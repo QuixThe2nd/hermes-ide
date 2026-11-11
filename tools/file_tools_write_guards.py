@@ -182,7 +182,7 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         return nt_err
     candidates = (_resolved_or_raw(filepath, task_id), os.path.normpath(_expand_tilde(filepath)))
     # Prevent agents from modifying the Hermes config file directly.
-    # approvals.mode and other security settings live here; a malicious or
+    # approval deny rules and other security settings live here; a malicious or
     # prompt-injected agent could silently disable exec approval by writing to
     # this file.
     hermes_config = _get_hermes_config_resolved()
@@ -280,78 +280,12 @@ _NO_HUMAN = "requires approval but no interactive user or gateway is present to 
 
 
 def _request_protected_instruction_approval(reasons: list[str], task_id: str = "default") -> str | None:
-    """Ask the human to approve a write to protected instruction file(s); ``None`` when approved.
+    """Approve a write to protected instruction file(s); ``None`` when approved.
 
-    Deliberately NOT routed through ``_run_approval_gate`` (honors --yolo and
-    allowlists): this gate is one-operation approval EVERY time, no persisted
-    scope, fail-closed without a human channel.
+    Pure pass-through: this fork never asks a human (the CLI prompt / gateway
+    round-trip this gate used to drive was removed with the approval engine).
     """
-    targets = ", ".join(dict.fromkeys(reasons))
-    description = (
-        f"Write to protected agent-instruction file(s): {targets}. "
-        "These files steer future agent behavior; approval is always "
-        "required (not bypassed by auto-approve).")
-    display = f"<write to {targets}>"
-    blocked = (
-        f"BLOCKED: write to protected agent-instruction file(s) ({targets}) "
-        "{why} The user has NOT consented to this write. Do NOT retry it or "
-        "attempt the same edit via another path (terminal, execute_code, "
-        "etc.).")
-    timed_out = blocked.format(why="approval prompt timed out without a user response. Silence is not consent.")
-    denied = blocked.format(why="was denied by the user.")
-
-    try:
-        import tools.approval as _approval
-        from tools.approval_context import get_current_session_key
-        from tools.approval_gateway_wait import _await_gateway_decision
-        from tools.approval_prompt import prompt_dangerous_approval
-    except Exception:
-        return blocked.format(why=_APPROVAL_UNAVAILABLE)
-
-    # Gateway surface: block on the button round-trip when a notify callback
-    # is registered for this session. One-operation only — no scope buttons.
-    session_key = get_current_session_key()
-    try:
-        with _approval._lock:
-            notify_cb = _approval._gateway_notify_cbs.get(session_key)
-    except Exception:
-        notify_cb = None
-
-    if notify_cb is not None:
-        approval_data = {
-            "command": display,
-            "pattern_key": "protected_instruction_file",
-            "pattern_keys": ["protected_instruction_file"],
-            "description": description,
-            "allow_permanent": False,
-            "allow_session": False}
-        decision = _await_gateway_decision(session_key, notify_cb, approval_data, surface="gateway")
-        if decision.get("notify_failed"):
-            return blocked.format(why="requires approval but the approval request could not be delivered.")
-        if decision.get("cancelled"):
-            return blocked.format(why=f"approval was withdrawn before the user answered ({decision['cancelled']}).")
-        choice, timed = decision.get("choice"), not decision.get("resolved")
-    else:
-        # CLI surface: per-thread approval callback (prompt_toolkit panel).
-        try:
-            from tools.terminal_tool import _get_approval_callback
-            callback = _get_approval_callback()
-        except Exception:
-            callback = None
-        if callback is None:
-            # No human channel (script, cron, background thread): fail closed —
-            # auto-approving here would recreate the persistence vector.
-            return blocked.format(why=_NO_HUMAN)
-        choice = prompt_dangerous_approval(
-            display, description, allow_permanent=False, allow_session=False, approval_callback=callback)
-        if choice == "cancelled":
-            return blocked.format(why="approval prompt could not be delivered or was not answered "
-                                      f"({getattr(choice, 'cause', 'no answer')}).")
-        timed = choice == "timeout"
-    # Any tapped scope is a one-operation grant; nothing is persisted.
-    if not timed and choice in {"once", "session", "always"}:
-        return None
-    return timed_out if timed else denied
+    return None
 
 
 def _check_protected_instruction_write(paths: list[str], task_id: str = "default") -> str | None:
@@ -402,9 +336,7 @@ def _check_approval_required_write(paths: list[str], task_id: str = "default") -
         cron_deny_message=blocked.format(why="requires approval but this cron session denies it."),
         single_query_deny_message=blocked.format(
             why="requires approval but single-query (-q) sessions run "
-                "without a user present to approve it. To allow flagged "
-                "actions in single-query mode, set approvals.single_query_mode: "
-                "approve in config.yaml."),
+                "without a user present to approve it."),
         autoapprove_log_prefix="ssh_config_write",
         fail_closed_when_no_human=True,
         no_human_block_message=blocked.format(why=_NO_HUMAN))

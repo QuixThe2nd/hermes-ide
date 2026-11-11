@@ -106,8 +106,8 @@ or the switch in **Settings → Passwords & Logins**.
 
 Cards and addresses work the same way as logins: saved once (**Settings →
 Passwords & Logins → Add**, or `hermes vault add`), bound to the checkout site,
-and filled by the agent on that site only. **Every card fill asks you first**,
-with the same approval prompt as a dangerous command; declining writes nothing.
+and filled by the agent on that site only. **Every card fill asks you first**;
+declining writes nothing.
 Headless sessions (cron, webhooks, the API server) cannot confirm and are
 refused, so a prompt injection that reaches a checkout page can ask, but it
 cannot spend. Address fills need no confirmation.

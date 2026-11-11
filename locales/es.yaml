@@ -1,26 +1,7 @@
 # Catálogo de mensajes estáticos de Hermes -- Español
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
-approval:
-  dangerous_header: "⚠️  COMANDO PELIGROSO: {description}"
-  choose_long:     "      [o]una vez  |  [s]sesión  |  [a]siempre  |  [d]denegar"
-  choose_short:    "      [o]una vez  |  [s]sesión  |  [d]denegar"
-  prompt_long:     "      Opción [o/s/a/D]: "
-  prompt_short:    "      Opción [o/s/D]: "
-  choose_smart_deny: "      [o]una vez  |  [d]denegar"
-  prompt_smart_deny: "      Opción [o/D]: "
-  smart_deny_once_inputs: "o,once"
-  smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ Sin respuesta en {waited} — el comando no se ejecutó. Pide de nuevo para reintentar, o sube el límite: hermes config set approvals.timeout {suggested}"
-  allowed_once:    "      ✓ Permitido una vez"
-  allowed_session: "      ✓ Permitido en esta sesión"
-  allowed_always:  "      ✓ Añadido a la lista de permitidos permanente"
-  denied:          "      ✗ Denegado"
-  cancelled:       "      ✗ Cancelado"
-  blocklist_message: "Este comando está en la lista de bloqueo incondicional y no se puede aprobar."
-
 gateway:
-  approval_expired: "⚠️ La aprobación ha caducado (el agente ya no está esperando). Pida al agente que lo intente de nuevo."
   draining:         "⏳ Pidiendo a {count} agente(s) activo(s) que se detengan, luego reinicio..."
   goal_cleared:     "✓ Objetivo eliminado."
   no_active_goal:   "No hay objetivo activo."
@@ -57,15 +38,6 @@ gateway:
     none:                  "No hay agentes activos ni tareas en ejecución."
     state_starting:        "iniciando"
     state_running:         "en ejecución"
-
-  approve:
-    no_pending:            "No hay ningún comando pendiente que aprobar."
-    once_singular:         "✅ Comando aprobado. El agente se está reanudando..."
-    once_plural:           "✅ Comandos aprobados ({count} comandos). El agente se está reanudando..."
-    session_singular:      "✅ Comando aprobado (patrón aprobado para esta sesión). El agente se está reanudando..."
-    session_plural:        "✅ Comandos aprobados (patrón aprobado para esta sesión) ({count} comandos). El agente se está reanudando..."
-    always_singular:       "✅ Comando aprobado (patrón aprobado permanentemente). El agente se está reanudando..."
-    always_plural:         "✅ Comandos aprobados (patrón aprobado permanentemente) ({count} comandos). El agente se está reanudando..."
 
   background:
     usage:                 "Uso: /bg <prompt>\nEjemplo: /bg Resume las principales historias de HN de hoy\n\nEjecuta el prompt en una sesión separada. Puedes seguir chateando — el resultado aparecerá aquí cuando termine."
@@ -115,14 +87,6 @@ gateway:
     auto_delete:           "⏱ Los pastes se eliminarán automáticamente en 6 horas."
     full_logs_hint:        "Para subir registros completos, usa `hermes debug share` desde la CLI."
     share_hint:            "Comparte estos enlaces con el equipo de Hermes para obtener soporte."
-
-  deny:
-    stale:                 "❌ Comando denegado (la aprobación había caducado)."
-    no_pending:            "No hay ningún comando pendiente que denegar."
-    denied_singular:       "❌ Comando denegado."
-    denied_plural:         "❌ Comandos denegados ({count} comandos)."
-    denied_reason_singular: "❌ Comando denegado. Motivo transmitido al agente: \"{reason}\""
-    denied_reason_plural:  "❌ Comandos denegados ({count} comandos). Motivo transmitido al agente: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast solo está disponible para modelos de OpenAI que admiten Priority Processing."
@@ -206,7 +170,7 @@ gateway:
   reload_mcp:
     cancelled:             "🟡 /reload-mcp cancelado. Las herramientas MCP no han cambiado."
     always_followup:       "ℹ️ Las próximas llamadas a `/reload-mcp` se ejecutarán sin confirmación. Reactiva mediante `approvals.mcp_reload_confirm: true` en `config.yaml`."
-    confirm_prompt:        "⚠️ **Confirmar /reload-mcp**\n\nRecargar los servidores MCP reconstruye el conjunto de herramientas de esta sesión e **invalida la caché de prompt del proveedor** — el siguiente mensaje reenviará los tokens de entrada completos. En modelos de contexto largo o de razonamiento alto esto puede resultar costoso.\n\nElige:\n• **Aprobar una vez** — recargar ahora\n• **Aprobar siempre** — recargar ahora y silenciar esta confirmación permanentemente\n• **Cancelar** — dejar las herramientas MCP sin cambios\n\n_Alternativa de texto: responde `/approve`, `/always` o `/cancel`._"
+    confirm_prompt:        "⚠️ **Confirmar /reload-mcp**\n\nRecargar los servidores MCP reconstruye el conjunto de herramientas de esta sesión e **invalida la caché de prompt del proveedor** — el siguiente mensaje reenviará los tokens de entrada completos. En modelos de contexto largo o de razonamiento alto esto puede resultar costoso.\n\nElige:\n• **Aprobar una vez** — recargar ahora\n• **Aprobar siempre** — recargar ahora y silenciar esta confirmación permanentemente\n• **Cancelar** — dejar las herramientas MCP sin cambios"
     header:                "🔄 **Servidores MCP recargados**\n"
     reconnected:           "♻️ Reconectados: {names}"
     added:                 "➕ Añadidos: {names}"
@@ -439,10 +403,6 @@ La resincronización se ejecuta automáticamente como máximo una vez por hora."
     label_all:             "TTS (responder con voz a todos los mensajes)"
     help:                  "{toggle}\n\n**Cómo funciona /voice**\n• `/voice on` — respuesta de voz cuando envías un mensaje de voz\n• `/voice tts` — respuesta de voz a *cada* mensaje\n• `/voice off` — volver a respuestas solo de texto\n• `/voice status` — mostrar el modo actual\n• `/voice` (sin argumento) — alternar rápido entre activado y desactivado{channels}"
     help_channels:         "\n\n**Canales de voz en vivo (Discord)**\n• Únete primero a un canal de voz, luego `/voice channel` — me uno, escucho y digo mis respuestas\n• `/voice leave` — desconectar del canal de voz"
-
-  yolo:
-    disabled:                   "⚠️ Modo YOLO **DESACTIVADO** en esta sesión — los comandos peligrosos requerirán aprobación."
-    enabled:                    "⚡ Modo YOLO **ACTIVADO** en esta sesión — todos los comandos se aprueban automáticamente. Úsalo con precaución."
 
   shared:
     session_db_unavailable:      "Base de datos de sesiones no disponible."

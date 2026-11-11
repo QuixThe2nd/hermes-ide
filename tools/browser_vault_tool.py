@@ -623,7 +623,7 @@ def _confirm_payment_fill(label: str, origin: str) -> bool:
     """Human confirmation before a card is written into a page: a prompt injection that reaches a checkout
     must not be able to spend. Routes through the approval surface of the active session (gateway button
     round-trip or CLI panel); headless sessions cannot confirm and the fill is refused."""
-    from tools.approval_prompt import request_elicitation_consent
+    from tools.approval import request_elicitation_consent
 
     return request_elicitation_consent(
         f"Fill payment card '{label}' on {origin}",

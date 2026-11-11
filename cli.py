@@ -3220,7 +3220,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         "undo": ("_cmd_undo", True), "save": ("save_conversation", True), "skills": ("_cmd_skills", True),
         "platforms": ("_show_gateway_status", False), "status": ("_show_session_status", False),
         "context": ("_show_context_breakdown", True), "egress": ("_cmd_egress", True),
-        "statusbar": ("_cmd_statusbar", True), "verbose": ("_toggle_verbose", False), "yolo": ("_toggle_yolo", False),
+        "statusbar": ("_cmd_statusbar", True), "verbose": ("_toggle_verbose", False),
         "compress": ("_manual_compress", True), "subscription": ("_show_subscription", False),
         "topup": ("_show_billing", True), "insights": ("_show_insights", True), "update": ("_cmd_update", True),
         "version": ("_cmd_version", True), "paste": ("_handle_paste_command", False), "reload": ("_cmd_reload", True),
@@ -4391,8 +4391,8 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
     # Mark single-query for the approval gate. cli.py sets HERMES_INTERACTIVE earlier for interactive sudo
     # prompts, but a -q run has NO user waiting to answer approval prompts. The gate reads this marker (via
     # gateway.session_context.get_session_env, which falls back to os.environ when the session-context layer
-    # isn't engaged) and takes the deterministic approvals.single_query_mode path instead of waiting the
-    # full timeout. See #86878.
+    # isn't engaged) and takes the deterministic single-query path instead of waiting the
+    # full approval window. See #86878.
     os.environ["HERMES_SINGLE_QUERY_SESSION"] = "1"
     from hermes_cli.quiet_single_query import exit_single_query
     if not cli._claim_active_session("cli", stderr=bool(quiet)):

@@ -152,7 +152,7 @@ TTS settings are read from **two** OpenClaw config locations with this priority:
 
 | What | OpenClaw path | Hermes path | Notes |
 |------|-------------|-------------|-------|
-| Approval mode | `approvals.exec.mode` | `config.yaml` → `approvals.mode` | "auto"→"off", "always"→"manual", "smart"→"smart" |
+| Approval mode | `approvals.exec.mode` | none | Dangerous commands run without approval prompts in Hermes; block patterns via `approvals.deny` |
 | Command allowlist | `exec-approvals.json` | `config.yaml` → `command_allowlist` | Patterns merged and deduped |
 | Browser CDP URL | `browser.cdpUrl` | `config.yaml` → `browser.cdp_url` | |
 | Browser headless | `browser.headless` | `config.yaml` → `browser.headless` | |

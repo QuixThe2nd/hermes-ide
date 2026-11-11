@@ -1,26 +1,7 @@
 # Hermes 静的メッセージカタログ -- 日本語
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
-approval:
-  dangerous_header: "⚠️  危険なコマンド: {description}"
-  choose_long:     "      [o]今回のみ  |  [s]セッション中  |  [a]常に許可  |  [d]拒否"
-  choose_short:    "      [o]今回のみ  |  [s]セッション中  |  [d]拒否"
-  prompt_long:     "      選択 [o/s/a/D]: "
-  prompt_short:    "      選択 [o/s/D]: "
-  choose_smart_deny: "      [o]今回のみ  |  [d]拒否"
-  prompt_smart_deny: "      選択 [o/D]: "
-  smart_deny_once_inputs: "o,once"
-  smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ {waited} 以内に応答がなかったため、コマンドは実行されませんでした。もう一度依頼して再試行するか、制限を引き上げてください: hermes config set approvals.timeout {suggested}"
-  allowed_once:    "      ✓ 今回のみ許可"
-  allowed_session: "      ✓ このセッション中は許可"
-  allowed_always:  "      ✓ 永続的な許可リストに追加"
-  denied:          "      ✗ 拒否しました"
-  cancelled:       "      ✗ キャンセルしました"
-  blocklist_message: "このコマンドは無条件ブロックリストに含まれており、承認できません。"
-
 gateway:
-  approval_expired: "⚠️ 承認の有効期限が切れました（エージェントはもう待機していません）。エージェントに再試行を依頼してください。"
   draining:         "⏳ {count} 個のアクティブエージェントに一時停止を依頼してから再起動します..."
   goal_cleared:     "✓ 目標をクリアしました。"
   no_active_goal:   "アクティブな目標はありません。"
@@ -57,15 +38,6 @@ gateway:
     none:                  "アクティブなエージェントや実行中のタスクはありません。"
     state_starting:        "起動中"
     state_running:         "実行中"
-
-  approve:
-    no_pending:            "承認待ちのコマンドはありません。"
-    once_singular:         "✅ コマンドを承認しました。エージェントを再開しています..."
-    once_plural:           "✅ コマンドを承認しました ({count} 件)。エージェントを再開しています..."
-    session_singular:      "✅ コマンドを承認しました (このセッション中はパターンを許可)。エージェントを再開しています..."
-    session_plural:        "✅ コマンドを承認しました (このセッション中はパターンを許可) ({count} 件)。エージェントを再開しています..."
-    always_singular:       "✅ コマンドを承認しました (パターンを永続的に許可)。エージェントを再開しています..."
-    always_plural:         "✅ コマンドを承認しました (パターンを永続的に許可) ({count} 件)。エージェントを再開しています..."
 
   background:
     usage:                 "使い方: /bg <プロンプト>\n例: /bg 今日の HN トップ記事を要約して\n\nプロンプトを別のセッションで実行します。チャットを続けられます — 完了したらここに結果が表示されます。"
@@ -115,14 +87,6 @@ gateway:
     auto_delete:           "⏱ ペーストは 6 時間後に自動削除されます。"
     full_logs_hint:        "完全なログのアップロードには、CLI から `hermes debug share` を使用してください。"
     share_hint:            "サポートを受けるには、このリンクを Hermes チームに共有してください。"
-
-  deny:
-    stale:                 "❌ コマンドを拒否しました (承認は期限切れでした)。"
-    no_pending:            "拒否待ちのコマンドはありません。"
-    denied_singular:       "❌ コマンドを拒否しました。"
-    denied_plural:         "❌ コマンドを拒否しました ({count} 件)。"
-    denied_reason_singular: "❌ コマンドを拒否しました。 理由をエージェントに伝達しました: \"{reason}\""
-    denied_reason_plural:  "❌ コマンドを拒否しました ({count} 件)。 理由をエージェントに伝達しました: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast は Priority Processing をサポートする OpenAI モデルでのみ利用できます。"
@@ -206,7 +170,7 @@ gateway:
   reload_mcp:
     cancelled:             "🟡 /reload-mcp をキャンセルしました。MCP ツールは変更されていません。"
     always_followup:       "ℹ️ 今後の `/reload-mcp` は確認なしで実行されます。`config.yaml` で `approvals.mcp_reload_confirm: true` を設定すると再有効化できます。"
-    confirm_prompt:        "⚠️ **/reload-mcp の確認**\n\nMCP サーバーを再読み込みすると、このセッションのツールセットが再構築され、**プロバイダーのプロンプトキャッシュが無効化されます** — 次のメッセージで完全な入力トークンが再送信されます。長コンテキストや高推論モデルではコストが高くなる可能性があります。\n\n選択してください:\n• **一度だけ承認** — 今すぐ再読み込み\n• **常に承認** — 今すぐ再読み込みし、このプロンプトを永続的に非表示\n• **キャンセル** — MCP ツールを変更しない\n\n_テキスト代替: `/approve`、`/always`、または `/cancel` と返信してください。_"
+    confirm_prompt:        "⚠️ **/reload-mcp の確認**\n\nMCP サーバーを再読み込みすると、このセッションのツールセットが再構築され、**プロバイダーのプロンプトキャッシュが無効化されます** — 次のメッセージで完全な入力トークンが再送信されます。長コンテキストや高推論モデルではコストが高くなる可能性があります。\n\n選択してください:\n• **一度だけ承認** — 今すぐ再読み込み\n• **常に承認** — 今すぐ再読み込みし、このプロンプトを永続的に非表示\n• **キャンセル** — MCP ツールを変更しない"
     header:                "🔄 **MCP サーバーを再読み込みしました**\n"
     reconnected:           "♻️ 再接続: {names}"
     added:                 "➕ 追加: {names}"
@@ -442,10 +406,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_all:             "TTS (すべてのメッセージに音声で返信)"
     help:                  "{toggle}\n\n**/voice の使い方**\n• `/voice on` — 音声メッセージを送ると音声で返信\n• `/voice tts` — *すべての*メッセージに音声で返信\n• `/voice off` — テキストのみの返信に戻す\n• `/voice status` — 現在のモードを表示\n• `/voice`（引数なし）— オンとオフをすばやく切り替え{channels}"
     help_channels:         "\n\n**ライブ音声チャンネル (Discord)**\n• 先に音声チャンネルに参加してから `/voice channel` — 参加して聞き取り、音声で返信します\n• `/voice leave` — 音声チャンネルから切断"
-
-  yolo:
-    disabled:                   "⚠️ このセッションの YOLO モードは **OFF** — 危険なコマンドには承認が必要です。"
-    enabled:                    "⚡ このセッションの YOLO モードは **ON** — すべてのコマンドが自動承認されます。注意して使用してください。"
 
   shared:
     session_db_unavailable:      "セッションデータベースが利用できません。"

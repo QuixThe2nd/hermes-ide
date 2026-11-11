@@ -1673,28 +1673,9 @@ class MatrixAdapter(BasePlatformAdapter):
                       "always": "`!approve always` to approve permanently, "}
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
-        """Reaction-driven approval: the bot seeds one reaction per offered choice."""
-        if not self._client:
-            return SendResult(success=False, error="Not connected")
-        choices = prompt.choices
-        typed_hints = "" if prompt.smart_denied else "".join(self._EA_TYPED_HINT[c] for c in choices if c in self._EA_TYPED_HINT)
-        text = (
-            f"{prompt.text}\n\n"
-            f"{typed_hints}Reply `!approve` to execute once, or `!deny` to cancel.\n\n"
-            "You can also click the reaction to approve:\n" + "\n".join(self._EA_LEGEND[c] for c in choices))
-        reactions = tuple(self._EA_REACTIONS[c] for c in choices)
-        session_key, chat_id = prompt.session_key, prompt.chat_id
-
-        def _make(message_id, requester, expires_at):
-            old_event = self._approval_prompt_by_session.get(session_key)
-            if old_event:
-                self._approval_prompts_by_event.pop(old_event, None)
-            self._approval_prompt_by_session[session_key] = message_id
-            return _MatrixApprovalPrompt(
-                session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
-                expires_at=expires_at)
-        return await self._send_reaction_prompt(
-            chat_id, text, prompt.metadata, _make, self._approval_prompts_by_event, reactions, "approval")
+        """Deprecated: this fork never asks a human to approve/deny agent actions, so no
+        approval prompt is ever posted (base ``send_exec_approval`` is a no-op pass-through)."""
+        return SendResult(success=False, error="Not supported")
 
     async def send_model_picker(
         self, chat_id: str, providers: list, current_model: str, current_provider: str, session_key: str,
@@ -2431,27 +2412,9 @@ class MatrixAdapter(BasePlatformAdapter):
         return True, prompt, selection
 
     async def _handle_approval_reaction(self, room_id: str, reacts_to: str, key: str, sender: str) -> bool:
-        """Resolve a pending exec-approval prompt from a reaction. True if it was the target."""
-        handled, prompt, choice = await self._claim_reaction_prompt(
-            self._approval_prompts_by_event, room_id, reacts_to, key, sender, "approval",
-            "That reaction is not valid for this approval prompt.", self._expire_matrix_approval_prompt,
-            choices=self._approval_reaction_map)
-        if choice is None:
-            return handled
-        try:
-            from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(prompt.session_key, choice)
-            if count:
-                prompt.resolved = True
-                self._approval_prompts_by_event.pop(reacts_to, None)
-                self._approval_prompt_by_session.pop(prompt.session_key, None)
-                logger.info(
-                    "Matrix reaction resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                    count, prompt.session_key, choice, sender)
-                await self._redact_bot_approval_reactions(room_id, prompt)
-        except Exception as exc:
-            logger.error("Failed to resolve gateway approval from Matrix reaction: %s", exc)
-        return True
+        """Deprecated: this fork never posts exec-approval prompts, so no reaction can resolve
+        one. Kept (importable, still in the reaction-handler loop) as a permanent no-op."""
+        return False
 
     async def _handle_model_picker_reaction(self, room_id: str, reacts_to: str, key: str, sender: str) -> bool:
         """Apply a model-picker reaction. True if the reaction targeted a pending picker."""

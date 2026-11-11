@@ -636,7 +636,7 @@ class TestBrowserVaultTools:
             with patch("agent.vault_store.get_vault_store", return_value=store), \
                  patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
                  patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret), \
-                 patch("tools.approval_prompt.request_elicitation_consent", return_value="decline"):
+                 patch("tools.approval.request_elicitation_consent", return_value="decline"):
                 declined = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
             assert declined["success"] is False and declined["error_type"] == "payment_declined"
             assert secret_exprs == []
@@ -644,7 +644,7 @@ class TestBrowserVaultTools:
             with patch("agent.vault_store.get_vault_store", return_value=store), \
                  patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
                  patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret), \
-                 patch("tools.approval_prompt.request_elicitation_consent", return_value="accept"):
+                 patch("tools.approval.request_elicitation_consent", return_value="accept"):
                 raw = browser_vault_tool.browser_vault_fill(meta.id)
             out = json.loads(raw)
             assert out["success"] is True and out["fields"] == ["cc-csc", "cc-exp", "cc-number"]
@@ -798,15 +798,17 @@ class TestManagerAutoDetection:
             assert [b.name for b in base.enabled_backends()] == ["local"]
 
 
-def test_every_vault_tool_is_in_the_browser_toolset():
+def test_every_vault_tool_is_reachable_through_a_toolset():
     """toolsets.py is a hand-maintained list; a tool registered here but missing there is invisible to the model
-    (live: browser_vault_save_login was registered, tested, and never offered)."""
+    (live: browser_vault_save_login was registered, tested, and never offered). The vault tools ride
+    with the browser via _HERMES_CORE_TOOLS rather than the browser toolset itself."""
     import toolsets
     from tools import browser_vault_tool  # noqa: F401  (registers)
     from tools.registry import registry
 
     registered = {e.name for e in registry.get_all_entries() if e.name.startswith("browser_vault_")}
-    assert registered <= set(toolsets.TOOLSETS["browser"]["tools"]), registered - set(toolsets.TOOLSETS["browser"]["tools"])
+    reachable = set(toolsets.TOOLSETS["browser"]["tools"]) | set(toolsets._HERMES_CORE_TOOLS)
+    assert registered <= reachable, registered - reachable
 
 
 class TestTwoFactor:

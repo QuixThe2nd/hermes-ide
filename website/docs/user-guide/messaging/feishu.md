@@ -285,8 +285,6 @@ Gateway-driven update prompts use a native Feishu `Yes` / `No` card instead of f
 
 Card action events are dispatched with `MessageType.COMMAND`, so they flow through the normal command processing pipeline.
 
-This is also how **command approval** works — when the agent needs to run a dangerous command, it sends an interactive card with Allow Once / Session / Always / Deny buttons. The user clicks a button, and the card action callback delivers the approval decision back to the agent.
-
 ### Required Feishu App Configuration
 
 Interactive cards need the following configuration in the Feishu Developer Console. The usual symptom of a gap here is error **200340** when users click card buttons.

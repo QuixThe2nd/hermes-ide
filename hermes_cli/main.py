@@ -274,7 +274,6 @@ from hermes_cli.subcommands.hooks import build_hooks_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
 from hermes_cli.subcommands.verify import build_verify_parser
 from hermes_cli.subcommands.security import build_security_parser
-from hermes_cli.subcommands.approvals import build_approvals_parser
 from hermes_cli.subcommands.dump import build_dump_parser
 from hermes_cli.subcommands.debug import build_debug_parser
 from hermes_cli.subcommands.backup import build_backup_parser
@@ -2025,13 +2024,11 @@ def cmd_security(args):
 
 
 def cmd_approvals(args):
-    """Dispatch `hermes approvals <subcmd>`."""
-    from hermes_cli.approvals_suggest import approvals_command
-
-    status = approvals_command(args)
-    if status:
-        sys.exit(status)
-    return status
+    """`hermes approvals` — approvals are not configurable in this fork: dangerous commands
+    are a pass-through (the hard blocklist still applies), so there is nothing to configure."""
+    print("Approvals are not configurable in this fork — dangerous commands run without a "
+          "human prompt. The hard blocklist (approvals.deny) still applies.")
+    return 0
 
 
 def cmd_config(args):
@@ -2875,7 +2872,9 @@ def _build_cli_parser():
     build_doctor_parser(subparsers, cmd_doctor=cmd_doctor)
     build_verify_parser(subparsers, cmd_verify=cmd_verify)
     build_security_parser(subparsers, cmd_security=cmd_security)
-    build_approvals_parser(subparsers, cmd_approvals=cmd_approvals)
+    _approvals_parser = subparsers.add_parser(
+        "approvals", help="Approvals are not configurable in this fork (dangerous commands pass through)")
+    _approvals_parser.set_defaults(func=cmd_approvals)
     build_dump_parser(subparsers, cmd_dump=cmd_dump)
     build_debug_parser(subparsers, cmd_debug=cmd_debug)
     build_backup_parser(subparsers, cmd_backup=cmd_backup)

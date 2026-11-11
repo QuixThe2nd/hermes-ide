@@ -17,7 +17,7 @@ OLD_CHAIN_COMMANDS = [
     "prompt", "undo", "branch", "worktree", "save", "cron", "suggestions",
     "blueprint", "curator", "skills", "learn", "init", "memory",
     "platforms", "status", "context", "egress", "statusbar", "diff", "battery",
-    "timestamps", "verbose", "focus", "footer", "yolo", "approvals", "reasoning",
+    "timestamps", "verbose", "focus", "footer", "reasoning",
     "fast", "compress", "usage", "subscription", "topup", "insights", "copy",
     "debug", "update", "version", "paste", "image", "reload", "reload-mcp",
     "reload-skills", "bundles", "browser", "plugins", "rollback", "snapshot",
@@ -62,12 +62,11 @@ def _cli():
 
 def test_dispatch_return_semantics_and_side_effects():
     c = _cli()
-    with patch.object(HermesCLI, "_toggle_yolo", return_value=None) as m, \
-            patch("hermes_cli.plugins.fire_pre_command_hook") as hook:
-        assert c.process_command("/yolo") is True
-        m.assert_called_once_with()
+    with patch("hermes_cli.plugins.fire_pre_command_hook") as hook, \
+            patch.object(HermesCLI, "_show_session_status", return_value=None):
+        assert c.process_command("/status") is True
         hook.assert_called_once()
-        assert hook.call_args.kwargs["command"] == "yolo"
+        assert hook.call_args.kwargs["command"] == "status"
     assert c._pending_resume_sessions is None  # non-resume command disarms it
 
     c = _cli()

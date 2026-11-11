@@ -25,8 +25,6 @@ import time
 import pytest
 
 from agent.tool_executor import _ConcurrentToolAuthorizationGate
-from tools import approval as approval_mod
-from tools import approval_context
 from tools import approval_human_wait
 
 
@@ -102,10 +100,9 @@ class TestHumanWaitTracker:
             assert approval_human_wait.human_wait_seconds(SESSION) == 0.0
         assert approval_human_wait.human_wait_seconds("other-session") > 0.0
 
-    def test_open_window_clamped_to_approval_timeout(self, monkeypatch):
-        """A window that overstays approvals.timeout is itself wedged and must
+    def test_open_window_clamped_to_approval_timeout(self):
+        """A window that overstays the clamp ceiling is itself wedged and must
         stop extending the exclusion (belt-and-braces for #79719)."""
-        monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 300)
         with approval_human_wait.human_wait_window(SESSION):
             state = approval_human_wait._human_wait_states[SESSION]
             # Simulate a window that has been open for a full day.
@@ -126,10 +123,9 @@ class TestHumanWaitTracker:
                 <= approval_human_wait._HUMAN_WAIT_MAX_SESSIONS
             )
 
-    def test_late_close_of_wedged_window_is_clamped(self, monkeypatch):
+    def test_late_close_of_wedged_window_is_clamped(self):
         """A wedged window that eventually CLOSES must not retroactively inject
         its full overstay into completed_seconds (close-side clamp)."""
-        monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 300)
         with approval_human_wait.human_wait_window(SESSION):
             state = approval_human_wait._human_wait_states[SESSION]
             # Simulate the window having been open for a full day before close.
@@ -267,53 +263,3 @@ class TestAuthorizationGate:
         assert gate.excluded_seconds() == 0.0
 
 
-class TestApprovalPathsRecordHumanWait:
-    def test_await_gateway_decision_records_wait(self, monkeypatch):
-        """The gateway approval poll loop must mark itself as human wait."""
-        monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 300)
-        approval_data = {
-            "command": "rm -rf /tmp/x",
-            "description": "test",
-            "pattern_key": "k",
-            "pattern_keys": ["k"],
-        }
-        notified = threading.Event()
-        result_holder = {}
-
-        def _worker():
-            result_holder["result"] = approval_mod._await_gateway_decision(
-                SESSION, lambda _data: notified.set(), approval_data
-            )
-
-        t = threading.Thread(target=_worker, daemon=True)
-        t.start()
-        assert notified.wait(timeout=5)
-        time.sleep(0.1)
-        try:
-            assert approval_human_wait.human_wait_seconds(SESSION) > 0.0
-        finally:
-            # Resolve the pending entry via the real production path.
-            approval_mod.resolve_gateway_approval(SESSION, "deny", resolve_all=True)
-            t.join(timeout=5)
-        assert not t.is_alive()
-        # Window closed once the wait resolved.
-        assert approval_human_wait._human_wait_states[SESSION].pending == 0
-
-    def test_prompt_dangerous_approval_records_wait(self, monkeypatch):
-        """The CLI prompt path must mark itself as human wait."""
-        observed = {}
-
-        def _callback(_command, _description, **_kwargs):
-            observed["during"] = approval_human_wait.human_wait_seconds()
-            return "deny"
-
-        choice = approval_mod.prompt_dangerous_approval(
-            "rm -rf /tmp/x", "test", approval_callback=_callback
-        )
-        assert choice == "deny"
-        # The window was open while the callback (the human prompt) ran.
-        state = approval_human_wait._human_wait_states.get(
-            approval_mod.get_current_session_key()
-        )
-        assert state is not None
-        assert state.pending == 0

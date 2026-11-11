@@ -1,90 +1,32 @@
 ---
 sidebar_position: 8
 title: "安全"
-description: "安全模型、危险命令审批、用户授权、容器隔离及生产部署最佳实践"
+description: "安全模型、危险命令硬性拦截、用户授权、容器隔离及生产部署最佳实践"
 ---
 
 # 安全
 
-Hermes Agent 采用纵深防御安全模型。本页涵盖所有安全边界——从命令审批到容器隔离，再到消息平台上的用户授权。
+Hermes Agent 采用纵深防御安全模型。本页涵盖所有安全边界——从危险命令硬性拦截到容器隔离，再到消息平台上的用户授权。
 
 ## 概述
 
 安全模型共有七层：
 
 1. **用户授权** — 谁可以与 Agent 通信（允许列表、DM 配对）
-2. **危险命令审批** — 针对破坏性操作的人工审核环节
+2. **危险命令硬性拦截** — 极端破坏性命令会被直接拒绝，无需询问
 3. **容器隔离** — Docker/Singularity/Modal 沙箱及加固配置
 4. **MCP 凭据过滤** — MCP 子进程的环境变量隔离
 5. **上下文文件扫描** — 检测项目文件中的 prompt（提示词）注入
 6. **跨会话隔离** — 会话之间无法访问彼此的数据或状态；cron 任务存储路径已针对路径遍历攻击进行加固
 7. **输入清理** — 终端工具后端中的工作目录参数会经过允许列表验证，以防止 shell 注入
 
-## 危险命令审批
+## 危险命令
 
-在执行任何命令之前，Hermes 会将其与一份精心维护的危险模式列表进行比对。若匹配，用户必须明确批准。
-
-### 审批模式
-
-审批系统支持三种模式，通过 `~/.hermes/config.yaml` 中的 `approvals.mode` 配置：
-
-```yaml
-approvals:
-  mode: smart     # smart | manual | off
-  timeout: 300    # 等待用户响应的秒数（默认：300）
-```
-
-| 模式 | 行为 |
-|------|----------|
-| **smart**（默认） | 使用辅助 LLM 评估风险。低风险命令（如 `python -c "print('hello')"`）仅对当前命令自动批准，真正危险的命令自动拒绝，不确定的情况升级为手动提示。 |
-| **manual** | 始终提示用户审批危险命令。 |
-| **off** | 禁用所有审批检查——等同于使用 `--yolo` 运行。所有命令无需提示即可执行。 |
-
-:::warning
-设置 `approvals.mode: off` 将禁用所有安全提示。仅在受信任的环境（CI/CD、容器等）中使用。
-:::
-
-### YOLO 模式
-
-YOLO 模式会绕过当前会话中**所有**危险命令审批提示。可通过以下三种方式激活：
-
-1. **CLI 标志**：使用 `hermes --yolo` 或 `hermes chat --yolo` 启动会话
-2. **斜杠命令**：在会话中输入 `/yolo` 以切换开/关
-3. **环境变量**：设置 `HERMES_YOLO_MODE=1`
-
-`/yolo` 命令是一个**切换开关**——每次使用都会翻转模式的开/关状态：
-
-```
-> /yolo
-  ⚡ YOLO mode ON — all commands auto-approved. Use with caution.
-
-> /yolo
-  ⚠ YOLO mode OFF — dangerous commands will require approval.
-```
-
-YOLO 模式在 CLI 和 gateway 会话中均可使用。在内部，它会设置 `HERMES_YOLO_MODE` 环境变量，该变量在每次命令执行前都会被检查。
-
-当 YOLO 激活时，Hermes 会显示两个持久的视觉提醒，以确保用户不会忘记审批提示已被绕过：
-
-- 当 YOLO 已激活时，会话开始时显示一条红色横幅：`⚠ YOLO mode — all approval prompts bypassed`。YOLO 关闭时隐藏，以保持默认横幅整洁。
-- 状态栏中所有宽度层级均显示 `⚠ YOLO` 片段，随着 YOLO 的切换实时更新（富文本渲染器和纯文本回退均支持）。
-
-:::danger
-YOLO 模式会禁用会话中**所有**危险命令安全检查——**但硬性黑名单除外**（见下文）。仅在完全信任所生成命令的情况下使用（例如，在一次性环境中经过充分测试的自动化脚本）。
-:::
-
-对于破坏性会话斜杠命令（`/clear`、`/new` / `/reset`、`/undo`、`/exit --delete`），CLI 在执行前也会提示确认。参见[斜杠命令——破坏性命令的确认提示](../reference/slash-commands.md#confirmation-prompts-for-destructive-commands)。
+危险命令会立即执行——Hermes 不会暂停询问。一个小的硬性黑名单会直接拒绝极端破坏性命令，无需询问。
 
 ### 硬性黑名单（始终生效的底线）
 
-某些命令极具破坏性——不可逆的文件系统清除、fork 炸弹、直接写入块设备——无论以下任何情况，Hermes 都**拒绝**执行：
-
-- `--yolo` / `/yolo` 已开启
-- `approvals.mode: off`
-- Cron 任务以无头 `approve` 模式运行
-- 用户明确点击"始终允许"
-
-黑名单是 `--yolo` 之下的底线。它在审批层看到命令**之前**就会触发，且没有任何覆盖标志。当前涵盖的模式（非详尽列表；与 `tools/approval.py::UNRECOVERABLE_BLOCKLIST` 保持同步）：
+危险命令会立即执行——Hermes 不会暂停询问。一个小的硬性黑名单会直接拒绝极端破坏性命令，无需询问。某些命令极具破坏性——不可逆的文件系统清除、fork 炸弹、直接写入块设备——Hermes 会直接拒绝执行，且没有任何覆盖标志。当前涵盖的模式（非详尽列表；与 `tools/approval.py::UNRECOVERABLE_BLOCKLIST` 保持同步）：
 
 | 模式 | 为何列为硬性规则 |
 |---|---|
@@ -96,102 +38,6 @@ YOLO 模式会禁用会话中**所有**危险命令安全检查——**但硬性
 | 将不受信任的 URL 通过管道传给 `sh`（作用于根文件系统顶层） | 远程代码执行攻击面过大，无法批准 |
 
 若触发黑名单，工具调用会向 Agent 返回一条说明性错误，且不执行任何操作。如果某个合法工作流确实需要这些命令（例如，你是一个清除并重装流水线的操作者），请在 Agent 外部运行。
-
-### 审批超时
-
-当危险命令提示出现时，用户有一段可配置的时间来响应。若在超时内未响应，命令将**默认被拒绝**（故障关闭）。
-
-在 `~/.hermes/config.yaml` 中配置超时：
-
-```yaml
-approvals:
-  timeout: 300  # 秒（默认：300）
-```
-
-### 触发审批的条件
-
-以下模式会触发审批提示（定义于 `tools/approval.py`）：
-
-| 模式 | 描述 |
-|---------|-------------|
-| `rm -r` / `rm --recursive` | 递归删除 |
-| `rm ... /` | 在根路径下删除 |
-| `chmod 777/666` / `o+w` / `a+w` | 全局/其他用户可写权限 |
-| `chmod --recursive` 配合不安全权限 | 递归全局/其他用户可写（长标志） |
-| `chown -R root` / `chown --recursive root` | 递归 chown 为 root |
-| `mkfs` | 格式化文件系统 |
-| `dd if=` | 磁盘复制 |
-| `> /dev/sd` | 写入块设备 |
-| `DROP TABLE/DATABASE` | SQL DROP |
-| `DELETE FROM`（不含 WHERE） | 不含 WHERE 的 SQL DELETE |
-| `TRUNCATE TABLE` | SQL TRUNCATE |
-| `> /etc/` | 覆盖系统配置 |
-| `systemctl stop/restart/disable/mask` | 停止/重启/禁用系统服务 |
-| `kill -9 -1` | 杀死所有进程 |
-| `pkill -9` | 强制杀死进程 |
-| Fork 炸弹模式 | Fork 炸弹 |
-| `bash -c` / `sh -c` / `zsh -c` / `ksh -c` | 通过 `-c` 标志执行 shell 命令（包括组合标志如 `-lc`） |
-| `python -e` / `perl -e` / `ruby -e` / `node -c` | 通过 `-e`/`-c` 标志执行脚本 |
-| `curl ... \| sh` / `wget ... \| sh` | 将远程内容通过管道传给 shell |
-| `bash <(curl ...)` / `sh <(wget ...)` | 通过进程替换执行远程脚本 |
-| `tee` 写入 `/etc/`、`~/.ssh/`、`~/.hermes/.env` | 通过 tee 覆盖敏感文件 |
-| `>` / `>>` 写入 `/etc/`、`~/.ssh/`、`~/.hermes/.env` | 通过重定向覆盖敏感文件 |
-| `xargs rm` | xargs 配合 rm |
-| `find -exec rm` / `find -delete` | find 配合破坏性操作 |
-| `cp`/`mv`/`install` 写入 `/etc/` | 复制/移动文件到系统配置目录 |
-| `sed -i` / `sed --in-place` 作用于 `/etc/` | 就地编辑系统配置 |
-| `pkill`/`killall` hermes/gateway | 防止自我终止 |
-| `gateway run` 配合 `&`/`disown`/`nohup`/`setsid` | 防止在服务管理器外启动 gateway |
-
-:::info
-**容器绕过**：在 `docker`、`singularity`、`modal`、`daytona` 或 `vercel_sandbox` 后端运行时，危险命令检查会被**跳过**，因为容器本身就是安全边界。容器内的破坏性命令不会危害宿主机。
-:::
-
-### 审批流程（CLI）
-
-在交互式 CLI 中，危险命令会显示内联审批提示：
-
-```
-  ⚠️  DANGEROUS COMMAND: recursive delete
-      rm -rf /tmp/old-project
-
-      [o]nce  |  [s]ession  |  [a]lways  |  [d]eny
-
-      Choice [o/s/a/D]:
-```
-
-四个选项：
-
-- **once** — 仅允许本次执行
-- **session** — 在本次会话剩余时间内允许此模式
-- **always** — 添加到永久允许列表（保存至 `config.yaml`）
-- **deny**（默认） — 阻止该命令
-
-### 审批流程（Gateway/消息平台）
-
-在消息平台上，Agent 会将危险命令详情发送到聊天中，并等待用户回复：
-
-- 回复 **yes**、**y**、**approve**、**ok** 或 **go** 以批准
-- 回复 **no**、**n**、**deny** 或 **cancel** 以拒绝
-
-运行 gateway 时，`HERMES_EXEC_ASK=1` 环境变量会自动设置。
-
-### 永久允许列表
-
-通过"always"批准的命令会保存到 `~/.hermes/config.yaml`：
-
-```yaml
-# 永久允许的危险命令模式
-command_allowlist:
-  - rm
-  - systemctl
-```
-
-这些模式在启动时加载，并在所有后续会话中静默批准。
-
-:::tip
-使用 `hermes config edit` 查看或删除永久允许列表中的模式。
-:::
 
 ## 用户授权（Gateway）
 

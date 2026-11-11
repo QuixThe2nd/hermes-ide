@@ -901,7 +901,7 @@ The buttons disable themselves once a choice is made so duplicate clicks don't d
 
 ### Prompt layout
 
-Interactive prompts (command approvals, `clarify` questions, and slash-command confirmations) share one layout: the **plain message** carries the full payload — the command and why it was flagged plus the approval deadline, or the question and reply hint — the **embed card** underneath is a header only, and the buttons sit below the card. Everything you need to decide is in the plain text, so the prompt reads correctly on clients that hide or detach embeds, and nothing is shown twice on clients that render them.
+Interactive prompts (`clarify` questions and slash-command confirmations) share one layout: the **plain message** carries the full payload — the question and reply hint — the **embed card** underneath is a header only, and the buttons sit below the card. Everything you need to decide is in the plain text, so the prompt reads correctly on clients that hide or detach embeds, and nothing is shown twice on clients that render them.
 
 ## Proactive Delivery Targets
 

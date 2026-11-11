@@ -22,7 +22,7 @@ _SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
 _HERMES_ENV_PATH = (
     r'(?:~\/\.hermes/|(?:\$home|\$\{home\})/\.hermes/|(?:\$hermes_home|\$\{hermes_home\})/)' r'\.env\b'
 )
-# ~/.hermes/config.yaml IS the security policy (approvals.mode, yolo, allowlist) and the config cache is mtime-keyed,
+# ~/.hermes/config.yaml IS the security policy (deny rules, yolo, allowlist) and the config cache is mtime-keyed,
 # so a write takes effect mid-session. Terminal-side coverage (sed -i, tee, >, cp) pairs the file_tools deny.
 _HERMES_CONFIG_PATH = (
     r'(?:~\/\.hermes/|(?:\$home|\$\{home\})/\.hermes/|(?:\$hermes_home|\$\{hermes_home\})/)' r'config\.yaml\b'
@@ -50,7 +50,7 @@ _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
 _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 
 # ---- Hardline (unconditional) blocklist ---------------------------------------------------
-# Commands that NEVER run via the agent, regardless of --yolo, approvals.mode=off, or cron approve
+# Commands that NEVER run via the agent, regardless of --yolo or any approval bypass
 # mode — a floor below yolo. Applies only to environments that can damage the host (local, ssh,
 # container-host cron); containerized backends already bypass the dangerous-command layer.
 # Deliberately tiny: only things with no recovery path (root wipe, raw block device writes,

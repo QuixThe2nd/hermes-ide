@@ -3465,7 +3465,7 @@ _SCALAR_WORDS = {
 def _coerce_config_set_value(key: str, value: str) -> Any:
     """Auto-coerce a ``hermes config set`` string to bool/None/int/float/list/dict.
     String-typed settings (per ``DEFAULT_CONFIG``) are preserved verbatim so enum members such as
-    ``approvals.mode="off"`` never become booleans. List/mapping literals are parsed so
+    ``mode="off"`` never become booleans. List/mapping literals are parsed so
     isinstance-gated readers see real structures; the trigger is conservative."""
     if isinstance(_default_value_for_key(key), str):
         return value

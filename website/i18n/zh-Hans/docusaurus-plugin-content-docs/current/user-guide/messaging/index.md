@@ -153,8 +153,6 @@ hermes gateway status --system         # 仅 Linux：显式检查系统服务
 | `/status` | 显示会话信息 |
 | `/whoami` | 显示你在当前范围内的斜杠命令权限（管理员 / 普通用户 / 无限制） |
 | `/stop` | 停止正在运行的 agent |
-| `/approve` | 批准待执行的危险命令 |
-| `/deny` | 拒绝待执行的危险命令 |
 | `/compress` | 手动压缩对话上下文 |
 | `/title [name]` | 设置或显示会话标题 |
 | `/resume [name]` | 恢复之前命名的会话 |

@@ -1,26 +1,7 @@
 # Hermes statikus üzenetkatalógus -- Magyar
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
-approval:
-  dangerous_header: "⚠️  VESZÉLYES PARANCS: {description}"
-  choose_long:     "      [o]egyszer  |  [s]munkamenet  |  [a]mindig  |  [d]elutasít"
-  choose_short:    "      [o]egyszer  |  [s]munkamenet  |  [d]elutasít"
-  prompt_long:     "      Választás [o/s/a/D]: "
-  prompt_short:    "      Választás [o/s/D]: "
-  choose_smart_deny: "      [o]egyszer  |  [d]elutasít"
-  prompt_smart_deny: "      Választás [o/D]: "
-  smart_deny_once_inputs: "o,once"
-  smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ Nem érkezett válasz {waited} alatt — a parancs nem futott le. Kérd újra a megismétléshez, vagy növeld a határt: hermes config set approvals.timeout {suggested}"
-  allowed_once:    "      ✓ Egyszer engedélyezve"
-  allowed_session: "      ✓ Engedélyezve ehhez a munkamenethez"
-  allowed_always:  "      ✓ Hozzáadva az állandó engedélylistához"
-  denied:          "      ✗ Elutasítva"
-  cancelled:       "      ✗ Megszakítva"
-  blocklist_message: "Ez a parancs a feltétel nélküli tiltólistán van, és nem hagyható jóvá."
-
 gateway:
-  approval_expired: "⚠️ A jóváhagyás lejárt (az ügynök már nem vár). Kérd meg az ügynököt, hogy próbálja újra."
   draining:         "⏳ {count} aktív ügynököt kérünk, hogy álljon meg, majd újraindítás..."
   goal_cleared:     "✓ A cél törölve."
   no_active_goal:   "Nincs aktív cél."
@@ -57,15 +38,6 @@ gateway:
     none:                  "Nincsenek aktív ügynökök vagy futó feladatok."
     state_starting:        "indul"
     state_running:         "fut"
-
-  approve:
-    no_pending:            "Nincs jóváhagyásra váró parancs."
-    once_singular:         "✅ Parancs jóváhagyva. Az ügynök folytatja..."
-    once_plural:           "✅ Parancsok jóváhagyva ({count} parancs). Az ügynök folytatja..."
-    session_singular:      "✅ Parancs jóváhagyva (minta jóváhagyva ehhez a munkamenethez). Az ügynök folytatja..."
-    session_plural:        "✅ Parancsok jóváhagyva (minta jóváhagyva ehhez a munkamenethez) ({count} parancs). Az ügynök folytatja..."
-    always_singular:       "✅ Parancs jóváhagyva (minta véglegesen jóváhagyva). Az ügynök folytatja..."
-    always_plural:         "✅ Parancsok jóváhagyva (minta véglegesen jóváhagyva) ({count} parancs). Az ügynök folytatja..."
 
   background:
     usage:                 "Használat: /bg <prompt>\nPélda: /bg Foglald össze a mai legjobb HN sztorikat\n\nKülön munkamenetben futtatja a promptot. Folytathatod a beszélgetést — az eredmény itt jelenik meg, amint elkészül."
@@ -115,14 +87,6 @@ gateway:
     auto_delete:           "⏱ A beillesztések 6 óra múlva automatikusan törlődnek."
     full_logs_hint:        "Teljes naplók feltöltéséhez használd a `hermes debug share` parancsot a CLI-ből."
     share_hint:            "Oszd meg ezeket a hivatkozásokat a Hermes csapattal támogatásért."
-
-  deny:
-    stale:                 "❌ Parancs elutasítva (a jóváhagyás elavult)."
-    no_pending:            "Nincs elutasítható függőben lévő parancs."
-    denied_singular:       "❌ Parancs elutasítva."
-    denied_plural:         "❌ Parancsok elutasítva ({count} parancs)."
-    denied_reason_singular: "❌ Parancs elutasítva. Indok továbbítva az ügynöknek: \"{reason}\""
-    denied_reason_plural:  "❌ Parancsok elutasítva ({count} parancs). Indok továbbítva az ügynöknek: \"{reason}\""
 
   fast:
     not_supported:         "⚡ A /fast csak olyan OpenAI modelleknél érhető el, amelyek támogatják a Priority Processinget."
@@ -206,7 +170,7 @@ gateway:
   reload_mcp:
     cancelled:             "🟡 /reload-mcp megszakítva. Az MCP-eszközök változatlanok."
     always_followup:       "ℹ️ A jövőbeli `/reload-mcp` hívások megerősítés nélkül futnak. Újra engedélyezhető az `approvals.mcp_reload_confirm: true` beállítással a config.yaml fájlban."
-    confirm_prompt:        "⚠️ **A /reload-mcp megerősítése**\n\nAz MCP-szerverek újratöltése újraépíti az eszközkészletet ehhez a munkamenethez, és **érvényteleníti a szolgáltató prompt-gyorsítótárát** — a következő üzenet újraküldi a teljes bemeneti tokent. Hosszú kontextusú vagy magas gondolkodási szintű modelleknél ez költséges lehet.\n\nVálassz:\n• **Egyszeri jóváhagyás** — újratöltés most\n• **Mindig jóváhagy** — újratöltés most, és ennek a kérdésnek a végleges elnémítása\n• **Megszakítás** — az MCP-eszközök változatlanok maradnak\n\n_Szöveges alternatíva: válaszolj `/approve`, `/always` vagy `/cancel` paranccsal._"
+    confirm_prompt:        "⚠️ **A /reload-mcp megerősítése**\n\nAz MCP-szerverek újratöltése újraépíti az eszközkészletet ehhez a munkamenethez, és **érvényteleníti a szolgáltató prompt-gyorsítótárát** — a következő üzenet újraküldi a teljes bemeneti tokent. Hosszú kontextusú vagy magas gondolkodási szintű modelleknél ez költséges lehet.\n\nVálassz:\n• **Egyszeri jóváhagyás** — újratöltés most\n• **Mindig jóváhagy** — újratöltés most, és ennek a kérdésnek a végleges elnémítása\n• **Megszakítás** — az MCP-eszközök változatlanok maradnak"
     header:                "🔄 **MCP-szerverek újratöltve**\n"
     reconnected:           "♻️ Újracsatlakozva: {names}"
     added:                 "➕ Hozzáadva: {names}"
@@ -442,10 +406,6 @@ Az újraszinkronizálás legfeljebb óránként egyszer fut automatikusan."
     label_all:             "TTS (hangválasz minden üzenetre)"
     help:                  "{toggle}\n\n**Hogyan működik a /voice**\n• `/voice on` — hangválasz, amikor hangüzenetet küldesz\n• `/voice tts` — hangválasz *minden* üzenetre\n• `/voice off` — vissza a csak szöveges válaszokhoz\n• `/voice status` — az aktuális mód megjelenítése\n• `/voice` (argumentum nélkül) — gyors váltás be és ki között{channels}"
     help_channels:         "\n\n**Élő hangcsatornák (Discord)**\n• Először lépj be egy hangcsatornába, majd `/voice channel` — csatlakozom, hallgatok és hangosan válaszolok\n• `/voice leave` — lecsatlakozás a hangcsatornáról"
-
-  yolo:
-    disabled:                   "⚠️ YOLO mód **KI** ebben a munkamenetben — a veszélyes parancsok jóváhagyást igényelnek."
-    enabled:                    "⚡ YOLO mód **BE** ebben a munkamenetben — minden parancs automatikusan jóváhagyva. Óvatosan használd."
 
   shared:
     session_db_unavailable:      "A munkamenet-adatbázis nem érhető el."

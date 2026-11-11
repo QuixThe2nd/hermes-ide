@@ -208,16 +208,12 @@ $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 
 This keeps PowerShell and child processes on UTF-8 and helps avoid Windows-only failures.
 
-### Review Before Choosing "Always"
+### Dangerous commands run without a prompt
 
-When the agent triggers a dangerous command approval (`rm -rf`, `DROP TABLE`, etc.), you get four options: **once**, **session**, **always**, **deny**. Think carefully before choosing "always" — it permanently allowlists that pattern. Start with "session" until you're comfortable.
-
-### Command Approval Is Your Safety Net
-
-Hermes checks every command against a curated list of dangerous patterns before execution. This includes recursive deletes, SQL drops, piping curl to shell, and more. Don't disable this in production — it exists for good reasons.
+Dangerous commands run immediately, and a small hard blocklist refuses catastrophic commands without asking. Use `approvals.deny` in `config.yaml` for anything that must never run on a given machine.
 
 :::warning
-When running in a container backend (Docker, Singularity, Modal, Daytona), dangerous command checks are **skipped** because the container is the security boundary. Make sure your container images are properly locked down.
+When running in a container backend (Docker, Singularity, Modal, Daytona), use a properly locked-down image — the container itself is the security boundary.
 :::
 
 ### Use Allowlists for Messaging Bots

@@ -1045,7 +1045,6 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
     # a config with a few stdio servers — even for sessions that never run a worker-routed command. Sessions
     # held by a live transport are never reaped, so with the desktop app open for days those fleets
     # accumulate until the OS refuses new process spawns.
-    from tools.approval import register_gateway_notify, unregister_gateway_notify
     from tools.approval_context import reset_current_session_key, set_current_session_key
     session_id = run.session_id
     effective_task_id = session_id or run.run_id
@@ -1077,7 +1076,6 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             if run.agent_kwargs["room_dispatch"] is not None:
                 policy = RoomExecutionPolicy.from_mapping(run.agent_kwargs["room_execution_policy"] or {})
                 resets.append((bind_room_execution_policy(policy), reset_room_execution_policy))
-            register_gateway_notify(run.approval_session_key, approval_notify)
             # /v1/runs owns its agent lifecycle (no TurnRunner): record process ownership
             # so stop/cancel reaps only the background processes this run created.
             _api_server._publish_turn_process_ownership(agent, effective_task_id)
@@ -1093,12 +1091,9 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             if run.declared_selected:
                 self._bind_declared_conversation(
                     getattr(agent, "session_id", None) or session_id, run.gateway_session_key)
-            try:
-                unregister_gateway_notify(run.approval_session_key)
-            finally:
-                for token, reset in resets:
-                    with suppress(Exception):
-                        reset(token)
+            for token, reset in resets:
+                with suppress(Exception):
+                    reset(token)
         return r, _run_usage(agent), _served_runtime(agent)
 
 
@@ -1222,11 +1217,9 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
 
 
 def _unregister_approval_notify(approval_session_key: Optional[str]) -> None:
-    """Best-effort release of a run's approval waiter (no-op without a key)."""
-    with suppress(Exception):
-        from tools.approval import unregister_gateway_notify
-        if approval_session_key:
-            unregister_gateway_notify(approval_session_key)
+    """Deprecated no-op: the approval engine is a pass-through, so no run ever registers an
+    approval waiter to release."""
+    return
 
 
 def _release_run_owner_if_forgotten(self, run_id: str) -> None:
@@ -1332,58 +1325,17 @@ def _mark_run_event(self, run_id: str, name: str, **fields: Any) -> None:
             q.put_nowait(_run_event(run_id, name, **fields))
 
 
-_APPROVAL_CHOICE_ALIASES = {"approve": "once", "approved": "once", "allow": "once"}
-
-
 async def _handle_run_approval(self, request: "web.Request", *, _api_server) -> "web.Response":
-    """POST /v1/runs/{run_id}/approval — resolve a pending run approval."""
+    """POST /v1/runs/{run_id}/approval — deprecated no-op: this fork never asks a human to
+    approve/deny agent actions, so no run approval is ever pending. The route stays
+    registered (importable) but never resolves a choice."""
     _openai_error = _api_server._openai_error
     run_id, _, _, _, err = _load_owned_run(
         self, request, _api_server=_api_server, permission="approve", active_fallback=False)
     if err is not None:
         return err
-    try:
-        body = await request.json()
-    except Exception:
-        return _json_error(_openai_error, "Invalid JSON", status=400)
-    raw_choice = str(body.get("choice", "")).strip().lower()
-    choice = _APPROVAL_CHOICE_ALIASES.get(raw_choice, raw_choice)
-    room_scoped = bool(self._room_grant_token(request))
-    raw_request_id = body.get("request_id")
-    request_id = raw_request_id.strip() if isinstance(raw_request_id, str) else ""
-    # Room grants may resolve exactly one request and never widen to session/always.
-    allowed = {"once", "deny"} if room_scoped else {"once", "session", "always", "deny"}
-    resolve_all = any(_api_server._coerce_request_bool(body.get(k), default=False) for k in ("all", "resolve_all"))
-    approval_session_key = self._run_approval_sessions.get(run_id)
-    for failed, message, code, status in (
-        (raw_request_id is not None and (not request_id or len(request_id) > 256),
-         "Approval request_id is invalid.", "invalid_approval_request", 400),
-        (choice not in allowed,
-         "Invalid approval choice; expected one of: " + ", ".join(sorted(allowed)),
-         "invalid_approval_choice", 400),
-        (room_scoped and resolve_all,
-         "Room approvals can resolve only one exact request", "invalid_approval_scope", 400),
-        (room_scoped and not request_id,
-         "Room approvals require the exact request_id.", "approval_request_required", 400),
-        (not approval_session_key,
-         f"Run has no active approval session: {run_id}", "approval_not_active", 409)):
-        if failed:
-            return _json_error(_openai_error, message, code=code, status=status)
-    try:
-        from tools.approval import resolve_gateway_approval
-        resolved = resolve_gateway_approval(
-            approval_session_key, choice, resolve_all=resolve_all, request_id=request_id or None)
-    except Exception as exc:
-        logger.exception("[api_server] approval resolution failed for run %s", run_id)
-        return _json_error(_openai_error, str(exc), status=500)
-    if resolved <= 0:
-        return _json_error(
-            _openai_error, f"Run has no pending approval: {run_id}", code="approval_not_pending", status=409)
-    request_id_field = {"request_id": request_id} if request_id else {}
-    _mark_run_event(self, run_id, "approval.responded", choice=choice, **request_id_field, resolved=resolved)
-    return web.json_response({
-        "object": "hermes.run.approval_response", "run_id": run_id, "choice": choice, **request_id_field,
-        "resolved": resolved})
+    return _json_error(
+        _openai_error, f"Run has no pending approval: {run_id}", code="approval_not_pending", status=409)
 
 
 async def _handle_steer_run(self, request: "web.Request", *, _api_server) -> "web.Response":

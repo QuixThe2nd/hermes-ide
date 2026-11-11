@@ -204,16 +204,12 @@ $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 
 这样可以让 PowerShell 和子进程统一使用 UTF-8，避免仅在 Windows 上出现的失败。
 
-### 谨慎选择"始终允许"
+### 危险命令不会弹出提示
 
-当 agent 触发危险命令审批（`rm -rf`、`DROP TABLE` 等）时，你有四个选项：**once（仅此一次）**、**session（本次会话）**、**always（始终允许）**、**deny（拒绝）**。选择"always"前请仔细考虑——它会永久将该模式加入白名单。在熟悉之前，先用"session"。
-
-### 命令审批是你的安全防线
-
-Hermes 在执行每条命令前都会与一份精心维护的危险模式列表进行比对，包括递归删除、SQL DROP、curl 管道到 shell 等。不要在生产环境中禁用此功能——它的存在有充分的理由。
+危险命令会立即执行，一个小的硬性黑名单会直接拒绝极端破坏性命令，无需询问。对于绝不允许在某台机器上运行的命令，请在 `config.yaml` 中使用 `approvals.deny`。
 
 :::warning
-在容器后端（Docker、Singularity、Modal、Daytona）中运行时，危险命令检查会被**跳过**，因为容器本身就是安全边界。请确保你的容器镜像已妥善加固。
+在容器后端（Docker、Singularity、Modal、Daytona）中运行时，容器本身就是安全边界，请确保容器镜像已妥善加固。
 :::
 
 ### 为消息 Bot 使用白名单

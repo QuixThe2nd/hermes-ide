@@ -26,7 +26,6 @@ hermes [global-options] <command> [subcommand/options]
 | `--continue [name]`, `-c [name]` | Resume the most recent session, or the most recent session matching a title. |
 | `--in <dir>` | Change into `<dir>` before starting or resuming. Scopes `--resume latest` / `-c` lookups to that directory's workspace and keeps the session there (skips the recorded-cwd restore). |
 | `--worktree`, `-w` | Start in an isolated git worktree for parallel-agent workflows. |
-| `--yolo` | Bypass dangerous-command approval prompts. |
 | `--pass-session-id` | Include the session ID in the agent's system prompt. |
 | `--ignore-user-config` | Ignore `~/.hermes/config.yaml` and fall back to built-in defaults. Credentials in `.env` are still loaded. |
 | `--ignore-rules` | Skip auto-injection of `AGENTS.md`, `SOUL.md`, `.cursorrules`, memory, and preloaded skills. |
@@ -66,7 +65,6 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes hooks` | Inspect, approve, or remove shell-script hooks declared in `config.yaml`. |
 | `hermes doctor` | Diagnose config and dependency issues. |
 | `hermes security audit` | On-demand supply-chain audit (OSV.dev) for the venv, plugin requirements, and pinned MCP servers. |
-| `hermes approvals` | Approval-prompt tools — mine approval history into allowlist proposals. |
 | `hermes dump` | Copy-pasteable setup summary for support/debugging. |
 | `hermes prompt-size` | Show a byte breakdown of the system prompt + tool schemas (skills index, memory, profile). Runs offline. |
 | `hermes debug` | Debug tools — upload logs and system info for support. |
@@ -122,7 +120,6 @@ Common options:
 | `--resume <session>` / `--continue [name]` | Resume a session directly from `chat`. |
 | `--worktree` | Create an isolated git worktree for this run. |
 | `--checkpoints` | Enable filesystem checkpoints before destructive file changes. |
-| `--yolo` | Skip approval prompts. |
 | `--pass-session-id` | Pass the session ID into the system prompt. |
 | `--ignore-user-config` | Ignore `~/.hermes/config.yaml` and use built-in defaults. Credentials in `.env` are still loaded. Useful for isolated CI runs, reproducible bug reports, and third-party integrations. |
 | `--ignore-rules` | Skip auto-injection of `AGENTS.md`, `SOUL.md`, `.cursorrules`, persistent memory, and preloaded skills. Combine with `--ignore-user-config` for a fully isolated run. |
@@ -162,9 +159,9 @@ final response before the CLI exits.
 
 - **Automatic joining:** no opt-in or background-mode override is needed.
   Interactive TTY chat and messaging sessions keep background delegation.
-- **Existing safeguards:** delegation limits, timeouts, cancellation, and
-  `approvals.single_query_mode` still apply. Joining does not auto-approve commands
-  or guarantee successful child outcomes. Inspect results and verify artifacts.
+- **Existing safeguards:** delegation limits, timeouts, and cancellation still
+  apply. Joining does not guarantee successful child outcomes. Inspect results and
+  verify artifacts.
 - **Terminal completions:** this does not change background terminal notification
   behavior or the bounded `terminal.oneshot_completion_wait_seconds` exit wait.
   That setting is not a delegation timeout.
@@ -1685,7 +1682,7 @@ hermes claw migrate --source /home/user/old-openclaw
 hermes import-agent [claude-code|codex] [options]
 ```
 
-Import a **Claude Code** (`~/.claude`) or **OpenAI Codex CLI** (`~/.codex`) setup into Hermes. Maps `CLAUDE.md`/`AGENTS.md` instructions to memory entries, `Bash(...)` permission allow/deny rules to `command_allowlist`/`approvals.deny`, MCP servers to `mcp_servers` in `config.yaml`, and skill directories into `~/.hermes/skills/`. Always previews before applying; API keys and credentials are never imported.
+Import a **Claude Code** (`~/.claude`) or **OpenAI Codex CLI** (`~/.codex`) setup into Hermes. Maps `CLAUDE.md`/`AGENTS.md` instructions to memory entries, `Bash(...)` permission deny rules to `approvals.deny`, MCP servers to `mcp_servers` in `config.yaml`, and skill directories into `~/.hermes/skills/`. Always previews before applying; API keys and credentials are never imported.
 
 | Option | Description |
 | --- | --- |

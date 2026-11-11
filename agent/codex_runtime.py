@@ -480,7 +480,7 @@ def _ensure_codex_session(agent) -> None:
         from tools.terminal_tool import _get_approval_callback
         approval_callback = _get_approval_callback()
     # Gateway/cron have no UI for codex approval requests, so exec/apply_patch fail closed by default. Only an
-    # explicit approval bypass (approvals.mode: off, /yolo, --yolo, HERMES_YOLO_MODE) hands policy to codex's sandbox.
+    # explicit approval bypass (/yolo, --yolo, HERMES_YOLO_MODE) hands policy to codex's sandbox.
     auto_approve_requests = False
     try:
         from tools.approval import is_approval_bypass_active

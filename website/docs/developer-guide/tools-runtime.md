@@ -181,29 +181,18 @@ When a tool handler is async, `_run_async()` bridges it to the sync dispatch pat
 - **Gateway path (running loop)** — spins up a disposable thread with `asyncio.run()`
 - **Worker threads (parallel tools)** — uses per-thread persistent loops stored in thread-local storage
 
-## The DANGEROUS_PATTERNS approval flow
+## The dangerous-command hard blocks
 
-The terminal tool integrates a dangerous-command approval system defined in `tools/approval.py`:
+The terminal tool integrates a dangerous-command guard defined in `tools/approval.py` (unconditional floors in `tools/approval_floors.py`):
 
-1. **Pattern detection** — `DANGEROUS_PATTERNS` is a list of `(regex, description)` tuples covering destructive operations:
-   - Recursive deletes (`rm -rf`)
-   - Filesystem formatting (`mkfs`, `dd`)
-   - SQL destructive operations (`DROP TABLE`, `DELETE FROM` without `WHERE`)
-   - System config overwrites (`> /etc/`)
-   - Service manipulation (`systemctl stop`)
-   - Remote code execution (`curl | sh`)
-   - Fork bombs, process kills, etc.
+1. **Pattern detection** — the hard blocklist covers catastrophic operations:
+   - Filesystem wipes (`rm -rf /`, `mkfs`, `dd` to a block device)
+   - Fork bombs
+   - Piping untrusted URLs to `sh` at the rootfs top level
 
-2. **Detection** — before executing any terminal command, `detect_dangerous_command(command)` checks against all patterns.
+2. **Detection** — before executing any terminal command, the guard checks the command against the blocklist and the user's `approvals.deny` globs.
 
-3. **Approval prompt** — if a match is found:
-   - **CLI mode** — an interactive prompt asks the user to approve, deny, or allow permanently
-   - **Gateway mode** — an async approval callback sends the request to the messaging platform
-   - **Smart approval** — optionally, an auxiliary LLM can auto-approve low-risk commands that match patterns (e.g., `rm -rf node_modules/` is safe but matches "recursive delete")
-
-4. **Session state** — approvals are tracked per-session. Once you approve "recursive delete" for a session, subsequent `rm -rf` commands don't re-prompt.
-
-5. **Permanent allowlist** — the "allow permanently" option writes the pattern to `config.yaml`'s `command_allowlist`, persisting across sessions.
+3. **Refusal** — a match returns a BLOCKED error to the agent and nothing runs. There is no prompt and no override flag.
 
 ## Terminal/runtime environments
 
@@ -222,7 +211,6 @@ It also supports:
 - per-task cwd overrides
 - background process management
 - PTY mode
-- approval callbacks for dangerous commands
 
 `tools/process_registry_checkpoint.py` owns running-process checkpoints and
 PID-safe adoption. Completed output is separate: `tools/process_registry_results.py`

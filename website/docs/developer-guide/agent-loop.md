@@ -140,8 +140,8 @@ When the model returns tool calls:
 for each tool_call in response.tool_calls:
     1. Resolve handler from tools/registry.py
     2. Fire pre_tool_call plugin hook
-    3. Check if dangerous command (tools/approval.py)
-       - If dangerous: invoke approval_callback, wait for user
+    3. Check hard-block floors (tools/approval.py, tools/approval_floors.py)
+       - If catastrophic: refuse with a BLOCKED error, nothing runs
     4. Execute handler with args + task_id
     5. Fire post_tool_call plugin hook
     6. Append {"role": "tool", "content": result} to history

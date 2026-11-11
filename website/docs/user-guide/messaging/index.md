@@ -222,8 +222,6 @@ platform network disconnect as an event-loop failure.
 | `/status` | Show session info |
 | `/whoami` | Show your slash command access on this scope (admin / user / unrestricted) |
 | `/stop` | Stop the running agent |
-| `/approve` | Approve a pending dangerous command |
-| `/deny` | Reject a pending dangerous command |
 | `/compress` | Manually compress conversation context |
 | `/title [name]` | Set or show the session title |
 | `/resume [name]` | Resume a previously named session |

@@ -1,26 +1,7 @@
 # Hermes statiese boodskap-katalogus -- Afrikaans
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
-approval:
-  dangerous_header: "⚠️  GEVAARLIKE OPDRAG: {description}"
-  choose_long:     "      [o]eenmalig  |  [s]sessie  |  [a]altyd  |  [d]weier"
-  choose_short:    "      [o]eenmalig  |  [s]sessie  |  [d]weier"
-  prompt_long:     "      Keuse [o/s/a/D]: "
-  prompt_short:    "      Keuse [o/s/D]: "
-  choose_smart_deny: "      [o]eenmalig  |  [d]weier"
-  prompt_smart_deny: "      Keuse [o/D]: "
-  smart_deny_once_inputs: "o,once"
-  smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ Geen antwoord binne {waited} — die opdrag is nie uitgevoer nie. Vra weer om te herprobeer, of verhoog die limiet: hermes config set approvals.timeout {suggested}"
-  allowed_once:    "      ✓ Eenmalig toegelaat"
-  allowed_session: "      ✓ Vir hierdie sessie toegelaat"
-  allowed_always:  "      ✓ By permanente toelaatlys gevoeg"
-  denied:          "      ✗ Geweier"
-  cancelled:       "      ✗ Gekanselleer"
-  blocklist_message: "Hierdie opdrag is op die onvoorwaardelike blokkeerlys en kan nie goedgekeur word nie."
-
 gateway:
-  approval_expired: "⚠️ Goedkeuring het verval (die agent wag nie meer nie). Vra die agent om weer te probeer."
   draining:         "⏳ Vra {count} aktiewe agent(e) om te parkeer, dan herbegin..."
   goal_cleared:     "✓ Doelwit verwyder."
   no_active_goal:   "Geen aktiewe doelwit nie."
@@ -57,15 +38,6 @@ gateway:
     none:                  "Geen aktiewe agente of lopende take nie."
     state_starting:        "begin"
     state_running:         "loop"
-
-  approve:
-    no_pending:            "Geen hangende opdrag om goed te keur nie."
-    once_singular:         "✅ Opdrag goedgekeur. Die agent gaan voort..."
-    once_plural:           "✅ Opdragte goedgekeur ({count} opdragte). Die agent gaan voort..."
-    session_singular:      "✅ Opdrag goedgekeur (patroon goedgekeur vir hierdie sessie). Die agent gaan voort..."
-    session_plural:        "✅ Opdragte goedgekeur (patroon goedgekeur vir hierdie sessie) ({count} opdragte). Die agent gaan voort..."
-    always_singular:       "✅ Opdrag goedgekeur (patroon permanent goedgekeur). Die agent gaan voort..."
-    always_plural:         "✅ Opdragte goedgekeur (patroon permanent goedgekeur) ({count} opdragte). Die agent gaan voort..."
 
   background:
     usage:                 "Gebruik: /bg <prompt>\nVoorbeeld: /bg Som vandag se top HN-stories op\n\nVoer die prompt in 'n aparte sessie uit. Jy kan aanhou gesels — die resultaat verskyn hier wanneer dit klaar is."
@@ -115,14 +87,6 @@ gateway:
     auto_delete:           "⏱ Plakke sal outomaties oor 6 uur uitgevee word."
     full_logs_hint:        "Vir volledige loglae, gebruik `hermes debug share` vanaf die CLI."
     share_hint:            "Deel hierdie skakels met die Hermes-span vir ondersteuning."
-
-  deny:
-    stale:                 "❌ Opdrag geweier (goedkeuring was verouderd)."
-    no_pending:            "Geen hangende opdrag om te weier nie."
-    denied_singular:       "❌ Opdrag geweier."
-    denied_plural:         "❌ Opdragte geweier ({count} opdragte)."
-    denied_reason_singular: "❌ Opdrag geweier. Rede aan die agent oorgedra: \"{reason}\""
-    denied_reason_plural:  "❌ Opdragte geweier ({count} opdragte). Rede aan die agent oorgedra: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast is slegs beskikbaar vir OpenAI-modelle wat Priority Processing ondersteun."
@@ -206,7 +170,7 @@ gateway:
   reload_mcp:
     cancelled:             "🟡 /reload-mcp gekanselleer. MCP-gereedskap onveranderd."
     always_followup:       "ℹ️ Toekomstige `/reload-mcp`-oproepe sal sonder bevestiging loop. Heraktiveer via `approvals.mcp_reload_confirm: true` in config.yaml."
-    confirm_prompt:        "⚠️ **Bevestig /reload-mcp**\n\nOm MCP-bedieners te herlaai, herbou die gereedskapsstel vir hierdie sessie en **maak die verskaffer se prompt-kasie ongeldig** — die volgende boodskap sal alle invoertokens herstuur. Op modelle met lang konteks of hoë redenering kan dit duur wees.\n\nKies:\n• **Eenmaal Goedkeur** — herlaai nou\n• **Altyd Goedkeur** — herlaai nou en stop hierdie prompt permanent\n• **Kanselleer** — laat MCP-gereedskap onveranderd\n\n_Teks-alternatief: antwoord `/approve`, `/always`, of `/cancel`._"
+    confirm_prompt:        "⚠️ **Bevestig /reload-mcp**\n\nOm MCP-bedieners te herlaai, herbou die gereedskapsstel vir hierdie sessie en **maak die verskaffer se prompt-kasie ongeldig** — die volgende boodskap sal alle invoertokens herstuur. Op modelle met lang konteks of hoë redenering kan dit duur wees.\n\nKies:\n• **Eenmaal Goedkeur** — herlaai nou\n• **Altyd Goedkeur** — herlaai nou en stop hierdie prompt permanent\n• **Kanselleer** — laat MCP-gereedskap onveranderd"
     header:                "🔄 **MCP-bedieners herlaai**\n"
     reconnected:           "♻️ Herverbind: {names}"
     added:                 "➕ Bygevoeg: {names}"
@@ -442,10 +406,6 @@ Hersinchronisasie loop outomaties hoogstens een keer per uur."
     label_all:             "TTS (stemantwoord op alle boodskappe)"
     help:                  "{toggle}\n\n**Hoe /voice werk**\n• `/voice on` — stemantwoord wanneer jy 'n stemboodskap stuur\n• `/voice tts` — stemantwoord op *elke* boodskap\n• `/voice off` — terug na slegs-teks antwoorde\n• `/voice status` — wys die huidige modus\n• `/voice` (geen argument) — wissel vinnig tussen aan en af{channels}"
     help_channels:         "\n\n**Lewendige stemkanale (Discord)**\n• Sluit eers by 'n stemkanaal aan, dan `/voice channel` — ek sluit aan, luister en praat my antwoorde\n• `/voice leave` — ontkoppel van die stemkanaal"
-
-  yolo:
-    disabled:                   "⚠️ YOLO-modus **AF** vir hierdie sessie — gevaarlike opdragte sal goedkeuring vereis."
-    enabled:                    "⚡ YOLO-modus **AAN** vir hierdie sessie — alle opdragte word outomaties goedgekeur. Gebruik versigtig."
 
   shared:
     session_db_unavailable:      "Sessie-databasis is nie beskikbaar nie."

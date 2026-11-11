@@ -42,7 +42,6 @@ it. New commands land often; `/help` in-session is always authoritative.
 /fast [normal|fast]      Priority/fast processing tier
 /verbose                 Cycle tool progress: off → new → all → verbose → log (CLI)
 /voice [on|off|tts]      Voice mode
-/yolo                    Toggle approval bypass
 /busy [queue|steer|interrupt] How messages behave while working (CLI + gateway)
 /indicator [style]       TUI busy indicator: kaomoji|emoji|unicode|ascii (CLI)
 /footer [on|off]         Gateway runtime-metadata footer on replies
@@ -75,8 +74,6 @@ it. New commands land often; `/help` in-session is always authoritative.
 
 ### Gateway
 ```
-/approve [session|always]  Approve a pending dangerous command (GW)
-/deny [all] [reason]       Deny a pending dangerous command (GW)
 /restart                   Restart gateway after draining active runs (GW)
                            (the agent can also call the `restart` tool — same
                            drain path)

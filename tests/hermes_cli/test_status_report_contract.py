@@ -76,8 +76,7 @@ def _render_gateway() -> str:
 
 
 def test_cli_and_gateway_status_surfaces_report_the_same_common_fields():
-    with patch("hermes_constants.display_hermes_home", return_value=HOME), \
-         patch("tools.approval_context._get_approval_mode", side_effect=RuntimeError("n/a")):
+    with patch("hermes_constants.display_hermes_home", return_value=HOME):
         outputs = {"cli": _render_cli(), "gateway": _render_gateway()}
 
     for surface, text in outputs.items():

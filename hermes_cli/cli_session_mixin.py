@@ -875,48 +875,6 @@ class CLISessionMixin:
         # swallow exceptions but would lose every field after the failure.
         return is_session_yolo_enabled(getattr(self, "session_id", None) or "default")
 
-    def _toggle_yolo(self):
-        """Toggle per-session YOLO mode (skip dangerous-command approvals).
-
-        Mirrors the gateway/TUI ``/yolo`` handlers. Deliberately does NOT touch
-        ``HERMES_YOLO_MODE``: that env var is frozen into ``tools.approval._YOLO_MODE_FROZEN``
-        at import (so prompt-injected skills can't flip the bypass), making a later set a
-        silent no-op. ``run_conversation`` binds ``self.session_id`` as the active approval
-        key, so the bypass applies to the very next dangerous command.
-        """
-        from cli import _cprint
-        from hermes_cli.colors import Colors as _Colors
-        from tools.approval import (
-            _YOLO_MODE_FROZEN, disable_session_yolo, enable_session_yolo, is_session_yolo_enabled)
-
-        # A frozen process-level bypass short-circuits the approval gate ahead of the session
-        # check — toggling "OFF" would be a false safety claim. Say so instead.
-        if _YOLO_MODE_FROZEN:
-            _cprint(
-                f"  ⚡ YOLO is {_Colors.BOLD}{_Colors.RED}locked ON{_Colors.RESET}"
-                " for this process (started with --yolo / HERMES_YOLO_MODE)."
-                " /yolo cannot disable it — restart without the flag to"
-                " re-enable approvals.")
-            return
-
-        session_key = self.session_id or "default"
-        # getattr: tests call this unbound against a minimal stand-in; persistence is best-effort.
-        _persist = getattr(self, "_persist_session_yolo", None)
-        if is_session_yolo_enabled(session_key):
-            disable_session_yolo(session_key)
-            if _persist:
-                _persist(session_key, False)
-            _cprint(
-                f"  ⚠ YOLO mode {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET}"
-                " — dangerous commands will require approval.")
-        else:
-            enable_session_yolo(session_key)
-            if _persist:
-                _persist(session_key, True)
-            _cprint(
-                f"  ⚡ YOLO mode {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}"
-                " — all commands auto-approved. Use with caution.")
-
     def _persist_session_yolo(self, session_key: str, enabled: bool) -> None:
         """Persist the YOLO flag to the session row so --resume restores it. Best-effort; the
         in-memory toggle is authoritative. Skipped without a store or before the row exists

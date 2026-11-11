@@ -8,17 +8,15 @@ description: "A security-posture walkthrough for running Hermes Agent on the mac
 
 You're about to run an agent on the machine you live on — a personal laptop or an employer-managed workstation. What's the safe posture?
 
-Short answer: the defaults already do most of the work. Hermes ships secure-by-default, with a defense-in-depth model covering command approval, file-write safety, and credential handling. This page walks through what's on out of the box, which knobs to tighten for a shared or work machine, and how to undo mistakes when they happen. Every control here is covered in depth in the [Security](../user-guide/security.md) guide.
+Short answer: the defaults already do most of the work. Hermes ships secure-by-default, with a defense-in-depth model covering dangerous-command hard blocks, file-write safety, and credential handling. This page walks through what's on out of the box, which knobs to tighten for a shared or work machine, and how to undo mistakes when they happen. Every control here is covered in depth in the [Security](../user-guide/security.md) guide.
 
 ## What the Defaults Already Protect
 
 Fresh install, no configuration — these protections are active:
 
-**Dangerous commands require approval.** Before executing any command, Hermes checks it against a curated list of dangerous patterns — recursive deletes, writes to `/etc/`, disk operations, pipe-to-shell, and more. The default `approvals.mode: smart` uses an auxiliary LLM to assess risk: low-risk commands are auto-approved for that command only, genuinely dangerous commands are auto-denied, and uncertain cases escalate to a manual prompt.
+**Catastrophic commands are refused outright.** A small hard blocklist — filesystem wipes, fork bombs, direct block-device writes — is always on, with no override flag. Everything else runs immediately without asking.
 
-**Approval prompts fail closed.** If you don't respond to an approval prompt within the timeout (default 300 seconds), the command is **denied**. Walking away from your desk never silently approves anything.
-
-**A hardline blocklist is the always-on floor.** Some commands — `rm -rf /`, fork bombs, zeroing a physical disk — are refused **regardless** of approval mode, `--yolo`, or an explicit "allow always". The blocklist trips before the approval layer even sees the command, and there is no override flag.
+**A hardline blocklist is the always-on floor.** Some commands — `rm -rf /`, fork bombs, zeroing a physical disk — are refused outright, with no override flag.
 
 **File writes to sensitive paths are blocked.** The `write_file` and `patch` tools cannot touch OS credential stores (`~/.ssh/`, `~/.aws/`, `~/.kube/`, `/etc/sudoers`, `~/.netrc`), Hermes credential stores (`auth.json`, `.env`, pairing data), or project secret files (`.env`, `.env.local`, `.envrc`) anywhere on disk. Blocked writes return an error immediately — there is no approval prompt and no way to override from the chat UI.
 
@@ -34,20 +32,9 @@ There's more below the surface — SSRF protection on all URL-capable tools, fil
 
 On a machine with employer data, production credentials, or other people's files, layer these on top of the defaults.
 
-### Switch approvals to manual
-
-`smart` mode auto-approves low-risk commands. If you want to see every flagged command yourself:
-
-```yaml
-approvals:
-  mode: manual
-```
-
-Manual mode always prompts you before executing a flagged command.
-
 ### Add your own deny rules
 
-`approvals.deny` is a list of glob patterns that block matching terminal commands unconditionally — even under `--yolo`, `/yolo`, or `mode: off`. It's the user-editable counterpart to the built-in hardline blocklist. Use it to declare things that must never run on this machine:
+`approvals.deny` is a list of glob patterns that block matching terminal commands unconditionally. It's the user-editable counterpart to the built-in hardline blocklist. Use it to declare things that must never run on this machine:
 
 ```yaml
 approvals:
@@ -150,9 +137,7 @@ Everything above, assembled. Adjust to taste in `~/.hermes/config.yaml`:
 
 ```yaml
 approvals:
-  mode: manual                  # See every flagged command yourself
-  timeout: 300                  # Unanswered prompts are denied (fail-closed)
-  deny:                         # Never-run list — survives even /yolo
+  deny:                         # Never-run list
     - "git push --force*"
     - "*curl*|*sh*"
     - "dd if=* of=/dev/*"
@@ -176,7 +161,7 @@ HERMES_WRITE_SAFE_ROOT=/path/to/project:/home/you/.hermes
 
 ## See Also
 
-- **[Security](../user-guide/security.md)** — the full defense-in-depth reference: every approval pattern, container hardening flags, gateway authorization, MCP credential filtering
+- **[Security](../user-guide/security.md)** — the full defense-in-depth reference: the hard blocklist and deny rules, container hardening flags, gateway authorization, MCP credential filtering
 - **[Checkpoints & Rollback](../user-guide/checkpoints-and-rollback.md)** — configuration, store maintenance, and restore workflows
 - **[Tools & Toolsets](../user-guide/features/tools.md)** — all terminal backends and their configuration
 - **[Configuration](../user-guide/configuration.md)** — the complete `config.yaml` reference

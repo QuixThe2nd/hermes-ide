@@ -140,8 +140,8 @@ API 请求被封装在 `_interruptible_api_call()` 中，该方法在后台线�
 for each tool_call in response.tool_calls:
     1. 从 tools/registry.py 解析处理器
     2. 触发 pre_tool_call 插件 hook
-    3. 检查是否为危险命令（tools/approval.py）
-       - 若危险：调用 approval_callback，等待用户确认
+    3. 检查硬性拦截底线（tools/approval.py、tools/approval_floors.py）
+       - 若为极端破坏性命令：返回 BLOCKED 错误，不执行
     4. 使用参数 + task_id 执行处理器
     5. 触发 post_tool_call 插件 hook
     6. 将 {"role": "tool", "content": result} 追加到历史

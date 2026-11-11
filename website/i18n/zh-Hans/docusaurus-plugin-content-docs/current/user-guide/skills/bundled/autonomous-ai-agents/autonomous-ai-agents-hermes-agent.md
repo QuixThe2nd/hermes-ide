@@ -85,7 +85,6 @@ hermes [flags] [command]
   --worktree, -w            Isolated git worktree mode (parallel agents)
   --skills, -s SKILL        Preload skills (comma-separate or repeat)
   --profile, -p NAME        Use a named profile
-  --yolo                    Skip dangerous command approval
   --pass-session-id         Include session ID in system prompt
 ```
 
@@ -278,7 +277,6 @@ hermes uninstall            Uninstall Hermes
 /reasoning [level]   Set reasoning (none|minimal|low|medium|high|xhigh|max|ultra|show|hide)
 /verbose             Cycle: off → new → all → verbose
 /voice [on|off|tts]  Voice mode
-/yolo                Toggle approval bypass
 /busy [sub]          Control how messages behave while Hermes works (CLI + gateway)
                      (subcommands: queue, steer, interrupt, status)
 /indicator [style]   Pick the TUI busy-indicator style (CLI)
@@ -304,8 +302,6 @@ hermes uninstall            Uninstall Hermes
 
 ### Gateway
 ```
-/approve             Approve a pending command (gateway)
-/deny                Deny a pending command (gateway)
 /restart             Restart gateway (gateway)
 /update              Update Hermes to latest (gateway)
 /topic [sub]         Enable or inspect Telegram DM topic sessions (gateway)
@@ -477,24 +473,9 @@ hermes config set privacy.redact_pii true    # 启用
 hermes config set privacy.redact_pii false   # 禁用（默认）
 ```
 
-### 命令审批提示
+### 危险命令
 
-默认情况下（`approvals.mode: smart`），Hermes 会让辅助 LLM 评估被标记为破坏性的 shell 命令（`rm -rf`、`git reset --hard` 等）。模式如下：
-
-- `smart` — 低风险命令仅批准一次，高风险命令拒绝，不确定时提示（默认）
-- `manual` — 始终提示
-- `off` — 跳过所有审批提示（等同于 `--yolo`）
-
-```bash
-hermes config set approvals.mode smart       # 推荐的折中方案
-hermes config set approvals.mode off         # 绕过一切（不推荐）
-```
-
-单次调用绕过（不更改配置）：
-- `hermes --yolo …`
-- `export HERMES_YOLO_MODE=1`
-
-注意：YOLO / `approvals.mode: off` **不会**关闭密钥脱敏。两者相互独立。
+危险命令会立即执行——Hermes 不会暂停询问。一个小的硬性黑名单会直接拒绝极端破坏性命令，无需询问；`config.yaml` 中的 `approvals.deny` glob 会无条件拦截额外的模式。以上均不影响密钥脱敏，两者相互独立。
 
 ### Shell hook 允许列表
 

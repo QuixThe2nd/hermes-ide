@@ -1420,7 +1420,7 @@ def _chat_id_from_session_key(session_key: str) -> str:
 def _trusted_session_key(**kwargs: Any) -> str:
     """The gateway-built session key for THIS turn, from trusted sources only.
 
-    Ladder: executor-passed kwarg → the per-thread approval ContextVar the
+    Ladder: executor-passed kwarg → the per-thread session ContextVar the
     gateway installs around a turn → the gateway's own env mirror. None of
     these are model-readable, so a tool call cannot influence which chat it
     is answered from.
@@ -1428,7 +1428,7 @@ def _trusted_session_key(**kwargs: Any) -> str:
     session_key = str(kwargs.get("session_key") or "").strip()
     if not session_key:
         try:
-            from tools.approval import get_current_session_key
+            from tools.approval_context import get_current_session_key
 
             session_key = str(get_current_session_key(default="") or "").strip()
         except Exception:

@@ -1,26 +1,7 @@
 # Hermes-Katalog für statische Meldungen -- Deutsch
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
-approval:
-  dangerous_header: "⚠️  GEFÄHRLICHER BEFEHL: {description}"
-  choose_long:     "      [o]einmal  |  [s]sitzung  |  [a]immer  |  [d]ablehnen"
-  choose_short:    "      [o]einmal  |  [s]sitzung  |  [d]ablehnen"
-  prompt_long:     "      Auswahl [o/s/a/D]: "
-  prompt_short:    "      Auswahl [o/s/D]: "
-  choose_smart_deny: "      [o]einmal  |  [d]ablehnen"
-  prompt_smart_deny: "      Auswahl [o/D]: "
-  smart_deny_once_inputs: "o,once"
-  smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ Keine Antwort innerhalb von {waited} — der Befehl wurde nicht ausgeführt. Erneut anfragen, um es noch einmal zu versuchen, oder das Limit erhöhen: hermes config set approvals.timeout {suggested}"
-  allowed_once:    "      ✓ Einmalig erlaubt"
-  allowed_session: "      ✓ Für diese Sitzung erlaubt"
-  allowed_always:  "      ✓ Zur dauerhaften Erlaubnisliste hinzugefügt"
-  denied:          "      ✗ Abgelehnt"
-  cancelled:       "      ✗ Abgebrochen"
-  blocklist_message: "Dieser Befehl steht auf der unbedingten Sperrliste und kann nicht genehmigt werden."
-
 gateway:
-  approval_expired: "⚠️ Genehmigung abgelaufen (Agent wartet nicht mehr). Bitten Sie den Agenten, es erneut zu versuchen."
   draining:         "⏳ Bitte {count} aktive(n) Agent(en) um Pause, dann Neustart..."
   goal_cleared:     "✓ Ziel gelöscht."
   no_active_goal:   "Kein aktives Ziel."
@@ -57,15 +38,6 @@ gateway:
     none:                  "Keine aktiven Agenten oder laufenden Aufgaben."
     state_starting:        "startet"
     state_running:         "läuft"
-
-  approve:
-    no_pending:            "Kein ausstehender Befehl zum Genehmigen."
-    once_singular:         "✅ Befehl genehmigt. Der Agent wird fortgesetzt..."
-    once_plural:           "✅ Befehle genehmigt ({count} Befehle). Der Agent wird fortgesetzt..."
-    session_singular:      "✅ Befehl genehmigt (Muster für diese Sitzung genehmigt). Der Agent wird fortgesetzt..."
-    session_plural:        "✅ Befehle genehmigt (Muster für diese Sitzung genehmigt) ({count} Befehle). Der Agent wird fortgesetzt..."
-    always_singular:       "✅ Befehl genehmigt (Muster dauerhaft genehmigt). Der Agent wird fortgesetzt..."
-    always_plural:         "✅ Befehle genehmigt (Muster dauerhaft genehmigt) ({count} Befehle). Der Agent wird fortgesetzt..."
 
   background:
     usage:                 "Verwendung: /bg <prompt>\nBeispiel: /bg Fasse die Top-HN-Storys von heute zusammen\n\nFührt den Prompt in einer separaten Sitzung aus. Sie können weiter chatten — das Ergebnis erscheint hier, wenn es fertig ist."
@@ -115,14 +87,6 @@ gateway:
     auto_delete:           "⏱ Pastes werden in 6 Stunden automatisch gelöscht."
     full_logs_hint:        "Für vollständige Log-Uploads verwenden Sie `hermes debug share` aus der CLI."
     share_hint:            "Teilen Sie diese Links mit dem Hermes-Team, um Unterstützung zu erhalten."
-
-  deny:
-    stale:                 "❌ Befehl abgelehnt (Genehmigung war veraltet)."
-    no_pending:            "Kein ausstehender Befehl zum Ablehnen."
-    denied_singular:       "❌ Befehl abgelehnt."
-    denied_plural:         "❌ Befehle abgelehnt ({count} Befehle)."
-    denied_reason_singular: "❌ Befehl abgelehnt. Grund an den Agenten weitergeleitet: \"{reason}\""
-    denied_reason_plural:  "❌ Befehle abgelehnt ({count} Befehle). Grund an den Agenten weitergeleitet: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast ist nur für OpenAI-Modelle mit Priority Processing verfügbar."
@@ -206,7 +170,7 @@ gateway:
   reload_mcp:
     cancelled:             "🟡 /reload-mcp abgebrochen. MCP-Tools unverändert."
     always_followup:       "ℹ️ Künftige `/reload-mcp`-Aufrufe laufen ohne Bestätigung. Wieder aktivieren über `approvals.mcp_reload_confirm: true` in `config.yaml`."
-    confirm_prompt:        "⚠️ **/reload-mcp bestätigen**\n\nDas Neuladen der MCP-Server baut das Toolset für diese Sitzung neu auf und **invalidiert den Prompt-Cache des Anbieters** — die nächste Nachricht sendet die vollständigen Eingabetokens erneut. Bei langem Kontext oder Modellen mit hohem Reasoning-Aufwand kann das teuer sein.\n\nWählen Sie:\n• **Einmal genehmigen** — jetzt neu laden\n• **Immer genehmigen** — jetzt neu laden und diese Bestätigung dauerhaft unterdrücken\n• **Abbrechen** — MCP-Tools unverändert lassen\n\n_Text-Alternative: Antworten Sie mit `/approve`, `/always` oder `/cancel`._"
+    confirm_prompt:        "⚠️ **/reload-mcp bestätigen**\n\nDas Neuladen der MCP-Server baut das Toolset für diese Sitzung neu auf und **invalidiert den Prompt-Cache des Anbieters** — die nächste Nachricht sendet die vollständigen Eingabetokens erneut. Bei langem Kontext oder Modellen mit hohem Reasoning-Aufwand kann das teuer sein.\n\nWählen Sie:\n• **Einmal genehmigen** — jetzt neu laden\n• **Immer genehmigen** — jetzt neu laden und diese Bestätigung dauerhaft unterdrücken\n• **Abbrechen** — MCP-Tools unverändert lassen"
     header:                "🔄 **MCP-Server neu geladen**\n"
     reconnected:           "♻️ Wiederverbunden: {names}"
     added:                 "➕ Hinzugefügt: {names}"
@@ -442,10 +406,6 @@ Re-Syncs laufen automatisch höchstens einmal pro Stunde."
     label_all:             "TTS (Sprachantwort auf alle Nachrichten)"
     help:                  "{toggle}\n\n**So funktioniert /voice**\n• `/voice on` — Sprachantwort, wenn du eine Sprachnachricht sendest\n• `/voice tts` — Sprachantwort auf *jede* Nachricht\n• `/voice off` — zurück zu reinen Textantworten\n• `/voice status` — aktuellen Modus anzeigen\n• `/voice` (ohne Argument) — schnelles Umschalten zwischen an und aus{channels}"
     help_channels:         "\n\n**Live-Sprachkanäle (Discord)**\n• Tritt zuerst einem Sprachkanal bei, dann `/voice channel` — ich trete bei, höre zu und spreche meine Antworten\n• `/voice leave` — vom Sprachkanal trennen"
-
-  yolo:
-    disabled:                   "⚠️ YOLO-Modus für diese Sitzung **AUS** — gefährliche Befehle benötigen eine Genehmigung."
-    enabled:                    "⚡ YOLO-Modus für diese Sitzung **AN** — alle Befehle werden automatisch genehmigt. Mit Vorsicht verwenden."
 
   shared:
     session_db_unavailable:      "Session-Datenbank nicht verfügbar."

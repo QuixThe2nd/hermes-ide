@@ -497,7 +497,7 @@ to a sibling gateway that the same fan-out also reached, and letting the
 CLICKING user (connector-observed: Telegram `callback_query.from`, Slack
 `block_actions.user`, WhatsApp `messages[].from`, Discord interaction
 member/user), so gateway-side authorization gates apply to a button press
-exactly as to a typed `/approve`. Ingest lanes: Telegram `callback_query`
+exactly as to a typed command. Ingest lanes: Telegram `callback_query`
 (polled, `allowed_updates` widened; best-effort `answerCallbackQuery`
 spinner-stop), Slack `POST /slack/interactions` (raw-bytes HMAC + replay
 window, same posture as `/slack/commands`), WhatsApp interactive

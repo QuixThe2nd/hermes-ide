@@ -1618,42 +1618,12 @@ DEFAULT_CONFIG = {
         # message opens one private room instead of a synthetic thread.
         "inbox_rooms": {},
     },
-    # Approvals for dangerous commands.
-    # mode: manual (always prompt) | smart (aux LLM auto-approves low-risk) | off (= --yolo)
-    # cron_mode / single_query_mode / unattended_mode: deny | approve — what to do when a
-    #   cron job, a -q session (HERMES_INTERACTIVE=1 but nobody to answer), or an unattended
-    #   platform (webhook, msgraph_webhook, api_server; no /approve channel) hits one.
-    #   deny blocks instantly so the agent finds another way instead of waiting out the
-    #   timeout and failing closed.
-    # timeout: seconds before an unanswered prompt fails closed (CLI and gateway). 60s
-    #   proved too tight for Telegram/Discord push notifications, hence 300.
+    # Approvals for dangerous commands: only the hard blocklist and the two slash-confirm
+    # gates remain — the engine passes everything else through (tools/approval.py) and the
+    # unconditional floors live in tools/approval_floors.py.
     "approvals": {
-        # single_query_mode — what to do when a single-query (-q) session hits a dangerous command. -q runs
-        # export HERMES_INTERACTIVE=1 (for interactive sudo prompts) but have NO user waiting to answer
-        # approval prompts — an unanswered prompt just waits the full timeout then fails closed, so the
-        # agent is forced to work around the block (often via execute_code). This setting makes that intent
-        # explicit: deny    — block the command and let the agent find another way (default, safe; mirrors
-        # cron_mode deny) approve — auto-approve all dangerous commands in single-query mode These surfaces
-        # bind a session platform like chat gateways do, but have no send_exec_approval and no /approve
-        # channel — a pending approval there just blocks for the full timeout with nobody to answer (#37284,
-        # #87509): deny    — block the command instantly and let the agent find another way (default, safe;
-        # mirrors cron_mode deny) approve — auto-approve all dangerous commands on unattended platforms
-        # Shared by the CLI prompt and gateway/messaging waits. Messaging approvals arrive as a push
-        # notification the user may not see immediately — 60s proved too tight on Telegram/Discord (the
-        # prompt expired before the user reached their phone), so the default is 300.
-        "mode": "smart",
-        "timeout": 300,
-        "cron_mode": "deny",
-        "single_query_mode": "deny",
-        "unattended_mode": "deny",
-        # Extra rules appended to the smart-approval guardian's SYSTEM prompt, e.g. "Always ESCALATE
-        # commands touching /etc".
-        "smart_policy": "",
-        # After this many consecutive guardian DENYs in a session, the deny message escalates to a
-        # hard-stop (report to user / ask for /approve). Approval resets; 0 off.
-        "denial_breaker_threshold": 3,
-        # Case-insensitive fnmatch globs against terminal commands; a match blocks even under --yolo
-        # / mode=off. Quote in YAML when starting with * or containing {}/!/: e.g. "git push
+        # Case-insensitive fnmatch globs against terminal commands; a match blocks even under --yolo.
+        # Quote in YAML when starting with * or containing {}/!/: e.g. "git push
         # --force*".
         "deny": [],
         # /reload-mcp confirms before rebuilding the MCP tool set (it invalidates the prompt cache,
@@ -1725,7 +1695,7 @@ DEFAULT_CONFIG = {
         # Operator opt-out of the config-file write guard. When true, the
         # agent's write_file/patch tools may edit the Hermes config file
         # directly instead of refusing and deferring to `hermes config`.
-        # Trades away prompt-injection protection for approvals.mode etc.
+        # Trades away prompt-injection protection for the approval deny rules etc.
         "allow_agent_config_writes": False,
         # Persisted acknowledgement for unattended model overrides whose tier
         # lets the vendor train on prompts/completions. The startup guard still

@@ -17,7 +17,6 @@ hermes [flags] [command]        (no subcommand = interactive chat)
   --worktree, -w            Isolated git worktree mode (parallel agents)
   --skills, -s SKILL        Preload skills (comma-separate or repeat)
   --profile, -p NAME        Use a named profile
-  --yolo                    Skip dangerous command approval
   --tui / --cli             Force the Ink TUI / classic REPL
   --ignore-rules            Skip AGENTS.md/SOUL.md/memory/skill injection
   --safe-mode               Disable ALL customizations (troubleshooting)

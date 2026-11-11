@@ -509,7 +509,6 @@ Graph 事件（Teams 会议、日历、聊天等）的入站变更通知监听�
 |----------|-------------|
 | `HERMES_MAX_ITERATIONS` | 每次对话的最大工具调用迭代次数（默认：256） |
 | `HERMES_INFERENCE_MODEL` | 在进程级别覆盖模型名称（优先于本次会话的 `config.yaml`）。也可通过 `-m`/`--model` 标志设置。 |
-| `HERMES_YOLO_MODE` | 设为 `1` 可绕过危险命令审批提示。等同于 `--yolo`。 |
 | `HERMES_ACCEPT_HOOKS` | 无需 TTY 提示自动批准 `config.yaml` 中声明的任何未见过的 shell hook。等同于 `--accept-hooks` 或 `hooks_auto_accept: true`。 |
 | `HERMES_IGNORE_USER_CONFIG` | 跳过 `~/.hermes/config.yaml` 并使用内置默认值（`.env` 中的凭证仍会加载）。等同于 `--ignore-user-config`。 |
 | `HERMES_IGNORE_RULES` | 跳过 `AGENTS.md`、`SOUL.md`、`.cursorrules`、记忆和预加载技能的自动注入。等同于 `--ignore-rules`。 |

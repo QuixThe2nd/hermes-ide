@@ -2841,18 +2841,8 @@ class Migrator:
         hermes_cfg_path = self.target_root / "config.yaml"
         hermes_cfg = load_yaml_file(hermes_cfg_path)
 
-        # Map approval mode (nested under approvals.exec.mode in OpenClaw)
-        exec_approvals = approvals.get("exec") or {}
-        mode = (exec_approvals.get("mode") if isinstance(exec_approvals, dict) else None) or approvals.get("mode") or approvals.get("defaultMode")
-        if mode:
-            mode_map = {"auto": "off", "always": "manual", "smart": "smart", "manual": "manual"}
-            hermes_mode = mode_map.get(mode, "manual")
-            hermes_cfg.setdefault("approvals", {})["mode"] = hermes_mode
-            if self.execute:
-                self.maybe_backup(hermes_cfg_path)
-                dump_yaml_file(hermes_cfg_path, hermes_cfg)
-            self.record("approvals-config", "openclaw.json approvals.mode",
-                        "config.yaml approvals.mode", "migrated", f"Mapped '{mode}' -> '{hermes_mode}'")
+        # Hermes no longer has a configurable approval mode (dangerous commands pass
+        # through unconditional floors only), so the OpenClaw mode has no target key.
 
         # Archive full approvals config
         if len(approvals) > 1 and self.archive_dir:

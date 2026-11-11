@@ -501,10 +501,8 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     _sudo_cb = _get_sudo_password_callback()
     if _sudo_cb is not None:
         try:
-            # Blocked on a human typing their password: exclude from tool
-            # deadlines (#85125 2e). Local import avoids any import-layering
-            # surprises; tools.terminal_tool already imports tools.approval.
-            from tools.approval import human_wait_window
+            # Blocked on a human typing their password: exclude from tool deadlines.
+            from tools.approval_human_wait import human_wait_window
             with human_wait_window():
                 return _sudo_cb() or ""
         except Exception:
@@ -577,10 +575,8 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
         
         password_thread = threading.Thread(target=read_password_thread, daemon=True)
         password_thread.start()
-        # Blocked on a human typing their password: exclude from tool
-        # deadlines on both executor paths (#85125 2e). Local import avoids
-        # any import-layering surprises.
-        from tools.approval import human_wait_window
+        # Blocked on a human typing their password: exclude from tool deadlines.
+        from tools.approval_human_wait import human_wait_window
         with human_wait_window():
             password_thread.join(timeout=timeout_seconds)
         
@@ -3376,7 +3372,7 @@ def terminal_tool(
         # contextvar doesn't cross tool-worker threads, so fall back to the raw
         # task_id (which IS the session_key for the top-level agent) — a
         # stable, thread-safe anchor.
-        from tools.approval import get_current_session_key
+        from tools.approval_context import get_current_session_key
 
         session_key = get_current_session_key(default="") or (task_id or "")
 
@@ -4350,8 +4346,6 @@ TERMINAL_SCHEMA = {
 
 
 def _handle_terminal(args, **kw):
-    from agent.terminal_approval_batch import validate_prepared_terminal
-    validate_prepared_terminal(args)
     # Mirror of execute_code's misplaced-argument recovery: models sometimes
     # send execute_code's ``code`` argument here. Without this, the call
     # falls through to command=None and fails with "Invalid command:

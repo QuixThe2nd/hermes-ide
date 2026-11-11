@@ -1848,101 +1848,9 @@ class TurnRunner(_TurnRunnerCore):
         return response, answered
 
     def _approval_notify_sync(self, approval_data: dict) -> None:
-        """Send the approval request from the agent thread: the adapter's interactive button
-        approvals (``send_exec_approval``) when available, else plain text with ``/approve`` steps."""
-        from gateway.run import _approval_send_outcome, _format_exec_approval_fallback, _interim_metadata, _redact_approval_command
-        from gateway.run_turn_runner_approval_settle import register_timeout_notice
-        ctx = self._ctx
-        adapter = ctx._status_adapter
-        # Slack's assistant_threads_setStatus disables the compose box, so the user can't type
-        # /approve while "is thinking..." shows. Pausing stops _keep_typing re-setting it; resumed
-        # in approve/deny.
-        adapter.pause_typing_for_chat(ctx._status_chat_id)
-        self._close_native_stream_boundary("Approval")
-        # Redact credentials before display: Tirith's findings are already redacted, but the raw
-        # command string still leaks secrets. Both the button and plain-text paths use this value.
-        cmd = _redact_approval_command(approval_data.get("command", ""))
-        desc = approval_data.get("description", "dangerous command")
-        flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
-        # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
-        if _renders_exec_approval_buttons(type(adapter)):
-            try:
-                fut = self._schedule(
-                    adapter.send_exec_approval(
-                        chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=ctx._status_thread_metadata, **flags,
-                    ),
-                    "send_exec_approval scheduling error",
-                )
-                if fut is None:
-                    raise RuntimeError("send_exec_approval: loop unavailable")
-                outcome = _approval_send_outcome(fut, timeout=15)
-                if outcome == "sent":
-                    # Without this, a card whose timer runs out keeps live buttons and nobody
-                    # learns the command did NOT run (only the TUI registered a settle hook).
-                    register_timeout_notice(
-                        self, approval_data, command=cmd,
-                        card_message_id=getattr(fut.result(timeout=0), "message_id", None))
-                    return
-                if outcome == "ambiguous":
-                    # Timeout ≠ failure: the card may have posted with a late ack. The prompt
-                    # registration stays alive so a tap still resolves; re-sending made duplicate
-                    # cards + orphaned "/approve: nothing pending".
-                    logger.warning(
-                        "Button-based approval send timed out — treating "
-                        "as possibly-delivered (no re-send; the prompt "
-                        "stays armed for a late tap)"
-                    )
-                    return
-                if outcome == "declined":
-                    # P5(b): the connector AUTHORIZED this destination and
-                    # refused it. The text fallback below re-sends the same
-                    # content to the same chat, which would turn a refused
-                    # button card into a delivered plain-text one — the exact
-                    # leak the egress guard exists to stop. A decline is
-                    # definitive, so unlike `ambiguous` the registration is
-                    # torn down; unlike `failed`, nothing is re-sent.
-                    logger.warning(
-                        "Button-based approval DECLINED by the connector's "
-                        "egress guard — not falling back to text (the "
-                        "destination is not approved for this connection)"
-                    )
-                    # RAISE, do not return. This function is the notify_cb for
-                    # `_await_gateway_decision`, which already has a correct
-                    # undeliverable path: a raising notify drops the queue entry
-                    # and returns `notify_failed`, unblocking the tool. Returning
-                    # quietly suppressed the text fallback (right) but left the
-                    # CENTRAL approval entry pending (wrong) — the dangerous
-                    # command then blocked until the approval timeout. My earlier
-                    # comment claimed the registration was torn down; only the
-                    # adapter's private prompt map was.
-                    raise _ExecApprovalDeclined(
-                        "exec approval undeliverable: connector egress declined "
-                        "this destination"
-                    )
-                logger.warning("Button-based approval failed (send returned error), falling back to text")
-            except _ExecApprovalDeclined:
-                # Must escape this handler: the fallback below is a text send to
-                # the destination the connector just refused.
-                raise
-            except Exception as e:
-                logger.warning("Button-based approval failed, falling back to text: %s", e)
-        # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
-        # in Slack threads and reserved by Matrix clients.
-        msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
-        try:
-            # Mark as approval prompt so WeCom routes through the control lane.
-            metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
-            fut = self._schedule(
-                adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
-            )
-            if fut is not None:
-                fut.result(timeout=15)
-                # No card to edit on the text path: the prompt has no buttons to drop and carries
-                # the /approve instructions, so the timeout notice is posted as a new message.
-                register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
-        except Exception as e:
-            logger.error("Failed to send approval request: %s", e)
+        """Deprecated no-op: the approval engine is a pure pass-through, so nothing ever
+        registers this callback and no approval prompt (button or text) is posted."""
+        return
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 
@@ -2049,15 +1957,13 @@ class TurnRunner(_TurnRunnerCore):
     def _run_conversation_with_approval(self, agent, agent_history, observed_group_context,
                                         persist_user_message_override, persist_user_timestamp_override,
                                         *, continue_interrupted_turn=False, forced_recovery_blocked=None):
-        """Run the turn with the per-session gateway approval callback registered: dangerous-command
-        approval blocks the agent thread (mirrors CLI input()); the callback bridges sync→async."""
+        """Run the turn with the per-session approval context bound (the engine is a
+        pass-through, so no approval notify callback is registered)."""
         from gateway.run import _wrap_current_message_with_observed_context
-        from tools.approval import register_gateway_notify, unregister_gateway_notify
         from tools.approval_context import reset_current_session_key, set_current_session_key
         ctx = self._ctx
         session_key = ctx.session_key or ""
         token = set_current_session_key(session_key)
-        register_gateway_notify(session_key, self._approval_notify_sync)
         try:
             api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
             kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}
@@ -2103,7 +2009,6 @@ class TurnRunner(_TurnRunnerCore):
             with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
                 return agent.run_conversation(api_message, **kwargs)
         finally:
-            unregister_gateway_notify(session_key)
             # Cancel pending clarify entries so blocked agent threads don't hang past the end of the
             # run (interrupt, completion, gateway shutdown). Idempotent.
             with suppress(Exception):
