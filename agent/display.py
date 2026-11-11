@@ -1163,6 +1163,31 @@ def _describe_x_search_phrase(_tool_name: str, args: dict) -> str | None:
     return f"Searching X for {query}" if query else "Searching X"
 
 
+def _describe_delegate_lane_phrase(lane_name: str):
+    # Lane labels come from the lane spec table (ui_dev -> "ui dev"); the task
+    # and context are prompt payloads and never render. `description` is the
+    # model-authored progress phrase from the tool schema.
+    label = lane_name.replace("_", " ")
+
+    def _build(_tool_name: str, args: dict) -> str | None:
+        reason = _describe_arg(args, "description")
+        if reason:
+            return f"Delegated to {label} lane: {reason}"
+        workdir = _describe_arg(args, "workdir")
+        return f"Delegating to the {label} lane in {workdir}" if workdir else f"Delegating to the {label} lane"
+
+    return _build
+
+
+def _lane_describe_builders() -> dict:
+    from tools.delegate_lane_specs import LANE_NAMES
+
+    return {
+        f"delegate_{name}": _describe_delegate_lane_phrase(name)
+        for name in LANE_NAMES
+    }
+
+
 _DESCRIBE_SUBJECT_BUILDERS.update({
     "skill_view": _describe_skill_phrase,
     "skills_list": _describe_skills_list_phrase,
@@ -1214,6 +1239,7 @@ _DESCRIBE_SUBJECT_BUILDERS.update({
     "discord_history": _describe_discord_history_phrase,
     "web_extract": _describe_web_extract_phrase,
     "clarify": _describe_clarify_phrase,
+    **_lane_describe_builders(),
 })
 
 # The Discord MCP server exposes operation-in-name tools with camelCase fields
@@ -1304,6 +1330,7 @@ def _describe_subject_phrase(tool_name: str, args: dict) -> str | None:
 _DESCRIBE_COMPOSES_TOOL_DESCRIPTION = frozenset({
     "write_file", "patch", "skill_view", "skill_manage", "delegate_agent", "discord", "discord_admin",
     "session_search", "cronjob_manage", "cronjob", "memory",
+    *tuple(_lane_describe_builders()),  # lane phrases carry their own attribution
 })
 
 
