@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 import subprocess
@@ -305,11 +306,49 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     autofix_subs.add_parser("uninstall", help="Remove the daily autofix cron job")
     autofix_subs.add_parser("status", help="Show autofix cron job status")
 
+    tick = subs.add_parser(
+        "tick",
+        help="One bounded pass of the per-papercut thread lifecycle (no-op while threads are disabled)",
+    )
+    tick.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what this tick would open/launch, with zero side effects",
+    )
+
+    steer = subs.add_parser("steer", help="Leave a human steering note on a papercut")
+    steer.add_argument("id", help="Papercut ID or unique prefix")
+    steer.add_argument("message", help="Steering note for the next stage work order")
+
+
+def cmd_tick(args: argparse.Namespace) -> int:
+    from plugins.papercuts.lifecycle import tick
+
+    return tick(dry_run=bool(getattr(args, "dry_run", False)))
+
+
+def cmd_steer(args: argparse.Namespace) -> int:
+    from plugins.papercuts import handle_papercuts
+
+    result = json.loads(
+        handle_papercuts({"action": "steer", "id": args.id, "message": args.message})
+    )
+    if not result.get("success"):
+        message = (result.get("error") or {}).get("message", "steer failed")
+        return _fail(message)
+    item = result.get("item") or {}
+    print(f"Steered {item.get('id', args.id)} (stage {item.get('stage', '?')}).")
+    return 0
+
 
 def papercuts_command(args: argparse.Namespace) -> int:
     sub = getattr(args, "papercuts_command", None)
+    if sub == "tick":
+        return cmd_tick(args)
+    if sub == "steer":
+        return cmd_steer(args)
     if sub != "autofix":
-        print("usage: hermes papercuts autofix {install,uninstall,status}")
+        print("usage: hermes papercuts {autofix {install,uninstall,status},tick,steer}")
         return 2
 
     autofix = getattr(args, "autofix_command", None)
@@ -320,5 +359,5 @@ def papercuts_command(args: argparse.Namespace) -> int:
     if autofix == "status":
         return cmd_status()
 
-    print("usage: hermes papercuts autofix {install,uninstall,status}")
+    print("usage: hermes papercuts {autofix {install,uninstall,status},tick,steer}")
     return 2

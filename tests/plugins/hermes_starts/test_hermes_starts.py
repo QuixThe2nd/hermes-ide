@@ -168,6 +168,10 @@ class MockDiscordRouter:
                 )
             return self._response({})
 
+        if method == "PATCH" and "/channels/" in url:
+            body = json.loads(request.data.decode("utf-8")) if request.data else {}
+            return self._response({"id": url.rsplit("/", 1)[-1], **body})
+
         raise AssertionError(f"unexpected request: {method} {url}")
 
     @staticmethod
@@ -1146,3 +1150,43 @@ class TestPromptSectionPluginManager:
             )
             is None
         )
+
+
+class TestPublicInboxThreads:
+    def test_open_post_and_update_reuse_discord_transport(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(_isolate_env)
+
+        opened = hermes_starts_module.open_inbox_thread("pc-abcdef12 · Example", "Papercut body")
+
+        assert opened == {
+            "thread_id": "thread-1",
+            "message_id": "msg-1",
+            "url": "https://discord.com/channels/guild-1/thread-1",
+        }
+        message_id = hermes_starts_module.post_to_thread("thread-1", "stage changed")
+        assert message_id == "msg-2"
+
+        hermes_starts_module.update_inbox_thread(
+            "thread-1", name="🙋 pc-abcdef12 · Example", archived=False
+        )
+        patch = discord_router.calls[-1]
+        assert patch["method"] == "PATCH"
+        assert patch["url"].endswith("/channels/thread-1")
+        assert json.loads(patch["body"]) == {
+            "name": "🙋 pc-abcdef12 · Example",
+            "archived": False,
+        }
+
+    def test_open_requires_a_provisioned_inbox_and_token(
+        self, hermes_starts_module, _isolate_env
+    ):
+        with pytest.raises(RuntimeError, match="Discord bot token"):
+            hermes_starts_module.open_inbox_thread("title", "body")
+
+        (_isolate_env / ".env").write_text(
+            "DISCORD_BOT_TOKEN=test-bot-token\n", encoding="utf-8"
+        )
+        with pytest.raises(RuntimeError, match="provisioned inbox"):
+            hermes_starts_module.open_inbox_thread("title", "body")

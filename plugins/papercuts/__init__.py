@@ -30,7 +30,7 @@ except ImportError:  # pragma: no cover - POSIX
     msvcrt = None  # type: ignore
 
 
-_ALLOWED_ACTIONS = {"log", "list", "resolve", "ignore", "stats"}
+_ALLOWED_ACTIONS = {"log", "list", "resolve", "ignore", "stats", "advance", "steer"}
 _ALLOWED_SEVERITIES = {"minor", "major"}
 _ALLOWED_CATEGORIES = {
     "tool",
@@ -61,7 +61,10 @@ PAPERCUTS_SCHEMA = {
         "transient error that immediately succeeded on retry, expected approval "
         "boundaries, user mistakes, or speculative complaints. At most one new "
         "papercut is accepted per user turn. Use list/stats for review and "
-        "resolve/ignore only when the item has actually been addressed or triaged."
+        "resolve/ignore only when the item has actually been addressed or triaged. "
+        "Stage work orders launched by `hermes papercuts tick` finish with "
+        "action='advance' (id, to_stage, note, pr_url); human steering uses "
+        "action='steer' (id, message)."
     ),
     "parameters": {
         "type": "object",
@@ -113,6 +116,19 @@ PAPERCUTS_SCHEMA = {
                 "type": "string",
                 "enum": ["open", "resolved", "ignored", "all"],
                 "description": "Status filter for list. Defaults to open.",
+            },
+            "to_stage": {
+                "type": "string",
+                "enum": ["queued", "triage", "fixing", "verifying", "closed", "needs_human"],
+                "description": "Target lifecycle stage for advance.",
+            },
+            "pr_url": {
+                "type": "string",
+                "description": "Pull request URL for advance to verifying.",
+            },
+            "message": {
+                "type": "string",
+                "description": "Human steering note for steer.",
             },
             "limit": {
                 "type": "integer",
@@ -296,6 +312,10 @@ def _fold(events: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
             item["occurrences"] = 1
             item["first_seen"] = event.get("ts")
             item["last_seen"] = event.get("ts")
+            # Legacy records with no stage events fold to their closed/open
+            # shape — no migration step, the fold IS the migration.
+            item["stage"] = "queued"
+            item["attempts"] = 0
             items[item_id] = item
             continue
         item = items.get(item_id)
@@ -310,8 +330,33 @@ def _fold(events: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
                 item.pop("closing_note", None)
         elif kind in {"resolve", "ignore"}:
             item["status"] = "resolved" if kind == "resolve" else "ignored"
+            item["stage"] = "closed"
             item["closed_at"] = event.get("ts")
             item["closing_note"] = event.get("note", "")
+        elif kind == "stage":
+            stage = str(event.get("stage") or "")
+            if stage:
+                item["stage"] = stage
+                ts_epoch = event.get("ts_epoch")
+                item["stage_since"] = ts_epoch if ts_epoch is not None else event.get("ts")
+                if event.get("thread_id"):
+                    item["thread_id"] = event["thread_id"]
+                if event.get("pr_url"):
+                    item["pr_url"] = event["pr_url"]
+                if "attempts" in event:
+                    try:
+                        item["attempts"] = int(event["attempts"] or 0)
+                    except (TypeError, ValueError):
+                        pass
+                # Steer notes only count since the last stage change.
+                item["steer_notes"] = []
+        elif kind == "steer":
+            item.setdefault("steer_notes", []).append(
+                {"message": event.get("message", ""), "ts": event.get("ts")}
+            )
+            if item.get("stage") == "closed":
+                # A human steer on a closed papercut is a sighting too.
+                item["stage"] = "needs_human"
     return items
 
 
@@ -333,6 +378,35 @@ def _json(payload: Dict[str, Any]) -> str:
 
 def _error(code: str, message: str) -> str:
     return _json({"success": False, "error": {"code": code, "message": message}})
+
+
+def _note_repeat_sighting(item: Dict[str, Any], observed: str, reopened: bool) -> Optional[str]:
+    """Thread side of a deduped re-log: post the sighting, and on a closed
+    papercut reopen it into triage in its SAME thread (unarchived). The event
+    append already happened, so failures degrade to a warning string only."""
+    from plugins.papercuts.lifecycle import _append_stage_event, threads_enabled
+    from plugins.papercuts import threads as pc_threads
+
+    if not threads_enabled():
+        return None
+    thread_id = str(item.get("thread_id") or "")
+    if not thread_id and not reopened:
+        return None  # never threaded; the journal counts the occurrence
+    warning = None
+    if reopened:
+        # Same thread, never a second one: unarchive and announce the reopen.
+        # Caller (_handle_log) holds the store lock.
+        _append_stage_event(str(item["id"]), "triage", attempts=0, note="reopened by a new sighting", locked=True)
+        if not thread_id:
+            return None
+        if not pc_threads.reopen(thread_id):
+            warning = "could not unarchive the thread"
+        if not pc_threads.post(thread_id, "reopened — the friction came back"):
+            warning = warning or "could not post the reopen note"
+        return warning
+    if thread_id and not pc_threads.post(thread_id, pc_threads.format_sighting(item, observed)):
+        warning = "could not post the repeat sighting to the thread"
+    return warning
 
 
 def _handle_log(args: Dict[str, Any], kwargs: Dict[str, Any]) -> str:
@@ -391,16 +465,18 @@ def _handle_log(args: Dict[str, Any], kwargs: Dict[str, Any]) -> str:
             }
             _append_event_unlocked(event)
             folded = _fold([*events, event])[item_id]
-            return _json(
-                {
-                    "success": True,
-                    "action": "log",
-                    "deduplicated": True,
-                    "reopened": kind == "reopen",
-                    "item": folded,
-                    "store": str(_events_path()),
-                }
-            )
+            warning = _note_repeat_sighting(folded, observed, kind == "reopen")
+            payload = {
+                "success": True,
+                "action": "log",
+                "deduplicated": True,
+                "reopened": kind == "reopen",
+                "item": folded,
+                "store": str(_events_path()),
+            }
+            if warning:
+                payload["warning"] = warning
+            return _json(payload)
 
         event = {
             "kind": "cut",
@@ -509,15 +585,32 @@ def _handle_close(args: Dict[str, Any], action: str, kwargs: Dict[str, Any]) -> 
         }
         _append_event_unlocked(event)
         folded = _fold([*events, event])[item_id]
-    return _json(
-        {
-            "success": True,
-            "action": action,
-            "changed": True,
-            "item": folded,
-            "store": str(_events_path()),
-        }
-    )
+    warning = _archive_thread_on_close(folded, action, note)
+    payload = {
+        "success": True,
+        "action": action,
+        "changed": True,
+        "item": folded,
+        "store": str(_events_path()),
+    }
+    if warning:
+        payload["warning"] = warning
+    return _json(payload)
+
+
+def _archive_thread_on_close(item: Dict[str, Any], action: str, note: str) -> Optional[str]:
+    """closing a threaded papercut posts the evidence and archives the thread."""
+    from plugins.papercuts.lifecycle import threads_enabled
+    from plugins.papercuts import threads as pc_threads
+
+    thread_id = str(item.get("thread_id") or "")
+    if not thread_id or not threads_enabled():
+        return None
+    verb = "resolved" if action == "resolve" else "ignored"
+    evidence = f"✅ {verb}: {note}" if note else f"✅ {verb}"
+    if not pc_threads.archive(thread_id, evidence):
+        return "closed in the journal, but archiving the Discord thread failed"
+    return None
 
 
 def _handle_stats() -> str:
@@ -552,6 +645,14 @@ def handle_papercuts(args: Dict[str, Any], **kwargs: Any) -> str:
             return _handle_list(args)
         if action in {"resolve", "ignore"}:
             return _handle_close(args, action, kwargs)
+        if action == "advance":
+            from plugins.papercuts.lifecycle import handle_advance
+
+            return handle_advance(args, kwargs)
+        if action == "steer":
+            from plugins.papercuts.lifecycle import handle_steer
+
+            return handle_steer(args, kwargs)
         return _handle_stats()
     except OSError as exc:
         return _error("io_error", f"papercuts store failure: {exc}")

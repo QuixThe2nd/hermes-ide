@@ -1887,6 +1887,16 @@ def check_requirements() -> bool:
         return False
 
 
+# Public inbox-thread surface for other in-tree plugins (papercuts). The
+# sibling module late-imports this package's internals, so this re-export
+# cannot cycle.
+from plugins.hermes_starts.threads import (  # noqa: E402,F401
+    open_inbox_thread,
+    post_to_thread,
+    update_inbox_thread,
+)
+
+
 def register(ctx) -> None:
     ctx.register_tool(
         name="start_conversation",
