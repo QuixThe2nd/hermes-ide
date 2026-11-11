@@ -63,6 +63,11 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
 }
 ```
 
+`model`/`provider` (and the legacy `model_snapshot`/`provider_snapshot` fields older stores may
+still carry) are **inert**: per-job model pinning was removed, so the scheduler always resolves
+`cron.model` → the global default, ignoring any per-job values. They are tolerated on load so
+existing `jobs.json` stores keep working; `hermes cron resnap` clears them.
+
 ### `last_status` literals
 
 `last_status` is a closed set written only by `cron.jobs.mark_job_run`. Every

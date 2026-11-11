@@ -39,9 +39,10 @@ def test_auth_failure_points_at_login_and_a_retry_command(monkeypatch):
     assert "401" not in msg
 
 
-def test_auth_failure_names_the_pinned_provider_and_the_failing_profile(monkeypatch, tmp_path):
+def test_auth_failure_names_the_failing_profile_not_a_stale_pin(monkeypatch, tmp_path):
     """A profile's credentials are its own (93889b770da): the notice must send the operator to
-    THIS profile's sign-in for the job's pinned provider, never a bare placeholder (#114012)."""
+    THIS profile's sign-in (#114012). Per-job provider pins are gone, so a job still carrying a
+    stale ``provider`` field gets the same unpinned notice — the pin must not leak into it."""
     _no_chain(monkeypatch)
     profile_home = tmp_path / ".hermes" / "profiles" / "ops"
     profile_home.mkdir(parents=True)
@@ -49,10 +50,10 @@ def test_auth_failure_names_the_pinned_provider_and_the_failing_profile(monkeypa
     monkeypatch.setenv("HERMES_HOME", str(profile_home))
     msg = _summarize_cron_failure_for_delivery(
         {**JOB, "provider": "openai-codex"}, "Error code: 401 - Unauthorized")
-    assert "`hermes -p ops auth add openai-codex --type oauth`" in msg, msg
-    assert "<provider>" not in msg
     unpinned = _summarize_cron_failure_for_delivery(JOB, "Error code: 401 - Unauthorized")
-    assert "`hermes -p ops auth add <provider>`" in unpinned, unpinned
+    assert "`hermes -p ops auth add <provider>`" in msg, msg
+    assert "openai-codex" not in msg  # the stale pin is not the provider the run used
+    assert msg == unpinned
 
 
 def test_rate_and_usage_limit_phrases_still_yield_a_provider_notice(monkeypatch):
@@ -68,7 +69,8 @@ def test_rate_and_usage_limit_phrases_still_yield_a_provider_notice(monkeypatch)
         msg = _summarize_cron_failure_for_delivery(JOB, text)
         assert "limit" in msg.lower(), msg
         assert not _HTTP_LEAD.search(msg), msg
-        assert "`hermes cron run ab12cd34`" in msg or "`hermes cron edit ab12cd34" in msg, msg
+        # The action is a fleet-provider switch (per-job pins are gone) or a rerun.
+        assert "cron.model_provider" in msg or "`hermes cron run ab12cd34`" in msg, msg
 
 
 def test_cron_cause_gloss_is_the_shared_table():
@@ -83,11 +85,11 @@ def test_cron_cause_gloss_is_the_shared_table():
 
 
 def test_waf_block_names_the_header_fix_not_a_bare_rerun(monkeypatch):
-    """A firewall refusing the SDK's User-Agent is healed by a header or another provider,
+    """A firewall refusing the SDK's User-Agent is healed by a header or the fleet provider,
     never by `hermes cron run` alone — the action must say so (#53099, #70566)."""
     _no_chain(monkeypatch)
     msg = _summarize_cron_failure_for_delivery(JOB, "Error code: 403 - Sorry, you have been blocked")
-    assert "extra_headers" in msg and "`hermes cron edit ab12cd34 --provider <name>`" in msg, msg
+    assert "extra_headers" in msg and "cron.model_provider" in msg, msg
     assert "Run it again with" not in msg, msg
     assert "rejected" not in msg.lower(), msg  # not read as a key rejection
 
