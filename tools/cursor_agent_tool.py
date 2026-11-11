@@ -89,6 +89,7 @@ from tools.cursor_run_receipts import (
 )
 from tools.delegate_evidence_gate import apply_evidence_gate
 from tools.delegate_tool_config import _cfg
+from tools.delegation_ownership import ensure_codebase_ownership
 from tools.environments.local import build_subprocess_env
 from tools.registry import registry
 from tools.tool_status import CURSOR_AGENT_VIEWER_STATUS_PREFIX, emit_tool_status
@@ -875,7 +876,12 @@ def build_create_agent_payload(
     """
     del force  # reserved; never maps to autoCreatePR / workOnCurrentBranch / pushes
     payload: Dict[str, Any] = {
-        "prompt": {"text": f"{NO_PUSH_PROMPT_PREFIX}{DEFAULT_ORCHESTRATION_PROMPT}{task}"},
+        "prompt": {
+            "text": (
+                f"{NO_PUSH_PROMPT_PREFIX}"
+                f"{ensure_codebase_ownership(f'{DEFAULT_ORCHESTRATION_PROMPT}{task}')}"
+            ),
+        },
         "name": machine_name,
         "agentId": agent_id,
         "env": {"type": "machine", "name": machine_name},

@@ -54,6 +54,22 @@ def test_config_can_override_one_field_without_losing_lane_defaults():
     assert overridden["soul"] == default["soul"]
 
 
+@pytest.mark.parametrize("lane_name", LANE_NAMES)
+def test_lane_soul_material_contains_single_ownership_guidance(lane_name):
+    from tools.delegation_ownership import (
+        CODEBASE_OWNERSHIP_GUIDANCE,
+        CODEBASE_OWNERSHIP_SENTENCE,
+    )
+
+    material = lane_tool._soul_material(resolve_lane_spec(lane_name, {}))
+
+    assert material.count(CODEBASE_OWNERSHIP_SENTENCE) == 1
+    assert material.count(CODEBASE_OWNERSHIP_GUIDANCE) == 1
+    if lane_name == "reverse_engineer":
+        assert "Do not modify the target artifacts." in material
+        assert "never to analyzed target artifacts" in material
+
+
 def test_quota_error_advances_chain_and_receipt_names_winner(monkeypatch, workdir):
     _configure(monkeypatch, {"ui_dev": {"models": ["provider/limited", "provider/winner"]}})
     calls = []
@@ -304,8 +320,13 @@ def test_claude_lane_pins_soul_in_system_prompt_file(monkeypatch, tmp_path, work
     assert not Path(soul_path).exists()
 
 
-def test_claude_lane_without_soul_sends_no_system_prompt_file(monkeypatch, workdir):
-    # soul:"" overrides the lane's default soul so nothing is left to pin.
+def test_claude_lane_without_soul_still_sends_ownership_prompt_file(monkeypatch, workdir):
+    from tools.delegation_ownership import (
+        CODEBASE_OWNERSHIP_GUIDANCE,
+        CODEBASE_OWNERSHIP_SENTENCE,
+    )
+
+    # An empty custom soul still receives the shared ownership guidance.
     _configure(monkeypatch, {"client_dev": {
         "harness": "claude", "models": ["provider/model"], "soul": "",
     }})
@@ -322,7 +343,11 @@ def test_claude_lane_without_soul_sends_no_system_prompt_file(monkeypatch, workd
         "delegate_client_dev", {"task": "Implement", "workdir": str(workdir)}
     ))
     assert result["success"] is True
-    assert captured.get("system_prompt_file") is None
+    soul_path = captured.get("system_prompt_file")
+    assert soul_path
+    assert captured["_soul_text"].count(CODEBASE_OWNERSHIP_SENTENCE) == 1
+    assert captured["_soul_text"].count(CODEBASE_OWNERSHIP_GUIDANCE) == 1
+    assert not Path(soul_path).exists()
     assert "# Task" in captured["goal"]
 
 
@@ -393,9 +418,13 @@ def test_claude_argv_includes_append_system_prompt_file(monkeypatch, tmp_path, w
     from tests.tools.test_claude_agent_tool import _write_fake_binary
 
     import tools.claude_agent_tool as claude_tool
+    from tools.delegation_ownership import (
+        CODEBASE_OWNERSHIP_GUIDANCE,
+        CODEBASE_OWNERSHIP_SENTENCE,
+    )
 
     soul_path = tmp_path / "soul.md"
-    soul_path.write_text("Harness soul", encoding="utf-8")
+    soul_path.write_text(f"{CODEBASE_OWNERSHIP_GUIDANCE}\n\nHarness soul", encoding="utf-8")
     fake_binary = _write_fake_binary(tmp_path, name="claude-fake")
     argv_out = tmp_path / "argv.json"
     monkeypatch.setattr(
@@ -410,6 +439,8 @@ def test_claude_argv_includes_append_system_prompt_file(monkeypatch, tmp_path, w
     assert result["success"] is True
     argv = json.loads(argv_out.read_text(encoding="utf-8"))
     assert argv[argv.index("--append-system-prompt-file") + 1] == str(soul_path)
+    assert "--append-system-prompt" not in argv
+    assert soul_path.read_text(encoding="utf-8").count(CODEBASE_OWNERSHIP_SENTENCE) == 1
     later_flag = "--model" if "--model" in argv else "--permission-mode"
     assert argv.index("--append-system-prompt-file") < argv.index(later_flag)
     assert argv[-1] == "do it"

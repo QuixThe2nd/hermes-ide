@@ -16,11 +16,12 @@ from tools.delegate_lane_specs import (
 )
 from tools.delegate_tool_config import _cfg
 from tools.delegate_tool_omp import is_quota_error, run_omp_lane
+from tools.delegation_ownership import ensure_codebase_ownership
 from tools.registry import no_cache_check_fn, registry
 
 
 def _soul_material(spec: Mapping[str, Any]) -> str:
-    """Lane soul sections only: instructions plus any injected skill files."""
+    """Ownership guidance, lane instructions, and any injected skill files."""
     sections = []
     if spec.get("soul"):
         sections.append("# Lane instructions\n" + read_soul(spec["soul"]).strip())
@@ -30,7 +31,7 @@ def _soul_material(spec: Mapping[str, Any]) -> str:
         if not skill_file.is_file():
             raise FileNotFoundError(f"lane skill file does not exist: {skill_file}")
         sections.append(f"# Injected skill: {skill_dir}\n" + skill_file.read_text(encoding="utf-8"))
-    return "\n\n".join(sections)
+    return ensure_codebase_ownership("\n\n".join(sections))
 
 
 def _task_prompt(task: str, context: str) -> str:
