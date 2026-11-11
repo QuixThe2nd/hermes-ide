@@ -147,6 +147,11 @@ DEFAULT_CONFIG = {
         "retry_base_delay": 2.0,
         # Upper cap (seconds) on any single API retry backoff wait. Default 60s.
         "retry_max_delay": 60.0,
+        # Total seconds a user turn may keep retrying TRANSIENT transport failures
+        # (TTFB/idle watchdog kills, upstream 5xx/504, connection timeouts) after the
+        # regular retries are exhausted, with capped exponential backoff. Default
+        # 25 min rides out WAN outages; 0 restores the fast-fail behavior.
+        "transport_retry_window_seconds": 1500,
         # Empty-response retry guard (NS-503).  The empty-retry loop
         # re-sends the full conversation input at full price on every
         # attempt; these settings stop it from re-billing *deterministic*

@@ -1206,6 +1206,15 @@ agent:
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
 
+  # Total per-turn window (seconds) for retrying TRANSIENT transport failures
+  # (first-event/idle watchdog kills, upstream 502/503/504, connection
+  # timeouts) after the regular retries above AND the fallback chain are
+  # exhausted — with capped exponential backoff + jitter. A WAN outage that
+  # outlasts api_max_retries (~8 min) no longer kills the turn: inside this
+  # window the turn keeps retrying until the link recovers. 0 restores the
+  # legacy fast-fail. Default 1500 (25 minutes).
+  # transport_retry_window_seconds: 1500
+
   # After the agent edits code without fresh passing verification, nudge it to
   # verify before finishing. Off by default (false). Set true to force it on
   # everywhere, or "auto" for the surface-aware mode: on for interactive
