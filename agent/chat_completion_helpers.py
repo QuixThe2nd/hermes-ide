@@ -569,7 +569,7 @@ def _report_stale_nonstream_kill(agent, api_kwargs: dict, elapsed: float, stale_
         "model=%s context=~%s tokens. Killing connection.", "Inline n" if inline else "N", elapsed,
         stale_timeout, model, f"{estimate_request_context_tokens(api_kwargs):,}")
     try:
-        agent._buffer_diagnostic_status(
+        agent._buffer_transient_reconnect_notice(
             f"⚠️ No response from provider for {int(elapsed)}s (non-streaming, model: {model}). {hint or 'Aborting call.'}")
     except Exception:
         logger.debug("stale status buffering failed", exc_info=True)
@@ -2531,7 +2531,7 @@ class _BedrockStream:
         logger.warning("Bedrock stream stale for %.0fs (threshold %.0fs) — no events "
             "received. region=%s model=%s. Aborting call.", stale_elapsed, self.stale_timeout, self.region,
             self._model())
-        agent._buffer_diagnostic_status(f"⚠️ No events from Bedrock for {int(stale_elapsed)}s (model: {self._model()}). Aborting...")
+        agent._buffer_transient_reconnect_notice(f"⚠️ No events from Bedrock for {int(stale_elapsed)}s (model: {self._model()}). Aborting...")
         _bump_stale_streak(agent)
         # Evict the region's cached client so the NEXT call gets a fresh pool.
         # This does NOT abort the in-flight botocore EventStream (no external
@@ -3533,7 +3533,7 @@ class _StreamingCall(StreamingWaitMonitor):
             "Stream stale for %.0fs (threshold %.0fs) — no chunks received. model=%s context=~%s tokens. Killing connection.",
             elapsed, self._stream_stale_timeout, self.api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
         )
-        self.agent._buffer_diagnostic_status(
+        self.agent._buffer_transient_reconnect_notice(
             f"⚠️ No response from provider for {int(elapsed)}s (model: {self.api_kwargs.get('model', 'unknown')}, "
             f"context: ~{_est_ctx:,} tokens). Reconnecting...")
         # Captured BEFORE the cancel/abort: the pool sweep can miss a checked-out
