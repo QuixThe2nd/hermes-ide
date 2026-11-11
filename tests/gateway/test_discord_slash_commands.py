@@ -340,7 +340,11 @@ async def test_handle_thread_create_slash_reports_success(adapter):
 @pytest.mark.asyncio
 async def test_handle_thread_create_slash_falls_back_to_seed_message(adapter):
     created_thread = SimpleNamespace(id=555, name="Planning")
-    seed_message = SimpleNamespace(id=777, create_thread=AsyncMock(return_value=created_thread))
+    seed_message = SimpleNamespace(
+        id=777,
+        create_thread=AsyncMock(return_value=created_thread),
+        delete=AsyncMock(),
+    )
     channel = SimpleNamespace(
         create_thread=AsyncMock(side_effect=RuntimeError("direct failed")),
         send=AsyncMock(return_value=seed_message),
@@ -362,6 +366,41 @@ async def test_handle_thread_create_slash_falls_back_to_seed_message(adapter):
         auto_archive_duration=1440,
         reason="Requested by Jezza via /thread",
     )
+    seed_message.delete.assert_not_awaited()
+    interaction.followup.send.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_handle_thread_create_slash_deletes_generated_seed_message(adapter):
+    created_thread = SimpleNamespace(id=555, name="Planning")
+    seed_message = SimpleNamespace(
+        id=777,
+        create_thread=AsyncMock(return_value=created_thread),
+        delete=AsyncMock(),
+    )
+    channel = SimpleNamespace(
+        create_thread=AsyncMock(side_effect=RuntimeError("direct failed")),
+        send=AsyncMock(return_value=seed_message),
+    )
+    interaction = SimpleNamespace(
+        channel=channel,
+        channel_id=123,
+        user=SimpleNamespace(display_name="Jezza", name="jezza", id=42),
+        guild=SimpleNamespace(name="TestGuild"),
+        followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
+    )
+
+    await adapter._handle_thread_create_slash(interaction, "Planning", "", 1440)
+
+    sent_content = channel.send.await_args.args[0]
+    assert sent_content.startswith("```\n")
+    assert sent_content.endswith("\n```")
+    assert sent_content.count("```") == 2
+    assert "🧵 Creating thread:" in sent_content
+    assert "Planning" in sent_content
+    assert "**" not in sent_content
+    seed_message.delete.assert_awaited_once()
     interaction.followup.send.assert_awaited()
 
 
