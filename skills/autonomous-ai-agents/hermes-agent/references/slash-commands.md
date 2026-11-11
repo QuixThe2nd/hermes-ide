@@ -21,7 +21,6 @@ it. New commands land often; `/help` in-session is always authoritative.
 /bg <prompt>              Run a prompt in a separate background session
 /btw <question>           Ask a side question about the current conversation without interrupting it
 /queue (/q) <prompt>     Queue prompt for next turn
-/steer <prompt>          Inject a message after the next tool call
 /agents (/tasks)         Show active agents and running tasks
 /goal [text|sub]         Standing goal across turns (status|pause|resume|clear)
 /subgoal [text]          Add/manage criteria on the active goal
@@ -57,14 +56,11 @@ it. New commands land often; `/help` in-session is always authoritative.
 /tools [list|enable|disable] Manage tools (CLI)
 /toolsets                List toolsets (CLI)
 /skills                  Search/install/manage skills (CLI)
-/bundles                 List skill bundles (/<name> loads several skills)
 /learn <source>          Learn a reusable skill from dirs/URLs/this chat
 /memory [pending|approve|reject] Review pending memory writes / approval gate
 /cron [sub]              Manage scheduled tasks (CLI)
 /suggestions (/suggest)  Review suggested automations
 /blueprint (/bp) [name]  Set up an automation from a blueprint
-/curator [sub]           Skill maintenance (status, run, pin, archive, …)
-/moa <prompt>            One prompt through the Mixture-of-Agents preset
 /reload                  Reload .env into the running session (CLI)
 /reload-mcp              Reload MCP servers
 /reload-skills           Re-scan skills directory

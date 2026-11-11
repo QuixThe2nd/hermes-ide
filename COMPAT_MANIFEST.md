@@ -1216,12 +1216,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `is_ancestor_of_head` | restored-def | `(deleted; BASE body restored)` |
 
-### `hermes_cli.heartbeat`
-
-| name | kind | new location |
-|---|---|---|
-| `Dict` | import | `typing` |
-
 ### `hermes_cli.journey`
 
 | name | kind | new location |

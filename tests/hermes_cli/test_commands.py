@@ -191,14 +191,13 @@ class TestTelegramBotCommands:
 
 
     def test_includes_builtin_commands_with_required_args(self):
-        """Built-in arg-taking commands (e.g. /queue, /steer, /bg, /btw)
+        """Built-in arg-taking commands (e.g. /queue, /bg, /btw)
         are now included because their handlers return usage text when
         invoked without arguments — issue #24312."""
         names = {name for name, _ in telegram_bot_commands()}
         assert "bg" in names
         assert "btw" in names
         assert "queue" in names
-        assert "steer" in names
 
 
 class TestSlackSubcommandMap:

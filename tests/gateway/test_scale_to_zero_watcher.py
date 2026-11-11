@@ -709,24 +709,6 @@ async def test_loop_heartbeat_task_does_not_block_idle():
         await asyncio.gather(r._loop_heartbeat_task, return_exceptions=True)
 
 
-@pytest.mark.asyncio
-async def test_heartbeat_poll_task_does_not_block_idle():
-    r = GatewayRunner.__new__(GatewayRunner)
-    r._running = True
-    r._background_tasks = set()
-    r._heartbeat_poll_task = None
-    r._heartbeat_watch = {}
-    r._running_agents = {}
-
-    r._start_heartbeat_poller()
-    await asyncio.sleep(0)  # let the task start
-    try:
-        assert r._scale_to_zero_has_live_background_work() is False
-    finally:
-        r._heartbeat_poll_task.cancel()
-        await asyncio.gather(r._heartbeat_poll_task, return_exceptions=True)
-
-
 # ── in-flight cron / API-server work must block suspend (the 10:45 near-miss) ──
 #
 # Cron jobs run on the scheduler's thread pool and API-server runs live on the

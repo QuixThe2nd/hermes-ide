@@ -1,4 +1,4 @@
-"""Autonomy-loop gateway commands: /goal, /subgoal, /heartbeat, /loop, /refine, /review.
+"""Autonomy-loop gateway commands: /goal, /subgoal, /loop, /refine, /review.
 Bound onto ``GatewayRunner`` through ``GatewaySlashCommandsMixin``."""
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ def _mgr_call(prefix: str, fn, *args, errors=(RuntimeError, ValueError)):
 
 
 class GatewayGoalCommandsMixin:
-    """Autonomy-loop gateway commands: /goal, /subgoal, /heartbeat, /loop, /refine, /review."""
+    """Autonomy-loop gateway commands: /goal, /subgoal, /loop, /refine, /review."""
 
     async def _handle_goal_command(self, event: MessageEvent) -> str:
         from hermes_cli.goal_command import dispatch_goal_command
@@ -94,67 +94,6 @@ class GatewayGoalCommandsMixin:
                 self._enqueue_fifo(quick_key, turn, adapter)
         except Exception as exc:
             logger.debug("goal %s failed: %s", label, exc)
-
-    async def _handle_heartbeat_command(self, event: MessageEvent) -> str:
-        """Handle /heartbeat (mirror of the CLI handler): the session's one recurring re-entry
-        prompt. The gateway-wide poller injects due heartbeats through the adapter FIFO as
-        ordinary user turns, so alternation and caching hold."""
-        from hermes_cli.heartbeat import parse_interval, format_interval, MIN_INTERVAL_SECONDS
-        args = (event.get_command_args() or "").strip()
-        lower = args.lower()
-        mgr, _session_entry = await self._get_heartbeat_manager_for_event(event)
-        if mgr is None:
-            return "Heartbeats unavailable (no session)."
-        quick_key = self._session_key_for_source(event.source) if event.source else None
-
-        def _watch():
-            if quick_key and event.source is not None:
-                self._register_heartbeat_watch(quick_key, event.source, mgr.session_id)
-
-        if not args or lower == "status":
-            return mgr.status_line()
-        if lower == "pause":
-            state = mgr.pause()
-            return f"⏸ Heartbeat paused: {state.prompt}" if state else "No heartbeat set."
-        if lower == "resume":
-            state = mgr.resume()
-            if state is None:
-                return "No heartbeat to resume."
-            _watch()
-            return f"▶ Heartbeat resumed (every {format_interval(state.interval_seconds)}): {state.prompt}"
-        if lower in {"clear", "stop", "off"}:
-            had = mgr.clear()
-            if quick_key:
-                self._unregister_heartbeat_watch(quick_key)
-            return "✓ Heartbeat cleared." if had else "No heartbeat set."
-
-        # Set: `/heartbeat every 10m <prompt>` (also accepts `10m <prompt>`).
-        tokens = args.split(None, 2)
-        interval, prompt = None, ""
-        if tokens[0].lower() == "every" and len(tokens) >= 2:
-            interval = parse_interval(f"every {tokens[1]}")
-            prompt = tokens[2] if len(tokens) > 2 else ""
-        else:
-            interval = parse_interval(tokens[0])
-            prompt = args[len(tokens[0]):].strip() if interval and interval > 0 else ""
-        if interval is None:
-            return (
-                "Usage: /heartbeat every <interval> <prompt>  (e.g. /heartbeat every 10m Check CI)\n"
-                "Also: /heartbeat status | pause | resume | clear"
-            )
-        if interval < 0:
-            return f"Interval too small — minimum is {MIN_INTERVAL_SECONDS}s."
-        if not prompt.strip():
-            return "Usage: /heartbeat every <interval> <prompt> — the prompt is required."
-        state, err = _mgr_call("Invalid heartbeat", mgr.set, prompt, interval, errors=(ValueError,))
-        if err:
-            return err
-        _watch()
-        return (
-            f"♥ Heartbeat set (every {format_interval(state.interval_seconds)}): {state.prompt}\n"
-            "Fires as a normal turn whenever this session is idle and the interval has "
-            "elapsed. Lives while the gateway runs — use `hermes cron` for durable schedules."
-        )
 
     def _idle_cached_agent_or_error(self, event: MessageEvent, verb: str):
         """``(session_key, cached_agent, None)`` for /refine and /review, or ``(_, _, error_text)``:

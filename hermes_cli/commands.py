@@ -104,15 +104,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("q",), args_hint="[<prompt>|list|edit N <prompt>|rm N|move A B|clear]",
                subcommands=("list", "edit", "rm", "move", "clear", "add"),
                busy_policy="dispatch", busy_handler="queue"),
-    CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
-               args_hint="<prompt>", busy_policy="dispatch", busy_handler="steer"),
     CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
                args_hint="[text | draft <text> | show | gate add <cmd> | pause | resume | clear | status | wait <pid> | unwait]",
                argument_mode="mixed", busy_policy="dispatch", busy_handler="goal"),
-    CommandDef("heartbeat", "Set a recurring prompt that re-enters this session when idle", "Session",
-               aliases=("hb",), args_hint="[every <interval> <prompt> | status | pause | resume | clear]",
-               subcommands=("status", "pause", "resume", "clear"),
-               busy_policy="dispatch"),
     CommandDef("refine", "Review this conversation now and save lessons to memory/skills", "Session",
                args_hint="[focus instructions]"),
     CommandDef("review", "Spawn an independent subagent to review the work just discussed (PR, code, docs)", "Session",
@@ -123,8 +117,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
                argument_mode="mixed", busy_policy="dispatch", busy_handler="loop"),
     CommandDef("plan", "Write a markdown implementation plan to .hermes/plans/ without executing anything", "Session",
                args_hint="[task]"),
-    CommandDef("moa", "Run one prompt through the default Mixture of Agents preset, then restore your model", "Session",
-               args_hint="<prompt>", busy_policy="reject", busy_handler="moa"),
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
                args_hint="[text | remove N | clear]", busy_policy="dispatch"),
     CommandDef("status", "Show session, model, token, and context info", "Session",
@@ -214,8 +206,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("memory", "Review pending memory writes / toggle the approval gate",
                "Tools & Skills", args_hint="[pending|approve|reject|approval] [id|on|off]",
                subcommands=("pending", "approve", "reject", "approval")),
-    CommandDef("bundles", "List skill bundles (aliases /<name> for multiple skills)",
-               "Tools & Skills", execute="bundles"),
     CommandDef("learn", "Learn a reusable skill from anything you describe (dirs, URLs, this chat, notes)",
                "Tools & Skills", args_hint="<what to learn from>"),
     CommandDef("init", "Generate or update AGENTS.md project instructions from a repo scan",
@@ -229,10 +219,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("accept", "dismiss", "catalog", "clear")),
     CommandDef("blueprint", "Set up an automation from a blueprint template",
                "Tools & Skills", aliases=("bp",), args_hint="[name] [slot=value ...]"),
-    CommandDef("curator", "Background skill maintenance (status, run, pin, archive, list-archived)",
-               "Tools & Skills", args_hint="[subcommand]",
-               subcommands=("status", "run", "pause", "resume", "pin", "unpin", "restore", "list-archived"),
-               desktop="advanced"),
     CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
                cli_only=True, desktop="terminal"),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
@@ -351,8 +337,8 @@ for _cmd in COMMAND_REGISTRY:
 HELP_SESSION_SUBGROUPS: dict[str, tuple[str, ...]] = {
     "Context": ("compress", "compact", "context", "ctx", "status"),
     "Background & Automation": (
-        "bg", "btw", "agents", "tasks", "queue", "q", "steer", "goal", "subgoal", "heartbeat", "hb",
-        "refine", "loop", "proactive", "moa", "journey", "learning", "memory-graph")}
+        "bg", "btw", "agents", "tasks", "queue", "q", "goal", "subgoal",
+        "refine", "loop", "proactive", "journey", "learning", "memory-graph")}
 
 # All names + aliases the gateway dispatches. Config-gated commands are
 # included; their handler checks the gate at runtime.

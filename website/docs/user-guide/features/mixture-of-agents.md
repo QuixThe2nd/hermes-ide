@@ -33,23 +33,7 @@ MoA presets are selectable on **every Hermes surface**, because MoA is a normal 
 
 Configured presets therefore show up wherever you would pick any other model.
 
-## Slash command shortcut
-
-`/moa` is one-shot convenience sugar. It runs a single prompt through the **default** MoA preset, then restores whatever model you were on:
-
-```bash
-/moa design and implement a migration plan for this flaky test cluster
-```
-
-Hermes temporarily switches to the default MoA preset for that one turn, sends the prompt, then restores your previous model afterward. The whole argument is the prompt — `/moa` no longer interprets it as a preset name.
-
-```bash
-/moa
-```
-
-Bare `/moa` (no prompt) just prints usage.
-
-To **switch** to a MoA preset for the rest of the session, select it from the model picker — MoA presets appear under a `Mixture of Agents` provider in every model-selection surface (see above). `/moa` is deliberately not a model switch, so a normal prompt can never accidentally change your model.
+To **switch** to a MoA preset for the rest of the session, select it from the model picker — MoA presets appear under a `Mixture of Agents` provider in every model-selection surface (see above).
 
 ## How it works in the agent loop
 
@@ -171,7 +155,7 @@ moa:
   aggregator still receives the raw advisor text, so answer quality is
   unaffected.
 - `full` — additionally redacts the advisor text injected into the
-  aggregator prompt (and the one-shot `/moa` synthesis input).
+  aggregator prompt.
 
 Credential shapes (API-key prefixes, JWTs, private keys, DB connection
 strings) are masked by Hermes' central secret redactor; the MoA filter adds

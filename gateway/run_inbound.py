@@ -1021,15 +1021,10 @@ class GatewayInboundMixin:
         )
         return await self._hm_confirm_destructive(event, "undo", _undo_detail, self._handle_undo_command)
 
-    # /queue and /steer on the idle path: no agent is running, so strip the prefix and send the
+    # /queue on the idle path: no agent is running, so strip the prefix and send the
     # payload as a regular user turn; an empty payload surfaces the usage hint.
     async def _hm_cmd_queue(self, event, source, _quick_key):
         return self._hm_send_payload_as_turn(event, "Usage: /queue <prompt>")
-
-    async def _hm_cmd_steer(self, event, source, _quick_key):
-        return self._hm_send_payload_as_turn(
-            event, "Usage: /steer <prompt>  (no agent is running; sending as a normal message)"
-        )
 
     @staticmethod
     def _hm_send_payload_as_turn(event, usage: str) -> Tuple[bool, Optional[str]]:
@@ -1040,39 +1035,10 @@ class GatewayInboundMixin:
             event.text = payload
         return False, None
 
-    async def _hm_cmd_moa(self, event, source, _quick_key):
-        # /moa is one-shot sugar only: run a single prompt through the default MoA preset, then
-        # restore the prior model. To *switch* to a MoA preset for the session, pick it from the
-        # model picker (MoA presets surface as a virtual "Mixture of Agents" provider).
-        from hermes_cli.moa_config import moa_usage, normalize_moa_config
-        from hermes_cli.config import load_config
-
-        moa_payload = event.get_command_args().strip()
-        if not moa_payload:
-            return True, moa_usage()
-        try:
-            cfg = load_config()
-            moa_cfg = normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
-        except Exception:
-            moa_cfg = normalize_moa_config({})
-        try:
-            event.text = moa_payload
-            _moa_state = self._session_state(_quick_key)
-            # Same one-shot snapshot `/model --once` uses, so eviction/stop/finalizer settle both alike.
-            self._claim_one_turn_restore(_quick_key)
-            _moa_state.conversation.model_override = {
-                "provider": "moa", "model": moa_cfg["default_preset"], "base_url": "moa://local",
-                "api_key": "moa-virtual-provider", "api_mode": "chat_completions",
-            }
-            self._evict_cached_agent(_quick_key)
-        except Exception:
-            return True, "Failed to prepare MoA turn."
-        return False, None
-
-    # Idle-path built-ins with bespoke flow (confirmations, prompt rewrites, one-shot MoA), each
+    # Idle-path built-ins with bespoke flow (confirmations, prompt rewrites), each
     # handled by ``_hm_cmd_<name>`` → ``(handled, result)``; ``(False, None)`` falls through to the agent.
     _HM_CANONICAL_COMMANDS = frozenset({
-        "new", "start", "egress", "learn", "plan", "init", "blueprint", "undo", "queue", "steer", "moa",
+        "new", "start", "egress", "learn", "plan", "init", "blueprint", "undo", "queue",
     })
 
     async def _hm_dispatch_canonical_command(
@@ -2638,9 +2604,6 @@ class GatewayInboundMixin:
         if canonical == "reload-skills":
             return await self._handle_reload_skills_command(event)
 
-        if canonical == "bundles":
-            return await self._handle_bundles_command(event)
-
         if canonical == "debug":
             return await self._handle_debug_command(event)
 
@@ -2671,21 +2634,6 @@ class GatewayInboundMixin:
             except Exception:
                 pass
 
-        if canonical == "steer":
-            # No active agent — /steer has no tool call to inject into.
-            # Strip the prefix so downstream treats it as a normal user
-            # message. If the payload is empty, surface the usage hint.
-            steer_payload = event.get_command_args().strip()
-            if not steer_payload:
-                return "Usage: /steer <prompt>  (no agent is running; sending as a normal message)"
-            try:
-                event.text = steer_payload
-            except Exception:
-                pass
-            # Do NOT return — fall through to _handle_message_with_agent
-            # at the end of this function so the rewritten text is sent
-            # to the agent as a regular user turn.
-
         if canonical == "goal":
             return await self._handle_goal_command(event)
 
@@ -2696,42 +2644,6 @@ class GatewayInboundMixin:
             return await self._handle_refine_command(event)
         if canonical == "review":
             return await self._handle_review_command(event)
-
-        if canonical == "moa":
-            # /moa is one-shot sugar only: run a single prompt through the
-            # default MoA preset, then restore the prior model. To *switch* to a
-            # MoA preset for the session, pick it from the model picker (MoA
-            # presets surface as a virtual "Mixture of Agents" provider).
-            from hermes_cli.moa_config import (
-                moa_usage,
-                normalize_moa_config,
-            )
-            from hermes_cli.config import load_config
-
-            moa_payload = event.get_command_args().strip()
-            if not moa_payload:
-                return moa_usage()
-            try:
-                cfg = load_config()
-                moa_cfg = normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
-            except Exception:
-                moa_cfg = normalize_moa_config({})
-            preset = moa_cfg["default_preset"]
-            try:
-                event.text = moa_payload
-                _moa_state = self._session_state(_quick_key)
-                event._moa_restore_override = _moa_state.conversation.model_override
-                _moa_state.conversation.model_override = {
-                    "provider": "moa",
-                    "model": preset,
-                    "base_url": "moa://local",
-                    "api_key": "moa-virtual-provider",
-                    "api_mode": "chat_completions",
-                }
-                self._evict_cached_agent(_quick_key)
-                event._moa_disable_after_turn = True
-            except Exception:
-                return "Failed to prepare MoA turn."
 
         if canonical == "voice":
             return await self._handle_voice_command(event)
@@ -3123,15 +3035,6 @@ class GatewayInboundMixin:
                 logger.debug("post-turn hook failed: %s", _goal_exc)
             return _agent_result
         finally:
-            # MoA one-shot restore must run on EVERY exit path, not just
-            # success. The restore data lives on the per-turn event object
-            # (_moa_restore_override), which is discarded once the event goes
-            # out of scope — so if _handle_message_with_agent raises, a restore
-            # in the try block would be skipped and the MoA override would leak
-            # permanently (every later message silently fans out through MoA).
-            # Putting it in finally guarantees the revert on success, exception,
-            # and interrupt alike.
-            self._restore_moa_one_shot(event, _quick_key)
             self._restore_pending_one_turn_model_override(_quick_key)
             # Normal completion/exception/interrupt owns and clears this exact
             # durable marker.  SIGKILL/OOM skips finally, leaving the marker for

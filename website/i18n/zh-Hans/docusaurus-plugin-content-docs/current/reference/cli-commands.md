@@ -798,7 +798,7 @@ hermes bundles show backend-dev
 hermes bundles delete backend-dev
 ```
 
-在聊天会话中，`/bundles` 列出已安装的 bundle，`/<bundle-name>` 加载某个 bundle。
+在聊天会话中，`/<bundle-name>` 加载某个 bundle。
 
 ## `hermes curator`
 

@@ -101,7 +101,6 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/delegation',
             'user-guide/features/codex-app-server-runtime',
             'user-guide/features/goals',
-            'user-guide/features/heartbeat',
             'user-guide/features/loops',
             'user-guide/features/code-execution',
             'user-guide/features/hooks',
