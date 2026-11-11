@@ -31,6 +31,23 @@ logger = logging.getLogger(__name__)
 Delivery = Callable[[str, Dict[str, Any]], Awaitable[None]]
 
 
+def _pid_gone(pid: Optional[int]) -> bool:
+    """True only when the PID provably no longer exists (unknown counts as alive)."""
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
+            return handle.read().rsplit(")", 1)[1].split()[0] == "Z"
+    except OSError:
+        return False
+
+
 class DiscordSessionRouter:
     """Route each session to exactly one live Hermes generation.
 
@@ -146,7 +163,21 @@ class DiscordSessionRouter:
                 delivered_record["_hub_previous_generation"] = previous_owner
                 delivered_record["_hub_previous_pid"] = self._client_pids.get(previous_owner)
             await self._clients[generation](session_key, delivered_record)
-        except Exception:
+        except Exception as exc:
+            # A gateway that was SIGKILLed cannot have received anything. Its
+            # socket write fails before the server notices EOF, so drop that
+            # generation now and route to a live one instead of parking the
+            # event until some later attach replays it.
+            dead_pid = self._client_pids.get(generation)
+            if isinstance(exc, (ConnectionError, OSError)) and _pid_gone(dead_pid):
+                logger.warning(
+                    "%s hub dropped generation %s (gateway PID %s is gone) and is rerouting %s",
+                    self._transport, generation, dead_pid, session_key,
+                )
+                self.detach(generation)
+                return await self._route_locked(
+                    session_key, record, excluded=excluded | {generation},
+                )
             # Do not send a possibly-received event to a second generation.
             self._undelivered.append(record)
             logger.exception("%s hub retained an event for %s after delivery failed", self._transport, session_key)
