@@ -200,12 +200,12 @@ def test_untrusted_adopter_of_a_full_profiles_connection_keeps_its_own_trust_gat
     B's ``trust: untrusted`` write-capable call skip approval."""
     from tools import mcp_tool_discovery as disc, mcp_tool_handlers as handlers
     from tools import mcp_tool_registration as reg
-    import tools.approval_prompt as approval_prompt
+    import tools.approval as approval_mod
 
     route = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer shared"}}
     cfg_a, cfg_b = dict(route, trust="full"), dict(route, trust="untrusted")
     asked = []
-    monkeypatch.setattr(approval_prompt, "request_elicitation_consent",
+    monkeypatch.setattr(approval_mod, "request_elicitation_consent",
                         lambda *a, **k: asked.append(a) or "deny")
 
     two_profiles("a")

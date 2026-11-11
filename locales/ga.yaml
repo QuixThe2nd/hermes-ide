@@ -5,26 +5,7 @@
 # without good native equivalents (e.g. "session", "tokens", "API").
 # Where Irish has a settled term we use it; otherwise we keep the English.
 
-approval:
-  dangerous_header: "⚠️  ORDÚ CONTÚIRTEACH: {description}"
-  choose_long:     "      [o]uair amháin  |  [s]eisiún  |  [a]i gcónaí  |  [d]iúltaigh"
-  choose_short:    "      [o]uair amháin  |  [s]eisiún  |  [d]iúltaigh"
-  prompt_long:     "      Rogha [o/s/a/D]: "
-  prompt_short:    "      Rogha [o/s/D]: "
-  choose_smart_deny: "      [o]uair amháin  |  [d]iúltaigh"
-  prompt_smart_deny: "      Rogha [o/D]: "
-  smart_deny_once_inputs: "o,once"
-  smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ Gan freagra laistigh de {waited} — níor ritheadh an t-ordú. Iarr arís le triail eile a bhaint as, nó ardaigh an teorainn: hermes config set approvals.timeout {suggested}"
-  allowed_once:    "      ✓ Ceadaithe uair amháin"
-  allowed_session: "      ✓ Ceadaithe don seisiún seo"
-  allowed_always:  "      ✓ Curtha leis an liosta ceadaithe buan"
-  denied:          "      ✗ Diúltaithe"
-  cancelled:       "      ✗ Cealaithe"
-  blocklist_message: "Tá an t-ordú seo ar an liosta cosc gan choinníoll agus ní féidir é a cheadú."
-
 gateway:
-  approval_expired: "⚠️ Tá an cead imithe in éag (níl an gníomhaire ag fanacht níos mó). Iarr ar an ngníomhaire iarracht eile a dhéanamh."
   draining:         "⏳ Ag iarraidh ar {count} gníomhaire(í) gníomhach sos a ghlacadh, ansin atosú..."
   goal_cleared:     "✓ Sprioc glanta."
   no_active_goal:   "Níl aon sprioc ghníomhach ann."
@@ -61,15 +42,6 @@ gateway:
     none:                  "Níl aon ghníomhairí gníomhacha ná tascanna ag rith."
     state_starting:        "ag tosú"
     state_running:         "ag rith"
-
-  approve:
-    no_pending:            "Níl aon ordú ag fanacht le ceadú."
-    once_singular:         "✅ Ordú ceadaithe. Tá an gníomhaire ag atosú..."
-    once_plural:           "✅ Orduithe ceadaithe ({count} ordú). Tá an gníomhaire ag atosú..."
-    session_singular:      "✅ Ordú ceadaithe (patrún ceadaithe don seisiún seo). Tá an gníomhaire ag atosú..."
-    session_plural:        "✅ Orduithe ceadaithe (patrún ceadaithe don seisiún seo) ({count} ordú). Tá an gníomhaire ag atosú..."
-    always_singular:       "✅ Ordú ceadaithe (patrún ceadaithe go buan). Tá an gníomhaire ag atosú..."
-    always_plural:         "✅ Orduithe ceadaithe (patrún ceadaithe go buan) ({count} ordú). Tá an gníomhaire ag atosú..."
 
   background:
     usage:                 "Úsáid: /bg <leid>\nSampla: /bg Déan achoimre ar phríomhscéalta HN inniu\n\nRitheann an leid i seisiún ar leith. Is féidir leat leanúint leis an gcomhrá — taispeánfar an toradh anseo nuair a bheidh sé críochnaithe."
@@ -119,14 +91,6 @@ gateway:
     auto_delete:           "⏱ Scriosfar na pastes go huathoibríoch i 6 huaire."
     full_logs_hint:        "Le haghaidh uaslódálacha logála iomlána, úsáid `hermes debug share` ón CLI."
     share_hint:            "Roinn na naisc seo le foireann Hermes le haghaidh tacaíochta."
-
-  deny:
-    stale:                 "❌ Ordú diúltaithe (bhí an cead imithe i léig)."
-    no_pending:            "Níl aon ordú ag fanacht le diúltú."
-    denied_singular:       "❌ Ordú diúltaithe."
-    denied_plural:         "❌ Orduithe diúltaithe ({count} ordú)."
-    denied_reason_singular: "❌ Ordú diúltaithe. Cúis curtha ar aghaidh chuig an ngníomhaire: \"{reason}\""
-    denied_reason_plural:  "❌ Orduithe diúltaithe ({count} ordú). Cúis curtha ar aghaidh chuig an ngníomhaire: \"{reason}\""
 
   fast:
     not_supported:         "⚡ Tá /fast ar fáil amháin do shamhlacha OpenAI a thacaíonn le Priority Processing."
@@ -210,7 +174,7 @@ gateway:
   reload_mcp:
     cancelled:             "🟡 /reload-mcp cealaithe. Tá uirlisí MCP gan athrú."
     always_followup:       "ℹ️ Rithfear glaonna `/reload-mcp` amach anseo gan dearbhú. Athchumasaigh trí `approvals.mcp_reload_confirm: true` a shocrú in config.yaml."
-    confirm_prompt:        "⚠️ **Dearbhaigh /reload-mcp**\n\nAthlódáil freastalaithe MCP a athchruthaíonn an tacar uirlisí don seisiún seo agus **cuireann sé taisce leid an tsoláthraí ar neamhní** — seolfaidh an chéad teachtaireacht eile na comharthaí ionchuir iomlána arís. Ar shamhlacha le comhthéacs fada nó réasúnaíocht ard, is féidir leis seo a bheith costasach.\n\nRoghnaigh:\n• **Approve Once** — athlódáil anois\n• **Always Approve** — athlódáil anois agus an leid seo a chiúnú go buan\n• **Cancel** — fág uirlisí MCP gan athrú\n\n_Cúltaca téacs: freagair `/approve`, `/always`, nó `/cancel`._"
+    confirm_prompt:        "⚠️ **Dearbhaigh /reload-mcp**\n\nAthlódáil freastalaithe MCP a athchruthaíonn an tacar uirlisí don seisiún seo agus **cuireann sé taisce leid an tsoláthraí ar neamhní** — seolfaidh an chéad teachtaireacht eile na comharthaí ionchuir iomlána arís. Ar shamhlacha le comhthéacs fada nó réasúnaíocht ard, is féidir leis seo a bheith costasach.\n\nRoghnaigh:\n• **Approve Once** — athlódáil anois\n• **Always Approve** — athlódáil anois agus an leid seo a chiúnú go buan\n• **Cancel** — fág uirlisí MCP gan athrú"
     header:                "🔄 **Freastalaithe MCP Athlódáilte**\n"
     reconnected:           "♻️ Athcheanglaithe: {names}"
     added:                 "➕ Curtha leis: {names}"
@@ -446,10 +410,6 @@ Ritheann athshioncronú go huathoibríoch uair amháin in aghaidh na huaire ar a
     label_all:             "TTS (freagra gutha do gach teachtaireacht)"
     help:                  "{toggle}\n\n**Conas a oibríonn /voice**\n• `/voice on` — freagra gutha nuair a sheolann tú teachtaireacht gutha\n• `/voice tts` — freagra gutha do *gach* teachtaireacht\n• `/voice off` — ar ais go freagraí téacs amháin\n• `/voice status` — taispeáin an mód reatha\n• `/voice` (gan argóint) — scoránaigh go tapa idir air agus as{channels}"
     help_channels:         "\n\n**Cainéil gutha bheo (Discord)**\n• Téigh isteach i gcainéal gutha ar dtús, ansin `/voice channel` — téim isteach, éistim agus labhraím mo fhreagraí\n• `/voice leave` — dícheangail ón gcainéal gutha"
-
-  yolo:
-    disabled:                   "⚠️ Mód YOLO **AS** don seisiún seo — beidh cead de dhíth d'orduithe contúirteacha."
-    enabled:                    "⚡ Mód YOLO **AR** don seisiún seo — gach ordú ceadaithe go huathoibríoch. Úsáid go cúramach."
 
   shared:
     session_db_unavailable:      "Níl bunachar sonraí na seisiún ar fáil."

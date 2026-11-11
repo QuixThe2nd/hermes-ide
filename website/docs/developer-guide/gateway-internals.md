@@ -58,7 +58,7 @@ When a message arrives from any platform:
 1. **Platform adapter** receives raw event, normalizes it into a `MessageEvent`
 2. **Base adapter** checks active session guard:
    - If agent is running for this session → queue message, set interrupt event
-   - If `/approve`, `/deny`, `/stop` → bypass guard (dispatched inline)
+   - If `/stop` → bypass guard (dispatched inline)
 3. **GatewayRunner._handle_message()** receives the event:
    - Resolve session key via `_session_key_for_source()` (format: `agent:{namespace}:{platform}:{chat_type}:{chat_id}`; the namespace is `main` for the default profile, `<profile>` under multiplexing — see [Multiplexed profiles](#multiplexed-profiles))
    - Check authorization (see Authorization below)
@@ -87,9 +87,9 @@ When an agent is actively running, incoming messages pass through two sequential
 
 1. **Level 1 — Base adapter** (`gateway/platforms/base.py`): Checks `_active_sessions`. If the session is active, queues the message in `_pending_messages` and sets an interrupt event. This catches messages *before* they reach the gateway runner.
 
-2. **Level 2 — Gateway runner** (`gateway/run_inbound.py`): Checks `_running_agents`. Intercepts specific commands (`/stop`, `/new`, `/queue`, `/status`, `/approve`, `/deny`) and routes them appropriately. Everything else triggers `running_agent.interrupt()`.
+2. **Level 2 — Gateway runner** (`gateway/run_inbound.py`): Checks `_running_agents`. Intercepts specific commands (`/stop`, `/new`, `/queue`, `/status`) and routes them appropriately. Everything else triggers `running_agent.interrupt()`.
 
-Commands that must reach the runner while the agent is blocked (like `/approve`) are dispatched **inline** via `await self._message_handler(event)` — they bypass the background task system to avoid race conditions.
+Commands that must reach the runner while the agent is blocked (like `/stop`) are dispatched **inline** via `await self._message_handler(event)` — they bypass the background task system to avoid race conditions.
 
 ## Authorization
 
@@ -127,7 +127,7 @@ Commands that must NOT execute while the agent is processing are rejected early:
 
 While `_quick_key in self._running_agents`, `_dispatch_busy_slash_command()` in `gateway/run_busy.py` routes each recognized command by its `CommandDef.busy_policy` / `busy_handler`: a mid-run variant (`_busy_<key>_command`) if one exists, otherwise the normal handler when `busy_policy` allows it, otherwise a reject message ("⏳ Agent is running — `/model` can't run mid-turn…").
 
-Bypass commands (`/stop`, `/new`, `/approve`, `/deny`, `/queue`, `/status`) have mid-run handlers and are dispatched inline.
+Bypass commands (`/stop`, `/new`, `/queue`, `/status`) have mid-run handlers and are dispatched inline.
 
 ## Config Sources
 

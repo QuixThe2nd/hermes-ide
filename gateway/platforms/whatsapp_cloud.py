@@ -469,14 +469,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     _EA_CMD_BUDGET = 800  # body caps at 1024; leave room for the framing prose
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
-        """Approve / Deny buttons only (a 3-button cap leaves no room for the session/always
-        tiers); a tap resolves via ``tools.approval.resolve_gateway_approval``."""
-        approval_id = uuid.uuid4().hex[:12]
-        interactive = self._button_interactive(
-            self._truncate_body(prompt.text),
-            (f"appr:{approval_id}:approve", "✅ Approve"), (f"appr:{approval_id}:deny", "❌ Deny"))
-        return await self._send_interactive(
-            prompt.chat_id, interactive, prompt.metadata, self._exec_approval_state, approval_id, prompt.session_key)
+        """Deprecated: this fork never asks a human to approve/deny agent actions, so no
+        approval prompt is ever posted (base ``send_exec_approval`` is a no-op pass-through)."""
+        return SendResult(success=False, error="Not supported")
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
@@ -863,27 +858,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return True
 
     async def _handle_approval_tap(self, to: str, inner: Dict[str, Any], parts: list) -> bool:
-        _, approval_id, choice = parts
-        session_key = self._pop_tap_state(
-            self._exec_approval_state, approval_id,
-            "[whatsapp_cloud] approval tap with no matching state (approval_id=%s) — likely stale; falling back to text",
-            choice, ("approve", "deny"),
-        )
-        if not session_key:
-            return False
-        approval = _optional_module("tools.approval", "[whatsapp_cloud] approval resolver unavailable")
-        if approval is None:
-            return False
-        count = approval.resolve_gateway_approval(session_key, choice)
-        # A tap after the wait timed out (count == 0) must not claim approval:
-        # the command was already denied fail-closed.
-        if count:
-            confirm_text = "✅ Approved." if choice == "approve" else "❌ Denied."
-        else:
-            logger.info("[whatsapp_cloud] approval resolver reported no waiter (session_key=%s) — likely already resolved", session_key)
-            confirm_text = "⌛ Approval expired — command was not run (already timed out or resolved elsewhere)."
-        await self._reply_best_effort(to, confirm_text, "[whatsapp_cloud] approval confirm failed")
-        return True
+        """Deprecated: this fork never posts exec-approval prompts, so an ``appr:`` tap can
+        never resolve one. Kept (importable, still in the tap dispatch) as a no-op."""
+        return False
 
     async def _handle_slash_confirm_tap(self, to: str, inner: Dict[str, Any], parts: list) -> bool:
         _, choice, confirm_id = parts

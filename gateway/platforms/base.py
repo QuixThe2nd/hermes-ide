@@ -2654,7 +2654,7 @@ class BasePlatformAdapter(ABC):
         return self._EA_CMD_BUDGET
 
     def _ea_deadline_line(self) -> str:
-        """The "doing nothing means it will NOT run" line, with the configured approvals.timeout."""
+        """The "doing nothing means it will NOT run" line, with the fixed approval window."""
         return self._EA_DEADLINE_PREFIX + self._ea_escape(format_approval_deadline_line(approval_timeout_seconds()))
 
     def _format_exec_approval(
@@ -2702,16 +2702,11 @@ class BasePlatformAdapter(ABC):
         metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
         smart_denied: bool = False,
     ) -> SendResult:
-        """Interactive exec-approval prompt; a press resolves via
-        ``tools.approval.resolve_gateway_approval``. Text and choice set are shared; adapters
-        render them natively in ``_send_exec_approval_prompt``."""
-        prompt = ExecApprovalPrompt(
-            chat_id=chat_id, session_key=session_key, metadata=metadata, command=str(command or ""),
-            description=description, smart_denied=smart_denied,
-            text=self._format_exec_approval(command, description, smart_denied),
-            actions=self._exec_approval_actions(
-                allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied))
-        return await self._send_exec_approval_prompt(prompt)
+        """Deprecated no-op: this fork never asks a human to approve/deny agent actions, so no
+        exec-approval prompt is built or posted. Kept (importable, callers like
+        ``run_turn_runner._approval_notify_sync`` still reference it) but it never renders
+        buttons or resolves choices."""
+        return SendResult(success=False, error="Not supported")
 
     async def _send_exec_approval_prompt(self, prompt: "ExecApprovalPrompt") -> SendResult:
         """Render ``prompt`` with the platform's native buttons; the default has none."""

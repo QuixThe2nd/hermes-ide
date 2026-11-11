@@ -154,7 +154,6 @@ The default implementation returns (any `None` widgets are filtered out):
     Window(height=0),       # anchor
     sudo_widget,            # sudo password prompt (conditional)
     secret_widget,          # secret input prompt (conditional)
-    approval_widget,        # dangerous command approval (conditional)
     clarify_widget,         # clarify question UI (conditional)
     model_picker_widget,    # model picker overlay (conditional)
     spinner_widget,         # thinking spinner (conditional)

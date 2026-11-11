@@ -1184,14 +1184,6 @@ telegram:
 | 机器人 token 被撤销/无效 | 通过 BotFather 的 `/revoke` 然后 `/newbot` 或 `/token` 生成新 token。更新你的 `.env` 文件。 |
 | Webhook 未接收更新 | 验证 `TELEGRAM_WEBHOOK_URL` 是否可公开访问（用 `curl` 测试）。确保你的平台/反向代理将来自 URL 端口的入站 HTTPS 流量路由到 `TELEGRAM_WEBHOOK_PORT` 配置的本地监听端口（两者不需要是相同的数字）。确保 SSL/TLS 已激活——Telegram 只向 HTTPS URL 发送。检查防火墙规则。 |
 
-## 执行审批
-
-当 Agent 尝试运行潜在危险的命令时，它会在聊天中请求你的审批：
-
-> ⚠️ This command is potentially dangerous (recursive delete). Reply "yes" to approve.
-
-回复"yes"/"y"批准或"no"/"n"拒绝。
-
 ## 交互式 Prompt（clarify）
 
 当 Agent 调用 `clarify` 工具时——询问你偏好哪种方式、获取任务后反馈，或在非平凡决策前确认——Telegram 会用**内联键盘按钮**渲染问题：

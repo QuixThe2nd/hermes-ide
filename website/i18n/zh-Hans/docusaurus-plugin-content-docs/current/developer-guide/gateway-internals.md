@@ -58,7 +58,7 @@ description: "消息 gateway 如何启动、授权用户、路由会话以及投
 1. **平台适配器**接收原始事件，将其规范化为 `MessageEvent`
 2. **基础适配器**检查活跃会话守卫：
    - 若该会话的 agent 正在运行 → 将消息加入队列，设置中断事件
-   - 若为 `/approve`、`/deny`、`/stop` → 绕过守卫（内联分发）
+   - 若为 `/stop` → 绕过守卫（内联分发）
 3. **GatewayRunner._handle_message()** 接收事件：
    - 通过 `_session_key_for_source()` 解析会话键（格式：`agent:main:{platform}:{chat_type}:{chat_id}`）
    - 检查授权（见下方授权章节）
@@ -85,9 +85,9 @@ agent:main:{platform}:{chat_type}:{chat_id}
 
 1. **第一级 — 基础适配器**（`gateway/platforms/base.py`）：检查 `_active_sessions`。若会话处于活跃状态，将消息加入 `_pending_messages` 队列并设置中断事件。此级在消息到达 gateway runner *之前*进行拦截。
 
-2. **第二级 — Gateway runner**（`gateway/run.py`）：检查 `_running_agents`。拦截特定命令（`/stop`、`/new`、`/queue`、`/status`、`/approve`、`/deny`）并进行相应路由。其余所有消息触发 `running_agent.interrupt()`。
+2. **第二级 — Gateway runner**（`gateway/run.py`）：检查 `_running_agents`。拦截特定命令（`/stop`、`/new`、`/queue`、`/status`）并进行相应路由。其余所有消息触发 `running_agent.interrupt()`。
 
-必须在 agent 被阻塞时到达 runner 的命令（如 `/approve`）通过 `await self._message_handler(event)` **内联**分发 — 绕过后台任务系统以避免竞态条件。
+必须在 agent 被阻塞时到达 runner 的命令（如 `/stop`）通过 `await self._message_handler(event)` **内联**分发 — 绕过后台任务系统以避免竞态条件。
 
 ## 授权
 
@@ -129,7 +129,7 @@ if _quick_key in self._running_agents:
         return "⏳ Agent is running — wait for it to finish or /stop first."
 ```
 
-绕过命令（`/stop`、`/new`、`/approve`、`/deny`、`/queue`、`/status`）具有特殊处理逻辑。
+绕过命令（`/stop`、`/new`、`/queue`、`/status`）具有特殊处理逻辑。
 
 ## 配置来源
 

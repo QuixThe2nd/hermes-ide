@@ -285,9 +285,6 @@ class GatewayInboundMixin:
             from tools import slash_confirm as _estop_confirm_mod
             if _estop_confirm_mod.get_pending(_estop_key):
                 return True
-            from tools.approval import has_blocking_approval as _estop_has_approval
-            if _estop_has_approval(_estop_key):
-                return True
         return False
 
     def _hm_estop_gate(
@@ -474,10 +471,6 @@ class GatewayInboundMixin:
         _pending_confirm = _slash_confirm_mod.get_pending(_quick_key)
         if not _pending_confirm:
             return None
-        with suppress(Exception):
-            from tools.approval import has_blocking_approval
-            if has_blocking_approval(_quick_key):
-                return None
         # Accept bang-prefixed replies (`!always`, `!cancel`) verbatim: Slack/Matrix show the `!`
         # prefix (typed `/` is blocked in Slack threads) and adapters only rewrite
         # `!<known-command>` — confirm keywords aren't commands, so the `!` survives to here.
@@ -1676,12 +1669,6 @@ class GatewayInboundMixin:
                             from tools import slash_confirm as _estop_confirm_mod
                             if _estop_confirm_mod.get_pending(_estop_key):
                                 _estop_allow = True
-                        if not _estop_allow:
-                            from tools.approval import (
-                                has_blocking_approval as _estop_has_approval,
-                            )
-                            if _estop_has_approval(_estop_key):
-                                _estop_allow = True
                     except Exception:
                         pass
                 if not _estop_allow:
@@ -1896,13 +1883,7 @@ class GatewayInboundMixin:
         # Slash-confirm only catches /approve when no tool approval is live.
         from tools import slash_confirm as _slash_confirm_mod
         _pending_confirm = _slash_confirm_mod.get_pending(_quick_key)
-        _tool_approval_live = False
-        try:
-            from tools.approval import has_blocking_approval
-            _tool_approval_live = has_blocking_approval(_quick_key)
-        except Exception:
-            _tool_approval_live = False
-        if allow_gateway_control and _pending_confirm and not _tool_approval_live:
+        if allow_gateway_control and _pending_confirm:
             _raw_reply = (event.text or "").strip()
             # Accept bang-prefixed replies (`!always`, `!cancel`) verbatim.
             # Slack/Matrix instruction text shows the `!` prefix (typed `/`
@@ -2561,9 +2542,6 @@ class GatewayInboundMixin:
 
         if canonical == "fast":
             return await self._handle_fast_command(event)
-
-        if canonical == "approvals":
-            return await self._handle_approvals_command(event)
 
         if canonical == "model":
             return await self._handle_model_command(event)

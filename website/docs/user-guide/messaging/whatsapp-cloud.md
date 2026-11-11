@@ -257,7 +257,6 @@ You can have **both** the Baileys (`whatsapp`) and Cloud (`whatsapp_cloud`) adap
 When the agent invokes any of these flows, Hermes uses WhatsApp's native interactive messages — tap-to-answer buttons instead of "reply with the number" prompts:
 
 - **`clarify` tool** — multi-choice questions render as quick-reply buttons (1–3 choices) or a tap-to-open list sheet (4+ choices). Picking "✏️ Other" lets the user type a free-form answer that the agent receives as the resolution.
-- **Dangerous-command approvals** — when the agent's terminal/code execution hits a gated command, the user sees `✅ Approve` / `❌ Deny` buttons instead of needing to type `/approve` or `/deny`.
 - **Slash-command confirmations** — privileged commands like `/reload-mcp` show `✅ Approve Once` / `🔒 Always` / `❌ Cancel` buttons.
 
 All interactive prompts gracefully degrade to plain text if the buttons fail to render (e.g. on legacy WhatsApp clients).

@@ -94,8 +94,8 @@ def test_show_session_status_prints_gateway_style_summary():
     assert kwargs.get("markup") is False
 
 
-def test_show_session_status_includes_reasoning_approvals_context():
-    """C-02: /status surfaces reasoning level, approval mode, and context %."""
+def test_show_session_status_includes_reasoning_context():
+    """C-02: /status surfaces reasoning level and context %."""
     cli_obj = _make_cli()
     cli_obj.agent = SimpleNamespace(session_total_tokens=1000, session_api_calls=2,
                                     reasoning_config={"enabled": True, "effort": "high"})
@@ -107,14 +107,11 @@ def test_show_session_status_includes_reasoning_approvals_context():
         "context_tokens": 50000, "context_length": 200000, "context_percent": 25,
     }
 
-    with patch("hermes_constants.display_hermes_home", return_value="~/.hermes"), \
-         patch("tools.approval_context._get_approval_mode", return_value="manual"), \
-         patch("tools.approval.is_approval_bypass_active_for_session", return_value=False):
+    with patch("hermes_constants.display_hermes_home", return_value="~/.hermes"):
         cli_obj._show_session_status()
 
     printed = "\n".join(str(call.args[0]) for call in cli_obj.console.print.call_args_list)
     assert "Reasoning: high (display: on)" in printed
-    assert "Approvals: manual" in printed
     assert "Context: 75% left · 50,000 / 200,000 tokens used" in printed
 
 

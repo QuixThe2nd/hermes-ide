@@ -1,19 +1,19 @@
 ---
 sidebar_position: 8
 title: "Security"
-description: "Security model, dangerous command approval, user authorization, container isolation, and production deployment best practices"
+description: "Security model, dangerous-command hard blocks, user authorization, container isolation, and production deployment best practices"
 ---
 
 # Security
 
-Hermes Agent is designed with a defense-in-depth security model. This page covers every security boundary — from command approval to container isolation to user authorization on messaging platforms.
+Hermes Agent is designed with a defense-in-depth security model. This page covers every security boundary — from dangerous-command hard blocks to container isolation to user authorization on messaging platforms.
 
 ## Overview
 
 The security model has eight layers:
 
 1. **User authorization** — who can talk to the agent (allowlists, DM pairing)
-2. **Dangerous command approval** — human-in-the-loop for destructive operations
+2. **Dangerous-command hard blocks** — catastrophic commands are refused outright, without asking
 3. **File write safety** — denylist and optional write sandbox for `write_file`/`patch`
 4. **Container isolation** — Docker/Singularity/Modal sandboxing with hardened settings
 5. **MCP credential filtering** — environment variable isolation for MCP subprocesses
@@ -21,84 +21,16 @@ The security model has eight layers:
 7. **Cross-session isolation** — sessions cannot access each other's data or state; cron job storage paths are hardened against path traversal attacks
 8. **Input sanitization** — working directory parameters in terminal tool backends are validated against an allowlist to prevent shell injection
 
-## Dangerous Command Approval
+## Dangerous Commands
 
-Before executing any command, Hermes checks it against a curated list of dangerous patterns. If a match is found, the user must explicitly approve it.
-
-### Approval Modes
-
-The approval system supports three modes, configured via `approvals.mode` in `~/.hermes/config.yaml`:
-
-```yaml
-approvals:
-  mode: smart                     # smart | manual | off
-  timeout: 300                    # seconds to wait for user response (default: 300)
-  cron_mode: deny                 # deny | approve — what cron jobs do when they hit a dangerous command
-  single_query_mode: deny         # deny | approve — what single-query (-q) sessions do on a dangerous command
-  unattended_mode: deny           # deny | approve — what webhook/API sessions do on a dangerous command
-  mcp_reload_confirm: true        # /reload-mcp asks before invalidating the MCP tool cache
-  destructive_slash_confirm: true # /clear, /new, /reset, /undo prompt before discarding state
-```
-
-The full set of keys:
-
-| Key | Default | What it controls |
-|---|---|---|
-| `mode` | `smart` | Approval policy for dangerous shell commands — see the table below. |
-| `timeout` | `300` | Seconds Hermes waits for an approval reply before timing out. |
-| `cron_mode` | `deny` | How [cron jobs](./features/cron.md) behave headlessly when they trigger a dangerous-command prompt. `deny` blocks the command (the agent must find another path); `approve` auto-approves everything in cron context. |
-| `single_query_mode` | `deny` | How one-shot [`hermes chat -q`](./cli.md) sessions behave when they trigger a dangerous-command prompt. A `-q` session runs a single turn and exits with no user waiting to answer prompts; `deny` blocks the command (the agent must find another path), `approve` auto-approves everything in single-query context. Mirrors `cron_mode`. |
-| `unattended_mode` | `deny` | How sessions on unattended programmatic platforms (webhook, msgraph_webhook, api_server) behave when they trigger a dangerous-command prompt. These surfaces have no human who can answer `/approve`, so instead of blocking for the full approval timeout, `deny` blocks the command instantly (the agent must find another path) and `approve` auto-approves everything in unattended context. Mirrors `cron_mode`. |
-| `mcp_reload_confirm` | `true` | When true, `/reload-mcp` asks before rebuilding the MCP tool set. Rebuilding invalidates the provider prompt cache (tool schemas live in the system prompt), so the next message re-sends full input tokens. Users who click **Always Approve** flip this key to `false`. |
-| `destructive_slash_confirm` | `true` | When true, destructive session slash commands (`/clear`, `/new`, `/reset`, `/undo`) prompt before discarding conversation state. Three-option dialog (Approve Once / Always Approve / Cancel) routed through native yes/no buttons on Telegram, Discord, and Slack; text fallback elsewhere. Users who click **Always Approve** flip this key to `false`. The TUI also honors this setting for its `/clear`, `/new`, and `/reset` modal; `HERMES_TUI_NO_CONFIRM=1` force-skips that modal regardless of the configured value. |
-
-| Mode | Behavior |
-|------|----------|
-| **smart** (default) | Use an auxiliary LLM to assess risk. Low-risk commands (e.g., `python -c "print('hello')"`) are auto-approved for that command only. Genuinely dangerous commands are auto-denied. Uncertain cases escalate to a manual prompt. |
-| **manual** | Always prompt the user for approval on dangerous commands. |
-| **off** | Disable all approval checks — equivalent to running with `--yolo`. All commands execute without prompts. |
-
-:::warning
-Setting `approvals.mode: off` disables all safety prompts. Use only in trusted environments (CI/CD, containers, etc.).
-:::
-
-### YOLO Mode
-
-YOLO mode bypasses **all** dangerous command approval prompts for the current session. It can be activated three ways:
-
-1. **CLI flag**: Start a session with `hermes --yolo` or `hermes chat --yolo`
-2. **Slash command**: Type `/yolo` during a session to toggle it on/off
-3. **Environment variable**: Set `HERMES_YOLO_MODE=1`
-
-The `/yolo` command is a **toggle** — each use flips the mode on or off:
-
-```
-> /yolo
-  ⚡ YOLO mode ON — all commands auto-approved. Use with caution.
-
-> /yolo
-  ⚠ YOLO mode OFF — dangerous commands will require approval.
-```
-
-YOLO mode is available in both CLI and gateway sessions. Internally, it sets the `HERMES_YOLO_MODE` environment variable which is checked before every command execution.
-
-When YOLO is active, Hermes shows two persistent visual reminders so it's hard to forget that approval prompts are bypassed:
-
-- A red banner line at session start when YOLO is already active: `⚠ YOLO mode — all approval prompts bypassed`. Hidden when YOLO is off so the default banner stays uncluttered.
-- A `⚠ YOLO` fragment in the status bar across all width tiers, updated live as you toggle YOLO on or off (rich-text renderer and plain-text fallback).
-
-:::danger
-YOLO mode disables **all** dangerous command safety checks for the session — **except** the hardline blocklist (see below). Use only when you fully trust the commands being generated (e.g., well-tested automation scripts in disposable environments).
-:::
-
-For destructive session slash commands (`/clear`, `/new` / `/reset`, `/undo`, `/quit --delete` — `/exit --delete` is an alias), the CLI also prompts for confirmation before running them. See [Slash Commands — Confirmation prompts for destructive commands](../reference/slash-commands.md#confirmation-prompts-for-destructive-commands).
+Dangerous commands run immediately — Hermes does not pause to ask. A small hard blocklist refuses catastrophic commands without asking.
 
 ### Supervised-gateway lifecycle restriction
 
 The terminal tool has a separate, non-overridable guard against stopping or
 restarting the gateway from inside its own supervised process. A self-restart can
 terminate the tool before it finishes and cause a supervisor/auto-resume loop.
-User approval, YOLO mode, and `force=True` do not bypass this guard.
+`force=True` does not bypass this guard.
 
 The guard also refuses process killers aimed at the interpreter image the gateway
 runs as — `taskkill /F /IM python.exe`, `taskkill /FI "IMAGENAME eq python.exe"`,
@@ -130,17 +62,7 @@ A tool rejection means the command did not execute through that tool call. An
 assistant declining to issue a call is a separate model decision; changing models
 does not change the terminal guard's policy.
 
-### Hardline Blocklist (Always-On Floor)
-
-Some commands are so catastrophic — irreversible filesystem wipes, fork bombs, direct block-device writes — that Hermes refuses to run them **regardless** of:
-
-- `--yolo` / `/yolo` toggled on
-- `approvals.mode: off`
-- Cron jobs running in headless `approve` mode
-- User explicitly clicking "allow always"
-
-The blocklist is the floor below `--yolo`. It trips **before** the approval layer even sees the command, and there's no override flag. Patterns currently covered (not exhaustive; kept in sync with `tools/approval.py::UNRECOVERABLE_BLOCKLIST`):
-
+Some commands are so catastrophic — irreversible filesystem wipes, fork bombs, direct block-device writes — that Hermes refuses to run them outright. There is no override flag. Patterns currently covered (not exhaustive; kept in sync with `tools/approval.py::UNRECOVERABLE_BLOCKLIST`):
 | Pattern | Why it's hardline |
 |---|---|
 | `rm -rf /` and obvious variants | Wipes the filesystem root |
@@ -148,15 +70,13 @@ The blocklist is the floor below `--yolo`. It trips **before** the approval laye
 | `:(){ :\|:& };:` (bash fork bomb) | Pegs the host until reboot |
 | `mkfs.*` on a mounted root device | Formats the live system |
 | `dd if=/dev/zero of=/dev/sd*` | Zeroes a physical disk |
-| Piping untrusted URLs to `sh` at the rootfs top level | Remote-code-execution attack vector too broad to approve |
+| Piping untrusted URLs to `sh` at the rootfs top level | Remote-code-execution attack vector too broad to run |
 
 If you hit the blocklist, the tool call returns an explanatory error to the agent and nothing runs. If a legitimate workflow needs one of these commands (you're the operator of a wipe-and-reinstall pipeline, for example), run it outside the agent.
 
 The floor also fails closed on a command whose shell quoting cannot be parsed (`grep 'unterminated`): the error says `malformed executable payload`. Quoting is judged on the command exactly as written, so shell-valid escapes inside a quoted pattern (`grep -o "[^\"]*" file`) are not malformed, and an escaped quote before a separator (`echo "a\"b"; reboot`) does not hide the command that follows it.
 
-### User-Defined Deny Rules (`approvals.deny`)
-
-The hardline blocklist is fixed and code-shipped. `approvals.deny` is its user-editable counterpart: a list of glob patterns that block matching terminal commands unconditionally — **before** `--yolo`, `/yolo`, and `approvals.mode: off` are consulted. Use it to run yolo-with-exceptions: "let the agent do everything, except these specific things, ever."
+The hardline blocklist is fixed and code-shipped. `approvals.deny` is its user-editable counterpart: a list of glob patterns that block matching terminal commands unconditionally, with no override. Use it to declare: "let the agent do everything, except these specific things, ever."
 
 ```yaml
 approvals:
@@ -169,186 +89,19 @@ approvals:
 Details:
 
 - Patterns are [fnmatch](https://docs.python.org/3/library/fnmatch.html) globs (`*`, `?`, `[...]`) matched **case-insensitively** against the whole command text and individual executable-command candidates. `git push --force*` matches `git push --force origin main` but not `git push origin main`.
-- Matching runs over the same normalized/deobfuscated command variants the dangerous-pattern detector uses, so simple quoting tricks (`git pu""sh --force`) don't slip past a rule.
+- Matching runs over the same normalized/deobfuscated command variants the terminal guard uses, so simple quoting tricks (`git pu""sh --force`) don't slip past a rule.
 - Executable candidates retain the literal path and also match its basename: `sudo *` covers `/usr/bin/sudo -n id` and `./sudo -n id`. A path-specific rule such as `/usr/bin/sudo *` does **not** become a rule for every binary named `sudo`.
 - Quote-aware parsing exposes commands after assignments, leading redirections, `;`, `&&`, `||`, pipelines, groups, command substitutions, and ordinary `if`/`then`/`else`/`do` transitions. Supported launchers include `sudo`, `env`, `command`, `exec`, `nohup`, `setsid`, `time`, `nice`, `timeout`, `stdbuf`, `ionice`, `chrt`, `taskset`, and `chroot`. Known option operands are skipped; `command -v`/`-V` lookups are not executions. Shell `-c` payloads are inspected recursively. Literal executable-and-argument strings in `env -S` / `--split-string` use GNU quoting and escapes (including `\_` word boundaries and `\c` termination), with the remaining command arguments appended; shell punctuation inside those arguments stays data unless an actual shell `-c` consumes it. `env -a` / `--argv0` values are arguments, not executable names. Shell and GNU split-string comments do not introduce executable candidates.
 - In the additional executable candidates, whitespace **between** words is collapsed, but quoted argument content and argument paths are retained. An exact rule such as `git status` therefore also matches `env git\tstatus; echo done` (where `\t` represents a tab). Quoted mentions such as `echo 'sudo -n id'` are not promoted to commands. Existing whole-input globs such as `*sudo*` still intentionally match mentions anywhere.
 - **YAML quoting:** always quote patterns. A bare leading `*` is a YAML alias and fails to parse; `{`, `!`, and `: ` have their own YAML meanings. Single quotes are safest for shell-ish content.
-- User-defined deny rules apply to all terminal backends, including isolated containers, before any backend-specific approval shortcut.
+- User-defined deny rules apply to all terminal backends, including isolated containers.
 - A denied command returns a BLOCKED error to the agent telling it not to retry or rephrase. Nothing runs.
 
-Like the rest of the approval config, changes take effect immediately (the config cache is mtime-keyed) — no session restart needed.
+Changes take effect immediately (the config cache is mtime-keyed) — no session restart needed.
 
 :::note Threat model
-Deny rules are a shell-command policy, not a complete shell interpreter or an OS capability sandbox. Normalization does not resolve arbitrary variables (including GNU `env -S` `${NAME}` expansion), aliases, functions, renamed binaries, scripts, interpreter programs, or every shell/launcher grammar (for example, case-pattern syntax, clustered launcher options, or options embedded inside an `env -S` string). Do not use a basename deny rule as a guarantee that a capability cannot be reached by other means. For containment, use OS permissions and an isolated backend with appropriately restricted mounts, credentials, and network access. This matching behavior does not change the configured approval mode or the empty-deny-list default.
+Deny rules are a shell-command policy, not a complete shell interpreter or an OS capability sandbox. Normalization does not resolve arbitrary variables (including GNU `env -S` `${NAME}` expansion), aliases, functions, renamed binaries, scripts, interpreter programs, or every shell/launcher grammar (for example, case-pattern syntax, clustered launcher options, or options embedded inside an `env -S` string). Do not use a basename deny rule as a guarantee that a capability cannot be reached by other means. For containment, use OS permissions and an isolated backend with appropriately restricted mounts, credentials, and network access.
 :::
-
-### Approval Timeout
-
-When a dangerous command prompt appears, the user has a configurable amount of time to respond. If no response is given within the timeout, the command is **denied** by default (fail-closed).
-
-An expired prompt cannot be reopened: the pending entry is discarded and the agent is told not to retry on its own within that turn. To run the operation after all, send a new message asking for it (for example "go ahead and run that now") — the agent issues a fresh tool call, which raises a fresh approval card, and a "once" approval applies only to that call. A timeout is not counted as a denial, so asking again is never penalized.
-
-Configure the timeout in `~/.hermes/config.yaml`:
-
-```yaml
-approvals:
-  timeout: 300  # seconds (default: 300)
-```
-
-### What Triggers Approval
-
-The following patterns trigger approval prompts (defined in `tools/approval.py`):
-
-| Pattern | Description |
-|---------|-------------|
-| `rm -r` / `rm --recursive` | Recursive delete |
-| `rm ... /` | Delete in root path |
-| `chmod 777/666` / `o+w` / `a+w` | World/other-writable permissions |
-| `chmod --recursive` with unsafe perms | Recursive world/other-writable (long flag) |
-| `chown -R root` / `chown --recursive root` | Recursive chown to root |
-| `mkfs` | Format filesystem |
-| `dd if=` | Disk copy |
-| `> /dev/sd` | Write to block device |
-| `DROP TABLE/DATABASE` | SQL DROP |
-| `DELETE FROM` (without WHERE) | SQL DELETE without WHERE |
-| `TRUNCATE TABLE` | SQL TRUNCATE |
-| `> /etc/` | Overwrite system config |
-| `systemctl stop/restart/disable/mask` | Stop/restart/disable system services |
-| `kill -9 -1` | Kill all processes |
-| `pkill -9` | Force kill processes |
-| Fork bomb patterns | Fork bombs |
-| `bash -c` / `sh -c` / `zsh -c` / `ksh -c` | Shell command execution via `-c` flag (including combined flags like `-lc`) |
-| `python -e` / `perl -e` / `ruby -e` / `node -c` | Script execution via `-e`/`-c` flag |
-| `curl ... \| sh` / `wget ... \| sh` | Pipe remote content to shell |
-| `bash <(curl ...)` / `sh <(wget ...)` | Execute remote script via process substitution |
-| `tee` to `/etc/`, `~/.ssh/`, `~/.hermes/.env` | Overwrite sensitive file via tee |
-| `>` / `>>` to `/etc/`, `~/.ssh/`, `~/.hermes/.env` | Overwrite sensitive file via redirection |
-| `xargs rm` | xargs with rm |
-| `find -exec rm` / `find -delete` | Find with destructive actions |
-| `cp`/`mv`/`install` to `/etc/` | Copy/move file into system config |
-| `sed -i` / `sed --in-place` on `/etc/` | In-place edit of system config |
-| `pkill`/`killall` hermes/gateway | Self-termination prevention |
-| `gateway run` with `&`/`disown`/`nohup`/`setsid` | Prevents starting gateway outside service manager |
-| `docker stop/kill/restart`, `docker compose down/stop/kill/restart` | Container lifecycle (also catches global flags and `docker-compose`) |
-| `docker -H`/`--host`/`--context`, `DOCKER_HOST=`/`DOCKER_CONTEXT=` | Docker daemon redirect — the command targets a different (often remote) daemon |
-| `docker context use` | Switches the default daemon for all future docker commands |
-| `podman --remote`/`-r`/`--url`/`--connection`/`--identity`, `CONTAINER_HOST=` | Podman remote daemon redirect |
-
-:::info
-**Container bypass**: When running in `docker`, `singularity`, `modal`, `daytona`, or `vercel_sandbox` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
-:::
-
-### Approval Flow (CLI)
-
-In the interactive CLI, dangerous commands show an inline approval prompt:
-
-```
-  ⚠️  DANGEROUS COMMAND: recursive delete
-      rm -rf ~/old-project
-
-      [o]nce  |  [s]ession  |  [a]lways  |  [d]eny
-
-      Choice [o/s/a/D]:
-```
-
-The four options:
-
-- **once** — allow this single execution
-- **session** — allow this pattern for the rest of the session
-- **always** — add to permanent allowlist (saved to `config.yaml`)
-- **deny** (default) — block the command
-
-### Approval Flow (Gateway/Messaging)
-
-On messaging platforms, the agent sends the dangerous command details to the chat and waits for the user to reply:
-
-- Reply **yes**, **y**, **approve**, **ok**, or **go** to approve
-- Reply **no**, **n**, **deny**, or **cancel** to deny
-
-The `HERMES_EXEC_ASK=1` environment variable is automatically set when running the gateway.
-
-### Permanent Allowlist
-
-Commands approved with "always" are saved to `~/.hermes/config.yaml`:
-
-```yaml
-# Permanently allowed dangerous command patterns
-command_allowlist:
-  - rm
-  - systemctl
-```
-
-These patterns are loaded at startup and silently approved in all future sessions.
-
-Entries can be exact command text, a shell-style glob (`podman *`), or a
-dangerous-pattern rule key such as `script execution via heredoc` (the key shown
-in the approval prompt). Rule keys are honored on every surface, including
-unattended ones: a cron job, `hermes chat -q` run or webhook session under
-`cron_mode`/`single_query_mode`/`unattended_mode: deny` still runs a command whose
-detected rule key is in `command_allowlist`, while Tirith content-security
-findings on the same command continue to block it.
-
-The setting must be a list of strings. Legacy installs that stored a list as a
-quoted YAML/JSON string recover that list at load time and log a warning to
-re-save it with `hermes config edit`. Other malformed values are ignored with
-a warning; they never become per-character approvals. Loading does not rewrite
-your configuration file.
-
-:::tip
-Use `hermes config edit` to review or remove patterns from your permanent allowlist.
-:::
-
-:::caution
-The list is read when Hermes starts. A pattern you remove while a session is
-already running stays approved in that session until it next writes the file
-(the next time you answer `always` to a prompt) or you restart Hermes. If you
-removed it for safety reasons, restart.
-:::
-
-### Mining Approval History (`hermes approvals suggest`)
-
-Instead of answering the same prompt session after session, you can mine your
-past approval decisions into allowlist proposals:
-
-```bash
-hermes approvals suggest            # dry run — prints a numbered proposal
-hermes approvals suggest --apply 1,3  # merge picks into command_allowlist
-hermes approvals suggest --json     # machine-readable output
-```
-
-The command scans the session database (`~/.hermes/state.db`) for
-dangerous-classified commands that actually executed — i.e. commands you
-approved — aggregates them into patterns (`git push *`, or the dangerous-class
-key for compound commands), and ranks them by approval frequency:
-
-```
-Proposed command_allowlist additions (from approval history, last 90 days):
-
-  1. git push *    — approved 14x
-  2. docker restart/stop/kill (container lifecycle)    — approved 9x (class key)
-```
-
-Safety rules:
-
-- **Nothing is ever applied automatically** — the default run is read-only;
-  only an explicit `--apply N[,M...]` writes to `config.yaml`.
-- **Destructive classes are never proposed**, no matter how often they were
-  approved: recursive deletes, `sudo`, disk/device writes, credential and
-  system-config edits, pipe-to-shell, SQL DROP/TRUNCATE, process kills, and
-  every hardline class are excluded outright. `rm -rf build/` approved 100
-  times still never yields an `rm` entry.
-- Proposals already covered by your existing `command_allowlist` are skipped.
-- **Credentials inside mined commands are masked** (`ghp_…`, `bot<id>:<token>`
-  URLs, `KEY=value` assignments, bearer tokens) in both the printed `e.g.`
-  examples and the `--json` payload, using the same redactor as terminal
-  output. Masked text is never used as an allowlist pattern: a command whose
-  glob would embed a credential (`TOKEN=… git …`) is proposed under its
-  dangerous-class key instead. The session database itself still holds the
-  command as it was executed.
-
-Useful flags: `--days N` (history window, default 90), `--min-count N`
-(minimum approvals to qualify, default 2), `--limit N`, and `--db PATH`.
 
 ## File Write Safety {#file-write-safety}
 
@@ -372,19 +125,16 @@ The `~` in the OS-credential rows means *every* home a write can land in, not ju
 
 Safe-root violations return `Write denied: '…' is outside HERMES_WRITE_SAFE_ROOT (…)`. Credential-path blocks use `Write denied: '…' is a protected system/credential file.`
 
-**Exception — `~/.ssh/config` is approval-gated, not hard-blocked.** The SSH
-*client config* holds no private-key material and editing it (host aliases,
-`ProxyJump`, VS Code Remote-SSH targets) is a routine task, so `write_file` /
-`patch` route it through the same approve-once/session/always prompt the
-terminal tool already uses for `~/.ssh` writes — instead of the flat refusal
-that used to apply. It can still carry `ProxyCommand` / `Match exec` directives
-that run commands, so the write is never silent. Non-interactive callers (ACP
-file bridge, background jobs with no human channel) fail closed. Private keys,
-`authorized_keys`, and everything else under `~/.ssh/` remain hard-blocked.
+**Exception — `~/.ssh/config` is not hard-blocked.** The SSH *client config*
+holds no private-key material and editing it (host aliases, `ProxyJump`,
+VS Code Remote-SSH targets) is a routine task, so `write_file` / `patch` may
+write it. It can still carry `ProxyCommand` / `Match exec` directives that run
+commands, so the write is never silent. Private keys, `authorized_keys`, and
+everything else under `~/.ssh/` remain hard-blocked.
 
 ### HERMES_WRITE_SAFE_ROOT (optional sandbox)
 
-When set, `write_file` and `patch` may only target paths inside the listed directory prefix(es). Anything outside is **hard-blocked** — not routed through dangerous-command approval.
+When set, `write_file` and `patch` may only target paths inside the listed directory prefix(es). Anything outside is **hard-blocked**.
 
 - Set automatically in the [official Docker image](https://github.com/NousResearch/hermes-agent) (`HERMES_WRITE_SAFE_ROOT=/opt/data`)
 - Supports multiple roots separated by `:` on Unix or `;` on Windows
@@ -577,7 +327,7 @@ terminal:
 - **Ephemeral mode** (`container_persistent: false`): Uses tmpfs for workspace — everything is lost on cleanup
 
 :::tip
-For production gateway deployments, use `docker`, `modal`, `daytona`, or `vercel_sandbox` backend to isolate agent commands from your host system. This eliminates the need for dangerous command approval entirely.
+For production gateway deployments, use `docker`, `modal`, `daytona`, or `vercel_sandbox` backend to isolate agent commands from your host system. This isolates agent commands from the host entirely.
 :::
 
 :::warning
@@ -825,9 +575,9 @@ Three consecutive operational failures (spawn error, timeout, crash) suspend sca
 
 Tirith ships prebuilt binaries for Linux (x86_64 / aarch64) and macOS (x86_64 / arm64). On platforms with no prebuilt binary (Windows, etc.), tirith is silently skipped — pattern-matching guards still run, and the CLI does not surface an "unavailable" banner. To use tirith on Windows, run Hermes under WSL.
 
-Tirith's verdict integrates with the approval flow: safe commands pass through, while both suspicious and blocked commands trigger user approval with the full tirith findings (severity, title, description, safer alternatives). Users can approve or deny — the default choice is deny to keep unattended scenarios secure.
+Tirith's verdict integrates with the terminal guard: safe and warn verdicts pass through, while blocked commands are refused outright with the full tirith findings (severity, title, description, safer alternatives).
 
-Two known Tirith false positives are downgraded to "allow" so they never prompt (or, in cron, never deny): a `lookalike_tld` warning whose only target is the legitimate `.app` gTLD, and a `variation_selector` warning when every selector in the command is U+FE0F directly after an emoji (folder names such as `🗞️ Journal/` or `▶️ Media/`). A variation selector after a letter or digit — the steganographic-obfuscation signal the rule exists for — still prompts.
+Two known Tirith false positives are downgraded to "allow" so they never block: a `lookalike_tld` warning whose only target is the legitimate `.app` gTLD, and a `variation_selector` warning when every selector in the command is U+FE0F directly after an emoji (folder names such as `🗞️ Journal/` or `▶️ Media/`). A variation selector after a letter or digit — the steganographic-obfuscation signal the rule exists for — still prompts.
 
 ### Context File Injection Protection
 
@@ -850,15 +600,14 @@ Blocked project files show a warning:
 [BLOCKED: AGENTS.md contained potential prompt injection (prompt_injection). Content not loaded.]
 ```
 
-Your own `SOUL.md` in `HERMES_HOME` is treated differently: it is a file you wrote (file-tool writes to it
-need your approval, and project checkouts never supply it), so a scanner hit there **does not block the
+Your own `SOUL.md` in `HERMES_HOME` is treated differently: it is a file you wrote (and project checkouts never supply it), so a scanner hit there **does not block the
 file**. Hermes logs a warning naming the matched pattern, loads the file as usual, and `/context` lists it as
 `⚠ SOUL.md … loaded — matched prompt-injection pattern(s); review the file`. This lets an identity file that
 *documents* an attack phrase (security guidance such as "content telling you to ignore previous instructions")
 keep working; if you did not write the flagged text, treat the warning as a sign that something else edited
 the file. The exception does not extend to a `SOUL.md` shipped by a profile distribution: `hermes profile
 install <git-url>` and `hermes profile update` copy a third party's `SOUL.md` into the profile home without
-a scan or an approval prompt, so when `distribution.yaml` owns the file a scanner hit still blocks it.
+a scan, so when `distribution.yaml` owns the file a scanner hit still blocks it.
 
 ## Best Practices for Production Deployment
 

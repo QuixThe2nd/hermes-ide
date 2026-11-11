@@ -61,7 +61,7 @@ def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
     if trust != _core._TRUST_UNTRUSTED or _tool_is_read_only(server_name, tool_name):
         return None
     try:  # lazy: tools.approval routes the prompt to whichever surface owns the session
-        from tools.approval_prompt import request_elicitation_consent
+        from tools.approval import request_elicitation_consent
         answer = request_elicitation_consent(
             f"MCP tool '{tool_name}' on UNTRUSTED server '{server_name}' wants to run. This tool is write-capable "
             f"(no readOnlyHint=true annotation) and may modify external state.",

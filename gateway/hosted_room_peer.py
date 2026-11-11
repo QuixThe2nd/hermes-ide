@@ -252,10 +252,6 @@ def catalog_mapping(
     profile = str(target_profile or "").strip() or (os.getenv("HERMES_PROFILE") or "default").strip() or "default"
     checked_policy = RoomExecutionPolicy.from_mapping(
         execution_policy or execution_policy_mapping(target_profile=profile))
-    # A RoomLink run is initiated by another installation. Process-wide YOLO mode bypasses the scoped
-    # approval ContextVar, so rewriting the advertised policy cannot make it safe: refuse.
-    if checked_policy.approval_mode == "off":
-        raise HostedRoomPeerError("remote room execution requires manual or smart approvals")
     value = {
         "installation_id": _identifier(installation_id, field="installation_id"),
         "protocol_versions": _protocol_versions(protocol_versions),

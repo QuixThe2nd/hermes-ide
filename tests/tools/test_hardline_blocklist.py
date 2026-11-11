@@ -9,7 +9,8 @@ Inspired by Mercury Agent's permission-hardened blocklist.
 
 import pytest
 
-from tools.approval import check_all_command_guards, check_dangerous_command, detect_dangerous_command, detect_hardline_command, disable_session_yolo, enable_session_yolo
+from tools.approval import check_all_command_guards, check_dangerous_command
+from tools.approval_detection import detect_dangerous_command, detect_hardline_command
 from tools.approval_context import reset_current_session_key, set_current_session_key
 from tools.approval_detection import HARDLINE_PATTERNS
 from tools import approval_context
@@ -299,8 +300,7 @@ def test_real_newline_separated_threats_still_blocked(command):
 
 def test_quoted_newline_data_not_blocked_by_full_guard_chain(clean_session):
     """End-to-end: the guard chain must not hardline-block a multi-line
-    quoted message (yolo on, so only the unconditional floor can block)."""
-    enable_session_yolo("hardline_test")
+    quoted message (only the unconditional floor can block)."""
     command = 'hermes send -t telegram "status:\nsudo reboot happened at 3am"'
     result = check_all_command_guards(command, "local")
     assert result["approved"], (
@@ -540,10 +540,8 @@ def clean_session(monkeypatch):
     monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
     token = set_current_session_key("hardline_test")
     try:
-        disable_session_yolo("hardline_test")
         yield
     finally:
-        disable_session_yolo("hardline_test")
         reset_current_session_key(token)
 
 
@@ -665,9 +663,8 @@ def test_line_continuation_root_wipe_cannot_bypass_hardline(clean_session, monke
 
 
 def test_session_yolo_cannot_bypass_hardline(clean_session):
-    """Gateway /yolo (session-scoped) must not bypass the hardline floor."""
-    enable_session_yolo("hardline_test")
-
+    """Gateway /yolo (session-scoped) never bypassed the hardline floor; the floor
+    itself is unconditional and must stay blocking regardless of session state."""
     result = check_dangerous_command("rm -rf /", "local")
     assert result["approved"] is False
     assert result.get("hardline") is True
@@ -678,12 +675,8 @@ def test_session_yolo_cannot_bypass_hardline(clean_session):
 
 
 def test_approvals_mode_off_cannot_bypass_hardline(clean_session, monkeypatch, tmp_path):
-    """config approvals.mode=off (yolo-equivalent) must not bypass hardline."""
-    # _get_approval_mode() reads from hermes config; simplest path: monkeypatch the helper.
-    import tools.approval as approval_mod
-    from tools import approval_context
-    from tools import approval_context
-    monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "off")
+    """config approvals.mode=off (yolo-equivalent) never bypassed hardline."""
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
 
     result = check_all_command_guards("rm -rf /", "local")
     assert result["approved"] is False
@@ -691,26 +684,21 @@ def test_approvals_mode_off_cannot_bypass_hardline(clean_session, monkeypatch, t
 
 
 def test_cron_approve_mode_cannot_bypass_hardline(clean_session, monkeypatch):
-    """Cron sessions with cron_mode=approve must not bypass hardline."""
+    """Cron sessions with cron_mode=approve never bypassed hardline."""
     monkeypatch.setenv("HERMES_CRON_SESSION", "1")
-    import tools.approval as approval_mod
-    monkeypatch.setattr(approval_context, "_get_cron_approval_mode", lambda: "approve")
 
     result = check_all_command_guards("rm -rf /", "local")
     assert result["approved"] is False
     assert result.get("hardline") is True
 
 
-def test_container_backends_still_bypass(clean_session):
-    """Containerized backends remain bypass-approved — they can't touch the host.
-
-    Hardline only protects environments with real host impact (local, ssh).
-    """
+def test_container_backends_still_blocked_by_hardline(clean_session):
+    """Hardline floors are unconditional: they block on every backend, containers included."""
     for env in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
         r1 = check_dangerous_command("rm -rf /", env)
-        assert r1["approved"] is True, f"container {env} should still bypass"
+        assert r1["approved"] is False, f"container {env} must still hit the hardline floor"
         r2 = check_all_command_guards("rm -rf /", env)
-        assert r2["approved"] is True, f"container {env} should still bypass"
+        assert r2["approved"] is False, f"container {env} must still hit the hardline floor"
 
 
 def test_hardline_runs_before_dangerous_detection(clean_session):
@@ -796,9 +784,9 @@ def test_sudo_stdin_guard_detects_without_password():
         assert "sudo" in desc.lower()
 
 
-def test_sudo_stdin_guard_container_bypass(clean_session):
-    """Containerized backends still bypass — they can't touch the host."""
+def test_sudo_stdin_guard_blocks_containers_too(clean_session):
+    """The sudo -S floor is unconditional: it blocks on every backend, containers included."""
     for env in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
         for cmd in _SUDO_STDIN_BLOCK:
             result = check_all_command_guards(cmd, env)
-            assert result["approved"] is True, f"container {env} should bypass sudo guard on {cmd!r}"
+            assert result["approved"] is False, f"container {env} must still hit the sudo guard on {cmd!r}"

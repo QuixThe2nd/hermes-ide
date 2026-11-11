@@ -15,9 +15,8 @@ These tests drive the REAL functions against a temp HERMES_HOME config
 import pytest
 
 import hermes_cli.config as hc
-from tools.approval import check_all_command_guards, load_permanent_allowlist
-from tools.approval_context import _get_approval_config, _get_approval_mode
-from tools.approval_context import _get_cron_approval_mode
+from tools.approval import check_all_command_guards
+from tools.approval_context import _get_approval_config
 from tools.tirith_security import _load_security_config
 
 
@@ -74,14 +73,11 @@ def test_guard_never_calls_deepcopy_variant(config_home, monkeypatch):
 
 def test_config_readers_never_call_deepcopy_variant(config_home, monkeypatch):
     calls = _patched_loaders(monkeypatch)
-    assert _get_approval_mode() == "manual"
     assert _get_approval_config().get("timeout") == 300
-    assert _get_cron_approval_mode() == "deny"
-    assert load_permanent_allowlist() == set()
     sec = _load_security_config()
     assert sec["tirith_enabled"] is False
     assert calls["legacy"] == 0
-    assert calls["readonly"] == 5  # one readonly load per function
+    assert calls["readonly"] == 2  # one readonly load per function
 
 
 def test_readers_return_live_cache_without_corrupting_it(
@@ -95,8 +91,6 @@ def test_readers_return_live_cache_without_corrupting_it(
     # a full guard pass must leave the cache values untouched
     before = dict(first)
     check_all_command_guards("ls -la", "local")
-    _get_cron_approval_mode()
-    load_permanent_allowlist()
     _load_security_config()
     assert _get_approval_config() == before
     assert hc.load_config_readonly()["approvals"]["mode"] == "manual"

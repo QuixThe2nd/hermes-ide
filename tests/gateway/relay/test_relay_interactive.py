@@ -85,40 +85,9 @@ def _event(
 
 
 @pytest.mark.asyncio
-async def test_exec_approval_renders_full_option_set():
-    adapter, stub = _adapter()
-    result = await adapter.send_exec_approval(
-        "c1", "rm -rf /tmp/x", "sess:1", description="deletes files"
-    )
-    assert result.success is True
-    assert result.message_id == "pm1"
-    action = stub.sent[-1]
-    assert action["op"] == "prompt"
-    assert action["prompt_kind"] == "approval"
-    ids = [o["id"] for o in action["options"]]
-    assert ids == ["once", "session", "always", "deny"]
-    assert "rm -rf /tmp/x" in action["content"]
-    assert "deletes files" in action["content"]
-    # The registry holds the pending prompt keyed by the wire's prompt_id.
-    assert action["prompt_id"] in adapter._pending_prompts
-    state = adapter._pending_prompts[action["prompt_id"]]
-    assert state["kind"] == "exec_approval"
-    assert state["session_key"] == "sess:1"
 
 
 @pytest.mark.asyncio
-async def test_exec_approval_smart_denied_and_flag_gating():
-    adapter, stub = _adapter()
-    await adapter.send_exec_approval(
-        "c1", "cmd", "s", smart_denied=True, allow_permanent=True, allow_session=True
-    )
-    ids = [o["id"] for o in stub.sent[-1]["options"]]
-    assert ids == ["once", "deny"]  # smart-deny: no session/always
-    await adapter.send_exec_approval(
-        "c1", "cmd", "s", allow_session=True, allow_permanent=False
-    )
-    ids = [o["id"] for o in stub.sent[-1]["options"]]
-    assert ids == ["once", "session", "deny"]
 
 
 @pytest.mark.asyncio

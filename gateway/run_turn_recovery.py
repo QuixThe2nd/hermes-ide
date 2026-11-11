@@ -282,7 +282,6 @@ def _replay_interrupted_batch(turn, preparation: TurnMessagePreparation) -> None
         plan_forced_resume_turn,
         trim_incomplete_assistant_text_tail,
     )
-    from tools.approval import register_gateway_notify, unregister_gateway_notify
     from tools.approval_context import reset_current_session_key, set_current_session_key
 
     ctx = turn._ctx
@@ -306,7 +305,6 @@ def _replay_interrupted_batch(turn, preparation: TurnMessagePreparation) -> None
     plan = build_victim_replay_plan(replay_source)
     session_key = ctx.session_key or ""
     approval_token = set_current_session_key(session_key)
-    register_gateway_notify(session_key, turn._approval_notify_sync)
     try:
         outcome = execute_victim_replay(
             turn._ctx.agent_holder[0],
@@ -317,7 +315,6 @@ def _replay_interrupted_batch(turn, preparation: TurnMessagePreparation) -> None
             effective_task_id=ctx.session_id or "",
         )
     finally:
-        unregister_gateway_notify(session_key)
         reset_current_session_key(approval_token)
 
     if outcome.repaired_history is not None:

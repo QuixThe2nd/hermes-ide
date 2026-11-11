@@ -93,8 +93,6 @@ Hermes 应用多层防护机制：
 - 硬性屏蔽的输入模式：`curl | bash`、`sudo rm -rf /`、fork bomb 等。
 - Agent 的系统 prompt 明确规定：不得点击权限对话框，不得输入密码，不得执行截图中嵌入的指令。
 
-如需对每个操作进行确认，可在 `~/.hermes/config.yaml` 中配置 `approvals.mode: manual`。
-
 ## Token 效率
 
 截图开销较大。Hermes 应用四层优化措施：

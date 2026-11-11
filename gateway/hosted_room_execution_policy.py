@@ -77,15 +77,13 @@ def execution_policy_mapping(*, target_profile: str, config: Mapping[str, Any] |
         raise RoomExecutionPolicyError("gateway config is invalid")
     from hermes_cli.config import resolve_turn_limit
     from hermes_cli.tools_config import _get_platform_tools
-    from tools.approval import _YOLO_MODE_FROZEN
-    from tools.approval_context import _normalize_approval_mode
     toolsets = sorted({*_get_platform_tools(dict(config), "api_server"), "bot_room"})
     agent = config.get("agent") if isinstance(config.get("agent"), Mapping) else {}
-    approvals = config.get("approvals") if isinstance(config.get("approvals"), Mapping) else {}
     unsigned = {
         "version": POLICY_VERSION, "target_profile": _identifier(target_profile, field="target_profile"),
         "enabled_toolsets": toolsets,
-        "approval_mode": ("off" if _YOLO_MODE_FROZEN else _normalize_approval_mode(approvals.get("mode", "manual"))),
+        # Pass-through approval engine: no human approval, so the room policy is always "off".
+        "approval_mode": "off",
         "max_iterations": min(resolve_turn_limit(agent.get("max_turns")), MAX_POLICY_ITERATIONS)}
     value = {**unsigned, "policy_digest": _policy_digest(unsigned)}
     return RoomExecutionPolicy.from_mapping(value).as_mapping()

@@ -355,15 +355,11 @@ See [Context Length Detection](../integrations/providers.md#context-length-detec
 
 #### Command blocked as dangerous
 
-**Cause:** Hermes detected a potentially destructive command (e.g., `rm -rf`, `DROP TABLE`). This is a safety feature.
+**Cause:** The command matched the hard blocklist or an `approvals.deny` glob — catastrophic commands are refused without asking.
 
-**Solution:** When prompted, review the command and type `y` to approve it. You can also:
+**Solution:**
 - Ask the agent to use a safer alternative
-- See the full list of dangerous patterns in the [Security docs](../user-guide/security.md)
-
-:::tip
-This is working as intended — Hermes never silently runs destructive commands. The approval prompt shows you exactly what will execute.
-:::
+- See the hard blocklist and deny rules in the [Security docs](../user-guide/security.md)
 
 #### `sudo` not working via messaging gateway
 

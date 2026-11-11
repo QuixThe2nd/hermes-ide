@@ -41,39 +41,41 @@ class _Buttons(_Plain):
         return SendResult(success=True, message_id="m1")
 
 
-@pytest.mark.parametrize(
-    "allow_permanent, allow_session, smart_denied, expected",
-    [
-        (True, True, False, ["once", "session", "always", "deny"]),
-        (False, True, False, ["once", "session", "deny"]),
-        (True, False, False, ["once", "deny"]),          # no session tier → no permanent tier either
-        (True, True, True, ["once", "deny"]),            # smart deny: owner override is one-shot
-        (False, False, True, ["once", "deny"]),
-    ],
-)
-@pytest.mark.asyncio
-async def test_choice_set_follows_the_shared_rule(allow_permanent, allow_session, smart_denied, expected):
-    adapter = _Buttons()
-    result = await adapter.send_exec_approval(
-        "chat", "rm -rf /tmp/x", "sess", description="cleanup",
-        allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied)
-    assert result.success
-    (prompt,) = adapter.prompts
-    assert prompt.choices == expected
-    assert "rm -rf /tmp/x" in prompt.text and "cleanup" in prompt.text
-    assert ("one operation only" in prompt.text) is smart_denied
+"""Invariants for the exec-approval template surface on BasePlatformAdapter.
+
+``send_exec_approval`` is a deprecated no-op in this fork (no human approval prompts), but the
+runner still needs to distinguish adapters that would render buttons from plain ones.
+"""
+
+from typing import Any, Dict
+
+import pytest
+
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult
+from gateway.run_turn_runner import _renders_exec_approval_buttons
 
 
-@pytest.mark.asyncio
-async def test_command_is_truncated_to_the_platform_budget():
-    class _Small(_Buttons):
-        _EA_CMD_BUDGET = 20
+class _Plain(BasePlatformAdapter):
+    def __init__(self):
+        super().__init__(PlatformConfig(enabled=True), Platform.TELEGRAM)
 
-    adapter = _Small()
-    await adapter.send_exec_approval("chat", "x" * 100, "sess")
-    (prompt,) = adapter.prompts
-    assert "x" * 20 + "..." in prompt.text and "x" * 21 not in prompt.text
-    assert prompt.command == "x" * 100  # the raw command stays available for embeds/cards
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        pass
+
+    async def send(self, *a: Any, **k: Any) -> SendResult:
+        return SendResult(success=True)
+
+    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+        return {}
+
+
+class _Buttons(_Plain):
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        return SendResult(success=True, message_id="m1")
 
 
 def test_runner_only_offers_buttons_to_adapters_that_render_them():

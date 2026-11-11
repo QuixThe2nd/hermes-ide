@@ -886,7 +886,7 @@ def _dispatch_claude_background(
 
     try:
         from tools.delegate_tool import _get_max_async_children
-        from tools.approval import get_current_session_key
+        from tools.approval_context import get_current_session_key
     except Exception:  # pragma: no cover — both always importable in-tree
         _get_max_async_children = None
         get_current_session_key = None

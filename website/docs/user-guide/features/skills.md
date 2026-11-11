@@ -654,7 +654,7 @@ patch / delete / write_file / remove_file) is **staged** instead of committed â€
 a SKILL.md is too large to review inline, so staging applies regardless of
 whether the write came from a foreground turn or the background review.
 Staged writes survive restarts under `~/.hermes/pending/skills/` and are
-reviewed with the same familiar approve/deny flow as dangerous commands:
+reviewed with an approve/deny flow:
 
 ```
 /skills pending             # list staged skill writes + a one-line gist each

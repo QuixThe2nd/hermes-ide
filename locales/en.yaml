@@ -1,7 +1,7 @@
 # Hermes static-message catalog -- English (baseline / source of truth)
 #
-# Only user-facing static messages from the CLI approval prompt and a handful
-# of gateway slash-command replies live here.  Agent-generated output, log
+# Only user-facing static messages from a handful of gateway slash-command
+# replies live here.  Agent-generated output, log
 # lines, error tracebacks, tool outputs, and slash-command descriptions stay
 # in English and are NOT translated -- see agent/i18n.py for scope rationale.
 #
@@ -10,28 +10,8 @@
 # new key, add it to EVERY locale file (en/zh/ja/de/es/fr/tr/uk) in the same commit --
 # tests/agent/test_i18n.py asserts catalog parity.
 
-approval:
-  # CLI approval prompt -- shown when a dangerous command needs user review.
-  dangerous_header: "⚠️  DANGEROUS COMMAND: {description}"
-  choose_long:     "      [o]nce  |  [s]ession  |  [a]lways  |  [d]eny"
-  choose_short:    "      [o]nce  |  [s]ession  |  [d]eny"
-  prompt_long:     "      Choice [o/s/a/D]: "
-  prompt_short:    "      Choice [o/s/D]: "
-  choose_smart_deny: "      [o]nce  |  [d]eny"
-  prompt_smart_deny: "      Choice [o/D]: "
-  smart_deny_once_inputs: "o,once"
-  smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ No answer in {waited} — the command was not run. Ask again to retry, or raise the limit: hermes config set approvals.timeout {suggested}"
-  allowed_once:    "      ✓ Allowed once"
-  allowed_session: "      ✓ Allowed for this session"
-  allowed_always:  "      ✓ Added to permanent allowlist"
-  denied:          "      ✗ Denied"
-  cancelled:       "      ✗ Cancelled"
-  blocklist_message: "This command is on the unconditional blocklist and cannot be approved."
-
 gateway:
   # Messenger replies to slash commands and implicit state changes.
-  approval_expired: "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
   draining:         "♻ Restarting gateway..."
   goal_cleared:     "✓ Goal cleared."
   no_active_goal:   "No active goal."
@@ -72,15 +52,6 @@ gateway:
     none:                  "No active agents or running tasks."
     state_starting:        "starting"
     state_running:         "running"
-
-  approve:
-    no_pending:            "No pending command to approve."
-    once_singular:         "✅ Command approved. The agent is resuming..."
-    once_plural:           "✅ Commands approved ({count} commands). The agent is resuming..."
-    session_singular:      "✅ Command approved (pattern approved for this session). The agent is resuming..."
-    session_plural:        "✅ Commands approved (pattern approved for this session) ({count} commands). The agent is resuming..."
-    always_singular:       "✅ Command approved (pattern approved permanently). The agent is resuming..."
-    always_plural:         "✅ Commands approved (pattern approved permanently) ({count} commands). The agent is resuming..."
 
   background:
     usage:                 "Usage: /bg <prompt>\nExample: /bg Summarize the top HN stories today\n\nRuns the prompt in a separate session. You can keep chatting — the result will appear here when done."
@@ -130,14 +101,6 @@ gateway:
     auto_delete:           "⏱ Pastes will auto-delete in 6 hours."
     full_logs_hint:        "For full log uploads, use `hermes debug share` from the CLI."
     share_hint:            "Share these links with the Hermes team for support."
-
-  deny:
-    stale:                 "❌ Command denied (approval was stale)."
-    no_pending:            "No pending command to deny."
-    denied_singular:       "❌ Command denied."
-    denied_plural:         "❌ Commands denied ({count} commands)."
-    denied_reason_singular: "❌ Command denied. Reason relayed to the agent: \"{reason}\""
-    denied_reason_plural:  "❌ Commands denied ({count} commands). Reason relayed to the agent: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast is only available for OpenAI models that support Priority Processing."
@@ -221,7 +184,7 @@ gateway:
   reload_mcp:
     cancelled:             "🟡 /reload-mcp cancelled. MCP tools unchanged."
     always_followup:       "ℹ️ Future `/reload-mcp` calls will run without confirmation. Re-enable via `approvals.mcp_reload_confirm: true` in config.yaml."
-    confirm_prompt:        "⚠️ **Confirm /reload-mcp**\n\nReloading MCP servers rebuilds the tool set for this session and **invalidates the provider prompt cache** — the next message will re-send full input tokens.  On long-context or high-reasoning models this can be expensive.\n\nChoose:\n• **Approve Once** — reload now\n• **Always Approve** — reload now and silence this prompt permanently\n• **Cancel** — leave MCP tools unchanged\n\n_Text fallback: reply `/approve`, `/always`, or `/cancel`._"
+    confirm_prompt:        "⚠️ **Confirm /reload-mcp**\n\nReloading MCP servers rebuilds the tool set for this session and **invalidates the provider prompt cache** — the next message will re-send full input tokens.  On long-context or high-reasoning models this can be expensive.\n\nChoose:\n• **Approve Once** — reload now\n• **Always Approve** — reload now and silence this prompt permanently\n• **Cancel** — leave MCP tools unchanged"
     header:                "🔄 **MCP Servers Reloaded**\n"
     reconnected:           "♻️ Reconnected: {names}"
     added:                 "➕ Added: {names}"
@@ -459,10 +422,6 @@ gateway:
     label_all:             "TTS (voice reply to all messages)"
     help:                  "{toggle}\n\n**How /voice works**\n• `/voice on` — voice reply when you send a voice message\n• `/voice tts` — voice reply to *every* message\n• `/voice off` — back to text-only replies\n• `/voice status` — show the current mode\n• `/voice` (no argument) — quick toggle between on and off{channels}"
     help_channels:         "\n\n**Live voice channels (Discord)**\n• Join a voice channel first, then `/voice channel` — I'll join, listen, and speak my replies\n• `/voice leave` — disconnect from the voice channel"
-
-  yolo:
-    disabled:                   "⚠️ YOLO mode **OFF** for this session — dangerous commands will require approval."
-    enabled:                    "⚡ YOLO mode **ON** for this session — all commands auto-approved. Use with caution."
 
   shared:
     session_db_unavailable:      "Session database not available."

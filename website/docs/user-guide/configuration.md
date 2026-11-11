@@ -812,7 +812,7 @@ When on, any flagged `skill_manage` write surfaces as an approval prompt with th
 
 ### Write approval for skill writes
 
-Independent of the content scanner above, `skills.write_approval` gates **every** agent skill write (create / edit / patch / delete / supporting files) behind your explicit approval — the same approve/deny mechanism as dangerous commands:
+Independent of the content scanner above, `skills.write_approval` gates **every** agent skill write (create / edit / patch / delete / supporting files) behind your explicit approval:
 
 ```yaml
 skills:
@@ -2809,39 +2809,11 @@ Shared files contain one domain rule per line (blank lines and `#` comments are 
 
 The policy is cached for 30 seconds, so config changes take effect quickly without restart.
 
-## Smart Approvals
+## Approvals
 
-Control how Hermes handles potentially dangerous commands:
+Dangerous commands run immediately — Hermes does not pause to ask. A small hard blocklist refuses catastrophic commands without asking.
 
-```yaml
-approvals:
-  mode: smart   # smart | manual | off
-```
-
-| Mode | Behavior |
-|------|----------|
-| `smart` (default) | Use an auxiliary LLM to assess whether a flagged command is actually dangerous. Low-risk commands are auto-approved for that command only. Genuinely risky commands are denied; uncertain decisions escalate to the user. |
-| `manual` | Prompt the user before executing any flagged command. In the CLI, shows an interactive approval dialog. In messaging, queues a pending approval request. |
-| `off` | Skip all approval checks. Equivalent to `HERMES_YOLO_MODE=true`. **Use with caution.** |
-
-Smart mode is particularly useful for reducing approval fatigue — it lets the agent work more autonomously on safe operations while still catching genuinely destructive commands.
-
-:::warning
-Setting `approvals.mode: off` disables all safety checks for terminal commands. Only use this in trusted, sandboxed environments.
-:::
-
-### Denial circuit breaker
-
-`approvals.denial_breaker_threshold` (default `3`) guards against the agent retrying variations of a command the smart-approval reviewer keeps denying — each retry burns another guardian LLM call. After that many consecutive denials in a session, the deny message escalates to a hard-stop instruction telling the agent to stop, report the blocked operation, and ask you to run it manually or `/approve`. Any approval resets the count; set `0` to disable:
-
-```yaml
-approvals:
-  denial_breaker_threshold: 3   # 0 disables the breaker
-```
-
-### Deny rules
-
-`approvals.deny` is a list of glob patterns that block matching terminal commands unconditionally — even under `--yolo`, `/yolo`, or `mode: off`. It's the user-editable counterpart to the built-in hardline blocklist:
+`approvals.deny` is a list of glob patterns that block matching terminal commands unconditionally. It's the user-editable counterpart to the built-in hardline blocklist:
 
 ```yaml
 approvals:
@@ -2851,17 +2823,6 @@ approvals:
 ```
 
 Patterns are case-insensitive fnmatch globs and must be quoted in YAML (a bare leading `*` is a parse error). See [Security — User-Defined Deny Rules](./security.md#user-defined-deny-rules-approvalsdeny) for details.
-
-### Custom smart-approval policy
-
-`approvals.smart_policy` lets you append your own rules to the smart-approval reviewer's instructions. When set, the text is added to the guardian LLM's system prompt (the trusted channel — never alongside the untrusted command text), so you can tighten or relax its judgment for your environment without editing code:
-
-```yaml
-approvals:
-  smart_policy: |
-    Always ESCALATE commands that modify anything under /etc.
-    APPROVE docker compose restarts in ~/deploys — they are routine here.
-```
 
 
 ## Checkpoints

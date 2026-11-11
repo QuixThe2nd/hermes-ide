@@ -1,26 +1,7 @@
 # Hermes 정적 메시지 카탈로그 -- 한국어
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
-approval:
-  dangerous_header: "⚠️  위험한 명령: {description}"
-  choose_long:     "      [o]한 번  |  [s]세션  |  [a]항상  |  [d]거부"
-  choose_short:    "      [o]한 번  |  [s]세션  |  [d]거부"
-  prompt_long:     "      선택 [o/s/a/D]: "
-  prompt_short:    "      선택 [o/s/D]: "
-  choose_smart_deny: "      [o]한 번  |  [d]거부"
-  prompt_smart_deny: "      선택 [o/D]: "
-  smart_deny_once_inputs: "o,once"
-  smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ {waited} 동안 응답이 없어 명령을 실행하지 않았습니다. 다시 요청해 재시도하거나 제한을 늘리세요: hermes config set approvals.timeout {suggested}"
-  allowed_once:    "      ✓ 한 번 허용됨"
-  allowed_session: "      ✓ 이 세션에서 허용됨"
-  allowed_always:  "      ✓ 영구 허용 목록에 추가됨"
-  denied:          "      ✗ 거부됨"
-  cancelled:       "      ✗ 취소됨"
-  blocklist_message: "이 명령은 무조건 차단 목록에 있으며 승인할 수 없습니다."
-
 gateway:
-  approval_expired: "⚠️ 승인이 만료되었습니다 (에이전트가 더 이상 대기하지 않습니다). 에이전트에게 다시 시도하도록 요청하세요."
   draining:         "⏳ 활성 에이전트 {count}명에게 일시 중지를 요청한 뒤 재시작합니다..."
   goal_cleared:     "✓ 목표가 삭제되었습니다."
   no_active_goal:   "활성 목표가 없습니다."
@@ -57,15 +38,6 @@ gateway:
     none:                  "활성 에이전트나 실행 중인 작업이 없습니다."
     state_starting:        "시작 중"
     state_running:         "실행 중"
-
-  approve:
-    no_pending:            "승인 대기 중인 명령이 없습니다."
-    once_singular:         "✅ 명령이 승인되었습니다. 에이전트가 재개됩니다..."
-    once_plural:           "✅ 명령이 승인되었습니다 ({count}개). 에이전트가 재개됩니다..."
-    session_singular:      "✅ 명령이 승인되었습니다 (이 세션 동안 패턴 승인됨). 에이전트가 재개됩니다..."
-    session_plural:        "✅ 명령이 승인되었습니다 (이 세션 동안 패턴 승인됨) ({count}개). 에이전트가 재개됩니다..."
-    always_singular:       "✅ 명령이 승인되었습니다 (패턴 영구 승인됨). 에이전트가 재개됩니다..."
-    always_plural:         "✅ 명령이 승인되었습니다 (패턴 영구 승인됨) ({count}개). 에이전트가 재개됩니다..."
 
   background:
     usage:                 "사용법: /bg <prompt>\n예시: /bg 오늘 HN 인기 글을 요약해줘\n\n프롬프트를 별도 세션에서 실행합니다. 계속 대화할 수 있으며, 완료되면 결과가 여기에 표시됩니다."
@@ -115,14 +87,6 @@ gateway:
     auto_delete:           "⏱ 페이스트는 6시간 후 자동 삭제됩니다."
     full_logs_hint:        "전체 로그 업로드는 CLI에서 `hermes debug share`를 사용하세요."
     share_hint:            "지원을 받으려면 이 링크를 Hermes 팀과 공유하세요."
-
-  deny:
-    stale:                 "❌ 명령이 거부되었습니다 (승인이 만료됨)."
-    no_pending:            "거부 대기 중인 명령이 없습니다."
-    denied_singular:       "❌ 명령이 거부되었습니다."
-    denied_plural:         "❌ 명령이 거부되었습니다 ({count}개)."
-    denied_reason_singular: "❌ 명령이 거부되었습니다. 사유를 에이전트에 전달함: \"{reason}\""
-    denied_reason_plural:  "❌ 명령이 거부되었습니다 ({count}개). 사유를 에이전트에 전달함: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast는 Priority Processing을 지원하는 OpenAI 모델에서만 사용할 수 있습니다."
@@ -206,7 +170,7 @@ gateway:
   reload_mcp:
     cancelled:             "🟡 /reload-mcp가 취소되었습니다. MCP 도구는 변경되지 않았습니다."
     always_followup:       "ℹ️ 이후 `/reload-mcp` 호출은 확인 없이 실행됩니다. config.yaml의 `approvals.mcp_reload_confirm: true`로 다시 활성화할 수 있습니다."
-    confirm_prompt:        "⚠️ **/reload-mcp 확인**\n\nMCP 서버를 재로드하면 이 세션의 도구 세트가 재구성되며 **제공자 프롬프트 캐시가 무효화됩니다** — 다음 메시지에서 전체 입력 토큰이 다시 전송됩니다. 긴 컨텍스트 또는 고도 추론 모델에서는 비용이 클 수 있습니다.\n\n선택하세요:\n• **한 번 승인** — 지금 재로드\n• **항상 승인** — 지금 재로드하고 이 프롬프트를 영구 비활성화\n• **취소** — MCP 도구를 변경하지 않음\n\n_텍스트 대체: `/approve`, `/always`, `/cancel`로 응답하세요._"
+    confirm_prompt:        "⚠️ **/reload-mcp 확인**\n\nMCP 서버를 재로드하면 이 세션의 도구 세트가 재구성되며 **제공자 프롬프트 캐시가 무효화됩니다** — 다음 메시지에서 전체 입력 토큰이 다시 전송됩니다. 긴 컨텍스트 또는 고도 추론 모델에서는 비용이 클 수 있습니다.\n\n선택하세요:\n• **한 번 승인** — 지금 재로드\n• **항상 승인** — 지금 재로드하고 이 프롬프트를 영구 비활성화\n• **취소** — MCP 도구를 변경하지 않음"
     header:                "🔄 **MCP 서버가 재로드되었습니다**\n"
     reconnected:           "♻️ 재연결됨: {names}"
     added:                 "➕ 추가됨: {names}"
@@ -442,10 +406,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_all:             "TTS (모든 메시지에 음성으로 응답)"
     help:                  "{toggle}\n\n**/voice 사용법**\n• `/voice on` — 음성 메시지를 보내면 음성으로 답변\n• `/voice tts` — *모든* 메시지에 음성으로 답변\n• `/voice off` — 텍스트 전용 답변으로 복귀\n• `/voice status` — 현재 모드 표시\n• `/voice` (인자 없음) — 켜기와 끄기를 빠르게 전환{channels}"
     help_channels:         "\n\n**라이브 음성 채널 (Discord)**\n• 먼저 음성 채널에 들어간 다음 `/voice channel` — 제가 참여해 듣고 음성으로 답변합니다\n• `/voice leave` — 음성 채널에서 연결 해제"
-
-  yolo:
-    disabled:                   "⚠️ 이 세션에서 YOLO 모드 **꺼짐** — 위험한 명령은 승인이 필요합니다."
-    enabled:                    "⚡ 이 세션에서 YOLO 모드 **켜짐** — 모든 명령이 자동 승인됩니다. 주의해서 사용하세요."
 
   shared:
     session_db_unavailable:      "세션 데이터베이스를 사용할 수 없습니다."

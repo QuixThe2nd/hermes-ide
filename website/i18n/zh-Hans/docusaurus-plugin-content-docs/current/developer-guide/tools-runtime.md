@@ -181,29 +181,18 @@ registry.dispatch(name, args, **kwargs)
 - **Gateway 路径（有运行中的事件循环）** — 使用 `asyncio.run()` 启动一个一次性线程
 - **工作线程（并行工具）** — 使用存储在线程本地存储中的每线程持久化循环
 
-## DANGEROUS_PATTERNS 审批流程
+## 危险命令硬性拦截
 
-终端工具集成了定义在 `tools/approval.py` 中的危险命令审批系统：
+终端工具集成了定义在 `tools/approval.py` 中的危险命令防护（无条件底线位于 `tools/approval_floors.py`）：
 
-1. **模式检测** — `DANGEROUS_PATTERNS` 是一个 `(regex, description)` 元组列表，涵盖破坏性操作：
-   - 递归删除（`rm -rf`）
-   - 文件系统格式化（`mkfs`、`dd`）
-   - SQL 破坏性操作（`DROP TABLE`、不带 `WHERE` 的 `DELETE FROM`）
-   - 系统配置覆写（`> /etc/`）
-   - 服务操控（`systemctl stop`）
-   - 远程代码执行（`curl | sh`）
-   - Fork bomb、进程终止等
+1. **模式检测** — 硬性黑名单涵盖极端破坏性操作：
+   - 文件系统清除（`rm -rf /`、`mkfs`、`dd` 写入块设备）
+   - Fork 炸弹
+   - 在根文件系统顶层将不受信任的 URL 通过管道传给 `sh`
 
-2. **检测** — 在执行任何终端命令之前，`detect_dangerous_command(command)` 会对所有模式进行检查。
+2. **检测** — 在执行任何终端命令之前，防护会对照黑名单与用户的 `approvals.deny` glob 规则进行检查。
 
-3. **审批提示** — 若发现匹配：
-   - **CLI 模式** — 交互式提示要求用户批准、拒绝或永久允许
-   - **Gateway 模式** — 异步审批回调将请求发送至消息平台
-   - **智能审批** — 可选地，辅助 LLM 可自动批准匹配模式但风险较低的命令（例如，`rm -rf node_modules/` 是安全的，但匹配"递归删除"模式）
-
-4. **会话状态** — 审批按会话跟踪。一旦在某个会话中批准了"递归删除"，后续的 `rm -rf` 命令不会再次提示。
-
-5. **永久允许列表** — "永久允许"选项会将该模式写入 `config.yaml` 的 `command_allowlist`，跨会话持久化。
+3. **拒绝** — 匹配时向 Agent 返回 BLOCKED 错误，不执行任何操作。没有提示，也没有覆盖标志。
 
 ## 终端/运行时环境
 
@@ -222,7 +211,6 @@ registry.dispatch(name, args, **kwargs)
 - 按任务的 cwd 覆盖
 - 后台进程管理
 - PTY 模式
-- 危险命令的审批回调
 
 ## 并发
 

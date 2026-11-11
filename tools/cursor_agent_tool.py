@@ -2444,7 +2444,7 @@ def _dispatch_cursor_background(
 
     session_key = ""
     try:
-        from tools.approval import get_current_session_key
+        from tools.approval_context import get_current_session_key
 
         session_key = get_current_session_key(default="")
     except Exception:
