@@ -85,6 +85,10 @@ from tools.claude_run_receipts import write_spawn_receipt
 from tools.claude_viewer_url import watch_url
 from tools.delegate_evidence_gate import apply_evidence_gate
 from tools.delegate_tool_config import _cfg
+from tools.delegation_ownership import (
+    CODEBASE_OWNERSHIP_GUIDANCE,
+    ensure_codebase_ownership,
+)
 from tools.registry import registry
 from tools.tool_status import CLAUDE_AGENT_VIEWER_STATUS_PREFIX, emit_tool_status
 
@@ -538,11 +542,21 @@ def delegate_claude_agent(
             ),
         )
 
-    if system_prompt_file is not None and not Path(system_prompt_file).is_file():
-        return _make_result(
-            success=False,
-            error=f"system_prompt_file does not exist: {system_prompt_file}",
-        )
+    system_prompt_material: Optional[str] = None
+    if system_prompt_file is not None:
+        prompt_path = Path(system_prompt_file)
+        if not prompt_path.is_file():
+            return _make_result(
+                success=False,
+                error=f"system_prompt_file does not exist: {system_prompt_file}",
+            )
+        try:
+            system_prompt_material = prompt_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return _make_result(
+                success=False,
+                error=f"failed to read system_prompt_file {system_prompt_file}: {exc}",
+            )
 
     # Uniform lifecycle gate — BEFORE any side effect (the /goal brief
     # write, the log directory, the subprocess). An unsupported channel is
@@ -615,10 +629,19 @@ def delegate_claude_agent(
         "-p",
     ]
     if system_prompt_file is not None:
-        # Lane soul material pinned at the harness level: the file's contents
-        # ride in the child's system prompt, not the task text. The lane layer
-        # owns the file's lifecycle (it outlives the subprocess by contract).
-        cmd.extend(["--append-system-prompt-file", str(system_prompt_file)])
+        if CODEBASE_OWNERSHIP_GUIDANCE in (system_prompt_material or ""):
+            # Lane soul material already includes ownership. Pin it at the
+            # harness level without adding a second system-prompt source.
+            cmd.extend(["--append-system-prompt-file", str(system_prompt_file)])
+        else:
+            # Custom files get the same guidance through one inline flag;
+            # never rely on combining both append-system-prompt forms.
+            cmd.extend([
+                "--append-system-prompt",
+                ensure_codebase_ownership(system_prompt_material or ""),
+            ])
+    else:
+        cmd.extend(["--append-system-prompt", CODEBASE_OWNERSHIP_GUIDANCE])
     if model_name:
         cmd.extend(["--model", model_name])
     cmd.extend(

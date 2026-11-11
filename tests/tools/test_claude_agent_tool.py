@@ -574,6 +574,78 @@ def test_happy_path_e2e(monkeypatch, repo, fake_binary, tmp_path):
 
 
 @_REAL_SUBPROC
+def test_plain_task_receives_ownership_in_system_prompt(
+    monkeypatch, repo, fake_binary, tmp_path
+):
+    from tools import claude_agent_tool
+    from tools.delegation_ownership import (
+        CODEBASE_OWNERSHIP_GUIDANCE,
+        CODEBASE_OWNERSHIP_SENTENCE,
+    )
+
+    _patch_binary(monkeypatch, fake_binary)
+    argv_out = tmp_path / "argv.json"
+    monkeypatch.setenv("FAKE_CLAUDE_ARGV_OUT", str(argv_out))
+
+    result = json.loads(claude_agent_tool.delegate_claude_agent(
+        task="implement feature", workdir=str(repo),
+    ))
+
+    assert result["success"] is True
+    argv = json.loads(argv_out.read_text(encoding="utf-8"))
+    assert "--append-system-prompt-file" not in argv
+    system_prompt = argv[argv.index("--append-system-prompt") + 1]
+    assert system_prompt.count(CODEBASE_OWNERSHIP_SENTENCE) == 1
+    assert system_prompt.count(CODEBASE_OWNERSHIP_GUIDANCE) == 1
+
+
+@_REAL_SUBPROC
+@pytest.mark.parametrize("include_ownership", [False, True])
+def test_system_prompt_file_has_single_ownership_guidance(
+    monkeypatch, repo, fake_binary, tmp_path, include_ownership
+):
+    from tools import claude_agent_tool
+    from tools.delegation_ownership import (
+        CODEBASE_OWNERSHIP_GUIDANCE,
+        CODEBASE_OWNERSHIP_SENTENCE,
+    )
+
+    _patch_binary(monkeypatch, fake_binary)
+    prompt_material = "Lane soul instructions"
+    if include_ownership:
+        prompt_material = f"{CODEBASE_OWNERSHIP_GUIDANCE}\n\n{prompt_material}"
+    soul_path = tmp_path / "soul.md"
+    soul_path.write_text(prompt_material, encoding="utf-8")
+    argv_out = tmp_path / "argv.json"
+    monkeypatch.setenv("FAKE_CLAUDE_ARGV_OUT", str(argv_out))
+
+    result = json.loads(claude_agent_tool.delegate_claude_agent(
+        task="implement feature",
+        workdir=str(repo),
+        system_prompt_file=str(soul_path),
+    ))
+
+    assert result["success"] is True
+    argv = json.loads(argv_out.read_text(encoding="utf-8"))
+    prompt_flags = [
+        flag for flag in ("--append-system-prompt", "--append-system-prompt-file")
+        if flag in argv
+    ]
+    assert len(prompt_flags) == 1
+    prompt_flag = prompt_flags[0]
+    prompt_value = argv[argv.index(prompt_flag) + 1]
+    if prompt_flag == "--append-system-prompt-file":
+        system_prompt = Path(prompt_value).read_text(encoding="utf-8")
+    else:
+        system_prompt = prompt_value
+    assert system_prompt.count(CODEBASE_OWNERSHIP_SENTENCE) == 1
+    assert system_prompt.count(CODEBASE_OWNERSHIP_GUIDANCE) == 1
+    assert "Lane soul instructions" in system_prompt
+    if include_ownership:
+        assert prompt_flag == "--append-system-prompt-file"
+
+
+@_REAL_SUBPROC
 def test_kimi_model_runs_kimi_wrapper(monkeypatch, repo, tmp_path):
     from tools import claude_agent_tool
 

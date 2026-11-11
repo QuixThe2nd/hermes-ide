@@ -570,6 +570,7 @@ def test_explicit_model_adds_payload_id(monkeypatch, tmp_path):
 @pytest.mark.parametrize("force_value", [False, "false", "0", True])
 def test_force_does_not_enable_pushes(monkeypatch, tmp_path, force_value):
     from tools import cursor_agent_tool
+    from tools import delegation_ownership
 
     captured = {}
 
@@ -597,9 +598,14 @@ def test_force_does_not_enable_pushes(monkeypatch, tmp_path, force_value):
 
     payload = captured["payload"]
     assert payload["prompt"]["text"].startswith(cursor_agent_tool.NO_PUSH_PROMPT_PREFIX)
-    after_no_push = payload["prompt"]["text"][len(cursor_agent_tool.NO_PUSH_PROMPT_PREFIX):]
-    assert after_no_push.startswith(cursor_agent_tool.DEFAULT_ORCHESTRATION_PROMPT)
-    assert payload["prompt"]["text"].endswith("no pushes")
+    prompt_text = payload["prompt"]["text"]
+    assert prompt_text.count(
+        delegation_ownership.CODEBASE_OWNERSHIP_SENTENCE
+    ) == 1
+    assert prompt_text.index(
+        delegation_ownership.CODEBASE_OWNERSHIP_GUIDANCE
+    ) < prompt_text.index(cursor_agent_tool.DEFAULT_ORCHESTRATION_PROMPT)
+    assert prompt_text.endswith("no pushes")
     assert payload["autoCreatePR"] is False
     assert payload["skipReviewerRequest"] is True
     assert payload["workOnCurrentBranch"] is False
@@ -1423,7 +1429,40 @@ def test_build_create_agent_payload_no_pr_side_effects():
     assert DEFAULT_ORCHESTRATION_PROMPT
     assert NO_PUSH_PROMPT_PREFIX != DEFAULT_ORCHESTRATION_PROMPT
     prompt_text = payload["prompt"]["text"]
-    assert prompt_text == NO_PUSH_PROMPT_PREFIX + DEFAULT_ORCHESTRATION_PROMPT + task
+    assert prompt_text.startswith(NO_PUSH_PROMPT_PREFIX)
+    assert DEFAULT_ORCHESTRATION_PROMPT in prompt_text
+    assert prompt_text.endswith(task)
+
+
+def test_build_create_agent_prompt_has_single_ownership_guidance():
+    from tools.cursor_agent_tool import NO_PUSH_PROMPT_PREFIX, build_create_agent_payload
+    from tools.delegation_ownership import (
+        CODEBASE_OWNERSHIP_GUIDANCE,
+        CODEBASE_OWNERSHIP_SENTENCE,
+    )
+
+    task = "fix the flaky test"
+    payload = build_create_agent_payload(
+        task=task,
+        repo_url="https://github.com/acme/demo",
+        machine_name="hermes-abc",
+        agent_id="bc-aaaa",
+    )
+    prompt_text = payload["prompt"]["text"]
+
+    assert prompt_text.startswith(NO_PUSH_PROMPT_PREFIX)
+    assert prompt_text.endswith(task)
+    assert prompt_text.count(CODEBASE_OWNERSHIP_SENTENCE) == 1
+    assert prompt_text.count(CODEBASE_OWNERSHIP_GUIDANCE) == 1
+
+    lane_task = f"{CODEBASE_OWNERSHIP_GUIDANCE}\n\n# Task\n{task}"
+    lane_payload = build_create_agent_payload(
+        task=lane_task,
+        repo_url="https://github.com/acme/demo",
+        machine_name="hermes-abc",
+        agent_id="bc-bbbb",
+    )
+    assert lane_payload["prompt"]["text"].count(CODEBASE_OWNERSHIP_SENTENCE) == 1
 
 
 def test_timeout_dedupe_reuses_listed_agent(monkeypatch):

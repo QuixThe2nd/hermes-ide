@@ -23,6 +23,7 @@ We keep the parts that work until their replacement is ready. We don't need a fu
 
 - **Discord first.** Discord is the operator surface, not just another adapter. Your home server is mission control.
 - **Code is delegated, not written in chat.** Coding lanes (Cursor, Claude Code) do the work; the agent plans, verifies, and publishes.
+- **Delegated coding agents own the codebase.** They merge duplicates, fix related bugs, and keep adjacent cleanups in separate tested commits.
 - **Batteries included.** Tooling, pipelines and integrations live in this tree. Upstream ships slim; we ship ready.
 - **No upstream sync.** NousResearch/hermes-agent is ancestry, not an update source. Differences are intentional.
 
