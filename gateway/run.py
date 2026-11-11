@@ -1305,7 +1305,15 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         ):
             return None
     if _looks_like_gateway_provider_error(text):
-        return _gateway_provider_error_reply(text)
+        if _is_live_retry_progress:
+            # The user opted into live progress — keep the sanitized rewrite.
+            return _gateway_provider_error_reply(text)
+        # 2026-11-12 incident: a failed turn sent TWO near-identical "kept failing"
+        # messages — this status callback (plain) and the failed turn's final
+        # response (with usage footer). The final response is the canonical
+        # failure message; a provider-error-shaped STATUS line is dropped here.
+        logger.info("Suppressing provider-error status line (final response is the canonical failure message): %s", text)
+        return None
     return text
 
 

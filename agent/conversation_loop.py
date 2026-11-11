@@ -1579,6 +1579,12 @@ def _run_conversation_turn(
     agent._ephemeral_reasoning_off = False
     agent._auth_pool_refresh_counts = {}
     agent._last_turn_usage = None
+    # Per-turn transient-reconnect notice gate + extended transport-retry budget
+    # (see agent/status_output.py::_buffer_transient_reconnect_notice and
+    # agent/transport_retry.py) — one reconnect notice per turn, one window per turn.
+    agent._transient_reconnect_notice_sent = False
+    agent._transport_retry_deadline = None
+    agent._transport_retry_attempts = 0
 
     s = _LoopState(
         system_message=system_message, moa_config=moa_config,
@@ -1860,6 +1866,12 @@ def _run_conversation_inlined(
     # Per-turn diagnostic: a failed compression-tip adoption in a previous
     # turn's flush must not be reported against this turn.
     agent._compression_adoption_failed = False
+    # Per-turn transient-reconnect notice gate + extended transport-retry budget
+    # (see agent/status_output.py::_buffer_transient_reconnect_notice and
+    # agent/transport_retry.py) — one reconnect notice per turn, one window per turn.
+    agent._transient_reconnect_notice_sent = False
+    agent._transport_retry_deadline = None
+    agent._transport_retry_attempts = 0
 
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0

@@ -181,6 +181,21 @@ class StatusOutputMixin:
         from gateway.warning_notifications import DiagnosticText
         self._buffer_status(DiagnosticText(message))
 
+    def _buffer_transient_reconnect_notice(self, message: str) -> None:
+        """Per-turn gate for transient reconnect notices (TTFB/idle/stale kills).
+
+        2026-11-12 incident: ~86 watchdog kills in 2h each buffered a "Reconnecting."
+        line, and every replay landed in chat as its own near-identical message. At
+        most ONE such notice is buffered per user turn; later kills in the same turn
+        are logged (each site still logs) and folded into the activity feed only.
+        The turn prolog re-arms the gate (``_transient_reconnect_notice_sent``).
+        """
+        if getattr(self, "_transient_reconnect_notice_sent", False):
+            self._touch_activity(str(message))
+            return
+        self._transient_reconnect_notice_sent = True
+        self._buffer_diagnostic_status(message)
+
     def _buffer_vprint(self, message: str) -> None:
         self._buffer_retry_message("vprint", message)
 
