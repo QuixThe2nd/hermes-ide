@@ -32,7 +32,6 @@ CONSOLIDATED_MIXIN_METHODS = (
     ("_session_has_compression_in_flight", GatewayBusySessionMixin),
     ("_steer_running_agent", GatewayBusySessionMixin),
     ("_steer_active_subagents", GatewayBusySessionMixin),
-    ("_busy_steer_command", GatewayBusySessionMixin),
     ("_resolve_busy_steer_or_redirect", GatewayBusySessionMixin),
     ("_hm_text_only", GatewayInboundMixin),
     ("_hm_busy_steer", GatewayInboundMixin),

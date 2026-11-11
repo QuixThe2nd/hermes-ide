@@ -62,9 +62,8 @@ _NAMES_BY_MODULE = {
     ],
     GatewayGoalsMixin: [
         "_goal_max_turns_from_config", "_warm_goals_session_db",
-        "_get_goal_manager_for_event", "_get_heartbeat_manager_for_event",
-        "_register_heartbeat_watch", "_unregister_heartbeat_watch",
-        "_start_heartbeat_poller", "_send_goal_status_notice",
+        "_get_goal_manager_for_event",
+        "_send_goal_status_notice",
         "_defer_goal_status_notice_after_delivery", "_post_turn_goal_continuation",
         "_run_post_turn_hooks", "_final_text_for_post_turn_hooks",
         "_post_turn_loop_completion", "_loop_wakeup_watcher",

@@ -354,14 +354,6 @@ class CLIChatTurnMixin:
                     stream_callback=None if muted else turn.stream_callback, task_id=self.session_id,
                     persist_user_message=_persist_clean_user_message, moa_config=_moa_cfg,
                 )
-            if getattr(self, "_pending_moa_disable_after_turn", False):
-                _restore = getattr(self, "_pending_moa_restore_model", None) or {}
-                for _key, _value in _restore.items():
-                    if _value is not None:
-                        setattr(self, _key, _value)
-                _retire_agent(self)
-                self._pending_moa_restore_model = None
-                self._pending_moa_disable_after_turn = False
         except Exception as exc:
             logging.error("run_conversation raised: %s", exc, exc_info=True)
             _summary = getattr(self.agent, '_summarize_api_error', lambda e: str(e)[:300])(exc)

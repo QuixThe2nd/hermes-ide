@@ -1652,9 +1652,6 @@ class GatewayStartupMixin:
         mutating Group Chat commands fail closed without it."""
         from gateway.run import _hermes_home
         self._start_loop_heartbeat_task()
-        from gateway.run_heartbeat_restore import restore_heartbeat_watches
-        self._start_heartbeat_poller()  # Keep retrying even when the first scan is empty.
-        await restore_heartbeat_watches(self)
         hook_count = len(self.hooks.loaded_hooks)
         if hook_count:
             logger.info("%s hook(s) loaded", hook_count)

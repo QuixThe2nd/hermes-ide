@@ -1346,7 +1346,7 @@ hermes bundles show backend-dev
 hermes bundles delete backend-dev
 ```
 
-In a chat session, `/bundles` lists installed bundles and `/<bundle-name>` loads one.
+In a chat session, `/<bundle-name>` loads a bundle.
 
 ## `hermes curator`
 
@@ -1382,7 +1382,7 @@ See [Curator](../user-guide/features/curator.md) for behavior and config.
 
 ## `hermes moa`
 
-Configure named Mixture of Agents presets. Presets appear as selectable models under a `Mixture of Agents` provider in every model picker; `/moa <prompt>` runs one prompt through the default preset.
+Configure named Mixture of Agents presets. Presets appear as selectable models under a `Mixture of Agents` provider in every model picker.
 
 ```bash
 hermes moa list

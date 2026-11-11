@@ -147,7 +147,6 @@ Set `curator.backup.enabled: false` to disable automatic snapshotting. The manua
 
 `hermes curator status` also lists the five least-recently-used skills — a quick way to see what's likely to become stale next.
 
-The same subcommands are available as the `/curator` slash command inside a running session (CLI or gateway platforms).
 
 ## Audit ledger and single-edit rollback
 

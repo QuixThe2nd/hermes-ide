@@ -64,8 +64,6 @@ def build_relay_command_manifest() -> List[Dict[str, Any]]:
         _cmd("sethomeserver", "Provision and wire the Discord home server",
              _opt("confirm", "Type 'confirm' to move an existing home server to this server")),
         _cmd("stop", "Stop the running Hermes agent"),
-        _cmd("steer", "Inject a message after the next tool call (no interrupt)",
-             _opt("text", "What to tell the agent")),
         _cmd("compress", "Compress conversation context"),
         _cmd("title", "Set or show the session title",
              _opt("text", "New title. Leave empty to show.")),

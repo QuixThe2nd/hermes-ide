@@ -1,4 +1,4 @@
-"""Goal/heartbeat continuation, post-turn hooks and loop-wakeup watcher methods for GatewayRunner.
+"""Goal continuation, post-turn hooks and loop-wakeup watcher methods for GatewayRunner.
 
 Split out of ``gateway/run.py``; bound onto ``GatewayRunner`` via the MRO.
 ``gateway.run`` internals are imported lazily inside method bodies (import cycle),
@@ -25,7 +25,7 @@ logger = logging.getLogger("gateway.run")
 
 
 class GatewayGoalsMixin:
-    """Goal/heartbeat continuation, post-turn hooks and loop-wakeup watcher methods for GatewayRunner."""
+    """Goal continuation, post-turn hooks and loop-wakeup watcher methods for GatewayRunner."""
 
     # ── /goal — persistent cross-turn goals (Ralph-style loop) ──────────
     def _goal_max_turns_from_config(self) -> int:
@@ -57,7 +57,7 @@ class GatewayGoalsMixin:
             logger.warning("%s: session DB warm-up failed: %s", label, exc)
 
     async def _session_entry_for_manager(self, event: "MessageEvent", label: str):
-        """Session entry for a /goal or /heartbeat manager, or None when lookup fails. Warms the
+        """Session entry for a /goal manager, or None when lookup fails. Warms the
         SessionDB cache first (a cold cache drops the first write while the reply claims it was
         set). Internal events never touch activity (idle/daily reset clock)."""
         await self._warm_goals_session_db(label)
@@ -71,7 +71,7 @@ class GatewayGoalsMixin:
         return session_entry if getattr(session_entry, "session_id", None) else None
 
     async def _manager_for_event(self, event: "MessageEvent", kind: str, load):
-        """``(manager, session_entry)`` for *kind* ("goal"/"heartbeat"), or ``(None, None)``.
+        """``(manager, session_entry)`` for *kind* ("goal"), or ``(None, None)``.
         ``load()`` imports the manager class and returns a ``session_id -> manager`` factory."""
         try:
             factory = load()
@@ -115,37 +115,9 @@ class GatewayGoalsMixin:
         max_turns = self._goal_max_turns_from_config()
         return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry
 
-    async def _get_heartbeat_manager_for_event(self, event: "MessageEvent"):
-        """Return a HeartbeatManager bound to the session for this event.
-
-        Returns ``(manager, session_entry)`` or ``(None, None)``.
-        """
-        try:
-            from hermes_cli.heartbeat import HeartbeatManager
-        except Exception as exc:
-            logger.debug("heartbeat manager unavailable: %s", exc)
-            return None, None
-        # Warm the SessionDB cache off-loop. A cold cache can drop the
-        # first /heartbeat write while the reply claims it was set.
-        await self._warm_goals_session_db("heartbeat manager")
-        try:
-            # Same reset-policy contract as _get_goal_manager_for_event:
-            # internal events look up the session without touching activity.
-            session_entry = await self.async_session_store.get_or_create_session(
-                event.source,
-                touch_activity=not bool(getattr(event, "internal", False)),
-            )
-        except Exception as exc:
-            logger.debug("heartbeat manager: session lookup failed: %s", exc)
-            return None, None
-        sid = getattr(session_entry, "session_id", None) or ""
-        if not sid:
-            return None, None
-        return HeartbeatManager(session_id=sid), session_entry
-
     @staticmethod
     def _synthetic_prompt_event(source: Any, text: str, *, internal: bool = False) -> MessageEvent:
-        """Build the TEXT event used to inject a goal/heartbeat/loop prompt into a session.
+        """Build the TEXT event used to inject a goal/loop prompt into a session.
 
         The stored source's ``message_id`` is the message that registered the watch; a synthetic
         prompt is not a reply to it, so it is dropped or every progress bubble and final reply
@@ -153,144 +125,6 @@ class GatewayGoalsMixin:
         """
         source = dataclasses.replace(source, message_id=None) if getattr(source, "message_id", None) else source
         return MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=internal)
-
-    def _register_heartbeat_watch(self, quick_key: str, source: Any, session_id: str) -> None:
-        """Track a session with an active heartbeat and start the poller.
-
-        The registry maps ``quick_key`` → ``(source, session_id)`` so the
-        poller can rebuild a MessageEvent and enqueue via the adapter FIFO.
-        In-memory by design: heartbeat STATE survives restarts in SessionDB,
-        but firing resumes when the user touches /heartbeat again in the new
-        gateway process (documented; durable schedules belong to cron).
-        """
-        watch = getattr(self, "_heartbeat_watch", None)
-        if watch is None:
-            watch = {}
-            self._heartbeat_watch = watch
-        watch[quick_key] = (source, session_id)
-        self._start_heartbeat_poller()
-
-    def _unregister_heartbeat_watch(self, quick_key: str) -> None:
-        watch = getattr(self, "_heartbeat_watch", None)
-        if watch:
-            watch.pop(quick_key, None)
-
-    async def _heartbeat_poll_once(self, watch: dict) -> None:
-        """Wake each idle watched session once; leave busy sessions' ticks unclaimed."""
-        for quick_key, (source, session_id) in list(watch.items()):
-            try:
-                with self._profile_scope_for_source(source):
-                    await self._heartbeat_poll_watch(watch, quick_key, source, session_id)
-            except Exception as exc:
-                logger.debug("heartbeat poll for %s failed: %s", quick_key, exc)
-
-    async def _heartbeat_poll_watch(self, watch, quick_key, source, session_id):
-        await self._warm_goals_session_db("heartbeat poll")
-        store = getattr(self, "session_store", None)
-        if store is not None:
-            current = store.peek_session_id(quick_key)
-            if not current:
-                watch.pop(quick_key, None)
-                return
-            session_id = current
-            watch[quick_key] = (source, session_id)
-        adapter = self._delivery_adapter_for(source)
-        if adapter is None or not adapter._message_handler:
-            return
-        if (
-            self._is_session_running(quick_key)
-            or quick_key in adapter._active_sessions
-            or self._queue_depth(quick_key, adapter=adapter) > 0
-        ):
-            return  # keep missed intervals due until user work has drained
-        from hermes_cli.heartbeat import HeartbeatManager
-
-        mgr = HeartbeatManager(session_id=session_id)
-        if not mgr.has_heartbeat():
-            watch.pop(quick_key, None)
-            return
-        prompt = mgr.due_prompt()
-        if not prompt:
-            return
-        event = self._synthetic_prompt_event(source, prompt)
-        event.metadata["gateway_session_key"] = quick_key
-        event._heartbeat_execution_started = False
-        # Provenance read by display_kind_for_event / the turn's quiet surfaces; the event stays
-        # non-internal so authorization and the emergency stop still apply.
-        event._heartbeat_session_id = session_id
-        # A pinned route skips topic recovery: no await between the idle
-        # check and adapter claim. FIFO alone never wakes an idle session.
-        try:
-            await adapter.handle_message(event)
-        finally:
-            task = getattr(adapter, "_session_tasks", {}).get(quick_key)
-            if task is not None:
-                from gateway.run_heartbeat_acceptance import settle_heartbeat_attempt
-                task.add_done_callback(lambda done: settle_heartbeat_attempt(event, mgr))
-            elif quick_key not in adapter._active_sessions:
-                mgr.abandon_fire()
-
-    def _start_heartbeat_poller(self) -> None:
-        """Start the single gateway-wide heartbeat poll task (idempotent)."""
-        existing = getattr(self, "_heartbeat_poll_task", None)
-        if existing is not None and not existing.done():
-            return
-
-        from hermes_cli.heartbeat import POLL_SECONDS
-
-        async def _poll_loop():
-            while True:
-                await asyncio.sleep(POLL_SECONDS)
-                watch = getattr(self, "_heartbeat_watch", None)
-                if not watch:
-                    continue
-                # Warm the cache off-loop once per poll. A watch can only
-                # be registered through the warmed /heartbeat command, so
-                # this covers only the degraded path where that warm-up
-                # failed.
-                await self._warm_goals_session_db("heartbeat poll")
-                for quick_key, (source, session_id) in list(watch.items()):
-                    try:
-                        # Busy sessions coalesce their tick to the next idle poll.
-                        if quick_key in self._running_agents:
-                            continue
-                        from hermes_cli.heartbeat import HeartbeatManager
-
-                        mgr = HeartbeatManager(session_id=session_id)
-                        if not mgr.has_heartbeat():
-                            watch.pop(quick_key, None)
-                            continue
-                        prompt = mgr.due_prompt()
-                        if not prompt:
-                            continue
-                        adapter = self._adapter_for_source(source)
-                        if adapter is None:
-                            continue
-                        hb_event = MessageEvent(
-                            text=prompt,
-                            message_type=MessageType.TEXT,
-                            source=source,
-                            message_id=None,
-                            channel_prompt=None,
-                        )
-                        self._enqueue_fifo(quick_key, hb_event, adapter)
-                    except Exception as exc:
-                        logger.debug("heartbeat poll for %s failed: %s", quick_key, exc)
-
-        try:
-            task = asyncio.create_task(_poll_loop())
-            self._heartbeat_poll_task = task
-            # PERMANENT once started (an infinite while-True loop, no exit
-            # condition) — same as a _spawn_supervised watcher. Tag it so
-            # _scale_to_zero_has_live_background_work() doesn't treat a
-            # gateway with an active heartbeat watch as busy forever.
-            task._hermes_supervised_watcher = True  # type: ignore[attr-defined]
-            _bg = getattr(self, "_background_tasks", None)
-            if _bg is not None:
-                _bg.add(task)
-                task.add_done_callback(_bg.discard)
-        except Exception:
-            logger.debug("Failed to start heartbeat poller", exc_info=True)
 
     def _goal_notice_adapter(self, source: Any):
         adapter = self._delivery_adapter_for(source)

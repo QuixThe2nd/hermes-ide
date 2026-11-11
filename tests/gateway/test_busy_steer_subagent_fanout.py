@@ -33,23 +33,20 @@ def _event(text="focus on rows 10-20"):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("route", ["busy_steer_mode", "priority", "explicit_command"])
+@pytest.mark.parametrize("route", ["busy_steer_mode", "priority"])
 async def test_busy_steer_fans_out_to_active_subagents(route, tmp_path, monkeypatch):
     monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
     runner = GatewayRunner(config=GatewayConfig())
     child_a, child_b = _Agent(), _Agent()
     parent = _Agent(children=[child_a, child_b])
     runner._session_state("key").turn.agent = parent
-    event = _event("/steer focus on rows 10-20" if route == "explicit_command" else "focus on rows 10-20")
+    event = _event("focus on rows 10-20")
 
     if route == "busy_steer_mode":
         outcome = await runner._resolve_busy_steer_or_redirect(event, "key", "steer", parent)
         assert outcome.steered is True
-    elif route == "priority":
-        runner._hm_busy_steer(event, parent, "key")
     else:
-        reply = await runner._busy_steer_command(event, "key", event.source)
-        assert "subagent" in reply
+        runner._hm_busy_steer(event, parent, "key")
 
     assert parent.payload and parent.payload.endswith("focus on rows 10-20")
     # The looping child — the one actually doing the work — gets the same text, not just the parent.

@@ -911,30 +911,3 @@ class CLIModelSwitchMixin:
             return bool(cmd and cmd.name == "model")
         except Exception:
             return False
-
-    def _cmd_moa(self, cmd_original: str):
-        """/moa one-shot: run one prompt through the default MoA preset, then restore the prior
-        model (a session-long MoA switch goes through the picker's virtual MoA provider)."""
-        from cli import _cprint, _slash_args
-        from hermes_cli.moa_config import moa_usage, normalize_moa_config
-
-        payload = _slash_args(cmd_original)
-        if not payload:
-            _cprint(f"  {moa_usage()}")
-            return True
-        moa_cfg = self.config.get("moa") if isinstance(self.config, dict) else {}
-        preset = normalize_moa_config(moa_cfg)["default_preset"]
-        self._pending_moa_restore_model = {
-            key: getattr(self, key, None)
-            for key in (
-                "requested_provider", "provider", "model", "api_key", "base_url", "api_mode")}
-        self.requested_provider = "moa"
-        self.provider = "moa"
-        self.model = preset
-        self.api_key = "moa-virtual-provider"
-        self.base_url = "moa://local"
-        self.api_mode = "chat_completions"
-        _retire_agent(self)
-        self._pending_moa_disable_after_turn = True
-        self._pending_agent_seed = payload
-        _cprint(f"  MoA one-shot queued with preset {preset}; previous model will be restored after this turn.")

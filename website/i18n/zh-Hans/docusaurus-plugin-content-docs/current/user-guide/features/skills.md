@@ -304,7 +304,7 @@ instruction: |
 
 字段说明：
 - `name`（可选——默认为文件名主干）——捆绑包的显示名称。规范化为连字符 slug 用于斜杠命令（`Backend Dev` → `/backend-dev`）。
-- `description`（可选）——在 `/bundles` 和 `hermes bundles list` 中显示的简短文本。
+- `description`（可选）——在 `hermes bundles list` 中显示的简短文本。
 - `skills`（必填，非空列表）——skill 名称或相对于你的 skills 目录的路径。使用与 `/<skill-name>` 相同的标识符。
 - `instruction`（可选）——附加在加载的 skill 内容前的额外指导。适用于固化"我们总是这样一起使用这些 skills"的方式。
 
@@ -330,7 +330,6 @@ hermes bundles delete backend-dev
 hermes bundles reload
 ```
 
-在聊天会话中，`/bundles` 会列出每个已安装的捆绑包及其 skills。
 
 ### 行为
 

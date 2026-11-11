@@ -261,7 +261,6 @@ hermes uninstall            Uninstall Hermes
 /snapshot [sub]      Create or restore state snapshots of Hermes config/state (CLI)
 /bg <prompt> Run prompt in background
 /queue <prompt>      Queue for next turn
-/steer <prompt>      Inject a message after the next tool call without interrupting
 /agents (/tasks)     Show active agents and running tasks
 /resume [name]       Resume a named session
 /goal [text|sub]     Set a standing goal Hermes works on across turns until achieved
@@ -296,7 +295,6 @@ hermes uninstall            Uninstall Hermes
 /reload              Reload .env variables into the running session (CLI)
 /reload-mcp          Reload MCP servers
 /cron                Manage cron jobs (CLI)
-/curator [sub]       Background skill maintenance (status, run, pin, archive, …)
 /plugins             List plugins (CLI)
 ```
 
@@ -634,7 +632,6 @@ terminal(command="tmux new-session -d -s resumed 'hermes --resume 20260225_14305
 agent 创建的 skill 的后台维护。跟踪使用情况，将闲置 skill 标记为过时，归档过时的 skill，保留运行前的 tar.gz 备份以防数据丢失。
 
 - **CLI：** `hermes curator <verb>` — `status`、`run`、`pause`、`resume`、`pin`、`unpin`、`archive`、`restore`、`prune`、`backup`、`rollback`。
-- **斜杠命令：** `/curator <subcommand>` 与 CLI 对应。
 - **范围：** 仅处理 `created_by: "agent"` 来源的 skill。内置和 hub 安装的 skill 不在范围内。**从不删除** — 最具破坏性的操作是归档。已固定的 skill 不受任何自动转换和任何 LLM 审查的影响。
 - **遥测：** `~/.hermes/skills/.usage.json` 中的 sidecar 保存每个 skill 的 `use_count`、`view_count`、`patch_count`、`last_activity_at`、`state`、`pinned`。
 

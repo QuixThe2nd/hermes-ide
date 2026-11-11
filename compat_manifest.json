@@ -3159,12 +3159,6 @@
    "target": "(deleted; BASE body restored)"
   },
   {
-   "facade": "hermes_cli.heartbeat",
-   "name": "Dict",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
    "facade": "hermes_cli.journey",
    "name": "cmd_journey",
    "kind": "restored-def",

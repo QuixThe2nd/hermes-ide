@@ -1186,25 +1186,6 @@ class GatewaySlashCommandsMixin(
             logger.warning("Skills reload failed: %s", e)
             return t("gateway.reload_skills.failed", error=e)
 
-    async def _handle_bundles_command(self, event: MessageEvent) -> str:
-        """Handle /bundles — list installed skill bundles (mirrors the CLI handler). Bundles are
-        loaded by invoking their own ``/<slug>`` command, not by this one."""
-        reply = _execute("bundles")
-        if "error" in reply.data:
-            logger.warning("Bundles command unavailable: %s", reply.data["error"])
-            return reply.text
-        bundles = reply.data["bundles"]
-        if not bundles:
-            return ("No skill bundles installed.\nCreate one on the host with:\n"
-                    "  `hermes bundles create <name> --skill <s1> --skill <s2>`\n"
-                    f"Directory: `{reply.data['dir']}`")
-        lines = [f"**Skill Bundles** ({len(bundles)} installed):", ""]
-        for info in bundles:
-            skills = info.get("skills", [])
-            desc = info.get("description") or f"Load {len(skills)} skills"
-            lines += [f"• `/{info['slug']}` — {desc} _({len(skills)} skills)_"] + [f"    · {s}" for s in skills]
-        return "\n".join(lines + ["", "Invoke a bundle with `/<slug>` to load all its skills."])
-
     async def _handle_debug_command(self, event: MessageEvent) -> str:
         """Handle /debug — upload ONLY the summary (system info + log tails), never full logs, to
         protect privacy; ``hermes debug share`` from the CLI does full uploads."""
