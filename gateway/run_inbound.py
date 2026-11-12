@@ -60,6 +60,20 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text[len(prefix):] if message_text.startswith(prefix) else message_text
 
 
+def interrupt_if_capable(running_agent: Any, text: Any) -> bool:
+    """Call ``interrupt()`` only on a live agent; a placeholder object has none.
+
+    The session slot can briefly hold a non-agent placeholder that is not the pending
+    sentinel, so duck-type instead of assuming ``interrupt`` exists. False means nothing
+    was interrupted and the caller keeps the follow-up queued instead of crashing.
+    """
+    interrupt = getattr(running_agent, "interrupt", None)
+    if not callable(interrupt):
+        return False
+    interrupt(text)
+    return True
+
+
 class GatewayInboundMixin:
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
@@ -697,7 +711,9 @@ class GatewayInboundMixin:
             _interrupt_text = _build_media_placeholder(event)
         # Delivered via adapter._pending_messages (read by _run_agent); never also buffered on self
         # — that copy was never consumed and grew unbounded.
-        running_agent.interrupt(_interrupt_text)
+        if not interrupt_if_capable(running_agent, _interrupt_text):
+            # Placeholder object: nothing to interrupt, keep the follow-up queued.
+            self._queue_or_replace_pending_event(_quick_key, event)
 
     def _resume_claim_event_consumes_sentinel(
         self, event: "MessageEvent", session_key: str
@@ -2232,7 +2248,10 @@ class GatewayInboundMixin:
                 )
             elif not _interrupt_text and _media_urls:
                 _interrupt_text = _build_media_placeholder(event)
-            running_agent.interrupt(_interrupt_text)
+            if not interrupt_if_capable(running_agent, _interrupt_text):
+                # Placeholder object in the slot: nothing to interrupt, keep the
+                # follow-up queued rather than killing the turn with AttributeError.
+                self._queue_or_replace_pending_event(_quick_key, event)
             # NOTE: self._pending_messages was write-only (never consumed).
             # The actual interrupt message is delivered via adapter._pending_messages
             # which is read by _run_agent. Removed to prevent unbounded growth.
