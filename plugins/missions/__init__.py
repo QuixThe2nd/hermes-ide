@@ -9,7 +9,7 @@ renderer injects an **Active Mission** section into that session's system
 prompt, and — once the goal condition is met — the agent calls
 ``end_session`` to record the outcome and wake the dispatching thread.
 
-A standing WhatsApp chat on the ``assistant`` profile with NO active mission
+A standing WhatsApp chat on a mission-serving profile with NO active mission
 instead gets ``escalate_task``: a ONE-WAY handoff of a bounded summary +
 requested action to a dedicated default-profile review session, which
 forwards anything warranted to the human via ``start_conversation``. The two
@@ -119,10 +119,37 @@ HANDOFF_TOOLSET = "assistant_handoff"
 END_SESSION_TOOL = "end_session"
 ESCALATE_TASK_TOOL = "escalate_task"
 
-# The exact, trusted gateway session namespace the handoff pair serves.
-# Profile and platform come from the gateway-built session key (slot 1/2),
-# never from anything the model controls.
-_ASSISTANT_WHATSAPP_PREFIX = "agent:assistant:whatsapp:"
+# Backwards-compatible default; HERMES_MISSION_PROFILE may select another
+# standing assistant profile. Active missions always use their own record.
+_DEFAULT_MISSION_PROFILE = "assistant"
+
+
+def _normalize_mission_profile(value: Any) -> str:
+    from hermes_cli.profiles import normalize_profile_name
+
+    profile = str(value or _DEFAULT_MISSION_PROFILE).strip()
+    return normalize_profile_name(profile or _DEFAULT_MISSION_PROFILE)
+
+
+def _default_mission_profile() -> str:
+    return _normalize_mission_profile(os.environ.get("HERMES_MISSION_PROFILE"))
+
+
+def _mission_profile(mission: Dict[str, Any]) -> str:
+    """Canonical serving profile, including legacy records without one."""
+    return _normalize_mission_profile(mission.get("profile"))
+
+
+def _profile_serves_missions(profile: str) -> bool:
+    """Whether *profile* is a configured or currently serving assistant."""
+    if profile in {_DEFAULT_MISSION_PROFILE, _default_mission_profile()}:
+        return True
+    try:
+        return any(_mission_profile(m) == profile for m in list_active_missions())
+    except Exception:
+        logger.debug("missions: serving-profile lookup failed", exc_info=True)
+        return False
+
 
 # Hard-coded escalation routing. None of it is reachable from tool args.
 ESCALATION_TARGET_PROFILE = "default"
@@ -171,6 +198,7 @@ _ESCALATION_INSTRUCTIONS = (
 
 def _escalation_envelope(
     escalation_id: str,
+    source_profile: str,
     chat_id: str,
     chat_type: str,
     summary: str,
@@ -190,7 +218,7 @@ def _escalation_envelope(
             "escalation_id": escalation_id,
             "escalated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "source_platform": "whatsapp",
-            "source_profile": "assistant",
+            "source_profile": source_profile,
             "chat_id": chat_id,
             "chat_type": chat_type,
         },
@@ -353,7 +381,7 @@ def _grant_mission_pairing(mission: Dict[str, Any]) -> None:
     platform = str(mission.get("platform") or "whatsapp")
     chat_id = str(mission.get("chat_id") or "")
     name = str(mission.get("chat_name") or "")
-    profile = str(mission.get("profile") or "assistant")
+    profile = _mission_profile(mission)
     if not chat_id:
         return
     try:
@@ -386,7 +414,7 @@ def _revoke_mission_pairing(mission: Dict[str, Any]) -> None:
         return
     platform = str(mission.get("platform") or "whatsapp")
     chat_id = str(mission.get("chat_id") or "")
-    profile = str(mission.get("profile") or "assistant")
+    profile = _mission_profile(mission)
     if not chat_id:
         return
     try:
@@ -582,17 +610,20 @@ def _contact_match_tokens(chat_id: str) -> set:
     return {t for t in tokens if t}
 
 
-def _assistant_session_key(canon: str) -> str:
-    return f"agent:assistant:whatsapp:dm:{canon}"
+def _assistant_session_key(canon: str, profile: str) -> str:
+    from gateway.session import Platform, SessionSource, build_session_key
+
+    source = SessionSource(platform=Platform.WHATSAPP, chat_id=canon, chat_type="dm")
+    return build_session_key(source, profile=profile)
 
 
-def _find_prior_whatsapp_dm(default_db, tokens):
+def _find_prior_whatsapp_dm(default_db, tokens, serving_profile: str):
     """Return the latest default-profile WhatsApp DM for this contact.
 
     ``find_latest_gateway_session_for_peer`` misses compression-ended rows
-    and unkeyed continuation tips. Scan matching DMs, skip assistant keys
-    and groups, then walk ``get_compression_tip`` so the seeded chat is the
-    live long thread, not a stale compressed ancestor.
+    and unkeyed continuation tips. Scan matching DMs, skip mission-serving
+    keys and groups, then walk ``get_compression_tip`` so the seeded chat is
+    the live long thread, not a stale compressed ancestor.
     """
     token_list = [t for t in tokens if t]
     if not token_list:
@@ -606,13 +637,20 @@ def _find_prior_whatsapp_dm(default_db, tokens):
             "OR COALESCE(user_id,'') LIKE ?)"
         )
         params.extend([like, like, like])
+    excluded_profiles = {_DEFAULT_MISSION_PROFILE, serving_profile}
+    excluded_profiles.update(_mission_profile(m) for m in list_active_missions())
+    exclusions = "".join(
+        "AND COALESCE(session_key, '') NOT LIKE ? "
+        for _ in sorted(excluded_profiles)
+    )
+    params.extend(f"agent:{profile}:%" for profile in sorted(excluded_profiles))
     sql = (
         "SELECT * FROM sessions WHERE source = 'whatsapp' "
         "AND COALESCE(chat_type, 'dm') = 'dm' "
         f"AND ({' OR '.join(clauses)}) "
         "AND COALESCE(session_key, '') NOT LIKE '%:group:%' "
         "AND COALESCE(chat_id, '') NOT LIKE '%@g.us' "
-        "AND COALESCE(session_key, '') NOT LIKE 'agent:assistant:%' "
+        f"{exclusions}"
         "ORDER BY COALESCE(last_activity_at, started_at) DESC LIMIT 20"
     )
     try:
@@ -725,7 +763,7 @@ def _seed_contact_history(mission: Dict[str, Any]) -> None:
     resumes the default-profile DM instead of starting empty.
     """
     chat_id = str(mission.get("chat_id") or "").strip()
-    profile = str(mission.get("profile") or "assistant").strip() or "assistant"
+    profile = _mission_profile(mission)
     if not chat_id:
         return
     # DM-only by contract: a group mission shares one fresh session and must
@@ -743,18 +781,18 @@ def _seed_contact_history(mission: Dict[str, Any]) -> None:
         return
 
     # Gateway inbound loads history from the process home under
-    # agent:assistant:whatsapp:dm:<canon> (default handler scope). Seeding
-    # the assistant-profile store would never be replayed.
+    # agent:<mission-profile>:whatsapp:dm:<canon> (default handler scope).
+    # Seeding another profile's store would never be replayed.
     db_path = get_process_hermes_home() / "state.db"
     if not db_path.exists():
         return
     db = SessionDB(db_path=db_path)
-    session_key = _assistant_session_key(canon)
+    session_key = _assistant_session_key(canon, profile)
     display_name = str(mission.get("chat_name") or "").strip()
     chat_jid = chat_id
     user_id = chat_id
     try:
-        prior = _find_prior_whatsapp_dm(db, tokens)
+        prior = _find_prior_whatsapp_dm(db, tokens, profile)
         prior_turns = []
         if prior:
             prior_turns = _seedable_turns(
@@ -847,11 +885,7 @@ def _handle_start(args: Dict[str, Any], **kwargs: Any) -> str:
     reply_to = str(
         args.get("reply_to") or kwargs.get("reply_to") or ""
     ).strip()
-    profile = str(
-        args.get("profile")
-        or os.environ.get("HERMES_MISSION_PROFILE")
-        or "assistant"
-    ).strip()
+    profile = str(args.get("profile") or _default_mission_profile()).strip()
 
     if not chat_id:
         return _error("missing_chat_id", "chat_id (contact's WhatsApp JID/phone, or a group JID ending @g.us) is required.")
@@ -1202,7 +1236,7 @@ DELEGATE_ASSISTANT_SCHEMA = {
             },
             "profile": {
                 "type": "string",
-                "description": "Serving profile. Default: assistant.",
+                "description": "Serving profile. Default: HERMES_MISSION_PROFILE or assistant.",
             },
             "background": {
                 "type": "boolean",
@@ -1322,7 +1356,7 @@ def resolve_handoff_tool_for_session(session_key: str) -> Optional[str]:
     mission started or closed between turns flips the mode on the very next
     turn; the result is never cached per session.
     """
-    chat_id = _assistant_whatsapp_chat_id(session_key)
+    profile, _chat_type, chat_id = _parse_assistant_whatsapp_session_key(session_key)
     if not chat_id:
         return None
     try:
@@ -1330,7 +1364,9 @@ def resolve_handoff_tool_for_session(session_key: str) -> Optional[str]:
     except Exception:
         logger.debug("missions: handoff tool resolution failed", exc_info=True)
         return None
-    return END_SESSION_TOOL if mission else ESCALATE_TASK_TOOL
+    if mission:
+        return END_SESSION_TOOL if profile == _mission_profile(mission) else None
+    return ESCALATE_TASK_TOOL if _profile_serves_missions(profile) else None
 
 
 def apply_assistant_handoff_tools(agent: Any) -> bool:
@@ -1453,8 +1489,8 @@ def _origin_env_session_id() -> str:
         return ""
 
 
-def _parse_assistant_whatsapp_session_key(session_key: str) -> tuple[str, str]:
-    """Return ``(chat_type, chat_id)`` for a trusted assistant WhatsApp key.
+def _parse_assistant_whatsapp_session_key(session_key: str) -> tuple[str, str, str]:
+    """Return ``(profile, chat_type, chat_id)`` for a trusted WhatsApp key.
 
     DMs are five parts. A standing group is six parts when the gateway's
     default per-user isolation appends the participant; an active group
@@ -1463,24 +1499,32 @@ def _parse_assistant_whatsapp_session_key(session_key: str) -> tuple[str, str]:
     """
     parts = str(session_key or "").split(":")
     if any(not part for part in parts):
-        return "", ""
-    if parts[:3] != ["agent", "assistant", "whatsapp"]:
-        return "", ""
+        return "", "", ""
+    if len(parts) < 5 or parts[0] != "agent" or parts[2] != "whatsapp":
+        return "", "", ""
+    from gateway.session import profile_from_session_key_namespace
+
+    profile = profile_from_session_key_namespace(parts[1])
     if len(parts) == 5 and parts[3] in ("dm", "group"):
-        return parts[3], parts[4]
+        return profile, parts[3], parts[4]
     if len(parts) == 6 and parts[3] == "group":
-        return "group", parts[4]
-    return "", ""
+        return profile, "group", parts[4]
+    return "", "", ""
+
+
+def _assistant_whatsapp_profile(session_key: str) -> str:
+    """Trusted profile namespace from an assistant WhatsApp key."""
+    return _parse_assistant_whatsapp_session_key(session_key)[0]
 
 
 def _assistant_whatsapp_chat_id(session_key: str) -> str:
     """Trusted assistant WhatsApp chat id, else ``""``."""
-    return _parse_assistant_whatsapp_session_key(session_key)[1]
+    return _parse_assistant_whatsapp_session_key(session_key)[2]
 
 
 def _assistant_whatsapp_chat_type(session_key: str) -> str:
     """``dm`` / ``group`` for an assistant WhatsApp key, else ``""``."""
-    return _parse_assistant_whatsapp_session_key(session_key)[0]
+    return _parse_assistant_whatsapp_session_key(session_key)[1]
 
 
 def handle_end_session(args: Dict[str, Any], **kwargs: Any) -> str:
@@ -1494,7 +1538,7 @@ def handle_end_session(args: Dict[str, Any], **kwargs: Any) -> str:
     only when one is active.
     """
     session_key = _trusted_session_key(**kwargs)
-    chat_id = _assistant_whatsapp_chat_id(session_key)
+    profile, _chat_type, chat_id = _parse_assistant_whatsapp_session_key(session_key)
     if not chat_id:
         return _error(
             "not_available",
@@ -1506,6 +1550,10 @@ def handle_end_session(args: Dict[str, Any], **kwargs: Any) -> str:
     except Exception:
         logger.debug("missions: end_session mission lookup failed", exc_info=True)
         return _error("not_available", "end_session is unavailable right now.")
+    if mission and profile != _mission_profile(mission):
+        return _error("not_available", "This profile cannot close the chat's mission.")
+    if not mission and not _profile_serves_missions(profile):
+        return _error("not_available", "This profile has no assistant mission sessions.")
     if not mission:
         return _error("not_found", "No active mission for this chat.")
     close_args = {
@@ -1596,6 +1644,7 @@ def _queue_escalation(
         )
     envelope = _escalation_envelope(
         escalation_id,
+        _assistant_whatsapp_profile(session_key),
         chat_id,
         _assistant_whatsapp_chat_type(session_key),
         summary,
@@ -1660,7 +1709,7 @@ def handle_escalate_task(args: Dict[str, Any], **kwargs: Any) -> str:
     failures are generic.
     """
     session_key = _trusted_session_key(**kwargs)
-    chat_id = _assistant_whatsapp_chat_id(session_key)
+    profile, _chat_type, chat_id = _parse_assistant_whatsapp_session_key(session_key)
     if not chat_id:
         return _error(
             "not_available",
@@ -1670,14 +1719,19 @@ def handle_escalate_task(args: Dict[str, Any], **kwargs: Any) -> str:
     # Execution-time re-check (the turn's tool list may be stale): a chat
     # with an active mission escalates nothing — it ends its mission.
     try:
-        if find_active_mission_for_chat(chat_id):
-            return _error(
-                "mission_active",
-                "This chat has an active mission; use end_session instead.",
-            )
+        mission = find_active_mission_for_chat(chat_id)
     except Exception:
         logger.debug("missions: escalate_task mission re-check failed", exc_info=True)
         return _error("not_available", "escalate_task is unavailable right now.")
+    if mission and profile != _mission_profile(mission):
+        return _error("not_available", "This profile cannot escalate the chat's mission.")
+    if mission:
+        return _error(
+            "mission_active",
+            "This chat has an active mission; use end_session instead.",
+        )
+    if not _profile_serves_missions(profile):
+        return _error("not_available", "This profile has no assistant mission sessions.")
 
     summary = str((args or {}).get("summary") or "").strip()
     requested_action = str((args or {}).get("requested_action") or "").strip()
