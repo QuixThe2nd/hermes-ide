@@ -81,7 +81,7 @@ class MediaCaptureProgressAdapter(ProgressCaptureAdapter):
         self.image_batches = []
 
     async def send_multiple_images(
-        self, chat_id, images, metadata=None, human_delay=0.0
+        self, chat_id, images, metadata=None
     ) -> None:
         self.image_batches.append(
             {

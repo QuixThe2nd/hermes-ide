@@ -477,7 +477,7 @@ class _QueuedMediaCaptureAdapter(BasePlatformAdapter):
         self.images.append({"chat_id": chat_id, "image_path": image_path, "metadata": metadata})
         return SendResult(success=True, message_id=f"img-{len(self.images)}")
 
-    async def send_multiple_images(self, chat_id, images, metadata=None, human_delay=0.0):
+    async def send_multiple_images(self, chat_id, images, metadata=None):
         for image_url, _alt in images:
             path = image_url
             if path.startswith("file://"):

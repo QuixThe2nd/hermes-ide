@@ -562,9 +562,9 @@ class MatrixHubClientAdapter(MatrixAdapter):
             "send_image_file", chat_id, image_path, caption=caption, reply_to=reply_to, metadata=metadata))
 
     async def send_multiple_images(self, chat_id: str, images: list, metadata: Optional[dict] = None,
-                                   human_delay: float = 0.0) -> SendResult:
+    ) -> SendResult:
         return self._send_result(await self._rpc(
-            "send_multiple_images", chat_id, images, metadata=metadata, human_delay=human_delay))
+            "send_multiple_images", chat_id, images, metadata=metadata))
 
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None,
                             file_name: Optional[str] = None, reply_to: Optional[str] = None,

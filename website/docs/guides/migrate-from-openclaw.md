@@ -89,8 +89,6 @@ Skill conflicts are handled by `--skill-conflict`: `skip` leaves the existing He
 | Reasoning effort | `agents.defaults.thinkingDefault` | `agent.reasoning_effort` | "always"/"high"/"xhigh" → "high", "auto"/"medium"/"adaptive" → "medium", "off"/"low"/"none"/"minimal" → "low" |
 | Compression | `agents.defaults.compaction.mode` | `compression.enabled` | "off" → false, anything else → true |
 | Compression model | `agents.defaults.compaction.model` | `compression.summary_model` | Direct string copy |
-| Human delay | `agents.defaults.humanDelay.mode` | `human_delay.mode` | "natural" / "custom" / "off" |
-| Human delay timing | `agents.defaults.humanDelay.minMs` / `.maxMs` | `human_delay.min_ms` / `.max_ms` | Direct copy |
 | Timezone | `agents.defaults.userTimezone` | `timezone` | Direct string copy |
 | Exec timeout | `tools.exec.timeoutSec` | `terminal.timeout` | Direct copy (field is `timeoutSec`, not `timeout`) |
 | Docker sandbox | `agents.defaults.sandbox.backend` | `terminal.backend` | "docker" → "docker" |

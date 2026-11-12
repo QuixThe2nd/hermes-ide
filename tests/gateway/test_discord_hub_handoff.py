@@ -1407,13 +1407,13 @@ def test_send_multiple_images_forwards_reply_to():
 
     result = run(client.send_multiple_images(
         "42", ["/tmp/image.png"], metadata={"thread_id": "43"},
-        human_delay=0.25, reply_to="root-message",
+        reply_to="root-message",
     ))
 
     assert result.success
     client._rpc.assert_awaited_once_with(
         "send_multiple_images", "42", ["/tmp/image.png"],
-        metadata={"thread_id": "43"}, human_delay=0.25, reply_to="root-message",
+        metadata={"thread_id": "43"}, reply_to="root-message",
     )
 
 

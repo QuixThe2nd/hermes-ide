@@ -2803,7 +2803,7 @@ class BasePlatformAdapter(ABC):
 
     async def send_multiple_images(
         self, chat_id: str, images: List[Tuple[str, str]],
-        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
+        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send ``(url, alt)`` images (``http(s)://`` or ``file://``) one by one (GIFs via
         ``send_animation``, local files via ``send_image_file``); override to bundle natively
         (Signal). Returns success when at least one image was delivered — the outcome
@@ -2812,8 +2812,6 @@ class BasePlatformAdapter(ABC):
         from urllib.parse import unquote as _unquote
         delivered = False
         for image_url, alt_text in images:
-            if human_delay > 0:
-                await asyncio.sleep(human_delay)
             try:
                 logger.info("[%s] Sending image: %s (alt=%s)", self.name,
                             safe_url_for_log(image_url), alt_text[:30] if alt_text else "")
@@ -4108,20 +4106,6 @@ class BasePlatformAdapter(ABC):
             event._gateway_processing_deferred = True
             event._gateway_accepted = True
 
-    @staticmethod
-    def _get_human_delay() -> float:
-        """Random human-like pacing delay (s) from HERMES_HUMAN_DELAY_MODE: "off" (default) |
-        "natural" 800-2500ms | "custom" via HERMES_HUMAN_DELAY_MIN_MS /
-        HERMES_HUMAN_DELAY_MAX_MS."""
-        mode = os.getenv("HERMES_HUMAN_DELAY_MODE", "off").lower()
-        if mode == "off":
-            return 0.0
-        lo, hi = 800, 2500
-        if mode != "natural":  # custom mode tolerates malformed env vars
-            lo = _or_default(lambda: int(os.getenv("HERMES_HUMAN_DELAY_MIN_MS", str(lo))), lo)
-            hi = _or_default(lambda: int(os.getenv("HERMES_HUMAN_DELAY_MAX_MS", str(hi))), hi)
-        return random.uniform(lo / 1000.0, hi / 1000.0)
-
     async def _synthesize_auto_tts(self, text_content: str) -> Tuple[List[str], Optional[str]]:
         """Synthesize auto-TTS audio -> ``(existing_paths, requested_path)``; empty/None on failure
         (logged, never raised). Path built platform-aware HERE: HERMES_SESSION_PLATFORM is cleared
@@ -4235,7 +4219,7 @@ class BasePlatformAdapter(ABC):
 
     async def _deliver_media_attachments(
         self, event: MessageEvent, media_files: list, local_files: list, *,
-        force_document_attachments: bool, human_delay: float, metadata: Dict[str, Any],
+        force_document_attachments: bool, metadata: Dict[str, Any],
         record_delivery: Callable) -> None:
         """Deliver MEDIA-tag files and detected local files by type: images batched via
         ``send_multiple_images`` unless ``[[as_document]]``; otherwise audio → send_voice (MEDIA
@@ -4249,7 +4233,7 @@ class BasePlatformAdapter(ABC):
         _image_paths += [p for p in local_files if _as_image(p)]
         if _image_paths:
             await self._send_image_batch(
-                event, [(f"file://{_quote(p)}", "") for p in _image_paths], metadata, human_delay,
+                event, [(f"file://{_quote(p)}", "") for p in _image_paths], metadata,
                 record_delivery)
         chat_id = event.source.chat_id
 
@@ -4275,8 +4259,6 @@ class BasePlatformAdapter(ABC):
             logger.info("[%s] Delivering %d non-image MEDIA attachment(s)", self.name, len(queue))
         queue += [(p, False, False) for p in local_files if not _as_image(p)]
         for path, is_voice, media_tag in queue:
-            if human_delay > 0:
-                await asyncio.sleep(human_delay)
             try:
                 record_delivery(await _send_one(path, is_voice=is_voice, media_tag=media_tag))
             except Exception as err:
@@ -4287,14 +4269,14 @@ class BasePlatformAdapter(ABC):
                     logger.error("[%s] Error sending local file %s: %s", self.name, path, err)
 
     async def _send_image_batch(
-        self, event: MessageEvent, images: list, metadata: Dict[str, Any], human_delay: float,
+        self, event: MessageEvent, images: list, metadata: Dict[str, Any],
         record_delivery: Callable) -> None:
         """Batch-send images; a failure is logged (never raised) so other attachments still go.
         The batch result feeds ``record_delivery`` so media-only turns report their real
         outcome instead of FAILURE."""
         try:
             result = await self.send_multiple_images(
-                chat_id=event.source.chat_id, images=images, metadata=metadata, human_delay=human_delay)
+                chat_id=event.source.chat_id, images=images, metadata=metadata)
         except Exception as batch_err:
             logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
             record_delivery(SendResult(success=False, error=str(batch_err)))
@@ -4360,18 +4342,17 @@ class BasePlatformAdapter(ABC):
     async def _deliver_attachments(self, event: MessageEvent, extracted: "_ExtractedResponse",
                                    metadata: Dict[str, Any], *, anything_sent: bool,
                                    record_delivery: Callable) -> None:
-        """Send extracted image URLs, MEDIA files and bare local files (human-paced),
+        """Send extracted image URLs, MEDIA files and bare local files,
         then fail loudly if a non-empty response produced nothing deliverable. Attachment
         results feed ``record_delivery`` so the turn outcome reflects them."""
-        human_delay = self._get_human_delay()
         images, media_files, local_files = extracted.images, extracted.media_files, extracted.local_files
         if images:
             logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
-            await self._send_image_batch(event, images, metadata, human_delay, record_delivery)
+            await self._send_image_batch(event, images, metadata, record_delivery)
         await self._deliver_media_attachments(
             event, media_files, local_files,
             force_document_attachments=extracted.force_document_attachments,
-            human_delay=human_delay, metadata=metadata, record_delivery=record_delivery)
+            metadata=metadata, record_delivery=record_delivery)
         if not (anything_sent or images or local_files or media_files) and extracted.pre_extract.strip():
             logger.error("[%s] response_delivery_dropped: non-empty response "
                          "(%d chars) produced no delivered message or attachment "

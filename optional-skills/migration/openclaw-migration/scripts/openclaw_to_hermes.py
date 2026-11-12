@@ -2478,20 +2478,6 @@ class Migrator:
             hermes_cfg["compression"] = compression
             changes = True
 
-        # Map humanDelay
-        human_delay = defaults.get("humanDelay") or {}
-        if human_delay:
-            hd = hermes_cfg.get("human_delay") or {}
-            hd_mode = human_delay.get("mode") or ("natural" if human_delay.get("enabled") else None)
-            if hd_mode and hd_mode != "off":
-                hd["mode"] = hd_mode
-            if human_delay.get("minMs"):
-                hd["min_ms"] = human_delay["minMs"]
-            if human_delay.get("maxMs"):
-                hd["max_ms"] = human_delay["maxMs"]
-            hermes_cfg["human_delay"] = hd
-            changes = True
-
         # Map userTimezone
         if defaults.get("userTimezone"):
             hermes_cfg["timezone"] = defaults["userTimezone"]

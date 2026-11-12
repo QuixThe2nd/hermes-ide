@@ -70,7 +70,7 @@ class _DummyAdapter(BasePlatformAdapter):
         self.documents.append(str(file_path))
         return SendResult(success=True, message_id="doc-1")
 
-    async def send_multiple_images(self, chat_id, images, metadata=None, human_delay=0.0):
+    async def send_multiple_images(self, chat_id, images, metadata=None):
         self.images_sent.extend(str(p) for p, _cap in images)
 
     async def send_image_file(self, chat_id, image_path, caption=None, reply_to=None, metadata=None, **kwargs) -> SendResult:

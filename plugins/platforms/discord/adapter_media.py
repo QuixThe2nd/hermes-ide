@@ -1,7 +1,6 @@
 """Discord native media uploads and delivery fallbacks."""
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -130,7 +129,7 @@ class DiscordMediaMixin:
 
     async def send_multiple_images(
         self, chat_id: str, images: List[Tuple[str, str]],
-        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send images as one Discord message (<=10 attachments): URLs are downloaded and uploaded
         inline (bare links don't render); on chunk failure the remainder uses the per-image loop."""
@@ -145,7 +144,7 @@ class DiscordMediaMixin:
             import io as _io
             from urllib.parse import unquote as _unquote
         except Exception:  # pragma: no cover
-            return await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            return await super().send_multiple_images(chat_id, images, metadata)
         try:
             channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
             if not channel:
@@ -153,13 +152,11 @@ class DiscordMediaMixin:
                 return SendResult(success=False, error=f"Channel {chat_id} not found")
         except Exception as e:
             logger.warning("[%s] Failed to resolve channel for multi-image send: %s", self.name, e)
-            return await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            return await super().send_multiple_images(chat_id, images, metadata)
         CHUNK = 10
         chunks = [images[i:i + CHUNK] for i in range(0, len(images), CHUNK)]
         delivered = False
         for chunk_idx, chunk in enumerate(chunks):
-            if human_delay > 0 and chunk_idx > 0:
-                await asyncio.sleep(human_delay)
             files: List[Any] = []
             captions: List[str] = []
             skip_notices: List[str] = []
@@ -263,7 +260,7 @@ class DiscordMediaMixin:
                     "[%s] Multi-image Discord send failed (chunk %d/%d), falling back to per-image: %s",
                     self.name, chunk_idx + 1, len(chunks), e, exc_info=True,
                 )
-                fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                fallback = await super().send_multiple_images(chat_id, chunk, metadata)
                 delivered = delivered or fallback.success
             finally:
                 if aiohttp_session is not None:
