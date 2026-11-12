@@ -156,20 +156,6 @@ class TestPerTurnExposure:
         assert pm.apply_assistant_handoff_tools(agent) is True
         assert _tool_names(agent) == ["read_file", "escalate_task"]
 
-    def test_tool_search_bridge_still_honours_configured_opt_in(self, missions_home):
-        pm = missions_home
-        agent = _FakeAgent(
-            ASSISTANT_GROUP_KEY,
-            tool_names=(),
-            enabled_toolsets=["assistant_handoff"],
-        )
-        agent.tools.append(
-            {"type": "function", "function": {"name": "tool_search", "parameters": {}}}
-        )
-        agent.valid_tool_names.add("tool_search")
-        assert pm.apply_assistant_handoff_tools(agent) is True
-        assert _tool_names(agent) == ["read_file", "tool_search", "escalate_task"]
-
     def test_idempotent_and_position_stable(self, missions_home):
         pm = missions_home
         _start(pm)
@@ -667,12 +653,6 @@ class TestWiring:
             if isinstance(item.get("function"), dict)
         }
         assert names == {"end_session", "escalate_task"}
-
-        from tools.tool_search import is_deferrable_tool_name
-
-        assert is_deferrable_tool_name("end_session") is False
-        assert is_deferrable_tool_name("escalate_task") is False
-        assert is_deferrable_tool_name("start_conversation") is False
 
         agent = types.SimpleNamespace(
             _gateway_session_key=ASSISTANT_GROUP_KEY,

@@ -1850,40 +1850,7 @@ DEFAULT_CONFIG = {
         "kernel_idle_timeout": 1800,
         "max_session_kernels": 4,
     },
-    # Tool Search: deferrable (MCP / non-core plugin) tools are replaced in the model-facing array
-    # by tool_search / tool_describe / tool_call bridges and surfaced on demand. Core Hermes tools
-    # (terminal, file tools, todo, memory, browser_*, ...) are NEVER deferred.
     "tools": {
-        "tool_search": {
-            # Tiered: tier 0 (no deferrable tools) = everything eager; tier 1 = bridge + a
-            # name+description manifest when it fits the budget (degrades to names-only); tier 2
-            # (over budget even names-only, e.g. ~3,300-tool APIs) = bare bridge + a
-            # one-line-per-server summary (name + tool count). "auto"|"on" = activate when at least
-            # one deferrable tool exists ("auto" is an alias of "on" today, reserved for a future
-            # budget-gated mode; keep it the default so explicit "on"/"off" pins are unaffected).
-            # "off" = pass-through, no bridge.
-            "enabled": "auto",
-            # Listing budget as % of the model's context length; effective budget = min(this % of
-            # context, listing_max_tokens). Range 0..100.
-            "threshold_pct": 5,
-            # Hits per query when the model omits `limit`. Range 1..max_search_limit.
-            "search_default_limit": 5,
-            # Hard upper bound the model may request via `limit` (per query). Range 1..50.
-            "max_search_limit": 25,
-            # Catalog listing embedded in the bridge description (name + first sentence ≤60 chars,
-            # grouped by server/toolset). "auto" = include when it fits (falls back to names-only,
-            # then bare tier-2 bridge); "on" = same rendering, explicit intent; "off" = always the
-            # bare bridge.
-            "listing": "auto",
-            # Absolute cap on the embedded listing in tokens (chars/4), regardless of context size.
-            # Range 200..60000.
-            "listing_max_tokens": 4000,
-            # Exact tool names (list or comma-separated string) whose full
-            # schemas stay directly visible when tool search is active.
-            # Unknown names are ignored. Use for small, high-frequency
-            # plugin/MCP tools the model should not have to discover first.
-            "always_visible": [],
-        },
         # Remote connector discovery/lifecycle through the Nous tool gateway.
         # The flag is the user's off switch; availability additionally requires
         # the portal sign-in every managed tool gates on.

@@ -1261,8 +1261,8 @@ class TestResponsesReservedToolAliases:
 
 class TestXaiReservedToolSearchAlias:
     """xAI reserves ``tool_search`` for Grok's native Tool Search and rejects
-    the client declaration with HTTP 400 (#95003). The transport aliases the
-    progressive-disclosure bridge on the wire and maps it back on dispatch."""
+    a client-defined function with that name (#95003). The transport aliases
+    the colliding function on the wire and maps it back on dispatch."""
 
     @pytest.fixture
     def transport(self):
@@ -1271,13 +1271,13 @@ class TestXaiReservedToolSearchAlias:
 
     _TOOLS = [
         {"type": "function", "function": {
-            "name": "tool_search", "description": "Search deferred tools.",
+            "name": "tool_search", "description": "Search indexed content.",
             "parameters": {"type": "object",
                            "properties": {"query": {"type": "string"}}}}},
         {"type": "function", "function": {
-            "name": "tool_describe", "description": "Describe a deferred tool.",
+            "name": "search_files", "description": "Search files.",
             "parameters": {"type": "object",
-                           "properties": {"name": {"type": "string"}}}}},
+                           "properties": {"pattern": {"type": "string"}}}}},
         {"type": "function", "function": {
             "name": "read_file", "description": "Read a file.",
             "parameters": {"type": "object",
@@ -1297,14 +1297,13 @@ class TestXaiReservedToolSearchAlias:
         names = self._names(kw)
         assert "hermes_tool_search" in names
         assert "tool_search" not in names
-        # Only ``tool_search`` is reserved — the sibling bridge tools and
-        # ordinary tools go out untouched.
-        assert "tool_describe" in names
+        # Only ``tool_search`` is reserved — sibling functions go out untouched.
+        assert "search_files" in names
         assert "read_file" in names
 
     def test_openai_responses_aliases_reserved_tool_search(self, transport):
         """OpenAI Responses reserves the ``tool_search`` namespace for its native Tool Search (#83122):
-        both the ChatGPT Codex backend and api.openai.com get the bridge under ``hermes_tool_search``."""
+        both the ChatGPT Codex backend and api.openai.com alias the client-defined function."""
         for extra in ({"is_codex_backend": True}, {"base_url": "https://api.openai.com/v1"}):
             kw = transport.build_kwargs(
                 model="gpt-5.4", messages=[{"role": "user", "content": "hi"}], tools=list(self._TOOLS), **extra,
@@ -1325,7 +1324,7 @@ class TestXaiReservedToolSearchAlias:
         assert "hermes_tool_search" not in names
 
     def test_alias_composes_with_native_web_search_swap(self, transport, monkeypatch):
-        """The bridge alias must survive the xAI web_search branch (#48108)."""
+        """The reserved-name alias must survive the xAI web_search branch (#48108)."""
         import agent.transports.codex as codex_mod
 
         monkeypatch.setattr(codex_mod, "_xai_prefers_native_web_search", lambda: True)
@@ -1420,13 +1419,13 @@ class TestXaiReservedToolSearchAlias:
 
     def test_alias_collision_takes_suffix_no_duplicates(self, transport, monkeypatch):
         """A real tool already named ``hermes_tool_search`` keeps its wire
-        name; the bridge is suffixed and both round-trip independently."""
+        name; the reserved client function is suffixed and both round-trip independently."""
         tools = [
             {"type": "function", "function": {
                 "name": "hermes_tool_search", "description": "Real tool.",
                 "parameters": {"type": "object", "properties": {}}}},
             {"type": "function", "function": {
-                "name": "tool_search", "description": "Bridge.",
+                "name": "tool_search", "description": "Reserved client function.",
                 "parameters": {"type": "object", "properties": {}}}},
         ]
         kw = transport.build_kwargs(
@@ -1439,7 +1438,7 @@ class TestXaiReservedToolSearchAlias:
         assert names == ["hermes_tool_search", "hermes_tool_search_2"]
         assert len(names) == len(set(names))
         assert transport._last_wire_aliases == {"hermes_tool_search_2": "tool_search"}
-        # Bridge alias maps back; the real tool's name is untouched.
+        # Reserved-name alias maps back; the real tool's name is untouched.
         normalized = self._normalize_named_call(
             transport, monkeypatch, "hermes_tool_search_2"
         )

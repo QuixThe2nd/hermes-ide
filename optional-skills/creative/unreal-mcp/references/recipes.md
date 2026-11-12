@@ -1,23 +1,21 @@
 # Unreal MCP — Worked Recipes
 
 Complete build sequences from a plain-English brief to a delivered capture.
-Written against the discovery contract, because the live tool surface is
-project-dependent: each step names the **capability to locate** (via
-`list_toolsets` / `describe_toolset`) and the **exact values** to feed it —
-not hardcoded tool names, which drift while the plugin is experimental.
+Written against direct schemas because the live tool surface is
+project-dependent: each step names the **capability to locate** among the
+directly advertised tools and the **exact values** to feed it.
 
 ## Recipe grammar
 
 Every step = four parts:
 
     INTENT     what this step achieves
-    DISCOVER   which toolset/tool capability to use (locate via describe_toolset)
+    DISCOVER   which directly advertised tool capability to use
     VALUES     the exact arguments/numbers (from scene-craft.md)
     VERIFY     the query or screenshot that proves it worked
 
-Dispatch shape: `call_tool` with `toolset_name`, `tool_name`, and an
-`arguments` object matching the described schema — result returns on the
-same turn.
+Call the selected `mcp_unreal_engine_<tool_name>` with arguments matching its
+advertised schema — the result returns on the same turn.
 
 LIGHTING RULE for every recipe: set **Mobility = Movable** on every light
 you spawn (Lumen GI ignores Static/Stationary lights — the #1 "why is GI
@@ -25,11 +23,9 @@ dead" cause).
 
 Session preamble for every recipe (do once):
 
-1. `list_toolsets` → note the qualified names (e.g.
-   `editor_toolset.toolsets.scene.SceneTools`,
-   `EditorToolset.EditorAppToolset`).
-2. `describe_toolset` on each group you'll touch → cache schemas.
-3. Query current level (`SceneTools.get_current_level`) and inventory the
+1. Review the directly advertised tools for the scene, editor, and capture
+   capabilities you will use.
+2. Query current level (`SceneTools.get_current_level`) and inventory the
    environment: `find_actors` for DirectionalLight, SkyAtmosphere,
    SkyLight, ExponentialHeightFog, PostProcessVolume, VolumetricCloud.
    **Configure existing environment actors; spawn only what's missing** —

@@ -138,8 +138,8 @@ def test_schema_bearing_tool_result_is_wrapped_as_opaque_text():
     Gemini 3 resolves ``$ref``/``$defs`` pointers inside a function response
     payload and rejects unknown references with HTTP 400 INVALID_ARGUMENT
     ("referenced name '#/$defs/...' does not match a display_name"; see
-    vercel/ai#14369). ``tool_describe`` output for an MCP tool is exactly such
-    a schema, so it must be wrapped as opaque text instead.
+    vercel/ai#14369). A schema-producing tool result is exactly such a payload,
+    so it must be wrapped as opaque text instead.
     """
     from agent.gemini_native_adapter import _translate_tool_result_to_gemini
 
@@ -150,7 +150,7 @@ def test_schema_bearing_tool_result_is_wrapped_as_opaque_text():
     msg = {
         "role": "tool",
         "tool_call_id": "call_1",
-        "name": "tool_describe",
+        "name": "schema_report",
         "content": json.dumps(schema),
     }
 

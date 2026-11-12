@@ -404,39 +404,6 @@ def _append_skipped_tool_results(
     return True
 
 
-def _tool_search_scoped_names(agent) -> frozenset:
-    """Deferrable tool names the session may invoke via ``tool_call``; the unwrap bypasses
-    the bridge's scope check in ``model_tools.handle_function_call``, so restricted sessions
-    validate against this set. Cached on the agent, keyed by registry scope/generation."""
-    try:
-        import model_tools
-        from tools import tool_search as _ts
-        from tools.registry import registry as _registry
-    except Exception:
-        return frozenset()
-
-    enabled = getattr(agent, "enabled_toolsets", None)
-    disabled = getattr(agent, "disabled_toolsets", None)
-    cache_key = (
-        _registry.current_scope_key(),
-        getattr(_registry, "_generation", 0),
-        frozenset(enabled) if enabled is not None else None,
-        frozenset(disabled) if disabled is not None else None,
-    )
-    cached = getattr(agent, "_tool_search_scope_cache", None)
-    if cached is not None and cached[0] == cache_key:
-        return cached[1]
-    try:
-        names = _ts.scoped_deferrable_names(model_tools.get_tool_definitions(
-            enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True, skip_tool_search_assembly=True,
-        ) or [])
-    except Exception:
-        names = frozenset()
-    with contextlib.suppress(Exception):
-        agent._tool_search_scope_cache = (cache_key, names)
-    return names
-
-
 def _canonical_tool_name(function_name: str) -> str:
     """Map legacy tool-name aliases BEFORE agent-loop dispatch."""
     from model_tools import _LEGACY_TOOL_ALIASES as _lta
@@ -444,74 +411,24 @@ def _canonical_tool_name(function_name: str) -> str:
     return _lta.get(function_name, function_name)
 
 
-def _unwrap_tool_search_call(
-    agent, function_name: str, function_args: dict, *, flatten_probe: bool = False
-) -> tuple[str, dict, Optional[str]]:
-    """Peel the ``tool_call`` bridge so downstream hooks (checkpointing, guardrails, plugin
-    hooks, activity feed) see the underlying tool; ``tool_call.function`` stays untouched for
-    the transcript and tool_call_id pairing.
-
-    The unwrap bypasses handle_function_call's scope check, so session toolset scope is
-    enforced HERE. Returns ``(name, args, scope_block)``; ``scope_block`` is the block
-    message when the underlying tool is out of scope or its args fail the deferred-schema
-    probe (``flatten_probe`` collapses the probe's JSON payload to one plain string for
-    callers that wrap the message in ``{"error": ...}``).
-    """
-    scope_block: Optional[str] = None
-    try:
-        from tools import tool_search as _ts
-        if function_name != _ts.TOOL_CALL_NAME:
-            return function_name, function_args, None
-        underlying, underlying_args, err = _ts.resolve_underlying_call(function_args)
-        if err or not underlying:
-            return function_name, function_args, None
-        if underlying == _ts.CONNECTOR_BATCH_SENTINEL:
-            # Both executors retain the wrapper: scope/probe/hooks run per entry
-            # in the batch dispatcher, not against a synthetic registry name.
-            return function_name, function_args, None
-        if underlying not in _tool_search_scoped_names(agent):
-            return function_name, function_args, (
-                f"'{underlying}' is not available in this session. Use tool_search to find tools you can call."
-            )
-        # Validate before unwrapping: the generic bridge hides the concrete
-        # parameter schema from provider-native tool-call validation.
-        scope_block = _ts.validate_deferred_call_args(underlying, underlying_args)
-        if scope_block is None:
-            return underlying, underlying_args, None
-        if flatten_probe:
-            probe = json.loads(scope_block)
-            scope_block = (
-                f"{probe.get('error', '')} Parameters schema: "
-                f"{json.dumps(probe.get('parameters', {}), ensure_ascii=False)}. "
-                f"{probe.get('hint', '')}"
-            ).strip()
-    except Exception:
-        pass
-    return function_name, function_args, scope_block
-
-
 @dataclass
 class _ParsedCall:
-    """One model tool call after alias canonicalization, arg parsing and bridge unwrap."""
+    """One model tool call after alias canonicalization and argument parsing."""
 
     tool_call: Any
     name: str
     args: dict
     middleware_trace: list
     parse_error: Optional[str]
-    scope_block: Optional[str]
 
     def ref(self, task_id: str) -> _ToolCallRef:
         return _ToolCallRef(self.name, self.args, task_id, _pairing_tool_call_id(self.tool_call), self.middleware_trace)
 
 
-def _parse_tool_call(agent, tool_call, *, flatten_probe: bool = False) -> _ParsedCall:
+def _parse_tool_call(tool_call) -> _ParsedCall:
     name = _canonical_tool_name(tool_call.function.name)
     args, parse_error = _parse_tool_arguments(tool_call.function.arguments)
-    scope_block = None
-    if parse_error is None:
-        name, args, scope_block = _unwrap_tool_search_call(agent, name, args, flatten_probe=flatten_probe)
-    return _ParsedCall(tool_call, name, args, [], parse_error, scope_block)
+    return _ParsedCall(tool_call, name, args, [], parse_error)
 
 
 @dataclass
@@ -706,12 +623,11 @@ def _dispatch_authorized_once(
     ref: _ToolCallRef,
     *,
     execute,
-    scope_block: str | None,
     display_index: int | None,
     begin_execution,
     authorization_gate: _ConcurrentToolAuthorizationGate | None,
 ) -> Any:
-    """Hermes policy (scope → plugin pre-hooks → guardrails) then the one real dispatch.
+    """Run plugin pre-hooks and guardrails, then dispatch exactly once.
 
     Plugin ``modify`` hooks may rewrite ``ref.args`` (mirrored into ``state.args``).
     ``begin_execution`` (concurrent start-order gate) is advanced exactly once on every
@@ -723,12 +639,10 @@ def _dispatch_authorized_once(
         elif callback is not None:
             callback()
 
-    block_message, block_error_type = scope_block, "tool_scope_block"
-    if block_message is None:
-        block_error_type = "plugin_block"
-        resolve = lambda: _pre_tool_block(agent, ref)  # noqa: E731
-        block_message, ref.args = resolve() if authorization_gate is None else authorization_gate.run(resolve)
-        state.args = ref.args
+    block_error_type = "plugin_block"
+    resolve = lambda: _pre_tool_block(agent, ref)  # noqa: E731
+    block_message, ref.args = resolve() if authorization_gate is None else authorization_gate.run(resolve)
+    state.args = ref.args
 
     guardrail_decision = None
     if block_message is None:
@@ -761,7 +675,6 @@ def _run_agent_tool_execution_middleware(
     effective_task_id: str,
     tool_call_id: str,
     execute,
-    scope_block: str | None = None,
     display_index: int | None = None,
     middleware_trace: list[dict[str, Any]] | None = None,
     begin_execution=None,
@@ -790,7 +703,6 @@ def _run_agent_tool_execution_middleware(
             state,
             _ToolCallRef(function_name, final_args, effective_task_id, tool_call_id, trace),
             execute=execute,
-            scope_block=scope_block,
             display_index=display_index,
             begin_execution=begin_execution,
             authorization_gate=authorization_gate,
@@ -892,7 +804,6 @@ def _run_sequential_tool_execution_middleware(
     effective_task_id: str,
     tool_call_id: str,
     execute,
-    scope_block: str | None = None,
     display_index: int | None = None,
     middleware_trace: list[dict[str, Any]] | None = None,
 ) -> _ManagedToolResult:
@@ -901,7 +812,7 @@ def _run_sequential_tool_execution_middleware(
     if function_name in _resolve_unbounded_tools():
         timeout_s = None
     ref = _ToolCallRef(function_name, function_args, effective_task_id, tool_call_id, middleware_trace)
-    kwargs = dict(ref.middleware_kwargs(), execute=execute, scope_block=scope_block, display_index=display_index)
+    kwargs = dict(ref.middleware_kwargs(), execute=execute, display_index=display_index)
     if function_name in _NEVER_PARALLEL_TOOLS:
         return _run_agent_tool_execution_middleware(agent, **kwargs)
 
@@ -1271,7 +1182,7 @@ class _ConcurrentBatch:
         self.authorization_gate = _ConcurrentToolAuthorizationGate()
         self.timed_out_indices: set[int] = set()
 
-    def _dispatch_worker(self, index: int, ref: _ToolCallRef, scope_block, start_gate: _WorkerStartOnce) -> Optional[_ToolOutcome]:
+    def _dispatch_worker(self, index: int, ref: _ToolCallRef, start_gate: _WorkerStartOnce) -> Optional[_ToolOutcome]:
         """Run one call through the middleware and synthesize its slot outcome; ``None`` when
         abandoned at the gate (the main thread already wrote this slot; emitting would
         double-report the tool_call_id)."""
@@ -1292,7 +1203,6 @@ class _ConcurrentBatch:
                     skip_tool_execution_middleware=True,
                     tool_request_middleware_trace=list(ref.trace),
                 ),
-                scope_block=scope_block,
                 display_index=index + 1,
                 begin_execution=start_gate.advance,
                 authorization_gate=self.authorization_gate,
@@ -1335,7 +1245,7 @@ class _ConcurrentBatch:
             _set_worker_activity_callback(agent)
             start_gate = _WorkerStartOnce(self.gate, start_order, pc.name)
             try:
-                outcome = self._dispatch_worker(index, pc.ref(self.effective_task_id), pc.scope_block, start_gate)
+                outcome = self._dispatch_worker(index, pc.ref(self.effective_task_id), start_gate)
                 if outcome is not None:
                     self.results[index] = outcome
             finally:
@@ -1562,7 +1472,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         )
         return
 
-    parsed_calls = [_parse_tool_call(agent, tc) for tc in tool_calls]
+    parsed_calls = [_parse_tool_call(tc) for tc in tool_calls]
 
     tool_names_str = ", ".join(pc.name for pc in parsed_calls)
     if _tool_progress_enabled(agent):
@@ -1764,7 +1674,6 @@ def _run_sequential_call(
     dispatch: _SequentialDispatch,
     ref: _ToolCallRef,
     *,
-    scope_block: Optional[str],
     messages: list,
     remaining_calls,
     display_index: int,
@@ -1779,7 +1688,6 @@ def _run_sequential_call(
             agent,
             **dict(ref.middleware_kwargs(), middleware_trace=dispatch.middleware_trace_arg),
             execute=dispatch.execute,
-            scope_block=scope_block,
             display_index=display_index,
         )
         ref.args = managed.args
@@ -1941,7 +1849,7 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
                     return
             break
 
-        pc = _parse_tool_call(agent, tool_call, flatten_probe=True)
+        pc = _parse_tool_call(tool_call)
         ref = pc.ref(effective_task_id)
         if pc.parse_error is not None:
             if not _append_invalid_arguments_result(agent, messages, ref, pc.parse_error):
@@ -1952,7 +1860,6 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
         dispatch = _resolve_sequential_dispatch(agent, ref, messages)
         managed, tool_duration = _run_sequential_call(
             agent, dispatch, ref,
-            scope_block=pc.scope_block,
             messages=messages,
             remaining_calls=tool_calls[i - 1:],
             display_index=i,

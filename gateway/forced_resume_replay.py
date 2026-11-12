@@ -106,31 +106,6 @@ def _arguments_dict(arguments: Any) -> Optional[dict]:
     return None
 
 
-def resolve_replay_call_target(name: str, arguments: Any) -> Tuple[str, Any]:
-    """Resolve a deferred ``tool_call`` bridge wrapper to its underlying call.
-
-    Returns ``(name, arguments)`` unchanged for every non-bridge call and
-    for a wrapper that does not parse — classification then judges the
-    wrapper as-is instead of guessing.  Deliberately NOT
-    ``tools.tool_search.resolve_underlying_call``: that helper enforces the
-    config-curated deferrable set, and lifecycle classification must not
-    depend on which tools defer-eligibility currently allows — a wrapper
-    naming ``restart`` is a lifecycle request whatever the defer config
-    says.  This is classification only; the dispatcher still executes the
-    original wrapper call as-is.
-    """
-    if name != "tool_call":
-        return name, arguments
-    raw = _arguments_dict(arguments) or {}
-    underlying = raw.get("name")
-    if not isinstance(underlying, str) or not underlying.strip():
-        return name, arguments
-    underlying_args: Any = raw.get("arguments")
-    if isinstance(underlying_args, str):
-        underlying_args = _arguments_dict(underlying_args)
-    return underlying.strip(), underlying_args if underlying_args is not None else {}
-
-
 def is_lifecycle_replay_request(name: str, arguments: Any) -> bool:
     """True when re-running this exact call could re-trigger the bounce.
 
@@ -138,7 +113,6 @@ def is_lifecycle_replay_request(name: str, arguments: Any) -> bool:
     call is not replayed:
 
     * the gateway ``restart`` tool (the agent-side lifecycle request), or
-      a deferred bridge wrapping it;
     * a shell command targeting the gateway's own lifecycle
       (``hermes gateway restart``, ``systemctl restart hermes-gateway``,
       ``launchctl``/``pkill`` variants) — detected with the same
@@ -157,11 +131,10 @@ def is_lifecycle_replay_request(name: str, arguments: Any) -> bool:
     trying to fix the last one.  Calls without a command have nothing to
     classify and stay replayable.
     """
-    resolved_name, resolved_args = resolve_replay_call_target(name, arguments)
-    if resolved_name in GATEWAY_LIFECYCLE_TOOL_NAMES:
+    if name in GATEWAY_LIFECYCLE_TOOL_NAMES:
         return True
     command = None
-    args = _arguments_dict(resolved_args)
+    args = _arguments_dict(arguments)
     if args is not None and isinstance(args.get("command"), str):
         command = args["command"]
     if not command:

@@ -8073,48 +8073,6 @@
    "target": "uuid"
   },
   {
-   "facade": "tools.tool_search",
-   "name": "Literal",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "tools.tool_search",
-   "name": "build_catalog_listing",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "tools.tool_search",
-   "name": "copy",
-   "kind": "import",
-   "target": "copy"
-  },
-  {
-   "facade": "tools.tool_search",
-   "name": "field",
-   "kind": "import",
-   "target": "dataclasses"
-  },
-  {
-   "facade": "tools.tool_search",
-   "name": "re",
-   "kind": "import",
-   "target": "re"
-  },
-  {
-   "facade": "tools.tool_search",
-   "name": "snowballstemmer",
-   "kind": "import",
-   "target": "snowballstemmer"
-  },
-  {
-   "facade": "tools.tool_search",
-   "name": "threading",
-   "kind": "import",
-   "target": "threading"
-  },
-  {
    "facade": "tools.transcription_tools",
    "name": "COMMAND_STT_OUTPUT_FORMATS",
    "kind": "moved-lazy",

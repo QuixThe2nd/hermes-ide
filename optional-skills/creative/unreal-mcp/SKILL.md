@@ -54,7 +54,8 @@ Two halves, in this order: the editor side must be up before Hermes connects.
    ActorTools, MaterialInstanceTools, ObjectTools, …); skip it and the
    server connects but the agent has nothing to call.
 4. **Edit > Editor Preferences > General > Model Context Protocol** — enable
-   **Auto Start Server**. Default bind is `http://127.0.0.1:8000/mcp`
+   **Auto Start Server** and disable **Enable Tool Search** so every enabled
+   tool is advertised directly. Default bind is `http://127.0.0.1:8000/mcp`
    (port/path configurable in the same panel; server name is `unreal-mcp`).
    To start manually instead, run `ModelContextProtocol.StartServer` in the
    editor console (backtick key).
@@ -81,41 +82,23 @@ from `config.yaml` via the catalog entry.
 2. Start the Hermes session. Tools register as `mcp_unreal_engine_*`. If
    they're missing: editor wasn't up first — start it, then open a new
    Hermes session.
-3. Sanity check: call `mcp_unreal_engine_list_toolsets` and confirm toolsets
-   come back.
+3. Sanity check: call `mcp_unreal_engine_get_current_level` and confirm the
+   current level comes back.
 
-## The Tool Surface: Discovery, Not a Fixed List
+## The Tool Surface: Direct Schemas
 
-By default the plugin runs in **tool-search mode**: `tools/list` returns only
-three meta-tools, and every real tool is reached through them. Through Hermes
-they appear as:
+With **Enable Tool Search** disabled, `tools/list` advertises each enabled
+Unreal tool with its complete JSON Schema. Hermes exposes them as
+`mcp_unreal_engine_<tool_name>`; no list/describe/call meta-tool hop is
+needed or assumed.
 
-| Hermes tool | Purpose |
-|---|---|
-| `mcp_unreal_engine_list_toolsets` | Names + descriptions of every registered toolset |
-| `mcp_unreal_engine_describe_toolset` | Full JSON schemas for one named toolset's tools |
-| `mcp_unreal_engine_call_tool` | Invoke a named tool with arguments, get the result |
+The surface is project-dependent: enabled plugins, Game Feature Plugins, and
+custom toolsets all contribute. Read each tool's advertised schema before
+calling it; never guess parameter names. Use `hermes mcp configure
+unreal-engine` to prune tools the session does not need.
 
-The discovery walk, always in this order:
-
-1. `list_toolsets` → see what capability groups this project actually has
-   (the surface is project-dependent: enabled plugins, Game Feature Plugins,
-   and any custom toolsets all contribute). Names come back FULLY QUALIFIED
-   (`editor_toolset.toolsets.scene.SceneTools`,
-   `EditorToolset.EditorAppToolset`) — use them verbatim as `toolset_name`.
-2. `describe_toolset` on the group you need → read the real parameter
-   schemas. Never guess parameter names — schemas are the contract.
-3. `call_tool` with the qualified toolset name, the SHORT tool name
-   (`find_actors`, not the dotted form), and arguments matching the schema.
-
-Cache what you learn for the session; re-list only after the editor side
-changes (new plugin enabled, toolset authored, `RefreshTools` run).
-
-The alternative eager mode (`Enable Tool Search` off in Editor Preferences)
-advertises every tool as its own `mcp_unreal_engine_<tool>` entry. Discovery
-then happens at `hermes mcp install`/`configure` time instead. Tool-search
-mode is the default and what this skill assumes; it also keeps schema tokens
-out of every API call, so prefer it.
+After the editor side changes (new plugin enabled, toolset authored,
+`RefreshTools` run), start a new Hermes session so the direct schemas refresh.
 
 See `references/tool-surface.md` for the shipped toolset catalog, authoring
 custom toolsets, and the full plugin configuration/console-command reference.
@@ -124,12 +107,12 @@ custom toolsets, and the full plugin configuration/console-command reference.
 
 Every Unreal task follows the same loop:
 
-1. **Inspect first.** List toolsets, then query the scene/level state before
-   touching anything. Never assume an empty or default level. In an
-   unfamiliar project, also check for project-registered Agent Skills
-   (`call_tool` → `AgentSkillToolset.ListSkills`): a matching project skill's
-   instructions override this skill's generic defaults.
-2. **Act in small, single-purpose calls.** One logical step per `call_tool`.
+1. **Inspect first.** Review the directly advertised tools, then query the
+   scene/level state before touching anything. Never assume an empty or
+   default level. In an unfamiliar project, also check for project-registered
+   Agent Skills through AgentSkillToolset's direct `ListSkills` tool: a
+   matching project skill's instructions override this skill's generic defaults.
+2. **Act in small, single-purpose calls.** One logical step per direct tool call.
    The server executes tools **serially on the game thread** — a big
    monolithic operation freezes the editor UI until it finishes and risks
    client timeouts. Exception: for loops over 5+ homogeneous operations,
@@ -207,7 +190,7 @@ Load on demand; keep SKILL.md-level rules in mind throughout.
 
 | Reference | Contents |
 |---|---|
-| `references/tool-surface.md` | Shipped toolsets catalog, discovery protocol detail, plugin console commands/CVars/flags, screenshot & capture paths, MCP Inspector debugging, extending with custom Python/C++ toolsets |
+| `references/tool-surface.md` | Shipped toolsets catalog, direct-schema details, plugin console commands/CVars/flags, screenshot & capture paths, MCP Inspector debugging, extending with custom Python/C++ toolsets |
 | `references/advanced-workflows.md` | Sophisticated workflows, live-verified: ProgrammaticToolset batching, Blueprint DSL authoring loop (create→DSL→compile→spawn), PIE test sessions, Sequencer orientation (140 tools), LogsToolset self-debugging, automation testing, semantic asset search, config settings, per-situation decision table |
 | `references/scene-craft.md` | Numeric cheat sheet: physical light intensities, color temperatures, exposure/EV100, fog densities, mood recipes (noon/golden hour/overcast/night/interior), scale tables, content path conventions |
 | `references/recipes.md` | End-to-end worked builds with exact call sequences |
@@ -229,11 +212,11 @@ Load on demand; keep SKILL.md-level rules in mind throughout.
   render/import-heavy sessions.
 - **Stale tool schemas.** After authoring/hot-reloading toolsets or enabling
   a plugin, run `ModelContextProtocol.RefreshTools` in the editor console
-  and re-`list_toolsets`. New C++ `UFUNCTION`s need a full editor restart —
-  Live Coding won't surface them.
+  and start a new Hermes session. New C++ `UFUNCTION`s need a full editor
+  restart — Live Coding won't surface them.
 - **Experimental plugin.** APIs and tool shapes can change between engine
-  versions; trust `describe_toolset` over memory, including this skill's
-  examples. When docs and the live schema disagree, the live schema wins.
+  versions; trust the directly advertised schema over memory, including this
+  skill's examples. When docs and the live schema disagree, the live schema wins.
 - **Don't expose the server beyond localhost.** Loopback-only, no auth, by
   design. Never suggest binding it wider.
 - **Licensing note.** The server logs on start: data transmitted via the
@@ -243,7 +226,7 @@ Load on demand; keep SKILL.md-level rules in mind throughout.
 
 ## Verification Checklist
 
-- [ ] `list_toolsets` returns toolsets at session start (connection healthy)
+- [ ] Direct `mcp_unreal_engine_*` tools are visible at session start (connection healthy)
 - [ ] Scene state queried before first edit (never assumed empty)
 - [ ] After each milestone: changed actors/properties re-queried and a
       screenshot reviewed against the brief

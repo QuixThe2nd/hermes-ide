@@ -46,7 +46,6 @@ from tools.connectors.gateway.errors import (
     render_connection_required,
 )
 from tools.connectors.gateway.names import (
-    CONNECTOR_BATCH_SENTINEL,
     CONNECTOR_NAME_PREFIX,
     ConnectorName,
     format_connector_name,
@@ -55,7 +54,6 @@ from tools.connectors.gateway.names import (
 )
 
 __all__ = [
-    "CONNECTOR_BATCH_SENTINEL",
     "CONNECTOR_NAME_PREFIX",
     "ConnectorConfig",
     "ConnectorName",

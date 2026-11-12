@@ -217,20 +217,17 @@ def _clear_tool_defs_cache() -> None:
 
 
 def get_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disabled_toolsets: Optional[List[str]] = None,
-                         quiet_mode: bool = False, skip_tool_search_assembly: bool = False) -> List[Dict[str, Any]]:
+                         quiet_mode: bool = False) -> List[Dict[str, Any]]:
     """Tool definitions for model API calls, filtered by toolset.
 
     enabled_toolsets None = all; disabled_toolsets are subtracted after enabling.
     quiet_mode suppresses status prints and enables memoization.
-    skip_tool_search_assembly returns raw schemas for every enabled tool — only
-    the tool_search bridge should use it (it reads the real, uncollapsed catalog).
     """
     def compute():
-        return _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
-                                         skip_tool_search_assembly=skip_tool_search_assembly)
+        return _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode)
     if not quiet_mode:
         return compute()
-    cache_key = _tool_defs_cache_key(enabled_toolsets, disabled_toolsets, skip_tool_search_assembly)
+    cache_key = _tool_defs_cache_key(enabled_toolsets, disabled_toolsets)
     # Cache the freshly-computed list, but hand callers a shallow copy so downstream mutations (e.g.
     # run_agent appending memory/LCM tool schemas to self.tools) don't poison the cache. Without this, a
     # long-lived Gateway process accumulates duplicate tool names across agent inits and providers that
@@ -259,7 +256,7 @@ def get_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disabled_
 
 
 def _tool_defs_cache_key(
-    enabled_toolsets: Optional[List[str]], disabled_toolsets: Optional[List[str]], skip_tool_search_assembly: bool,
+    enabled_toolsets: Optional[List[str]], disabled_toolsets: Optional[List[str]],
 ) -> Optional[tuple]:
     """Memo key for get_tool_definitions, or None when caching must be bypassed.
 
@@ -279,7 +276,7 @@ def _tool_defs_cache_key(
     return (
         registry.current_scope_key(), frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
         frozenset(disabled_toolsets) if disabled_toolsets else None, registry._generation, cfg_fp,
-        bool(skip_tool_search_assembly), _is_delegated_child_context(), profile_scope,
+        _is_delegated_child_context(), profile_scope,
     )
 
 
@@ -542,17 +539,8 @@ def _apply_dynamic_schemas(tool_defs: List[Dict[str, Any]]) -> List[Dict[str, An
     return out
 
 
-_TOOL_SEARCH_LISTING_FORMS = {
-    "full": "catalog listing embedded",
-    "names": "names-only listing embedded",
-    "mixed": "listing embedded (oversized servers summarized)",
-    "groups": "server summary embedded (search-only discovery)",
-    "none": "no listing (search-only)",
-}
-
-
 def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disabled_toolsets: Optional[List[str]] = None,
-                              quiet_mode: bool = False, skip_tool_search_assembly: bool = False) -> List[Dict[str, Any]]:
+                              quiet_mode: bool = False) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     tools_to_include = _select_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode)
     filtered_tools = _apply_dynamic_schemas(registry.get_definitions(tools_to_include, quiet=quiet_mode))
@@ -570,84 +558,7 @@ def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disa
     except Exception as e:  # pragma: no cover — defensive
         logger.warning("Schema sanitization skipped: %s", e)
 
-    # Tool Search (progressive disclosure): replace MCP/plugin tools with the
-    # tool_search/describe/call bridge when the deferrable surface exceeds the
-    # configured share of the context window. Core tools are never deferred.
-    # Must be the LAST step (after sanitization); idempotent if called twice.
-    try:
-        from tools.tool_search import assemble_tool_defs, load_config as _load_ts_config
-        ts_cfg = _load_ts_config()
-        if not skip_tool_search_assembly and ts_cfg.enabled != "off":
-            assembly = assemble_tool_defs(filtered_tools, context_length=_resolve_active_context_length(), config=ts_cfg)
-            if assembly.activated and not quiet_mode:
-                print(f"🔎 Tool Search (tier {assembly.tier}): {assembly.deferred_count} "
-                      f"MCP/plugin tools deferred (~{assembly.deferred_tokens} tokens) behind "
-                      f"tool_search/describe/call — "
-                      f"{_TOOL_SEARCH_LISTING_FORMS.get(assembly.listing_form, assembly.listing_form)}.")
-            filtered_tools = assembly.tool_defs
-    except Exception as e:  # pragma: no cover — never break tool loading
-        logger.warning("Tool search assembly skipped: %s", e)
-
     return filtered_tools
-
-
-def _active_model_config() -> Tuple[str, Dict[str, Any]]:
-    """(model_id, model section) from config.yaml; model_id is "" when unset."""
-    from hermes_cli.config import load_config
-    cfg = load_config() or {}
-    model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
-    raw_model_id = model_cfg.get("model") or model_cfg.get("default") or ""
-    if isinstance(raw_model_id, dict):
-        from hermes_cli.config import split_model_config_default
-        raw_model_id, _ = split_model_config_default(raw_model_id)
-    return str(raw_model_id).strip(), model_cfg
-
-
-def _resolve_active_context_length() -> int:
-    """Active model's context length for the tool-search gate (0 if unresolvable).
-
-    Order: explicit `model.context_length`; provider-aware resolution (Codex OAuth
-    enforces a smaller window than the direct API for the same slug); the on-disk
-    metadata cache (slightly stale is fine for picking a tier and avoids a ~200 ms
-    /models probe per CLI startup); then the full live resolver.
-    """
-    try:
-        model_id, model_cfg = _active_model_config()
-        if not model_id:
-            return 0
-        from agent.model_metadata import get_cached_context_length, get_model_context_length
-        # Honor explicit `model.context_length` in config.yaml — short-circuits the OpenRouter /models probe
-        # at get_model_context_length step 0, so non-OpenRouter providers don't pay the ~2-3s OpenRouter
-        # fetch at every CLI startup. See issue #46620.
-        raw_ctx = model_cfg.get("context_length")
-        config_ctx = raw_ctx if isinstance(raw_ctx, int) and raw_ctx > 0 else None
-        provider = str(model_cfg.get("provider") or "").strip()
-        base_url = str(model_cfg.get("base_url") or "").strip()
-        api_key = ""
-        if provider:
-            # Credential resolution failing (offline, no keys) degrades to a
-            # provider+base_url-only lookup so static fallbacks still apply.
-            try:
-                from hermes_cli.runtime_provider import resolve_runtime_provider
-                rt = resolve_runtime_provider(requested=provider, target_model=model_id) or {}
-                base_url = str(rt.get("base_url") or base_url or "").strip()
-                api_key = str(rt.get("api_key") or "").strip()
-            except Exception as rt_exc:
-                logger.debug("Runtime credential resolution failed for tool-search "
-                             "context gate (provider=%s): %s — using config values only", provider, rt_exc)
-        if config_ctx is None and base_url:
-            try:
-                cached_ctx = get_cached_context_length(model_id, base_url)
-                if isinstance(cached_ctx, int) and cached_ctx > 0:
-                    return cached_ctx
-            except Exception:
-                pass
-        return int(get_model_context_length(model_id, base_url=base_url, api_key=api_key,
-                                            config_context_length=config_ctx, provider=provider) or 0)
-    except Exception as e:
-        logger.debug("Could not resolve active context length: %s", e)
-        return 0
-
 
 # =============================================================================
 # handle_function_call  (the main dispatcher)
@@ -758,52 +669,6 @@ def _emit_post_tool_call_hook(
         )
     except Exception as _hook_err:
         logger.debug("post_tool_call hook error: %s", _hook_err)
-
-
-def _dispatch_bridge_tool(function_name: str, function_args: Dict[str, Any],
-                          enabled_toolsets: Optional[List[str]], disabled_toolsets: Optional[List[str]]):
-    """Handle a Tool Search bridge call (tool_search / tool_describe / tool_call).
-
-    None when *function_name* is not a bridge tool; ``(result, None)`` for a
-    finished catalog read or error; ``(None, (name, args))`` when a validated
-    tool_call should be re-dispatched as the real tool.
-    """
-    try:
-        from tools import tool_search as ts
-    except Exception:
-        return None
-    if not ts.is_bridge_tool(function_name):
-        return None
-    # Un-collapsed catalog scoped to the session's toolsets, so a restricted
-    # session (for example a subagent) can't reach the whole registry via the bridge.
-    try:
-        current_defs = get_tool_definitions(enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
-                                            quiet_mode=True, skip_tool_search_assembly=True) or []
-    except Exception:
-        current_defs = []
-    args = function_args or {}
-    if function_name == ts.TOOL_SEARCH_NAME:
-        return ts.dispatch_tool_search(args, current_tool_defs=current_defs), None
-    if function_name == ts.TOOL_DESCRIBE_NAME:
-        return ts.dispatch_tool_describe(args, current_tool_defs=current_defs), None
-    underlying_name, underlying_args, err = ts.resolve_underlying_call(args)
-    if err or not underlying_name:
-        return tool_error(err or "tool_call could not be resolved"), None
-    if underlying_name == ts.CONNECTOR_BATCH_SENTINEL:
-        if not ts.connections_in_scope(current_defs):
-            return tool_error("Connectors are not available in this session."), None
-        return None, (underlying_name, underlying_args)
-    # Defense in depth: resolve_underlying_call only checks the global
-    # registry; also require membership in the session-scoped catalog.
-    if underlying_name not in ts.scoped_deferrable_names(current_defs):
-        return tool_error(f"'{underlying_name}' is not available in this session. "
-                          "Use tool_search to find tools you can call."), None
-    # Validate against the deferred tool's concrete schema — the generic
-    # ``arguments: object`` bridge schema can't enforce it.
-    probe_err = ts.validate_deferred_call_args(underlying_name, underlying_args)
-    if probe_err is not None:
-        return probe_err, None
-    return None, (underlying_name, underlying_args)
 
 
 def _apply_request_middleware(
@@ -939,8 +804,8 @@ def handle_function_call(
     task_id isolates terminal/browser sessions; user_task feeds browser_snapshot.
     enabled_tools picks execute_code's sandbox tools (default: the process-global
     ``_last_resolved_tool_names``). skip_pre_tool_call_hook: caller already fired
-    it (single-fire contract). enabled/disabled_toolsets scope the Tool Search
-    bridge catalog to this session's grant (None = unrestricted).
+    it (single-fire contract). enabled/disabled_toolsets scope connector access
+    to this session's grant (None = unrestricted).
     """
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
@@ -955,28 +820,6 @@ def handle_function_call(
         _emit_post_tool_call_hook(function_name=function_name, function_args=function_args, result=result,
                                   **asdict(ids), middleware_trace=list(trace), **extra)
         return result
-
-    # Tool Search bridge: tool_search / tool_describe are catalog reads handled
-    # inline; tool_call is unwrapped so every downstream hook (pre/post, edit
-    # approval, guardrails) sees the real tool name, never the bridge.
-    bridged = _dispatch_bridge_tool(function_name, function_args, enabled_toolsets, disabled_toolsets)
-    if bridged is not None:
-        result, underlying = bridged
-        if underlying is None:
-            return _emit(result, duration_ms=_elapsed_ms(start))
-        from tools.connectors import CONNECTOR_BATCH_SENTINEL, dispatch_connector_batch
-        if underlying[0] == CONNECTOR_BATCH_SENTINEL:
-            return _emit(dispatch_connector_batch(
-                underlying[1]["calls"], ids, user_task=user_task,
-                enabled_tools=enabled_tools, middleware_trace=trace,
-                enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
-            ), duration_ms=_elapsed_ms(start))
-        return handle_function_call(
-            *underlying, **asdict(ids), user_task=user_task, enabled_tools=enabled_tools,
-            skip_pre_tool_call_hook=skip_pre_tool_call_hook, skip_tool_request_middleware=skip_tool_request_middleware,
-            skip_tool_execution_middleware=skip_tool_execution_middleware, tool_request_middleware_trace=list(trace),
-            enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
-        )
 
     from tools.connectors import is_connector_name
     from tools.connectors.gateway.names import parse_connector_name
