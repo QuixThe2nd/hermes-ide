@@ -111,6 +111,11 @@ class MatrixHub:
             router = self.router if not self._routers else DiscordSessionRouter(
                 transport="Matrix", version_field="_matrix_hub_version")
             self._routers[key] = router
+            socket_path = getattr(self.server, "socket_path", None)
+            if socket_path is not None and callable(getattr(router, "bind_store", None)):
+                import hashlib
+                digest = hashlib.sha256(str(key).encode("utf-8")).hexdigest()[:16]
+                router.bind_store(Path(socket_path).parent / f"hub-undelivered-matrix-{digest}.json")
         return router
 
     async def attach(self, *, config_data: Dict[str, Any], profile: str,
