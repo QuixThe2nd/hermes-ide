@@ -97,3 +97,18 @@ def test_render_block_is_idempotent():
     assert "**hermes-ide**" in block and "**upstream hermes**" in block
     assert "img.shields.io/badge" in block
     assert block.startswith(db.README_MARKERS[0]) and block.endswith(db.README_MARKERS[1])
+
+def test_badge_percent_is_encoded_once():
+    # A raw "%" is an invalid percent-escape and shields.io returns 400.
+    url = db._badge("delta", "4.4 deleted per 1 added, 44% smaller", "blue")
+    assert "44%25_smaller" in url
+    assert "44%_smaller" not in url
+    assert "%2525" not in url
+    side = db.render_side(
+        "hermes-ide",
+        {"pct_gone": 57, "pct_new": 23, "ratio_line": "4.4 deleted per 1 added, 44% smaller"},
+        "blue",
+    )
+    assert "57%25" in side and "23%25" in side
+    assert "57%2525" not in side
+

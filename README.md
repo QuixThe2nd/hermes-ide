@@ -13,7 +13,7 @@ It started as a fork of [Hermes Agent](https://github.com/NousResearch/hermes-ag
 <!-- divergence-badges:start -->
 **hermes-ide**
 
-![gone](https://img.shields.io/badge/gone-57%25-blue) ![new](https://img.shields.io/badge/new-23%25-blue) ![delta](https://img.shields.io/badge/delta-4.4_deleted_per_1_added~44%_smaller-blue)
+![gone](https://img.shields.io/badge/gone-57%25-blue) ![new](https://img.shields.io/badge/new-23%25-blue) ![delta](https://img.shields.io/badge/delta-4.4_deleted_per_1_added,_44%25_smaller-blue)
 
 - 57% of the original code is gone
 - 23% of the code it has now is new
@@ -21,7 +21,7 @@ It started as a fork of [Hermes Agent](https://github.com/NousResearch/hermes-ag
 
 **upstream hermes**
 
-![gone](https://img.shields.io/badge/gone-16%25-orange) ![new](https://img.shields.io/badge/new-40%25-orange) ![delta](https://img.shields.io/badge/delta-3.5_added_per_1_deleted~39%_larger-orange)
+![gone](https://img.shields.io/badge/gone-16%25-orange) ![new](https://img.shields.io/badge/new-40%25-orange) ![delta](https://img.shields.io/badge/delta-3.5_added_per_1_deleted,_39%25_larger-orange)
 
 - 16% of the original code is gone
 - 40% of the code it has now is new

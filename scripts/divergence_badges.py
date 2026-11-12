@@ -150,7 +150,11 @@ def compute_side(repo: Path, base: str, tip: str) -> dict:
 
 
 def _badge(label: str, value: str, color: str) -> str:
-    return f"![{label}](https://img.shields.io/badge/{label}-{value.replace('-', '--').replace(' ', '_')}-{color})"
+    # shields.io treats "%" as the start of a percent-escape. A raw "%"
+    # (as in "44% smaller") makes the badge URL 400. Encode it first so a
+    # later "%25" is not double-encoded.
+    message = value.replace("%", "%25").replace("-", "--").replace(" ", "_")
+    return f"![{label}](https://img.shields.io/badge/{label}-{message}-{color})"
 
 
 def render_side(name: str, s: dict, color: str) -> str:
@@ -160,9 +164,9 @@ def render_side(name: str, s: dict, color: str) -> str:
             "",
             " ".join(
                 [
-                    _badge("gone", f"{s['pct_gone']}%25", color),
-                    _badge("new", f"{s['pct_new']}%25", color),
-                    _badge("delta", s["ratio_line"].replace(", ", "~"), color),
+                    _badge("gone", f"{s['pct_gone']}%", color),
+                    _badge("new", f"{s['pct_new']}%", color),
+                    _badge("delta", s["ratio_line"], color),
                 ]
             ),
             "",
