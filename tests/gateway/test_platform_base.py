@@ -517,30 +517,6 @@ class TestMediaDeliveryPathValidation:
 
         assert filtered == [(str(safe.resolve()), True)]
 
-
-    def test_allows_stale_kanban_attachment_but_not_neighboring_workspace(
-        self, tmp_path, monkeypatch,
-    ):
-        """Strict mode trusts durable attachments without trusting scratch."""
-        self._patch_roots(monkeypatch)
-        monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path / "hermes"))
-        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
-        board_root = tmp_path / "hermes" / "kanban" / "boards" / "research"
-        board_root.mkdir(parents=True)
-        (board_root / "kanban.db").touch()
-        attachment = board_root / "attachments" / "t_12345678" / "report.pdf"
-        scratch = board_root / "workspaces" / "t_12345678" / "notes.txt"
-        attachment.parent.mkdir(parents=True)
-        scratch.parent.mkdir(parents=True)
-        attachment.write_bytes(b"%PDF")
-        scratch.write_text("private", encoding="utf-8")
-
-        assert BasePlatformAdapter.validate_media_delivery_path(str(attachment)) == str(
-            attachment.resolve()
-        )
-        assert BasePlatformAdapter.validate_media_delivery_path(str(scratch)) is None
-
-
     def test_recency_trust_denies_system_paths_even_when_fresh(self, tmp_path, monkeypatch):
         """A freshly-touched file under /etc must NOT be uploaded.
 
@@ -681,11 +657,9 @@ class TestMediaDeliveryDefaultMode:
         assert BasePlatformAdapter.validate_media_delivery_path(str(artifact)) == str(artifact.resolve())
 
     def test_denylist_blocks_session_stores_but_not_neighbouring_artifacts(self, tmp_path, monkeypatch):
-        """The SQLite session/kanban stores (and WAL/SHM sidecars, whose mtime is always fresh),
+        """The SQLite session stores (and WAL/SHM sidecars, whose mtime is always fresh),
         legacy ``sessions/`` transcripts and the copied browser cookie store hold every secret ever
-        pasted into a chat; ``MEDIA:~/.hermes/state.db`` must not exfiltrate them (#41071). Named
-        boards keep their DB beside the ATTACHMENTS the gateway already allowlists, so the board
-        attachment stays deliverable while ``kanban.db`` next to it does not."""
+        pasted into a chat; ``MEDIA:~/.hermes/state.db`` must not exfiltrate them (#41071)."""
         self._patch_roots(monkeypatch)
 
         fake_home = tmp_path / "home"
@@ -694,13 +668,10 @@ class TestMediaDeliveryDefaultMode:
         monkeypatch.setenv("HOME", str(fake_home))
         monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
         monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
-        board = hermes_dir / "kanban" / "boards" / "team-a"
-        (board / "attachments").mkdir(parents=True)
 
-        denied = ["state.db", "state.db-wal", "state.db-shm", "kanban.db", "kanban.db-wal",
-                  "sessions/20260101_abc.json", "browser-profile/Default/Cookies",
-                  "kanban/boards/team-a/kanban.db", "kanban/boards/team-a/kanban.db-wal"]
-        allowed = ["kanban/boards/team-a/attachments/report.pdf", "adhoc_report.pdf", "logs/agent.log"]
+        denied = ["state.db", "state.db-wal", "state.db-shm",
+                  "sessions/20260101_abc.json", "browser-profile/Default/Cookies"]
+        allowed = ["adhoc_report.pdf", "logs/agent.log"]
         for rel in denied + allowed:
             path = hermes_dir / rel
             path.parent.mkdir(parents=True, exist_ok=True)
