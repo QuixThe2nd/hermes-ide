@@ -247,7 +247,6 @@ TIPS = [
     "/compress <focus topic> allocates 60-70% of the summary budget to your topic and aggressively trims the rest.",
     "On second+ compression, the compressor updates the previous summary instead of starting from scratch.",
     "Before a gateway session reset, Hermes auto-flushes important facts to memory in the background.",
-    "network.force_ipv4: true in config.yaml fixes hangs on servers with broken IPv6 — monkey-patches socket.",
     "The terminal tool annotates common exit codes: grep returning 1 = 'No matches found (not an error)'.",
     "Failed foreground terminal commands auto-retry up to 3 times with exponential backoff (2s, 4s, 8s).",
     "Bare sudo commands are auto-rewritten to pipe SUDO_PASSWORD from .env — no interactive prompt needed.",

@@ -578,13 +578,11 @@ load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
 
 # Bridge security.redact_secrets → HERMES_REDACT_SECRETS BEFORE hermes_logging
 # imports agent.redact, which snapshots the flag exactly once at import. A
-# .env value still wins — this is config.yaml fallback only. network.force_ipv4
-# is read from the same parse to avoid a second full load_config() (~17ms).
-_FORCE_IPV4_EARLY = False
+# .env value still wins — this is config.yaml fallback only.
 try:
     # The effective-config cache (shared raw parse with read_raw_config()) means this SAME parse
     # serves hermes_logging, hermes_time and later raw reads: 3-4 config.yaml parses become one.
-    # Managed overlay included: administrator-pinned redact_secrets / force_ipv4 win here too.
+    # Managed overlay included: administrator-pinned redact_secrets wins here too.
     from hermes_cli.config_effective import load_user_config_effective as _load_effective_early
 
     _cfg_path = get_hermes_home() / "config.yaml"
@@ -596,9 +594,6 @@ try:
                 _early_redact = _early_sec_cfg.get("redact_secrets")
                 if _early_redact is not None:
                     os.environ["HERMES_REDACT_SECRETS"] = str(_early_redact).lower()
-        _early_net_cfg = _early_cfg_raw.get("network", {})
-        if isinstance(_early_net_cfg, dict) and _early_net_cfg.get("force_ipv4"):
-            _FORCE_IPV4_EARLY = True
         del _early_cfg_raw
     del _cfg_path
 except Exception:
@@ -619,15 +614,6 @@ try:
     )
 except Exception:
     pass  # best-effort — don't crash the CLI if logging setup fails
-
-# Apply IPv4 preference before any HTTP client is created.
-if _FORCE_IPV4_EARLY:
-    try:
-        from hermes_constants import apply_ipv4_preference as _apply_ipv4
-
-        _apply_ipv4(force=True)
-    except Exception:
-        pass  # best-effort — don't crash if hermes_constants not importable yet
 
 import logging
 import threading
