@@ -134,6 +134,18 @@ def test_second_echo_after_the_nudge_is_delivered():
     the answer (no infinite loop)."""
     agent = _FakeAgent()
     notice = _notice()
+    messages = _messages_with_notice(notice)
+    messages.append({
+        "role": "user", "content": "nudge already issued",
+        "_restart_echo_synthetic": True,
+    })
+
+    verdict = _apply(agent, notice, messages)
+
+    assert verdict.continue_turn is False
+    assert verdict.final_response == notice
+    assert len(messages) == 4
+    assert agent.emitted == []
 
 def test_later_restart_rearms_the_gate():
     """Once-per-notice, not once-per-session: after a genuine reply closes
@@ -191,18 +203,6 @@ def test_restart_shaped_text_with_other_pids_is_not_this_notice():
 
     assert verdict.continue_turn is False
     assert verdict.final_response == other
-    messages = _messages_with_notice(notice)
-    messages.append({
-        "role": "user", "content": "nudge already issued",
-        "_restart_echo_synthetic": True,
-    })
-
-    verdict = _apply(agent, notice, messages)
-
-    assert verdict.continue_turn is False
-    assert verdict.final_response == notice
-    assert len(messages) == 4
-    assert agent.emitted == []
 
 
 @pytest.mark.parametrize("reply", [

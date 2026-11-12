@@ -1,12 +1,16 @@
 """Text-response stop gates for the conversation turn loop.
 
-When the model stops with a text answer, two gates may instead append the answer as an
-interim row plus a synthetic user-role nudge and continue the turn: verify-on-stop (#65919)
-and the ``pre_verify`` plugin hook after code edits.
-Each keeps the candidate answer as a budget-exhaustion fallback
-(``pending_verification_response``) and clears ``final_response`` so the finalizer can tell
-this gate from error exits (#61631). Nothing here imports ``agent.conversation_loop`` at
-module level (cycle).
+When the model stops with a text answer, three gates may instead continue the
+turn. The restart-echo gate runs first and DROPS the answer: a model quoting
+the restart tool result (the rich "Restarted successfully" notice) is echoing
+context, not replying, so the candidate must not be emitted, persisted, or
+kept as a fallback — one synthetic user nudge re-enters the loop instead.
+The other two append the answer as an interim row plus a synthetic user-role
+nudge: verify-on-stop (#65919) and the ``pre_verify`` plugin hook after code
+edits. Each clears ``final_response`` so the finalizer can tell a gate from
+error exits (#61631); the interim-answer gates keep the candidate as a
+budget-exhaustion fallback (``pending_verification_response``). Nothing here
+imports ``agent.conversation_loop`` at module level (cycle).
 """
 
 from __future__ import annotations
@@ -16,6 +20,12 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent.message_metadata import append_message
+from agent.turn_control import (
+    RESTART_NOTICE_FIRST_LINE,
+    RESTART_NOTICE_NEW_PROCESS_PREFIX,
+    RESTART_NOTICE_OLD_PROCESS_PREFIX,
+    parse_restart_notice_lines,
+)
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -31,97 +41,89 @@ class StopGateVerdict:
     pending_verification_response_previewed: Any
 
 
-# First lines of every restart-notice last-line wording ever shipped: the
-# original builder text ("This chat is no longer running in ..." / "You are
-# now running in ...") and the do-not-send instruction line. A text stop
-# made of the identity lines plus at most ONE of these is an echo of the
-# tool result, not an answer.
-_RESTART_NOTICE_TRAILING_PREFIXES = (
-    "This chat is no longer running",
-    "You are now running in",
-    "This is a tool result for you",
+# A model that ends the turn by quoting the restart tool result is echoing
+# context, not answering (PR #667 follow-up: the notice reached a Discord
+# user verbatim as the turn's final reply). The echo is dropped — never
+# emitted, never persisted, never a budget fallback — and one synthetic user
+# nudge re-enters the loop after the tool result (tool → user, the legal
+# boundary /steer uses). The nudge is itself a user row after the notice, so
+# it structurally closes the gate: a second echo is delivered as the answer
+# (no loop), and a later restart's fresh notice re-arms it.
+_RESTART_ECHO_NUDGE = (
+    "[System: the \"Restarted successfully\" report with the process ids is "
+    "the restart tool result, not a reply to the user — do not send, repeat, "
+    "or quote it. The old process is gone; you are running in the new one. "
+    "Continue the interrupted task with your tools — confirm the restart "
+    "took effect and finish the remaining work — then answer the user about "
+    "that work.]"
 )
+_RESTART_ECHO_FLAG = "_restart_echo_synthetic"
 
 
-def _is_restart_notice_echo(text: Any) -> bool:
-    """True when *text* is (a quote of) the restart tool result, not an answer.
+def _latest_restart_notice(
+    messages: List[Dict[str, Any]],
+) -> Optional[tuple]:
+    """``(index, lines)`` of the newest rich restart-notice tool result."""
+    for index in range(len(messages) - 1, -1, -1):
+        row = messages[index]
+        if not (isinstance(row, dict) and row.get("role") == "tool"):
+            continue
+        lines = parse_restart_notice_lines(row.get("content"))
+        if lines is not None:
+            return index, lines
+    return None
 
-    Shape, not bytes: the identity block (``Restarted successfully`` +
-    ``Old process:``/``New process:`` lines) with at most one trailing
-    instruction line in a known wording. Anything beyond that is task
-    content, so a genuine final that mentions the pids passes through.
-    """
-    if not isinstance(text, str):
+
+def _restart_notice_window_open(messages: List[Dict[str, Any]], notice_index: int) -> bool:
+    """True while the restart turn is still open: no user row follows the
+    notice (the echo nudge itself, a raced-in user message, or a later turn
+    closes the window)."""
+    return not any(
+        isinstance(row, dict) and row.get("role") == "user"
+        for row in messages[notice_index + 1:]
+    )
+
+
+def _is_restart_notice_echo(text: Any, notice_lines: List[str]) -> bool:
+    """True when *text* quotes the notice itself: exact copy, or a subset —
+    it opens with the notice's first line, every line is one of the notice's
+    lines, and the identity (Old/New process) lines are present. A reply
+    about different pids, or notice lines plus real work, is content."""
+    stripped = str(text or "").strip()
+    if not stripped:
         return False
-    lines = [line.strip() for line in text.strip().split("\n")]
-    if not lines or not lines[0].startswith("Restarted successfully"):
-        return False
-    index = 1
-    if index < len(lines) and lines[index].startswith("Old process: "):
-        index += 1
-    if index >= len(lines) or not lines[index].startswith("New process: "):
-        return False
-    trailing = [line for line in lines[index + 1:] if line]
-    if not trailing:
+    reply_lines = [line.strip() for line in stripped.split("\n") if line.strip()]
+    if reply_lines == notice_lines:
         return True
-    return len(trailing) == 1 and trailing[0].startswith(
-        _RESTART_NOTICE_TRAILING_PREFIXES
-    )
+    if not stripped.startswith(RESTART_NOTICE_FIRST_LINE):
+        return False
+    if not all(line in notice_lines for line in reply_lines):
+        return False
+    identity = [
+        line for line in notice_lines
+        if line.startswith((
+            RESTART_NOTICE_OLD_PROCESS_PREFIX,
+            RESTART_NOTICE_NEW_PROCESS_PREFIX,
+        ))
+    ]
+    return all(line in reply_lines for line in identity)
 
 
-def _history_has_restart_notice(messages: List[Dict[str, Any]]) -> bool:
-    """The transcript must actually carry the restart tool result this echo quotes."""
-    for row in messages:
-        if isinstance(row, dict) and row.get("role") == "tool":
-            content = row.get("content")
-            if (
-                isinstance(content, str)
-                and "Restarted successfully" in content
-                and "New process: " in content
-            ):
-                return True
-    return False
-
-
-def _restart_echo_nudge() -> str:
-    return (
-        "[System: that text was the restart tool result, not a reply to "
-        "send to the user. Do not repeat or quote it. Continue the "
-        "interrupted task with your tools, and answer the user only about "
-        "that work.]"
-    )
-
-
-def _gate_restart_echo(agent, final_msg, final_response, messages) -> Optional[StopGateVerdict]:
-    """Drop a verbatim echo of the restart notice and continue the turn once.
-
-    The echo is context, not an answer: it is not emitted, not persisted as
-    the reply, and not kept as the budget-exhaustion fallback. One nudge
-    only — a second echo is delivered as the answer so the turn cannot loop.
-    """
-    if getattr(agent, "_restart_echo_nudges", 0) > 0:
+def _gate_restart_echo(agent, final_response, messages) -> Optional[StopGateVerdict]:
+    """Drop an echo of the restart notice and continue the interrupted turn."""
+    notice = _latest_restart_notice(messages)
+    if notice is None:
         return None
-    if any(
-        isinstance(row, dict) and row.get("_restart_echo_synthetic")
-        for row in messages
-    ):
+    notice_index, notice_lines = notice
+    if not _restart_notice_window_open(messages, notice_index):
         return None
-    if not _is_restart_notice_echo(final_response):
+    if not _is_restart_notice_echo(final_response, notice_lines):
         return None
-    if not _history_has_restart_notice(messages):
-        return None
-
-    agent._restart_echo_nudges = 1
-    if not (messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "tool"):
-        # user-tail: keep role alternation by persisting the echo as an
-        # assistant row first — WITHOUT emitting it to the user.
-        append_message(messages, final_msg)
-    append_message(
-        messages,
-        {"role": "user", "content": _restart_echo_nudge(), "_restart_echo_synthetic": True},
-    )
+    append_message(messages, {
+        "role": "user", "content": _RESTART_ECHO_NUDGE, _RESTART_ECHO_FLAG: True,
+    })
     agent._session_messages = messages
-    logger.debug("restart-notice echo dropped; continuation nudge issued")
+    logger.debug("restart-result echo gated; continuation nudge issued")
     return StopGateVerdict(
         continue_turn=True, final_response=None,
         pending_verification_response=None,
@@ -189,9 +191,11 @@ def apply_stop_gates(
     conversation_history: Any, pending_verification_response: Any,
     pending_verification_response_previewed: Any,
 ) -> StopGateVerdict:
-    """Run verify-on-stop, then the pre_verify hook. Nudges are user-role rows
-    appended only after the assistant answer row, so role alternation holds.
-    Hook lookups are imported lazily from their origin modules (tests patch them
+    """Run the restart-echo gate first (it drops the candidate entirely),
+    then verify-on-stop, then the pre_verify hook. Nudges are user-role rows
+    appended only after a legal boundary (tool result for the echo gate,
+    assistant answer row for the others), so role alternation holds. Hook
+    lookups are imported lazily from their origin modules (tests patch them
     there)."""
 
     def _continue(nudge: str, flag: str) -> StopGateVerdict:
@@ -209,7 +213,7 @@ def apply_stop_gates(
             ),
         )
 
-    _echo_verdict = _gate_restart_echo(agent, final_msg, final_response, messages)
+    _echo_verdict = _gate_restart_echo(agent, final_response, messages)
     if _echo_verdict is not None:
         return _echo_verdict
 
