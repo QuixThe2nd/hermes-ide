@@ -65,7 +65,10 @@ def test_cleanup_all_includes_direct_camofox_sessions(browser_state):
     from tools import browser_camofox
 
     browser_state._active_sessions["facade-task"] = {"backend": "camofox"}
+    # Other tests in the browser suite may leave entries in _sessions; isolate this test.
     with browser_camofox._sessions_lock:
+        saved_sessions = dict(browser_camofox._sessions)
+        browser_camofox._sessions.clear()
         browser_camofox._sessions["direct-task"] = {
             "user_id": "u1",
             "tab_id": "tab-1",
@@ -78,7 +81,8 @@ def test_cleanup_all_includes_direct_camofox_sessions(browser_state):
         assert {call.args[0] for call in cleanup.call_args_list} == {"facade-task", "direct-task"}
     finally:
         with browser_camofox._sessions_lock:
-            browser_camofox._sessions.pop("direct-task", None)
+            browser_camofox._sessions.clear()
+            browser_camofox._sessions.update(saved_sessions)
 
 
 def test_emergency_cleanup_clears_tracking_after_cleanup(browser_state):
