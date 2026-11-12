@@ -1,4 +1,4 @@
-"""Auto-goal (``goals.auto.mode=on``): apply a Jev decision at the turn boundary.
+"""Auto-goal: apply a Jev decision at the turn boundary.
 
 The decision is classified off-path at message arrival
 (``gateway/run_goal_intent.py``) and applied here, at turn end, BEFORE the goal
@@ -47,7 +47,7 @@ class GatewayGoalAutoMixin:
     async def _take_pending_auto_goal_decision(self: "GatewayRunner", source) -> Optional[Dict[str, Any]]:
         """Pop this session's pending classification and bounded-await it.
 
-        Returns None when nothing is pending (shadow mode, internal turns,
+        Returns None when nothing is pending (internal turns,
         suppressed messages) or the decision did not land in time — never
         raises, never defers a stale decision to a later turn.
         """
@@ -87,7 +87,7 @@ class GatewayGoalAutoMixin:
             label = str(decision.get("label") or "unknown")
             confidence = _confidence_of(decision)
             # chat / unknown / low confidence: nothing to do — the raw label and
-            # confidence are already in the shadow JSONL.
+            # confidence are already in the audit JSONL.
             if label not in CLASSIFICATION_LABELS or confidence < AUTO_GOAL_CONFIDENCE_MIN:
                 return None
             message = str(decision.get("message") or "").strip()
@@ -145,12 +145,17 @@ class GatewayGoalAutoMixin:
             return DEFAULT_MAX_TURNS
 
     def _auto_goal_contract(self, message: str, decision: Dict[str, Any]):
-        """Merged completion contract: inline user fields win over the classifier's
-        draft; an explicit ``done when:`` line overrides the outcome verbatim."""
+        """Merged completion contract for a goal start: inline user fields win
+        over the classifier's draft; an explicit ``done when:`` line overrides
+        the outcome verbatim. A start with no classifier draft (any non-task
+        label, or a failed draft) drafts one here — a goal started from ANY
+        label gets a contract."""
         from hermes_cli import goals
 
         headline, inline = goals.parse_contract(message)
         draft = goals.GoalContract.from_dict(decision.get("contract_draft"))
+        if draft.is_empty():
+            draft = self._auto_goal_draft((headline or message).strip(), decision)
         merged = goals.GoalContract(
             **{field: (getattr(inline, field) or getattr(draft, field)) for field in goals._CONTRACT_FIELDS}
         )
@@ -159,18 +164,44 @@ class GatewayGoalAutoMixin:
             merged.outcome = override
         return (headline or message).strip(), merged
 
+    def _auto_goal_draft(self, objective: str, decision: Dict[str, Any]):
+        """Draft a completion contract at goal-start time when the classifier
+        carried none, over the objective plus the assistant's last reply as
+        context when the decision has one the objective does not already
+        quote. Best-effort: an unavailable drafter yields an empty contract
+        and never blocks the goal."""
+        from hermes_cli import goals
+
+        context = str(decision.get("last_assistant") or "").strip()
+        if context and context not in objective:
+            objective = f"{objective}\nAssistant's last reply, for context: {context}"
+        try:
+            return goals.draft_contract(objective=objective) or goals.GoalContract()
+        except Exception:
+            return goals.GoalContract()
+
     def _auto_goal_set_from_text(self: "GatewayRunner", mgr, goal_text: str, contract) -> str:
-        """Set a fresh goal; returns its done-condition (contract outcome, else the goal text)."""
+        """Set a fresh goal; returns the 🎯 finish line: the contract's drafted
+        outcome, plus a stop-and-ask clause when the contract has one. Empty
+        when no outcome exists — the raw message is never echoed as a
+        done-condition."""
         from hermes_cli import goals
 
         state = mgr.set(goal_text, contract=contract)
-        return (state.contract.outcome.strip() if state.has_contract() else "") or goal_text
+        settled = getattr(state, "contract", None) or goals.GoalContract()
+        outcome = settled.outcome.strip()
+        if not outcome:
+            return ""
+        stop_when = settled.stop_when.strip()
+        if stop_when:
+            return f"🎯 Done when: {outcome} — stop and ask when: {stop_when}"
+        return f"🎯 Done when: {outcome}"
 
     def _auto_goal_start_or_append(
         self: "GatewayRunner", sid: str, message: str, decision: Dict[str, Any]
     ) -> Optional[str]:
         """task + confidence: append to an active goal, else create one (draft contract,
-        ``done when:`` override, one 🎯 line)."""
+        ``done when:`` override, one 🎯 line carrying the drafted outcome)."""
         from hermes_cli.goals import GoalManager
 
         mgr = GoalManager(session_id=sid, default_max_turns=self._goal_max_turns())
@@ -178,9 +209,9 @@ class GatewayGoalAutoMixin:
             mgr.add_subgoal(message)  # never a second goal
             return None
         goal_text, contract = self._auto_goal_contract(message, decision)
-        done_condition = self._auto_goal_set_from_text(mgr, goal_text, contract)
+        notice = self._auto_goal_set_from_text(mgr, goal_text, contract)
         logger.info("auto-goal: created goal for session %s", sid)
-        return f"🎯 Done when: {done_condition}"
+        return notice or None
 
     def _auto_goal_approval(
         self: "GatewayRunner", sid: str, message: str, decision: Dict[str, Any]
@@ -227,12 +258,14 @@ class GatewayGoalAutoMixin:
             if last_assistant
             else message
         )
-        draft = goals.GoalContract.from_dict(decision.get("contract_draft"))
-        self._auto_goal_set_from_text(mgr, goal_text, draft)
+        contract = goals.GoalContract.from_dict(decision.get("contract_draft"))
+        if contract.is_empty():
+            contract = self._auto_goal_draft(goal_text, decision)
+        self._auto_goal_set_from_text(mgr, goal_text, contract)
         logger.info("auto-goal: chase started a goal for session %s", sid)
-        return None
+        return None  # chase starts carry no 🎯 line
 
-    # ── 'stop' pause (message arrival, mode on) ──────────────────────────
+    # ── 'stop' pause (message arrival) ──────────────────────────────────
 
     async def _pause_goal_for_stop(self: "GatewayRunner", source) -> None:
         """Pause any active goal for a ``stop`` message. Best-effort, off the reply path."""

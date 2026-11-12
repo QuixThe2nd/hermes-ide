@@ -1670,7 +1670,7 @@ class GatewayInboundMixin:
         # Auto-goal intent: classify off-path (this schedules retained,
         # profile-scoped work; no classification/HTTP/DB/JSONL work runs
         # inline with the reply) so the decision is ready at the turn boundary.
-        self._schedule_goal_intent_shadow(event, _quick_key)
+        self._schedule_auto_goal_intent(event, _quick_key)
         allow_gateway_control = event.allow_gateway_control
         _up_state = self._peek_session_state(_quick_key)
         if (

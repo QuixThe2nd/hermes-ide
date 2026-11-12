@@ -227,9 +227,9 @@ class GatewayGoalsMixin:
         user message that arrives simultaneously is handled by the same
         queue and takes priority naturally.
 
-        ``auto_decision`` (goals.auto.mode=on) is applied FIRST — before the
-        judge — so a goal minted by this turn's message is judged against
-        this turn's response in the same boundary.
+        ``auto_decision`` is applied FIRST — before the judge — so a goal minted
+        by this turn's message is judged against this turn's response in the
+        same boundary.
         """
         try:
             from hermes_cli.goals import GoalManager
@@ -344,10 +344,10 @@ class GatewayGoalsMixin:
             logger.debug("post-turn session resolution failed: %s", exc)
             return
 
-        # Auto-goal (goals.auto.mode=on): consume the decision parked at
-        # message arrival. Popped before the final-text gate and dropped —
-        # not deferred — when the turn produced no text: an interrupted or
-        # errored turn must not mint a goal.
+        # Auto-goal: consume the decision parked at message arrival.
+        # Popped before the final-text gate and dropped — not deferred —
+        # when the turn produced no text: an interrupted or errored turn
+        # must not mint a goal.
         auto_decision = await self._take_pending_auto_goal_decision(source)
 
         # Empty interrupted/errored responses must not drive /goal, but an

@@ -1335,17 +1335,15 @@ DEFAULT_CONFIG = {
     "prefill_messages_file": "",
     # Goals — persistent cross-turn goal loop: after each turn an aux-model judge checks
     # if the goal is satisfied, else a continuation prompt re-enters the session until
-    # done, budget exhausted, or paused. With goals.auto.mode=on goals are created
-    # automatically from task-like messages (see `hermes goals`). Judge failures fail
-    # OPEN; the budget is the backstop.
+    # done, budget exhausted, or paused. Goals are always automatic: every eligible
+    # message is classified by Jev Decisions and task-like messages start/extend a
+    # goal at the end of the turn (see `hermes goals`). Judge failures fail OPEN; the
+    # budget is the backstop. A leftover `goals.auto` key from older installs is
+    # ignored — there is no mode setting.
     "goals": {
         # Max continuation turns before auto-pause — guards against judge false
         # negatives and unbounded spend.
         "max_turns": 20,
-        # off = no work; shadow = background classification + local JSONL only;
-        # on = Jev Decisions classify eligible messages and auto goals are
-        # created/appended/resumed at the end of the turn.
-        "auto": {"mode": "shadow"},
     },
     # Loops — /loop re-runs a prompt or slash command on a cadence in-session. Fixed interval fires
     # on the user's clock; self-paced (no interval) starts at the floor and backs off exponentially

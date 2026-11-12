@@ -6,9 +6,9 @@ description: "Automatic standing goals: task-like messages start the loop, and H
 
 # Persistent Goals (auto-goal)
 
-A standing goal gives Hermes an objective that survives across turns. With
-`goals.auto.mode: on`, every eligible message is classified by a Jev Decisions
-model (`typesafe/jev-1.13` via Openrouter): task-like messages **start a goal
+A standing goal gives Hermes an objective that survives across turns. Every
+eligible message is classified by a Jev Decisions model
+(`typesafe/jev-1.13` via Openrouter): task-like messages **start a goal
 automatically**, follow-up task messages extend it, approvals resume a paused
 loop, and chases reopen work that finished or stalled. After every turn a
 lightweight judge model checks whether the goal is satisfied by the
@@ -42,21 +42,14 @@ to say "keep going" three times* are where the loop shines.
 
 ## Quick start
 
-```yaml
-# ~/.hermes/config.yaml
-goals:
-  auto:
-    mode: on   # default is shadow (log-only observation)
-```
-
-Then just send the task:
+Nothing to enable — just send the task:
 
 ```
 You: why is tdarr down and can you get it back up
 
 Hermes: <starts diagnosing>
 
-  🎯 Done when: why is tdarr down and can you get it back up
+  🎯 Done when: tdarr is back up and verified serving
 
   ↻ Continuing toward goal (1/20): the cause is found but the fix is unverified.
 ```
@@ -65,13 +58,18 @@ What happened:
 
 1. **Your message was classified** (`task`, confidence ≥ 0.6) off-path, at
    message arrival — it never delays the reply.
-2. **At the end of the turn**, the goal is created and you get exactly one
-   `🎯 Done when: …` line — the goal's completion condition, from an explicit
-   `done when:` line in your message if you wrote one, otherwise the goal text.
+2. **At the end of the turn**, the goal is created with a drafted completion
+   contract and you get exactly one `🎯 Done when: …` line carrying the
+   contract's outcome — from an explicit `done when:` line in your message if
+   you wrote one, otherwise the drafted outcome (no line is posted when no
+   outcome could be drafted; the raw message is never echoed back as a
+   done-condition). A `stop_when` in the contract rides the same line as a
+   "stop and ask when" clause.
 3. **The judge runs** against the turn that just finished; if the goal isn't
    met, a continuation prompt re-enters the session automatically.
 4. **The loop terminates** with `✓ Goal achieved`, `⏸ Goal paused — N/20
    turns used`, or your own "stop".
+
 
 Low-confidence decisions, `chat`, and `unknown` (the fail-safe result when
 the classifier is unreachable) never start a goal — but the raw label and
@@ -83,7 +81,7 @@ confidence are always logged (see the intent report below).
 |---|---|
 | a task-like message (no active goal) | Starts a goal + one `🎯 Done when:` line. |
 | a task-like message (goal active) | Appended to the active goal as an extra criterion. No second goal. |
-| "yeah", "merge", "go ahead" (goal paused) | Resumes the paused goal (budget reset). No papercut. |
+| "yeah", "merge", "go ahead" (goal paused) | Resumes the paused goal (budget reset). No papercut. With nothing paused, it starts a goal from the approval — contract drafted like any other start. |
 | "status?", "so u done?", "it didnt work" | **Chase.** Reopens a goal that finished or paused within the last 30 minutes and appends `user says not done: <message>`; with no recent goal, starts one from the chase text plus the last assistant message. |
 | "stop" | Pauses the active goal immediately and keeps the turn goal-free. |
 | "just answer" (anywhere in the message) | Skips goal machinery for that turn entirely. |
@@ -126,10 +124,12 @@ not a loose "looks done" claim.
 
 ### Two ways a contract gets set
 
-**1. Automatically.** When a task message starts a goal, the `goal_judge`
-auxiliary model drafts a contract from the message (same drafter the old
-`/goal draft` used). If drafting is unavailable, the goal is set free-form —
-drafting never blocks goal creation.
+**1. Automatically.** Whenever a message starts a goal — from any label
+(task, an approval with nothing paused, a chase with no recent goal) — the
+`goal_judge` auxiliary model drafts a contract from the message (plus the
+assistant's last reply as context when there is one). If drafting is
+unavailable, the goal is set free-form and no `🎯` line is posted — drafting
+never blocks goal creation.
 
 **2. Inline, in your message.** Write `field: value` lines directly in the
 task message:
@@ -293,25 +293,20 @@ adds nothing to model context.
 goals:
   # Max continuation turns before Hermes auto-pauses. Default 20.
   max_turns: 20
-
-  # Auto-goal intent (gateway). Default: shadow.
-  # off: no classification, no HTTP calls.
-  # shadow: classify in the background and write local audit records only.
-  # on: task-like messages start/extend goals at the end of the turn.
-  auto:
-    mode: shadow
 ```
 
-In `on` and `shadow` modes every eligible human message is classified by one
-Jev Decisions POST to Openrouter (`typesafe/jev-1.13`, 8s timeout, one retry,
-then fail closed as `unknown`). The classifier needs `OPENROUTER_API_KEY` (in
-`.env` or the platform's secret scope); without a key, `on` mode simply never
-starts goals — nothing else changes. Internal/system events, bot-authored
-messages, blank messages, and slash commands are skipped.
+Automatic goals are always on — there is no mode setting. A `goals.auto` key
+left over in a config.yaml from an older install is ignored, not an error;
+you can delete it. Every eligible human message is classified by one Jev
+Decisions POST to Openrouter (`typesafe/jev-1.13`, 8s timeout, one retry,
+then fail closed as `unknown`). The classifier needs `OPENROUTER_API_KEY`
+(in `.env` or the platform's secret scope); without a key, goals simply never
+start automatically — nothing else changes. Internal/system events,
+bot-authored messages, blank messages, and slash commands are skipped.
 
 Records are appended to `<HERMES_HOME>/goals/intent_shadow.jsonl`
-(profile-aware) in every mode that classifies — including `on`, which is the
-audit trail of what the loop acted on. The directory and file use private
+(profile-aware) — the audit trail of what the loop acted on. The directory
+and file use private
 permissions (`0700`/`0600` where supported), and each stored message excerpt
 is capped at 300 characters. Inspect counts and the newest examples per label
 without making an LLM call:
