@@ -1205,7 +1205,7 @@ platforms:
 ```
 
 :::tip
-You usually don't need to configure this manually. The auto-discovery via DoH handles most restricted-network scenarios. The `TELEGRAM_FALLBACK_IPS` env var is only needed if DoH is also blocked on your network. If IPv6 is broken on the host, you can also set `network.force_ipv4: true` in `config.yaml` to skip AAAA lookups process-wide.
+You usually don't need to configure this manually. The auto-discovery via DoH handles most restricted-network scenarios. The `TELEGRAM_FALLBACK_IPS` env var is only needed if DoH is also blocked on your network.
 :::
 
 ## Proxy Support

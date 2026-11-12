@@ -1392,32 +1392,6 @@ def get_env_path() -> Path:
     return get_hermes_home() / ".env"
 
 
-def apply_ipv4_preference(force: bool = False) -> None:
-    """Monkey-patch ``socket.getaddrinfo`` to prefer IPv4 when *force* is True.
-
-    Broken-IPv6 hosts hang on AAAA for the full TCP timeout; ``AF_UNSPEC`` resolves as ``AF_INET``,
-    falling back to full resolution when no A record exists (pure-IPv6 hosts still work).
-    """
-    if not force:
-        return
-
-    import socket
-
-    if getattr(socket.getaddrinfo, "_hermes_ipv4_patched", False):
-        return
-    _original_getaddrinfo = socket.getaddrinfo
-
-    def _ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-        if family == 0:  # AF_UNSPEC — caller didn't request a specific family
-            try:
-                return _original_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
-            except socket.gaierror:  # no A record — pure-IPv6 host
-                return _original_getaddrinfo(host, port, family, type, proto, flags)
-        return _original_getaddrinfo(host, port, family, type, proto, flags)
-    _ipv4_getaddrinfo._hermes_ipv4_patched = True  # type: ignore[attr-defined]
-    socket.getaddrinfo = _ipv4_getaddrinfo  # type: ignore[assignment]
-
-
 PARTIAL_STREAM_STUB_ID = "partial-stream-stub"
 FINISH_REASON_LENGTH = "length"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"

@@ -1437,11 +1437,6 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
             "default with `hermes model <name>`."
         )
 
-    with contextlib.suppress(Exception):
-        from hermes_constants import apply_ipv4_preference
-        _net_cfg = _cfg.get("network", {})
-        if isinstance(_net_cfg, dict) and _net_cfg.get("force_ipv4"):
-            apply_ipv4_preference(force=True)
     return _CronJobConfig(_cfg, model, _model_cfg, _cron_default_provider)
 
 
