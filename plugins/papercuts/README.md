@@ -11,12 +11,13 @@ papercut through Hermes Starts. That shared opener applies the configured
 `plugins.entries.hermes_starts.settings.mention_user_id` owner ping and thread
 membership, so papercuts do not silently bypass inbox notifications.
 
-Openings lead with a short plain-English hook and why the friction matters;
-component, severity, and times seen follow as compact details. Each lifecycle
-transition produces one logical update (long updates split into multiple
-Discord messages), and closing posts once before archiving. Stage notes remain
-complete in the journal and in delivery rather than being truncated with an
-ellipsis.
+Openings are rewritten in plain language by an auxiliary model, with a
+deterministic summary-and-impact fallback when the model is unavailable or its
+output is rejected. Component, severity, and times seen follow as compact
+details. Each lifecycle transition produces one logical update (long updates
+split into multiple Discord messages), and closing posts once before archiving.
+Stage notes remain complete in the journal and in delivery rather than being
+truncated with an ellipsis.
 
 ## Prerequisites
 
