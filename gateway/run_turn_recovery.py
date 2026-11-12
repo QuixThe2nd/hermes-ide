@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -140,6 +141,51 @@ def _stand_down_for_claim_loss(
     preparation.blocked_error = f"forced_recovery_{claim}_{suffix}"
 
 
+def _restart_success_content(old_process: Optional[str], new_process: str) -> str:
+    """Model-facing restart result; legacy results may lack the old identity."""
+    lines = ["Restarted successfully"]
+    if old_process:
+        lines.append(f"Old process: {old_process}")
+    lines.append(f"New process: {new_process}")
+    if old_process:
+        lines.append(
+            f"This chat is no longer running in {old_process}. "
+            f"You are now running in {new_process}. Continue the original task."
+        )
+    else:
+        lines.append(
+            f"You are now running in {new_process}. Continue the original task."
+        )
+    return "\n".join(lines)
+
+
+def _parse_restart_success_content(content: Any) -> Optional[tuple[Optional[str], str]]:
+    """Accept only the exact rich result shape and recover its old identity."""
+    if not isinstance(content, str):
+        return None
+    lines = content.split("\n")
+    if not lines or lines[0] != "Restarted successfully":
+        return None
+    old_process = None
+    if len(lines) == 4:
+        if not lines[1].startswith("Old process: "):
+            return None
+        old_process = lines[1][len("Old process: "):].strip()
+        new_line = lines[2]
+    elif len(lines) == 3:
+        new_line = lines[1]
+    else:
+        return None
+    if not new_line.startswith("New process: "):
+        return None
+    new_process = new_line[len("New process: "):].strip()
+    if not new_process or (len(lines) == 4 and not old_process):
+        return None
+    if content != _restart_success_content(old_process, new_process):
+        return None
+    return old_process, new_process
+
+
 def _repair_restart_tool_tail(history: list) -> Optional[tuple[list, bool]]:
     """Return the exact successful restart result the successor must resume from."""
     from agent.message_sanitization import tool_call_id_variants, tool_result_id_variants
@@ -197,6 +243,7 @@ def _repair_restart_tool_tail(history: list) -> Optional[tuple[list, bool]]:
     if restart_call is None:
         return None
 
+    old_process = None
     id_variants = tool_call_id_variants(restart_call)
     matching_results = []
     for index in range(assistant_index + 1, result_end):
@@ -205,6 +252,11 @@ def _repair_restart_tool_tail(history: list) -> Optional[tuple[list, bool]]:
             continue
         content = row.get("content")
         trusted_result = content == "Restarted successfully"
+        if not trusted_result:
+            rich_result = _parse_restart_success_content(content)
+            if rich_result is not None:
+                old_process, _rich_new_process = rich_result
+                trusted_result = True
         if not trusted_result:
             try:
                 payload = json.loads(content)
@@ -215,11 +267,16 @@ def _repair_restart_tool_tail(history: list) -> Optional[tuple[list, bool]]:
                 and payload.get("success") is True
                 and payload.get(TURN_CONTROL_FIELD) == GATEWAY_RESTART_CONTROL
             )
+            if trusted_result and isinstance(payload, dict):
+                process = payload.get("process")
+                if isinstance(process, str) and process.strip():
+                    old_process = process.strip()
         if not trusted_result:
             return None
         matching_results.append(index)
     if len(matching_results) != 1:
         return None
+    success_content = _restart_success_content(old_process, f"pid {os.getpid()}")
 
     result_index = matching_results[0]
     rewritten = [
@@ -230,10 +287,10 @@ def _repair_restart_tool_tail(history: list) -> Optional[tuple[list, bool]]:
     result = rewritten[result_index]
     changed = bool(
         drop_close
-        or result.get("content") != "Restarted successfully"
+        or result.get("content") != success_content
         or "api_content" in result
     )
-    result["content"] = "Restarted successfully"
+    result["content"] = success_content
     result.pop("api_content", None)
     return rewritten, changed
 

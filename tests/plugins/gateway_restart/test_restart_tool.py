@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 import threading
 import time
@@ -233,6 +234,9 @@ def test_schema_describes_successor_tool_result_and_single_bounce():
 
     description = RESTART_SCHEMA["description"]
     assert "Restarted successfully" in description
+    assert "Old process:" in description
+    assert "New process:" in description
+    assert "exactly 'Restarted successfully'" not in description
     assert "continues the interrupted task" in description
     assert "do not call restart again for the same restart" in description.lower()
     assert "ends this turn immediately" not in description.lower()
@@ -589,6 +593,7 @@ def test_handler_queues_via_control_socket_when_no_runner(monkeypatch):
         requested["restart_platforms"] = restart_platforms
         return {
             "queued": True,
+            "pid": 3376901,
             "status": "restarting",
             "active_agents": 2,
             "via_service": False,
@@ -604,13 +609,13 @@ def test_handler_queues_via_control_socket_when_no_runner(monkeypatch):
     assert result["status"] == "restarting"
     assert result["active_agents"] == 2
     assert result["via_service"] is False
-    # No live runner to read draining from — the ack's status carries the
-    # state, so False is the honest answer.
-    assert result["draining"] is False
+    # The worker uses the gateway PID from the ACK, never its own process ID.
+    assert result["process"] == "pid 3376901"
+    assert "draining" not in result
     # Same committed-restart turn-control stamp as the in-process path, so
     # the tool executor ends the turn identically on either transport.
     expected_fields = {
-        "success", "status", "draining", "active_agents", "via_service",
+        "success", "status", "process", "active_agents", "via_service",
         *turn_control_field_for("restarting"),
     }
     assert set(result) == expected_fields
@@ -829,10 +834,12 @@ def test_other_session_live_queues_the_drain_immediately(gateway_loop, monkeypat
     from agent.turn_control import turn_control_field_for
 
     expected_fields = {
-        "success", "status", "draining", "active_agents", "via_service",
+        "success", "status", "process", "active_agents", "via_service",
         *turn_control_field_for("restarting"),
     }
     assert set(result) == expected_fields
+    assert result["process"] == f"pid {os.getpid()}"
+    assert "draining" not in result
     runner.request_restart.assert_called_once()
     # No plugin-side idle poll ran before the drain.
     slept.assert_not_called()
@@ -1127,7 +1134,7 @@ else:
 
     def _restart_verb(params):
         acks.append(params)
-        return {"queued": True, "status": "restarting",
+        return {"queued": True, "status": "restarting", "pid": 3376901,
                 "active_agents": 3, "via_service": None}
 
     server = GatewayControlServer(home, verb_handlers={"restart": _restart_verb})
@@ -1153,10 +1160,12 @@ else:
         assert result["success"] is True, result
         assert result["status"] == "restarting"
         assert result["active_agents"] == 3
+        assert result["process"] == "pid 3376901"
+        assert "draining" not in result
         assert acks == [{"restart_platforms": True}], acks
         from agent.turn_control import turn_control_field_for
         assert set(result) == {
-            "success", "status", "draining", "active_agents", "via_service",
+            "success", "status", "process", "active_agents", "via_service",
             *turn_control_field_for("restarting"),
         }, sorted(result)
         print("SOCKET-OK")
