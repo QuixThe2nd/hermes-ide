@@ -14,6 +14,12 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from agent.turn_control import (
+    RESTART_NOTICE_FIRST_LINE,
+    RESTART_NOTICE_NEW_PROCESS_PREFIX,
+    RESTART_NOTICE_OLD_PROCESS_PREFIX,
+)
+
 logger = logging.getLogger("gateway.run")
 
 
@@ -143,18 +149,24 @@ def _stand_down_for_claim_loss(
 
 def _restart_success_content(old_process: Optional[str], new_process: str) -> str:
     """Model-facing restart result; legacy results may lack the old identity."""
-    lines = ["Restarted successfully"]
+    lines = [RESTART_NOTICE_FIRST_LINE]
     if old_process:
-        lines.append(f"Old process: {old_process}")
-    lines.append(f"New process: {new_process}")
+        lines.append(f"{RESTART_NOTICE_OLD_PROCESS_PREFIX}{old_process}")
+    lines.append(f"{RESTART_NOTICE_NEW_PROCESS_PREFIX}{new_process}")
     if old_process:
         lines.append(
-            f"This chat is no longer running in {old_process}. "
-            f"You are now running in {new_process}. Continue the original task."
+            "This is a tool result for you, not a message to send or quote "
+            f"to the user. This chat is no longer running in {old_process}; "
+            f"you are now running in {new_process}. Continue the interrupted "
+            "task with your tools until the original work is verified, then "
+            "reply to the user about that work."
         )
     else:
         lines.append(
-            f"You are now running in {new_process}. Continue the original task."
+            "This is a tool result for you, not a message to send or quote "
+            f"to the user. You are now running in {new_process}. Continue "
+            "the interrupted task with your tools until the original work is "
+            "verified, then reply to the user about that work."
         )
     return "\n".join(lines)
 
@@ -164,21 +176,21 @@ def _parse_restart_success_content(content: Any) -> Optional[tuple[Optional[str]
     if not isinstance(content, str):
         return None
     lines = content.split("\n")
-    if not lines or lines[0] != "Restarted successfully":
+    if not lines or lines[0] != RESTART_NOTICE_FIRST_LINE:
         return None
     old_process = None
     if len(lines) == 4:
-        if not lines[1].startswith("Old process: "):
+        if not lines[1].startswith(RESTART_NOTICE_OLD_PROCESS_PREFIX):
             return None
-        old_process = lines[1][len("Old process: "):].strip()
+        old_process = lines[1][len(RESTART_NOTICE_OLD_PROCESS_PREFIX):].strip()
         new_line = lines[2]
     elif len(lines) == 3:
         new_line = lines[1]
     else:
         return None
-    if not new_line.startswith("New process: "):
+    if not new_line.startswith(RESTART_NOTICE_NEW_PROCESS_PREFIX):
         return None
-    new_process = new_line[len("New process: "):].strip()
+    new_process = new_line[len(RESTART_NOTICE_NEW_PROCESS_PREFIX):].strip()
     if not new_process or (len(lines) == 4 and not old_process):
         return None
     if content != _restart_success_content(old_process, new_process):

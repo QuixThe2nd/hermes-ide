@@ -29,13 +29,13 @@ RESTART_SCHEMA = {
         "command. New turns and other sessions' long running turns "
         "continue in a new instance. This call only requests the restart; "
         "the old process terminates this turn mechanically. The successor "
-        "supplies a tool result beginning 'Restarted successfully', with "
-        "'Old process: <old_id>' and 'New process: <new_id>' lines that "
-        "identify the gateway process transition, and continues the "
-        "interrupted task from that result. Continue the original task "
-        "then; do not call restart again for the same restart. Use this "
-        "to pick up config or code changes, or to recover a misbehaving "
-        "gateway."
+        "process rewrites this tool result with lines beginning 'Restarted "
+        "successfully' plus 'Old process: <old_id>' and 'New process: "
+        "<new_id>'. That result is context for you, not a message to send "
+        "to the user: do not repeat or quote it. Continue the interrupted "
+        "task using your tools and only then reply about that work, and "
+        "do not call restart again for the same restart. Use this to pick "
+        "up config or code changes, or to recover a misbehaving gateway."
     ),
     "parameters": {
         "type": "object",

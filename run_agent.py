@@ -215,6 +215,9 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_pre_verify_synthetic",
     # pre_turn_end end-of-turn nudge: same synthetic-user-nudge shape
     "_pre_turn_end_synthetic",
+    # restart-result echo nudge: the gated echo itself is dropped; the
+    # nudge exists only to drive the continuation.
+    "_restart_echo_synthetic",
     # dropped tool-call re-prompt pair (finish_reason=tool_calls with an
     # empty tool_calls array): the interim narration-only assistant turn
     # and the "issue the actual tool call now" user nudge exist only to
