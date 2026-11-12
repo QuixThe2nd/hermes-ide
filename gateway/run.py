@@ -2226,6 +2226,7 @@ def build_resume_recovery_note(
     message: str = "",
     *,
     interactive: bool = True,
+    continue_task: bool = False,
 ) -> str:
     """Build the resume-pending recovery system note for an interrupted turn.
 
@@ -2242,6 +2243,11 @@ def build_resume_recovery_note(
     resumed turn must instead complete the interrupted work, or the task is
     silently abandoned behind a "restored" acknowledgement that goes
     nowhere (#57056).
+
+    ``continue_task`` marks a restart_requester resume whose turn already
+    wrote its real assistant final: the restart was part of the task, so
+    the note says to continue that task and re-verify the pre-restart
+    claims instead of asking what next.
     """
     reason_phrase = (
         "a gateway restart"
@@ -2257,6 +2263,17 @@ def build_resume_recovery_note(
         )
         tail_guidance = (
             "Do NOT re-execute old tool calls — resume where you left off."
+        )
+    elif continue_task:
+        resume_guidance = (
+            "The restart you requested has already run — do NOT "
+            "re-execute it. Continue the original task and re-verify "
+            "the claims you made before the restart. Do NOT ask the "
+            "user what to do next."
+        )
+        tail_guidance = (
+            "Do not redo tool calls whose results already appear in "
+            "the history; finish the steps that have no recorded result."
         )
     elif interactive:
         resume_guidance = (
@@ -2278,11 +2295,18 @@ def build_resume_recovery_note(
             "appear in the history — resume from the first step "
             "that has no recorded result."
         )
+    already_ran = (
+        ""
+        if continue_task
+        else (
+            "Any restart/shutdown command in the history has already "
+            "run — do NOT re-execute or verify it. "
+        )
+    )
     return (
         f"[System note: The previous turn was interrupted by "
         f"{reason_phrase}; the gateway is now back online. "
-        f"Any restart/shutdown command in the history has already "
-        f"run — do NOT re-execute or verify it. {resume_guidance} "
+        f"{already_ran}{resume_guidance} "
         f"{tail_guidance}]"
         + (f"\n\n{message}" if message else "")
     )
@@ -2293,6 +2317,7 @@ def _prepare_resume_pending_message(
     message: Optional[str],
     *,
     interactive: bool = True,
+    continue_task: bool = False,
 ) -> tuple[str, str]:
     """Return the recovery message and the user text to persist.
 
@@ -2307,6 +2332,7 @@ def _prepare_resume_pending_message(
     """
     recovery_message = build_resume_recovery_note(
         reason, message or "", interactive=interactive,
+        continue_task=continue_task,
     )
     persist_message = (
         message if isinstance(message, str) and message.strip() else recovery_message
@@ -3976,15 +4002,6 @@ if _config_path.exists():
             "your current config.yaml. Run `hermes doctor` to investigate.",
             file=sys.stderr,
         )
-
-# Apply IPv4 preference if configured (before any HTTP clients are created).
-try:
-    from hermes_constants import apply_ipv4_preference
-    _network_cfg = (_cfg if '_cfg' in dir() else {}).get("network", {})
-    if isinstance(_network_cfg, dict) and _network_cfg.get("force_ipv4"):
-        apply_ipv4_preference(force=True)
-except Exception as _bootstrap_exc:
-    print(f"  Warning: IPv4 preference application failed: {_bootstrap_exc}", file=sys.stderr)
 
 # Validate config structure early — log warnings so gateway operators see problems
 try:
@@ -8729,13 +8746,6 @@ class GatewayRunner(
 
         # Start background session expiry watcher to finalize expired sessions
         self._spawn_supervised(self._session_expiry_watcher, "session_expiry_watcher")
-
-        # Keep the /model picker's remote catalogs (curated manifest,
-        # OpenRouter live list, Nous Portal recommendations) warm on disk so a
-        # delisted or newly-published model reaches the picker within one TTL
-        # window (model_catalog.ttl_minutes, default 20) without waiting for a
-        # cold /model open to trigger the refresh.
-        self._spawn_supervised(self._model_catalog_refresh_watcher, "model_catalog_refresh_watcher")
 
         # Stall watchdog: pending inbound + stale agent activity → warn user
         # to /new (does not kill the turn; see agent.session_stall_timeout).

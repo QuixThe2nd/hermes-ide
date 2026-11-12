@@ -316,27 +316,27 @@ class TestGatewayNotRunningWarning:
 
 
 class TestExternalCronProviderStatus:
-    """With an external cron provider (e.g. Chronos), jobs fire via a
-    NAS-mediated webhook, NOT the in-process ticker. The ticker-heartbeat /
+    """With an external cron provider, jobs fire via an external
+    scheduler, NOT the in-process ticker. The ticker-heartbeat /
     gateway-process heuristics are meaningless there, so neither
     `cron status` nor the create/list warning must claim the gateway being
     absent means jobs won't fire — that was a false-negative on every healthy
-    Chronos instance (the heartbeat is intentionally never written).
+    external provider instance (the heartbeat is intentionally never written).
     """
 
-    def test_status_reports_provider_not_ticker_for_chronos(
+    def test_status_reports_provider_not_ticker_for_external_provider(
         self, tmp_cron_dir, capsys, monkeypatch
     ):
         create_job(prompt="Ping", schedule="every 2m")
         monkeypatch.setattr(
-            "hermes_cli.cron._active_cron_provider_name", lambda: "chronos"
+            "hermes_cli.cron._active_cron_provider_name", lambda: "external"
         )
-        # Even with NO gateway process and NO ticker heartbeat, Chronos status
+        # Even with NO gateway process and NO ticker heartbeat, provider status
         # must NOT report a stall / "not firing".
         monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
         cron_command(Namespace(cron_command="status"))
         out = capsys.readouterr().out
-        assert "chronos" in out
+        assert "external" in out
         assert "managed scheduler" in out
         assert "not firing" not in out.lower()
         assert "STALLED" not in out
@@ -345,13 +345,13 @@ class TestExternalCronProviderStatus:
         assert "active job(s)" in out
 
 
-    def test_create_silent_for_chronos_even_without_gateway(
+    def test_create_silent_for_external_provider_even_without_gateway(
         self, tmp_cron_dir, capsys, monkeypatch
     ):
         # The create-time "gateway not running" nag is a ticker-only concern;
         # an external provider doesn't depend on a live in-process ticker.
         monkeypatch.setattr(
-            "hermes_cli.cron._active_cron_provider_name", lambda: "chronos"
+            "hermes_cli.cron._active_cron_provider_name", lambda: "external"
         )
         monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
         cron_command(

@@ -692,11 +692,8 @@ hermes cron <list|create|edit|pause|resume|run|remove|status|runs|incidents|doct
 | `tick` | Run due jobs once and exit. |
 
 The cron **trigger** is pluggable via the `cron.provider` config key. Empty
-(the default) uses the built-in in-process ticker. Set it to `chronos` (the
-NAS-managed provider for scale-to-zero hosted gateways) — configured via the
-`cron.chronos.*` keys (`portal_url`, `callback_url`, `expected_audience`,
-`nas_jwks_url`) — or name a custom provider under `plugins/cron/<name>/` or
-`$HERMES_HOME/plugins/<name>/`. An unknown or unavailable provider falls back to
+(the default) uses the built-in in-process ticker, or name a custom provider
+under `plugins/cron_providers/<name>/` or `$HERMES_HOME/plugins/<name>/`. An unknown or unavailable provider falls back to
 the built-in, so cron is never left without a trigger. See the
 [cron internals](../developer-guide/cron-internals.md#gateway-integration) doc.
 
@@ -828,7 +825,7 @@ hermes doctor [--fix]
 |--------|-------------|
 | `--fix` | Attempt automatic repairs where possible. |
 
-The **API Connectivity** section includes an `IPv6 route` check: it opens one short (2 s) IPv6 TCP connection to a known dual-stack host. A route that is advertised but only times out (a blackholed IPv6 prefix) is reported as a warning naming the remedy, `network.force_ipv4: true`. Having no IPv6 route at all is healthy and reported as OK; the check is skipped when `force_ipv4` is already set.
+The **API Connectivity** section includes an `IPv6 route` check: it opens one short (2 s) IPv6 TCP connection to a known dual-stack host. A route that is advertised but only times out (a blackholed IPv6 prefix) is reported as a warning with a remedy to fix the IPv6 route. Having no IPv6 route at all is healthy and reported as OK.
 
 Custom-endpoint config checks (both warn-only; `--fix` does not rewrite them):
 

@@ -317,15 +317,6 @@ def _probe_azure_entra() -> ProbeResult:
     return _row(name, "warn", f"({err})", [f"Azure Foundry Entra: {err}. {hint}"], label=label)
 
 
-def _load_network_config() -> dict:
-    try:
-        from hermes_cli.config import load_config_readonly
-        net = (load_config_readonly() or {}).get("network")
-    except Exception:
-        return {}
-    return net if isinstance(net, dict) else {}
-
-
 def _tcp_connect(sockaddr, timeout: float) -> None:
     """Open + close one IPv6 TCP connection; raises OSError (TimeoutError on a dead route)."""
     with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sock:
@@ -340,8 +331,6 @@ def _probe_ipv6_path() -> ProbeResult:
     """Dead-IPv6-route detector (#114265): an advertised AAAA path that only times out makes every
     serial connect burn its full timeout before IPv4 answers. Name the remedy instead of stalling."""
     name = "IPv6 route"
-    if _load_network_config().get("force_ipv4"):
-        return _skip(name)  # IPv6 is never dialled
     host = urlsplit(OPENROUTER_MODELS_URL).hostname
     try:
         infos = socket.getaddrinfo(host, 443, socket.AF_INET6, socket.SOCK_STREAM)
@@ -352,7 +341,7 @@ def _probe_ipv6_path() -> ProbeResult:
     try:
         _tcp_connect(infos[0][4], _IPV6_PROBE_TIMEOUT)
     except TimeoutError:
-        remedy = "set `network.force_ipv4: true` in config.yaml (or fix the IPv6 route)"
+        remedy = "fix or disable the host's IPv6 route (or prefer IPv4 via /etc/gai.conf)"
         return _row(name, "warn", f"(IPv6 route to {host} advertised but dead: connect timed out after "
                     f"{_IPV6_PROBE_TIMEOUT:g}s — {remedy})",
                     [f"Dead IPv6 route: every IPv6-first connect stalls before IPv4 answers. Fix: {remedy}"])

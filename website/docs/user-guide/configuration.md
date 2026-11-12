@@ -1626,7 +1626,7 @@ The semaphore wraps the entire call including retries and fallbacks, so a single
 
 ### OpenRouter routing & Pareto Code for auxiliary tasks
 
-When an auxiliary task resolves to OpenRouter (either explicitly or via `provider: "main"` while your main agent is on OpenRouter), the main agent's `provider_routing` and `openrouter.min_coding_score` settings **do not propagate** — by design, each auxiliary task is independent. To set OpenRouter provider preferences or use the [Pareto Code router](../integrations/providers.md#openrouter-pareto-code-router) for a specific aux task, set them per-task via `extra_body`:
+When an auxiliary task resolves to OpenRouter (either explicitly or via `provider: "main"` while your main agent is on OpenRouter), the main agent's `provider_routing` settings and the Pareto coding-score floor **do not propagate** — by design, each auxiliary task is independent. To set OpenRouter provider preferences or use the [Pareto Code router](../integrations/providers.md#openrouter-pareto-code-router) for a specific aux task, set them per-task via `extra_body`:
 
 ```yaml
 auxiliary:
@@ -2324,28 +2324,7 @@ Signal is listed as a valid platform key because the setting can be saved per pl
 
 `show_commentary` (default `true`) controls Codex Responses models' commentary channel — the polished progress narration these models produce alongside their private reasoning. When enabled, each completed commentary message is delivered as a visible mid-turn update (on the gateway this also requires `interim_assistant_messages`). Set it to `false` if the extra narration annoys you: commentary then falls back to the reasoning channel and is only shown when `show_reasoning` is enabled.
 
-## Privacy
-
-```yaml
-privacy:
-  redact_pii: false  # Strip PII from LLM context (gateway only)
-```
-
-When `redact_pii` is `true`, the gateway redacts personally identifiable information from the system prompt before sending it to the LLM on supported platforms:
-
-| Field | Treatment |
-|-------|-----------|
-| Phone numbers (user ID on WhatsApp/Signal) | Hashed to `user_<12-char-sha256>` |
-| User IDs | Hashed to `user_<12-char-sha256>` |
-| Chat IDs | Numeric portion hashed, platform prefix preserved (`telegram:<hash>`) |
-| Notification channel IDs | Numeric portion hashed |
-| User names / usernames | **Not affected** (user-chosen, publicly visible) |
-
-**Platform support:** Redaction applies to WhatsApp, Signal, and Telegram. Discord and Slack are excluded because their mention systems (`<@user_id>`) require the real ID in the LLM context.
-
-Hashes are deterministic — the same user always maps to the same hash, so the model can still distinguish between users in group chats. Routing and delivery use the original values internally.
-
-### OpenAI Codex request identity
+## OpenAI Codex request identity
 
 OpenAI requires third-party Codex harnesses to identify themselves.
 ChatGPT-authenticated requests to the official Codex endpoint automatically
@@ -2899,17 +2878,6 @@ terminal:
 ```
 
 `MESSAGING_CWD` and direct `TERMINAL_CWD` entries in `~/.hermes/.env` are legacy compatibility fallbacks. New configurations should use `terminal.cwd`.
-
-## Network
-
-Connectivity workarounds for outbound HTTP:
-
-```yaml
-network:
-  force_ipv4: false   # Force IPv4 for outbound connections (default: false)
-```
-
-`force_ipv4` — on servers with broken or unreachable IPv6, Python resolves AAAA records first and can hang for the full TCP timeout before falling back to IPv4. Hermes already races IPv6 and IPv4 for every outbound connection it makes (Happy Eyeballs, RFC 8305: the IPv4 attempt starts 250 ms after IPv6 and whichever connects first wins), so an advertised-but-blackholed IPv6 route costs about a quarter second per connection instead of the full timeout. This covers the gateway's WebSocket dials (relay connector, platform adapters) as well as HTTP. Set this to `true` only when you want to skip IPv6 entirely and connect over IPv4 directly. `hermes doctor` runs an `IPv6 route` check that detects a dead IPv6 path and points at this setting.
 
 ## Onboarding
 

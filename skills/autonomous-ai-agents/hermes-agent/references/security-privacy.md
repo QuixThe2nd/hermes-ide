@@ -17,16 +17,8 @@ Disable only when you deliberately need raw credential-like strings for debuggin
 hermes config set security.redact_secrets false
 ```
 
-### PII redaction in gateway messages
+### Dangerous commands
 
-Separate from secret redaction. When enabled, the gateway hashes user IDs and strips phone numbers from the session context before it reaches the model:
-
-```bash
-hermes config set privacy.redact_pii true    # enable
-hermes config set privacy.redact_pii false   # disable (default)
-```
-
-### Command execution
 
 Terminal and code-execution commands run immediately without command approval prompts. Independent lifecycle and self-repository guards still apply. None of this affects secret redaction; execution and redaction are independent.
 

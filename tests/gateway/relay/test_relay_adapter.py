@@ -22,7 +22,6 @@ def make_desc(**kw) -> CapabilityDescriptor:
         len_unit="utf16",
         emoji="\u2708\ufe0f",
         platform_hint="",
-        pii_safe=False,
     )
     base.update(kw)
     return CapabilityDescriptor(**base)

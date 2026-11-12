@@ -921,12 +921,6 @@ def _run_post_update_maintenance(
     with _best_effort('Post-update state.db integrity check failed: %s'):
         _verify_and_restore_state_dbs_post_update()
 
-    # Seed the model-catalog cache from the checkout instead of a bot-gated, flaky fetch.
-    with _best_effort('Model catalog seed during update failed: %s'):
-        from hermes_cli.model_catalog import seed_cache_from_checkout
-        if seed_cache_from_checkout(_m().PROJECT_ROOT):
-            print("  ✓ Model catalog cache refreshed from checkout")
-
     # Claimed work that throws cannot be part of a *completed* preparation — a deferred run that
     # swallowed this would stamp itself prepared while the skill tree is half-synced (fork).
     try:

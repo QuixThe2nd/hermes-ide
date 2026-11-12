@@ -2194,7 +2194,6 @@ class GatewayTurnMixin:
         context prompt, sidecar notes, turn lease, transcript load + hygiene, inbound text. Returns
         ``(_PreparedTurn, env_tokens)``; a ``str`` first element is a reply to send instead of
         running (history unreadable); ``None`` drops the turn (inbound text rejected)."""
-        from gateway.run import _load_gateway_config
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
         context = build_session_context(source, self.config, session_entry)
         # Session context variables for tools (task-local, concurrency-safe)
@@ -2202,13 +2201,9 @@ class GatewayTurnMixin:
         # Self-injected turns (MessageEvent(internal=True)) persist with a DB-only display_kind so
         # UIs render timeline notices, not user bubbles; role/content untouched.
         persist_user_display_kind = display_kind_for_event(event)
-        _redact_pii = False  # privacy.redact_pii, re-read per message
-        with suppress(Exception):
-            _redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
-
         # The context prompt render is pinned per session, keyed by a hash of the renderer inputs, so
         # the system prompt cannot drift turn-over-turn; a miss (thread rename, /sethome) re-renders.
-        context_prompt = self._pinned_session_context_prompt(context, _redact_pii, session_key)
+        context_prompt = self._pinned_session_context_prompt(context, session_key)
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
         # (appending to the ephemeral system prompt forced a full agent rebuild).
@@ -2525,8 +2520,6 @@ class GatewayTurnMixin:
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
 
-        # Read privacy.redact_pii from config (re-read per message)
-        _redact_pii = False
         persist_user_message = None
         persist_user_timestamp = None
         # Synthetic self-injected turns (async-delegation batch completions,
@@ -2540,21 +2533,13 @@ class GatewayTurnMixin:
         persist_user_display_kind = (
             "internal_notification" if getattr(event, "internal", False) else None
         )
-        try:
-            _pcfg = _load_gateway_config()
-            _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
-        except Exception:
-            pass
-
         # Build the context prompt to inject.  The render is pinned per
         # session, keyed by a hash of the exact renderer inputs
         # (_ephemeral_change_key).  A key hit reuses the pinned bytes verbatim
         # so the composed system prompt cannot drift turn-over-turn; a key
-        # miss (thread rename, /setnotify, redact_pii flip, ...) re-renders
+        # miss (thread rename, /setnotify, ...) re-renders
         # once — the only legitimate cache busts.
-        context_prompt = self._pinned_session_context_prompt(
-            context, _redact_pii, session_key
-        )
+        context_prompt = self._pinned_session_context_prompt(context, session_key)
 
         # Per-turn must-deliver notes.  These used to be appended to
         # context_prompt (the ephemeral system prompt), which guaranteed a

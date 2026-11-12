@@ -16,7 +16,6 @@ def _telegram_descriptor(**overrides) -> CapabilityDescriptor:
         len_unit="utf16",
         emoji="\u2708\ufe0f",
         platform_hint="You are on Telegram.",
-        pii_safe=False,
     )
     base.update(overrides)
     return CapabilityDescriptor(**base)

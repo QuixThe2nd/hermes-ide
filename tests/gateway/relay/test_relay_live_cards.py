@@ -43,7 +43,6 @@ def make_desc(**kw) -> CapabilityDescriptor:
         len_unit="chars",
         emoji="\U0001f4ac",
         platform_hint="",
-        pii_safe=False,
         supported_ops=("send", "edit", "typing", "draft", "task_card"),
     )
     base.update(kw)

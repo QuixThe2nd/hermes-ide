@@ -1,6 +1,6 @@
 """Tests for fire_overdue_jobs — misfire catch-up for external cron providers.
 
-External providers (Chronos) deliver scheduled fires over HTTP; when the
+External providers deliver scheduled fires over HTTP; when the
 loopback hop is down at fire time and the scheduler's retry budget exhausts,
 the job's next_run_at stays parked in the past and nothing ever runs it
 (external providers have no local tick loop). fire_overdue_jobs, called from

@@ -353,8 +353,8 @@ TOOLSETS = {
     # Tools are injected via MemoryManager, not the toolset system.
 
     "discord": {
-        "description": "Discord read and participate tools (fetch messages, search members, create threads, resolve tickets, approve actions)",
-        "tools": ["discord", "resolve_ticket", "discord_approve_action"],
+        "description": "Discord read and participate tools (fetch messages, search members, create threads, resolve tickets)",
+        "tools": ["discord", "resolve_ticket"],
         "includes": [],
     },
 
@@ -479,7 +479,6 @@ TOOLSETS = {
             "discord",
             "discord_admin",
             "resolve_ticket",
-            "discord_approve_action",
         ],
         "includes": []
     },

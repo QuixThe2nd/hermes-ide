@@ -1437,11 +1437,6 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
             "default with `hermes model <name>`."
         )
 
-    with contextlib.suppress(Exception):
-        from hermes_constants import apply_ipv4_preference
-        _net_cfg = _cfg.get("network", {})
-        if isinstance(_net_cfg, dict) and _net_cfg.get("force_ipv4"):
-            apply_ipv4_preference(force=True)
     return _CronJobConfig(_cfg, model, _model_cfg, _cron_default_provider)
 
 
@@ -2238,7 +2233,6 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         providers_ignored=pr.get("ignore"),
         providers_order=pr.get("order"),
         provider_sort=pr.get("sort"),
-        openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
         enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
         disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
         quiet_mode=True,
@@ -2975,8 +2969,8 @@ def _run_one_job_body(
     try:
         # Commit a finite one-shot's dispatch BEFORE its side effect so a tick dying mid-run cannot
         # re-fire it forever on restart. No-op for recurring/infinite jobs (at-most-times).
-        # This lives here in the shared body so BOTH the built-in ticker and the external provider (Chronos
-        # fire_due) get at-most-times semantics. See #38758.
+        # This lives here in the shared body so BOTH the built-in ticker and external providers
+        # get at-most-times semantics. See #38758.
         if not claim_dispatch(job["id"]):
             logger.info(
                 "Job '%s': one-shot dispatch limit reached — skipping",
