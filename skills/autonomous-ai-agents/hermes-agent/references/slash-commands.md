@@ -7,7 +7,7 @@ it. New commands land often; `/help` in-session is always authoritative.
 
 ### Session
 ```
-/new (/reset) [name]     Fresh session
+/new [name]             Fresh session
 /clear                   Clear screen + new session (CLI)
 /retry                   Resend last message
 /undo [N]                Back up N user turns and re-prompt
@@ -35,10 +35,6 @@ it. New commands land often; `/help` in-session is always authoritative.
 ### Configuration
 ```
 /config                  Show config (CLI)
-/model [name] [--global] Switch model (session-scoped by default)
-/personality [name]      Set a personality
-/reasoning [level|show|hide] Reasoning effort/display (none..xhigh|max|ultra)
-/fast [normal|fast]      Priority/fast processing tier
 /verbose                 Cycle tool progress: off → new → all → verbose → log (CLI)
 /voice [on|off|tts]      Voice mode
 /busy [queue|steer|interrupt] How messages behave while working (CLI + gateway)

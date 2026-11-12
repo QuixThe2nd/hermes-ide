@@ -153,7 +153,7 @@ Hermes 已经可以通过自定义 provider 路径与任何 OpenAI 兼容的端�
 - 辅助模型默认值
 - 测试
 
-如果这些文件之间的 id 不一致，provider 会感觉只接了一半线：认证可能正常，而 `/model`、setup 或运行时解析会静默地遗漏它。
+如果这些文件之间的 id 不一致，provider 会感觉只接了一半线：认证可能正常，而 `hermes model`、setup 或运行时解析会静默地遗漏它。
 
 ## 第 2 步：在 `hermes_cli/auth.py` 中添加认证元数据
 
@@ -205,7 +205,7 @@ anthropic:claude-sonnet-4-6
 kimi:model-name
 ```
 
-如果此处缺少别名，provider 可能认证正常，但在 `/model` 解析中仍然失败。
+如果此处缺少别名，provider 可能认证正常，但在 `hermes model` 解析中仍然失败。
 
 ## 第 4 步：在 `hermes_cli/runtime_provider.py` 中解析运行时数据
 
@@ -412,7 +412,7 @@ python -m hermes_cli.main setup
 
 ### 1. 将 provider 添加到 auth 但未添加到模型解析
 
-这会导致凭据解析正确，而 `/model` 和 `provider:model` 输入失败。
+这会导致凭据解析正确，而 `hermes model` 和 `provider:model` 输入失败。
 
 ### 2. 忘记 `config["model"]` 可以是字符串或字典
 

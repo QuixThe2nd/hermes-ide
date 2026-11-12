@@ -120,7 +120,6 @@ hermes -w -z "Fix issue #123"     # 在 worktree 中以单次查询模式运行
 | 命令 | 描述 |
 |---------|-------------|
 | `/help` | 显示命令帮助 |
-| `/model` | 显示或更改当前模型 |
 | `/tools` | 列出当前可用工具 |
 | `/skills browse` | 浏览 skill 中心和官方可选 skill |
 | `/bg <prompt>` | 在独立后台会话中运行一个 prompt |
@@ -128,7 +127,6 @@ hermes -w -z "Fix issue #123"     # 在 worktree 中以单次查询模式运行
 | `/skin` | 显示或切换当前 CLI 皮肤 |
 | `/voice on` | 启用 CLI 语音模式（按 `Ctrl+B` 录音） |
 | `/voice tts` | 切换 Hermes 回复的语音播放 |
-| `/reasoning high` | 提高推理强度 |
 | `/title My Session` | 为当前会话命名 |
 | `/status` | 显示会话信息——模型/配置/token/时长——以及本地**会话摘要**块（近期轮次数、常用工具、涉及文件、最新用户 prompt + 助手回复）。纯本地计算，不调用 LLM。 |
 | `/sessions` | 在经典 CLI 中直接打开交互式会话选择器（与 TUI 使用同一界面）。输入过滤，方向键导航，Enter 恢复。 |
@@ -187,12 +185,11 @@ Hermes 会在第一轮对话前将每个指定的 skill 加载到会话 prompt �
 
 ## 人格设定
 
-设置预定义人格以改变 agent 的语气：
+在 `~/.hermes/config.yaml` 中设置预定义人格（`display.personality`）以改变 agent 的语气：
 
-```
-/personality pirate
-/personality kawaii
-/personality concise
+```yaml
+display:
+  personality: pirate   # 例如 kawaii、concise
 ```
 
 内置人格包括：`helpful`、`concise`、`technical`、`creative`、`teacher`、`kawaii`、`catgirl`、`pirate`、`shakespeare`、`surfer`、`noir`、`uwu`、`philosopher`、`hype`。

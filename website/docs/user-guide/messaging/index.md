@@ -214,9 +214,7 @@ platform network disconnect as an event-loop failure.
 
 | Command | Description |
 |---------|-------------|
-| `/new` or `/reset` | Start a fresh conversation |
-| `/model [provider:model]` | Show or change the model (supports `provider:model` syntax) |
-| `/personality [name]` | Set a personality (`none` to reset) |
+| `/new` | Start a fresh conversation |
 | `/retry` | Retry the last message |
 | `/undo` | Remove the last exchange |
 | `/status` | Show session info |
@@ -228,7 +226,6 @@ platform network disconnect as an event-loop failure.
 | `/sessions [all] [search <query>]` | List previous sessions; `search <query>` filters by title or id |
 | `/usage` | Show token usage for this session (`/usage reset [--force]` redeems a banked Codex limit reset) |
 | `/insights [days]` | Show usage insights and analytics |
-| `/reasoning [level\|show\|hide]` | Change reasoning effort or toggle reasoning display |
 | `/voice [on\|off\|tts\|join\|leave\|status]` | Control messaging voice replies and Discord voice-channel behavior |
 | `/rollback [number]` | List or restore filesystem checkpoints |
 | `/bg <prompt>` | Run a prompt in a separate background session |
@@ -248,9 +245,9 @@ Sessions persist across messages until they reset. The agent remembers your conv
 
 `/sessions` lists your previous sessions for the current chat — including the one you're in now, marked `(current)` — and `/sessions <name>` resumes one (shorthand for `/resume`). When the list grows long, `/sessions search <query>` (alias `find`) filters by title or session-id match, ordered by most recently active. Cross-origin listing with `/sessions all` is admin-only — regular users get a notice explaining the list stayed chat-scoped, and only ever see sessions from their own chat origin.
 
-### Persistent `/model` Overrides
+### Persistent Model Overrides
 
-A `/model` switch in a gateway chat applies to that session and now **survives gateway restarts**: the model/provider choice is persisted to the session store and rehydrated on first use after a restart (credentials are re-resolved at load time and never written to disk). `/new` (or `/reset`) clears the override, and `/model <name> --global` writes it through to `config.yaml` instead. `/model <name> --once` applies for a single turn only.
+A model switch in a gateway chat (`hermes model <name>` from the terminal, or a session override set via that path) applies to that session and now **survives gateway restarts**: the model/provider choice is persisted to the session store and rehydrated on first use after a restart (credentials are re-resolved at load time and never written to disk). `/new` clears the override, and a `--global` switch writes it through to `config.yaml` instead. A `--once` switch applies for a single turn only.
 
 ### Delivery Reliability
 
@@ -286,7 +283,7 @@ old behavior: in-flight responses are lost on crash).
 ### Session continuity
 
 Gateway conversations do not reset after inactivity or at a daily boundary. Use `/new`
-or `/reset` for an explicit new conversation; context compression remains automatic.
+for an explicit new conversation; context compression remains automatic.
 Legacy `session_reset` settings, reset-policy overrides and reset-timer environment
 variables are ignored. Cached agents may be released to reclaim resources without
 replacing the durable conversation. Restart-recovery freshness limits automatic
@@ -314,7 +311,7 @@ Details:
 
 - All three keys are optional — set only `model`, only `system_prompt`, or any combination. Unset fields fall back to the global defaults.
 - Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
-- Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
+- Resolution priority for the model is: session model override → `channel_overrides` → global config. A session model override in a chat still wins over the channel default.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
 
 ## Security

@@ -48,7 +48,7 @@ Classic CLI 仍作为默认方式保留。[CLI 界面](cli.md)中记录的所有
 - **备用屏幕渲染** — 差量更新意味着流式传输时无闪烁，退出后无滚动历史残留。
 - **编辑器增强** — 长片段的内联折叠粘贴、`Cmd+V` / `Ctrl+V` 文本粘贴（带剪贴板图片回退）、括号粘贴安全保护，以及图片/文件路径附件规范化。
 
-同样的 [skins](features/skins.md) 和 [personalities](features/personality.md) 均适用。会话中途使用 `/skin ares`、`/personality pirate` 切换，UI 实时重绘。完整的可定制键列表及其对 classic 与 TUI 的适用范围，请参阅 [Skins & Themes](features/skins.md)——TUI 支持 banner 调色板、UI 颜色、prompt 字形/颜色、会话显示、补全菜单、选区背景色、`tool_prefix` 和 `help_header`。
+同样的 [skins](features/skins.md) 和 [personalities](features/personality.md) 均适用。会话中途使用 `/skin ares` 切换皮肤，UI 实时重绘。完整的可定制键列表及其对 classic 与 TUI 的适用范围，请参阅 [Skins & Themes](features/skins.md)——TUI 支持 banner 调色板、UI 颜色、prompt 字形/颜色、会话显示、补全菜单、选区背景色、`tool_prefix` 和 `help_header`。
 
 ### 可折叠的 banner 区块
 
@@ -102,7 +102,6 @@ hermes --tui
 |------|---------|
 | `/help` | 带分类命令的浮层，可用方向键导航 |
 | `/sessions` | 模态会话选择器——预览、标题、token 总量、内联恢复 |
-| `/model` | 按提供商分组的模态模型选择器，带费用提示 |
 | `/skin` | 实时预览——浏览时主题变更即时生效 |
 | `/details` | 切换详细工具调用详情（全局或按区块） |
 | `/usage` | 丰富的 token / 费用 / 上下文面板 |

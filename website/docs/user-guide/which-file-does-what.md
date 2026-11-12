@@ -47,11 +47,11 @@ If the agent saved your name to memory, the save worked — check with the `memo
 - Want to change how the agent **talks**? Edit `~/.hermes/SOUL.md` — [Personality & SOUL.md](./features/personality.md).
 - Want the agent to **remember a fact**? Just tell it — it saves to memory itself. [Persistent Memory](./features/memory.md).
 - Want to set **project rules**? Put an `AGENTS.md` (or `.hermes.md`) in the project — [Context Files](./features/context-files.md).
-- Need a **temporary** personality change? Use `/personality` — it's a session-level overlay, no file edits needed.
+- Need a **temporary** personality change? Set `display.personality` in config.yaml — it's an overlay, no file edits needed.
 :::
 
 ## Related Docs
 
 - [Persistent Memory](./features/memory.md) — MEMORY.md, USER.md, the `memory` tool, capacity limits, `write_approval`
-- [Personality & SOUL.md](./features/personality.md) — SOUL.md content guidance, `/personality` presets, the prompt stack
+- [Personality & SOUL.md](./features/personality.md) — SOUL.md content guidance, personality presets, the prompt stack
 - [Context Files](./features/context-files.md) — AGENTS.md, `.hermes.md`, progressive discovery, security scanning

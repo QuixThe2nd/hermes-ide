@@ -81,7 +81,7 @@ scope unwound in finally
 
 `_profile_runtime_scope` wraps every seam where profile-owned code executes:
 secondary adapter startup, connect and reconnect, the primary platform event
-handler, inbound preprocessing, `/model` and session-info resolution,
+handler, inbound preprocessing, model-switch and session-info resolution,
 background tasks, and the agent turn itself. Config reloads run under the
 default profile's scope so global gateway settings (`#64674`) resolve
 consistently.
@@ -185,7 +185,7 @@ batching, the busy path and every adapter-derived session key; the runner's
 per-profile and default handlers, the auth-check callback and the shared
 `_handle_message` gate do the same — so no lane is keyed before the receiving
 bot is known. Text/media batching, active-session tracking, the busy-session
-guard, `/stop` `/new` `/reset` and clarify replies are all keyed per lane, so
+guard, `/stop` `/new` and clarify replies are all keyed per lane, so
 two bots sharing a chat do not share a session lane and a control command on one
 bot cannot reach the other's run. A route to an unserved profile is dropped with
 one WARNING at the first seam it reaches, never keyed into `agent:main`. Copy a
@@ -235,7 +235,7 @@ before the column existed carry `null` and keep the shared-bot heuristics.
 Over the relay, every outbound frame's `metadata.profile` (and `follow_up`'s
 key namespace) tells the connector which profile to stamp on the next
 `passthrough_forward`, so a button press after a routed slash command stays in
-the same profile. Deferred callbacks (`/model` picker) capture the routed home
+the same profile. Deferred callbacks (model pickers) capture the routed home
 at command time and the gateway's executor hops copy the ContextVar scope.
 
 ## Control plane

@@ -8,25 +8,6 @@ gateway:
   config_read_failed: "⚠️ Impossibile leggere config.yaml: {error}"
   config_save_failed: "⚠️ Impossibile salvare la configurazione: {error}"
 
-  model:
-    error_prefix:           "Errore: {error}"
-    switched:               "Modello cambiato a `{model}`"
-    provider_label:         "Provider: {provider}"
-    context_label:          "Contesto: {tokens} token"
-    max_output_label:       "Output massimo: {tokens} token"
-    cost_label:             "Costo: {cost}"
-    capabilities_label:     "Capacità: {capabilities}"
-    prompt_caching_enabled: "Caching dei prompt: attivo"
-    warning_prefix:         "Avviso: {warning}"
-    saved_global:           "Salvato in config.yaml (`--global`)"
-    session_only_hint:      "_(solo per questa sessione — aggiungi `--global` per renderlo permanente)_"
-    current_label:          "Attuale: `{model}` su {provider}"
-    current_tag:            " (attuale)"
-    more_models_suffix:     " (+{count} altri)"
-    usage_switch_model:     "`/model <name>` — cambia modello"
-    usage_switch_provider:  "`/model <name> --provider <slug>` — cambia provider"
-    usage_persist:          "`/model <name> --global` — rendi permanente"
-
   agents:
     header:                "🤖 **Agenti e attività attivi**"
     active_agents:         "**Agenti attivi:** {count}"
@@ -88,22 +69,6 @@ gateway:
     full_logs_hint:        "Per il caricamento dei log completi, usa `hermes debug share` dalla CLI."
     share_hint:            "Condividi questi link con il team Hermes per ricevere supporto."
 
-  fast:
-    not_supported:         "⚡ /fast è disponibile solo per i modelli OpenAI che supportano Priority Processing."
-    status:                "⚡ Priority Processing\n\nModalità attuale: `{mode}`\n\n_Uso:_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ Argomento sconosciuto: `{arg}`\n\n**Opzioni valide:** normal, fast, status"
-    saved:                 "⚡ ✓ Priority Processing: **{label}** (salvato nella configurazione)\n_(verrà applicato al prossimo messaggio)_"
-    session_only:          "⚡ ✓ Priority Processing: **{label}** (solo per questa sessione)"
-    label_fast:            "FAST"
-    label_normal:          "NORMAL"
-    status_fast:           "fast"
-    status_normal:         "normal"
-    picker_title:          "⚡ **Priority Processing**\\n\\nModalità attuale: `{mode}`\\n\\nScegli un\\'opzione:"
-    choice_fast:           "fast — Priority Processing attivo"
-    choice_normal:         "normal — elaborazione standard"
-    choice_auto:           "auto — veloce nei primi secondi di ogni turno"
-    choice_cold:           "cold — veloce solo nel primo turno di una sessione"
-
   footer:
     status:                "📎 Footer di runtime: **{state}**\nCampi: `{fields}`\nPiattaforma: `{platform}`"
     usage:                 "Uso: `/footer [on|off|status]`"
@@ -130,42 +95,9 @@ gateway:
     invalid_days:          "Valore --days non valido: {value}"
     error:                 "Errore nella generazione degli insight: {error}"
 
-  personality:
-    none_configured:       "Nessuna personalità configurata in `{path}/config.yaml`"
-    header:                "🎭 **Personalità disponibili**\n"
-    none_option:           "• `none` — (nessun overlay di personalità)"
-    item:                  "• `{name}` — {preview}"
-    usage:                 "\nUso: `/personality <name>`"
-    save_failed:           "⚠️ Salvataggio del cambio di personalità non riuscito: {error}"
-    cleared:               "🎭 Personalità cancellata — uso il comportamento base dell'agente.\n_(verrà applicato al prossimo messaggio)_"
-    set_to:                "🎭 Personalità impostata su **{name}**\n_(verrà applicato al prossimo messaggio)_"
-    unknown:               "Personalità sconosciuta: `{name}`\n\nDisponibili: {available}"
-
   profile:
     header:                "👤 **Profilo:** `{profile}`"
     home:                  "📂 **Home:** `{home}`"
-
-  reasoning:
-    level_default:             "medio (predefinito)"
-    level_disabled:            "nessuno (disattivato)"
-    scope_session:             "override di sessione"
-    scope_global:              "configurazione globale"
-    status:                    "🧠 **Impostazioni di reasoning**\n\n**Sforzo:** `{level}`\n**Ambito:** {scope}\n**Visualizzazione:** {display}\n\n_Uso:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
-    display_on:                "attivo ✓"
-    display_off:               "disattivato"
-    display_set_on:            "🧠 ✓ Visualizzazione del reasoning: **ATTIVA**\nIl pensiero del modello verrà mostrato prima di ogni risposta su **{platform}**."
-    display_set_off:           "🧠 ✓ Visualizzazione del reasoning: **DISATTIVATA** per **{platform}**"
-    reset_global_unsupported:  "⚠️ `/reasoning reset --global` non è supportato. Usa `/reasoning <level> --global` per cambiare il valore predefinito globale."
-    reset_done:                "🧠 ✓ Override di reasoning della sessione cancellato; ripristino della configurazione globale."
-    unknown_arg:               "⚠️ Argomento sconosciuto: `{arg}`\n\n**Livelli validi:** none, minimal, low, medium, high, xhigh, max, ultra\n**Visualizzazione:** show, hide\n**Persistenza:** aggiungi `--global` per salvare oltre questa sessione"
-    picker_title:              "🧠 **Impostazioni di reasoning**\\n\\n**Sforzo:** `{level}`\\n**Ambito:** {scope}\\n**Visualizzazione:** {display}\\n\\nScegli un\\'opzione:"
-    choice_none:               "none — disattiva il reasoning"
-    choice_reset:              "reset — cancella l'override di sessione"
-    choice_show:               "mostra il reasoning nelle risposte"
-    choice_hide:               "nascondi il reasoning dalle risposte"
-    set_global:                "🧠 ✓ Sforzo di reasoning impostato su `{effort}` (salvato nella configurazione)\n_(verrà applicato al prossimo messaggio)_"
-    set_global_save_failed:    "🧠 ✓ Sforzo di reasoning impostato su `{effort}` (solo per questa sessione — salvataggio della configurazione non riuscito)\n_(verrà applicato al prossimo messaggio)_"
-    set_session:               "🧠 ✓ Sforzo di reasoning impostato su `{effort}` (solo per questa sessione — aggiungi `--global` per renderlo permanente)\n_(verrà applicato al prossimo messaggio)_"
 
   reload_mcp:
     cancelled:             "🟡 /reload-mcp annullato. Strumenti MCP invariati."

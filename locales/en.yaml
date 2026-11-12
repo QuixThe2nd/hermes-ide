@@ -22,25 +22,6 @@ gateway:
   # Provider names, model IDs, capability strings, and cost figures are NOT
   # translated -- they're identifiers/values, not prose.  Only the labels
   # ("Provider:", "Context:", etc.) and the help/footer lines are localized.
-  model:
-    error_prefix:           "Error: {error}"
-    switched:               "Model switched to `{model}`"
-    provider_label:         "Provider: {provider}"
-    context_label:          "Context: {tokens} tokens"
-    max_output_label:       "Max output: {tokens} tokens"
-    cost_label:             "Cost: {cost}"
-    capabilities_label:     "Capabilities: {capabilities}"
-    prompt_caching_enabled: "Prompt caching: enabled"
-    warning_prefix:         "Warning: {warning}"
-    saved_global:           "Saved to config.yaml (`--global`)"
-    session_only_hint:      "_(session only — add `--global` to persist)_"
-    current_label:          "Current: `{model}` on {provider}"
-    current_tag:            " (current)"
-    more_models_suffix:     " (+{count} more)"
-    usage_switch_model:     "`/model <name>` — switch model"
-    usage_switch_provider:  "`/model <name> --provider <slug>` — switch provider"
-    usage_persist:          "`/model <name> --global` — persist"
-
   agents:
     header:                "🤖 **Active Agents & Tasks**"
     active_agents:         "**Active agents:** {count}"
@@ -102,22 +83,6 @@ gateway:
     full_logs_hint:        "For full log uploads, use `hermes debug share` from the CLI."
     share_hint:            "Share these links with the Hermes team for support."
 
-  fast:
-    not_supported:         "⚡ /fast is only available for OpenAI models that support Priority Processing."
-    status:                "⚡ Priority Processing\n\nCurrent mode: `{mode}`\n\n_Usage:_ `/fast <normal|fast|auto|cold|status>`"
-    unknown_arg:           "⚠️ Unknown argument: `{arg}`\n\n**Valid options:** normal, fast, auto, cold, status"
-    saved:                 "⚡ ✓ Priority Processing: **{label}** (saved to config)\n_(takes effect on next message)_"
-    session_only:          "⚡ ✓ Priority Processing: **{label}** (this session only)"
-    label_fast:            "FAST"
-    label_normal:          "NORMAL"
-    status_fast:           "fast"
-    status_normal:         "normal"
-    picker_title:          "⚡ **Priority Processing**\n\nCurrent mode: `{mode}`\n\nPick an option:"
-    choice_fast:           "fast — Priority Processing on"
-    choice_normal:         "normal — standard processing"
-    choice_auto:           "auto — fast for the first seconds of every turn"
-    choice_cold:           "cold — fast for the first turn of a session only"
-
   footer:
     status:                "📎 Runtime footer: **{state}**\nFields: `{fields}`\nPlatform: `{platform}`"
     usage:                 "Usage: `/footer [on|off|status]`"
@@ -144,42 +109,9 @@ gateway:
     invalid_days:          "Invalid --days value: {value}"
     error:                 "Error generating insights: {error}"
 
-  personality:
-    none_configured:       "No personalities configured in `{path}/config.yaml`"
-    header:                "🎭 **Available Personalities**\n"
-    none_option:           "• `none` — (no personality overlay)"
-    item:                  "• `{name}` — {preview}"
-    usage:                 "\nUsage: `/personality <name>`"
-    save_failed:           "⚠️ Failed to save personality change: {error}"
-    cleared:               "🎭 Personality cleared — using base agent behavior.\n_(takes effect on next message)_"
-    set_to:                "🎭 Personality set to **{name}**\n_(takes effect on next message)_"
-    unknown:               "Unknown personality: `{name}`\n\nAvailable: {available}"
-
   profile:
     header:                "👤 **Profile:** `{profile}`"
     home:                  "📂 **Home:** `{home}`"
-
-  reasoning:
-    level_default:             "medium (default)"
-    level_disabled:            "none (disabled)"
-    scope_session:             "session override"
-    scope_global:              "global config"
-    status:                    "🧠 **Reasoning Settings**\n\n**Effort:** `{level}`\n**Scope:** {scope}\n**Display:** {display}\n\n_Usage:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
-    display_on:                "on ✓"
-    display_off:               "off"
-    display_set_on:            "🧠 ✓ Reasoning display: **ON**\nModel thinking will be shown before each response on **{platform}**."
-    display_set_off:           "🧠 ✓ Reasoning display: **OFF** for **{platform}**"
-    reset_global_unsupported:  "⚠️ `/reasoning reset --global` is not supported. Use `/reasoning <level> --global` to change the global default."
-    reset_done:                "🧠 ✓ Session reasoning override cleared; falling back to global config."
-    unknown_arg:               "⚠️ Unknown argument: `{arg}`\n\n**Valid levels:** none, minimal, low, medium, high, xhigh, max, ultra\n**Display:** show, hide\n**Persist:** add `--global` to save beyond this session"
-    picker_title:              "🧠 **Reasoning Settings**\n\n**Effort:** `{level}`\n**Scope:** {scope}\n**Display:** {display}\n\nPick an option:"
-    choice_none:               "none — disable reasoning"
-    choice_reset:              "reset — clear session override"
-    choice_show:               "show reasoning in replies"
-    choice_hide:               "hide reasoning from replies"
-    set_global:                "🧠 ✓ Reasoning effort set to `{effort}` (saved to config)\n_(takes effect on next message)_"
-    set_global_save_failed:    "🧠 ✓ Reasoning effort set to `{effort}` (session only — config save failed)\n_(takes effect on next message)_"
-    set_session:               "🧠 ✓ Reasoning effort set to `{effort}` (session only — add `--global` to persist)\n_(takes effect on next message)_"
 
   reload_mcp:
     cancelled:             "🟡 /reload-mcp cancelled. MCP tools unchanged."

@@ -82,7 +82,7 @@ hermes-agent/
 │   ├── auth.py               # PROVIDER_REGISTRY, credential resolution (+ auth_*.py siblings)
 │   ├── runtime_provider.py   # Provider → api_mode + credentials
 │   ├── models.py             # Model catalog, provider model lists
-│   ├── model_switch.py       # /model command logic (CLI + gateway shared)
+│   ├── model_switch.py       # shared model-switch pipeline (hermes model / config)
 │   ├── setup.py              # Interactive setup wizard (+ setup_*.py siblings)
 │   ├── skin_engine.py        # CLI theming engine
 │   ├── skills_config.py      # hermes skills — enable/disable per platform
@@ -256,7 +256,7 @@ Generates ShareGPT-format trajectories from agent sessions for training data gen
 
 | Principle | What it means in practice |
 |-----------|--------------------------|
-| **Prompt stability** | System prompt doesn't change mid-conversation. No cache-breaking mutations except explicit user actions (`/model`). |
+| **Prompt stability** | System prompt doesn't change mid-conversation. No cache-breaking mutations except explicit user actions (a model switch). |
 | **Observable execution** | Every tool call is visible to the user via callbacks. Progress updates in CLI (spinner) and gateway (chat messages). |
 | **Interruptible** | API calls and tool execution can be cancelled mid-flight by user input or signals. |
 | **Platform-agnostic core** | One AIAgent class serves CLI, gateway, ACP, batch, and API server. Platform differences live in the entry point, not the agent. |

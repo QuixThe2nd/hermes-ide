@@ -110,23 +110,6 @@ def test_fast_auto_and_cold_parse_and_slash_command(monkeypatch):
     assert DEFAULT_CONFIG["agent"]["service_tier"] == ""
     assert DEFAULT_CONFIG["agent"]["fast_auto_seconds"] == 60
 
-    # /fast auto — session-scoped, agent rebuilt, status reports the mode
-    fast_cmd = next(c for c in COMMAND_REGISTRY if c.name == "fast")
-    assert {"auto", "cold"} <= set(fast_cmd.subcommands)
-    printed = []
-    monkeypatch.setattr(cli_mod, "_cprint", lambda *a, **k: printed.append(" ".join(map(str, a))))
-    monkeypatch.setattr(cli_mod, "save_config_value", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no config write")))
-    stub = SimpleNamespace(
-        service_tier=None, model="gpt-5.4", agent=object(), _fast_command_available=lambda: True
-    )
-    cli_mod.HermesCLI._handle_fast_command(stub, "/fast auto")
-    assert stub.service_tier == "auto"
-    assert stub.agent is None
-    cli_mod.HermesCLI._handle_fast_command(stub, "/fast status")
-    assert any("auto" in line for line in printed)
-    cli_mod.HermesCLI._handle_fast_command(stub, "/fast cold")
-    assert stub.service_tier == "cold"
-
     # auto/cold do NOT pin a static override into the turn route
     route_stub = SimpleNamespace(
         model="gpt-5.4", api_key="k", base_url="https://api.openai.com/v1", provider="openai",

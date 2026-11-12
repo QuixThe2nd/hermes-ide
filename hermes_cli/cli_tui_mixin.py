@@ -305,7 +305,7 @@ class CLITuiMixin:
             secret_widget,
             slash_confirm_widget,
             clarify_widget,
-            model_picker_widget,
+            *filter(None, (model_picker_widget,)),
             command_palette_widget,
             spinner_widget,
             spacer,
@@ -549,58 +549,6 @@ class CLITuiMixin:
                 panel.row(style, wrapped)
         panel.blank()
         return panel.close()
-
-    def _get_model_picker_display_fragments(self):
-        state = self._model_picker_state
-        if not state:
-            return []
-        if state.get("stage", "provider") == "provider":
-            title = "⚙ Model Picker — Select Provider"
-            choices = []
-            _providers = state.get("providers")
-            for p in _providers if isinstance(_providers, list) else []:
-                count = p.get("total_models", len(p.get("models", [])))
-                label = f"{p['name']} ({count} model{'s' if count != 1 else ''})"
-                if p.get("is_current"):
-                    label += "  ← current"
-                choices.append(label)
-            choices.append("Cancel")
-            hint = (
-                f"Current: {state.get('current_model', 'unknown')} "
-                f"on {state.get('current_provider', 'unknown')}")
-        elif state.get("stage") == "reasoning":
-            from hermes_cli.cli_model_switch_mixin import _picker_reasoning_rows
-            result = state.get("switch_result")
-            picked = getattr(result, "new_model", "") or "model"
-            title = f"⚙ Model Picker — Reasoning effort for {picked}"
-            rc = self.reasoning_config
-            current = ("none" if isinstance(rc, dict) and rc.get("enabled") is False
-                       else (rc or {}).get("effort", "medium") if isinstance(rc, dict) else "medium")
-            choices = [f"{label}  ← current" if value == current else label
-                       for value, label in _picker_reasoning_rows()]
-            choices += ["← Back", "Cancel"]
-            hint = "Applies with the model switch (same scope) — Enter to choose"
-        else:
-            provider_data = state.get("provider_data") or {}
-            model_list = state.get("model_list") or []
-            title = f"⚙ Model Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
-            # Fuzzy filter narrows the concrete list; selection still resolves to a real entry via
-            # the filtered_pairs index mapping, so this never makes model resolution ambiguous.
-            _query = state.get("filter", "") or ""
-            filtered_pairs = self._filter_model_picker_entries(model_list, _query)
-            state["_filtered_pairs"] = filtered_pairs
-            model_labels = [e for (_i, e) in filtered_pairs]
-            choices = list(model_labels) + ["← Back", "Cancel"]
-            if _query:
-                hint = (
-                    f"Filter: {_query}▏  ({len(model_labels)}/{len(model_list)} match "
-                    "— type to narrow, Backspace to clear)")
-            elif model_list:
-                hint = f"Select a model ({len(model_list)} available) — type to filter"
-            else:
-                hint = "No models listed for this provider. Use Back or Cancel."
-        return self._render_scroll_list_panel(
-            state, title, hint, choices, min_width=46, max_width=84, indent='  ')
 
     def _get_command_palette_display_fragments(self):
         state = self._command_palette_state
@@ -869,7 +817,6 @@ class CLITuiMixin:
             return
         if self._tui_cancel_foreground_ui(event, closers=(
             ("_slash_confirm_state", lambda: self._submit_slash_confirm_response("cancel")),
-            ("_model_picker_state", self._close_model_picker),
             ("_command_palette_state", self._close_command_palette))):
             return
         overlay_cleared = self._tui_clear_blocking_overlays(event)
@@ -892,8 +839,7 @@ class CLITuiMixin:
         if self._tui_cancel_voice_recording(event):
             return
         if self._tui_cancel_foreground_ui(event, closers=(
-            ("_slash_confirm_state", lambda: self._submit_slash_confirm_response("cancel")),
-            ("_model_picker_state", self._close_model_picker))):
+            ("_slash_confirm_state", lambda: self._submit_slash_confirm_response("cancel")))):
             return
         overlay_cleared = self._tui_clear_blocking_overlays(event)
         if overlay_cleared and not (self._agent_running and self.agent):
@@ -1101,63 +1047,12 @@ class CLITuiMixin:
         """Ctrl+G (or Alt+G in VSCode/Cursor) opens the draft in an external editor."""
         self._open_external_editor(event.current_buffer)
 
-    def _tui_model_picker_down(self, event):
-        state = self._model_picker_state
-        if not state:
-            return
-        if state.get("stage") == "provider":
-            max_idx = len(state.get("providers") or [])
-        elif state.get("stage") == "reasoning":
-            from hermes_cli.cli_model_switch_mixin import _picker_reasoning_rows
-            max_idx = len(_picker_reasoning_rows()) + 1  # + Back + Cancel
-        else:
-            # +1 for "← Back" and Cancel over the filtered visible rows.
-            _fp = state.get("_filtered_pairs")
-            max_idx = (len(_fp) if _fp is not None else len(state.get("model_list") or [])) + 1
-        state["selected"] = min(max_idx, state.get("selected", 0) + 1)
-        event.app.invalidate()
-
-    def _tui_model_picker_up(self, event):
-        if self._model_picker_state:
-            self._model_picker_state["selected"] = max(0, self._model_picker_state.get("selected", 0) - 1)
-            event.app.invalidate()
-
     @staticmethod
     def _tui_set_filter(st, value: str) -> None:
         """Replace a picker/palette filter and rewind the selection + viewport."""
         st["filter"] = value
         st["selected"] = 0
         st["_scroll_offset"] = 0
-
-    def _tui_model_picker_escape(self, event):
-        """ESC clears an active filter first, else steps back from the effort stage, else closes."""
-        st = self._model_picker_state
-        if st and st.get("stage") == "model" and (st.get("filter") or ""):
-            self._tui_set_filter(st, "")
-            event.app.invalidate()
-            return
-        if st and st.get("stage") == "reasoning":
-            st.update(stage="model", selected=0, _scroll_offset=0, switch_result=None)
-            event.app.invalidate()
-            return
-        self._close_model_picker()
-        event.app.current_buffer.reset()
-        event.app.invalidate()
-
-    def _tui_model_picker_filter_backspace(self, event):
-        st = self._model_picker_state
-        if st:
-            self._tui_set_filter(st, (st.get("filter", "") or "")[:-1])
-            event.app.invalidate()
-
-    def _tui_make_model_filter_char_handler(self, ch: str):
-        def handler(event):
-            st = self._model_picker_state
-            if not st or st.get("stage") != "model":
-                return
-            self._tui_set_filter(st, (st.get("filter", "") or "") + ch)
-            event.app.invalidate()
-        return handler
 
     def _tui_make_palette_char_handler(self, ch: str):
         def handler(event):
@@ -1337,12 +1232,7 @@ class CLITuiMixin:
         and never invalidates the app, so the just-cleared input area would keep showing the
         submitted text (looking unsent, inviting a re-submit) until some unrelated redraw.
         """
-        if self._should_handle_model_command_inline(text, has_images=has_images):
-            if not self.process_command(text):
-                self._should_exit = True
-                if event.app.is_running:
-                    event.app.exit()
-        elif (
+        if (
             self._should_handle_steer_command_inline(text, has_images=has_images)
             or self._should_handle_background_command_inline(text, has_images=has_images)):
             self.process_command(text)
@@ -1443,18 +1333,6 @@ class CLITuiMixin:
                 if 0 <= selected < len(choices):
                     choice = choices[selected][0]
             self._submit_slash_confirm_response(choice or "cancel")
-            buf.reset()
-            event.app.invalidate()
-            return True
-        if self._model_picker_state:
-            try:
-                # Picker selections follow the same session-scoped default as /model <name>
-                # (model.persist_switch_by_default).
-                from hermes_cli.model_switch import resolve_persist_behavior
-                self._handle_model_picker_selection(persist_global=resolve_persist_behavior(False, False))
-            except Exception as _exc:
-                _cprint(f"  ✗ Model selection failed: {_exc}")
-                self._close_model_picker()
             buf.reset()
             event.app.invalidate()
             return True
@@ -1803,7 +1681,7 @@ class CLITuiMixin:
         # Buffer.auto_up/auto_down browse history when on the first/last line.
         _normal_input = Condition(
             lambda: not self._clarify_state and not self._slash_confirm_state
-            and not self._sudo_state and not self._secret_state and not self._model_picker_state
+            and not self._sudo_state and not self._secret_state
             and not self._command_palette_state)
         kb.add('up', filter=_normal_input)(self._tui_history_up)
         kb.add('down', filter=_normal_input)(self._tui_history_down)
@@ -1843,7 +1721,7 @@ class CLITuiMixin:
         # a modal prompt owns the composer so Ctrl+S can't stash a password.
         _stash_filter = Condition(
             lambda: not self._clarify_state and not self._sudo_state
-            and not self._secret_state and not self._slash_confirm_state and not self._model_picker_state
+            and not self._secret_state and not self._slash_confirm_state
         )
         _stash_panel_filter = Condition(lambda: self._prompt_stash.panel_open and bool(len(self._prompt_stash)))
         kb.add('c-s', filter=_stash_filter)(self._tui_handle_prompt_stash)
@@ -1880,26 +1758,12 @@ class CLITuiMixin:
             kb.add(str(_num), filter=_clarify_nav)(self._tui_make_clarify_number_handler(_idx))
 
         _slash_confirm = Condition(lambda: bool(self._slash_confirm_state))
-        _picker = Condition(lambda: bool(self._model_picker_state))
         kb.add('up', filter=_slash_confirm)(self._tui_slash_confirm_up)
         kb.add('down', filter=_slash_confirm)(self._tui_slash_confirm_down)
-        kb.add('up', filter=_picker)(self._tui_model_picker_up)
-        kb.add('down', filter=_picker)(self._tui_model_picker_down)
-
-        def _model_picker_typing_active() -> bool:
-            # Type-to-filter is only live on the model stage (concrete list).
-            st = self._model_picker_state
-            return bool(st) and st.get("stage") == "model"
-
-        _picker_typing = Condition(_model_picker_typing_active)
-        for _ch in _TYPING_CHARS:
-            kb.add(_ch, filter=_picker_typing)(self._tui_make_model_filter_char_handler(_ch))
-        kb.add('backspace', filter=_picker_typing)(self._tui_model_picker_filter_backspace)
-        kb.add('escape', filter=_picker, eager=True)(self._tui_model_picker_escape)
 
         _palette = Condition(lambda: bool(self._command_palette_state))
         kb.add('c-p', filter=Condition(
-            lambda: not self._command_palette_state and not self._model_picker_state and not self._clarify_state
+            lambda: not self._command_palette_state and not self._clarify_state
             and not self._slash_confirm_state and not self._sudo_state
             and not self._secret_state
         ))(self._tui_open_command_palette)
@@ -1985,8 +1849,6 @@ class CLITuiMixin:
         secret_widget = self._tui_overlay_widget(self._get_secret_display_fragments, "_secret_state")
         slash_confirm_widget = self._tui_overlay_widget(
             self._get_slash_confirm_display_fragments, "_slash_confirm_state")
-        model_picker_widget = self._tui_overlay_widget(
-            self._get_model_picker_display_fragments, "_model_picker_state")
         command_palette_widget = self._tui_overlay_widget(
             self._get_command_palette_display_fragments, "_command_palette_state")
         # Rules above/below the input; narrow terminals hide the bottom one to recover a row.
@@ -2025,7 +1887,6 @@ class CLITuiMixin:
             secret_widget=secret_widget,
             slash_confirm_widget=slash_confirm_widget,
             clarify_widget=clarify_widget,
-            model_picker_widget=model_picker_widget,
             command_palette_widget=command_palette_widget,
             spinner_widget=spinner_widget,
             spacer=spacer,

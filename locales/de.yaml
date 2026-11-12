@@ -8,25 +8,6 @@ gateway:
   config_read_failed: "⚠️ config.yaml konnte nicht gelesen werden: {error}"
   config_save_failed: "⚠️ Konfiguration konnte nicht gespeichert werden: {error}"
 
-  model:
-    error_prefix:           "Fehler: {error}"
-    switched:               "Modell gewechselt zu `{model}`"
-    provider_label:         "Anbieter: {provider}"
-    context_label:          "Kontext: {tokens} Tokens"
-    max_output_label:       "Max. Ausgabe: {tokens} Tokens"
-    cost_label:             "Kosten: {cost}"
-    capabilities_label:     "Fähigkeiten: {capabilities}"
-    prompt_caching_enabled: "Prompt-Caching: aktiviert"
-    warning_prefix:         "Warnung: {warning}"
-    saved_global:           "In config.yaml gespeichert (`--global`)"
-    session_only_hint:      "_(nur für diese Sitzung — `--global` ergänzen, um zu speichern)_"
-    current_label:          "Aktuell: `{model}` bei {provider}"
-    current_tag:            " (aktuell)"
-    more_models_suffix:     " (+{count} weitere)"
-    usage_switch_model:     "`/model <name>` — Modell wechseln"
-    usage_switch_provider:  "`/model <name> --provider <slug>` — Anbieter wechseln"
-    usage_persist:          "`/model <name> --global` — dauerhaft speichern"
-
   agents:
     header:                "🤖 **Aktive Agenten & Aufgaben**"
     active_agents:         "**Aktive Agenten:** {count}"
@@ -88,22 +69,6 @@ gateway:
     full_logs_hint:        "Für vollständige Log-Uploads verwenden Sie `hermes debug share` aus der CLI."
     share_hint:            "Teilen Sie diese Links mit dem Hermes-Team, um Unterstützung zu erhalten."
 
-  fast:
-    not_supported:         "⚡ /fast ist nur für OpenAI-Modelle mit Priority Processing verfügbar."
-    status:                "⚡ Priority Processing\n\nAktueller Modus: `{mode}`\n\n_Verwendung:_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ Unbekanntes Argument: `{arg}`\n\n**Gültige Optionen:** normal, fast, status"
-    saved:                 "⚡ ✓ Priority Processing: **{label}** (in Konfiguration gespeichert)\n_(wird ab nächster Nachricht wirksam)_"
-    session_only:          "⚡ ✓ Priority Processing: **{label}** (nur diese Sitzung)"
-    label_fast:            "FAST"
-    label_normal:          "NORMAL"
-    status_fast:           "fast"
-    status_normal:         "normal"
-    picker_title:          "⚡ **Priority Processing**\\n\\nAktueller Modus: `{mode}`\\n\\nOption wählen:"
-    choice_fast:           "fast — Priority Processing an"
-    choice_normal:         "normal — Standardverarbeitung"
-    choice_auto:           "auto — schnell in den ersten Sekunden jedes Zugs"
-    choice_cold:           "cold — schnell nur im ersten Zug einer Sitzung"
-
   footer:
     status:                "📎 Laufzeit-Fußzeile: **{state}**\nFelder: `{fields}`\nPlattform: `{platform}`"
     usage:                 "Verwendung: `/footer [on|off|status]`"
@@ -130,42 +95,9 @@ gateway:
     invalid_days:          "Ungültiger --days-Wert: {value}"
     error:                 "Fehler beim Erstellen der Auswertung: {error}"
 
-  personality:
-    none_configured:       "Keine Persönlichkeiten in `{path}/config.yaml` konfiguriert"
-    header:                "🎭 **Verfügbare Persönlichkeiten**\n"
-    none_option:           "• `none` — (kein Persönlichkeits-Overlay)"
-    item:                  "• `{name}` — {preview}"
-    usage:                 "\nVerwendung: `/personality <name>`"
-    save_failed:           "⚠️ Speichern der Persönlichkeitsänderung fehlgeschlagen: {error}"
-    cleared:               "🎭 Persönlichkeit gelöscht — Basisverhalten des Agenten wird verwendet.\n_(wird mit der nächsten Nachricht wirksam)_"
-    set_to:                "🎭 Persönlichkeit auf **{name}** gesetzt\n_(wird mit der nächsten Nachricht wirksam)_"
-    unknown:               "Unbekannte Persönlichkeit: `{name}`\n\nVerfügbar: {available}"
-
   profile:
     header:                "👤 **Profil:** `{profile}`"
     home:                  "📂 **Stammverzeichnis:** `{home}`"
-
-  reasoning:
-    level_default:             "medium (Standard)"
-    level_disabled:            "none (deaktiviert)"
-    scope_session:             "Sitzungs-Override"
-    scope_global:              "Globale Konfiguration"
-    status:                    "🧠 **Reasoning-Einstellungen**\n\n**Stärke:** `{level}`\n**Geltungsbereich:** {scope}\n**Anzeige:** {display}\n\n_Verwendung:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
-    display_on:                "an ✓"
-    display_off:               "aus"
-    display_set_on:            "🧠 ✓ Reasoning-Anzeige: **AN**\nDas Modelldenken wird vor jeder Antwort auf **{platform}** angezeigt."
-    display_set_off:           "🧠 ✓ Reasoning-Anzeige: **AUS** für **{platform}**"
-    reset_global_unsupported:  "⚠️ `/reasoning reset --global` wird nicht unterstützt. Verwenden Sie `/reasoning <level> --global`, um den globalen Standard zu ändern."
-    reset_done:                "🧠 ✓ Sitzungs-Reasoning-Override gelöscht; Rückfall auf globale Konfiguration."
-    unknown_arg:               "⚠️ Unbekanntes Argument: `{arg}`\n\n**Gültige Stärken:** none, minimal, low, medium, high, xhigh, max, ultra\n**Anzeige:** show, hide\n**Speichern:** `--global` hinzufügen, um über die Sitzung hinaus zu speichern"
-    picker_title:              "🧠 **Reasoning-Einstellungen**\\n\\n**Stärke:** `{level}`\\n**Geltungsbereich:** {scope}\\n**Anzeige:** {display}\\n\\nOption wählen:"
-    choice_none:               "none — Reasoning deaktivieren"
-    choice_reset:              "reset — Sitzungs-Override löschen"
-    choice_show:               "Reasoning in Antworten anzeigen"
-    choice_hide:               "Reasoning in Antworten ausblenden"
-    set_global:                "🧠 ✓ Reasoning-Stärke auf `{effort}` gesetzt (in Konfiguration gespeichert)\n_(wird mit der nächsten Nachricht wirksam)_"
-    set_global_save_failed:    "🧠 ✓ Reasoning-Stärke auf `{effort}` gesetzt (nur Sitzung — Konfiguration konnte nicht gespeichert werden)\n_(wird mit der nächsten Nachricht wirksam)_"
-    set_session:               "🧠 ✓ Reasoning-Stärke auf `{effort}` gesetzt (nur Sitzung — `--global` hinzufügen, um zu speichern)\n_(wird mit der nächsten Nachricht wirksam)_"
 
   reload_mcp:
     cancelled:             "🟡 /reload-mcp abgebrochen. MCP-Tools unverändert."

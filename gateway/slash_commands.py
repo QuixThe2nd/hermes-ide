@@ -266,7 +266,7 @@ class GatewaySlashCommandsMixin(
             user_config.setdefault(section, {})["write_approval"] = bool(enabled)
             atomic_config_write(config_path, user_config)
             # Evict any cached agent for this session so the next message rebuilds with the correct
-            # session_id end-to-end — mirrors /branch and /reset. Without this, the cached AIAgent (and its
+            # session_id end-to-end — mirrors /branch and /new. Without this, the cached AIAgent (and its
             # memory provider, which cached `_session_id` during initialize()) keeps writing into the wrong
             # session's record. See #6672.
             self._evict_cached_agent(session_key)

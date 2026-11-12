@@ -37,24 +37,10 @@ def _cmd(name: str, description: str, *options: Dict[str, Any]) -> Dict[str, Any
     return row
 
 
-_REASONING_CHOICES = [
-    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
-    "reset", "show", "hide",
-]
-
-
 def build_relay_command_manifest() -> List[Dict[str, Any]]:
     """The relay lane's Discord slash-command manifest (native-tree mirror)."""
     return [
         _cmd("new", "Start a new conversation"),
-        _cmd("reset", "Reset your Hermes session"),
-        _cmd("model", "Show or change the model",
-             _opt("name", "Model name. Leave empty to see current.")),
-        _cmd("reasoning", "Show/change reasoning effort, or toggle showing it",
-             _opt("effort", "Level, reset, or show/hide. Leave empty to see current.",
-                  choices=_REASONING_CHOICES)),
-        _cmd("personality", "Set a personality",
-             _opt("name", "Personality name. Leave empty to list.")),
         _cmd("retry", "Retry your last message"),
         _cmd("undo", "Remove the last exchange"),
         _cmd("status", "Show Hermes session status"),

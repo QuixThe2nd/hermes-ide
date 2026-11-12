@@ -67,8 +67,8 @@ messaging platforms.
 **Project-level:** add the bias to `AGENTS.md` / `CLAUDE.md` /
 `.cursorrules` in a project the agent works from, to your global
 persona in `~/.hermes/SOUL.md`, or as a named preset under
-`agent.personalities` in `~/.hermes/config.yaml` (switchable per session
-via `/personality`).
+`agent.personalities` in `~/.hermes/config.yaml` (switchable via
+`display.personality`).
 
 The mechanic the agent has to use is simple: render the file to an
 absolute path (e.g. `~/.hermes/cache/scratch/q3-revenue.png`) and mention that path as

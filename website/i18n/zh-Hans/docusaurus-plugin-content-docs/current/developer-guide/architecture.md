@@ -82,7 +82,7 @@ hermes-agent/
 │   ├── auth.py               # PROVIDER_REGISTRY、凭据解析
 │   ├── runtime_provider.py   # Provider → api_mode + 凭据
 │   ├── models.py             # 模型目录、provider 模型列表
-│   ├── model_switch.py       # /model 命令逻辑（CLI + gateway 共用）
+│   ├── model_switch.py       # hermes model 切换逻辑（CLI + gateway 共用）
 │   ├── setup.py              # 交互式设置向导（大文件）
 │   ├── skin_engine.py        # CLI 主题引擎
 │   ├── skills_config.py      # hermes skills——按平台启用/禁用
@@ -255,7 +255,7 @@ CLI、gateway、cron、ACP 及辅助调用共用的运行时解析器。将 `(pr
 
 | 原则 | 实践含义 |
 |------|---------|
-| **Prompt 稳定性** | 系统 prompt 在对话中途不会改变。除用户显式操作（`/model`）外，不进行破坏缓存的变更。 |
+| **Prompt 稳定性** | 系统 prompt 在对话中途不会改变。除用户显式操作（`hermes model` 切换）外，不进行破坏缓存的变更。 |
 | **可观测执行** | 每次工具调用均通过回调对用户可见。CLI（spinner）和 gateway（聊天消息）中均有进度更新。 |
 | **可中断** | API 调用和工具执行可被用户输入或信号在执行中途取消。 |
 | **平台无关的核心** | 单一 AIAgent 类同时服务于 CLI、gateway、ACP、批处理和 API 服务器。平台差异存在于入口点，而非 agent 内部。 |

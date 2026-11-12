@@ -238,7 +238,6 @@ Common examples:
 | Command | Description |
 |---------|-------------|
 | `/help` | Show command help |
-| `/model` | Show or change the current model |
 | `/tools` | List currently available tools |
 | `/skills browse` | Browse the skills hub and official optional skills |
 | `/bg <prompt>` | Run a prompt in a separate background session |
@@ -246,7 +245,6 @@ Common examples:
 | `/skin` | Show or switch the active CLI skin |
 | `/voice on` | Enable CLI voice mode (press `Ctrl+B` to record) |
 | `/voice tts` | Toggle spoken playback for Hermes replies |
-| `/reasoning high` | Increase reasoning effort |
 | `/title My Session` | Name the current session |
 | `/status` | Show session info — model/profile/tokens/duration — followed by a local **Session recap** block (recent turn counts, top tools used, files touched, latest user prompt + assistant reply). Pure local compute; no LLM call. |
 | `/context [all]` | Visual context-usage breakdown — glyph block grid + per-category token table (system prompt / tools / skills / memory / conversation / free space). `/context all` adds per-skill and per-toolset costs. |
@@ -321,17 +319,17 @@ Every installed skill in `~/.hermes/skills/` is automatically registered as a sl
 
 ## Personalities
 
-Set a predefined personality to change the agent's tone:
+Set a predefined personality to change the agent's tone via `display.personality` in `config.yaml`:
 
-```
-/personality pirate
-/personality kawaii
-/personality concise
+```bash
+hermes config set display.personality pirate
+hermes config set display.personality kawaii
+hermes config set display.personality concise
 ```
 
 Built-in personalities include: `helpful`, `concise`, `technical`, `creative`, `teacher`, `kawaii`, `catgirl`, `pirate`, `shakespeare`, `surfer`, `noir`, `uwu`, `philosopher`, `hype`.
 
-To go back to the default (no overlay), use `/personality none` — `default` and `neutral` work too.
+To go back to the default (no overlay), set `display.personality: none`.
 
 You can also define custom personalities in `~/.hermes/config.yaml`:
 

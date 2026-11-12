@@ -1,7 +1,7 @@
 ---
 sidebar_position: 7
 title: "在 Hermes 中使用 SOUL.md"
-description: "如何使用 SOUL.md 塑造 Hermes Agent 的默认风格，哪些内容应放在其中，以及它与 AGENTS.md 和 /personality 的区别"
+description: "如何使用 SOUL.md 塑造 Hermes Agent 的默认风格，哪些内容应放在其中，以及它与 AGENTS.md 和 personality 预设的区别"
 ---
 
 # 在 Hermes 中使用 SOUL.md
@@ -181,16 +181,16 @@ What Hermes should not do.
 How Hermes should behave when ambiguity appears.
 ```
 
-## SOUL.md 与 /personality 的区别
+## SOUL.md 与 personality 预设 的区别
 
 两者互为补充。
 
 使用 `SOUL.md` 作为持久的基础设定。
-使用 `/personality` 进行临时的模式切换。
+在 config.yaml 中设置 `display.personality` 进行临时的模式切换。
 
 示例：
 - 你的默认 SOUL 是务实且直接的
-- 某次会话中你使用 `/personality teacher`
+- 某次会话中你设置 `display.personality: teacher`
 - 之后切换回来，无需修改基础风格文件
 
 ## SOUL.md 与 AGENTS.md 的区别
@@ -242,7 +242,7 @@ vim ~/.hermes/SOUL.md
 - 而不是某个仓库本地的 `SOUL.md`
 - 文件不为空
 - 编辑后已重启会话
-- 没有 `/personality` 覆盖层主导了结果
+- 没有 personality 覆盖层主导了结果
 
 ### Hermes 忽略了我 SOUL.md 中的部分内容
 

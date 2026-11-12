@@ -2421,9 +2421,6 @@ class GatewayInboundMixin:
         if canonical == "stop":
             return await self._handle_stop_command(event)
 
-        if canonical == "reasoning":
-            return await self._handle_reasoning_command(event)
-
         if canonical == "memory":
             return await self._handle_memory_command(event)
 
@@ -2514,17 +2511,8 @@ class GatewayInboundMixin:
             event.text = _init_prompt
             # fall through to agent processing
 
-        if canonical == "fast":
-            return await self._handle_fast_command(event)
-
-        if canonical == "model":
-            return await self._handle_model_command(event)
-
         if canonical == "codex-runtime":
             return await self._handle_codex_runtime_command(event)
-
-        if canonical == "personality":
-            return await self._handle_personality_command(event)
 
         if canonical == "suggestions":
             return await self._handle_suggestions_command(event)

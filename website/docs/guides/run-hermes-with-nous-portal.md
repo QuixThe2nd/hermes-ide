@@ -95,20 +95,20 @@ You should see Hermes call `web_search` (Firecrawl-backed, through the gateway) 
 
 ## 5. Pick the model you actually want
 
-`hermes setup --portal` lets you pick a model during setup, but the whole point of the subscription is access to the full catalog — switch any time with `/model` mid-session:
+`hermes setup --portal` lets you pick a model during setup, but the whole point of the subscription is access to the full catalog — switch any time with `hermes model`:
 
 ```bash
-/model anthropic/claude-sonnet-4.6     # best general-purpose agentic
-/model openai/gpt-5.4                  # strong reasoning + tool calling
-/model google/gemini-2.5-pro           # huge context window
-/model deepseek/deepseek-v3.2          # cost-effective coder
-/model anthropic/claude-opus-4.6       # heavyweight for hard problems
+hermes model anthropic/claude-sonnet-4.6     # best general-purpose agentic
+hermes model openai/gpt-5.4                  # strong reasoning + tool calling
+hermes model google/gemini-2.5-pro           # huge context window
+hermes model deepseek/deepseek-v3.2          # cost-effective coder
+hermes model anthropic/claude-opus-4.6       # heavyweight for hard problems
 ```
 
 Or pop the picker to browse:
 
 ```bash
-/model
+hermes model
 ```
 
 Pick a different default permanently:
@@ -225,13 +225,13 @@ hermes auth add nous
 
 The quarantine clears automatically on successful re-login.
 
-### Model I want isn't in the `/model` picker
+### Model I want isn't in the `hermes model` picker
 
 The Portal catalog draws on OpenRouter's model list (300+) plus models served through proprietary or secondary providers. If a model is missing, try typing the OpenRouter-style slug directly:
 
 ```bash
-/model anthropic/claude-opus-4.6
-/model openai/o1-2025-12-17
+hermes model anthropic/claude-opus-4.6
+hermes model openai/o1-2025-12-17
 ```
 
 If a model is genuinely unavailable, [open an issue](https://github.com/NousResearch/hermes-agent/issues) — most gaps are routing config we can update.

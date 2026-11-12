@@ -106,7 +106,7 @@ What happens:
 3. It becomes available as a slash command
 
 :::tip
-Installed skills take effect in new sessions. If you want it available in the current session, use `/reset` to start fresh, or add `--now` to invalidate the prompt cache immediately (costs more tokens on the next turn).
+Installed skills take effect in new sessions. If you want it available in the current session, use `/new` to start fresh, or add `--now` to invalidate the prompt cache immediately (costs more tokens on the next turn).
 :::
 
 ### Verifying Installation

@@ -137,12 +137,12 @@ Models prefixed with `us.` use cross-region inference profiles, which provide be
 
 ## Switching Models Mid-Session
 
-Use the `/model` command during a conversation:
+Use the `hermes model` command during a conversation:
 
 ```
-/model us.amazon.nova-pro-v1:0
-/model deepseek.v3.2
-/model us.anthropic.claude-opus-4-6-v1
+hermes model us.amazon.nova-pro-v1:0
+hermes model deepseek.v3.2
+hermes model us.anthropic.claude-opus-4-6-v1
 ```
 
 ## Diagnostics

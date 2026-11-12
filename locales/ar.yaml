@@ -31,25 +31,6 @@ gateway:
   config_read_failed: "⚠️ تعذّر قراءة config.yaml: {error}"
   config_save_failed: "⚠️ تعذّر حفظ الإعدادات: {error}"
 
-  model:
-    error_prefix:           "خطأ: {error}"
-    switched:               "تم التبديل إلى النموذج `{model}`"
-    provider_label:         "المزوّد: {provider}"
-    context_label:          "السياق: {tokens} رمزًا"
-    max_output_label:       "أقصى خرج: {tokens} رمزًا"
-    cost_label:             "التكلفة: {cost}"
-    capabilities_label:     "القدرات: {capabilities}"
-    prompt_caching_enabled: "التخزين المؤقت للموجِّه: مُفعّل"
-    warning_prefix:         "تحذير: {warning}"
-    saved_global:           "حُفظ في config.yaml (‏`--global`)"
-    session_only_hint:      "_(هذه الجلسة فقط — أضف `--global` للحفظ الدائم)_"
-    current_label:          "الحالي: `{model}` على {provider}"
-    current_tag:            " (الحالي)"
-    more_models_suffix:     " (+{count} آخر)"
-    usage_switch_model:     "`/model <name>` — تبديل النموذج"
-    usage_switch_provider:  "`/model <name> --provider <slug>` — تبديل المزوّد"
-    usage_persist:          "`/model <name> --global` — حفظ دائم"
-
   agents:
     header:                "🤖 **الوكلاء والمهام النشطة**"
     active_agents:         "**الوكلاء النشطون:** {count}"
@@ -111,22 +92,6 @@ gateway:
     full_logs_hint:        "لرفع السجلات الكاملة، استخدم `hermes debug share` من واجهة الأوامر."
     share_hint:            "شارك هذه الروابط مع فريق Hermes للحصول على الدعم."
 
-  fast:
-    not_supported:         "⚡ /fast متاح فقط لنماذج OpenAI التي تدعم المعالجة ذات الأولوية."
-    status:                "⚡ المعالجة ذات الأولوية\n\nالوضع الحالي: `{mode}`\n\n_الاستخدام:_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ وسيط غير معروف: `{arg}`\n\n**الخيارات الصالحة:** normal, fast, status"
-    saved:                 "⚡ ✓ المعالجة ذات الأولوية: **{label}** (حُفظت في الإعدادات)\n_(تسري على الرسالة التالية)_"
-    session_only:          "⚡ ✓ المعالجة ذات الأولوية: **{label}** (هذه الجلسة فقط)"
-    label_fast:            "سريع"
-    label_normal:          "عادي"
-    status_fast:           "fast"
-    status_normal:         "normal"
-    picker_title:          "⚡ **المعالجة ذات الأولوية**\n\nالوضع الحالي: `{mode}`\n\nاختر خيارًا:"
-    choice_fast:           "fast — المعالجة ذات الأولوية مُفعّلة"
-    choice_normal:         "normal — المعالجة القياسية"
-    choice_auto:           "auto — سريع في الثواني الأولى من كل دور"
-    choice_cold:           "cold — سريع في الدور الأول من الجلسة فقط"
-
   footer:
     status:                "📎 تذييل التشغيل: **{state}**\nالحقول: `{fields}`\nالمنصّة: `{platform}`"
     usage:                 "الاستخدام: `/footer [on|off|status]`"
@@ -153,42 +118,9 @@ gateway:
     invalid_days:          "قيمة --days غير صالحة: {value}"
     error:                 "خطأ في توليد الرؤى: {error}"
 
-  personality:
-    none_configured:       "لا توجد شخصيات مُهيّأة في `{path}/config.yaml`"
-    header:                "🎭 **الشخصيات المتاحة**\n"
-    none_option:           "• `none` — (بدون طبقة شخصية)"
-    item:                  "• `{name}` — {preview}"
-    usage:                 "\nالاستخدام: `/personality <name>`"
-    save_failed:           "⚠️ فشل حفظ تغيير الشخصية: {error}"
-    cleared:               "🎭 مُسحت الشخصية — يتم استخدام سلوك الوكيل الأساسي.\n_(يسري على الرسالة التالية)_"
-    set_to:                "🎭 ضُبطت الشخصية إلى **{name}**\n_(يسري على الرسالة التالية)_"
-    unknown:               "شخصية غير معروفة: `{name}`\n\nالمتاح: {available}"
-
   profile:
     header:                "👤 **الملف الشخصي:** `{profile}`"
     home:                  "📂 **المجلد الرئيسي:** `{home}`"
-
-  reasoning:
-    level_default:             "medium (افتراضي)"
-    level_disabled:            "none (مُعطّل)"
-    scope_session:             "تجاوز الجلسة"
-    scope_global:              "الإعدادات العامة"
-    status:                    "🧠 **إعدادات التفكير**\n\n**الجهد:** `{level}`\n**النطاق:** {scope}\n**العرض:** {display}\n\n_الاستخدام:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
-    display_on:                "مُفعّل ✓"
-    display_off:               "مُعطّل"
-    display_set_on:            "🧠 ✓ عرض التفكير: **مُفعّل**\nسيُعرض تفكير النموذج قبل كل رد على **{platform}**."
-    display_set_off:           "🧠 ✓ عرض التفكير: **مُعطّل** لـ **{platform}**"
-    reset_global_unsupported:  "⚠️ `/reasoning reset --global` غير مدعوم. استخدم `/reasoning <level> --global` لتغيير الافتراضي العام."
-    reset_done:                "🧠 ✓ مُسح تجاوز التفكير للجلسة؛ العودة إلى الإعدادات العامة."
-    unknown_arg:               "⚠️ وسيط غير معروف: `{arg}`\n\n**المستويات الصالحة:** none, minimal, low, medium, high, xhigh, max, ultra\n**العرض:** show, hide\n**الحفظ:** أضف `--global` للحفظ بعد هذه الجلسة"
-    picker_title:              "🧠 **إعدادات التفكير**\n\n**الجهد:** `{level}`\n**النطاق:** {scope}\n**العرض:** {display}\n\nاختر خيارًا:"
-    choice_none:               "none — تعطيل التفكير"
-    choice_reset:              "reset — مسح تجاوز الجلسة"
-    choice_show:               "عرض التفكير في الردود"
-    choice_hide:               "إخفاء التفكير من الردود"
-    set_global:                "🧠 ✓ ضُبط جهد التفكير إلى `{effort}` (حُفظ في الإعدادات)\n_(يسري على الرسالة التالية)_"
-    set_global_save_failed:    "🧠 ✓ ضُبط جهد التفكير إلى `{effort}` (الجلسة فقط — فشل حفظ الإعدادات)\n_(يسري على الرسالة التالية)_"
-    set_session:               "🧠 ✓ ضُبط جهد التفكير إلى `{effort}` (الجلسة فقط — أضف `--global` للحفظ الدائم)\n_(يسري على الرسالة التالية)_"
 
   reload_mcp:
     cancelled:             "🟡 أُلغي /reload-mcp. أدوات MCP دون تغيير."

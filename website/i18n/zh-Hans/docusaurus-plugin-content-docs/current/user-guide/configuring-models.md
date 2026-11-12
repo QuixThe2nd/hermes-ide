@@ -39,7 +39,7 @@ Hermes 使用两类模型槽位：
 
 在过滤框中输入提供商名称、slug 或模型 ID 进行筛选。
 
-选择模型后点击 **Switch**，Hermes 会将其写入 `~/.hermes/config.yaml` 的 `model` 部分。**此操作仅对新会话生效** — 已打开的聊天标签页将继续使用启动时的模型。如需在当前聊天中热切换，请在聊天内使用 `/model` 斜杠命令。
+选择模型后点击 **Switch**，Hermes 会将其写入 `~/.hermes/config.yaml` 的 `model` 部分。**此操作仅对新会话生效** — 已打开的聊天标签页将继续使用启动时的模型。如需热切换，请开启新会话——新会话会读取更新后的配置。
 
 ## 设置辅助模型
 
@@ -125,9 +125,9 @@ auxiliary:
 
 - **CLI**（`hermes chat`）：下次执行 `hermes chat` 时生效。
 - **Gateway**（Telegram、Discord、Slack 等）：下一个*新*会话生效。现有会话保持原有模型。如需强制所有会话使用新配置，重启 gateway（`hermes gateway restart`）。
-- **仪表板聊天标签页**（`/chat`）：下一个新 PTY 生效。当前打开的聊天保持原有模型 — 在聊天内使用 `/model` 进行热切换。
+- **仪表板聊天标签页**（`/chat`）：下一个新 PTY 生效。当前打开的聊天保持原有模型，直到开启新会话。
 
-更改不会使运行中会话的 prompt 缓存失效。这是有意为之：在会话内切换主模型需要重置缓存（系统 prompt 包含模型特定内容），该操作保留给聊天内的显式 `/model` 斜杠命令。
+更改不会使运行中会话的 prompt 缓存失效。这是有意为之：在会话内切换主模型需要重置缓存（系统 prompt 包含模型特定内容），该操作保留给显式的模型切换（`hermes model`）。
 
 ## 故障排查
 
@@ -137,7 +137,7 @@ Hermes 仅列出具有有效凭据的提供商。检查侧边栏中的 **Keys** 
 
 ### 主模型在运行中的聊天里未发生变化
 
-符合预期。仪表板写入 `config.yaml`，新会话读取该文件。当前打开的聊天是一个活跃的 agent 进程 — 它保持启动时的模型。在聊天内使用 `/model <name>` 对该会话进行热切换。
+符合预期。仪表板写入 `config.yaml`，新会话读取该文件。当前打开的聊天是一个活跃的 agent 进程 — 它保持启动时的模型。开启新会话即可使用新模型。
 
 ### 辅助覆盖"未生效"
 
@@ -153,20 +153,17 @@ Hermes 仅列出具有有效凭据的提供商。检查侧边栏中的 **Keys** 
 
 ## 其他方法 {#alternative-methods}
 
-### CLI 斜杠命令
+### CLI
 
-在任意 `hermes chat` 会话内：
-
-```
-/model gpt-5.4 --provider openrouter             # 仅当前会话
-/model gpt-5.4 --provider openrouter --global    # 同时持久化到 config.yaml
+```bash
+hermes model gpt-5.4 --provider openrouter    # 更改默认模型并写入 config.yaml
 ```
 
-`--global` 与仪表板 **Change** 按钮效果相同，并额外在当前会话内原地切换模型。
+与仪表板 **Change** 按钮效果相同。
 
 ### 自定义别名
 
-为常用模型定义短名称，然后在 CLI 或任意消息平台中使用 `/model <alias>`：
+为常用模型定义短名称，然后通过 `hermes model <alias>` 使用：
 
 ```yaml
 # ~/.hermes/config.yaml
@@ -186,7 +183,7 @@ hermes config set model.aliases.fav anthropic/claude-opus-4.6
 hermes config set model.aliases.grok x-ai/grok-4
 ```
 
-然后在聊天中使用 `/model fav` 或 `/model grok`。用户别名会覆盖内置短名称（`sonnet`、`kimi`、`opus` 等）。完整参考请见[自定义模型别名](../reference/slash-commands.md#custom-model-aliases)。
+然后运行 `hermes model fav` 或 `hermes model grok`。用户别名会覆盖内置短名称（`sonnet`、`kimi`、`opus` 等）。完整参考请见[自定义模型别名](../reference/slash-commands.md#custom-model-aliases)。
 
 ### `hermes model` 子命令
 

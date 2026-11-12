@@ -161,36 +161,22 @@ hermes model
 - 配置自定义/自托管端点
 - 将新默认值保存到 config
 
-:::warning hermes model 与 /model——了解区别
-**`hermes model`**（从终端运行，在任何 Hermes 会话外部）是**完整的 provider 设置向导**。它可以添加新 provider、运行 OAuth 流程、提示输入 API 密钥并配置端点。
-
-**`/model`**（在活跃的 Hermes 聊天会话中输入）只能**在已设置好的 provider 和模型之间切换**。它无法添加新 provider、运行 OAuth 或提示输入 API 密钥。
-
-**如果需要添加新 provider：** 先退出 Hermes 会话（`Ctrl+C` 或 `/quit`），然后从终端提示符运行 `hermes model`。
-:::
-
-### `/model` 斜杠命令（会话中途）
-
-无需离开会话即可在已配置的模型之间切换：
+`hermes model`（从终端运行，在任何 Hermes 会话外部）是**完整的 provider 设置与切换向导**。它可以添加新 provider、运行 OAuth 流程、提示输入 API 密钥、配置端点，并在已设置好的 provider 和模型之间切换：
 
 ```
-/model                              # 显示当前模型和可用选项
-/model claude-sonnet-4              # 切换模型（自动检测 provider）
-/model zai:glm-5                    # 切换 provider 和模型
-/model custom:qwen-2.5              # 在自定义端点上使用模型
-/model custom                       # 从自定义端点自动检测模型
-/model custom:local:qwen-2.5        # 使用命名的自定义 provider
-/model openrouter:anthropic/claude-sonnet-4  # 切换回云端
+hermes model                              # 交互式提供商 + 模型选择器
+hermes model claude-sonnet-4              # 切换模型（自动检测 provider）
+hermes model zai:glm-5                    # 切换 provider 和模型
+hermes model custom:qwen-2.5              # 在自定义端点上使用模型
+hermes model custom                       # 从自定义端点自动检测模型
+hermes model custom:local:qwen-2.5        # 使用命名的自定义 provider
+hermes model openrouter:anthropic/claude-sonnet-4  # 切换回云端
 ```
 
-默认情况下，`/model` 的更改**仅对当前会话生效**。添加 `--global` 可将更改持久化到 `config.yaml`：
-
-```
-/model claude-sonnet-4 --global     # 切换并保存为新默认值
-```
+更改会持久化到 `config.yaml`，对新会话生效。
 
 :::info 如果我只看到 OpenRouter 模型怎么办？
-如果你只配置了 OpenRouter，`/model` 将只显示 OpenRouter 模型。要添加其他 provider（Anthropic、DeepSeek、Copilot 等），请退出会话并从终端运行 `hermes model`。
+如果你只配置了 OpenRouter，`hermes model` 将只显示 OpenRouter 模型。要添加其他 provider（Anthropic、DeepSeek、Copilot 等），请先完成该 provider 的配置。
 :::
 
 Provider 和 base URL 的更改会自动持久化到 `config.yaml`。从自定义端点切换走时，过时的 base URL 会被清除，以防止其泄漏到其他 provider。
@@ -309,7 +295,7 @@ hermes slack manifest --write      # 写入 ~/.hermes/slack-manifest.json
 hermes slack manifest --slashes-only  # 仅输出 features.slash_commands 数组
 ```
 
-生成一个 Slack app manifest，将 `COMMAND_REGISTRY` 中的每条 gateway 命令（`/btw`、`/stop`、`/model` 等）注册为一等公民 Slack 斜杠命令——与 Discord 和 Telegram 保持一致。将输出粘贴到你的 Slack app 配置中：[https://api.slack.com/apps](https://api.slack.com/apps) → 你的 app → **Features → App Manifest → Edit**，然后点击 **Save**。如果 scope 或斜杠命令有变化，Slack 会提示重新安装。
+生成一个 Slack app manifest，将 `COMMAND_REGISTRY` 中的每条 gateway 命令（`/btw`、`/stop` 等）注册为一等公民 Slack 斜杠命令——与 Discord 和 Telegram 保持一致。将输出粘贴到你的 Slack app 配置中：[https://api.slack.com/apps](https://api.slack.com/apps) → 你的 app → **Features → App Manifest → Edit**，然后点击 **Save**。如果 scope 或斜杠命令有变化，Slack 会提示重新安装。
 
 | 标志 | 默认值 | 用途 |
 |------|---------|---------|
