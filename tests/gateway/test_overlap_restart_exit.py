@@ -108,6 +108,7 @@ async def test_restart_control_requests_the_same_overlap_flow(monkeypatch):
     result = json.loads(response)["result"]
     assert result["queued"] is True
     assert result["status"] == "restarting"
+    assert result["pid"] == os.getpid()
     queued.assert_awaited_once_with(runner, None, None, restart_platforms=False)
     runner.request_restart.assert_not_called()
 

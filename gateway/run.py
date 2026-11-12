@@ -11912,6 +11912,7 @@ async def _start_gateway_start_control_socket(runner):
             return {
                 "queued": status.get("status") in {"restarting", "chained"},
                 "status": status.get("status"),
+                "pid": os.getpid(),
                 "active_agents": status.get("active_agents", 0),
                 "via_service": status.get("via_service"),
             }

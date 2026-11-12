@@ -29,6 +29,7 @@ reasons — against the pre-fix implementation.
 """
 
 import json
+import os
 import time
 from datetime import datetime
 from types import SimpleNamespace
@@ -463,8 +464,24 @@ _RESTART_CLOSE_ROW = (
     "[Turn ended here: gateway restart was queued by the restart tool]"
 )
 
+_OLD_PROCESS = "pid 3376901"
+_NEW_PID = 3376902
+_NEW_PROCESS = f"pid {_NEW_PID}"
+_EXPECTED_RESTART_RESULT = (
+    "Restarted successfully\n"
+    f"Old process: {_OLD_PROCESS}\n"
+    f"New process: {_NEW_PROCESS}\n"
+    f"This chat is no longer running in {_OLD_PROCESS}. "
+    f"You are now running in {_NEW_PROCESS}. Continue the original task."
+)
+_EXPECTED_RESTART_RESULT_WITHOUT_OLD = (
+    "Restarted successfully\n"
+    f"New process: {_NEW_PROCESS}\n"
+    f"You are now running in {_NEW_PROCESS}. Continue the original task."
+)
 
-def _restart_tool_tail_history(*, deferred=False, timestamp=None):
+
+def _restart_tool_tail_history(*, deferred=False, timestamp=None, process=_OLD_PROCESS):
     """The exact durable shape left by the dying process's restart control."""
     from plugins.gateway_restart.tool import _result_json
 
@@ -479,6 +496,12 @@ def _restart_tool_tail_history(*, deferred=False, timestamp=None):
         SimpleNamespace(_draining=True),
         {"status": "restarting", "active_agents": 1, "via_service": False},
     )
+    payload = json.loads(result)
+    if process is None:
+        payload.pop("process", None)
+    else:
+        payload["process"] = process
+    result = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
     return [
         {"role": "user", "content": "restart, then finish my task", "timestamp": ts},
         {
@@ -503,11 +526,12 @@ def _restart_tool_tail_history(*, deferred=False, timestamp=None):
 
 
 @pytest.mark.parametrize("deferred", [False, True], ids=["direct", "deferred-wrapper"])
-def test_restart_tool_tail_continues_with_exact_success_result(deferred):
-    """The successor resumes after restart(); it never asks what to do next."""
+def test_restart_tool_tail_continues_with_process_identity(deferred, monkeypatch):
+    """The successor identifies both gateway processes without adding chat rows."""
+    history = _restart_tool_tail_history(deferred=deferred)
+    monkeypatch.setattr(os, "getpid", lambda: _NEW_PID)
     agent, store = _run_and_capture_agent(
-        _restart_tool_tail_history(deferred=deferred),
-        "", "restart_requester", {},
+        history, "", "restart_requester", {},
     )
 
     assert len(agent.run_calls) == 1
@@ -521,7 +545,7 @@ def test_restart_tool_tail_continues_with_exact_success_result(deferred):
     model_history = kwargs.get("conversation_history") or []
     assert [row.get("role") for row in model_history] == ["user", "assistant", "tool"]
     assert model_history[-1]["tool_call_id"] == "call_restart"
-    assert model_history[-1]["content"] == "Restarted successfully"
+    assert model_history[-1]["content"] == _EXPECTED_RESTART_RESULT
     assert all(row.get("content") != _RESTART_CLOSE_ROW for row in model_history)
     assert all(
         not str(row.get("content", "")).startswith("[System note:")
@@ -533,9 +557,40 @@ def test_restart_tool_tail_continues_with_exact_success_result(deferred):
     assert session_id == "test-session"
     assert active_only is True
     assert [row.get("role") for row in rewritten] == ["user", "assistant", "tool"]
-    assert rewritten[-1]["content"] == "Restarted successfully"
+    assert rewritten[-1]["content"] == _EXPECTED_RESTART_RESULT
     assert rewritten[-1]["tool_call_id"] == "call_restart"
     assert all(row.get("content") != _RESTART_CLOSE_ROW for row in rewritten)
+
+
+def test_rich_restart_result_is_trusted_and_idempotent(monkeypatch):
+    """A second recovery pass in the same successor changes nothing."""
+    from gateway.run_turn_recovery import _repair_restart_tool_tail
+
+    history = _restart_tool_tail_history()[:-1]
+    history[-1]["content"] = _EXPECTED_RESTART_RESULT
+    monkeypatch.setattr(os, "getpid", lambda: _NEW_PID)
+
+    repair = _repair_restart_tool_tail(history)
+
+    assert repair is not None
+    rewritten, changed = repair
+    assert changed is False
+    assert rewritten == history
+
+
+def test_restart_result_without_old_process_degrades_gracefully(monkeypatch):
+    """Legacy results still resume, without printing an unknown old identity."""
+    from gateway.run_turn_recovery import _repair_restart_tool_tail
+
+    history = _restart_tool_tail_history(process=None)
+    monkeypatch.setattr(os, "getpid", lambda: _NEW_PID)
+
+    repair = _repair_restart_tool_tail(history)
+
+    assert repair is not None
+    rewritten, changed = repair
+    assert changed is True
+    assert rewritten[-1]["content"] == _EXPECTED_RESTART_RESULT_WITHOUT_OLD
 
 
 def test_idle_restart_requester_keeps_interactive_recovery_note():

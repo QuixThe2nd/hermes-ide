@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any, Optional
 
 from agent.turn_control import turn_control_field_for
@@ -28,11 +29,13 @@ RESTART_SCHEMA = {
         "command. New turns and other sessions' long running turns "
         "continue in a new instance. This call only requests the restart; "
         "the old process terminates this turn mechanically. The successor "
-        "supplies the tool result exactly 'Restarted successfully' and "
-        "continues the interrupted task from that result. Continue the "
-        "original task then; do not call restart again for the same "
-        "restart. Use this to pick up config or code changes, or to "
-        "recover a misbehaving gateway."
+        "supplies a tool result beginning 'Restarted successfully', with "
+        "'Old process: <old_id>' and 'New process: <new_id>' lines that "
+        "identify the gateway process transition, and continues the "
+        "interrupted task from that result. Continue the original task "
+        "then; do not call restart again for the same restart. Use this "
+        "to pick up config or code changes, or to recover a misbehaving "
+        "gateway."
     ),
     "parameters": {
         "type": "object",
@@ -119,7 +122,7 @@ def _result_json(runner: Any, status: dict) -> str:
     payload = {
         "success": True,
         "status": status.get("status"),
-        "draining": bool(getattr(runner, "_draining", False)),
+        "process": f"pid {os.getpid()}",
         "active_agents": status.get("active_agents", 0),
         "via_service": status.get("via_service"),
     }
@@ -194,18 +197,19 @@ async def _queue_user_restart(runner: Any, source: Any, message_id: Optional[str
 def _socket_result_json(ack: dict) -> str:
     """Success payload for a control-socket ack (same keys as the in-process path).
 
-    ``draining`` has no live runner to read here; the ack's status already
-    encodes the restart state, so False is the honest answer. The
-    turn-control stamp is identical to `_result_json` so the tool executor
+    The gateway's PID comes from the ACK, never from this worker process.
+    The turn-control stamp is identical to `_result_json` so the tool executor
     ends the turn the same way on either transport.
     """
     payload = {
         "success": True,
         "status": ack.get("status"),
-        "draining": False,
         "active_agents": ack.get("active_agents", 0),
         "via_service": ack.get("via_service"),
     }
+    process = ack.get("pid")
+    if isinstance(process, int) and not isinstance(process, bool) and process > 0:
+        payload["process"] = f"pid {process}"
     control_field = turn_control_field_for(ack.get("status"))
     if control_field:
         payload.update(control_field)
