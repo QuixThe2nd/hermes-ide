@@ -943,6 +943,12 @@ class GatewayInboundMixin:
             self._handle_reset_command,
         )
 
+    async def _hm_cmd_incognito(self, event, source, _quick_key):
+        return await self._hm_confirm_destructive(
+            event, "incognito", "This starts a fresh incognito session and discards the current conversation history.",
+            self._handle_incognito_command,
+        )
+
     async def _hm_cmd_start(self, event, source, _quick_key):
         from gateway.run import logger
 
@@ -1041,7 +1047,7 @@ class GatewayInboundMixin:
     # Idle-path built-ins with bespoke flow (confirmations, prompt rewrites), each
     # handled by ``_hm_cmd_<name>`` → ``(handled, result)``; ``(False, None)`` falls through to the agent.
     _HM_CANONICAL_COMMANDS = frozenset({
-        "new", "start", "egress", "learn", "plan", "init", "blueprint", "undo", "queue",
+        "new", "incognito", "start", "egress", "learn", "plan", "init", "blueprint", "undo", "queue",
     })
 
     async def _hm_dispatch_canonical_command(
@@ -3127,6 +3133,7 @@ class GatewayInboundMixin:
                 _safe_user_name = f"{_safe_user_name} | Slack user <@{source.user_id}>"
             message_text = f"[{_safe_user_name}] {message_text}"
         # After the sender-prefix so the prefix applies only to the trigger message, not the backfill.
+        self._apply_incognito_inbound_gate(event)
         if getattr(event, "channel_context", None):
             message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"
         return message_text
@@ -3484,12 +3491,6 @@ class GatewayInboundMixin:
                 )
             message_text = f"[{_safe_user_name}] {message_text}"
 
-        # Prepend channel context from history backfill (if any).  This
-        # happens after sender-prefix so the prefix only applies to the
-        # trigger message, not the backfill block.
-        if getattr(event, "channel_context", None):
-            message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"
-
         # Declare at outer scope so the audio-file-paths handling block below
         # remains safe when ``event.media_urls`` is empty (no inner block runs).
         audio_file_paths: list[str] = []
@@ -3734,9 +3735,10 @@ class GatewayInboundMixin:
                     f"{message_text}"
                 )
 
+        # Incognito sessions drop unbounded history backfill and reply context here, BEFORE
+        # either is composed into the turn text (adapters that proved a bounded block flag it).
+        self._apply_incognito_inbound_gate(event)
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
-            # Always inject the reply-to pointer — even when the quoted text
-            # already appears in history. The prefix isn't deduplication, it's
             # disambiguation: it tells the agent *which* prior message the user
             # is referencing. History can contain the same or similar text
             # multiple times, and without an explicit pointer the agent has to
@@ -3749,6 +3751,12 @@ class GatewayInboundMixin:
                 )
             else:
                 message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+
+        # Prepend channel context from history backfill (if any), OUTERMOST so the block reads
+        # history → reply pointer → trigger message. Runs after sender-prefix so the prefix
+        # applies only to the trigger message, not the backfill block.
+        if getattr(event, "channel_context", None):
+            message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"
 
         if "@" in message_text:
             try:

@@ -849,6 +849,10 @@ def _memory_turn_start_and_prefetch(
     for — no prefetch injection."""
     if not agent._memory_manager or continue_interrupted_turn:
         return ""
+    # Incognito turn: no external recall, prefetch query, on_turn_start attribution,
+    # or recall indicator. The gateway re-reads the current session flag before every turn.
+    if getattr(agent, "_incognito", False):
+        return ""
     _query = original_user_message if isinstance(original_user_message, str) else ""
     # The author rides along so a provider can attribute THIS turn, not whoever opened the session.
     _author = turn_author if isinstance(turn_author, dict) else {}
@@ -1208,11 +1212,14 @@ def build_turn_context(
                     # already happened).
                     agent._memory_card_state = _mem_sha
                     _remember_session_memory_card_sha(getattr(agent, "session_id", None), _mem_sha)
-                    # Counted heading metadata, resolved like the card below.
+                    # Counted heading metadata, resolved like the card below. Incognito sessions
+                    # report no discrete count — "N memories recalled" over an incognito turn
+                    # would leak that recall happened at all.
                     _recalled_count = None
-                    with suppress(Exception):
-                        _count_fn = getattr(agent._memory_manager, "recalled_count", None)
-                        _recalled_count = _count_fn() if callable(_count_fn) else None
+                    if not getattr(agent, "_incognito", False):
+                        with suppress(Exception):
+                            _count_fn = getattr(agent._memory_manager, "recalled_count", None)
+                            _recalled_count = _count_fn() if callable(_count_fn) else None
                     _progress_callback(
                         "context.injected",
                         "context",
@@ -1327,9 +1334,10 @@ def build_turn_context(
                     # falls back to the uncounted label.
                     if "memory" in _sources:
                         _recalled_count = None
-                        with suppress(Exception):
-                            _count_fn = getattr(agent._memory_manager, "recalled_count", None)
-                            _recalled_count = _count_fn() if callable(_count_fn) else None
+                        if not getattr(agent, "_incognito", False):
+                            with suppress(Exception):
+                                _count_fn = getattr(agent._memory_manager, "recalled_count", None)
+                                _recalled_count = _count_fn() if callable(_count_fn) else None
                         _payload["recalled_count"] = _recalled_count
                     _progress_callback(
                         "context.injected",

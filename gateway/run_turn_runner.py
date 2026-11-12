@@ -1963,6 +1963,10 @@ class TurnRunner(_TurnRunnerCore):
         from tools.approval_context import reset_current_session_key, set_current_session_key
         ctx = self._ctx
         session_key = ctx.session_key or ""
+        # Re-read the current session's flag before every turn so cached agents and restarts
+        # cannot drift from the persisted session metadata.
+        with suppress(Exception):
+            agent._incognito = bool(self._runner._is_session_incognito(ctx.source))
         token = set_current_session_key(session_key)
         try:
             api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)

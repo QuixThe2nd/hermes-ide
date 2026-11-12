@@ -100,6 +100,9 @@ class MessageEvent:
     # Original durable inbound ids absorbed by replay dedup/media merges. These move
     # with the completion callback so platform hooks can settle every accepted row.
     _gateway_replay_message_ids: List[str] = field(default_factory=list, init=False, repr=False, compare=False)
+    # Adapter-proven incognito history bounds; process-local so replay fails closed.
+    _incognito_context_bounded: bool = field(default=False, init=False, repr=False, compare=False)
+    _incognito_reply_bounded: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
 

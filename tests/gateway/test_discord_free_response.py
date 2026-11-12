@@ -189,6 +189,16 @@ class FakeHistoryChannel(FakeTextChannel):
         return _iter()
 
 
+class FakeHistoryThread(FakeThread):
+    """A Discord thread fake whose history honors before/after snowflakes."""
+
+    history = FakeHistoryChannel.history
+
+    def __init__(self, history_messages, **kwargs):
+        super().__init__(**kwargs)
+        self._history_messages = list(history_messages)
+
+
 @pytest.mark.asyncio
 async def test_discord_free_response_in_server_channels(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
@@ -654,6 +664,134 @@ async def test_fetch_channel_context_reply_target_in_primary_window_not_duplicat
     # No separate reply block, and the target text appears exactly once.
     assert "[Context around the replied-to message]" not in result
     assert result.count("recent reply target") == 1
+
+
+@pytest.mark.asyncio
+async def test_incognito_thread_backfill_starts_at_starter_and_excludes_old_reply(adapter):
+    adapter.config.extra["history_backfill_limit"] = 10
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    thread = FakeHistoryThread(
+        [
+            make_history_message(author=human, content="after starter", msg_id=202),
+            make_history_message(author=human, content="thread starter", msg_id=200),
+            make_history_message(author=human, content="before starter", msg_id=199),
+        ],
+        channel_id=200,
+    )
+    history_calls = []
+    real_history = thread.history
+
+    def recording_history(**kwargs):
+        history_calls.append(dict(kwargs))
+        # Simulate a transport/test double that ignores after=: the local guard must still hold.
+        forwarded = dict(kwargs)
+        forwarded.pop("after", None)
+        return real_history(**forwarded)
+
+    thread.history = recording_history
+    trigger = make_message(channel=thread, content="current")
+    trigger.id = 300
+
+    result = await adapter._fetch_channel_context(
+        thread,
+        before=trigger,
+        reply_target=SimpleNamespace(id=150),
+        incognito=True,
+    )
+
+    assert result == "[Recent channel messages]\n[Alice] thread starter\n[Alice] after starter"
+    assert "before starter" not in result
+    assert "[Context around the replied-to message]" not in result
+    assert history_calls[0]["after"].id == 199
+
+
+@pytest.mark.asyncio
+async def test_incognito_reply_window_also_enforces_starter_bound(adapter):
+    adapter.config.extra["history_backfill_limit"] = 10
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    thread = FakeHistoryThread(
+        [
+            make_history_message(author=adapter._client.user, content="bot partition", msg_id=203),
+            make_history_message(author=human, content="reply target", msg_id=202),
+            make_history_message(author=human, content="thread starter", msg_id=200),
+            make_history_message(author=human, content="before starter", msg_id=199),
+        ],
+        channel_id=200,
+    )
+    history_calls = []
+    real_history = thread.history
+
+    def recording_history(**kwargs):
+        history_calls.append(dict(kwargs))
+        forwarded = dict(kwargs)
+        forwarded.pop("after", None)
+        return real_history(**forwarded)
+
+    thread.history = recording_history
+    trigger = make_message(channel=thread, content="current")
+    trigger.id = 300
+
+    result = await adapter._fetch_channel_context(
+        thread, before=trigger, reply_target=SimpleNamespace(id=202), incognito=True,
+    )
+
+    assert "reply target" in result
+    assert "thread starter" in result
+    assert "before starter" not in result
+    assert history_calls[1]["after"].id == 199
+
+@pytest.mark.asyncio
+async def test_incognito_non_thread_backfill_is_empty_without_reading_history(adapter):
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    channel = FakeHistoryChannel(
+        [make_history_message(author=human, content="old channel secret", msg_id=1)],
+        channel_id=123,
+    )
+    channel.history = MagicMock(side_effect=AssertionError("history must not be read"))
+
+    result = await adapter._fetch_channel_context(
+        channel, before=make_message(channel=channel, content="current"), incognito=True,
+    )
+
+    assert result == ""
+    channel.history.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_incognito_discord_event_keeps_only_bounded_thread_context(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    adapter.config.extra["history_backfill"] = True
+    adapter.gateway_runner = SimpleNamespace(_is_session_incognito=lambda _source: True)
+    human = SimpleNamespace(id=42, display_name="Jezza", name="Jezza", bot=False)
+    parent = FakeTextChannel(channel_id=100)
+    thread = FakeHistoryThread(
+        [
+            make_history_message(author=human, content="thread starter", msg_id=200),
+            make_history_message(author=human, content="before starter", msg_id=199),
+        ],
+        channel_id=200,
+        parent=parent,
+    )
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=thread,
+        content=f"<@{bot_user.id}> current",
+        mentions=[bot_user],
+    )
+    message.id = 300
+    message.reference = SimpleNamespace(
+        message_id=150,
+        channel_id=100,
+        resolved=SimpleNamespace(id=150, content="parent channel secret", attachments=[]),
+    )
+
+    await adapter._handle_message(message)
+
+    event = adapter.handle_message.await_args.args[0]
+    assert event.channel_context == "[Recent channel messages]\n[Jezza] thread starter"
+    assert event._incognito_context_bounded is True
+    assert event.reply_to_text is None
+    assert event._incognito_reply_bounded is False
 
 
 def test_nonconversational_fallback_requires_self_improvement_emoji():

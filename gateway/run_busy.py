@@ -1478,7 +1478,7 @@ class GatewayBusySessionMixin:
 
     # busy_handler key (hermes_cli/commands.py CommandDef) → mid-run variant ``_busy_<key>_command``.
     _BUSY_SPECIAL_HANDLERS: Dict[str, str] = {
-        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "queue", "egress", "goal", "loop")
+        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "incognito", "queue", "egress", "goal", "loop")
     }
 
     async def _dispatch_busy_slash_command(self, event: MessageEvent, cmd_def, quick_key: str, source):
@@ -1567,6 +1567,15 @@ class GatewayBusySessionMixin:
             quick_key, source, interrupt_reason=_INTERRUPT_REASON_RESET, invalidation_reason="new_command",
         )
         return await self._handle_reset_command(event)
+
+    async def _busy_incognito_command(self, event: MessageEvent, quick_key: str, source):
+        # Same shape as _busy_new_command: the reset must bypass the running-agent guard, and the
+        # incognito flag is stamped on the NEW entry only after the reset lands.
+        from gateway.run import _INTERRUPT_REASON_RESET
+        await self._interrupt_and_clear_session(
+            quick_key, source, interrupt_reason=_INTERRUPT_REASON_RESET, invalidation_reason="incognito_command",
+        )
+        return await self._handle_incognito_command(event)
 
     async def _busy_queue_command(self, event: MessageEvent, quick_key: str, source):
         # Each /queue is its own full agent turn, run FIFO after the current run; never merged.
