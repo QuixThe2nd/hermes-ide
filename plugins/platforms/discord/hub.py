@@ -255,6 +255,8 @@ _SYNC_RPC_METHODS = frozenset({
     "get_voice_channel_context",
 })
 _MATRIX_SYNC_RPC_METHODS = frozenset({"get_diagnostics"})
+# Dispatched as tasks: they call out to Discord/Matrix and may block on rate limits.
+_CONCURRENT_RPC_METHODS = frozenset({"rpc", "sync_rpc", "spawn_gateway"})
 _PICKER_CALLBACK_KWARGS = {
     "send_model_picker": "on_model_selected",
     "send_choice_picker": "on_choice_selected",
@@ -328,6 +330,7 @@ class DiscordHubServer:
 
         self.socket_path = Path(socket_path or default_socket_path())
         self.router = DiscordSessionRouter()
+        self._rpc_tasks: set[asyncio.Task] = set()
         self._routers: Dict[str, DiscordSessionRouter] = {}
         self._server: Optional[asyncio.AbstractServer] = None
         self._clients: Dict[str, _Client] = {}
@@ -590,6 +593,13 @@ class DiscordHubServer:
                         continue
                     if client is None and method not in {"sync_rpc", "overlap_successors"}:
                         raise RuntimeError("attach is required before hub RPC")
+                    if client is not None and method in _CONCURRENT_RPC_METHODS:
+                        # Platform API calls (Discord REST, Matrix) can sit in a
+                        # rate-limit sleep for minutes. Run them off the read
+                        # loop so this generation's register/route/handoff and
+                        # control_result lines keep flowing meanwhile.
+                        self._spawn_client_rpc(client, request_id, str(method), params)
+                        continue
                     result = await self._dispatch(client, str(request.get("method") or ""), params)
                     if client is None:
                         await self._write_response(writer, {"id": request_id, "result": result})
@@ -619,6 +629,22 @@ class DiscordHubServer:
                 await writer.wait_closed()
             except Exception:
                 pass
+
+    def _spawn_client_rpc(self, client: _Client, request_id: Any, method: str,
+                          params: Dict[str, Any]) -> None:
+        async def _run() -> None:
+            try:
+                result = await self._dispatch(client, method, params)
+                payload: Dict[str, Any] = {"id": request_id, "result": result}
+            except Exception as exc:
+                logger.exception("Discord hub RPC failed")
+                payload = {"id": request_id, "error": str(exc)}
+            with contextlib.suppress(Exception):
+                await client.send(payload)
+
+        task = asyncio.create_task(_run())
+        self._rpc_tasks.add(task)
+        task.add_done_callback(self._rpc_tasks.discard)
 
     @staticmethod
     async def _write_response(writer: asyncio.StreamWriter, payload: Dict[str, Any]) -> None:
