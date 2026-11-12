@@ -1260,16 +1260,18 @@ The evidence that feeds this guard (which test/lint/build commands ran, which fi
 
 For a user/plugin policy gate at the same point — keep the agent going with your own checks — see the [`pre_verify` hook](./features/hooks.md#pre_verify).
 
-## Standing Goals (`/goal`)
+## Standing Goals (auto-goal)
 
-When a standing goal is active, Hermes judges whether each assistant response satisfies it. If not, it feeds a continuation prompt back into the same session and keeps working until the goal is done, the turn budget is exhausted, or the user pauses/clears it. The turn budget is the real backstop — judge failures fail **open** (continue) so a flaky judge never wedges progress.
+When a standing goal is active, Hermes judges whether each assistant response satisfies it. If not, it feeds a continuation prompt back into the same session and keeps working until the goal is done, the turn budget is exhausted, or the user says "stop". With `goals.auto.mode: on`, task-like messages start goals automatically (see [Goals](./features/goals.md)); a single judge failure fails **open** (continue), two in a row pause the goal.
 
 ```yaml
 goals:
   max_turns: 20   # Max continuation turns before Hermes auto-pauses the goal (default: 20)
+  auto:
+    mode: shadow  # off | shadow (default) | on
 ```
 
-`max_turns` caps how many continuation turns a goal can drive before Hermes auto-pauses it and asks the user to `/goal resume`. It protects against judge false negatives (goal actually done but judge says continue) and unbounded model spend on fuzzy or unachievable goals. See [Goals](./features/goals.md) for the full feature.
+`max_turns` caps how many continuation turns a goal can drive before Hermes auto-pauses it and asks you to keep going ("go ahead" resumes with a fresh budget). It protects against judge false negatives (goal actually done but judge says continue) and unbounded model spend on fuzzy or unachievable goals. See [Goals](./features/goals.md) for the full feature.
 
 ### API Timeouts
 

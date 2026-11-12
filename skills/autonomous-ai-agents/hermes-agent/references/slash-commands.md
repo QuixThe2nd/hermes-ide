@@ -22,7 +22,6 @@ it. New commands land often; `/help` in-session is always authoritative.
 /btw <question>           Ask a side question about the current conversation without interrupting it
 /queue (/q) <prompt>     Queue prompt for next turn
 /agents (/tasks)         Show active agents and running tasks
-/goal [text|sub]         Standing goal across turns (status|pause|resume|clear)
 /subgoal [text]          Add/manage criteria on the active goal
 /branch (/fork) [name]   Branch the session
 /resume [name]           Resume a named session
