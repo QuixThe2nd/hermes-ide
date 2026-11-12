@@ -208,7 +208,6 @@ def test_enabled_plugin_survives_saved_discord_toolset_resolution(tmp_path, monk
     _clear_tool_defs_cache()
     definitions = get_tool_definitions(
         enabled_toolsets=sorted(enabled), quiet_mode=True,
-        skip_tool_search_assembly=True,
     )
     assert "restart" in {item["function"]["name"] for item in definitions}
 

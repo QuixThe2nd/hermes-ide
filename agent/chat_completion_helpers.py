@@ -1289,11 +1289,11 @@ def _reasoning_config_for_wire(agent):
     return cfg
 
 
-def _alias_tool_search_bridge_for_xai(agent, transport, tools_for_api):
-    """xAI chat-completions reserves ``tool_search`` and 400s when the bridge declares
-    it (#95003): rename the wire declaration; ``normalize_response`` maps calls back
-    via the transport's ``_last_wire_aliases`` (reset here so a stale map can't
-    reverse-map a name this request never aliased). Deep-copy first (#27907)."""
+def _alias_reserved_tool_names_for_xai(agent, transport, tools_for_api):
+    """Alias xAI-reserved client function names; reverse-map calls via request-local provenance.
+
+    Reset ``_last_wire_aliases`` so a stale map cannot rewrite a name this request never
+    aliased. Deep-copy before rewriting the shared schema list (#27907)."""
     if transport is not None and hasattr(transport, "_last_wire_aliases"):
         transport._last_wire_aliases = {}
     is_xai_chat = agent.provider in {"xai", "xai-oauth"} or agent._base_url_hostname == "api.x.ai"
@@ -1301,17 +1301,17 @@ def _alias_tool_search_bridge_for_xai(agent, transport, tools_for_api):
         return tools_for_api
     try:
         import copy as _copy_xai
-        from agent.transports.chat_completions import _rename_tool_search_bridge_for_xai
-        has_bridge = any(
+        from agent.transports.chat_completions import _rename_reserved_tool_names_for_xai
+        has_reserved_name = any(
             (t.get("function") or {}).get("name") == "tool_search" for t in tools_for_api if isinstance(t, dict)
         )
-        if has_bridge:
+        if has_reserved_name:
             tools_for_api = _copy_xai.deepcopy(tools_for_api)
-            tools_for_api, alias_map = _rename_tool_search_bridge_for_xai(tools_for_api)
+            tools_for_api, alias_map = _rename_reserved_tool_names_for_xai(tools_for_api)
             if transport is not None:
                 transport._last_wire_aliases = alias_map
     except Exception as exc:
-        logger.warning("%s⚠️ Failed to alias tool_search bridge for xAI: %s", getattr(agent, "log_prefix", ""), exc)
+        logger.warning("%s⚠️ Failed to alias reserved tool name for xAI: %s", getattr(agent, "log_prefix", ""), exc)
     return tools_for_api
 
 
@@ -1386,7 +1386,7 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
 
 def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
     transport = agent._get_transport()
-    tools_for_api = _alias_tool_search_bridge_for_xai(agent, transport, tools_for_api)
+    tools_for_api = _alias_reserved_tool_names_for_xai(agent, transport, tools_for_api)
 
     _is_qwen = agent._is_qwen_portal()
     _is_or = agent._is_openrouter_url()

@@ -212,6 +212,12 @@ gateway:
     title_empty_untitled:  "\n⚠️ Title is empty after cleanup — session started untitled."
     tip:                   "\n✦ Tip: {tip}"
 
+  incognito:
+    status_on:             "🕵️ This session is incognito: external memory recall, queued prefetch, completed-turn retention, and unbounded history backfill are suppressed."
+    status_off:            "This session is not incognito. Use /incognito to start a new incognito session."
+    note:                  "🕵️ Incognito session: no external memory, no prior history. /new starts a normal session."
+    write_failed:          "⚠️ Started a new session, but could not persist the incognito flag — this session is NOT incognito. Please try again."
+
   restart:
     in_progress:           "⏳ Gateway restart already in progress..."
     restarting:            "♻ Restarting gateway..."

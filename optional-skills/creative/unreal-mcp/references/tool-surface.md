@@ -4,7 +4,7 @@ How Epic's editor-embedded MCP server organizes, advertises, and executes
 tools, and how to extend the surface when the shipped tools run out.
 Everything here is against UE 5.8's experimental plugin (id
 `ModelContextProtocol`); expect drift between engine versions — the live
-`describe_toolset` schema always outranks this file.
+directly advertised JSON Schema always outranks this file.
 
 ## Architecture in one paragraph
 
@@ -27,52 +27,29 @@ can contribute more. Unreal MCP wraps every registered tool call as an MCP
 Tool. Execution is **serialized onto the game thread** — one tool call at a
 time, editor UI blocked while each runs.
 
-## Tool-search mode (the default contract)
+## Direct tool contract
 
-With `Enable Tool Search` on (default), `tools/list` advertises exactly three
-meta-tools:
-
-| Meta-tool | Args | Returns |
-|---|---|---|
-| `list_toolsets` | — | Registered toolset names + descriptions |
-| `describe_toolset` | toolset name | JSON Schemas for every tool in that toolset |
-| `call_tool` | toolset/tool name + arguments object | The tool's result, same turn |
+Disable `Enable Tool Search` in Editor Preferences. `tools/list` then
+advertises every enabled tool individually with its complete JSON Schema.
+Under Hermes each becomes `mcp_unreal_engine_<tool_name>` at session start;
+`hermes mcp configure unreal-engine` can prune the list. No discovery or
+dispatch meta-tool is required.
 
 Discipline:
 
-- `list_toolsets` once per session; re-run only after `RefreshTools`, plugin
-  changes, or reconnect.
-- `describe_toolset` before first use of any toolset. Parameter names, types,
-  and required fields come from the schema — never from memory or this file.
+- Read the directly advertised schema before first use. Parameter names,
+  types, and required fields come from that schema — never from memory or
+  this file.
 - Results: primitive results arrive wrapped as `{"result": ...}` (CVar
   `ModelContextProtocol.WrapPODToolResultsInObject`, default true).
   Structured results serialize with field-level schema.
 - Errors come back as tool-call errors with the engine-side message — read
   them; they usually name the offending parameter or missing asset.
 
-Eager mode (`Enable Tool Search` off) advertises every tool individually.
-Under Hermes that means each tool becomes `mcp_unreal_engine_<tool_name>` at
-session start, and `hermes mcp configure unreal-engine` can prune the list.
-Schema payload grows with every registered toolset, and tool authors are told
-NOT to rely on eager advertising — stay in tool-search mode unless a very
-small fixed surface is wanted.
-
-## call_tool dispatch semantics (live-verified, 5.8)
+## Direct-call semantics (live-verified, 5.8)
 
 Verified against a running 5.8 server; these details are where naive
 clients die:
-
-- `list_toolsets` returns **fully-qualified** toolset names — Python:
-  `editor_toolset.toolsets.scene.SceneTools`; C++:
-  `EditorToolset.EditorAppToolset`. Epic's prose says "SceneTools"; the
-  registry speaks qualified names. Use them verbatim in `describe_toolset`
-  and `call_tool`'s `toolset_name`.
-- `tool_name` must be the **short** name (`get_current_level`,
-  `CaptureViewport`). Passing the fully-qualified tool name fails with
-  "Unknown tool" even though `describe_toolset` displays qualified names.
-- `call_tool` args: `{"toolset_name": ..., "tool_name": ..., "arguments":
-  {...}}`; result returns on the same turn (the HTTP response blocks until
-  the game thread finishes the call).
 - **`TOptional` parameters must be passed explicitly as `null`** — omitting
   them errors with `input param "X" needs a default value`. E.g.
   `CaptureViewport` minimal call is `{"captureTransform": null,
@@ -109,8 +86,8 @@ clients die:
 
 ## Shipped toolsets
 
-The registry is project-dependent; `describe_toolset` on the live server is
-the only source of truth for schemas. The core surface below is verified
+The registry is project-dependent; the directly advertised live schemas are
+the only source of truth. The core surface below is verified
 against EditorToolset's source in the 5.8 install (Python:
 `.../EditorToolset/Content/Python/editor_toolset/toolsets/`; C++:
 `EditorAppToolset.h`).
@@ -169,8 +146,8 @@ append box/cylinder/sphere, booleans, then `Create New Static Mesh Asset
 from Mesh` to bake an `SM_` asset). For organic/sculpted meshes, model in
 Blender and import.
 
-First-session move: `list_toolsets`, then `describe_toolset` each group you
-plan to use, and keep those schemas in working memory for the session.
+First-session move: review the directly advertised tools you plan to use and
+keep their schemas in working memory for the session.
 
 ## ProgrammaticToolset — sanctioned batching
 
@@ -192,14 +169,14 @@ project-contained paths; scripts run inside an editor **transaction scope**
 `unreal.*` calls are not the contract. Data returns via `run()`'s dict.
 
 Use it whenever a recipe loop exceeds ~5 homogeneous calls; keep one-off
-edits as plain `call_tool`.
+edits as plain direct tool calls.
 
 ## Project Agent Skills (AgentSkillToolset)
 
 Projects and plugins can register **Agent Skills** — named instruction
 bundles for project-specific conventions and workflows (naming schemes,
-folder layout, canonical multi-step sequences). They are NOT listed by
-`list_toolsets`; reach them through `call_tool`:
+folder layout, canonical multi-step sequences). Their tools are advertised
+directly alongside the other enabled Unreal tools:
 
 1. `AgentSkillToolset.ListSkills` → names + descriptions of registered
    skills.
@@ -238,7 +215,7 @@ Editor Preferences > General > Model Context Protocol:
 | Auto Start Server | `false` | Turn on for frictionless sessions |
 | Server Port Number | `8000` | Change on conflict; mirror in Hermes config url |
 | Server URL Path | `/mcp` | Same |
-| Enable Tool Search | `true` | Keep on (see above) |
+| Enable Tool Search | `true` | Turn off for Hermes direct schemas |
 
 Console commands (editor console, backtick):
 
@@ -296,7 +273,7 @@ import toolset_registry
 
 @unreal.uclass()
 class MySceneTools(unreal.ToolsetDefinition):
-    """One-line toolset description — surfaces to the agent in list_toolsets."""
+    """One-line toolset description for editor tooling."""
 
     @toolset_registry.tool_call
     @staticmethod
@@ -328,9 +305,9 @@ Conventions that matter (they generate the schema the agent sees):
   `print()`/stdout go to the UE log, not back over MCP.
 
 After authoring: `ModelContextProtocol.RefreshTools` in the editor console,
-then re-`list_toolsets` from Hermes. Users on Claude Code can scaffold with
-the `create-toolset` skill from Epic's `unreal-mcp` plugin pack; the
-conventions above still apply.
+then start a new Hermes session to refresh the direct schemas. Users on
+Claude Code can scaffold with the `create-toolset` skill from Epic's
+`unreal-mcp` plugin pack; the conventions above still apply.
 
 ### C++ toolset
 
@@ -348,8 +325,8 @@ runtime-shaped tools; caller owns deregistration.
 
 The server is editor-hosted by default but not editor-only: runtime modules
 can host it in cooked builds via `IModelContextProtocolModule::StartServer()`.
-The Toolset Registry adapter (and the three tool-search meta-tools) are
-editor-only, though — cooked-build tools must be registered explicitly
+The Toolset Registry adapter's discovery meta-tools are editor-only; cooked-build
+tools must be registered explicitly
 through `AddTool()` and are advertised eagerly. MCP Resources and Prompts are
 not advertised by any shipping toolset.
 

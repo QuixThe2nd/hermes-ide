@@ -167,6 +167,46 @@ class TestMemoryManager:
         assert len(mgr.providers) == 1
         assert [p.name for p in mgr.providers] == ["test1"]
 
+
+    def test_incognito_sessions_skip_session_end_extraction(self):
+        mgr = MemoryManager()
+        mgr._incognito_check = lambda: True
+        provider = FakeMemoryProvider("external")
+        provider.on_session_end = MagicMock()
+        mgr.add_provider(provider)
+        messages = [{"role": "user", "content": "private"}]
+
+        mgr.on_session_end(messages)
+
+        provider.on_session_end.assert_not_called()
+
+    def test_incognito_sessions_skip_pre_compress_provider_payloads(self):
+        mgr = MemoryManager()
+        mgr._incognito_check = lambda: True
+        provider = FakeMemoryProvider("external")
+        provider.pre_compress_checkpoint_api_version = 2
+        provider.on_pre_compress = MagicMock(return_value="")
+        mgr.add_provider(provider)
+
+        result = mgr.on_pre_compress(
+            [{"role": "user", "content": "private"}],
+            evidence_messages=[{"role": "user", "content": "private"}],
+        )
+
+        assert result == ""
+        provider.on_pre_compress.assert_not_called()
+
+    def test_incognito_turns_do_not_sync_to_providers(self):
+        mgr = MemoryManager()
+        mgr._incognito_check = lambda: True
+        provider = MessagesMemoryProvider("external")
+        mgr.add_provider(provider)
+
+        mgr.sync_all("private", "private answer", messages=[{"role": "user", "content": "private"}])
+        mgr.flush_pending(timeout=5.0)
+
+        assert provider.synced_turns == []
+
     def test_get_provider_by_name(self):
         mgr = MemoryManager()
         p = FakeMemoryProvider("test1")

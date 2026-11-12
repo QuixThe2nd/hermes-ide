@@ -22,7 +22,6 @@ from tools.connectors.gateway.merge import (
     splice_remote_results,
 )
 from tools.connectors.gateway.names import (
-    CONNECTOR_BATCH_SENTINEL,
     format_connector_name,
     parse_connector_name,
 )
@@ -47,13 +46,12 @@ def test_parse_round_trips_and_keeps_tool_slug_underscores():
         None,
         42,
         "",
-        "tool_search",
+        "not_a_connector",
         "connectors__",
         "connectors____",
         "connectors__gmail",
         "connectors__gmail__",
         "connectors____GMAIL_SEND_EMAIL",
-        CONNECTOR_BATCH_SENTINEL,  # planner sentinel is not a callable name
     ],
 )
 def test_parse_rejects_malformed_names_without_raising(bad):

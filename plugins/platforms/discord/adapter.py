@@ -7383,12 +7383,20 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     async def _fetch_channel_context(
         self, channel: Any, before: "DiscordMessage", reply_target: Optional[Any] = None,
+        *, incognito: bool = False,
     ) -> str:
         """Fetch recent channel messages; returns a ``[Recent channel messages]`` block or "".
         Scans back from *before* to the bot's own message or ``history_backfill_limit``; with
-        ``reply_target`` a second scan ending at the target is merged chronologically, deduped by ID."""
+        ``reply_target`` a second scan ending at the target is merged chronologically, deduped by ID.
+
+        Incognito sessions omit unbounded history: a plain channel returns "" without reading
+        history at all; a thread is bounded to messages at/after its starter (a Discord thread id
+        IS its starter message id, so ``after=thread_id-1`` admits the starter and nothing older),
+        and a reply window pointing before the starter is dropped."""
         limit = self._discord_history_backfill_limit()
         if limit <= 0:
+            return ""
+        if incognito and not isinstance(channel, discord.Thread):
             return ""
         allow_bots_raw = self._get_allow_bots()
         include_other_bots = allow_bots_raw != "none"
@@ -7402,6 +7410,23 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         except (ValueError, TypeError):
             pass  # Malformed cache entry — fall back to cold-start scan
         is_thread_channel = isinstance(channel, discord.Thread)
+        _incognito_starter_id: Optional[int] = None
+        if incognito and is_thread_channel:
+            # Thread id == starter message id. Keep both the API lower bound and a local guard:
+            # transports/test doubles must not be able to widen this privacy boundary.
+            try:
+                _incognito_starter_id = int(channel.id)
+                if _incognito_starter_id <= 0:
+                    raise ValueError("invalid thread snowflake")
+                _after_obj = _Snowflake(_incognito_starter_id - 1)
+            except (ValueError, TypeError):
+                return ""
+        _reply_before_starter = False
+        if _incognito_starter_id is not None and reply_target is not None:
+            try:
+                _reply_before_starter = int(getattr(reply_target, "id", 0)) < _incognito_starter_id
+            except (ValueError, TypeError):
+                _reply_before_starter = True
         has_unverified = False
         try:
             def _keep(msg) -> Optional[str]:
@@ -7451,6 +7476,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             async for msg in channel.history(
                 limit=limit, before=before, after=_after_obj, oldest_first=False,
             ):
+                if _incognito_starter_id is not None:
+                    try:
+                        if int(getattr(msg, "id", None)) < _incognito_starter_id:
+                            break  # newest-first: every remaining row is also pre-starter
+                    except (ValueError, TypeError):
+                        continue  # malformed/unprovable snowflakes never enter incognito context
                 # Skip non-conversational status bumps BEFORE the partition check, else a
                 # delayed bump authored by us masquerades as the last bot turn.
                 _content = getattr(msg, "clean_content", msg.content) or ""
@@ -7472,7 +7503,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # Reply window: context around the replied-to message; deliberately NOT self-partitioned.
             reply_collected: List[Tuple[str, str]] = []
             reply_target_id = str(getattr(reply_target, "id", "")) if reply_target else ""
-            if reply_target is not None and reply_target_id and reply_target_id not in seen_ids:
+            if (
+                reply_target is not None and reply_target_id and reply_target_id not in seen_ids
+                and not _reply_before_starter
+            ):
                 # Modest cap: anchored context, not a full backfill.
                 reply_limit = max(1, min(limit, 10))
                 # `before` is exclusive; anchor at target_id + 1 to include the target. A
@@ -7481,9 +7515,18 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     _before_obj = _Snowflake(int(reply_target_id) + 1)
                 except (ValueError, TypeError):
                     _before_obj = before
-                async for msg in channel.history(
-                    limit=reply_limit, before=_before_obj, oldest_first=False,
-                ):
+                _reply_history_kwargs = {
+                    "limit": reply_limit, "before": _before_obj, "oldest_first": False,
+                }
+                if _incognito_starter_id is not None:
+                    _reply_history_kwargs["after"] = _after_obj
+                async for msg in channel.history(**_reply_history_kwargs):
+                    if _incognito_starter_id is not None:
+                        try:
+                            if int(getattr(msg, "id", None)) < _incognito_starter_id:
+                                break
+                        except (ValueError, TypeError):
+                            continue
                     line = _keep(msg)
                     if line is None:
                         continue
@@ -7530,6 +7573,18 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if not channel:
             channel = await self._client.fetch_channel(int(channel_id))
         return channel
+
+    def _source_session_is_incognito(self, source) -> bool:
+        """Whether the gateway session this source routes to is incognito. No runner (unit rigs,
+        hand-built adapters) → not incognito."""
+        runner = getattr(self, "gateway_runner", None)
+        fn = getattr(runner, "_is_session_incognito", None)
+        if not callable(fn):
+            return False
+        try:
+            return bool(fn(source))
+        except Exception:
+            return False
 
     def _thread_parent_channel(self, channel: Any) -> Any:
         """Return the parent text channel when invoked from a thread."""
@@ -8699,6 +8754,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # history after the bot's last message (cold start: last N, stop at first self-message)
         # and prepend it. DMs skipped (every DM triggers the bot); in-flight arrivals not captured.
         _channel_context = None
+        # Incognito session: history backfill is bounded to the incognito window (threads: at/after
+        # the starter; plain channels: nothing) — see _fetch_channel_context.
+        _incognito = self._source_session_is_incognito(source)
         _is_dm = isinstance(message.channel, discord.DMChannel)
         if not _is_dm and self._discord_history_backfill():
             # Backfill on a gap: mention-gated channels, any thread (processing/restart gaps), any
@@ -8709,6 +8767,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 _backfill_text = await self._fetch_channel_context(
                     message.channel, before=message,
                     reply_target=self._reply_target(message.reference) if _is_reply else None,
+                    incognito=_incognito,
                 )
                 if _backfill_text:
                     _channel_context = _backfill_text
@@ -8734,6 +8793,32 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             reply_to_id = str(message.reference.message_id)
             if message.reference.resolved:
                 reply_to_text = getattr(message.reference.resolved, "content", None) or None
+                # Incognito: the replied-to message is injected verbatim, so it gets the same
+                # window bound as the backfill — same-channel, and inside the thread (a reference
+                # older than the thread starter points at parent-channel history). Unresolved or
+                # out-of-window references carry no proof and are dropped.
+                if reply_to_text and _incognito:
+                    _resolved = message.reference.resolved
+                    _current_channel_id = str(getattr(message.channel, "id", "") or "")
+                    _resolved_channel_id = str(getattr(getattr(_resolved, "channel", None), "id", "") or "")
+                    _reference_channel_id = str(getattr(message.reference, "channel_id", "") or "")
+                    _ref_ok = bool(_current_channel_id) and (
+                        _resolved_channel_id == _current_channel_id if _resolved_channel_id
+                        else _reference_channel_id == _current_channel_id
+                    )
+                    if _ref_ok and isinstance(message.channel, discord.Thread):
+                        try:
+                            _target_id = int(reply_to_id)
+                            _ref_ok = (
+                                _target_id >= int(message.channel.id)
+                                and int(getattr(_resolved, "id", _target_id)) == _target_id
+                            )
+                        except (ValueError, TypeError):
+                            _ref_ok = False
+                    elif _ref_ok:
+                        _ref_ok = False  # non-thread incognito: no provable bound
+                    if not _ref_ok:
+                        reply_to_text = None
         event = MessageEvent(
             text=event_text, message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.id), media_urls=media_urls, media_types=media_types,
@@ -8742,6 +8827,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
             channel_context=_channel_context,
         )
+        if _incognito:
+            # Bounded-proof flags the gateway's incognito inbound gate consults: True only for
+            # context this adapter provably kept inside the incognito window.
+            event._incognito_context_bounded = (
+                _channel_context is not None and isinstance(message.channel, discord.Thread)
+            )
+            event._incognito_reply_bounded = reply_to_text is not None
         if (
             getattr(getattr(message, "author", None), "bot", False)
             and self._is_bot_tag_debounce_continuation(message)

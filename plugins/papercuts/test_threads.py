@@ -19,6 +19,7 @@ from unittest import mock
 
 import plugins.papercuts as papercuts
 from plugins.papercuts import lifecycle
+from plugins.papercuts import threads as pc_threads
 
 
 class FakeDiscord:
@@ -75,6 +76,10 @@ class ThreadsTestCase(unittest.TestCase):
         patcher = mock.patch.object(lifecycle, "_launch_run", side_effect=self._fake_launch)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # Thread openings may use an auxiliary model, but the tick must stay offline-safe.
+        patcher = mock.patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("offline"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self):
         os.environ.pop("HERMES_PAPERCUTS_DIR", None)
@@ -106,6 +111,67 @@ class ThreadsTestCase(unittest.TestCase):
         }
         payload.update(overrides)
         return self.call(payload, session_id="s1", turn_id=turn, task_id="s1", tool_call_id=f"tc-{turn}")
+
+
+class ThreadBodyTests(unittest.TestCase):
+    def setUp(self):
+        self.item = {
+            "summary": "Status checks keep forcing a detour",
+            "observed": "session_id=agent:main:discord:thread:123; goal_active=False",
+            "component": "auto-goal",
+            "severity": "minor",
+            "occurrences": 6,
+        }
+        patcher = mock.patch("agent.auxiliary_client.call_llm")
+        self.call_llm = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def response(text):
+        return {"choices": [{"message": {"content": text}}]}
+
+    def assert_fallback(self, body):
+        opening = body.splitlines()[0]
+        self.assertTrue(opening.startswith("Status checks keep forcing a detour."))
+        self.assertIn("It has happened 6 times", opening)
+        self.assertIn(
+            "Component: `auto-goal` · Severity: minor · Times seen: 6",
+            body.splitlines(),
+        )
+        self.assertNotIn("What happens:", body)
+        self.assertNotIn(self.item["observed"], body)
+
+    def test_deterministic_fallback_shape(self):
+        self.call_llm.return_value = self.response("")
+
+        self.assert_fallback(pc_threads.thread_body(self.item))
+
+    def test_acceptable_model_output_leads_the_opening(self):
+        rewritten = "Recurring status checks keep breaking your flow. Fixing them would remove a repeated detour."
+        self.call_llm.return_value = self.response(rewritten)
+
+        body = pc_threads.thread_body(self.item)
+
+        self.assertEqual(body.splitlines()[0], rewritten)
+        self.assertIn("Component: `auto-goal` · Severity: minor · Times seen: 6", body.splitlines())
+        self.assertNotIn(self.item["observed"], body)
+
+    def test_model_output_echoing_observed_data_is_rejected(self):
+        self.call_llm.return_value = self.response(
+            f"Status checks keep breaking your flow. {self.item['observed']}"
+        )
+
+        self.assert_fallback(pc_threads.thread_body(self.item))
+
+    def test_overlong_model_output_is_rejected(self):
+        self.call_llm.return_value = self.response("A" * 401)
+
+        self.assert_fallback(pc_threads.thread_body(self.item))
+
+    def test_model_error_uses_fallback(self):
+        self.call_llm.side_effect = RuntimeError("auxiliary model unavailable")
+
+        self.assert_fallback(pc_threads.thread_body(self.item))
 
 
 class FoldTests(ThreadsTestCase):

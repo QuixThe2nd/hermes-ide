@@ -190,7 +190,6 @@ def _repair_restart_tool_tail(history: list) -> Optional[tuple[list, bool]]:
     """Return the exact successful restart result the successor must resume from."""
     from agent.message_sanitization import tool_call_id_variants, tool_result_id_variants
     from agent.turn_control import GATEWAY_RESTART_CONTROL, TURN_CONTROL_FIELD
-    from gateway.forced_resume_replay import resolve_replay_call_target
 
     if not history:
         return None
@@ -232,9 +231,7 @@ def _repair_restart_tool_tail(history: list) -> Optional[tuple[list, bool]]:
         if not isinstance(call, dict) or not isinstance(call.get("function"), dict):
             continue
         function = call["function"]
-        target, _arguments = resolve_replay_call_target(
-            function.get("name"), function.get("arguments")
-        )
+        target = function.get("name")
         if target != "restart":
             continue
         if restart_call is not None:

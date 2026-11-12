@@ -149,9 +149,9 @@ class TestCheckFnTransientFailureSuppression:
 
     def test_core_tool_drop_after_success_warns_once_never_configured_stays_info(self, monkeypatch, caplog):
         """A check_fn that drops a ``_HERMES_CORE_TOOLS`` member it had previously admitted logs at
-        WARNING naming the tool (#112649 atom 4): core tools are non-deferrable, so a dropped one
-        leaves neither the schema nor the tool_search catalog and the model's "no such tool" is
-        accurate. A core tool whose probe never succeeded (unconfigured browser/image_gen/HA on a
+        WARNING naming the tool (#112649 atom 4): dropping a previously available core tool removes
+        its direct schema, making the model's "no such tool" response accurate. A core tool whose
+        probe never succeeded (unconfigured browser/image_gen/HA on a
         stock home) keeps the INFO verdict of ae5666f7fc4 — the live pass counted 13 WARNINGs per
         process when every unconfigured core tool warned. The WARNING fires once per probe per
         process, not on every TTL re-probe.
@@ -262,7 +262,6 @@ class TestCheckFnTransientFailureSuppression:
                 tools_a = get_tool_definitions(
                     enabled_toolsets=["profile-cache-test"],
                     quiet_mode=True,
-                    skip_tool_search_assembly=True,
                 )
             finally:
                 reset_secret_scope(secrets_a)
@@ -274,7 +273,6 @@ class TestCheckFnTransientFailureSuppression:
                 tools_b = get_tool_definitions(
                     enabled_toolsets=["profile-cache-test"],
                     quiet_mode=True,
-                    skip_tool_search_assembly=True,
                 )
             finally:
                 reset_secret_scope(secrets_b)

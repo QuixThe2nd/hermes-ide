@@ -71,11 +71,6 @@ dependencies = [
   "prompt_toolkit==3.0.52",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
   "croniter==6.0.0",
-  # Snowball stemming for tool_search's BM25 (tools/tool_search.py) —
-  # official Snowball project package, pure Python, zero transitive deps.
-  # Applied at index AND query time so morphological variants match
-  # ("issues" finds create_issue).
-  "snowballstemmer==3.1.1",
   # ``packaging`` is imported directly on three production paths but was never
   # declared, so it only reached users transitively (pip/uv pull it for other
   # tools). The slim official Docker image ships without it, where the
@@ -487,15 +482,11 @@ exclude-newer = "14 days"
 #
 # Every other exact-pinned package below: the release-day brick shape
 # (observed 2026-08-29 updating three long-running installs v0.20.0 ->
-# v0.20.6 — one Termux, two Linux servers). Each release exact-pins at least
-# one dependency to a version published days before the release (v0.20.6
-# pinned snowballstemmer==3.1.1 and psutil==7.2.2 in core, plus fastapi /
-# uvicorn / python-telegram-bot pins across extras). For two weeks after
-# release the cutoff filters those versions out, so any venv that predates
-# the release bricks on `hermes update` ("no version of
-# snowballstemmer==3.1.1") until the window passes. Same zero-float-
-# protection logic as setuptools/pillow/mcp above; enforced for every exact
-# pin by
+# v0.20.6 — one Termux, two Linux servers). Releases can exact-pin versions
+# published days earlier; for two weeks the cutoff filters those versions out,
+# so any venv that predates the release can fail dependency resolution during
+# `hermes update`. Same zero-float-protection logic as setuptools/pillow/mcp
+# above; enforced for every exact pin by
 # tests/test_packaging_metadata.py::test_exact_pinned_deps_exempt_from_exclude_newer.
 #
 # maturin, setuptools-rust: build-system.requires of the cryptography pin
@@ -595,7 +586,6 @@ wheel = false
 sherpa-onnx = false
 slack-bolt = false
 slack-sdk = false
-snowballstemmer = false
 sounddevice = false
 starlette = false
 supermemory = false

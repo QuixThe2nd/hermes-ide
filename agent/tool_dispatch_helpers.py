@@ -31,7 +31,6 @@ _NEVER_PARALLEL_TOOLS = frozenset({"clarify", "manage_connections", "restart"})
 
 # Read-only tools with no shared mutable session state.
 _PARALLEL_SAFE_TOOLS = frozenset({
-    "connectors__execute",  # pure remote batches have per-dispatch idempotency keys
     "ha_get_state",
     "ha_list_entities",
     "ha_list_services",
@@ -95,55 +94,6 @@ def _is_mcp_tool_parallel_safe(tool_name: str) -> bool:
         return False
 
 
-# Stateless catalog reads (rebuilt from the current tool-defs on every call) — parallel-safe.
-_PARALLEL_SAFE_BRIDGE_LOOKUPS = frozenset({"tool_search", "tool_describe"})
-
-
-def _peel_bridge_call(tool_name: str, function_args: dict) -> tuple[str, dict]:
-    """Resolve a ``tool_call`` bridge invocation to its underlying tool.
-
-    The batch planner admits calls to a parallel run by tool NAME, but when
-    tool search is active the model emits the literal name ``tool_call`` for
-    every deferred tool — so a server opted in via
-    ``supports_parallel_tool_calls: true`` silently lost concurrency the
-    moment the bridge activated. Peel the wrapper here so admission is
-    decided on the underlying tool, exactly like the executors' unwrap.
-
-    Returns ``(underlying_name, underlying_args)`` when the wrapper parses
-    cleanly, else ``(tool_name, function_args)`` unchanged — an unparseable
-    bridge call stays a sequential barrier and fails at dispatch as before.
-    """
-    try:
-        from tools.tool_search import (
-            CONNECTOR_BATCH_SENTINEL,
-            TOOL_CALL_NAME,
-            is_connector_name,
-            resolve_underlying_call,
-        )
-        if tool_name != TOOL_CALL_NAME:
-            return tool_name, function_args
-        underlying, underlying_args, err = resolve_underlying_call(function_args)
-        if err is not None or not underlying:
-            return tool_name, function_args
-        if underlying == CONNECTOR_BATCH_SENTINEL:
-            # Only a PURE connector batch is parallel-safe (network-bound,
-            # no local state, own idempotency key). A batch containing any
-            # local entry keeps the sequential barrier: its entries never
-            # went through per-tool admission here, so treating the batch
-            # as parallel-safe would bypass path-overlap serialization for
-            # local writers and the per-server MCP parallel opt-in.
-            entries = underlying_args.get("calls") or []
-            if entries and all(
-                isinstance(e, dict) and is_connector_name(e.get("name"))
-                for e in entries
-            ):
-                return underlying, underlying_args
-            return tool_name, function_args
-        return underlying, underlying_args
-    except Exception:
-        return tool_name, function_args
-
-
 def _batch_admission(tool_call, execution_cwd: Optional[Path]) -> tuple[str, List[Path], bool] | None:
     """Classify one call for the planner: ``None`` = sequential barrier, else
     ``(effective_name, scoped_paths, is_writer)`` (empty paths = unscoped parallel-safe)."""
@@ -163,17 +113,14 @@ def _batch_admission(tool_call, execution_cwd: Optional[Path]) -> tuple[str, Lis
         logging.debug("Non-dict args for %s (%s) — treating as sequential barrier", tool_name, type(function_args).__name__)
         return None
 
-    name, args = _peel_bridge_call(tool_name, function_args)
-    if name in _NEVER_PARALLEL_TOOLS:
-        return None
-    if name in _PATH_SCOPED_TOOLS:
-        scoped = _extract_parallel_scope_paths(name, args, execution_cwd=execution_cwd)
-        return (name, scoped, name in _PATH_SCOPED_WRITERS) if scoped else None
-    if name in _PARALLEL_SAFE_TOOLS or name in _PARALLEL_SAFE_BRIDGE_LOOKUPS or _is_mcp_tool_parallel_safe(name):
-        return name, [], False
-    action = args.get("action")
-    if isinstance(action, str) and action in _PARALLEL_SAFE_ACTIONS.get(name, frozenset()):
-        return name, [], False
+    if tool_name in _PATH_SCOPED_TOOLS:
+        scoped = _extract_parallel_scope_paths(tool_name, function_args, execution_cwd=execution_cwd)
+        return (tool_name, scoped, tool_name in _PATH_SCOPED_WRITERS) if scoped else None
+    if tool_name in _PARALLEL_SAFE_TOOLS or _is_mcp_tool_parallel_safe(tool_name):
+        return tool_name, [], False
+    action = function_args.get("action")
+    if isinstance(action, str) and action in _PARALLEL_SAFE_ACTIONS.get(tool_name, frozenset()):
+        return tool_name, [], False
     return None
 
 

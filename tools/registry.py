@@ -363,17 +363,15 @@ def _check_fn_cached(fn: Callable) -> bool:
 
         # No recent success (or grace expired) — honor the failure. A False verdict is the
         # expected state for optional, unconfigured toolsets; only a raised probe is actionable.
-        # Core (non-deferrable) tools are the exception when they were available earlier in
-        # this process and the probe now fails: dropped, they leave neither the schema nor the
-        # tool_search catalog, so the model's "no such tool" is accurate and nothing points at
-        # the probe. That regression is a WARNING once per probe per process (#112649). A core
-        # tool whose probe never succeeded (browser, image_gen, HA unconfigured on a stock home)
-        # is the expected state and keeps the INFO verdict.
+        # Core tools are the exception when they were available earlier in this process and the
+        # probe now fails: dropping their schema is a WARNING once per probe per process (#112649).
+        # A core tool whose probe never succeeded (browser, image_gen, HA unconfigured on a stock
+        # home) is the expected state and keeps the INFO verdict.
         if core_dropped and cache_key in _check_fn_ever_good and cache_key not in _check_fn_core_drop_warned:
             _check_fn_core_drop_warned.add(cache_key)
             logger.warning(
-                "check_fn %s %s; previously available core tool(s) %s dropped (non-deferrable, "
-                "so not searchable either); dependent tools will be unavailable this turn",
+                "check_fn %s %s; previously available core tool(s) %s dropped; "
+                "dependent tools will be unavailable this turn",
                 _fn_label(fn), outcome, ", ".join(core_dropped), exc_info=exc_info)
         else:
             log = logger.warning if exc_info else logger.info

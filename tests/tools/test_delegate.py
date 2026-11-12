@@ -261,7 +261,6 @@ class TestStripBlockedTools(unittest.TestCase):
             enabled_toolsets=kwargs["enabled_toolsets"],
             disabled_toolsets=disabled,
             quiet_mode=True,
-            skip_tool_search_assembly=True,
         )
         names = {item["function"]["name"] for item in definitions}
         self.assertTrue(names & {"terminal", "read_file", "web_search"})
@@ -299,7 +298,6 @@ class TestStripBlockedTools(unittest.TestCase):
             enabled_toolsets=kwargs["enabled_toolsets"],
             disabled_toolsets=disabled,
             quiet_mode=True,
-            skip_tool_search_assembly=True,
         )
         names = {item["function"]["name"] for item in definitions}
         self.assertIn("delegate_agent", names)

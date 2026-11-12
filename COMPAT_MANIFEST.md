@@ -3339,18 +3339,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `HEREDOC_MARKER` | restored-def | `(deleted; BASE body restored)` |
 | `uuid` | import | `uuid` |
 
-### `tools.tool_search`
-
-| name | kind | new location |
-|---|---|---|
-| `Literal` | import | `typing` |
-| `build_catalog_listing` | restored-def | `(deleted; BASE body restored)` |
-| `copy` | import | `copy` |
-| `field` | import | `dataclasses` |
-| `re` | import | `re` |
-| `snowballstemmer` | import | `snowballstemmer` |
-| `threading` | import | `threading` |
-
 ### `tools.transcription_tools`
 
 | name | kind | new location |
