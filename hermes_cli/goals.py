@@ -39,10 +39,12 @@ _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 # Consecutive judge *parse* failures (empty / non-JSON) before the loop auto-pauses and points at
 # the goal_judge config. API/transport errors do NOT count — those are tracked separately below.
 # Guards against small models that cannot follow the strict JSON contract burning the whole budget.
-DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
+# Two in a row: with auto-goal driving the loop, a judge that misfires twice must surface to the
+# user instead of quietly burning model budget.
+DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 2
 # Consecutive transport failures (401, timeout, DNS) before auto-pause: a broken API key returns
 # 401 every call and must not spend every turn on an unreachable judge.
-DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 5
+DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 2
 
 # Quality gates: deterministic shell commands that must pass before the judge may declare DONE. A
 # failed gate short-circuits the judge — its output IS the continuation prompt, so the agent works
@@ -334,6 +336,18 @@ def parse_contract(text: str) -> Tuple[str, GoalContract]:
         headline_parts.append(line)
     contract = GoalContract(**{f: " ".join(v).strip() for f, v in fields.items()})
     return " ".join(headline_parts).strip(), contract
+
+def extract_done_when(text: str) -> str:
+    """The first ``done when: <value>`` line's value, verbatim (whitespace-stripped).
+
+    Case-insensitive prefix match on the line. An explicit done-when line in a
+    user message overrides the drafted contract's outcome verbatim.
+    """
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if line.lower().startswith("done when:"):
+            return line.partition(":")[2].strip()
+    return ""
 
 
 def _render_extra_criteria(subgoals: List[str]) -> str:
@@ -1446,7 +1460,7 @@ class GoalManager:
         return self._pause_decision(
             f"turn budget exhausted ({state.turns_used}/{state.max_turns})", verdict, reason,
             f"⏸ Goal paused — {state.turns_used}/{state.max_turns} turns used{note}. "
-            "Use /goal resume to keep going, or /goal clear to stop.",
+            "Send \"go ahead\" to keep going, or \"stop\" to end the goal.",
         )
 
     def evaluate_after_turn(
@@ -1500,7 +1514,7 @@ class GoalManager:
         if verdict == "blocked":
             return self._pause_decision(
                 f"judged unachievable: {reason}", "blocked", reason,
-                f"🚫 Goal judged unachievable — paused: {reason} Re-scope with /goal set, or override with /goal resume.",
+                f"🚫 Goal judged unachievable — paused: {reason} Re-state the goal to re-scope it, or say \"go ahead\" to override.",
             )
 
         # The budget is an absolute completion barrier: a DONE claim on the final
@@ -1563,7 +1577,8 @@ class GoalManager:
 
 
 __all__ = [
-    "GoalState", "GoalContract", "GoalGate", "GoalManager", "parse_contract", "draft_contract", "run_gate",
+    "GoalState", "GoalContract", "GoalGate", "GoalManager", "parse_contract", "extract_done_when",
+    "draft_contract", "run_gate",
     "CONTINUATION_PROMPT_TEMPLATE", "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
     "CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE", "JUDGE_USER_PROMPT_TEMPLATE",
     "JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE", "JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE",
