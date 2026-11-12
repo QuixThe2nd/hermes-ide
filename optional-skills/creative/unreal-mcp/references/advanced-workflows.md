@@ -20,8 +20,7 @@ Contract (verified):
    define `run() -> Dict[str, Any]`.
 3. Inside the script, `execute_tool(tool_name, json_input)` calls any
    registered tool. `tool_name` is FULLY QUALIFIED INCLUDING the tool
-   segment (`"editor_toolset.toolsets.primitive.PrimitiveTools.add_cube"`)
-   — unlike top-level `call_tool`, there is no separate toolset/tool split.
+   segment (`"editor_toolset.toolsets.primitive.PrimitiveTools.add_cube"`).
    `json_input` is a JSON **string** (use `json.dumps`).
 4. `execute_tool` returns a dict-like object; unwrap results with
    `["returnValue"]`. It raises `RuntimeError` on failure — no manual error
@@ -127,12 +126,12 @@ Variables, functions, dispatchers: `add_variable` (`type_name` strings),
 same refPath discipline. `read_graph_dsl` round-trips existing graphs back
 to DSL for inspection/editing.
 
-## Schema-in-error is a first-class discovery mechanism
+## Schema-in-error is a first-class correction mechanism
 
 When a call is missing/mistyping a required param, the server returns the
-COMPLETE input schema of the tool in the error text. This is faster than
-re-running `describe_toolset` and is authoritative for the exact function
-you called. Two verified cases where it corrected the surface:
+COMPLETE input schema of the tool in the error text. This is authoritative
+for the exact function you called. Two verified cases where it corrected
+the surface:
 
 - `add_to_scene_from_asset` — advertised conceptually as taking an asset
   reference; live schema requires `asset_path` (string).

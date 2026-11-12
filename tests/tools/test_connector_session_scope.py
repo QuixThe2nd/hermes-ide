@@ -28,15 +28,6 @@ def test_connector_scope_controls_schema_discovery_and_execution(monkeypatch, en
     name = "connectors__gmail__SEND_EMAIL"
 
     class Client:
-        def search(self, queries):
-            remote.append("search")
-            return {"results": [{"tools": ["GMAIL_SEND_EMAIL"]}], "schemas": {
-                "GMAIL_SEND_EMAIL": {"connector": "gmail", "description": "Send mail", "input_schema": {}}}}
-
-        def schemas(self, names):
-            remote.append("describe")
-            return {"schemas": {"GMAIL_SEND_EMAIL": {"description": "Send mail", "input_schema": {}}}}
-
         def execute(self, planned):
             remote.append("execute")
             return [{"data": "sent", "error": None} for _ in planned]
@@ -48,7 +39,7 @@ def test_connector_scope_controls_schema_discovery_and_execution(monkeypatch, en
     monkeypatch.setattr(bridge, "_default_client_factory", Client)
     monkeypatch.setattr(managed, "_default_client", Client)
     scope = {"enabled_toolsets": enabled, "disabled_toolsets": disabled}
-    defs = model_tools.get_tool_definitions(**scope, quiet_mode=True, skip_tool_search_assembly=True)
+    defs = model_tools.get_tool_definitions(**scope, quiet_mode=True)
     assert ("manage_connections" in {td["function"]["name"] for td in defs}) is allowed
     if enabled == []:
         assert model_tools.get_tool_definitions(**scope, quiet_mode=True) == []
@@ -56,18 +47,13 @@ def test_connector_scope_controls_schema_discovery_and_execution(monkeypatch, en
     def call(tool, args):
         return json.loads(model_tools.handle_function_call(tool, args, **scope))
 
-    assert (name in call("tool_search", {"queries": ["send mail"]})["tools"]) is allowed
-    assert (name in call("tool_describe", {"names": [name]})["tools"]) is allowed
-    result = call("tool_call", {"calls": [{"name": name, "arguments": {}}]})
     direct = call(name, {})
     status = call("manage_connections", {"action": "status"})
     if allowed:
-        assert result["results"][0]["response"] == "sent"
         assert "error" not in status
         assert direct["response"] == "sent"
-        assert remote == ["search", "describe", "execute", "execute", "status"]
+        assert remote == ["execute", "status"]
     else:
-        assert "not available in this session" in json.dumps(result)
         assert "not available in this session" in json.dumps(status)
         assert "not available in this session" in json.dumps(direct)
         assert remote == []

@@ -16,10 +16,10 @@ Tools don't hot-appear mid-session.
 
 ### 2. Server enabled but no tools advertised
 
-The Unreal MCP plugin ships the SERVER, not the tools. If `list_toolsets`
-returns nothing/near-nothing, the toolset provider plugin (AllToolsets) or
-Toolset Registry isn't enabled in this project. Fix in Edit > Plugins,
-restart the editor, restart the Hermes session.
+The Unreal MCP plugin ships the SERVER, not the tools. If few or no direct
+tools are advertised, the toolset provider plugin (AllToolsets) or Toolset
+Registry isn't enabled in this project. Fix in Edit > Plugins, restart the
+editor, restart the Hermes session. Also confirm Enable Tool Search is off.
 
 ### 3. macOS: full Xcode is required, not just Command Line Tools
 
@@ -99,9 +99,9 @@ timeout, RE-QUERY state before retrying, or you'll do the work twice
 
 Toolsets are cached: after enabling a plugin, authoring a toolset, or Live
 Coding, run `ModelContextProtocol.RefreshTools` in the editor console, then
-re-run `list_toolsets`/`describe_toolset`. New C++ `UFUNCTION`s need a full
-editor restart regardless. If a call fails with "unknown tool" that
-`describe_toolset` just showed, refresh + reconnect.
+start a new Hermes session to refresh the direct schemas. New C++ `UFUNCTION`s
+need a full editor restart regardless. Refresh and reconnect after an
+unexpected "unknown tool" error.
 
 ### 10b. Ref-object vs plain-string params are inconsistent — the error schema is the tiebreaker
 
@@ -127,9 +127,9 @@ progressive (one failing node at a time, named exactly) — fix and rerun.
 ### 11. Experimental means drift
 
 Tool names, parameters, and result shapes may change across engine versions.
-The live schema from `describe_toolset` is the only contract. If this
-skill's examples and the live schema disagree, the schema wins — and patch
-this skill afterward.
+The directly advertised live schema is the only contract. If this skill's
+examples and the live schema disagree, the schema wins — and patch this skill
+afterward.
 
 ## Editor & Scene State
 
@@ -347,4 +347,4 @@ skill pack for this server (unreal-engine-skills-for-claude-code), and
 engine-level field reports from the UE-via-MCP community (ue5-mcp field
 manual). Engine behaviors (crash patterns, Lumen mobility, async compiles,
 reflection casing) are server-agnostic; tool names and schemas remain
-whatever the live `describe_toolset` says.
+whatever the server directly advertises.

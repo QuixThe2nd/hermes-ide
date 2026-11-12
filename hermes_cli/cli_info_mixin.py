@@ -366,11 +366,8 @@ class CLIInfoMixin:
         """Display available tools with kawaii ASCII art."""
         from cli import get_tool_definitions
         from model_tools import get_toolset_for_tool
-        # Pre-assembly list: /tools is a discovery surface, so it must show the full catalog
-        # including tools deferred behind the tool_search bridge (users verify MCP installs here).
         tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
-                                     disabled_toolsets=self.disabled_toolsets, quiet_mode=True,
-                                     skip_tool_search_assembly=True)
+                                     disabled_toolsets=self.disabled_toolsets, quiet_mode=True)
         if not tools:
             print("(;_;) No tools available")
             return

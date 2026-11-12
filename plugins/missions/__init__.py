@@ -1372,10 +1372,8 @@ def apply_assistant_handoff_tools(agent: Any) -> bool:
             configured = isinstance(enabled, (list, tuple, set, frozenset)) and (
                 HANDOFF_TOOLSET in enabled
             )
-            # Tool Search may replace both plugin schemas with its bridge
-            # before this turn gate runs, so the trusted configured toolset is
-            # the primary opt-in signal. ``present`` preserves lightweight
-            # fake-agent and pre-Tool-Search compatibility.
+            # The configured toolset is authoritative; ``present`` preserves lightweight
+            # fake-agent compatibility and direct-schema opt-in.
             opted_in = bool(configured or present)
             setattr(agent, "_assistant_handoff_opted_in", opted_in)
         if not opted_in:

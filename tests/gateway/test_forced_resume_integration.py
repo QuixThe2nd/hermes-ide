@@ -464,17 +464,13 @@ _RESTART_CLOSE_ROW = (
 )
 
 
-def _restart_tool_tail_history(*, deferred=False, timestamp=None):
+def _restart_tool_tail_history(*, timestamp=None):
     """The exact durable shape left by the dying process's restart control."""
     from plugins.gateway_restart.tool import _result_json
 
     ts = time.time() if timestamp is None else timestamp
-    if deferred:
-        name = "tool_call"
-        arguments = json.dumps({"name": "restart", "arguments": {}})
-    else:
-        name = "restart"
-        arguments = "{}"
+    name = "restart"
+    arguments = "{}"
     result = _result_json(
         SimpleNamespace(_draining=True),
         {"status": "restarting", "active_agents": 1, "via_service": False},
@@ -502,11 +498,10 @@ def _restart_tool_tail_history(*, deferred=False, timestamp=None):
     ]
 
 
-@pytest.mark.parametrize("deferred", [False, True], ids=["direct", "deferred-wrapper"])
-def test_restart_tool_tail_continues_with_exact_success_result(deferred):
+def test_restart_tool_tail_continues_with_exact_success_result():
     """The successor resumes after restart(); it never asks what to do next."""
     agent, store = _run_and_capture_agent(
-        _restart_tool_tail_history(deferred=deferred),
+        _restart_tool_tail_history(),
         "", "restart_requester", {},
     )
 
@@ -822,28 +817,13 @@ def test_replay_window_observes_real_approval_binding():
     assert "sk-restart_timeout" not in _approval._gateway_notify_cbs
 
 
-@pytest.mark.parametrize(
-    "name,args,cid",
-    [
-        # Direct: the agent-side gateway lifecycle request itself.
-        ("restart", {"action": "restart"}, "call_direct"),
-        # Bridge: a deferred tool_call wrapper naming restart, carrying the
-        # composite id shape the bridge mints.
-        (
-            "tool_call",
-            {"name": "restart", "arguments": "{\"action\": \"restart\"}"},
-            "call_bridge|item_1",
-        ),
-    ],
-)
-def test_lifecycle_only_batch_pairs_durably_without_executing(name, args, cid):
+def test_lifecycle_only_batch_pairs_durably_without_executing():
     """REPAIR2 finding 6: a forced victim whose final batch is ONLY the
-    lifecycle request that caused the bounce (direct restart tool, or a
-    deferred bridge wrapping it) must never re-execute that call.  The
-    batch still CLOSES — one fail-closed UNKNOWN orphan row under the
-    EXACT call id, durably persisted — so the reconstructed transcript
-    pairs and the model continues instead of staring at an unanswered
-    batch."""
+    lifecycle request that caused the bounce must never re-execute that call.
+    The batch still CLOSES — one fail-closed UNKNOWN orphan row under the
+    EXACT call id, durably persisted — so the reconstructed transcript pairs
+    and the model continues instead of staring at an unanswered batch."""
+    name, args, cid = "restart", {"action": "restart"}, "call_direct"
     history = [
         {"role": "user", "content": "restart yourself", "timestamp": time.time()},
         {

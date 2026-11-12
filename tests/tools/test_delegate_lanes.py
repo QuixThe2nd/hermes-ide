@@ -185,7 +185,7 @@ def test_conditional_registration_uses_real_profile_config():
     assert all(item["function"]["parameters"]["required"] == ["task", "workdir"] for item in definitions)
     from model_tools import get_tool_definitions
     exposed = get_tool_definitions(
-        enabled_toolsets=["delegation"], quiet_mode=True, skip_tool_search_assembly=True,
+        enabled_toolsets=["delegation"], quiet_mode=True,
     )
     assert names <= {item["function"]["name"] for item in exposed}
 
@@ -621,7 +621,7 @@ def test_tool_definitions_route_delegation_to_lanes():
     config = get_hermes_home() / "config.yaml"
     config.write_text("delegation:\n  lanes:\n    ui_dev: {}\n", encoding="utf-8")
     exposed = get_tool_definitions(
-        enabled_toolsets=["delegation"], quiet_mode=True, skip_tool_search_assembly=True,
+        enabled_toolsets=["delegation"], quiet_mode=True,
     )
     agent = next(d for d in exposed if d["function"]["name"] == "delegate_agent")
     assert "delegate_ui_dev" in agent["function"]["description"]

@@ -19,16 +19,9 @@ from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
-# xAI reserves ``tool_search`` for its server-side tool (HTTP 400 on client
-# declarations); aliased on the wire, mapped back in normalize_response.
-# xAI's chat-completions API reserves the function name ``tool_search`` for its own server-side tool and
-# rejects any request declaring a client function with that name (HTTP 400 "The function name tool_search is
-# reserved for the tool_search tool", #95003). The Tool Search bridge (tools/tool_search.py) assembles its
-# client-side discovery tool under the same literal name for every provider, so Grok providers are unusable
-# whenever the bridge is active. Mirror the web_search treatment in transports/codex.py
-# (_rename_client_web_search_for_xai): alias the wire declaration and map the alias back in
-# normalize_response. The alias value matches _CODEX_TOOL_SEARCH_ALIAS from the Codex-side fix for the same
-# reserved-name class (#83122) so the two transports stay consistent.
+# xAI reserves ``tool_search`` for its server-side tool and rejects client functions with
+# that name (#95003). Alias the wire declaration and reverse-map only aliases emitted by
+# this request; the value matches the Responses transport's alias for the same collision.
 _XAI_TOOL_SEARCH_ALIAS = "hermes_tool_search"
 
 # Persistence-only / cross-transport message keys that strict OpenAI-compatible
@@ -41,10 +34,10 @@ _STRIP_TC_KEYS = ("call_id", "response_item_id")
 _HIGH_EFFORTS = {"high", "xhigh", "max", "ultra"}
 
 
-def _rename_tool_search_bridge_for_xai(tools: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    """Alias the client ``tool_search`` declaration for xAI; returns ``(tools, {alias: "tool_search"})``.
+def _rename_reserved_tool_names_for_xai(tools: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Alias xAI-reserved client function declarations; return tools and request-local reverse aliases.
 
-    If a real tool already holds ``hermes_tool_search``, the bridge takes a ``_2``/``_3`` suffix.
+    Existing alias-shaped client functions are preserved with numeric suffixes on the new aliases.
     """
     from agent.transports.codex import _alias_reserved_tools
 

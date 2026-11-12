@@ -2186,14 +2186,7 @@ class TestPluginToolVisibility:
     """Plugin-registered tools appear in get_tool_definitions()."""
 
     def test_plugin_tools_in_definitions(self, tmp_path, monkeypatch):
-        """Plugin tools are reachable when their toolset is in enabled_toolsets.
-
-        Under tiered disclosure (any MCP/plugin tool defers behind the
-        tool_search bridge), a plugin tool no longer appears as a direct
-        schema — it is deferred and surfaced via the bridge's catalog
-        listing. 'Reachable' therefore means: present directly OR listed
-        in the tool_search bridge description.
-        """
+        """Plugin tools appear directly only when their toolset is enabled."""
         import hermes_cli.plugins as plugins_mod
 
         plugins_dir = tmp_path / "hermes_test" / "plugins"
@@ -2221,26 +2214,20 @@ class TestPluginToolVisibility:
 
         from model_tools import get_tool_definitions
 
-        def _reachable(tools):
-            names = [t["function"]["name"] for t in tools]
-            if "vis_tool" in names:
-                return True  # tool_search inactive → direct schema
-            search = next((t for t in tools
-                           if t["function"]["name"] == "tool_search"), None)
-            return bool(search and "vis_tool" in search["function"]["description"])
+        def _visible(tools):
+            return "vis_tool" in {t["function"]["name"] for t in tools}
 
         # Reachable when its toolset is explicitly enabled
         tools = get_tool_definitions(enabled_toolsets=["terminal", "plugin_vis_plugin"], quiet_mode=True)
-        assert _reachable(tools)
+        assert _visible(tools)
 
-        # Excluded entirely when only other toolsets are enabled — not
-        # direct, not in the deferred listing.
+        # Excluded entirely when only other toolsets are enabled.
         tools2 = get_tool_definitions(enabled_toolsets=["terminal"], quiet_mode=True)
-        assert not _reachable(tools2)
+        assert not _visible(tools2)
 
         # Reachable when no toolset filter is active (all enabled)
         tools3 = get_tool_definitions(quiet_mode=True)
-        assert _reachable(tools3)
+        assert _visible(tools3)
 
 
 # ── TestPluginManagerList ──────────────────────────────────────────────────

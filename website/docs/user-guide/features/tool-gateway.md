@@ -198,7 +198,7 @@ Every host is named `{label}-gateway.<domain>`, and `TOOL_GATEWAY_DOMAIN` / `TOO
 
 - `{vendor}-gateway.<domain>` — per-vendor passthroughs (Firecrawl, BFL, ...).
 - `tool-gateway.<domain>` — the shared managed origin: the vendors hosted on the gateway itself plus media uploads.
-- `connector-gateway.<domain>` — the connectors API (`/v1/connectors/*`), its own deployment. See [Tool Search → Connectors](./tool-search.md#connectors-remote-tools).
+- `connector-gateway.<domain>` — the connectors API (`/v1/connectors/*`), its own deployment.
 
 These knobs exist for custom infrastructure setups (enterprise deployments, dev environments). Regular subscribers never set them.
 

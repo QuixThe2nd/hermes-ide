@@ -1390,39 +1390,28 @@ def test_sanitize_stubs_interrupted_first_occurrence_keeps_replay_pair():
 
 
 
-# ── Bridged tool_call: wire-visible response name must echo the call name ──
+# ── Tool-result wire names must echo their assistant call names ──
 # Google matches functionResponse.name against functionCall.name and rejects a
-# mismatch with HTTP 400 INVALID_ARGUMENT. #72089 fixed this for the native
-# Gemini adapter; requests reaching Gemini through an OpenAI-compatible
-# gateway (OpenRouter, Vertex/LiteLLM proxies) skip that translation, so the
-# chokepoint sanitizer has to hold the same invariant.
+# mismatch with HTTP 400 INVALID_ARGUMENT. OpenAI-compatible Gemini routes skip
+# the native adapter's translation, so the chokepoint sanitizer owns the invariant.
 
 
-def test_sanitize_realigns_bridged_tool_result_name_with_call_name():
-    """A tool_search-bridged result must go on the wire as ``tool_call``.
-
-    The executor labels the result with the unwrapped internal tool name for
-    dispatch/hooks/logging; Gemini sees that as a functionResponse whose name
-    does not match its functionCall and 400s.
-    """
+def test_sanitize_realigns_tool_result_name_with_call_name():
+    """A provider-aliased result uses the call's wire name without losing its internal name."""
     from agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [
         {"role": "user", "content": "file an issue"},
         {"role": "assistant", "content": "",
          "tool_calls": [{"id": "call_1", "type": "function",
-                         "function": {
-                             "name": "tool_call",
-                             "arguments": ('{"name": "mcp__github__create_issue",'
-                                           ' "arguments": {"title": "Bug"}}'),
-                         }}]},
+                         "function": {"name": "hermes_create_issue", "arguments": '{"title": "Bug"}'}}]},
         {"role": "tool", "name": "mcp__github__create_issue",
          "tool_name": "mcp__github__create_issue",
          "tool_call_id": "call_1", "content": '{"number": 123}'},
     ]
     out = sanitize_api_messages(list(messages))
     result = [m for m in out if m.get("role") == "tool"][0]
-    assert result["name"] == "tool_call"
+    assert result["name"] == "hermes_create_issue"
     # The internal name stays available for the session DB / UI, and the
     # caller's own message objects are untouched (per-call copy only).
     assert result["tool_name"] == "mcp__github__create_issue"
@@ -1464,7 +1453,7 @@ def test_sanitize_does_not_invent_a_name_on_unnamed_tool_results():
     assert out == messages
 
 
-def test_sanitize_realigns_bridged_name_when_call_id_is_padded():
+def test_sanitize_realigns_name_when_call_id_is_padded():
     """Ids are stripped on both sides, so a padded id still pairs."""
     from agent.agent_runtime_helpers import sanitize_api_messages
 
@@ -1472,15 +1461,15 @@ def test_sanitize_realigns_bridged_name_when_call_id_is_padded():
         {"role": "user", "content": "file an issue"},
         {"role": "assistant", "content": "",
          "tool_calls": [{"id": " call_1 ", "type": "function",
-                         "function": {"name": "tool_call", "arguments": "{}"}}]},
+                         "function": {"name": "hermes_create_issue", "arguments": "{}"}}]},
         {"role": "tool", "name": "mcp__github__create_issue",
          "tool_call_id": "call_1", "content": "{}"},
     ]
     out = sanitize_api_messages(list(messages))
-    assert [m["name"] for m in out if m.get("role") == "tool"] == ["tool_call"]
+    assert [m["name"] for m in out if m.get("role") == "tool"] == ["hermes_create_issue"]
 
 
-def test_sanitize_drops_bridged_result_whose_call_frame_was_pruned():
+def test_sanitize_drops_tool_result_whose_call_frame_was_pruned():
     """A result cannot keep a stale name if it has no call frame to disagree
     with: the orphan pass removes it before the realignment pass runs, so the
     mismatch never reaches the provider."""

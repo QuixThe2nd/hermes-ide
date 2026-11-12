@@ -492,41 +492,31 @@ class TestDisabledToolsetsPostureToolset:
 
 
 # =========================================================================
-# Tool Search bridge dispatch
+# Direct schema visibility
 # =========================================================================
 
-class TestBridgeDispatch:
-    """handle_function_call routes tool_search/tool_describe inline, unwraps tool_call,
-    and refuses tool_call targets outside the session-scoped deferrable catalog."""
+def test_enabled_tools_are_direct_and_byte_stable_with_legacy_config(tmp_path, monkeypatch):
+    """Obsolete tools.tool_search config loads but cannot alter the direct, stable schema array."""
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "tools:\n  tool_search:\n    enabled: on\n    always_visible: [read_file]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
 
-    def test_tool_search_and_describe_return_json_strings(self):
-        with patch("model_tools.get_tool_definitions", return_value=[]):
-            out = handle_function_call("tool_search", {"queries": ["anything"]})
-            assert isinstance(out, str) and json.loads(out) is not None
-            out = handle_function_call("tool_describe", {"names": ["nope"]})
-            assert isinstance(out, str) and json.loads(out) is not None
+    from hermes_cli.config import load_config
+    from model_tools import get_tool_definitions
 
-    def test_tool_call_bad_args_error(self):
-        with patch("model_tools.get_tool_definitions", return_value=[]):
-            result = json.loads(handle_function_call("tool_call", {}))
-        assert "requires 'calls'" in result["error"]
-
-    def test_tool_call_rejects_out_of_scope_and_unwraps_in_scope(self):
-        import tools.tool_search as ts
-        with patch("model_tools.get_tool_definitions", return_value=[]), \
-             patch.object(ts, "resolve_underlying_call", return_value=("mcp_x", {"a": 1}, None)), \
-             patch.object(ts, "scoped_deferrable_names", return_value=frozenset()):
-            result = json.loads(handle_function_call("tool_call", {"name": "mcp_x"}))
-        assert "not available in this session" in result["error"]
-
-        with patch("model_tools.get_tool_definitions", return_value=[]), \
-             patch.object(ts, "resolve_underlying_call", return_value=("mcp_x", {"a": 1}, None)), \
-             patch.object(ts, "scoped_deferrable_names", return_value=frozenset({"mcp_x"})), \
-             patch.object(ts, "validate_deferred_call_args", return_value=None), \
-             patch("model_tools.registry.dispatch", return_value='{"ok": true}') as disp:
-            out = handle_function_call("tool_call", {"name": "mcp_x"}, task_id="t")
-        assert json.loads(out) == {"ok": True}
-        assert disp.call_args.args[0] == "mcp_x" and disp.call_args.args[1] == {"a": 1}
+    legacy = load_config()
+    assert legacy["tools"]["tool_search"]["enabled"] is True
+    assert legacy["tools"]["connectors"]["enabled"] is True
+    first = get_tool_definitions(enabled_toolsets=["file"], quiet_mode=True)
+    second = get_tool_definitions(enabled_toolsets=["file"], quiet_mode=True)
+    names = {tool["function"]["name"] for tool in first}
+    assert {"read_file", "write_file", "search_files"} <= names
+    assert not {"tool_search", "tool_describe", "tool_call"} & names
+    assert json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True)
 
 
 # ==================================================================
@@ -573,10 +563,10 @@ def test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime(tmp_path)
     cfg = tmp_path / "config.yaml"
     cfg.write_text("mcp_servers:\n  aa: {command: a}\n", encoding="utf-8")
     with patch("hermes_cli.config.get_config_path", return_value=cfg):
-        before = _tool_defs_cache_key(None, None, False)
+        before = _tool_defs_cache_key(None, None)
         st = cfg.stat()
         other = tmp_path / "other.yaml"
         other.write_text("mcp_servers:\n  bb: {command: b}\n", encoding="utf-8")
         shutil.copy2(other, cfg)
         os.utime(cfg, ns=(st.st_atime_ns, st.st_mtime_ns))
-        assert _tool_defs_cache_key(None, None, False) != before
+        assert _tool_defs_cache_key(None, None) != before

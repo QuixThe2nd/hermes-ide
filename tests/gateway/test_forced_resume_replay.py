@@ -496,15 +496,9 @@ def test_replay_carries_original_argument_bytes_and_call_ids():
 
 
 def test_lifecycle_classifier_is_narrow_by_name_and_command():
-    # The agent-callable restart tool, by name and via a bridge wrapper.
+    # The agent-callable restart tool, by name.
     assert is_lifecycle_replay_request("restart", "{}") is True
     assert GATEWAY_LIFECYCLE_TOOL_NAMES == {"restart"}
-    assert (
-        is_lifecycle_replay_request(
-            "tool_call", '{"name": "restart", "arguments": {}}'
-        )
-        is True
-    )
     # Shell commands targeting the gateway's own lifecycle.
     assert (
         is_lifecycle_replay_request(
@@ -525,14 +519,6 @@ def test_lifecycle_classifier_is_narrow_by_name_and_command():
     assert is_lifecycle_replay_request("terminal", '{"command": "ls -la"}') is False
     assert is_lifecycle_replay_request("write_file", '{"path": "/tmp/a"}') is False
     assert is_lifecycle_replay_request("mcp__ci__deploy", '{"env": "prod"}') is False
-    # Bridge wrapping an ordinary tool stays replayable; junk stays honest.
-    assert (
-        is_lifecycle_replay_request(
-            "tool_call", '{"name": "terminal", "arguments": {"command": "ls"}}'
-        )
-        is False
-    )
-    assert is_lifecycle_replay_request("tool_call", "not-json") is False
 
 
 def test_lifecycle_restart_requester_is_never_a_victim():
@@ -1660,14 +1646,6 @@ def test_lifecycle_classifier_failure_fails_closed(monkeypatch):
     assert (
         is_lifecycle_replay_request(
             "terminal", '{"command": "hermes gateway restart"}'
-        )
-        is True
-    )
-    # Bridge-wrapped command-bearing call.
-    assert (
-        is_lifecycle_replay_request(
-            "tool_call",
-            '{"name": "terminal", "arguments": {"command": "systemctl restart hermes-gateway"}}',
         )
         is True
     )
