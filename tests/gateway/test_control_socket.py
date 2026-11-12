@@ -219,8 +219,8 @@ def test_restart_requester_is_optional_wire_param(home: Path):
     with_requester, without_requester = _run(scenario())
     assert with_requester == without_requester == {"queued": True}
     assert received == [
-        {"restart_platforms": True, "requester": requester},
-        {"restart_platforms": True},
+        {"restart_platforms": True, "restart_hub": False, "requester": requester},
+        {"restart_platforms": True, "restart_hub": False},
     ]
 
 

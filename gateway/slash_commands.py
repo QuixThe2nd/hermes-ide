@@ -484,7 +484,12 @@ class GatewaySlashCommandsMixin(
         # request_restart drain hand-off (supervisor/container routing included) — live in
         # ONE gateway-owned helper shared with the agent-callable restart tool, so the two
         # user-restart entry points cannot drift apart.
-        status = await queue_user_restart(self, event.source, event.message_id)
+        # ``--hub`` anywhere among the args opts into the successor-side
+        # hermes-discord-hub.service bounce; a bare word ("hub") must not.
+        restart_hub = "--hub" in (event.get_command_args() or "").split()
+        status = await queue_user_restart(
+            self, event.source, event.message_id, restart_hub=restart_hub
+        )
         if status["status"] == "chained":
             return EphemeralReply(t("gateway.restart.chained"))
         active_agents = status["active_agents"]

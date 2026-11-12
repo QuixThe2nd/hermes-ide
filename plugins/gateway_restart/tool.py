@@ -39,7 +39,18 @@ RESTART_SCHEMA = {
     ),
     "parameters": {
         "type": "object",
-        "properties": {},
+        "properties": {
+            "restart_hub": {
+                "type": "boolean",
+                "description": (
+                    "Also restart hermes-discord-hub.service. The successor "
+                    "gateway process performs the bounce after it comes up "
+                    "(never this dying process), so the hub's Discord/Matrix "
+                    "sessions re-attach to a fresh hub alongside the gateway. "
+                    "Default false: no hub restart."
+                ),
+            },
+        },
         "additionalProperties": False,
     },
 }
@@ -176,7 +187,9 @@ def _probe_restart_state(runner: Any, loop: Any) -> Optional[tuple[bool, bool]]:
         return None
 
 
-async def _queue_user_restart(runner: Any, source: Any, message_id: Optional[str]) -> dict:
+async def _queue_user_restart(
+    runner: Any, source: Any, message_id: Optional[str], *, restart_hub: bool = False,
+) -> dict:
     """Queue the restart through the ONE shared gateway sequence.
 
     Thin delegation to ``gateway.restart.queue_user_restart`` — the
@@ -191,7 +204,9 @@ async def _queue_user_restart(runner: Any, source: Any, message_id: Optional[str
     """
     from gateway.restart import queue_user_restart
 
-    return await queue_user_restart(runner, source, message_id)
+    return await queue_user_restart(
+        runner, source, message_id, restart_hub=restart_hub
+    )
 
 
 def _socket_result_json(ack: dict) -> str:
@@ -235,7 +250,7 @@ def _restart_requester_from_session() -> Optional[dict]:
     return requester
 
 
-def _restart_via_control_socket() -> str:
+def _restart_via_control_socket(*, restart_hub: bool = False) -> str:
     """Queue the restart through the gateway's control socket (out-of-process path).
 
     The transport ``hermes gateway restart`` already uses: the socket verb
@@ -251,6 +266,7 @@ def _restart_via_control_socket() -> str:
 
         request_kwargs: dict[str, Any] = {
             "restart_platforms": True,
+            "restart_hub": bool(restart_hub),
             "timeout": _SOCKET_RESTART_TIMEOUT_S,
         }
         requester = _restart_requester_from_session()
@@ -295,11 +311,12 @@ def handle_restart(args: dict, **_: Any) -> str:
         runner = _gateway_runner_ref()
     except Exception:
         runner = None
+    restart_hub = is_truthy_value(args.get("restart_hub"))
     if runner is None:
         # Agent turns run in restart-safe worker processes outside the
         # GatewayRunner process — the normal gateway-chat case. The control
         # socket is the transport to the same restart core from there.
-        return _restart_via_control_socket()
+        return _restart_via_control_socket(restart_hub=restart_hub)
 
     # The gateway-owned queue sequence this hands the runner into calls these
     # on it directly. A runner without them is a foreign or outdated object,
@@ -362,7 +379,7 @@ def handle_restart(args: dict, **_: Any) -> str:
     source = get_cached_source(session_key) if callable(get_cached_source) else None
     message_id = get_session_env("HERMES_SESSION_MESSAGE_ID", "").strip() or None
     future, submit_error = _submit_to_loop(
-        _queue_user_restart(runner, source, message_id), loop
+        _queue_user_restart(runner, source, message_id, restart_hub=restart_hub), loop
     )
     if submit_error is not None:
         logger.warning(

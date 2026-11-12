@@ -449,7 +449,7 @@ def _runner_restart_platforms(runner: Any) -> bool:
 
 async def queue_user_restart(
     runner: Any, source: Optional[SessionSource], message_id: Optional[str],
-    *, restart_platforms: Optional[bool] = None,
+    *, restart_platforms: Optional[bool] = None, restart_hub: bool = False,
 ) -> dict:
     """Queue a user-requested restart — the ONE shared ``/restart`` sequence.
 
@@ -474,6 +474,12 @@ async def queue_user_restart(
     "shutdown_in_progress"), ``active_agents`` (counted before the drain
     closes in), and ``via_service`` (None when nothing was started or chained
     this call).
+
+    ``restart_hub`` (opt-in, default False) never changes the drain call: its
+    hand-off is the ``.restart_hub_pending.json`` marker written just before
+    ``request_restart`` so the NEXT gateway process — never this dying one —
+    bounces ``hermes-discord-hub.service``. A chained request stores the flag
+    on the chain marker instead; the already-up successor re-queues it.
     """
     from gateway.run import _hermes_home
     from gateway.restart_chain import chained_restart_status
@@ -483,6 +489,7 @@ async def queue_user_restart(
         source=source,
         message_id=message_id,
         via_service=user_restart_via_service(),
+        restart_hub=restart_hub,
     )
     if chained is not None:
         return chained
@@ -519,6 +526,7 @@ async def queue_user_restart(
             source=source,
             message_id=message_id,
             via_service=user_restart_via_service(),
+            restart_hub=restart_hub,
         )
         if chained is not None:
             return chained
@@ -556,6 +564,20 @@ async def queue_user_restart(
             )
         except Exception as exc:
             logger.debug("Failed to write restart notify file: %s", exc)
+
+        if restart_hub:
+            # Opt-in hub bounce hand-off: persist BEFORE request_restart() so
+            # the successor — never this dying process — bounces the hub unit.
+            # Warning-only: a restart must never fail because the marker could
+            # not be written (the hub simply is not bounced).
+            from gateway.restart_hub import write_hub_pending
+
+            try:
+                write_hub_pending(_hermes_home)
+            except Exception as exc:
+                logger.warning(
+                    "restart-hub: could not persist hub bounce marker: %s", exc
+                )
 
         active_agents = runner._running_agent_count()
 

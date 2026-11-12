@@ -422,6 +422,17 @@ restarts). There is no second restart semantics anywhere in the tree.
 The old gateway_restart confirm-gate (ping the user, wait for the literal word
 "restart") and the CLI's parallel restart orchestration are gone.
 
+Opt-in hub bounce: `--hub` on `/restart`, `restart_hub: true` on the agent
+tool, or `restart_hub` on the control-socket verb persists a
+`.restart_hub_pending.json` marker in the HERMES_HOME *before*
+`request_restart()` is called; the SUCCESSOR gateway process consumes it
+(`gateway/restart_hub.py::consume_restart_hub_bounce`) and bounces
+`hermes-discord-hub.service` before its adapters attach — never the dying
+process. A chained `--hub` request rides the `.restart_chain.json` payload and
+is re-handed to the next successor. Failure to find the unit or run systemctl
+is warning-only and the report (`Hub: …` line) appears in the comeback notice
+and the repaired restart tool result.
+
 Pipeline semantics (unchanged by the unification — the overlap handover is
 canonical):
 

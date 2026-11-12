@@ -173,8 +173,10 @@ def test_register_exposes_restart_tool_on_gateway_toolset():
     assert registered["emoji"] == "♻️"
     schema = registered["schema"]
     assert schema["name"] == "restart"
-    # /restart takes no arguments — this is not a new API surface.
-    assert schema["parameters"].get("properties") in (None, {})
+    # Opt-in restart_hub is the only argument; omitting it does not bounce the hub.
+    props = schema["parameters"].get("properties") or {}
+    assert set(props) == {"restart_hub"}
+    assert props["restart_hub"]["type"] == "boolean"
     assert schema["parameters"]["additionalProperties"] is False
 
 
@@ -593,9 +595,10 @@ def test_handler_queues_via_control_socket_when_no_runner(monkeypatch):
     _no_runner(monkeypatch)
     requested = {}
 
-    def _fake_restart(home, *, restart_platforms=True, timeout=15.0):
+    def _fake_restart(home, *, restart_platforms=True, restart_hub=False, timeout=15.0):
         requested["home"] = home
         requested["restart_platforms"] = restart_platforms
+        requested["restart_hub"] = restart_hub
         return {
             "queued": True,
             "pid": 3376901,
@@ -626,6 +629,7 @@ def test_handler_queues_via_control_socket_when_no_runner(monkeypatch):
     assert set(result) == expected_fields
     assert requested["home"] == get_hermes_home()
     assert requested["restart_platforms"] is True
+    assert requested["restart_hub"] is False
 
 
 def test_handler_socket_request_includes_worker_chat_identity(monkeypatch):
@@ -634,8 +638,9 @@ def test_handler_socket_request_includes_worker_chat_identity(monkeypatch):
     _no_runner(monkeypatch)
     requested = {}
 
-    def _fake_restart(home, *, restart_platforms=True, timeout=15.0, requester=None):
+    def _fake_restart(home, *, restart_platforms=True, restart_hub=False, timeout=15.0, requester=None):
         requested["requester"] = requester
+        requested["restart_hub"] = restart_hub
         return {"queued": True, "status": "restarting"}
 
     monkeypatch.setattr(
@@ -1167,7 +1172,7 @@ else:
         assert result["active_agents"] == 3
         assert result["process"] == "pid 3376901"
         assert "draining" not in result
-        assert acks == [{"restart_platforms": True}], acks
+        assert acks == [{"restart_platforms": True, "restart_hub": False}], acks
         from agent.turn_control import turn_control_field_for
         assert set(result) == {
             "success", "status", "process", "active_agents", "via_service",
