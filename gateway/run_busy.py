@@ -1445,7 +1445,7 @@ class GatewayBusySessionMixin:
         "topic", "whoami", "platform", "stop", "memory", "skills",
         "codex-runtime", "suggestions", "save", "retry",
         "setnotify", "clearnotify", "compress", "usage", "topup", "insights", "reload-mcp", "reload-skills",
-        "debug", "title", "resume", "sessions", "branch", "rollback", "diff", "goal",
+        "debug", "title", "resume", "sessions", "branch", "rollback", "diff",
         "loop", "refine", "review", "voice",
     )
 
@@ -1478,7 +1478,7 @@ class GatewayBusySessionMixin:
 
     # busy_handler key (hermes_cli/commands.py CommandDef) → mid-run variant ``_busy_<key>_command``.
     _BUSY_SPECIAL_HANDLERS: Dict[str, str] = {
-        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "incognito", "queue", "egress", "goal", "loop")
+        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "incognito", "queue", "egress", "loop")
     }
 
     async def _dispatch_busy_slash_command(self, event: MessageEvent, cmd_def, quick_key: str, source):

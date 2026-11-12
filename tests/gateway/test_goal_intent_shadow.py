@@ -170,28 +170,38 @@ async def test_off_mode_performs_no_shadow_work(runner, hermes_home):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("runner", ["on"], indirect=True)
-async def test_on_mode_is_shadow_and_notice_is_emitted_once(
+async def test_on_mode_parks_decision_and_notice_is_emitted_once(
     runner, hermes_home, caplog
 ):
-    # ``on`` is deliberately only a shadow-mode alias in Phase 1.
-    result = {
-        "label": "chat", "reason": "hello", "confidence": 0.9,
-        "contract_draft": None,
-    }
+    # ``on`` is the real auto-goal mode: decisions are evaluated and parked
+    # for the turn boundary (no goal mutation at arrival).
     with (
-        patch("hermes_cli.goal_intent.build_goal_context", return_value={}),
-        patch("hermes_cli.goal_intent.classify", return_value=result),
+        patch(
+            "hermes_cli.goal_intent.evaluate_goal_intent",
+            side_effect=lambda text, sid, platform: {
+                "label": "chat", "reason": "jev decision", "confidence": 0.9,
+                "contract_draft": None, "message": text, "session_id": sid,
+                "last_assistant": "", "user_previous_message": "",
+                "record": {"label": "chat", "confidence": 0.9},
+            },
+        ) as evaluate,
         caplog.at_level(logging.INFO),
     ):
         runner._schedule_goal_intent_shadow(_event("hi"), SESSION_KEY)
         runner._schedule_goal_intent_shadow(_event("hi again"), SESSION_KEY)
         await _drain(runner)
 
-    assert len(_rows(hermes_home)) == 2
+    assert evaluate.call_count == 2
+    # The worker resolves the REAL session id (goal state key), not the quick key.
+    resolved_sid = evaluate.call_args.args[1]
+    assert resolved_sid and resolved_sid != SESSION_KEY
+    parked = runner._auto_goal_pending.get(SESSION_KEY)
+    assert parked is not None and parked.done()
+    assert parked.result()["session_id"] == resolved_sid
     notices = [
         record for record in caplog.records
         if "goals.auto.mode=on" in record.getMessage()
-        and "shadow" in record.getMessage()
+        and "automatic goal creation" in record.getMessage()
     ]
     assert len(notices) == 1
 

@@ -25,8 +25,8 @@ def build_goals_parser(subparsers) -> None:
     """Attach the ``goals`` group. Handler stays lazy so ``--help`` is cheap."""
     parser = subparsers.add_parser(
         "goals",
-        help="Inspect standing goals and shadow intent classifications",
-        description="Goal tooling, including the Phase 1 shadow intent report.",
+        help="Inspect standing goals and intent classifications",
+        description="Goal tooling, including the intent classification report.",
     )
     parser.set_defaults(func=_cmd_goals, goals_parser=parser, goals_command=None)
     subcommands = parser.add_subparsers(dest="goals_command")

@@ -64,9 +64,9 @@ class TestCommandRegistry:
         assert model is not None
         assert model.desktop == "hidden"
 
-        goal = resolve_command("goal")
-        assert goal is not None
-        assert goal.argument_mode == "mixed"
+        queue = resolve_command("queue")
+        assert queue is not None
+        assert queue.argument_mode == "mixed"
 
     def test_argument_mode_infers_text_from_any_args_hint(self):
         assert infer_argument_mode(CommandDef("demo", "Demo", "Session", args_hint="<prompt>")) == "text"

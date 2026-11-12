@@ -160,22 +160,34 @@ class TestGoalManager:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_goal_command_in_registry():
-    from hermes_cli.commands import resolve_command
+def test_goal_command_not_user_facing():
+    """/goal is unregistered: automatic goals (goals.auto.mode=on) replaced the
+    manual command, but the handler machinery stays for the CLI `hermes goals`
+    surface and internal callers."""
+    from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command
 
-    cmd = resolve_command("goal")
-    assert cmd is not None
-    assert cmd.name == "goal"
+    assert resolve_command("goal") is None
+    assert "goal" not in GATEWAY_KNOWN_COMMANDS
 
 
-def test_goal_command_dispatches_in_cli_registry_helpers():
-    """goal shows up in autocomplete / help categories alongside other Session cmds."""
+def test_goal_machinery_remains_importable():
+    """The goal loop and dispatch machinery survive the /goal registry removal."""
+    from hermes_cli.goal_command import dispatch_goal_command  # noqa: F401
+    from hermes_cli.goals import GoalManager, extract_done_when  # noqa: F401
     from hermes_cli.commands import COMMANDS, COMMANDS_BY_CATEGORY
 
-    assert "/goal" in COMMANDS
-    session_cmds = COMMANDS_BY_CATEGORY.get("Session", {})
-    assert "/goal" in session_cmds
+    assert "/goal" not in COMMANDS
+    assert "/goal" not in COMMANDS_BY_CATEGORY.get("Session", {})
+    assert "/subgoal" in COMMANDS  # sibling command remains registered
 
+
+def test_extract_done_when_takes_first_line_verbatim():
+    from hermes_cli.goals import extract_done_when
+
+    assert extract_done_when("fix the cert\nDone when: cert valid AND reloaded") == "cert valid AND reloaded"
+    assert extract_done_when("DONE WHEN: zero public routes") == "zero public routes"
+    assert extract_done_when("done when:") == ""
+    assert extract_done_when("nothing to see here") == ""
 
 # ──────────────────────────────────────────────────────────────────────
 # Auto-pause on consecutive judge parse failures
@@ -206,12 +218,12 @@ class TestJudgeParseFailureAutoPause:
         assert transport_failed is True
 
 
-    def test_auto_pause_after_three_consecutive_parse_failures(self, hermes_home):
-        """N=3 consecutive parse failures → auto-pause with config pointer."""
+    def test_auto_pause_after_two_consecutive_parse_failures(self, hermes_home):
+        """N=2 consecutive parse failures → auto-pause with config pointer."""
         from hermes_cli import goals
         from hermes_cli.goals import GoalManager, DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES
 
-        assert DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES == 3
+        assert DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES == 2
         mgr = GoalManager(session_id="parse-fail-sid-1", default_max_turns=20)
         mgr.set("do a thing")
 
@@ -223,17 +235,33 @@ class TestJudgeParseFailureAutoPause:
             assert mgr.state.consecutive_parse_failures == 1
 
             d2 = mgr.evaluate_after_turn("step 2")
-            assert d2["should_continue"] is True
+            assert d2["should_continue"] is False
+            assert d2["status"] == "paused"
             assert mgr.state.consecutive_parse_failures == 2
-
-            d3 = mgr.evaluate_after_turn("step 3")
-            assert d3["should_continue"] is False
-            assert d3["status"] == "paused"
-            assert mgr.state.consecutive_parse_failures == 3
             # Message points at the config surface so the user can fix it.
-            assert "auxiliary" in d3["message"]
-            assert "goal_judge" in d3["message"]
-            assert "config.yaml" in d3["message"]
+            assert "auxiliary" in d2["message"]
+            assert "goal_judge" in d2["message"]
+            assert "config.yaml" in d2["message"]
+
+
+    def test_auto_pause_after_two_consecutive_transport_failures(self, hermes_home):
+        """N=2 consecutive transport failures (401/timeout/DNS) → auto-pause."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager, DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES
+
+        assert DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES == 2
+        mgr = GoalManager(session_id="transport-fail-sid-1", default_max_turns=20)
+        mgr.set("do a thing")
+
+        with patch.object(
+            goals, "judge_goal", return_value=("continue", "api error", False, None, True)
+        ):
+            d1 = mgr.evaluate_after_turn("step 1")
+            assert d1["should_continue"] is True
+
+            d2 = mgr.evaluate_after_turn("step 2")
+            assert d2["should_continue"] is False
+            assert d2["status"] == "paused"
 
 
 
