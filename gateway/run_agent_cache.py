@@ -940,24 +940,22 @@ class GatewayAgentCacheMixin:
             "is live.]"
         )
 
-    def _pinned_session_context_prompt(
-        self, context, redact_pii: bool, session_key: Optional[str]
-    ) -> str:
+    def _pinned_session_context_prompt(self, context, session_key: Optional[str]) -> str:
         """Return the session-context prompt, pinned per session.
 
         Key hit → the pinned bytes are reused VERBATIM (immunizes the
         composed system prompt against renderer nondeterminism); key miss →
         re-render ``build_session_context_prompt`` and re-pin (a legitimate
-        cache bust: rename, topic edit, /setnotify, redact_pii flip, ...).
+        cache bust: rename, topic edit, /setnotify, ...).
         """
-        _eph_key = self._ephemeral_change_key(context, redact_pii)
+        _eph_key = self._ephemeral_change_key(context)
         _eph_pin = None
         if session_key:
             _pin_state = self._peek_session_state(session_key)
             _eph_pin = _pin_state.conversation.ephemeral_pin if _pin_state else None
         if _eph_pin is not None and _eph_pin[0] == _eph_key:
             return _eph_pin[1]
-        text = build_session_context_prompt(context, redact_pii=redact_pii)
+        text = build_session_context_prompt(context)
         if session_key:
             self._session_state(session_key).conversation.ephemeral_pin = (
                 _eph_key,
@@ -966,7 +964,7 @@ class GatewayAgentCacheMixin:
         return text
 
     @staticmethod
-    def _ephemeral_change_key(context, redact_pii: bool) -> str:
+    def _ephemeral_change_key(context) -> str:
         """Hash the exact inputs ``build_session_context_prompt`` renders.
 
         This key decides when the pinned per-session context-prompt bytes are
@@ -1060,7 +1058,6 @@ class GatewayAgentCacheMixin:
             discord_tools,
             slack_tools,
             tuple(p.value for p in context.connected_platforms),
-            bool(redact_pii),
             home_display,
             mission_digest,
         )

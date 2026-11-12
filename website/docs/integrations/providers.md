@@ -1638,21 +1638,17 @@ provider_routing:
 
 ## OpenRouter Pareto Code Router
 
-OpenRouter ships an experimental coding-model router at `openrouter/pareto-code` that auto-routes requests to the cheapest model meeting a coding-quality bar (ranked by [Artificial Analysis](https://artificialanalysis.ai/)). Pick this model and tune the `min_coding_score` knob in `~/.hermes/config.yaml`:
+OpenRouter ships an experimental coding-model router at `openrouter/pareto-code` that auto-routes requests to the cheapest model meeting a coding-quality bar (ranked by [Artificial Analysis](https://artificialanalysis.ai/)). Pick this model and the router is sent with a coding-score floor fixed at 0.65:
 
 ```yaml
 model:
   provider: openrouter
   model: openrouter/pareto-code
-
-openrouter:
-  min_coding_score: 0.65   # 0.0–1.0; higher = stronger (more expensive) coders. Default 0.65.
 ```
 
 Notes:
 
-- `min_coding_score` is **only** sent when `model.model` is `openrouter/pareto-code`. On any other model the value is a no-op.
-- Set to empty string (or remove the line) to let OpenRouter pick the strongest available coder — its documented behavior when the plugins block is omitted.
+- The `pareto-router` plugin with `min_coding_score: 0.65` is **only** sent when `model.model` is `openrouter/pareto-code`. On any other model it is a no-op. There is no config key for the floor.
 - Selection is deterministic per score on a given day, but the actual model chosen can shift as the Pareto frontier moves (new models, benchmark updates).
 - See OpenRouter's [Pareto Router docs](https://openrouter.ai/docs/guides/routing/routers/pareto-router) for the full router behavior.
 - To use the Pareto Code router for a specific **auxiliary task** (compression, vision, etc.) instead of the main agent, set `extra_body.plugins` under that task — see [Auxiliary Models → OpenRouter routing & Pareto Code for auxiliary tasks](../user-guide/configuration.md#openrouter-routing--pareto-code-for-auxiliary-tasks).

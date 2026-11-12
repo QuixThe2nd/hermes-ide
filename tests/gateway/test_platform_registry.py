@@ -266,7 +266,6 @@ class TestPlatformEntryExtendedFields:
         assert entry.allowed_users_env == ""
         assert entry.allow_all_env == ""
         assert entry.max_message_length == 0
-        assert entry.pii_safe is False
         assert entry.emoji == "🔌"
         assert entry.allow_update_command is True
 

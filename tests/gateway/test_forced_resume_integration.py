@@ -622,6 +622,31 @@ def test_idle_restart_requester_keeps_interactive_recovery_note():
     assert store.rewrites == []
 
 
+def test_restart_requester_task_final_continues_instead_of_asking():
+    """A restart() turn that already wrote its real final must continue the
+    original task, not ask the user what to do next."""
+    history = _restart_tool_tail_history()
+    history.append({
+        "role": "assistant",
+        "content": "Restart is queued. I'll verify the deploy after it comes back.",
+        "timestamp": time.time(),
+    })
+    agent, store = _run_and_capture_agent(history, "", "restart_requester", {})
+
+    run_message, kwargs = agent.run_calls[0]
+    assert "ask what they would like to do next" not in run_message
+    assert "Continue the original task" in run_message
+    assert "re-verify" in run_message
+    assert "do NOT re-execute" in run_message
+    assert kwargs.get("continue_interrupted_turn") is None
+    assert store.rewrites == []
+    model_history = kwargs.get("conversation_history") or []
+    assert any(
+        "verify the deploy after it comes back" in str(row.get("content") or "")
+        for row in model_history
+    ), [r.get("role") for r in model_history]
+
+
 def test_stale_restart_tail_is_not_rewritten():
     """An expired interruption marker cannot turn old restart rows into success."""
     stale_ts = time.time() - 7200

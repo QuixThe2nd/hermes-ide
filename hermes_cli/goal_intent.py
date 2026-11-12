@@ -36,6 +36,9 @@ _MESSAGE_LIMIT = 3000
 _LAST_ASSISTANT_LIMIT = 1200
 _PREVIOUS_USER_LIMIT = 1500
 CHASE_DEDUPE_WINDOW = timedelta(minutes=30)
+# Last-assistant snippet length in the chase papercut's observed block: enough to
+# recognize the exchange, short enough to keep the papercut readable.
+_CHASE_SNIPPET_LIMIT = 200
 
 # Jev Decisions endpoint (same fixed URL the Discord response gate posts to; the
 # string is duplicated rather than imported so hermes_cli never depends on a
@@ -151,6 +154,7 @@ _EMPTY_CONTEXT = {
     "goal_recently_completed": False,
     "goal_paused": False,
     "last_assistant": "",
+    "last_assistant_age_minutes": None,
     "user_previous_message": "",
 }
 
@@ -353,13 +357,16 @@ def _row_text(content: Any) -> str:
     return ""
 
 
-def _assistant_snippet(rows: List[Dict[str, Any]]) -> str:
-    """Newest assistant text from newest-first rows, bounded and non-fatal on odd shapes."""
+def _assistant_snippet(rows: List[Dict[str, Any]]) -> Tuple[str, Optional[float]]:
+    """Newest assistant ``(text, row timestamp)`` from newest-first rows, bounded and
+    non-fatal on odd shapes. The timestamp is ``None`` when the row carries none."""
     for row in reversed(rows):
         if row.get("role") != "assistant":
             continue
-        return _row_text(row.get("content"))[:_LAST_ASSISTANT_LIMIT]
-    return ""
+        ts = row.get("timestamp")
+        age_ts = float(ts) if isinstance(ts, (int, float)) and not isinstance(ts, bool) else None
+        return _row_text(row.get("content"))[:_LAST_ASSISTANT_LIMIT], age_ts
+    return "", None
 
 
 def _previous_user_message(rows: List[Dict[str, Any]]) -> str:
@@ -393,21 +400,29 @@ def build_goal_context(session_id: str) -> Dict[str, Any]:
         goal_recently_completed = last_turn > 0 and (time.time() - last_turn) <= CHASE_DEDUPE_WINDOW.total_seconds()
 
     last_assistant = ""
+    last_assistant_ts: Optional[float] = None
     previous_user = ""
     try:
         db = goals._get_session_db()
         if db is not None:
             rows = db.get_messages(session_id, limit=20, latest=True)
-            last_assistant = _assistant_snippet(rows)
+            last_assistant, last_assistant_ts = _assistant_snippet(rows)
             previous_user = _previous_user_message(rows)
     except Exception as exc:
         logger.debug("goal intent context read failed: %s", exc)
+    # Real age off the message row; unknown (never an invented 0) without a timestamp.
+    last_assistant_age_minutes = (
+        round((time.time() - last_assistant_ts) / 60.0, 1)
+        if last_assistant_ts is not None and last_assistant_ts > 0
+        else None
+    )
 
     return {
         "goal_active": status == "active",
         "goal_recently_completed": goal_recently_completed,
         "goal_paused": status == "paused",
         "last_assistant": last_assistant,
+        "last_assistant_age_minutes": last_assistant_age_minutes,
         "user_previous_message": previous_user,
     }
 
@@ -435,16 +450,51 @@ def _append_shadow_record(record: Dict[str, Any]) -> None:
             pass
 
 
+def _chase_live_work(session_id: str) -> bool:
+    """Whether background or delegated work was live for the session when the user chased."""
+    try:
+        from tools.async_delegation import has_live_for_session
+
+        if has_live_for_session(session_id, parent_session_id=session_id):
+            return True
+    except Exception as exc:
+        logger.debug("chase papercut live-delegation probe failed: %s", exc)
+    try:
+        from tools.process_registry import process_registry
+
+        return bool(process_registry.has_active_for_session(session_id))
+    except Exception as exc:
+        logger.debug("chase papercut live-process probe failed: %s", exc)
+        return False
+
+
 def _log_chase_papercut(
     session_id: str, record: Dict[str, Any], context: Dict[str, Any]
 ) -> bool:
-    """One auto-goal chase papercut per session per 30 minutes. Unavailable papercuts are skipped."""
-    excerpt = record["message_excerpt"]
+    """One auto-goal chase papercut per session per 30 minutes. Unavailable papercuts are skipped.
+
+    The summary is keyed by CAUSE (live background work vs. a silent session), never the
+    raw excerpt, so distinct chase reasons stay distinct papercuts instead of collapsing
+    into one per-30-minute "status?" blob. Observed carries the evidence: the last
+    assistant reply, its real age in minutes (unknown without a row timestamp), and the
+    live-work flag — present even when false.
+    """
+    live_work = _chase_live_work(session_id)
+    cause = (
+        "background or delegated work was live" if live_work
+        else "no background or delegated work was live"
+    )
+    age_minutes = context.get("last_assistant_age_minutes")
+    age_text = f"{age_minutes}" if isinstance(age_minutes, (int, float)) else "unknown"
+    snippet = str(context.get("last_assistant") or "")[:_CHASE_SNIPPET_LIMIT]
     observed = (
         f"session_id={session_id}; goal_active={context.get('goal_active')}; "
         f"goal_recently_completed={context.get('goal_recently_completed')}; "
         f"goal_paused={context.get('goal_paused')}; platform={record['platform']}; "
-        f"label={record['label']}; confidence={record['confidence']}"
+        f"label={record['label']}; confidence={record['confidence']}; "
+        f"last_assistant_snippet={snippet}; "
+        f"minutes_since_last_assistant={age_text}; "
+        f"background_work_live={live_work}"
     )
     now = time.time()
     key = (str(get_hermes_home()), session_id)
@@ -461,7 +511,7 @@ def _log_chase_papercut(
             raw = handle_papercuts(
                 {
                     "action": "log",
-                    "summary": f"User had to chase: {excerpt}",
+                    "summary": f"User had to chase while {cause}",
                     "observed": observed,
                     "suggested_fix": (
                         "Review the auto-goal shadow classification and continuation behavior "

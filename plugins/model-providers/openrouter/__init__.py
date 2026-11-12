@@ -148,14 +148,8 @@ class OpenRouterProfile(ProviderProfile):
         if prefs:
             body["provider"] = prefs
         # Pareto Code router plugin is only meaningful for openrouter/pareto-code.
-        score = context.get("openrouter_min_coding_score")
-        if (context.get("model") or "") == "openrouter/pareto-code" and score is not None and score != "":
-            try:
-                score_f = float(score)
-            except (TypeError, ValueError):
-                score_f = None
-            if score_f is not None and 0.0 <= score_f <= 1.0:
-                body["plugins"] = [{"id": "pareto-router", "min_coding_score": score_f}]
+        if (context.get("model") or "") == "openrouter/pareto-code":
+            body["plugins"] = [{"id": "pareto-router", "min_coding_score": 0.65}]
         return body
 
     def build_api_kwargs_extras(

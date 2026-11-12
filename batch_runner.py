@@ -50,13 +50,13 @@ _REASONING_KEYS = ("total_assistant_turns", "turns_with_reasoning", "turns_witho
 _RUNNER_FIELDS = (
     "batch_size", "run_name", "distribution", "max_iterations", "base_url", "api_key", "model",
     "num_workers", "verbose", "ephemeral_system_prompt", "log_prefix_chars", "providers_allowed",
-    "providers_ignored", "providers_order", "provider_sort", "openrouter_min_coding_score",
+    "providers_ignored", "providers_order", "provider_sort",
     "reasoning_config", "prefill_messages", "max_samples",
 )
 # BatchRunner attributes forwarded verbatim to every AIAgent in the worker config.
 _AGENT_PASSTHROUGH = (
     "base_url", "api_key", "ephemeral_system_prompt", "providers_allowed", "providers_ignored",
-    "providers_order", "provider_sort", "openrouter_min_coding_score",
+    "providers_order", "provider_sort",
     "reasoning_config", "prefill_messages",
     # Without this, every batch task run is attributed to the "unknown" execution
     # surface in shared metrics even though "batch" is a first-class surface.
@@ -433,7 +433,6 @@ class BatchRunner:
         providers_ignored: List[str] = None,
         providers_order: List[str] = None,
         provider_sort: str = None,
-        openrouter_min_coding_score: Optional[float] = None,
 
         reasoning_config: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,

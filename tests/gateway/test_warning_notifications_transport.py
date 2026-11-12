@@ -34,7 +34,7 @@ def test_warning_policy_reaches_relay_transport(tmp_path, monkeypatch, thread_id
     pc = PlatformConfig(extra={"reply_in_thread": bool(thread_id)})
     desc = CapabilityDescriptor(contract_version=CONTRACT_VERSION, platform="matrix", label="Matrix",
                                 max_message_length=4000, supports_edit=True, supports_threads=True, supports_draft_streaming=False,
-                                markdown_dialect="mrkdwn", len_unit="chars", emoji="", platform_hint="", pii_safe=False)
+                                markdown_dialect="mrkdwn", len_unit="chars", emoji="", platform_hint="")
     transport = StubConnector(desc)
     adapter = RelayAdapter(pc, desc, transport=transport)
     adapter._capture_scope(MessageEvent(text="hello", source=source, message_type=MessageType.TEXT))

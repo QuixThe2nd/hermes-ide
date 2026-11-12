@@ -76,7 +76,7 @@ class PlatformEntry:
     allowed_users_env: str = ""  # comma-separated allowed user IDs (_is_user_authorized)
     allow_all_env: str = ""  # truthy "allow everyone" switch
     max_message_length: int = 0  # smart-chunking cap; 0 = no limit
-    pii_safe: bool = False  # session descriptions redact PII (phone numbers, etc.)
+    pii_safe: bool = False  # deprecated, ignored (accepted for plugin compat)
     emoji: str = "🔌"  # CLI/gateway display
     allow_update_command: bool = True  # /update may be issued from this platform
     platform_hint: str = ""  # injected into the system prompt; empty = none

@@ -665,13 +665,6 @@ DEFAULT_CONFIG = {
     # non-falsy values are ignored; falsy (false, null, "off", "disabled", "no", "none") disables
     # caching.
     "prompt_caching": {"cache_ttl": "5m"},
-    # OpenRouter settings. response_cache: X-OpenRouter-Cache header — identical requests return
-    # cached responses at zero billing; independent of Anthropic prompt caching. response_cache_ttl:
-    # seconds (1-86400), only used when response_cache is on. min_coding_score (0.0-1.0):
-    # pareto-code router knob, applied only when model.model is "openrouter/pareto-code"; higher =
-    # stronger/pricier coders, 0.65 = mid-tier, "" = let OpenRouter pick the strongest. Docs:
-    # openrouter.ai/docs/guides/routing/routers/pareto-router
-    "openrouter": {"response_cache": True, "response_cache_ttl": 300, "min_coding_score": 0.65},
     "bedrock": {  # AWS Bedrock; only used when model.provider is "bedrock".
         "region": "",  # empty = AWS_REGION env var → us-east-1
         "discovery": {
@@ -698,7 +691,7 @@ DEFAULT_CONFIG = {
     #       extra_body:
     #         provider: {order: [anthropic, google], sort: throughput}  # or price | latency
     #         plugins: [{id: pareto-router, min_coding_score: 0.5}]
-    # Each task is independent — main-agent provider_routing and openrouter.min_coding_score
+    # Each task is independent — main-agent provider_routing and the Pareto coding-score floor
     # do NOT propagate to aux calls by design.
     "auxiliary": {
         # Same-provider retries for a transient blip (reset/timeout/5xx/408) on ANY aux call before
@@ -954,9 +947,6 @@ DEFAULT_CONFIG = {
         "copy_shortcut": "auto",  # "auto" (platform default) | ctrl_c | ctrl_shift_c | disabled
     },
 
-    "privacy": {
-        "redact_pii": False,  # hash user IDs and strip phone numbers from LLM context
-    },
     # Native vision embeds (vision_analyze / browser screenshots on vision-capable main models) ride
     # conversation history and are re-sent on every later API call.
     "vision": {
@@ -1514,20 +1504,6 @@ DEFAULT_CONFIG = {
         "level": "INFO",       # minimum level for agent.log: DEBUG, INFO, WARNING
         "max_size_mb": 5,      # max size per log file before rotation
         "backup_count": 3,     # rotated backups to keep
-    },
-    # Remote model-catalog manifest: curated OpenRouter / Nous Portal model lists fetched from this
-    # URL (falls back to the in-repo snapshot on network failure), so picker lists update without a
-    # release. Default URL is served by the docs-site GitHub Pages deploy.
-    "model_catalog": {
-        "enabled": True,
-        "url": "https://hermes-agent.nousresearch.com/docs/api/model-catalog.json",
-        # Disk cache TTL in minutes. The gateway refreshes in the background on this cadence; the
-        # CLI refetches on the next /model or `hermes model` once the cache is older. Network
-        # failures silently use the stale cache. Legacy `ttl_hours` is honoured if set.
-        "ttl_minutes": 20,
-        # Per-provider override URLs for self-hosted curation lists using the same schema, e.g.
-        # providers: {openrouter: {url: https://example.com/my-curation.json}}.
-        "providers": {},
     },
     # Per-model metadata overrides. Fields: context_window, supports_tools,
     # supports_vision, supports_reasoning, model_family. <provider>.<model_id> wins over

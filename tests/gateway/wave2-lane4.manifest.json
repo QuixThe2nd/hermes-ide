@@ -63,10 +63,6 @@
    "mixin_class": "GatewaySessionWatchersMixin"
   },
   {
-   "name": "GatewayRunner._model_catalog_refresh_watcher",
-   "mixin_class": "GatewaySessionWatchersMixin"
-  },
-  {
    "name": "GatewayRunner._session_stall_watcher",
    "mixin_class": "GatewaySessionWatchersMixin"
   }
