@@ -5,8 +5,10 @@ Discord is faked by patching the PUBLIC hermes_starts helpers
 These tests require the threads feature and therefore fail on the base
 revision (no such modules/actions exist there).
 """
-
 from __future__ import annotations
+
+import contextlib
+import io
 
 import json
 import os
@@ -262,6 +264,8 @@ class SightingTests(ThreadsTestCase):
         reopens = [c for c in self.discord.updates() if c[3] is False]
         self.assertTrue(reopens, "reopening must unarchive the same thread")
         items = papercuts._fold(papercuts._read_events_unlocked())
+        self.assertTrue(any("seen again ×2" in c[2] for c in self.discord.posted()))
+        self.assertEqual(again["item"]["stage"], "triage")
         self.assertEqual(items[item_id]["stage"], "triage")
 
 
@@ -324,6 +328,77 @@ class AdvanceSteerTests(ThreadsTestCase):
         lifecycle._pidfile(item_id, "triage").unlink(missing_ok=True)
         prompt = lifecycle.render_stage_prompt(steered["item"], "triage")
         self.assertIn("use the new parser", prompt)
+
+
+class LifecycleRegressionTests(ThreadsTestCase):
+    def test_dead_run_waits_for_timeout_before_relaunch(self):
+        item_id = self.seed(1)[0]
+        lifecycle.tick()
+        lifecycle._pidfile(item_id, "triage").unlink()
+        first = papercuts._fold(papercuts._read_events_unlocked())[item_id]
+        launched_at = first["stage_since"]
+
+        lifecycle.tick(now=launched_at + 1)
+        self.assertEqual(len(self.launches), 1)
+        lifecycle.tick(now=launched_at + 120 * 60 + 1)
+        self.assertEqual(len(self.launches), 2)
+
+    def test_new_stage_resets_attempt_budget(self):
+        item_id, _thread_id = self.threaded_item()
+        advanced = self.call(
+            {"action": "advance", "id": item_id, "to_stage": "fixing", "note": "brief"}
+        )
+        self.assertEqual(advanced["item"]["attempts"], 0)
+
+    def test_close_maps_resolved_and_repeat_advance_is_idempotent(self):
+        item_id, _thread_id = self.threaded_item()
+        args = {"action": "advance", "id": item_id, "to_stage": "closed", "note": "fixed"}
+        closed = self.call(args)
+        self.assertEqual(closed["item"]["status"], "resolved")
+        before = Path(self.tmp.name, "events.jsonl").read_text(encoding="utf-8")
+        duplicate = self.call(args)
+        self.assertFalse(duplicate["changed"])
+        self.assertEqual(Path(self.tmp.name, "events.jsonl").read_text(encoding="utf-8"), before)
+
+    def test_verifying_requires_pr_url(self):
+        item_id, _thread_id = self.threaded_item()
+        result = self.call(
+            {"action": "advance", "id": item_id, "to_stage": "verifying", "note": "PR opened"}
+        )
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error"]["code"], "invalid_input")
+
+    def test_steer_resumes_stage_that_needed_human(self):
+        item_id, _thread_id = self.threaded_item()
+        self.call({"action": "advance", "id": item_id, "to_stage": "fixing", "note": "brief"})
+        self.call({"action": "advance", "id": item_id, "to_stage": "needs_human", "note": "owner?"})
+        result = self.call({"action": "steer", "id": item_id, "message": "backend owns it"})
+        self.assertEqual(result["item"]["stage"], "fixing")
+        prompt = lifecycle.render_stage_prompt(result["item"])
+        self.assertIn("backend owns it", prompt)
+
+    def test_dry_run_without_store_creates_nothing(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(lifecycle.tick(dry_run=True), 0)
+        self.assertIn("nothing to do", output.getvalue())
+        # setUp's TemporaryDirectory already created the dir itself; the dry
+        # run's contract is that it stays completely empty (no store created).
+        self.assertEqual(list(Path(self.tmp.name).iterdir()), [])
+
+    def test_live_pid_helper_suppresses_due_relaunch(self):
+        item_id = self.seed(1)[0]
+        lifecycle.tick()
+        lifecycle._pidfile(item_id, "triage").unlink()
+        lifecycle._pidfile(item_id, "triage").write_text("4242\n", encoding="utf-8")
+        with mock.patch.object(lifecycle, "_pid_exists", return_value=True):
+            lifecycle.tick(now=10**10)
+        self.assertEqual(len(self.launches), 1)
+
+
+# Reuse the setup helpers without running their test classes a second time.
+LifecycleRegressionTests.threaded_item = AdvanceSteerTests.threaded_item
+LifecycleRegressionTests.seed = TickTests.seed
 
 
 if __name__ == "__main__":

@@ -343,11 +343,21 @@ def _fold(events: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
                     item["thread_id"] = event["thread_id"]
                 if event.get("pr_url"):
                     item["pr_url"] = event["pr_url"]
+                if event.get("resumes"):
+                    item["resumes"] = event["resumes"]
                 if "attempts" in event:
                     try:
                         item["attempts"] = int(event["attempts"] or 0)
                     except (TypeError, ValueError):
                         pass
+                else:
+                    # A fresh stage starts with a fresh attempt budget; only
+                    # relaunch events carry attempts forward.
+                    item["attempts"] = 0
+                if stage == "closed":
+                    item["status"] = "resolved"
+                    item["closed_at"] = event.get("ts")
+                    item["closing_note"] = event.get("note", "")
                 # Steer notes only count since the last stage change.
                 item["steer_notes"] = []
         elif kind == "steer":
@@ -381,31 +391,25 @@ def _error(code: str, message: str) -> str:
 
 
 def _note_repeat_sighting(item: Dict[str, Any], observed: str, reopened: bool) -> Optional[str]:
-    """Thread side of a deduped re-log: post the sighting, and on a closed
-    papercut reopen it into triage in its SAME thread (unarchived). The event
-    append already happened, so failures degrade to a warning string only."""
-    from plugins.papercuts.lifecycle import _append_stage_event, threads_enabled
+    """Thread side of a deduped re-log: post the sighting, and on a reopened
+    papercut unarchive its SAME thread and announce the reopen. The journal
+    events (occurrence/reopen + the triage stage re-entry in ``_handle_log``)
+    already happened, so failures degrade to a warning string only."""
+    from plugins.papercuts.lifecycle import threads_enabled
     from plugins.papercuts import threads as pc_threads
 
     if not threads_enabled():
         return None
     thread_id = str(item.get("thread_id") or "")
-    if not thread_id and not reopened:
+    if not thread_id:
         return None  # never threaded; the journal counts the occurrence
     warning = None
-    if reopened:
-        # Same thread, never a second one: unarchive and announce the reopen.
-        # Caller (_handle_log) holds the store lock.
-        _append_stage_event(str(item["id"]), "triage", attempts=0, note="reopened by a new sighting", locked=True)
-        if not thread_id:
-            return None
-        if not pc_threads.reopen(thread_id):
-            warning = "could not unarchive the thread"
-        if not pc_threads.post(thread_id, "reopened — the friction came back"):
-            warning = warning or "could not post the reopen note"
-        return warning
-    if thread_id and not pc_threads.post(thread_id, pc_threads.format_sighting(item, observed)):
-        warning = "could not post the repeat sighting to the thread"
+    if reopened and not pc_threads.reopen(thread_id):
+        warning = "could not unarchive the thread"
+    if reopened and not pc_threads.post(thread_id, "reopened — the friction came back"):
+        warning = warning or "could not post the reopen note"
+    if not pc_threads.post(thread_id, pc_threads.format_sighting(item, observed)):
+        warning = warning or "could not post the repeat sighting to the thread"
     return warning
 
 
@@ -464,7 +468,15 @@ def _handle_log(args: Dict[str, Any], kwargs: Dict[str, Any]) -> str:
                 **meta,
             }
             _append_event_unlocked(event)
-            folded = _fold([*events, event])[item_id]
+            if kind == "reopen":
+                # A closed papercut that gets sighted again goes straight back
+                # to triage in its SAME thread; the journal re-entry happens
+                # here (caller holds the store lock) so it survives even when
+                # Discord is unavailable.
+                from plugins.papercuts.lifecycle import _append_stage_event
+
+                _append_stage_event(item_id, "triage", attempts=0, note="reopened by a new sighting", locked=True)
+            folded = _fold(_read_events_unlocked())[item_id]
             warning = _note_repeat_sighting(folded, observed, kind == "reopen")
             payload = {
                 "success": True,

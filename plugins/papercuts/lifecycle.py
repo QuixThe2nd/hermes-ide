@@ -97,12 +97,7 @@ def _pidfile(item_id: str, stage: str) -> Path:
     return work_dir() / f"{item_id}-{stage}.pid"
 
 
-def _run_alive(item: Dict[str, Any]) -> bool:
-    pid_path = _pidfile(str(item.get("id") or ""), str(item.get("stage") or ""))
-    try:
-        pid = int(pid_path.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        return False
+def _pid_exists(pid: int) -> bool:
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -110,6 +105,15 @@ def _run_alive(item: Dict[str, Any]) -> bool:
     except OSError:  # permission = alive but not ours
         return True
     return True
+
+
+def _run_alive(item: Dict[str, Any]) -> bool:
+    pid_path = _pidfile(str(item.get("id") or ""), str(item.get("stage") or ""))
+    try:
+        pid = int(pid_path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return False
+    return _pid_exists(pid)
 
 
 def _launch_run(item: Dict[str, Any], stage: str, prompt_text: str) -> Optional[int]:
@@ -150,8 +154,13 @@ def _render_template(name: str) -> str:
     raise ValueError(f"stage template '{name}' not found")
 
 
-def render_stage_prompt(item: Dict[str, Any], stage: str) -> str:
+def render_stage_prompt(item: Dict[str, Any], stage: Optional[str] = None) -> str:
     from plugins.papercuts.threads import steer_notes_block
+
+    if stage is None:
+        stage = str(item.get("stage") or "triage")
+    if stage not in WORK_STAGES:  # queued/closed/needs_human have no template
+        stage = "triage"
 
     values = {
         "id": item.get("id", ""),
@@ -197,7 +206,7 @@ def _stage_age(item: Dict[str, Any], now: float) -> float:
         return float("inf")
 
 
-def tick(dry_run: bool = False) -> int:
+def tick(dry_run: bool = False, now: Optional[float] = None) -> int:
     settings = threads_settings()
     if not settings["enabled"]:
         print(
@@ -206,7 +215,14 @@ def tick(dry_run: bool = False) -> int:
         )
         return 0
 
-    from plugins.papercuts import _fold, _read_events_unlocked, _store_lock
+    from plugins.papercuts import _events_path, _fold, _read_events_unlocked, _store_lock
+
+    if dry_run and not _events_path().exists():
+        # Zero side effects means not even bringing the store into existence.
+        print("dry run: nothing to do this tick.")
+        return 0
+    if now is None:
+        now = time.time()
 
     max_active = settings["max_active"]
     timeout = settings["stage_timeout_minutes"] * 60
@@ -236,11 +252,11 @@ def tick(dry_run: bool = False) -> int:
                 )
             )
 
-        now = time.time()
         for item in active:
             item_id = str(item["id"])
             stage = str(item.get("stage") or "")
             if _run_alive(item):
+                continue
                 continue
             attempts = int(item.get("attempts") or 0)
             if attempts >= max_attempts:
@@ -324,7 +340,7 @@ def _to_needs_human(item: Dict[str, Any], reason: str) -> Optional[str]:
     from plugins.papercuts import threads as pc_threads
 
     item_id = str(item["id"])
-    _append_stage_event(item_id, "needs_human", note=reason)
+    _append_stage_event(item_id, "needs_human", note=reason, resumes=str(item.get("stage") or ""))
     thread_id = str(item.get("thread_id") or "")
     warning: Optional[str] = None
     if thread_id:
@@ -350,6 +366,8 @@ def handle_advance(args: Dict[str, Any], kwargs: Dict[str, Any]) -> str:
         pr_url = str(args.get("pr_url") or "").strip()
     except ValueError as exc:
         return _error("invalid_input", str(exc))
+    if to_stage == "verifying" and not pr_url:
+        return _error("invalid_input", "advance to verifying requires pr_url")
 
     with _store_lock():
         items = _fold(_read_events_unlocked())
@@ -357,9 +375,12 @@ def handle_advance(args: Dict[str, Any], kwargs: Dict[str, Any]) -> str:
         if err:
             return _error("not_found", err)
         item = items[item_id]
-        if item.get("stage") == to_stage and to_stage not in ("closed",):
+        if item.get("stage") == to_stage:
+            # Idempotent, journal-clean no-op — including a second advance to
+            # closed: the papercut is already there, nothing to record.
             return _json({"success": True, "action": "advance", "changed": False, "item": item})
-        _append_stage_event(item_id, to_stage, note=note, pr_url=pr_url or None, locked=True)
+        resumes = item.get("stage") if to_stage == "needs_human" else None
+        _append_stage_event(item_id, to_stage, note=note, pr_url=pr_url or None, resumes=resumes, locked=True)
         # Re-fold from the journal without re-taking the lock (caller holds it).
         from plugins.papercuts import _read_events_unlocked as _read
 
@@ -399,12 +420,16 @@ def handle_steer(args: Dict[str, Any], kwargs: Dict[str, Any]) -> str:
             return _error("not_found", err)
         item = items[item_id]
         epoch, iso = _now()
-        # "back on human steer": a parked needs_human papercut re-enters triage
-        # with the fresh note attached to its stage prompt. The stage event
-        # comes FIRST — the fold resets steer_notes on a stage change, so the
-        # steer event must land after it to survive into the next work order.
+        # "back on human steer": a parked needs_human papercut re-enters the
+        # stage it parked from (recorded on the needs_human event) with the
+        # fresh note attached to its stage prompt. The stage event comes FIRST —
+        # the fold resets steer_notes on a stage change, so the steer event must
+        # land after it to survive into the next work order.
         if item.get("stage") == "needs_human":
-            _append_stage_event(item_id, "triage", attempts=0, note=f"steered: {message}", locked=True)
+            resume_stage = str(item.get("resumes") or "triage")
+            if resume_stage not in WORK_STAGES:
+                resume_stage = "triage"
+            _append_stage_event(item_id, resume_stage, attempts=0, note=f"steered: {message}", locked=True)
         _append_event_unlocked(
             {"kind": "steer", "id": item_id, "message": message, "ts": iso, "ts_epoch": epoch, **_metadata(kwargs)}
         )
