@@ -193,26 +193,6 @@ Tool hooks describe individual tool calls:
 `post_tool_call` is emitted for blocked and cancelled paths so telemetry
 plugins can close spans cleanly.
 
-### Approval Lifecycle
-
-Approval hooks describe dangerous-command approval prompts:
-
-| Hook | When it fires |
-| --- | --- |
-| `pre_approval_request` | Before the approval request is shown or sent. |
-| `post_approval_response` | After the user responds or the request times out. |
-
-Common fields include `command`, `description`, `pattern_key`,
-`pattern_keys`, `session_key`, and `surface`.
-
-`post_approval_response` also includes `choice`, with values such as `once`,
-`session`, `always`, `deny`, `timeout`, and `cancelled` (nobody answered: the prompt
-was withdrawn — turn interrupted or ended — or never reached the user on the CLI).
-
-Approval hooks are observer-only. Plugins cannot pre-answer or veto approvals
-from these hooks. To prevent a tool from reaching approval, use
-`pre_tool_call` blocking.
-
 ### Subagent Lifecycle
 
 Subagent hooks describe delegated child-agent work:

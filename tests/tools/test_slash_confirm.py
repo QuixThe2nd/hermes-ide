@@ -25,13 +25,15 @@ class TestRegisterAndGetPending:
         async def handler(choice):
             return f"got {choice}"
 
-        slash_confirm.register("sess1", "cid1", "reload-mcp", handler)
+        slash_confirm.register(
+            "sess1", "cid1", "reload-mcp", handler, allowed_choices=("once", "cancel")
+        )
 
         pending = slash_confirm.get_pending("sess1")
         assert pending is not None
         assert pending["confirm_id"] == "cid1"
         assert pending["command"] == "reload-mcp"
-        assert pending["handler"] is handler
+        assert pending["allowed_choices"] == ("once", "cancel")
         assert "created_at" in pending
 
 
@@ -65,6 +67,24 @@ class TestResolve:
 
         # Entry should be popped.
         assert slash_confirm.get_pending("sess1") is None
+
+    @pytest.mark.asyncio
+    async def test_unoffered_choice_does_not_consume_prompt(self):
+        calls = []
+
+        async def handler(choice):
+            calls.append(choice)
+            return "ran"
+
+        slash_confirm.register(
+            "sess1", "cid1", "reload-mcp", handler, allowed_choices=("once", "cancel")
+        )
+
+        result = await slash_confirm.resolve("sess1", "cid1", "always")
+
+        assert result == "This prompt does not offer that choice. Reply /cancel to dismiss it."
+        assert calls == []
+        assert slash_confirm.get_pending("sess1") is not None
 
     @pytest.mark.asyncio
     async def test_resolve_no_pending_returns_none(self):

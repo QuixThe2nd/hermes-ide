@@ -186,7 +186,7 @@ azure-foundry (Microsoft Entra ID):
   Status: configured; live token probe is skipped here
 ```
 
-Auxiliary tasks that follow the main model (`provider: auto` — session titles, context compression, smart approval) reuse the main session's Entra token provider instead of re-authenticating; a `--api-key` string on the CLI still overrides it for one-off testing.
+Auxiliary tasks that follow the main model (`provider: auto` — session titles and context compression) reuse the main session's Entra token provider instead of re-authenticating; a `--api-key` string on the CLI still overrides it for one-off testing.
 
 ### Limitations
 

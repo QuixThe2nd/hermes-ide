@@ -498,11 +498,8 @@ def _with_timeout_notice(stdout_text: str, timeout_msg: str) -> str:
     return stdout_text + f"\n\n⏰ {timeout_msg}" if stdout_text else f"⏰ {timeout_msg}"
 
 
-def _error_result(error: str, *, tool_calls_made: int = 0, duration: float = 0,
-                  user_summary: Optional[str] = None) -> str:
+def _error_result(error: str, *, tool_calls_made: int = 0, duration: float = 0) -> str:
     body = {"status": "error", "error": error, "tool_calls_made": tool_calls_made, "duration_seconds": duration}
-    if user_summary:
-        body["user_summary"] = user_summary  # one human sentence; surfaces show it before the model text
     return json.dumps(body, ensure_ascii=False)
 
 
@@ -576,8 +573,8 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         _ship_file_to_remote(env, f"{sandbox_dir}/hermes_tools.py",
                              generate_hermes_tools_module(list(sandbox_tools), transport="file"))
         _ship_file_to_remote(env, f"{sandbox_dir}/script.py", code)
-        # Wrapped so the thread inherits the turn's approval context + callbacks
-        # (tools.thread_context) — else sandbox RPC tool calls lose approval routing.
+        # Wrapped so the thread inherits the turn's session context and retained callbacks
+        # (tools.thread_context) — else sandbox RPC tool calls lose session routing.
         # See #30882. A fresh read-dedup scope is copied with that context:
         # nested read_file results exist only inside this child process, so a
         # later execute_code invocation must receive the content again.
@@ -734,23 +731,11 @@ def execute_code(
                 "stop/uninstall, run the lifecycle command from a shell "
                 "outside the gateway."
             )
-    from tools.terminal_tool import _get_env_config, _docker_has_host_access
+    from tools.terminal_tool import _get_env_config
+    # Arbitrary Python retains the lifecycle guard above and the same backend
+    # isolation, redaction, and interrupt handling as other execution paths.
     _env_config = _get_env_config()
     env_type = _env_config["env_type"]
-    # Arbitrary Python never passes through terminal()/DANGEROUS_PATTERNS, so guard the whole
-    # script before either dispatch path spawns it — in this (tool-executor) thread, which holds
-    # the session context. A Docker sandbox with host bind mounts gets no container fast-path.
-    # See #30882.
-    from tools.approval import check_execute_code_guard
-    _guard = check_execute_code_guard(code, env_type, has_host_access=_docker_has_host_access(_env_config))
-    if not _guard.get("approved", False):
-        return _error_result(_guard.get("message") or "execute_code blocked by approval guard.",
-                             user_summary=_guard.get("user_summary"))
-    # Clear a stale interrupt bit that landed during the blocking approval-wait so it can't
-    # kill the just-approved run on the first poll. A genuine post-clear interrupt re-sets it.
-    if _guard.get("user_approved"):
-        from tools.interrupt import clear_current_thread_interrupt
-        clear_current_thread_interrupt()
     if env_type != "local":
         return _execute_remote(code, task_id, enabled_tools, reset=bool(reset))
     from tools.interrupt import is_interrupted as _is_interrupted

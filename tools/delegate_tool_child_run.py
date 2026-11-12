@@ -92,7 +92,7 @@ def _detach_child(parent_agent: Any, child: Any) -> None:
 
 def _signal_child_stop(child: Any, *reason: str, tool_reason: str = "parent delegation ended") -> None:
     """Cooperative interrupt so the child's worker thread can exit cleanly. ``tool_reason`` is the
-    fixed cause the child's tools see (a pending approval wait reports it instead of a user deny)."""
+    fixed cause the child's tools see (a pending interactive wait reports it instead of a user cancel)."""
     with _quiet(None):
         if (child is not None and not request_hard_interrupt(child, *reason, tool_reason=tool_reason)
                 and hasattr(child, "_interrupt_requested")):
@@ -749,21 +749,17 @@ class _ChildRun:
         close_deferred)`` on timeout/exception.
 
         Hard timeout is off by default (``result(timeout=None)``; stuck children are the heartbeat's job). Daemon
-        worker: an abandoned timed-out child on a non-daemon thread would block interpreter exit at atexit join. The
-        worker installs a non-interactive approval callback (deny/approve per delegation.subagent_auto_approve) so
-        dangerous-command prompts never fall back to ``input()`` and deadlock the parent TUI. On failure: steer
-        acceptance closes BEFORE the stop signal (a concurrent steer is drained into the entry or rejected, never
+        worker: an abandoned timed-out child on a non-daemon thread would block interpreter exit at atexit join.
+        On failure: steer acceptance closes BEFORE the stop signal (a concurrent steer is drained into the entry or rejected, never
         lost); a 0-API-call timeout gets a diagnostic dump; a worker that still owns the child gets ``child.close()``
         via a Future done-callback (``close_deferred=True``) — closing here would race its still-unwinding finally
         path.
         """
-        from tools.delegate_tool import (_get_child_timeout, _get_subagent_approval_callback, _set_subagent_approval_cb)
+        from tools.delegate_tool import _get_child_timeout
         from tools.daemon_pool import DaemonThreadPoolExecutor
         child, task_index = self.child, self.task_index
         child_timeout = _get_child_timeout()
-        executor = DaemonThreadPoolExecutor(
-            max_workers=1, initializer=_set_subagent_approval_cb, initargs=(_get_subagent_approval_callback(),),
-        )
+        executor = DaemonThreadPoolExecutor(max_workers=1)
         # Worker thread handle so the timeout diagnostic can dump its stack.
         worker_thread_holder: Dict[str, Optional[threading.Thread]] = {"t": None}
         # Resolved after seed_workspace so a multimodal goal's text part carries the worktree note too.

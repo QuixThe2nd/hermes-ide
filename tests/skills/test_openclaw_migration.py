@@ -79,7 +79,7 @@ def test_merge_entries_respects_limit_and_reports_overflow():
 
 
 
-def test_migrator_copies_skill_and_merges_allowlist(tmp_path: Path):
+def test_migrator_copies_skill(tmp_path: Path):
     mod = load_module()
     source = tmp_path / ".openclaw"
     target = tmp_path / ".hermes"
@@ -90,22 +90,6 @@ def test_migrator_copies_skill_and_merges_allowlist(tmp_path: Path):
         "---\nname: demo-skill\ndescription: demo\n---\n\nbody\n",
         encoding="utf-8",
     )
-    (source / "exec-approvals.json").write_text(
-        json.dumps(
-            {
-                "agents": {
-                    "*": {
-                        "allowlist": [
-                            {"pattern": "/usr/bin/*"},
-                            {"pattern": "/home/test/**"},
-                        ]
-                    }
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    (target / "config.yaml").write_text("command_allowlist:\n  - /usr/bin/*\n", encoding="utf-8")
 
     migrator = mod.Migrator(
         source_root=source,
@@ -120,20 +104,23 @@ def test_migrator_copies_skill_and_merges_allowlist(tmp_path: Path):
 
     imported_skill = target / "skills" / mod.SKILL_CATEGORY_DIRNAME / "demo-skill" / "SKILL.md"
     assert imported_skill.exists()
-    assert "/home/test/**" in (target / "config.yaml").read_text(encoding="utf-8")
-    assert report["summary"]["migrated"] >= 2
-    # The merge is written atomically — no temp file survives the run.
-    assert [p.name for p in target.glob(".tmp*")] == []
+    assert report["summary"]["migrated"] >= 1
 
 
-def _allowlist_migrator(mod, tmp_path: Path, existing_config: str):
-    """Migrator wired to merge an exec-approvals allowlist into config.yaml."""
+def _mcp_migrator(mod, tmp_path: Path, existing_config: str):
+    """Migrator wired to merge an MCP server into config.yaml."""
     source = tmp_path / ".openclaw"
     target = tmp_path / ".hermes"
     target.mkdir()
     source.mkdir(parents=True)
-    (source / "exec-approvals.json").write_text(
-        json.dumps({"agents": {"*": {"allowlist": [{"pattern": "/home/test/**"}]}}}),
+    (source / "openclaw.json").write_text(
+        json.dumps({
+            "mcp": {
+                "servers": {
+                    "imported": {"command": "uvx", "args": ["imported-mcp"]},
+                },
+            },
+        }),
         encoding="utf-8",
     )
     (target / "config.yaml").write_text(existing_config, encoding="utf-8")
@@ -151,42 +138,32 @@ def _allowlist_migrator(mod, tmp_path: Path, existing_config: str):
 MALFORMED_HERMES_CONFIG = """\
 model: hermes-4-405b
 api_key_env: OPENROUTER_API_KEY
-command_allowlist:
-  - /usr/bin/*
-approvals:
-  deny: [shutdown *
+mcp_servers: [unclosed
 telegram:
   enabled: true
 """
 
 
 def test_unreadable_config_is_refused_not_overwritten(tmp_path: Path):
-    """A present-but-unparseable config.yaml must survive the migration.
-
-    ``load_yaml_file`` returned ``{}`` for an absent file AND for one it could
-    not parse; the config-mutating steps read, merge and write the whole
-    mapping back, so a YAML syntax error meant every existing setting was
-    replaced by just the merged section.  Same defect as the ported twin in
-    ``hermes_cli/agent_import.py``.
-    """
+    """A present-but-unparseable config.yaml must survive the migration."""
     mod = load_module()
-    migrator, config_path = _allowlist_migrator(
+    migrator, config_path = _mcp_migrator(
         mod, tmp_path, MALFORMED_HERMES_CONFIG)
     before = config_path.read_bytes()
 
     report = migrator.migrate()
 
     assert config_path.read_bytes() == before
-    allowlist = [i for i in report["items"] if i["kind"] == "command-allowlist"]
-    assert allowlist and allowlist[0]["status"] == mod.STATUS_ERROR
-    assert "not valid YAML" in allowlist[0]["reason"]
+    items = [i for i in report["items"] if i["kind"] == "mcp-servers"]
+    assert items and items[0]["status"] == mod.STATUS_ERROR
+    assert "not valid YAML" in items[0]["reason"]
 
 
 def test_unreadable_config_blocks_later_config_steps_instead_of_partial_writes(
         tmp_path: Path):
     """One refusal flips the existing _config_apply_blocked short-circuit."""
     mod = load_module()
-    migrator, config_path = _allowlist_migrator(
+    migrator, config_path = _mcp_migrator(
         mod, tmp_path, MALFORMED_HERMES_CONFIG)
 
     report = migrator.migrate()
@@ -196,19 +173,18 @@ def test_unreadable_config_blocks_later_config_steps_instead_of_partial_writes(
         i["status"] for i in report["items"]
         if i["kind"] in mod.Migrator._CONFIG_MUTATING_OPTIONS
     }
-    # Nothing claimed a successful config write.
     assert "migrated" not in statuses
     assert config_path.read_text(encoding="utf-8") == MALFORMED_HERMES_CONFIG
 
 
 def test_readable_config_keeps_every_pre_existing_key(tmp_path: Path):
     mod = load_module()
-    migrator, config_path = _allowlist_migrator(
+    migrator, config_path = _mcp_migrator(
         mod,
         tmp_path,
         "model: hermes-4-405b\n"
         "api_key_env: OPENROUTER_API_KEY\n"
-        "command_allowlist:\n  - /usr/bin/*\n",
+        "mcp_servers:\n  local:\n    command: uvx\n",
     )
 
     migrator.migrate()
@@ -218,8 +194,8 @@ def test_readable_config_keeps_every_pre_existing_key(tmp_path: Path):
     merged = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert merged["model"] == "hermes-4-405b"
     assert merged["api_key_env"] == "OPENROUTER_API_KEY"
-    assert "/usr/bin/*" in merged["command_allowlist"]
-    assert "/home/test/**" in merged["command_allowlist"]
+    assert "local" in merged["mcp_servers"]
+    assert "imported" in merged["mcp_servers"]
 
 
 def test_absent_config_is_still_created(tmp_path: Path):
@@ -251,17 +227,12 @@ def test_absent_config_is_still_created(tmp_path: Path):
 
 @pytest.mark.require_symlinks
 def test_symlinked_config_stays_a_symlink(tmp_path: Path):
-    """Managed deployments symlink ~/.hermes/config.yaml into a dotfiles repo.
-
-    A plain ``os.replace`` onto the link would detach it into a regular file;
-    ``dump_yaml_file`` resolves the link first, as ``utils.atomic_replace`` does.
-    """
+    """Managed deployments symlink ~/.hermes/config.yaml into a dotfiles repo."""
     mod = load_module()
     real = tmp_path / "dotfiles" / "config.yaml"
     real.parent.mkdir(parents=True)
-    real.write_text("model: hermes-4-405b\ncommand_allowlist:\n  - /usr/bin/*\n",
-                    encoding="utf-8")
-    migrator, config_path = _allowlist_migrator(mod, tmp_path, "placeholder: true\n")
+    real.write_text("model: hermes-4-405b\n", encoding="utf-8")
+    migrator, config_path = _mcp_migrator(mod, tmp_path, "placeholder: true\n")
     config_path.unlink()
     config_path.symlink_to(real)
 
@@ -269,7 +240,7 @@ def test_symlinked_config_stays_a_symlink(tmp_path: Path):
 
     assert config_path.is_symlink()
     assert config_path.resolve() == real.resolve()
-    assert "/home/test/**" in real.read_text(encoding="utf-8")
+    assert "imported" in real.read_text(encoding="utf-8")
     assert "hermes-4-405b" in real.read_text(encoding="utf-8")
 
 
@@ -688,34 +659,6 @@ def _write_invalid_utf8_json(path: Path, prefix: bytes, valid_value: bytes, suff
     path.write_bytes(prefix + b"\xb3" + valid_value + suffix)
 
 
-def test_command_allowlist_handles_invalid_utf8_bytes(tmp_path: Path):
-    """exec-approvals.json with a non-UTF-8 byte should not abort migration;
-    valid patterns elsewhere in the same file must still be imported."""
-    mod = load_module()
-    source = tmp_path / ".openclaw"
-    target = tmp_path / ".hermes"
-    source.mkdir()
-    target.mkdir()
-
-    _write_invalid_utf8_json(
-        source / "exec-approvals.json",
-        prefix=b'{"agents": {"*": {"allowlist": [{"pattern": "/bad',
-        valid_value=b'"}, {"pattern": "/usr/bin/*"}]}}}',
-        suffix=b"",
-    )
-    (target / "config.yaml").write_text("command_allowlist: []\n", encoding="utf-8")
-
-    migrator = mod.Migrator(
-        source_root=source, target_root=target, execute=True,
-        workspace_target=None, overwrite=False, migrate_secrets=False, output_dir=None,
-        selected_options={"command-allowlist"},
-    )
-    report = migrator.migrate()
-
-    items = [i for i in report["items"] if i["kind"] == "command-allowlist"]
-    assert items and items[0]["status"] == "migrated"
-    config_text = (target / "config.yaml").read_text(encoding="utf-8")
-    assert "/usr/bin/*" in config_text
 
 
 def test_messaging_settings_handles_invalid_utf8_in_telegram_allowlist(tmp_path: Path):

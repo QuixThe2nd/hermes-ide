@@ -505,7 +505,7 @@ def test_code_only_prompt_decline_reaches_the_caller_as_a_decline(code_only_rela
     degrades to "failed" — the cue that triggers the text fallback into the
     chat the connector just refused.
     """
-    from gateway.run import _approval_send_outcome
+    from gateway.run import _prompt_send_outcome
 
     adapter, connector = code_only_relay
     result = asyncio.run(
@@ -523,7 +523,7 @@ def test_code_only_prompt_decline_reaches_the_caller_as_a_decline(code_only_rela
         def result(self, timeout=None):
             return result
 
-    assert _approval_send_outcome(_Fut(), timeout=1) == "declined"
+    assert _prompt_send_outcome(_Fut(), timeout=1) == "declined"
     # A prompt that never rendered must not stay pending.
     assert adapter._pending_prompts == {}
 

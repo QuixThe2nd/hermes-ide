@@ -1688,7 +1688,7 @@ class TestPreToolCallBlocking:
 
 
 class TestPreToolCallDirective:
-    """Tests for the extended (block | approve) directive helper."""
+    """Tests for block/modify directive handling and lifecycle observers."""
 
     def test_first_party_observer_receives_pre_tool_call(self, monkeypatch):
         from hermes_cli import observability
@@ -1728,103 +1728,8 @@ class TestPreToolCallDirective:
             )
         ]
 
-    def test_approve_directive_returned(self, monkeypatch):
-        from hermes_cli.plugins import get_pre_tool_call_directive
-        monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
-            lambda hook_name, **kwargs: [
-                {"action": "approve", "message": "needs human ok"}
-            ],
-        )
-        assert get_pre_tool_call_directive("write_file", {}) == (
-            "approve", "needs human ok")
-
-    def test_approve_without_message_is_valid(self, monkeypatch):
-        """approve may omit a message (block may not)."""
-        from hermes_cli.plugins import get_pre_tool_call_directive
-        monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
-            lambda hook_name, **kwargs: [{"action": "approve"}],
-        )
-        assert get_pre_tool_call_directive("write_file", {}) == ("approve", None)
 
 
-class TestResolvePreToolBlock:
-    """Tests for the single dispatch-site chokepoint that resolves a
-    directive (incl. the approve→gate escalation) to a block message."""
-
-
-    def test_approve_gate_receives_tool_observability_context(self, monkeypatch):
-        from hermes_cli.plugins import resolve_pre_tool_block
-        from tools import approval
-        from tools import approval_context
-
-        seen = {}
-        monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
-            lambda hook_name, **kwargs: [
-                {"action": "approve", "message": "why"}
-            ],
-        )
-
-        def _approve(*args, **kwargs):
-            seen["turn_id"] = approval_context._approval_turn_id.get()
-            seen["tool_call_id"] = approval_context._approval_tool_call_id.get()
-            return {"approved": True, "message": None}
-
-        monkeypatch.setattr("tools.approval.request_tool_approval", _approve)
-
-        assert resolve_pre_tool_block(
-            "write_file",
-            {},
-            turn_id="turn-1",
-            tool_call_id="call-1",
-        ) is None
-        assert seen == {"turn_id": "turn-1", "tool_call_id": "call-1"}
-
-    def test_approve_passes_plugin_rule_key_to_gate(self, monkeypatch):
-        from hermes_cli.plugins import resolve_pre_tool_block
-
-        seen = {}
-
-        monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
-            lambda hook_name, **kwargs: [
-                {
-                    "action": "approve",
-                    "message": "why",
-                    "rule_key": "write_file:ssh",
-                }
-            ],
-        )
-
-        def _approve(tool_name, reason, **kwargs):
-            seen["tool_name"] = tool_name
-            seen["reason"] = reason
-            seen["rule_key"] = kwargs.get("rule_key")
-            return {"approved": True, "message": None}
-
-        monkeypatch.setattr("tools.approval.request_tool_approval", _approve)
-
-        assert resolve_pre_tool_block("write_file", {}) is None
-        assert seen == {
-            "tool_name": "write_file",
-            "reason": "why",
-            "rule_key": "write_file:ssh",
-        }
-
-
-    def test_approve_gate_exception_fails_closed(self, monkeypatch):
-        from hermes_cli.plugins import resolve_pre_tool_block
-        monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
-            lambda hook_name, **kwargs: [{"action": "approve", "message": "why"}],
-        )
-        def _boom(*a, **k):
-            raise RuntimeError("gate crashed")
-        monkeypatch.setattr("tools.approval.request_tool_approval", _boom)
-        msg = resolve_pre_tool_block("terminal", {})
-        assert msg is not None and "gate failed" in msg  # fail-closed
 
 
 class TestPreToolCallModify:

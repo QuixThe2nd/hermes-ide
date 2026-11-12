@@ -19,7 +19,6 @@ MODEL_CALL_PROFILE_MODEL = "unknown"
 TASK_SCOPE = "hermes.task_run"
 TOOL_CALL_SCOPE = "hermes.tool_call"
 CLIENT_ACTIVE_MARK = "hermes.client.active"
-TOOL_APPROVAL_MARK = "hermes.tool_approval"
 SKILL_LIFECYCLE_MARK = "hermes.skill.lifecycle"
 SKILL_LOAD_MARK = "hermes.skill.load"
 SUBSCRIBER_NAME = "hermes.nemo_relay.shared_metrics"
@@ -29,7 +28,7 @@ MODEL_ROUTE_METRIC = "hermes.model_route.count"
 TASK_STARTED_METRIC = "hermes.task_run.started"
 TASK_FINISHED_METRIC = "hermes.task_run.finished"
 TOOL_CALL_METRIC = "hermes.tool_call.count"
-TOOL_APPROVAL_METRIC = "hermes.tool_approval.count"
+LEGACY_TOOL_APPROVAL_METRIC = "hermes.tool_approval.count"
 SKILL_LIFECYCLE_METRIC = "hermes.skill.lifecycle.count"
 SKILL_LOAD_METRIC = "hermes.skill.load.count"
 MODEL_IDENTIFIER_MAX_LENGTH = 256
@@ -61,8 +60,9 @@ TOOL_CATEGORIES = frozenset({
     "skill", "terminal", "unknown", "web",
 })
 TOOL_OUTCOMES = frozenset({"blocked", "cancelled", "failed", "success", "timed_out", "unknown"})
-TOOL_APPROVAL_OUTCOMES = frozenset({"approved", "cancelled", "denied", "not_required", "timed_out", "unknown"})
-TOOL_APPROVAL_ATTRIBUTIONS = frozenset({"tool_call", "unattributed"})
+_LEGACY_TOOL_APPROVAL_OUTCOMES = frozenset({
+    "approved", "cancelled", "denied", "not_required", "timed_out", "unknown",
+})
 TOOL_LATENCY_BUCKETS = frozenset({
     "100ms_to_250ms", "10s_to_30s", "1s_to_2s", "250ms_to_500ms", "2s_to_5s", "500ms_to_1s",
     "5s_to_10s", "gte_30s", "lt_100ms", "unknown",
@@ -169,13 +169,8 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "tool_call_count_bucket": COUNT_BUCKETS,
     },
     TOOL_CALL_METRIC: {
-        "approval_outcome": TOOL_APPROVAL_OUTCOMES, "latency_bucket": TOOL_LATENCY_BUCKETS,
-        "outcome": TOOL_OUTCOMES, "retry_count_bucket": TOOL_RETRY_BUCKETS,
-        "tool_category": TOOL_CATEGORIES,
-    },
-    TOOL_APPROVAL_METRIC: {
-        "attribution": TOOL_APPROVAL_ATTRIBUTIONS,
-        "outcome": TOOL_APPROVAL_OUTCOMES - {"not_required"},
+        "latency_bucket": TOOL_LATENCY_BUCKETS, "outcome": TOOL_OUTCOMES,
+        "retry_count_bucket": TOOL_RETRY_BUCKETS, "tool_category": TOOL_CATEGORIES,
     },
     SKILL_LIFECYCLE_METRIC: {"action": SKILL_LIFECYCLE_ACTIONS, "provenance": SKILL_PROVENANCES},
     SKILL_LOAD_METRIC: {
@@ -192,6 +187,23 @@ _METRIC_FIELDS: dict[str, frozenset[str]] = {
     MODEL_ROUTE_METRIC: frozenset(_MODEL_ROUTE_MAX_LENGTHS),
 }
 COUNTER_METRICS = frozenset(_METRIC_FIELDS) - {LEGACY_MODEL_CALL_METRIC}
+
+# Read-only compatibility for rows persisted before command approvals were
+# removed. These shapes are never accepted by record_counter(); the store uses
+# them only to drain the existing v2 counters and outbox without data loss.
+_LEGACY_COUNTER_DIMENSION_VALUES = {
+    TOOL_CALL_METRIC: {
+        "approval_outcome": _LEGACY_TOOL_APPROVAL_OUTCOMES,
+        "latency_bucket": TOOL_LATENCY_BUCKETS,
+        "outcome": TOOL_OUTCOMES,
+        "retry_count_bucket": TOOL_RETRY_BUCKETS,
+        "tool_category": TOOL_CATEGORIES,
+    },
+    LEGACY_TOOL_APPROVAL_METRIC: {
+        "attribution": frozenset({"tool_call", "unattributed"}),
+        "outcome": _LEGACY_TOOL_APPROVAL_OUTCOMES - {"not_required"},
+    },
+}
 _SKILL_MARK_METRICS = {
     SKILL_LIFECYCLE_MARK: SKILL_LIFECYCLE_METRIC, SKILL_LOAD_MARK: SKILL_LOAD_METRIC,
 }
@@ -205,6 +217,19 @@ def counter_dimensions_are_valid(metric_name: str, dimensions: dict[str, Any]) -
             for field, max_length in _MODEL_ROUTE_MAX_LENGTHS.items()
         )
     contract = _COUNTER_DIMENSION_VALUES.get(metric_name)
+    if contract is None or set(dimensions) != set(contract):
+        return False
+    return all(
+        isinstance(dimensions[field], str) and dimensions[field] in allowed_values
+        for field, allowed_values in contract.items()
+    )
+
+
+def stored_counter_dimensions_are_valid(metric_name: str, dimensions: dict[str, Any]) -> bool:
+    """Accept current counters or the exact legacy shapes already on disk."""
+    if counter_dimensions_are_valid(metric_name, dimensions):
+        return True
+    contract = _LEGACY_COUNTER_DIMENSION_VALUES.get(metric_name)
     if contract is None or set(dimensions) != set(contract):
         return False
     return all(
@@ -344,9 +369,6 @@ def tool_call_dimensions(event: Any) -> dict[str, str] | None:
     )
 
 
-def tool_approval_counter(event: Any) -> tuple[str, dict[str, str]] | None:
-    """Return one validated approval counter from a safe Relay mark event."""
-    return _mark_counter(event, {TOOL_APPROVAL_MARK: TOOL_APPROVAL_METRIC})
 
 
 def skill_counter(event: Any) -> tuple[str, dict[str, str]] | None:
@@ -541,28 +563,14 @@ def tool_outcome(kwargs: dict[str, Any]) -> str:
     return _TOOL_STATUS_OUTCOMES.get(_norm(kwargs.get("status")), "unknown")
 
 
-_APPROVAL_CHOICES = {
-    **dict.fromkeys(
-        ("always", "approve", "approved", "once", "session", "smart_approve"), "approved"
-    ),
-    **dict.fromkeys(("deny", "denied", "smart_deny"), "denied"),
-    **dict.fromkeys(("timed_out", "timeout"), "timed_out"),
-    "cancelled": "cancelled",  # prompt withdrawn / undeliverable / unanswered — not a user decision
-}
-
-
-def tool_approval_outcome(kwargs: dict[str, Any]) -> str:
-    """Normalize a terminal approval choice to a bounded outcome."""
-    return _APPROVAL_CHOICES.get(_norm(kwargs.get("choice")), "unknown")
 
 
 def tool_terminal_fields(
-    kwargs: dict[str, Any], *, category: str | None = None, approval_outcome: str = "not_required",
+    kwargs: dict[str, Any], *, category: str | None = None,
     fallback_duration_ms: int | None = None,
 ) -> dict[str, str]:
     """Build one bounded tool-call terminal payload."""
     return {
-        "approval_outcome": _allowlisted(approval_outcome, TOOL_APPROVAL_OUTCOMES),
         "latency_bucket": tool_latency_bucket(
             kwargs.get("duration_ms"), fallback_duration_ms=fallback_duration_ms
         ),

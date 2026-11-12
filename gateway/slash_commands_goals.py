@@ -132,15 +132,14 @@ class GatewayGoalCommandsMixin:
         )
 
     async def _handle_review_command(self, event: MessageEvent) -> str:
-        """Handle /review — spawn an independent reviewer subagent. The approval session-key
-        contextvar is only bound during agent turns, so bind it explicitly here or the completion
-        event carries no gateway route and never re-enters this chat."""
+        """Handle /review — spawn an independent reviewer subagent with this chat's
+        session key bound so its completion event re-enters this chat."""
         args = (event.get_command_args() or "").strip()
         quick_key, agent, error = self._idle_cached_agent_or_error(event, "review")
         if error:
             return error
         snapshot = list(getattr(agent, "_session_messages", None) or [])
-        from tools.approval_context import reset_current_session_key, set_current_session_key
+        from tools.session_context import reset_current_session_key, set_current_session_key
 
         def _dispatch():
             token = set_current_session_key(quick_key)

@@ -23,14 +23,12 @@ class TestStaticDenyList:
         assert _is_write_denied("/etc/shadow") is True
 
 
-class TestSshConfigApprovalGate:
-    """~/.ssh/config is approval-gated, not hard-denied (private keys stay denied)."""
+class TestSshConfigRoutineWrite:
+    """SSH client config is writable; private keys and other SSH files stay denied."""
 
     def test_ssh_config_not_hard_denied(self):
         from agent.file_safety import is_write_denied
 
-        # The client config carries no key material — it must NOT be in the
-        # flat credential deny (it is routed through approval instead).
         assert is_write_denied(os.path.expanduser("~/.ssh/config")) is False
 
     def test_ssh_config_get_write_denied_error_is_none(self):
@@ -38,32 +36,23 @@ class TestSshConfigApprovalGate:
 
         assert get_write_denied_error(os.path.expanduser("~/.ssh/config")) is None
 
-    def test_ssh_config_is_approval_required(self):
-        from agent.file_safety import is_write_approval_required
-
-        assert is_write_approval_required(os.path.expanduser("~/.ssh/config")) is True
-
     def test_private_keys_still_hard_denied(self):
-        from agent.file_safety import is_write_approval_required, is_write_denied
+        from agent.file_safety import is_write_denied
 
         for name in ("id_rsa", "id_ed25519", "authorized_keys"):
-            p = os.path.expanduser(f"~/.ssh/{name}")
-            assert is_write_denied(p) is True, name
-            # A hard-denied credential is not merely approval-gated.
-            assert is_write_approval_required(p) is False, name
+            path = os.path.expanduser(f"~/.ssh/{name}")
+            assert is_write_denied(path) is True, name
 
     def test_other_ssh_dir_files_still_hard_denied(self):
         from agent.file_safety import is_write_denied
 
-        # The ~/.ssh/ directory prefix deny still covers everything else,
-        # e.g. a known_hosts or an arbitrary key file.
         assert is_write_denied(os.path.expanduser("~/.ssh/id_rsa.pub")) is True
         assert is_write_denied(os.path.expanduser("~/.ssh/secret_key")) is True
 
-    def test_regular_file_not_approval_required(self, tmp_path: Path):
-        from agent.file_safety import is_write_approval_required
+    def test_regular_file_stays_writable(self, tmp_path: Path):
+        from agent.file_safety import is_write_denied
 
-        assert is_write_approval_required(str(tmp_path / "notes.txt")) is False
+        assert is_write_denied(str(tmp_path / "notes.txt")) is False
 
 
 

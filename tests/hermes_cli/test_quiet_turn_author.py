@@ -62,7 +62,7 @@ def test_quiet_one_shot_resumes_nested_notify_on_this_session_not_parent(monkeyp
     ``chat -Q`` used to inherit the dispatcher's HERMES_SESSION_KEY and exit after the
     dispatch ack, so C's reply was saved but B never resumed.
     """
-    from tools.approval_context import get_current_session_key
+    from tools.session_context import get_current_session_key
     from tools.process_registry import process_registry
 
     monkeypatch.setenv("HERMES_SESSION_KEY", "session-A")

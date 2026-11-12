@@ -446,7 +446,7 @@ expecting a server-side delivery row to be merged into those snapshots.
 
 Unconsumed event buffers expire after five minutes so a detached client cannot
 grow memory indefinitely. This expires transport state only: a run that is
-still executing remains visible to status polling, approval, stop control, and
+still executing remains visible to status polling, stop control, and
 concurrency accounting until its executor work actually exits. A connected SSE
 subscriber continues draining normally.
 
@@ -457,11 +457,6 @@ The run stays tracked as `stopping` until the executor-backed work exits, then
 settles as `cancelled`; requesting stop never hides a worker that is still
 running.
 
-### POST /v1/runs/\{run_id\}/approval
-
-Resolve a pending approval for a run that is waiting on a human decision (for example, a tool call gated behind an approval policy). The body carries the approval decision; the run resumes once the decision is recorded. This endpoint is advertised in `/v1/capabilities` as the `run_approval` feature so external UIs can detect support before surfacing an approval prompt.
-
-MCP trust-gate consent — a write-capable tool on a server configured `trust: untrusted` — surfaces the same way: the run emits an `approval.request` event and parks in `waiting_for_approval` until this endpoint resolves it (`once` runs the tool, `deny` blocks it).
 
 ## Jobs API (background scheduled work)
 

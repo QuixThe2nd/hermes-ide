@@ -93,7 +93,6 @@ def _make_runner(*, compression_in_flight: bool):
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}

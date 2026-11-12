@@ -36,8 +36,7 @@ _MATRIX_SCOPE_KEYS = (
     "MATRIX_REACTIONS", "MATRIX_ALLOWED_USERS", "MATRIX_ALLOWED_ROOMS",
     "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_IGNORE_USER_PATTERNS",
     "MATRIX_REQUIRE_MENTION", "MATRIX_THREAD_REQUIRE_MENTION",
-    "MATRIX_MAX_MEDIA_BYTES", "MATRIX_APPROVAL_REQUIRE_SENDER",
-    "MATRIX_APPROVAL_TIMEOUT_SECONDS", "MATRIX_ALLOW_PUBLIC_ROOMS",
+    "MATRIX_MAX_MEDIA_BYTES", "MATRIX_ALLOW_PUBLIC_ROOMS",
     "MATRIX_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS",
 )
 
@@ -140,8 +139,7 @@ class MatrixHubClientAdapter(MatrixAdapter):
             })
             self.hub_pid = int(result["pid"])
             self._token_key = str(result.get("token_key") or "")
-            prompt_event_ids = set(self._approval_prompts_by_event)
-            prompt_event_ids.update(self._model_picker_prompts_by_event)
+            prompt_event_ids = set(self._model_picker_prompts_by_event)
             prompt_event_ids.update(self._choice_picker_prompts_by_event)
             for event_id in prompt_event_ids:
                 await self._call("register_matrix_prompt", {"event_id": event_id})
@@ -328,7 +326,6 @@ class MatrixHubClientAdapter(MatrixAdapter):
             prompt_event_id = (relates_to.get("event_id", "") if isinstance(relates_to, dict)
                                else str(getattr(relates_to, "event_id", "") or ""))
             registries = (
-                self._approval_prompts_by_event,
                 self._model_picker_prompts_by_event,
                 self._choice_picker_prompts_by_event,
             )
@@ -610,7 +607,6 @@ class MatrixHubClientAdapter(MatrixAdapter):
 
     async def _send_reaction(self, room_id: str, event_id: str, emoji: str) -> Optional[str]:
         registries = (
-            self._approval_prompts_by_event,
             self._model_picker_prompts_by_event,
             self._choice_picker_prompts_by_event,
         )

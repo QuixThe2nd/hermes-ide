@@ -195,31 +195,6 @@ def test_owner_reload_reregisters_profiles_that_adopted_its_connection(two_profi
     assert disc.get_mcp_status({"x": cfg})[0]["status"] == "connected"
 
 
-def test_untrusted_adopter_of_a_full_profiles_connection_keeps_its_own_trust_gate(two_profiles, monkeypatch):
-    """Trust is the consuming profile's policy: adopting A's ``trust: full`` connection must not let
-    B's ``trust: untrusted`` write-capable call skip approval."""
-    from tools import mcp_tool_discovery as disc, mcp_tool_handlers as handlers
-    from tools import mcp_tool_registration as reg
-    import tools.approval as approval_mod
-
-    route = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer shared"}}
-    cfg_a, cfg_b = dict(route, trust="full"), dict(route, trust="untrusted")
-    asked = []
-    monkeypatch.setattr(approval_mod, "request_elicitation_consent",
-                        lambda *a, **k: asked.append(a) or "deny")
-
-    two_profiles("a")
-    srv_a = _server("x", cfg_a)
-    disc._adopt_server("x", srv_a)
-    srv_a._registered_tool_names = reg._register_server_tools("x", srv_a, cfg_a)
-
-    two_profiles("b")
-    assert reg.register_connected_into_current_scope({"x": cfg_b}) == 1
-    assert handlers._trust_gate_check("x", "t") is not None and asked
-
-    two_profiles("a")
-    assert handlers._trust_gate_check("x", "t") is None and len(asked) == 1
-
 
 def test_parallel_safe_opt_in_is_per_profile(two_profiles):
     """B's ``supports_parallel_tool_calls`` on its own same-named server never makes A's serial

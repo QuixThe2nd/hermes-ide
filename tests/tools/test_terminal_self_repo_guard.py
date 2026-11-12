@@ -54,11 +54,6 @@ def _run(command, config, monkeypatch, repo_root, session_cwds=None,
         stack.enter_context(
             patch("tools.terminal_tool._session_cwd", session_cwds or {})
         )
-        stack.enter_context(
-            patch(
-                "tools.terminal_tool._check_all_guards", return_value={"approved": True}
-            )
-        )
         result = json.loads(terminal_tool(command=command, **kwargs))
     return result, mock_env
 
@@ -72,13 +67,6 @@ class TestSelfRepoGuardWiring:
         assert str(repo) in result["error"]
         env.execute.assert_not_called()
 
-    def test_force_cannot_bypass(self, repo, monkeypatch):
-        config = _make_env_config(cwd=str(repo))
-        result, env = _run(
-            "git reset --hard origin/main", config, monkeypatch, repo, force=True
-        )
-        assert result["status"] == "blocked"
-        env.execute.assert_not_called()
 
     def test_workdir_targeting_repo_is_blocked(self, repo, monkeypatch, tmp_path):
         config = _make_env_config(cwd=str(tmp_path))

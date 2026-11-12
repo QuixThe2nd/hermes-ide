@@ -1127,15 +1127,13 @@ class CLICommandsMixin:
             self._display_resumed_history()
         else:
             _cp(f"  ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.")
-        # Same contract as startup --resume: retarget the tool cwd, restore the persisted YOLO
-        # bypass (approval session key changed) and the model/provider (else config default).
-        # Retarget the process + tool cwd to where the session was started, so a mid-chat /resume (and
+        # Same contract as startup --resume: retarget the tool cwd and restore
+        # the model/provider (else config default).
         # /sessions <id>, which delegates here) lands in the same directory as a startup `hermes
         # -c`/`--resume`. The startup resume paths already call this; without it, the terminal/code-exec
         # tools and relative-path resolution keep operating in the wrong repo. Idempotent and a no-op when
         # the session recorded no cwd. See #38562.
         self._restore_session_cwd(session_meta)
-        self._restore_session_yolo(session_meta)
         self._restore_session_model(session_meta)
 
     def _resolve_resume_target(self, target: str):
@@ -1223,7 +1221,6 @@ class CLICommandsMixin:
         with suppress(Exception):
             self._session_db.set_session_title(new_session_id, branch_title)
         # Switch to the new session
-        self._transfer_session_yolo(self.session_id, new_session_id)
         self.session_id, self.session_start, self._pending_title = new_session_id, now, None
         self._resumed = True  # Prevents auto-title generation
         _sync_process_session_id(new_session_id)
@@ -1633,7 +1630,7 @@ class CLICommandsMixin:
     def _handle_background_command(self, cmd: str):
         """Handle /bg <prompt> — run a prompt in a separate background session (its own AIAgent
         on a thread); the result prints here without touching the active history."""
-        from cli import set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
+        from cli import set_write_review_callback, set_secret_capture_callback, set_sudo_password_callback
         from run_agent import AIAgent
         prompt = _command_arg(cmd)
         if not prompt:
@@ -1654,7 +1651,7 @@ class CLICommandsMixin:
         def produce():
             from agent.vault_backends.unlock import set_code_prompt_callback, set_save_login_prompt_callback, set_unlock_prompt_callback
             set_sudo_password_callback(self._sudo_password_callback)
-            set_approval_callback(self._approval_callback)
+            set_write_review_callback(self._write_review_callback)
             set_unlock_prompt_callback(self._vault_unlock_callback)
             set_save_login_prompt_callback(self._vault_save_login_callback)
             set_code_prompt_callback(self._vault_code_callback)
@@ -1693,7 +1690,7 @@ class CLICommandsMixin:
             finally:
                 with suppress(Exception):
                     set_sudo_password_callback(None)
-                    set_approval_callback(None)
+                    set_write_review_callback(None)
                     set_secret_capture_callback(None)
                     set_unlock_prompt_callback(None)
                     set_save_login_prompt_callback(None)

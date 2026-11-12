@@ -6,8 +6,7 @@ OpenAI function-calling schema; vision models get SOM captures (numbered overlay
 tree) and click by index, non-vision models use the AX tree alone. Model-facing guidance
 lives in the schema description and each action result's `verdict`.
 
-Modules: `tool.py` (handler, approval gate, response shaping), `backend.py` (abstract
-`ComputerUseBackend` + result dataclasses), `cua_backend.py` (default MCP-over-stdio
+Modules: `tool.py` (handler, response shaping), `backend.py` (abstract
 backend + `cua_backend_parse`/`_session`/`_daemon` siblings), `schema.py` (byte-frozen).
 """
 
@@ -24,7 +23,6 @@ _PLUGIN_COMPAT_LAZY = {
     'get_computer_use_schema': ('tools.computer_use.tool', 'get_computer_use_schema'),
     'handle_computer_use': ('tools.computer_use.tool', 'handle_computer_use'),
     'release_computer_use_session': ('tools.computer_use.tool', 'release_computer_use_session'),
-    'set_approval_callback': ('tools.computer_use.tool', 'set_approval_callback'),
 }
 
 

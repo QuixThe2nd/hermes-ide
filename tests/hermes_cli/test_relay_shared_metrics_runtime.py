@@ -287,14 +287,6 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         args={"command": "sensitive-command"},
     )
     lifecycle.invoke_hook(
-        "post_approval_response",
-        turn_id=base["turn_id"],
-        tool_call_id="sensitive-tool-call",
-        choice="once",
-        command="sensitive-command",
-        description="sensitive-approval-description",
-    )
-    lifecycle.invoke_hook(
         "post_tool_call",
         **base,
         tool_call_id="sensitive-tool-call",
@@ -367,7 +359,6 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     assert tool_starts[0][1] == "hermes.tool_call"
     assert tool_starts[0][2] == {}
     assert tool_ends[0][2] == {
-        "approval_outcome": "approved",
         "latency_bucket": "250ms_to_500ms",
         "outcome": "success",
         "retry_count_bucket": "0",
@@ -393,7 +384,6 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     assert "sensitive-command" not in serialized_events
     assert "sensitive-tool-result" not in serialized_events
     assert "sensitive-tool-call" not in serialized_events
-    assert "sensitive-approval-description" not in serialized_events
     assert "gpt-sensitive-model-id" not in serialized_events
     assert plugins.get_plugin_manager().list_plugins() == []
 
@@ -407,7 +397,6 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         "hermes.model_route.count",
         "hermes.task_run.finished",
         "hermes.task_run.started",
-        "hermes.tool_approval.count",
         "hermes.tool_call.count",
     }
     assert metrics["hermes.client.active"] == {
@@ -425,20 +414,10 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         "name": "hermes.tool_call.count",
         "type": "counter",
         "dimensions": {
-            "approval_outcome": "approved",
             "latency_bucket": "250ms_to_500ms",
             "outcome": "success",
             "retry_count_bucket": "0",
             "tool_category": "terminal",
-        },
-        "value": 1,
-    }
-    assert metrics["hermes.tool_approval.count"] == {
-        "name": "hermes.tool_approval.count",
-        "type": "counter",
-        "dimensions": {
-            "attribution": "tool_call",
-            "outcome": "approved",
         },
         "value": 1,
     }
@@ -515,14 +494,6 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
         tool_call_id="sensitive-tool-call",
         tool_name="terminal",
         args={"command": prompt_canary},
-    )
-    lifecycle.invoke_hook(
-        "post_approval_response",
-        turn_id=success["turn_id"],
-        tool_call_id="sensitive-tool-call",
-        choice="session",
-        command=prompt_canary,
-        description="sensitive-approval-description",
     )
     lifecycle.invoke_hook(
         "post_tool_call",
@@ -655,34 +626,23 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
         for counter in by_metric["hermes.tool_call.count"]
     }
     assert tool_by_outcome["success"] == {
-        "approval_outcome": "approved",
         "latency_bucket": "100ms_to_250ms",
         "outcome": "success",
         "retry_count_bucket": "0",
         "tool_category": "terminal",
     }
     assert tool_by_outcome["failed"] == {
-        "approval_outcome": "not_required",
         "latency_bucket": "500ms_to_1s",
         "outcome": "failed",
         "retry_count_bucket": "unknown",
         "tool_category": "file",
     }
     assert tool_by_outcome["cancelled"] == {
-        "approval_outcome": "not_required",
         "latency_bucket": "gte_30s",
         "outcome": "cancelled",
         "retry_count_bucket": "unknown",
         "tool_category": "browser",
     }
-    assert len(by_metric["hermes.tool_approval.count"]) == 1
-    approval_counter = by_metric["hermes.tool_approval.count"][0]
-    assert approval_counter["dimensions"] == {
-        "attribution": "tool_call",
-        "outcome": "approved",
-    }
-    assert approval_counter["value"] == 1
-    assert approval_counter["packaged_value"] == 1
     terminal_by_outcome = {
         counter["dimensions"]["outcome"]: counter
         for counter in by_metric["hermes.task_run.finished"]
@@ -740,7 +700,7 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
 
 
 
-def test_real_binding_aggregates_tool_and_approval_timeouts(
+def test_real_binding_aggregates_tool_timeouts(
     real_binding_runtime,
     tmp_path,
 ):
@@ -762,13 +722,6 @@ def test_real_binding_aggregates_tool_and_approval_timeouts(
         tool_call_id="timeout-sensitive-tool-call",
         tool_name="terminal",
         args={"command": "timeout-sensitive-command"},
-    )
-    lifecycle.invoke_hook(
-        "post_approval_response",
-        **base,
-        tool_call_id="timeout-sensitive-tool-call",
-        choice="timeout",
-        command="timeout-sensitive-command",
     )
     lifecycle.invoke_hook(
         "post_tool_call",
@@ -800,20 +753,10 @@ def test_real_binding_aggregates_tool_and_approval_timeouts(
         if counter["metric_name"] == "hermes.tool_call.count"
     ]
     assert tool_metric["dimensions"] == {
-        "approval_outcome": "timed_out",
         "latency_bucket": "gte_30s",
         "outcome": "timed_out",
         "retry_count_bucket": "unknown",
         "tool_category": "terminal",
-    }
-    [approval_metric] = [
-        counter
-        for counter in snapshot
-        if counter["metric_name"] == "hermes.tool_approval.count"
-    ]
-    assert approval_metric["dimensions"] == {
-        "attribution": "tool_call",
-        "outcome": "timed_out",
     }
     assert "timeout-sensitive" not in json.dumps(snapshot)
 
@@ -2091,7 +2034,6 @@ def test_pending_tool_is_closed_and_counted_when_task_is_interrupted(direct_runt
         event for event in direct_runtime.events if event[0] == "tool.call_end"
     ]
     assert tool_end[2] == {
-        "approval_outcome": "not_required",
         "latency_bucket": tool_end[2]["latency_bucket"],
         "outcome": "cancelled",
         "retry_count_bucket": "unknown",
@@ -2182,78 +2124,6 @@ def test_late_model_start_does_not_create_an_orphan_after_task_completion(
     ] == []
 
 
-def test_approval_without_tool_context_is_counted_as_unattributed(direct_runtime):
-    base = {
-        "session_id": "s1",
-        "task_id": "t1",
-        "turn_id": "turn-1",
-        "platform": "cli",
-    }
-
-    lifecycle.invoke_hook("on_session_start", **base)
-    lifecycle.invoke_hook("pre_llm_call", **base)
-    lifecycle.invoke_hook(
-        "post_approval_response",
-        turn_id="turn-1",
-        choice="deny",
-        command="must-not-pass",
-    )
-    lifecycle.invoke_hook(
-        "on_session_end",
-        **base,
-        completed=False,
-        failed=True,
-        interrupted=False,
-        turn_exit_reason="approval_denied",
-    )
-    lifecycle.finalize_session(session_id="s1")
-
-    [approval] = [
-        event
-        for event in direct_runtime.events
-        if event[0] == "scope.event" and event[1] == "hermes.tool_approval"
-    ]
-    assert approval[2]["data"] == {
-        "attribution": "unattributed",
-        "outcome": "denied",
-    }
-
-
-def test_approval_with_unmatched_tool_id_is_counted_as_unattributed(direct_runtime):
-    base = {
-        "session_id": "s1",
-        "task_id": "t1",
-        "turn_id": "turn-1",
-        "platform": "cli",
-    }
-
-    lifecycle.invoke_hook("pre_llm_call", **base)
-    lifecycle.invoke_hook(
-        "post_approval_response",
-        **base,
-        tool_call_id="spoofed-tool-call",
-        choice="deny",
-        command="must-not-pass",
-    )
-    lifecycle.invoke_hook(
-        "on_session_end",
-        **base,
-        completed=False,
-        failed=True,
-        interrupted=False,
-        turn_exit_reason="approval_denied",
-    )
-    lifecycle.finalize_session(session_id="s1")
-
-    [approval] = [
-        event
-        for event in direct_runtime.events
-        if event[0] == "scope.event" and event[1] == "hermes.tool_approval"
-    ]
-    assert approval[2]["data"] == {
-        "attribution": "unattributed",
-        "outcome": "denied",
-    }
 
 
 def test_tool_category_comes_from_runtime_registry_metadata(

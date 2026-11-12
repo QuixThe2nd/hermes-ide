@@ -218,7 +218,7 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
     """
 
     def _run_as(self, session_key, code, task_id, **kwargs):
-        from tools.approval_context import reset_current_session_key, set_current_session_key
+        from tools.session_context import reset_current_session_key, set_current_session_key
 
         token = set_current_session_key(session_key)
         try:
@@ -337,14 +337,14 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
         self.assertIn("2", still["output"])
 
     def test_session_clear_disposes_the_owners_kernels(self):
-        from tools.approval import clear_session
+        from tools.code_kernel import clear_tool_session_resources
 
         with _kernel_config():
             self._run_as("conv-a", "x = 41", task_id="turn-1")
             self.assertEqual(len(_KERNELS), 1)
             kernel = next(iter(_KERNELS.values()))
             self.assertTrue(kernel.alive())
-            clear_session("conv-a")
+            clear_tool_session_resources("conv-a")
             self.assertEqual(len(_KERNELS), 0)
             kernel.proc.wait(timeout=10)
             self.assertFalse(kernel.alive())
@@ -436,12 +436,12 @@ class TestPerCellRpcAuthority(unittest.TestCase):
         def _handle(tool_name, tool_args, task_id=None):
             from tools.thread_context import _callback_api
 
-            (get_approval, _set_a), *_rest = _callback_api()
+            from tools.terminal_tool import _get_sudo_password_callback
             seen.append(
                 {
                     "tool": tool_name,
                     "task_id": task_id,
-                    "approval_cb": get_approval(),
+                    "sudo_cb": _get_sudo_password_callback(),
                 }
             )
             return json.dumps({"ok": True})
@@ -449,7 +449,7 @@ class TestPerCellRpcAuthority(unittest.TestCase):
         return _handle
 
     def test_a_later_cells_rpc_runs_under_that_cells_authority(self):
-        from tools.terminal_tool import set_approval_callback
+        from tools.terminal_tool import set_sudo_password_callback
 
         seen = []
         cell = "import hermes_tools\nhermes_tools.web_search(query='q')\n"
@@ -462,27 +462,26 @@ class TestPerCellRpcAuthority(unittest.TestCase):
             def cb_two():
                 return "two"
 
-            set_approval_callback(cb_one)
+            set_sudo_password_callback(cb_one)
             try:
                 first = _run(cell)
-                set_approval_callback(cb_two)
+                set_sudo_password_callback(cb_two)
                 second = _run(cell)
             finally:
-                set_approval_callback(None)
+                set_sudo_password_callback(None)
         self.assertEqual(first["status"], "success", first)
         self.assertEqual(second["status"], "success", second)
         self.assertEqual(len(seen), 2)
-        self.assertIs(seen[0]["approval_cb"], cb_one)
-        self.assertIs(seen[1]["approval_cb"], cb_two)
+        self.assertIs(seen[0]["sudo_cb"], cb_one)
+        self.assertIs(seen[1]["sudo_cb"], cb_two)
         self.assertEqual(seen[0]["task_id"], "kernel-test")
 
     def test_cross_cell_alias_dispatches_under_the_current_cell(self):
         # Adversarial cross-cell dataflow: a callable captured in cell 1 and
         # invoked by an opaque global name in cell 2 still crosses the RPC
-        # boundary — under cell 2's authority, allow-list, and budget — the
-        # operative enforcement a per-script static scan cannot provide once
-        # state persists (composition contract with the execute-code guard).
-        from tools.terminal_tool import set_approval_callback
+        # boundary — under cell 2's authority and budget. The operative
+        # enforcement is RPC dispatch, not an approval policy.
+        from tools.terminal_tool import set_sudo_password_callback
 
         seen = []
         with _kernel_config(), patch(
@@ -494,17 +493,17 @@ class TestPerCellRpcAuthority(unittest.TestCase):
             def cb_two():
                 return "two"
 
-            set_approval_callback(cb_one)
+            set_sudo_password_callback(cb_one)
             try:
                 first = _run("import hermes_tools\nalias = hermes_tools.web_search\n")
-                set_approval_callback(cb_two)
+                set_sudo_password_callback(cb_two)
                 second = _run("alias(query='q')\n")
             finally:
-                set_approval_callback(None)
+                set_sudo_password_callback(None)
         self.assertEqual(first["status"], "success", first)
         self.assertEqual(second["status"], "success", second)
         self.assertEqual(len(seen), 1)
-        self.assertIs(seen[0]["approval_cb"], cb_two)
+        self.assertIs(seen[0]["sudo_cb"], cb_two)
 
     def test_a_settled_cells_authority_refuses_dispatch(self):
         from tools.code_kernel import CellAuthority

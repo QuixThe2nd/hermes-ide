@@ -11,13 +11,14 @@ interactive CLI only) or **stages** the write under
 
 from __future__ import annotations
 
+from contextlib import suppress
 import difflib
 import json
 import logging
 import re
+import threading
 import time
 import uuid
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -26,6 +27,16 @@ from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
+_callback_tls = threading.local()
+
+
+def set_inline_prompt_callback(callback) -> None:
+    """Install the CLI's memory-write review prompt for this thread."""
+    _callback_tls.inline_prompt = callback
+
+
+def get_inline_prompt_callback():
+    return getattr(_callback_tls, "inline_prompt", None)
 
 # Subsystem identifiers
 MEMORY = "memory"
@@ -186,30 +197,32 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "", inline_detail: st
 
 
 def _prompt_inline_memory_approval(summary: str, detail: str) -> Optional[bool]:
-    """Prompt inline for a memory write: True approved, False denied, None → stage. Uses the per-thread
-    CLI approval callback (``tools.terminal_tool.set_approval_callback``) directly, not
-    ``prompt_dangerous_approval``: that wrapper falls back to ``input()`` (deadlock-prone under
-    prompt_toolkit; silent deny in gateway sessions) and turns callback errors into a deny, whereas
-    here a missing channel or failed prompt must stage instead.
-
-    See #15216.
-    """
-    try:
-        from tools.terminal_tool import _get_approval_callback
-    except Exception:
-        return None
-    callback = _get_approval_callback()
+    """Return the inline memory-review choice; ``None`` stages for later review."""
+    callback = get_inline_prompt_callback()
     if callback is None:
         return None
     header = summary.strip() or "Save to memory?"
     try:
-        from tools.approval import callback_accepts
-        extra = {"title": "Save to memory?"} if callback_accepts(callback, "title") else {}
-        choice = callback(detail.strip() or header, f"Save to memory: {header}", allow_permanent=False, **extra)
-    except Exception as e:
-        logger.error("Inline memory approval prompt failed: %s", e)
+        import inspect
+
+        params = inspect.signature(callback).parameters
+        accepts_title = "title" in params or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in params.values()
+        )
+        extra = {"title": "Save to memory?"} if accepts_title else {}
+        choice = callback(
+            detail.strip() or header,
+            f"Save to memory: {header}",
+            allow_permanent=False,
+            **extra,
+        )
+    except (TypeError, ValueError) as exc:
+        logger.error("Inline memory review prompt has an invalid callback: %s", exc)
         return None
-    # unknown outcome → stage rather than drop
+    except Exception as exc:
+        logger.error("Inline memory review prompt failed: %s", exc)
+        return None
     return {"once": True, "session": True, "deny": False}.get(choice)
 
 

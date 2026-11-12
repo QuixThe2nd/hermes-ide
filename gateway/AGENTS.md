@@ -26,15 +26,15 @@ accumulated bubbles, `separate` per-row messages and non-editable sends (`format
 `format_progress_row`); a row carrying its own 3+ fence ships unboxed. Pass rows RAW to these
 helpers — never pre-boxed — so nothing double-boxes.
 
-## The gateway has TWO message guards — both must bypass approval/control commands
+## The gateway has TWO message guards — both must bypass interactive/control replies
 
 While an agent is running, an inbound message passes two sequential guards: (1) the **base
 adapter** (`platforms/base.py`) queues it in `_pending_messages` when `session_key in
 self._active_sessions`; (2) the **runner** (`run.py`/`run_busy.py`) intercepts `/stop`, `/new`,
-`/queue`, `/status`, `/approve`, `/deny` before they reach `running_agent.interrupt()`. Any new
-command that must reach the runner while the agent is blocked (approval prompts) MUST bypass BOTH
-guards and be dispatched inline — never via `_process_message_background()`, which races session
-lifecycle.
+`/queue`, `/status` and replies to pending clarify/slash/model/MCP prompts before they reach
+`running_agent.interrupt()`. Any new command or prompt reply that must reach the runner while the
+agent is blocked MUST bypass BOTH guards and be dispatched inline — never via
+`_process_message_background()`, which races session lifecycle.
 
 ## Streaming delivery contract (stream-is-the-message adapters)
 

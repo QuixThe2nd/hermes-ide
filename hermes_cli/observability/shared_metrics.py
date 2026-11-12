@@ -22,6 +22,7 @@ from .shared_metrics_contract import (
     MODEL_ROUTE_METRIC,
     client_resource_is_valid,
     counter_dimensions_are_valid,
+    stored_counter_dimensions_are_valid,
 )
 
 
@@ -466,7 +467,7 @@ class SharedMetricsStore:
     def _package_metric(row: sqlite3.Row) -> dict[str, Any]:
         metric_name = str(row["metric_name"])
         dimensions = json.loads(row["dimensions_json"])
-        if not isinstance(dimensions, dict) or not counter_dimensions_are_valid(
+        if not isinstance(dimensions, dict) or not stored_counter_dimensions_are_valid(
             metric_name, dimensions
         ):
             raise ValueError(f"Unsupported dimensions for shared metric: {metric_name}")

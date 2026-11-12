@@ -21,7 +21,6 @@ A registered backend automatically participates in every core surface:
 | Dashboard terminal-backend picker (probe status) | `probe()` |
 | `hermes status` / `hermes doctor` | `doctor_checks()` |
 | System-prompt environment hints | `is_remote`, `env_description` |
-| Dangerous-command approval skipping | `skip_container_guards` |
 | Container path/cwd handling | `is_container` |
 | Synced cache-file path translation | `cache_path_base` |
 | Secret stripping from spawned subprocesses | `strip_env_keys` |
@@ -111,8 +110,7 @@ hermes config set terminal.backend acmebox
 - **`is_available()` / `probe()` must be cheap.** No network calls — they run
   during requirement checks and UI paints.
 - **Fail-soft everywhere.** A provider attribute that raises is treated as
-  its default by the core (e.g. a raising `skip_container_guards` keeps the
-  approval layer ON). Don't rely on exceptions for control flow.
+  its default by the core. Don't rely on exceptions for control flow.
 - **Secrets belong in `strip_env_keys`.** Your vendor token must never be
   readable by a model-authored shell command; listing it strips it from every
   spawned subprocess unconditionally, like the built-in `MODAL_*` /

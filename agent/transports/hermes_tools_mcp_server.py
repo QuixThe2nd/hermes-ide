@@ -80,7 +80,7 @@ def _signature_from_schema(schema: dict | None) -> tuple[inspect.Signature, dict
 #
 # What we deliberately DO NOT expose:
 #   - terminal / shell / read_file / write_file / patch / search_files /
-#     process — codex's built-ins cover these and approval routes through
+#     process — codex's built-ins cover these and server requests route through
 #     codex's own UI.
 #   - delegate_agent / memory / session_search / todo — these are
 #     `_AGENT_LOOP_TOOLS` in Hermes (model_tools.py:493). They require

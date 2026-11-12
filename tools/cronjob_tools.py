@@ -417,11 +417,11 @@ def _background_session_key(session_id: Optional[str]) -> str:
     """Routing key for a detached completion, captured on THIS thread (contextvars don't
     cross the pool). Empty string = no durable consumer."""
     try:
-        from tools.approval_context import get_current_session_key
+        from tools.session_context import get_current_session_key
         session_key = get_current_session_key(default="")
     except Exception:
         session_key = ""
-    # CLI path: the approval contextvar is only bound during gateway/TUI turns; the CLI
+    # CLI path: the tool session context is only bound during gateway/TUI turns; the CLI
     # drain filters completions by the durable session id, and an empty key would fail
     # closed (completion never claimable).
     return session_key or (str(session_id) if session_id else "")
@@ -505,7 +505,7 @@ def _try_dispatch_background_run(
     # Routing capture BEFORE the claim: no routable session = no durable consumer for a detached
     # completion, so don't claim-and-dispatch (direct callers like `hermes cron run` exit right after).
     session_key = _background_session_key(session_id)
-    # CLI path: the approval contextvar is only bound during gateway/TUI turns. The CLI drain filters
+    # CLI path: the tool session context is only bound during gateway/TUI turns. The CLI drain filters
     # completions by the durable agent session id (#64240), so stamp it as the key — an empty key would fail
     # closed and the completion could never be claimed.
     if not session_key:
@@ -1208,11 +1208,7 @@ def check_cronjob_requirements() -> bool:
     """Available in interactive CLI mode and gateway/messaging platforms (the scheduler is
     internal; no crontab needed). Flags must be explicitly truthy via ``env_var_enabled``."""
     from utils import env_var_enabled
-    return (
-        env_var_enabled("HERMES_INTERACTIVE")
-        or env_var_enabled("HERMES_GATEWAY_SESSION")
-        or env_var_enabled("HERMES_EXEC_ASK")
-    )
+    return env_var_enabled("HERMES_INTERACTIVE") or env_var_enabled("HERMES_GATEWAY_SESSION")
 
 
 # Agent-facing arguments forwarded verbatim to cronjob(). model / provider / base_url are

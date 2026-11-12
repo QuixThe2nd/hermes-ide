@@ -69,13 +69,6 @@ class CLILoopsMixin:
     def _cmd_clear(self, cmd_original: str):
         from cli import ChatConsole, _build_compact_banner, _clear_output_history, _cprint, get_tool_definitions
         from hermes_cli.banner import build_welcome_banner
-        if self._confirm_destructive_slash(
-            "clear",
-            "This clears the screen and starts a new session.\n"
-            "The current conversation history will be discarded.",
-            cmd_original=cmd_original,
-        ) is None:
-            return True  # confirmation cancelled — command handled, keep REPL alive
         self.new_session(silent=True)
         _clear_output_history()
         if not self._app:
@@ -165,17 +158,8 @@ class CLILoopsMixin:
                 _cprint(f"  Session title queued: {new_title} (will be saved on first message)")
 
     def _cmd_new(self, cmd_original: str):
-        # Strip inline-skip tokens (now/--yes/-y) before deriving the title so
-        # "/new now My Session" yields title="My Session". See _split_destructive_skip.
-        _new_args, _ = self._split_destructive_skip(cmd_original)
-        title = _new_args.strip() or None
-        if self._confirm_destructive_slash(
-            "new",
-            "This starts a fresh session.\n"
-            "The current conversation history will be discarded.",
-            cmd_original=cmd_original,
-        ) is None:
-            return True  # confirmation cancelled — command handled, keep REPL alive
+        from cli import _slash_args
+        title = _slash_args(cmd_original).strip() or None
         self.new_session(title=title)
 
     def _cmd_retry(self, cmd_original: str):
@@ -197,12 +181,6 @@ class CLILoopsMixin:
         if not self.conversation_history:
             print("(._.) No messages to undo.")
             return True
-        _undo_desc = (
-            "This removes the last user/assistant exchange from history."
-            if _undo_n == 1
-            else f"This removes the last {_undo_n} user turns from history.")
-        if self._confirm_destructive_slash("undo", _undo_desc, cmd_original=cmd_original) is None:
-            return True  # confirmation cancelled — command handled, keep REPL alive
         self.undo_last(_undo_n)
 
     def _cmd_skills(self, cmd_original: str):

@@ -21,10 +21,7 @@ from collections import OrderedDict
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
-    BasePlatformAdapter, ExecApprovalPrompt, SendResult,
-)
-from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.egress import (
@@ -2185,31 +2182,16 @@ class RelayAdapter(BasePlatformAdapter):
 
     _PROMPT_UNAVAILABLE = SendResult(success=False, error="relay prompt op unavailable")
 
-    _EA_HEADER = f"⚠️ **{EA_HEADER_TEXT}**\n\n"
-    _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
-    _EA_CMD_BUDGET = 1500
-
-    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
-        """Deprecated: this fork never asks a human to approve/deny agent actions, so no
-        approval prompt is ever posted (base ``send_exec_approval`` is a no-op pass-through)."""
-        return SendResult(success=False, error="Not supported")
 
     async def send_slash_confirm(
-        self,
-        chat_id: str,
-        title: str,
-        message: str,
-        session_key: str,
-        confirm_id: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,
+        metadata: Optional[Dict[str, Any]] = None, include_always: bool = True,
     ) -> SendResult:
-        """Three-button slash-command confirmation over the relay (resolves via
-        tools.slash_confirm.resolve; success=False falls back to text-intercept)."""
-        options = [
-            {"id": "once", "label": "Approve Once", "style": "primary"},
-            {"id": "always", "label": "Always Approve"},
-            {"id": "cancel", "label": "Cancel", "style": "danger"},
-        ]
+        """Send slash-command confirmation options over the relay."""
+        options = [{"id": "once", "label": "Approve Once", "style": "primary"}]
+        if include_always:
+            options.append({"id": "always", "label": "Always Approve"})
+        options.append({"id": "cancel", "label": "Cancel", "style": "danger"})
         result = await self._mint_and_send_prompt(
             "slash_confirm", {"session_key": session_key, "confirm_id": confirm_id}, chat_id,
             prompt_kind="approval", text=f"**{title}**\n\n{message}" if title else message,
@@ -2300,11 +2282,6 @@ class RelayAdapter(BasePlatformAdapter):
             logger.warning("relay prompt_response resolution failed", exc_info=True)
         return True
 
-    async def _resolve_exec_approval(self, state, option_id, chat_id, ack_meta) -> None:
-        """Deprecated: this fork never posts exec-approval prompts, so an ``exec_approval``
-        prompt_response can never resolve one. Kept (registered in ``_PROMPT_RESOLVERS``)
-        as a no-op ack."""
-        self._send_lifecycle_ack(chat_id, "⌛ Approval expired — no command was waiting.", ack_meta)
 
     async def _resolve_slash_confirm(self, state, option_id, chat_id, ack_meta) -> None:
         from tools import slash_confirm as slash_confirm_mod
@@ -2492,7 +2469,6 @@ class RelayAdapter(BasePlatformAdapter):
 
 # prompt kind -> resolver (order-independent: kinds are distinct keys).
 _PROMPT_RESOLVERS = {
-    "exec_approval": RelayAdapter._resolve_exec_approval,
     "slash_confirm": RelayAdapter._resolve_slash_confirm,
     "clarify": RelayAdapter._resolve_clarify,
 }

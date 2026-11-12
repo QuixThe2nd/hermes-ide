@@ -49,29 +49,11 @@ _CARD_DESTINATION_REFUSALS = {
 }
 
 
-def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
-    """True when the adapter class renders native approval buttons. BasePlatformAdapter subclasses
-    say so through ``supports_exec_approval_buttons``; anything else (test doubles, relay-style
-    duck types) counts when it defines ``send_exec_approval`` itself."""
-    probe = getattr(adapter_cls, "supports_exec_approval_buttons", None)
-    if callable(probe) and issubclass(adapter_cls, BasePlatformAdapter):
-        return bool(probe())
-    return getattr(adapter_cls, "send_exec_approval", None) is not None
-
 
 # Rendered on a native clarify card whose wait ended without a click (mirrors the notice the
 # Slack click handler shows on a dead entry).
 _CLARIFY_EXPIRED_NOTICE = "⏳ This prompt expired — please send a new request."
 
-
-class _ExecApprovalDeclined(RuntimeError):
-    """The connector refused the approval card's destination.
-
-    Raised (not returned) so it propagates out of `_approval_notify_sync` to
-    `_await_gateway_decision`, whose notify-failure path drops the central
-    approval queue entry and unblocks the waiting tool. A plain return
-    suppressed the text fallback but left that entry pending.
-    """
 
 
 class _TurnRunnerCore:
@@ -1847,10 +1829,6 @@ class TurnRunner(_TurnRunnerCore):
                 logger.debug("resume_typing_for_chat after clarify answer failed", exc_info=True)
         return response, answered
 
-    def _approval_notify_sync(self, approval_data: dict) -> None:
-        """Deprecated no-op: the approval engine is a pure pass-through, so nothing ever
-        registers this callback and no approval prompt (button or text) is posted."""
-        return
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 
@@ -1954,13 +1932,12 @@ class TurnRunner(_TurnRunnerCore):
             logger.warning("Native image attachment failed, falling back to text: %s", exc)
         return ctx.message
 
-    def _run_conversation_with_approval(self, agent, agent_history, observed_group_context,
-                                        persist_user_message_override, persist_user_timestamp_override,
-                                        *, continue_interrupted_turn=False, forced_recovery_blocked=None):
-        """Run the turn with the per-session approval context bound (the engine is a
-        pass-through, so no approval notify callback is registered)."""
+    def _run_conversation_with_session(self, agent, agent_history, observed_group_context,
+                                       persist_user_message_override, persist_user_timestamp_override,
+                                       *, continue_interrupted_turn=False, forced_recovery_blocked=None):
+        """Run the turn with its per-session tool context bound."""
         from gateway.run import _wrap_current_message_with_observed_context
-        from tools.approval_context import reset_current_session_key, set_current_session_key
+        from tools.session_context import reset_current_session_key, set_current_session_key
         ctx = self._ctx
         session_key = ctx.session_key or ""
         # Re-read the current session's flag before every turn so cached agents and restarts
@@ -2174,8 +2151,8 @@ class TurnRunner(_TurnRunnerCore):
         """Executor-thread body of the turn; returns the gateway result dict.
 
         The turn message lives on the shared TurnContext (``ctx.message``) so ``_run_agent_inner`` sees
-        every rebind. session_key propagates via contextvars (_set_session_env / set_current_session_key)
-        — never os.environ["HERMES_SESSION_KEY"], which would misroute approvals across sessions.
+        every rebind. session_key propagates via contextvars (_set_session_env / set_current_session_key),
+        never process-global environment state.
         """
         from gateway.run import (
             _current_max_iterations, _is_forced_recovery_control_outcome,
@@ -2185,16 +2162,12 @@ class TurnRunner(_TurnRunnerCore):
         ctx = self._ctx
         runner = self._runner
         # Platform.LOCAL ("local") maps to the "cli" hint key the agent understands.
-        # session_key is propagated via contextvars in _set_session_env() (_SESSION_KEY) and via
-        # set_current_session_key() (_approval_session_key) below — both concurrency-safe and inherited by
-        # tool worker threads. We deliberately do NOT write os.environ["HERMES_SESSION_KEY"] here:
-        # os.environ is process-global, so concurrent gateway sessions (e.g. two Discord threads) would
-        # clobber each other's value, and a tool thread whose contextvar is unset would fall back to
-        # os.environ and read the wrong session key — misrouting command-approval prompts to the wrong
-        # thread (#24100). The non-gateway surfaces don't depend on this write: CLI and cron bind the
-        # session via contextvars (set_current_session_key / session context), and only the TUI slash-worker
-        # *subprocess* exports HERMES_SESSION_KEY (from its own --session-key argv, a separate process) — so
-        # removing this in-process gateway write does not affect any of them.
+        # session_key is propagated via contextvars in _set_session_env() and
+        # set_current_session_key(), both concurrency-safe and inherited by tool worker threads.
+        # We deliberately do NOT write os.environ["HERMES_SESSION_KEY"] here: os.environ is
+        # process-global, so concurrent gateway sessions would clobber each other's value.
+        # CLI and cron bind through contextvars; only a separate slash-worker subprocess exports
+        # HERMES_SESSION_KEY from its own argv.
         platform_key = "cli" if ctx.source.platform == Platform.LOCAL else ctx.source.platform.value
         combined_ephemeral = self._combined_ephemeral_prompt()
         max_iterations = _current_max_iterations()
@@ -2247,7 +2220,7 @@ class TurnRunner(_TurnRunnerCore):
         agent_history = preparation.agent_history
         observed_group_context = preparation.observed_group_context
         history_media_paths = preparation.history_media_paths
-        result = self._run_conversation_with_approval(
+        result = self._run_conversation_with_session(
             agent, agent_history, observed_group_context,
             preparation.persist_user_message, preparation.persist_user_timestamp,
             continue_interrupted_turn=preparation.continue_interrupted_turn,

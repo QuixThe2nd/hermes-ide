@@ -47,7 +47,7 @@ hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
 ```
 
 :::tip
-The `hermes config set` command automatically routes values to the right file — every `UPPER_SNAKE` name (`OPENROUTER_API_KEY`, `DISCORD_HOME_CHANNEL`, `TELEGRAM_GROUP_ALLOWED_USERS`, `HERMES_TIMEZONE`, …) is an environment variable and is saved to `.env`, never to `config.yaml`; dotted settings go to `config.yaml`. Any other `UPPER_SNAKE` name is saved to `.env` as-is (it is exported to the process environment for plugins and skills); names on the env writer's denylist (`HERMES_YOLO_MODE`, `PATH`, …) are refused. A known key written under the wrong prefix (`gateway.discord.foo`, where `discord.foo` is itself a known key) is refused with a did-you-mean before anything is written; pass `--force` to write it anyway. Any other unknown path under a known section (a typo such as `agent.max_turnz`, or a runtime-read key with no seeded default) is written together with a did-you-mean notice, since the schema alone cannot tell the two apart. `hermes config get` on such a path prints the value from your file together with a stderr notice that Hermes may not read it, so a leftover key cannot silently pass for a live setting.
+The `hermes config set` command automatically routes values to the right file — every `UPPER_SNAKE` name (`OPENROUTER_API_KEY`, `DISCORD_HOME_CHANNEL`, `TELEGRAM_GROUP_ALLOWED_USERS`, `HERMES_TIMEZONE`, …) is an environment variable and is saved to `.env`, never to `config.yaml`; dotted settings go to `config.yaml`. Any other `UPPER_SNAKE` name is saved to `.env` as-is (it is exported to the process environment for plugins and skills); names on the env writer's denylist (`HERMES_ACCEPT_HOOKS`, `PATH`, …) are refused. A known key written under the wrong prefix (`gateway.discord.foo`, where `discord.foo` is itself a known key) is refused with a did-you-mean before anything is written; pass `--force` to write it anyway. Any other unknown path under a known section (a typo such as `agent.max_turnz`, or a runtime-read key with no seeded default) is written together with a did-you-mean notice, since the schema alone cannot tell the two apart. `hermes config get` on such a path prints the value from your file together with a stderr notice that Hermes may not read it, so a leftover key cannot silently pass for a live setting.
 :::
 
 ## Configuration Precedence
@@ -1501,14 +1501,6 @@ auxiliary:
                                # every core and starve the event loop; LLM calls stay fully
                                # concurrent. Minimum 1; values < 1 are ignored.
 
-  # Dangerous command approval classifier
-  approval:
-    provider: "auto"
-    model: ""
-    base_url: ""
-    api_key: ""
-    timeout: 30                # seconds
-
   # Gemini 3.1 TTS hidden audio-tag insertion
   tts_audio_tags:
     provider: "auto"
@@ -2216,7 +2208,7 @@ If writes to Hermes state (cron jobs, skills, scripts under `~/.hermes/`) are fa
 
 ### UI language for static messages
 
-The `display.language` setting translates a small set of static user-facing messages — the CLI approval prompt, a handful of gateway slash-command replies (e.g. restart-drain notices, "approval expired", "goal cleared"). It does **not** translate agent responses, log lines, tool output, error tracebacks, or slash-command descriptions — those stay in English. If you want the agent itself to reply in another language, just tell it in your prompt or system message.
+The `display.language` setting translates a small set of static user-facing messages — slash-command confirmations and a handful of gateway replies (e.g. restart-drain notices and "goal cleared"). It does **not** translate agent responses, log lines, tool output, error tracebacks, or slash-command descriptions — those stay in English. If you want the agent itself to reply in another language, just tell it in your prompt or system message.
 
 Supported values: `en` (default), `zh` (Simplified Chinese), `zh-hant` (Traditional Chinese), `ja` (Japanese), `de` (German), `es` (Spanish), `fr` (French), `tr` (Turkish), `uk` (Ukrainian), `af` (Afrikaans), `ko` (Korean), `it` (Italian), `ga` (Irish), `pt` (Portuguese), `ru` (Russian), `hu` (Hungarian). Unknown values fall back to English.
 
@@ -2224,7 +2216,7 @@ You can also set this per-session with the `HERMES_LANGUAGE` env var, which over
 
 ```yaml
 display:
-  language: zh   # CLI approval prompts appear in Chinese
+  language: zh   # Slash-command confirmations appear in Chinese
 ```
 
 | Mode | What you see |
@@ -2793,21 +2785,6 @@ Domain rules support:
 Shared files contain one domain rule per line (blank lines and `#` comments are ignored). Missing or unreadable files log a warning but don't disable other web tools.
 
 The policy is cached for 30 seconds, so config changes take effect quickly without restart.
-
-## Approvals
-
-Dangerous commands run immediately — Hermes does not pause to ask. A small hard blocklist refuses catastrophic commands without asking.
-
-`approvals.deny` is a list of glob patterns that block matching terminal commands unconditionally. It's the user-editable counterpart to the built-in hardline blocklist:
-
-```yaml
-approvals:
-  deny:
-    - "git push --force*"
-    - "*curl*|*sh*"
-```
-
-Patterns are case-insensitive fnmatch globs and must be quoted in YAML (a bare leading `*` is a parse error). See [Security — User-Defined Deny Rules](./security.md#user-defined-deny-rules-approvalsdeny) for details.
 
 
 ## Checkpoints

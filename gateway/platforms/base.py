@@ -384,8 +384,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after
-from gateway.platforms.base_exec_approval import (
-    EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
 from gateway.session import SessionSource, build_session_key
@@ -1547,26 +1545,6 @@ def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
             event.text = "/restart"
 
 
-@dataclass
-class ExecApprovalPrompt:
-    """One exec-approval prompt, ready for a platform to render natively (see
-    ``BasePlatformAdapter.send_exec_approval``). ``actions`` rows are ``(label, choice, style)``
-    with ``choice`` in ``once`` / ``session`` / ``always`` / ``deny`` — the vocabulary
-    ``tools.approval.resolve_gateway_approval`` accepts — and ``style`` in ``primary`` /
-    ``danger`` / ``""``."""
-    chat_id: str
-    session_key: str
-    text: str
-    actions: List[Tuple[str, str, str]]
-    command: str
-    description: str
-    smart_denied: bool
-    metadata: Optional[Dict[str, Any]] = None
-
-    @property
-    def choices(self) -> List[str]:
-        return [choice for _, choice, _ in self.actions]
-
 
 @dataclass
 class SendResult:
@@ -1913,7 +1891,7 @@ class BasePlatformAdapter(ABC):
         # the base adapter's whole-file auto-TTS path skips the duplicate. Cleared after the turn completes.
         # See #60671.
         self._streaming_tts_completed_turns: set[str] = set()
-        # Chats whose typing indicator is paused (approval waits); _keep_typing skips them.
+        # Chats whose typing indicator is paused (interactive waits); _keep_typing skips them.
         self._typing_paused: set = set()
         # Per-chat status phrase; the regular _keep_typing refresh renders it (no extra API calls).
         self._status_text: Dict[str, str] = {}
@@ -2608,109 +2586,6 @@ class BasePlatformAdapter(ABC):
             # No running loop (unit tests): close the coroutine to avoid a never-awaited warning.
             coro.close()
 
-    # ── ``_format_exec_approval`` templates; adapters override only the MARKUP (bold, HTML,
-    # fences) — the words come from ``gateway.platforms.base_exec_approval`` so every surface
-    # says the same thing.
-    _EA_HEADER: str = f"⚠️ {EA_HEADER_TEXT}\n\n"
-    _EA_CODE_OPEN: str = "```\n"
-    _EA_CODE_CLOSE: str = "\n```\n"
-    _EA_REASON_LABEL: str = f"{EA_REASON_LABEL_TEXT}: "
-    _EA_DEADLINE_PREFIX: str = "\n\n"  # separates the deadline line from the reason line
-    _EA_SMART_DENY_LINE: str = "\n\nSmart DENY: owner override applies to this one operation only."
-    _EA_CMD_BUDGET: int = 3000
-    _EA_REASON_BUDGET: int = 0  # 0 = the reason is never truncated
-
-    @staticmethod
-    def _truncate_preview(text: str, budget: int, suffix: str = "...") -> str:
-        """Truncate ``text`` to ``budget`` chars, appending ``suffix`` when cut."""
-        text = str(text or "")
-        return text[:budget] + suffix if len(text) > budget else text
-
-    def _ea_escape(self, text: str) -> str:
-        """Escape hook for command preview/reason; HTML-mode platforms (Telegram) override."""
-        return text
-
-    def _ea_fit(self, text: str, budget: int, suffix: str = "...", escape: Optional[Callable[[str], str]] = None) -> str:
-        """``_truncate_preview`` measured after ``escape`` (default ``_ea_escape``) in
-        ``message_len_fn`` units: the platform cap applies to the wire payload, and escaping
-        expands (``&`` → ``&amp;``), so a raw-length cut can still overflow. Returns raw text (the
-        caller escapes); ``suffix`` rides outside ``budget`` like ``_truncate_preview``."""
-        text = str(text or "")
-        escape = escape or self._ea_escape
-        len_fn = self.message_len_fn
-        if len_fn(escape(text)) <= budget:
-            return text
-        lo, hi = 0, len(text)
-        while lo < hi:  # escaped length is monotonic in the raw prefix, so bisect it
-            mid = (lo + hi + 1) // 2
-            if len_fn(escape(text[:mid])) <= budget:
-                lo = mid
-            else:
-                hi = mid - 1
-        return text[:lo] + suffix
-
-    def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
-        """Chars of command preview that fit; platforms with a hard message cap compute it."""
-        return self._EA_CMD_BUDGET
-
-    def _ea_deadline_line(self) -> str:
-        """The "doing nothing means it will NOT run" line, with the fixed approval window."""
-        return self._EA_DEADLINE_PREFIX + self._ea_escape(format_approval_deadline_line(approval_timeout_seconds()))
-
-    def _format_exec_approval(
-        self, command: str, description: str = "dangerous command", smart_denied: bool = False) -> str:
-        """Shared exec-approval prompt text: header + fenced (truncated) command + why it was
-        flagged + the deadline line, plus the smart-deny line. Buttons/trailing instructions stay
-        platform-local."""
-        if self._EA_REASON_BUDGET:
-            description = self._ea_fit(str(description or ""), self._EA_REASON_BUDGET)
-        cmd_preview = self._ea_fit(
-            str(command or ""), self._exec_approval_cmd_budget(description, smart_denied))
-        text = (f"{self._EA_HEADER}"
-                f"{self._EA_CODE_OPEN}{self._ea_escape(cmd_preview)}{self._EA_CODE_CLOSE}"
-                f"{self._EA_REASON_LABEL}{self._ea_escape(description)}"
-                f"{self._ea_deadline_line()}")
-        return text + self._EA_SMART_DENY_LINE if smart_denied else text
-
-    # ── Exec-approval prompt (template method). The choice set is one rule for every button
-    # surface — three separate "same fix × N adapters" commits motivated lifting it here.
-    _EA_ACTION_LABELS: Dict[str, str] = {
-        "once": "Allow Once", "session": "Allow Session", "always": "Always Allow", "deny": "Deny"}
-    _EA_ACTION_STYLES: Dict[str, str] = {"once": "primary", "deny": "danger"}
-
-    def _exec_approval_actions(
-            self, *, allow_permanent: bool, allow_session: bool, smart_denied: bool) -> List[Tuple[str, str, str]]:
-        """``(label, choice, style)`` rows for the approval buttons. A smart deny is an owner
-        override for one operation only, so it offers neither the session nor the permanent tier;
-        the permanent tier is never offered without the session tier."""
-        choices = ["once"]
-        if not smart_denied and allow_session:
-            choices.append("session")
-            if allow_permanent:
-                choices.append("always")
-        choices.append("deny")
-        return [(self._EA_ACTION_LABELS[c], c, self._EA_ACTION_STYLES.get(c, "")) for c in choices]
-
-    @classmethod
-    def supports_exec_approval_buttons(cls) -> bool:
-        """True when the adapter renders native approval buttons (overrides the prompt hook);
-        the runner otherwise sends the plain-text ``/approve`` prompt."""
-        return cls._send_exec_approval_prompt is not BasePlatformAdapter._send_exec_approval_prompt
-
-    async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
-        metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False,
-    ) -> SendResult:
-        """Deprecated no-op: this fork never asks a human to approve/deny agent actions, so no
-        exec-approval prompt is built or posted. Kept (importable, callers like
-        ``run_turn_runner._approval_notify_sync`` still reference it) but it never renders
-        buttons or resolves choices."""
-        return SendResult(success=False, error="Not supported")
-
-    async def _send_exec_approval_prompt(self, prompt: "ExecApprovalPrompt") -> SendResult:
-        """Render ``prompt`` with the platform's native buttons; the default has none."""
-        return SendResult(success=False, error="Not supported")
 
     @staticmethod
     def _format_choice_page(options: list, page: int, per_page: int) -> "tuple[list, Dict[str, Any]]":
@@ -2728,12 +2603,11 @@ class BasePlatformAdapter(ABC):
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,
-        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Three-option slash-command confirmation (e.g. ``/reload-mcp``). Button adapters render
-        Approve Once / Always Approve / Cancel and MUST resolve via
-        ``GatewayRunner._resolve_slash_confirm(confirm_id, "once"|"always"|"cancel")``. Default (not
-        supported) falls through to the gateway text fallback
-        (``/approve``/``/always``/``/cancel``)."""
+        metadata: Optional[Dict[str, Any]] = None, include_always: bool = True) -> SendResult:
+        """Render a slash-command confirmation.
+
+        ``include_always=False`` restricts the prompt to Once and Cancel.
+        """
         return SendResult(success=False, error="Not supported")
 
     async def send_clarify(
@@ -3200,7 +3074,7 @@ class BasePlatformAdapter(ABC):
     async def _keep_typing(self, chat_id: str, interval: float = 2.0, metadata=None,
                            stop_event: asyncio.Event | None = None) -> None:
         """Refresh the typing indicator every ``interval`` seconds until cancelled (platform typing
-        state expires after ~5s). Chats in ``_typing_paused`` are skipped (approval waits — Slack's
+        state expires after ~5s). Chats in ``_typing_paused`` are skipped (interactive waits — Slack's
         setStatus disables the compose box). Each ``send_typing`` is bounded by a sub-interval
         timeout so one slow round-trip is abandoned before the next tick, not the bubble lapsing."""
         _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
@@ -3413,7 +3287,7 @@ class BasePlatformAdapter(ABC):
                 current_tasks.pop(session_key, None)
 
     def pause_typing_for_chat(self, chat_id: str) -> None:
-        """Pause typing for a chat (approval waits); GIL-safe from the sync agent thread."""
+        """Pause typing for a chat (interactive waits); GIL-safe from the sync agent thread."""
         self._typing_paused.add(chat_id)
 
     def resume_typing_for_chat(self, chat_id: str) -> None:
@@ -4033,13 +3907,11 @@ class BasePlatformAdapter(ABC):
     async def _handle_message_while_active(self, event: MessageEvent, session_key: str) -> None:
         """Route a message that arrived while ``session_key`` is busy: bypass
         commands / clarify replies dispatch inline, everything else is queued."""
-        # Bypass commands run inline: queued they'd leak as user text (/new) or deadlock
-        # (/approve, /deny — the agent is blocked on Event.wait).  Dispatch inline by
-        # calling the message handler directly and sending the response.  Do NOT use
+        # Bypass commands run inline: queued they'd leak as user text (/new) or
+        # strand control traffic behind the active turn. Dispatch inline by calling
+        # the message handler directly and sending the response. Do NOT use
         # _process_message_background — it manages session lifecycle and its cleanup
         # races with the running task (split-brain, see PR #4926).
-        # Certain commands must bypass the active-session guard and be dispatched directly to the gateway
-        # runner. Without this, they are queued as pending messages and either: See #4926.
         self._canonicalize(event.source)  # identity FIRST (direct callers may skip handle_message)
         cmd = event.get_command()
         from hermes_cli.commands import (is_interrupt_then_dispatch, should_bypass_active_session)
@@ -4058,10 +3930,7 @@ class BasePlatformAdapter(ABC):
             return
         # Clarify bypass: while blocked on clarify_tool the next message must reach the
         # text-intercept so numeric/exact/"Other" answers resolve it and unblock the agent.
-        # Otherwise it lands in _pending_messages as a follow-up turn and the answer is
-        # discarded.  Same shape as the /approve deadlock fix (PR #4926): agent thread
-        # blocked on Event.wait, message must reach the resolver before being a new turn.
-        # See #4926.
+        # Otherwise it lands in _pending_messages as a follow-up turn and the answer is discarded.
         if not cmd and event.allow_gateway_control:
             try:
                 from tools import clarify_gateway as _clarify_mod

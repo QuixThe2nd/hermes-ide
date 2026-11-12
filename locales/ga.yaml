@@ -173,8 +173,7 @@ gateway:
 
   reload_mcp:
     cancelled:             "🟡 /reload-mcp cealaithe. Tá uirlisí MCP gan athrú."
-    always_followup:       "ℹ️ Rithfear glaonna `/reload-mcp` amach anseo gan dearbhú. Athchumasaigh trí `approvals.mcp_reload_confirm: true` a shocrú in config.yaml."
-    confirm_prompt:        "⚠️ **Dearbhaigh /reload-mcp**\n\nAthlódáil freastalaithe MCP a athchruthaíonn an tacar uirlisí don seisiún seo agus **cuireann sé taisce leid an tsoláthraí ar neamhní** — seolfaidh an chéad teachtaireacht eile na comharthaí ionchuir iomlána arís. Ar shamhlacha le comhthéacs fada nó réasúnaíocht ard, is féidir leis seo a bheith costasach.\n\nRoghnaigh:\n• **Approve Once** — athlódáil anois\n• **Always Approve** — athlódáil anois agus an leid seo a chiúnú go buan\n• **Cancel** — fág uirlisí MCP gan athrú"
+    confirm_prompt:        "⚠️ **Dearbhaigh /reload-mcp**\n\nAthlódáil freastalaithe MCP a athchruthaíonn an tacar uirlisí don seisiún seo agus **cuireann sé taisce leid an tsoláthraí ar neamhní** — seolfaidh an chéad teachtaireacht eile na comharthaí ionchuir iomlána arís. Ar shamhlacha le comhthéacs fada nó réasúnaíocht ard, is féidir leis seo a bheith costasach.\n\nRoghnaigh:\n• **Approve Once** — athlódáil anois\n• **Cancel** — fág uirlisí MCP gan athrú"
     header:                "🔄 **Freastalaithe MCP Athlódáilte**\n"
     reconnected:           "♻️ Athcheanglaithe: {names}"
     added:                 "➕ Curtha leis: {names}"

@@ -92,7 +92,6 @@ def _make_runner(*, platform_extra: dict | None = None,
     runner._running_agents_ts = {}
     runner._session_run_generation = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_sources = {}
     runner._session_db = MagicMock()
     runner._session_db.get_session_title.return_value = None
@@ -346,7 +345,6 @@ async def test_gating_isolated_per_platform():
     runner._running_agents_ts = {}
     runner._session_run_generation = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_sources = {}
     runner._session_db = MagicMock()
     runner._session_db.get_session_title.return_value = None

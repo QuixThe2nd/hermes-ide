@@ -301,19 +301,3 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 - `/voice join`, `/voice channel`, and `/voice leave` are only meaningful on Discord.
 - In the TUI, `/sessions` shows live sessions in the current TUI process. Use `/resume [name]` or `hermes --tui --resume <id-or-title>` for saved or closed transcripts.
 
-## Confirmation prompts for destructive commands
-
-The CLI prompts before running slash commands that throw away unsaved session state. The current destructive set is:
-
-| Command | What it destroys |
-|---------|------------------|
-| `/clear` | Clears the screen and starts a fresh session — current session ID and in-memory history are gone. |
-| `/new` / `/reset` | Starts a fresh session (new session ID + empty history). |
-| `/undo` | Removes the last user/assistant exchange from history. |
-| `/exit --delete` / `/quit --delete` | Exits **and** permanently deletes the current session's SQLite history and on-disk transcripts. |
-
-For each of these the CLI opens a three-choice modal: **Approve Once** (proceed this time), **Always Approve** (proceed and persist `approvals.destructive_slash_confirm: false` so future destructive commands run without prompting), or **Cancel**.
-
-**Inline skip:** append `now`, `--yes`, or `-y` to bypass the modal for a single invocation — e.g. `/reset now`, `/new --yes my-session`, `/clear -y`, `/undo -y`. Useful when the modal doesn't render correctly on your terminal (see [issue #30768](https://github.com/NousResearch/hermes-agent/issues/30768) for native Windows PowerShell) or when scripting against the CLI.
-
-Set `approvals.destructive_slash_confirm: false` in `~/.hermes/config.yaml` to disable the prompts globally; set it back to `true` to re-enable. See [Security — Destructive slash command confirmation](../user-guide/security.md#dangerous-commands) for context.

@@ -2365,7 +2365,7 @@ def _list_processes(task_id) -> dict:
     session_key = ""
     with suppress(Exception):
         # See #29177.
-        from tools.approval_context import get_current_session_key
+        from tools.session_context import get_current_session_key
         session_key = get_current_session_key(default="") or ""
     return {"processes": [
         _redact_process_result(p)

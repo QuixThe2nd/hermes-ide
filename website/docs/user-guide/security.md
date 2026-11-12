@@ -1,19 +1,19 @@
 ---
 sidebar_position: 8
 title: "Security"
-description: "Security model, dangerous-command hard blocks, user authorization, container isolation, and production deployment best practices"
+description: "Security model, execution safeguards, user authorization, container isolation, and production deployment best practices"
 ---
 
 # Security
 
-Hermes Agent is designed with a defense-in-depth security model. This page covers every security boundary — from dangerous-command hard blocks to container isolation to user authorization on messaging platforms.
+Hermes Agent is designed with a defense-in-depth security model. This page covers every security boundary — from execution safeguards to container isolation to user authorization on messaging platforms.
 
 ## Overview
 
 The security model has eight layers:
 
 1. **User authorization** — who can talk to the agent (allowlists, DM pairing)
-2. **Dangerous-command hard blocks** — catastrophic commands are refused outright, without asking
+2. **Execution safeguards** — supervised lifecycle and self-repository mutations are refused outright
 3. **File write safety** — denylist and optional write sandbox for `write_file`/`patch`
 4. **Container isolation** — Docker/Singularity/Modal sandboxing with hardened settings
 5. **MCP credential filtering** — environment variable isolation for MCP subprocesses
@@ -21,16 +21,16 @@ The security model has eight layers:
 7. **Cross-session isolation** — sessions cannot access each other's data or state; cron job storage paths are hardened against path traversal attacks
 8. **Input sanitization** — working directory parameters in terminal tool backends are validated against an allowlist to prevent shell injection
 
-## Dangerous Commands
+## Command Execution
 
-Dangerous commands run immediately — Hermes does not pause to ask. A small hard blocklist refuses catastrophic commands without asking.
+Terminal and code-execution commands run immediately; Hermes does not pause for command approval. Independent lifecycle and self-repository guards still refuse operations that would destabilize the gateway or rewrite Hermes' own checkout.
 
 ### Supervised-gateway lifecycle restriction
 
 The terminal tool has a separate, non-overridable guard against stopping or
 restarting the gateway from inside its own supervised process. A self-restart can
 terminate the tool before it finishes and cause a supervisor/auto-resume loop.
-`force=True` does not bypass this guard.
+This guard cannot be bypassed through the terminal tool.
 
 The guard also refuses process killers aimed at the interpreter image the gateway
 runs as — `taskkill /F /IM python.exe`, `taskkill /FI "IMAGENAME eq python.exe"`,
@@ -62,50 +62,10 @@ A tool rejection means the command did not execute through that tool call. An
 assistant declining to issue a call is a separate model decision; changing models
 does not change the terminal guard's policy.
 
-Some commands are so catastrophic — irreversible filesystem wipes, fork bombs, direct block-device writes — that Hermes refuses to run them outright. There is no override flag. Patterns currently covered (not exhaustive; kept in sync with `tools/approval.py::UNRECOVERABLE_BLOCKLIST`):
-| Pattern | Why it's hardline |
-|---|---|
-| `rm -rf /` and obvious variants | Wipes the filesystem root |
-| `rm -rf --no-preserve-root /` | The explicit "yes I mean root" variant |
-| `:(){ :\|:& };:` (bash fork bomb) | Pegs the host until reboot |
-| `mkfs.*` on a mounted root device | Formats the live system |
-| `dd if=/dev/zero of=/dev/sd*` | Zeroes a physical disk |
-| Piping untrusted URLs to `sh` at the rootfs top level | Remote-code-execution attack vector too broad to run |
-
-If you hit the blocklist, the tool call returns an explanatory error to the agent and nothing runs. If a legitimate workflow needs one of these commands (you're the operator of a wipe-and-reinstall pipeline, for example), run it outside the agent.
-
-The floor also fails closed on a command whose shell quoting cannot be parsed (`grep 'unterminated`): the error says `malformed executable payload`. Quoting is judged on the command exactly as written, so shell-valid escapes inside a quoted pattern (`grep -o "[^\"]*" file`) are not malformed, and an escaped quote before a separator (`echo "a\"b"; reboot`) does not hide the command that follows it.
-
-The hardline blocklist is fixed and code-shipped. `approvals.deny` is its user-editable counterpart: a list of glob patterns that block matching terminal commands unconditionally, with no override. Use it to declare: "let the agent do everything, except these specific things, ever."
-
-```yaml
-approvals:
-  deny:
-    - "git push --force*"
-    - "*curl*|*sh*"
-    - "dd if=* of=/dev/*"
-```
-
-Details:
-
-- Patterns are [fnmatch](https://docs.python.org/3/library/fnmatch.html) globs (`*`, `?`, `[...]`) matched **case-insensitively** against the whole command text and individual executable-command candidates. `git push --force*` matches `git push --force origin main` but not `git push origin main`.
-- Matching runs over the same normalized/deobfuscated command variants the terminal guard uses, so simple quoting tricks (`git pu""sh --force`) don't slip past a rule.
-- Executable candidates retain the literal path and also match its basename: `sudo *` covers `/usr/bin/sudo -n id` and `./sudo -n id`. A path-specific rule such as `/usr/bin/sudo *` does **not** become a rule for every binary named `sudo`.
-- Quote-aware parsing exposes commands after assignments, leading redirections, `;`, `&&`, `||`, pipelines, groups, command substitutions, and ordinary `if`/`then`/`else`/`do` transitions. Supported launchers include `sudo`, `env`, `command`, `exec`, `nohup`, `setsid`, `time`, `nice`, `timeout`, `stdbuf`, `ionice`, `chrt`, `taskset`, and `chroot`. Known option operands are skipped; `command -v`/`-V` lookups are not executions. Shell `-c` payloads are inspected recursively. Literal executable-and-argument strings in `env -S` / `--split-string` use GNU quoting and escapes (including `\_` word boundaries and `\c` termination), with the remaining command arguments appended; shell punctuation inside those arguments stays data unless an actual shell `-c` consumes it. `env -a` / `--argv0` values are arguments, not executable names. Shell and GNU split-string comments do not introduce executable candidates.
-- In the additional executable candidates, whitespace **between** words is collapsed, but quoted argument content and argument paths are retained. An exact rule such as `git status` therefore also matches `env git\tstatus; echo done` (where `\t` represents a tab). Quoted mentions such as `echo 'sudo -n id'` are not promoted to commands. Existing whole-input globs such as `*sudo*` still intentionally match mentions anywhere.
-- **YAML quoting:** always quote patterns. A bare leading `*` is a YAML alias and fails to parse; `{`, `!`, and `: ` have their own YAML meanings. Single quotes are safest for shell-ish content.
-- User-defined deny rules apply to all terminal backends, including isolated containers.
-- A denied command returns a BLOCKED error to the agent telling it not to retry or rephrase. Nothing runs.
-
-Changes take effect immediately (the config cache is mtime-keyed) — no session restart needed.
-
-:::note Threat model
-Deny rules are a shell-command policy, not a complete shell interpreter or an OS capability sandbox. Normalization does not resolve arbitrary variables (including GNU `env -S` `${NAME}` expansion), aliases, functions, renamed binaries, scripts, interpreter programs, or every shell/launcher grammar (for example, case-pattern syntax, clustered launcher options, or options embedded inside an `env -S` string). Do not use a basename deny rule as a guarantee that a capability cannot be reached by other means. For containment, use OS permissions and an isolated backend with appropriately restricted mounts, credentials, and network access.
-:::
 
 ## File Write Safety {#file-write-safety}
 
-Before `write_file` or `patch` touches disk, Hermes checks the target path against a denylist and an optional sandbox. Blocked writes return an error to the agent immediately — **there is no approval prompt** and no way to override from the chat UI. The model may still claim the edit succeeded; when `display.file_mutation_verifier` is on (default), trust the [file-mutation verifier footer](./configuration.md#file-mutation-verifier) over the assistant's closing summary.
+Before `write_file` or `patch` touches disk, Hermes checks the target path against a denylist and an optional sandbox. Blocked writes return an error to the agent immediately and cannot be overridden from the chat UI. The model may still claim the edit succeeded; when `display.file_mutation_verifier` is on (default), trust the [file-mutation verifier footer](./configuration.md#file-mutation-verifier) over the assistant's closing summary.
 
 ### Protected paths (always blocked)
 
@@ -618,7 +578,7 @@ a scan, so when `distribution.yaml` owns the file a scanner hit still blocks it.
 3. **Restrict resource limits** — set appropriate CPU, memory, and disk limits
 4. **Store secrets securely** — keep API keys in `~/.hermes/.env` with proper file permissions
 5. **Enable DM pairing** — use pairing codes instead of hardcoding user IDs when possible
-6. **Review command allowlist** — periodically audit `command_allowlist` in config.yaml
+6. **Review enabled toolsets** — disable tools the deployment does not need
 7. **Set `terminal.cwd`** — don't let the agent operate from sensitive directories
 8. **Run as non-root** — never run the gateway as root
 9. **Monitor logs** — check `~/.hermes/logs/` for unauthorized access attempts

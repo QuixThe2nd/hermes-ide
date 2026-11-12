@@ -877,7 +877,6 @@ class TestHealthDetailedEndpoint:
         adapter._run_statuses = {
             "queued": {"status": "queued"},
             "running": {"status": "running"},
-            "approval": {"status": "waiting_for_approval"},
             "stopping": {"status": "stopping"},
             "done": {"status": "completed"},
             "cancelled": {"status": "cancelled"},
@@ -885,7 +884,7 @@ class TestHealthDetailedEndpoint:
 
         with patch("tools.process_registry.process_registry.completion_queue.qsize", return_value=0), \
              patch("tools.async_delegation.active_count", return_value=0):
-            assert adapter._readiness_work_counts() == (4, 0, 0)
+            assert adapter._readiness_work_counts() == (3, 0, 0)
 
 
 # ---------------------------------------------------------------------------

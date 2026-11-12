@@ -3343,14 +3343,12 @@ def _launch_external_cron_worker(job: dict) -> bool:
     finally:
         reset_secret_scope(secret_token)
     worker_env = systemd_user_bus_env(worker_env)
-    # Unattended worker: the gateway sets HERMES_EXEC_ASK at startup (interactive launches set
-    # the other two), and an inherited presence var makes every env-fallback consumer in the
+    # Unattended worker: inherited presence variables make env-fallback consumers in the
     # child (`_is_interactive_cli`, sudo prompting, `check_cronjob_requirements`) believe a
     # human is present to answer (#110932).
     for _presence_var in (
         "HERMES_INTERACTIVE",
         "HERMES_GATEWAY_SESSION",
-        "HERMES_EXEC_ASK",
     ):
         worker_env.pop(_presence_var, None)
     # `-m cron.scheduler` has no hermes_cli.main bootstrap; pin this checkout explicitly

@@ -169,8 +169,7 @@ gateway:
 
   reload_mcp:
     cancelled:             "🟡 /reload-mcp megszakítva. Az MCP-eszközök változatlanok."
-    always_followup:       "ℹ️ A jövőbeli `/reload-mcp` hívások megerősítés nélkül futnak. Újra engedélyezhető az `approvals.mcp_reload_confirm: true` beállítással a config.yaml fájlban."
-    confirm_prompt:        "⚠️ **A /reload-mcp megerősítése**\n\nAz MCP-szerverek újratöltése újraépíti az eszközkészletet ehhez a munkamenethez, és **érvényteleníti a szolgáltató prompt-gyorsítótárát** — a következő üzenet újraküldi a teljes bemeneti tokent. Hosszú kontextusú vagy magas gondolkodási szintű modelleknél ez költséges lehet.\n\nVálassz:\n• **Egyszeri jóváhagyás** — újratöltés most\n• **Mindig jóváhagy** — újratöltés most, és ennek a kérdésnek a végleges elnémítása\n• **Megszakítás** — az MCP-eszközök változatlanok maradnak"
+    confirm_prompt:        "⚠️ **A /reload-mcp megerősítése**\n\nAz MCP-szerverek újratöltése újraépíti az eszközkészletet ehhez a munkamenethez, és **érvényteleníti a szolgáltató prompt-gyorsítótárát** — a következő üzenet újraküldi a teljes bemeneti tokent. Hosszú kontextusú vagy magas gondolkodási szintű modelleknél ez költséges lehet.\n\nVálassz:\n• **Egyszeri jóváhagyás** — újratöltés most\n• **Megszakítás** — az MCP-eszközök változatlanok maradnak"
     header:                "🔄 **MCP-szerverek újratöltve**\n"
     reconnected:           "♻️ Újracsatlakozva: {names}"
     added:                 "➕ Hozzáadva: {names}"

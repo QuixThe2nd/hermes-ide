@@ -26,12 +26,9 @@ hermes config set privacy.redact_pii true    # enable
 hermes config set privacy.redact_pii false   # disable (default)
 ```
 
-### Dangerous commands
+### Command execution
 
-Dangerous commands run immediately — Hermes does not pause to ask. A small
-hard blocklist refuses catastrophic commands without asking, and
-`approvals.deny` globs in `config.yaml` block additional patterns
-unconditionally. None of this affects secret redaction; they are independent.
+Terminal and code-execution commands run immediately without command approval prompts. Independent lifecycle and self-repository guards still apply. None of this affects secret redaction; execution and redaction are independent.
 
 ### Shell-hook consent
 

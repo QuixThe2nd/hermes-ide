@@ -554,8 +554,7 @@ def test_isolated_provider_worker_inherits_protection_and_progress_hook() -> Non
 
 
 def test_isolated_provider_worker_inherits_caller_contextvars() -> None:
-    from tools.approval import get_current_session_key
-    from tools.approval_context import reset_current_session_key, set_current_session_key
+    from tools.session_context import get_current_session_key, reset_current_session_key, set_current_session_key
 
     arbitrary = contextvars.ContextVar("isolated-provider-test", default="missing")
     arbitrary_token = arbitrary.set("caller-value")
@@ -565,10 +564,10 @@ def test_isolated_provider_worker_inherits_caller_contextvars() -> None:
         chat=SimpleNamespace(
             completions=SimpleNamespace(
                 create=lambda **_kwargs: (
-                    observed.update(
-                        arbitrary=arbitrary.get(),
-                        session_key=get_current_session_key(),
-                    ),
+                    observed.update({
+                        "arbitrary": arbitrary.get(),
+                        "session_key": get_current_session_key(),
+                    }),
                     SimpleNamespace(choices=[]),
                 )[1]
             )

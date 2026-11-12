@@ -65,7 +65,6 @@ def test_cron_provider_stop_cannot_override_gateway_exit_code(caplog):
 async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks():
     runner, adapter = make_restart_runner()
     runner._pending_messages = {"session": "pending text"}
-    runner._pending_approvals = {"session": {"command": "rm -rf /tmp/x"}}
     runner._restart_drain_timeout = 0.0
 
     release = asyncio.Event()
@@ -102,7 +101,6 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
     assert runner.adapters == {}
     assert runner._running_agents == {}
     assert runner._pending_messages == {}
-    assert runner._pending_approvals == {}
     assert runner._shutdown_event.is_set() is True
 
 

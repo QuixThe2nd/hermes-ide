@@ -2,7 +2,7 @@
 
 ``initialize`` handshake, then ``thread/start`` + ``turn/start`` with streaming
 ``item/*`` notifications until ``turn/completed``. Wire-level speaker only —
-projection, approvals and transcript handling live in sibling modules.
+projection, server-request handling and transcript handling live in sibling modules.
 """
 
 from __future__ import annotations
@@ -229,7 +229,7 @@ class CodexAppServerClient:
         self._send({"method": method, "params": params or {}})
 
     def respond(self, request_id: Any, result: dict) -> None:
-        """Reply to a server-initiated request (e.g. approval prompts)."""
+        """Reply to a server-initiated request."""
         self._send({"id": request_id, "result": result})
 
     def respond_error(self, request_id: Any, code: int, message: str, data: Optional[Any] = None) -> None:
@@ -251,7 +251,7 @@ class CodexAppServerClient:
         return self._take(self._notifications, timeout)
 
     def take_server_request(self, timeout: float = 0.0) -> Optional[dict]:
-        """Pop the next server-initiated request (e.g. exec/applyPatch approval)."""
+        """Pop the next server-initiated request."""
         return self._take(self._server_requests, timeout)
 
     def stderr_tail(self, n: int = 20) -> list[str]:

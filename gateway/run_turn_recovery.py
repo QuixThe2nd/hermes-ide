@@ -336,7 +336,7 @@ def _replay_interrupted_batch(turn, preparation: TurnMessagePreparation) -> None
         plan_forced_resume_turn,
         trim_incomplete_assistant_text_tail,
     )
-    from tools.approval_context import reset_current_session_key, set_current_session_key
+    from tools.session_context import reset_current_session_key, set_current_session_key
 
     ctx = turn._ctx
     claim = claim_forced_recovery_ownership(
@@ -358,7 +358,7 @@ def _replay_interrupted_batch(turn, preparation: TurnMessagePreparation) -> None
     )
     plan = build_victim_replay_plan(replay_source)
     session_key = ctx.session_key or ""
-    approval_token = set_current_session_key(session_key)
+    session_token = set_current_session_key(session_key)
     try:
         outcome = execute_victim_replay(
             turn._ctx.agent_holder[0],
@@ -369,7 +369,7 @@ def _replay_interrupted_batch(turn, preparation: TurnMessagePreparation) -> None
             effective_task_id=ctx.session_id or "",
         )
     finally:
-        reset_current_session_key(approval_token)
+        reset_current_session_key(session_token)
 
     if outcome.repaired_history is not None:
         if turn._live_history_selected:

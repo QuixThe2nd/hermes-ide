@@ -70,10 +70,10 @@ def _abort_for_outcome(outcome: str, *, session_key: str, clarify_mod) -> Option
 
 def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> Optional[str]:
     """Decide whether a clarify prompt send aborts the wait; returns the abort sentinel or ``None``."""
-    from gateway.run import _approval_send_outcome
+    from gateway.run import _prompt_send_outcome
 
     return _abort_for_outcome(
-        _approval_send_outcome(fut, timeout=SEND_ACK_WINDOW), session_key=session_key, clarify_mod=clarify_mod)
+        _prompt_send_outcome(fut, timeout=SEND_ACK_WINDOW), session_key=session_key, clarify_mod=clarify_mod)
 
 
 def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_mod,
@@ -88,16 +88,16 @@ def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_m
 
     Returns ``(response, answered)``. ``answered`` is the only signal that a user reply arrived;
     callers must not infer it from the text (a real answer may start with '[' like a sentinel)."""
-    from gateway.run import _approval_send_outcome
+    from gateway.run import _prompt_send_outcome
 
-    outcome = _approval_send_outcome(fut, timeout=SEND_ACK_WINDOW)
+    outcome = _prompt_send_outcome(fut, timeout=SEND_ACK_WINDOW)
     if outcome == "failed" and fallback is not None:
         # The text prompt is the last resort: a late failure of ITS send has nothing to retry.
         fut, fallback = fallback(), None
         # ``None`` = the fallback could not even be scheduled; the card failure already stands,
         # so re-classifying would only log a misleading "no scheduling future".
         if fut is not None:
-            outcome = _approval_send_outcome(fut, timeout=SEND_ACK_WINDOW)
+            outcome = _prompt_send_outcome(fut, timeout=SEND_ACK_WINDOW)
         if outcome == "sent":
             logger.info("Clarify card undeliverable; plain-text prompt sent instead (id=%s)", clarify_id)
     abort = _abort_for_outcome(outcome, session_key=session_key, clarify_mod=clarify_mod)
@@ -143,8 +143,8 @@ class _LateFailureWatch:
 
     @staticmethod
     def _outcome(fut) -> str:
-        from gateway.run import _approval_send_outcome
-        return _approval_send_outcome(fut, timeout=0)
+        from gateway.run import _prompt_send_outcome
+        return _prompt_send_outcome(fut, timeout=0)
 
     def _on_card_done(self, fut) -> None:
         if not self._armed:

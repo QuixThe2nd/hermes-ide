@@ -31,6 +31,7 @@ from hermes_cli.observability.shared_metrics_contract import (
     DURATION_BUCKETS,
     EXECUTION_SURFACES,
     LEGACY_MODEL_CALL_METRIC,
+    LEGACY_TOOL_APPROVAL_METRIC,
     MODEL_CALL_PROFILE_MODEL,
     MODEL_IDENTIFIER_MAX_LENGTH,
     MODEL_ROUTE_METRIC,
@@ -45,8 +46,7 @@ from hermes_cli.observability.shared_metrics_contract import (
     TASK_ENTRYPOINTS,
     TASK_OUTCOMES,
     TASK_TERMINATIONS,
-    TOOL_APPROVAL_ATTRIBUTIONS,
-    TOOL_APPROVAL_OUTCOMES,
+    TOOL_CALL_METRIC,
     TOOL_CATEGORIES,
     TOOL_LATENCY_BUCKETS,
     TOOL_OUTCOMES,
@@ -68,8 +68,6 @@ from hermes_cli.observability.shared_metrics_contract import (
     task_start_fields,
     task_terminal_fields,
     task_terminal_state,
-    tool_approval_counter,
-    tool_approval_outcome,
     tool_call_dimensions,
     tool_category,
     tool_latency_bucket,
@@ -280,6 +278,101 @@ def test_v2_package_preserves_pending_v1_model_counters(tmp_path):
     )
 
 
+def test_v2_package_drains_pre_removal_approval_counters_without_merging(tmp_path):
+    """Legacy rows retain their exact v2 dimensions and pending deltas.
+
+    No destructive database rewrite is needed: old binaries can still read the
+    store, and rollback does not require reconstructing approval_outcome.
+    """
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    period_start = shared_metrics_module._utc_now().date().isoformat()
+    base_dimensions = {
+        "latency_bucket": "lt_100ms",
+        "outcome": "success",
+        "retry_count_bucket": "0",
+        "tool_category": "terminal",
+    }
+    rows = [
+        (
+            TOOL_CALL_METRIC,
+            {**base_dimensions, "approval_outcome": "approved"},
+            3,
+            1,
+        ),
+        (
+            TOOL_CALL_METRIC,
+            {**base_dimensions, "approval_outcome": "not_required"},
+            2,
+            0,
+        ),
+        (
+            LEGACY_TOOL_APPROVAL_METRIC,
+            {"attribution": "tool_call", "outcome": "approved"},
+            4,
+            1,
+        ),
+    ]
+    with sqlite3.connect(database_path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO counter_aggregates(
+                period_start, metric_name, hermes_version, os_family, architecture,
+                install_method, dimensions_json, value, packaged_value
+            ) VALUES (?, ?, 'test-version', 'linux', 'x86_64', 'git', ?, ?, ?)
+            """,
+            [
+                (
+                    period_start,
+                    metric_name,
+                    json.dumps(dimensions, sort_keys=True, separators=(",", ":")),
+                    value,
+                    packaged_value,
+                )
+                for metric_name, dimensions, value, packaged_value in rows
+            ],
+        )
+
+    # Drain compatibility is read-only; new events cannot recreate old shapes.
+    with pytest.raises(ValueError, match="Unsupported shared metric"):
+        store.record_counter(
+            LEGACY_TOOL_APPROVAL_METRIC,
+            {"attribution": "tool_call", "outcome": "approved"},
+            _resource(),
+        )
+    with pytest.raises(ValueError, match="Unsupported dimensions"):
+        store.record_counter(
+            TOOL_CALL_METRIC,
+            {**base_dimensions, "approval_outcome": "approved"},
+            _resource(),
+        )
+
+    [package_path] = store.create_and_export_package()
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    _schema_validator().validate(package)
+
+    exported = {
+        (metric["name"], json.dumps(metric["dimensions"], sort_keys=True)): metric["value"]
+        for metric in package["metrics"]
+    }
+    assert exported == {
+        (
+            TOOL_CALL_METRIC,
+            json.dumps({**base_dimensions, "approval_outcome": "approved"}, sort_keys=True),
+        ): 2,
+        (
+            TOOL_CALL_METRIC,
+            json.dumps({**base_dimensions, "approval_outcome": "not_required"}, sort_keys=True),
+        ): 2,
+        (
+            LEGACY_TOOL_APPROVAL_METRIC,
+            json.dumps({"attribution": "tool_call", "outcome": "approved"}, sort_keys=True),
+        ): 3,
+    }
+    assert all(row["value"] == row["packaged_value"] for row in store.counter_snapshot())
+
+
 def test_v1_outbox_package_exports_unchanged_after_upgrade(tmp_path):
     database_path = tmp_path / "metrics.sqlite3"
     outbox_directory = tmp_path / "outbox"
@@ -337,6 +430,66 @@ def test_v1_outbox_package_exports_unchanged_after_upgrade(tmp_path):
             (package_id,),
         ).fetchone()
     assert persisted_payload_json == payload_json
+
+
+def test_pre_removal_v2_outbox_package_exports_unchanged(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    package_id = str(uuid.uuid4())
+    payload = {
+        "schema_version": "hermes.shared_metrics.v2",
+        "package_id": package_id,
+        "install_id": str(uuid.uuid4()),
+        "period_start": "2026-11-01T00:00:00Z",
+        "period_end": "2026-11-02T00:00:00Z",
+        "generated_at": "2026-11-02T01:00:00Z",
+        "resource": _resource(),
+        "metrics": [
+            {
+                "name": LEGACY_TOOL_APPROVAL_METRIC,
+                "type": "counter",
+                "dimensions": {"attribution": "tool_call", "outcome": "denied"},
+                "value": 2,
+            },
+            {
+                "name": TOOL_CALL_METRIC,
+                "type": "counter",
+                "dimensions": {
+                    "approval_outcome": "denied",
+                    "latency_bucket": "lt_100ms",
+                    "outcome": "blocked",
+                    "retry_count_bucket": "0",
+                    "tool_category": "terminal",
+                },
+                "value": 2,
+            },
+        ],
+    }
+    _schema_validator().validate(payload)
+    payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO package_outbox(
+                package_id, period_start, period_end, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                package_id,
+                payload["period_start"],
+                payload["period_end"],
+                payload_json,
+                payload["generated_at"],
+            ),
+        )
+
+    assert store.create_and_export_package() == [outbox_directory / f"{package_id}.json"]
+    assert json.loads((outbox_directory / f"{package_id}.json").read_text()) == payload
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT payload_json FROM package_outbox WHERE package_id = ?", (package_id,)
+        ).fetchone()[0] == payload_json
 
 
 def test_due_export_runs_once_per_utc_day_and_catches_up_pending_deltas(
@@ -616,21 +769,15 @@ def test_v1_package_schema_retains_the_legacy_model_contract():
 def test_package_schema_matches_the_tool_contract():
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     tool = _tool_dimension_schema("tool_call_counter")["properties"]
-    approval = _tool_dimension_schema("tool_approval_counter")["properties"]
 
     assert set(tool["tool_category"]["enum"]) == TOOL_CATEGORIES
     assert set(tool["outcome"]["enum"]) == TOOL_OUTCOMES
-    assert set(tool["approval_outcome"]["enum"]) == TOOL_APPROVAL_OUTCOMES
     assert tool["latency_bucket"] == {"$ref": "#/$defs/tool_latency_bucket"}
     assert tool["retry_count_bucket"] == {"$ref": "#/$defs/tool_retry_bucket"}
     assert set(schema["$defs"]["tool_latency_bucket"]["enum"]) == (
         TOOL_LATENCY_BUCKETS
     )
     assert set(schema["$defs"]["tool_retry_bucket"]["enum"]) == TOOL_RETRY_BUCKETS
-    assert set(approval["attribution"]["enum"]) == TOOL_APPROVAL_ATTRIBUTIONS
-    assert set(approval["outcome"]["enum"]) == (
-        TOOL_APPROVAL_OUTCOMES - {"not_required"}
-    )
 
 
 def test_package_schema_matches_the_skill_contract():
@@ -688,22 +835,6 @@ def test_tool_outcome_is_bounded(status, expected):
     assert tool_outcome({"status": status}) == expected
 
 
-@pytest.mark.parametrize(
-    ("choice", "expected"),
-    [
-        ("once", "approved"),
-        ("session", "approved"),
-        ("always", "approved"),
-        ("smart_approve", "approved"),
-        ("deny", "denied"),
-        ("smart_deny", "denied"),
-        ("timeout", "timed_out"),
-        ("cancelled", "cancelled"),
-        (None, "unknown"),
-    ],
-)
-def test_tool_approval_outcome_is_bounded(choice, expected):
-    assert tool_approval_outcome({"choice": choice}) == expected
 
 
 @pytest.mark.parametrize(
@@ -853,7 +984,6 @@ def test_tool_subscriber_contract_accepts_only_bounded_events():
         scope_category="end",
         metadata={"hermes.metrics.schema_version": "hermes.metrics.event.v2"},
         data={
-            "approval_outcome": "approved",
             "latency_bucket": "250ms_to_500ms",
             "outcome": "success",
             "retry_count_bucket": "0",
@@ -871,21 +1001,6 @@ def test_tool_subscriber_contract_accepts_only_bounded_events():
     terminal.category_profile["tool_name"] = "must-not-pass"
     assert tool_call_dimensions(terminal) is None
 
-    approval = SimpleNamespace(
-        kind="mark",
-        category=None,
-        category_profile=None,
-        name="hermes.tool_approval",
-        scope_category=None,
-        metadata={"hermes.metrics.schema_version": "hermes.metrics.event.v2"},
-        data={"attribution": "unattributed", "outcome": "denied"},
-    )
-    assert tool_approval_counter(approval) == (
-        "hermes.tool_approval.count",
-        approval.data,
-    )
-    approval.data["command"] = "must-not-pass"
-    assert tool_approval_counter(approval) is None
 
 
 def test_skill_subscriber_contract_accepts_only_bounded_marks():

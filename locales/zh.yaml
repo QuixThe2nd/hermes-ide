@@ -169,8 +169,7 @@ gateway:
 
   reload_mcp:
     cancelled:             "🟡 已取消 /reload-mcp。MCP 工具未更改。"
-    always_followup:       "ℹ️ 后续 `/reload-mcp` 调用将不再确认。可在 `config.yaml` 中将 `approvals.mcp_reload_confirm: true` 重新启用。"
-    confirm_prompt:        "⚠️ **确认 /reload-mcp**\n\n重新加载 MCP 服务器会为本会话重建工具集，并**使提供方提示词缓存失效** — 下一条消息将重新发送完整输入令牌。在长上下文或高推理模型上，这可能开销较大。\n\n请选择：\n• **批准一次** — 立即重新加载\n• **始终批准** — 立即重新加载并永久静默此提示\n• **取消** — 保持 MCP 工具不变"
+    confirm_prompt:        "⚠️ **确认 /reload-mcp**\n\n重新加载 MCP 服务器会为本会话重建工具集，并**使提供方提示词缓存失效** — 下一条消息将重新发送完整输入令牌。在长上下文或高推理模型上，这可能开销较大。\n\n请选择：\n• **批准一次** — 立即重新加载\n• **取消** — 保持 MCP 工具不变"
     header:                "🔄 **MCP 服务器已重新加载**\n"
     reconnected:           "♻️ 已重新连接：{names}"
     added:                 "➕ 已添加：{names}"

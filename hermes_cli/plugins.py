@@ -139,11 +139,6 @@ VALID_HOOKS: Set[str] = {
     # fast-path of /new; see gateway/run.py::_interrupt_and_clear_session). Kwargs: session_key,
     # platform, reason, invalidation_reason. Return values are ignored.
     "agent_loop_stopped",
-    # Approval observers (tools/approval.py); returns ignored — plugins cannot veto or pre-answer
-    # (use pre_tool_call). Kwargs: command, description, pattern_key, pattern_keys, session_key,
-    # surface: "cli"|"gateway"|"smart"; post_approval_response adds choice ("once"|"session"|
-    # "always"|"deny"|"timeout"|"smart_approve"|"smart_deny") and decided_by.
-    "pre_approval_request", "post_approval_response",
     # on_room_member_activity: a hosted Group Chat member's live runtime events (tool.started/completed,
     # request.opened, message.delta, reasoning.delta, turn.error, ...) stamped with room_id, thread_id,
     # member_id, turn_id, task_id, execution_generation. Observer, queued per consumer off the token
@@ -520,30 +515,6 @@ class PluginContext:
         logger.debug("Plugin %s spawned supervised task: %s", self.manifest.name, task_name)
         return task
 
-    def register_approval_transport(self, name: str, present_fn: Callable) -> None:
-        """Register a human approval transport, inactive until ``security.approval.transport:
-        <name>`` selects it. It receives a redacted ``ApprovalRequest`` and returns only a
-        correlated decision; policy and persistence stay host-owned. ``present_fn`` may be async."""
-        from hermes_cli.approval_transport import RegisteredApprovalTransport
-        transports = self._manager._approval_transports
-        clean = str(name).strip().lower()
-        if clean == "builtin":
-            raise ValueError("approval transport name 'builtin' is reserved")
-        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", clean):
-            raise ValueError("approval transport name must match [a-z0-9][a-z0-9_-]{0,63}")
-        if not callable(present_fn):
-            raise TypeError("approval transport present_fn must be callable")
-        if clean in transports:
-            owner = transports[clean].plugin_id
-            raise ValueError(f"approval transport {clean!r} is already registered by {owner!r}")
-        entry = RegisteredApprovalTransport(
-            name=clean, present=present_fn, plugin_id=self.plugin_id,
-            profile_home=str(get_hermes_home().resolve()),
-        )
-        logger.info("Plugin %s registered approval transport: %s", self.plugin_id, clean)
-        # Duplicate names are rejected above, so there is never a displaced previous entry to restore;
-        # tracking makes unload/force-reload remove this transport.
-        self._track_mapping_entry("approval_transport", clean, transports, entry, None)
 
     @_serialized_replacement
     def register_tool(
@@ -1299,7 +1270,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._context_engine = None  # Set by a plugin via register_context_engine()
         # Manager-local registries keyed by name (see the matching ``PluginContext.register_*``):
         # plugins, hooks, middleware, CLI + slash commands, prompt sections, skills (qualified name ->
-        # metadata), portable MCP servers, auxiliary tasks, approval transports, Slack action handlers
+        # metadata), portable MCP servers, auxiliary tasks, Slack action handlers
         # (matcher, callback, plugin_name), platform handler factories (lowercase platform -> list).
         self._plugins: Dict[str, LoadedPlugin] = {}
         self._hooks: Dict[str, List[Callable]] = {}
@@ -1314,7 +1285,6 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
         self._portable_mcp_servers: Dict[str, Dict[str, Any]] = {}
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
-        self._approval_transports: Dict[str, Any] = {}
         self._slack_action_handlers: List[tuple] = []
         self._platform_handler_factories: Dict[str, List[tuple]] = {}
         # Event bus: owner-tagged subscriptions (unload removes zombies); one daemon worker keeps
@@ -1541,31 +1511,6 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             logger.log(*verdict.log)
         return False
 
-    def register_approval_transport(self, name: str, present_fn: Callable, *, plugin_id: str) -> None:
-        """Manager-level registration (public API kept for out-of-tree plugins); the PluginContext
-        method is the tracked path plugins normally use. Same validation, no unload tracking."""
-        from hermes_cli.approval_transport import RegisteredApprovalTransport
-        clean = str(name).strip().lower()
-        if clean == "builtin":
-            raise ValueError("approval transport name 'builtin' is reserved")
-        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", clean):
-            raise ValueError("approval transport name must match [a-z0-9][a-z0-9_-]{0,63}")
-        if not callable(present_fn):
-            raise TypeError("approval transport present_fn must be callable")
-        if clean in self._approval_transports:
-            owner = self._approval_transports[clean].plugin_id
-            raise ValueError(f"approval transport {clean!r} is already registered by {owner!r}")
-        self._approval_transports[clean] = RegisteredApprovalTransport(
-            name=clean, present=present_fn, plugin_id=plugin_id, profile_home=str(get_hermes_home().resolve()),
-        )
-        logger.info("Plugin %s registered approval transport: %s", plugin_id, clean)
-
-    def get_approval_transport(self, name: str):
-        """Return a transport only inside the profile that registered it."""
-        registered = self._approval_transports.get(str(name).strip().lower())
-        if registered is None or registered.profile_home != str(get_hermes_home().resolve()):
-            return None
-        return registered
 
     def _collect_directory_manifests(self) -> List[PluginManifest]:
         """Directory manifests in full-discovery order (see :func:`collect_directory_manifests`)."""
@@ -1940,7 +1885,6 @@ _thread_tool_whitelist = threading.local()
 class _PreToolCallDirective:
     action: Optional[str] = None
     message: Optional[str] = None
-    rule_key: Optional[str] = None
     modified_args: Optional[Dict[str, Any]] = None
 
 
@@ -1961,10 +1905,7 @@ def _get_pre_tool_call_directive_details(
     tool_call_id: str = "", turn_id: str = "", api_request_id: str = "",
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
 ) -> _PreToolCallDirective:
-    """Check ``pre_tool_call`` hooks for ``{"action": "block", "message"}`` (veto; message becomes
-    the tool result) or ``{"action": "approve", "message", "rule_key"?}`` (escalate ANY tool to the
-    human-approval gate; ``rule_key`` picks the ``[a]lways`` allowlist grain). First valid directive
-    wins; irrelevant returns are ignored."""
+    """Run pre-tool hooks and return the first block plus merged argument modifications."""
     allowed = getattr(_thread_tool_whitelist, "allowed", None)
     if allowed is not None and tool_name not in allowed:
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
@@ -1980,33 +1921,24 @@ def _get_pre_tool_call_directive_details(
         if not isinstance(result, dict):
             continue
         action = result.get("action")
-        # "modify" — transform tool_input before dispatch. Processed before the block/approve gate
-        # so modify directives are visible even when a later hook blocks. Each modify directive
-        # shallow-merges its keys into one accumulated dict built from the original args.
         if action == "modify":
             partial = result.get("args")
             if isinstance(partial, dict) and partial:
                 modified_args = {**(modified_args if modified_args is not None else
                                     (args if isinstance(args, dict) else {})), **partial}
             continue
-        if action not in ("block", "approve"):
+        if action != "block":
             continue
         message = result.get("message")
-        message = message if isinstance(message, str) and message else None
-        # A block directive requires a message (it becomes the tool result); approve's is optional.
-        if action == "block" and not message:
-            continue
-        rule_key = result.get("rule_key") if action == "approve" else None
-        rule_key = (rule_key.strip() or None) if isinstance(rule_key, str) else None
-        return _PreToolCallDirective(action=action, message=message, rule_key=rule_key, modified_args=modified_args)
+        if isinstance(message, str) and message:
+            return _PreToolCallDirective(action="block", message=message, modified_args=modified_args)
     return _PreToolCallDirective(modified_args=modified_args)
 
 
 def get_pre_tool_call_directive(
     tool_name: str, args: Optional[Dict[str, Any]], **hook_kwargs: Any
 ) -> tuple[Optional[str], Optional[str]]:
-    """Back-compat: ``(directive, message)`` with directive ``"block"`` / ``"approve"`` / ``None``.
-    ``hook_kwargs`` are the observability ids of :func:`_get_pre_tool_call_directive_details`."""
+    """Return ``("block", message)`` or ``(None, None)`` after running hooks."""
     details = _get_pre_tool_call_directive_details(tool_name, args, **hook_kwargs)
     return (details.action, details.message)
 
@@ -2014,7 +1946,7 @@ def get_pre_tool_call_directive(
 def get_pre_tool_call_block_message(
     tool_name: str, args: Optional[Dict[str, Any]], **hook_kwargs: Any
 ) -> Optional[str]:
-    """Deprecated shim: only the ``block`` message (or ``None``); ``approve`` is invisible here."""
+    """Return the first valid block message, if any."""
     directive, message = get_pre_tool_call_directive(tool_name, args, **hook_kwargs)
     return message if directive == "block" else None
 
@@ -2022,52 +1954,16 @@ def get_pre_tool_call_block_message(
 def resolve_pre_tool_block(
     tool_name: str, args: Optional[Dict[str, Any]], **hook_kwargs: Any
 ) -> Optional[str]:
-    """Resolve the pre_tool_call directive to a final block message (or ``None`` to proceed),
-    running the human-approval gate for ``approve``. See :func:`_resolve_block_from_details`."""
+    """Resolve a pre-tool block message; ``None`` proceeds."""
     return _dispatch_pre_tool_call_hooks(tool_name, args, **hook_kwargs)[0]
-
-
-def _resolve_block_from_details(
-    details: "_PreToolCallDirective", tool_name: str, *, turn_id: str = "", tool_call_id: str = "",
-    session_id: str = "",
-) -> Optional[str]:
-    """The ONE place for the fail-closed approval logic: ``block`` blocks with its message; an
-    ``approve`` whose gate errors, denies, or times out is blocked; anything else proceeds."""
-    if details.action == "block":
-        return details.message
-    if details.action != "approve":
-        return None
-    try:
-        from tools.approval import request_tool_approval
-        from tools.approval_context import reset_current_observability_context, set_current_observability_context
-        approval_tokens = None
-        with suppress(Exception):
-            approval_tokens = set_current_observability_context(
-                turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id)
-        try:
-            result = request_tool_approval(tool_name, details.message or "", rule_key=details.rule_key or tool_name)
-        finally:
-            if approval_tokens is not None:
-                with suppress(Exception):
-                    reset_current_observability_context(approval_tokens)
-    except Exception:
-        # Fail-closed: if the gate itself errors, block rather than silently execute an action a
-        # plugin flagged for approval.
-        return f"BLOCKED: plugin approval gate failed for {tool_name}"
-    if not result.get("approved"):
-        return str(result.get("message") or f"BLOCKED: plugin approval required for {tool_name}")
-    return None
 
 
 def _dispatch_pre_tool_call_hooks(
     tool_name: str, args: Optional[Dict[str, Any]], **hook_kwargs: Any
 ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
-    """Invoke ``pre_tool_call`` hooks once; return ``(block_message, modified_args)`` — the resolved
-    block/approve message (``None`` to proceed) and merged ``modify`` args (``None`` if none)."""
+    """Invoke hooks once; return ``(block_message, modified_args)``."""
     details = _get_pre_tool_call_directive_details(tool_name, args, **hook_kwargs)
-    block_msg = _resolve_block_from_details(
-        details, tool_name, **{k: hook_kwargs.get(k, "") for k in ("turn_id", "tool_call_id", "session_id")})
-    return (block_msg, details.modified_args)
+    return (details.message if details.action == "block" else None, details.modified_args)
 
 
 def get_pre_verify_continue_message(

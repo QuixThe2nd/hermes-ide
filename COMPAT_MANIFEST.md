@@ -1029,7 +1029,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 
 | name | kind | new location |
 |---|---|---|
-| `approval_callback` | restored-def | `(deleted; BASE body restored)` |
 | `clarify_callback` | restored-def | `(deleted; BASE body restored)` |
 
 ### `hermes_cli.checkpoints`
@@ -2535,40 +2534,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `json` | import | `json` |
 
-### `tools.approval`
-
-| name | kind | new location |
-|---|---|---|
-| `DANGEROUS_PATTERNS` | moved-lazy | `tools.approval_detection` |
-| `DANGEROUS_PATTERNS_COMPILED` | moved-lazy | `tools.approval_detection` |
-| `HARDLINE_PATTERNS` | moved-lazy | `tools.approval_detection` |
-| `HARDLINE_PATTERNS_COMPILED` | moved-lazy | `tools.approval_detection` |
-| `HUMAN_WAIT_MARGIN_S` | moved-lazy | `tools.approval_human_wait` |
-| `cfg_get` | moved-lazy | `hermes_cli.config` |
-| `contextlib` | import | `contextlib` |
-| `contextvars` | import | `contextvars` |
-| `fnmatch` | import | `fnmatch` |
-| `functools` | import | `functools` |
-| `get_plugin_manager` | moved-lazy | `tools.approval_prompt` |
-| `human_wait_ceiling` | moved-lazy | `tools.approval_human_wait` |
-| `human_wait_seconds` | moved-lazy | `tools.approval_human_wait` |
-| `human_wait_window` | moved-lazy | `tools.approval_human_wait` |
-| `is_interrupted` | moved-lazy | `tools.interrupt` |
-| `re` | import | `re` |
-| `request_elicitation_consent` | moved-lazy | `tools.approval_prompt` |
-| `reset_current_observability_context` | moved-lazy | `tools.approval_context` |
-| `reset_current_session_key` | moved-lazy | `tools.approval_context` |
-| `reset_hermes_interactive_context` | moved-lazy | `tools.approval_context` |
-| `set_current_observability_context` | moved-lazy | `tools.approval_context` |
-| `set_current_session_key` | moved-lazy | `tools.approval_context` |
-| `set_hermes_interactive_context` | moved-lazy | `tools.approval_context` |
-| `shlex` | import | `shlex` |
-| `sys` | import | `sys` |
-| `tempfile` | import | `tempfile` |
-| `time` | import | `time` |
-| `unicodedata` | import | `unicodedata` |
-| `uuid` | import | `uuid` |
-
 ### `tools.async_delegation`
 
 | name | kind | new location |
@@ -2649,7 +2614,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `get_computer_use_schema` | moved-lazy | `tools.computer_use.tool` |
 | `handle_computer_use` | moved-lazy | `tools.computer_use.tool` |
 | `release_computer_use_session` | moved-lazy | `tools.computer_use.tool` |
-| `set_approval_callback` | moved-lazy | `tools.computer_use.tool` |
 
 ### `tools.computer_use.cua_backend`
 
@@ -2791,7 +2755,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | name | kind | new location |
 |---|---|---|
 | `json` | import | `json` |
-| `logger` | moved-lazy | `tools.approval` |
 | `logging` | import | `logging` |
 | `threading` | import | `threading` |
 
@@ -2978,12 +2941,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `get_async_client` | restored-def | `(deleted; BASE body restored)` |
 
-### `tools.path_security`
-
-| name | kind | new location |
-|---|---|---|
-| `logger` | moved-lazy | `tools.approval` |
-| `logging` | import | `logging` |
 
 ### `tools.preview_tool`
 

@@ -21,7 +21,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | **Threads** | Hermes supports Matrix threads (MSC3440). If you reply in a thread, Hermes keeps the thread context isolated from the main room timeline. Threads where the bot has already participated do not require a mention. |
 | **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. Set `MATRIX_DM_AUTO_THREAD=true` (default false) to also auto-create threads for DM messages — this is distinct from `MATRIX_DM_MENTION_THREADS`, which only starts a thread when the bot is `@mentioned` in a DM. |
 | **Commands** | Hermes accepts normal `/commands` when your Matrix client sends them. If your client reserves `/` for local commands, use `!commands` instead; Hermes normalizes known `!command` aliases to `/command`. |
-| **Interactive controls** | Dangerous-command approval and `/model` selection can use Matrix reactions. Approval reactions can be limited to the user who requested the action. |
+| **Interactive controls** | `/model` selection and other retained pickers can use Matrix reactions. |
 | **Thinking and tool activity** | Matrix uses threaded, editable thinking/tool-activity panes when gateway progress is enabled, so updates do not flood the main room timeline. |
 | **Shared rooms with multiple users** | By default, Hermes isolates session history per user inside the room. Two people talking in the same room do not share one transcript unless you explicitly disable that. |
 | **LaTeX math** | `$...$` (inline) and `$$...$$` (display) in replies are sent as Element `data-mx-maths` markup, so clients with **Settings → Labs → Render LaTeX maths in messages** typeset them with KaTeX. Unpaired dollars (`$5 or $10`) stay literal, and the plain-text `body` keeps the raw TeX for other clients. |
@@ -465,7 +465,7 @@ When E2EE is enabled, Hermes:
 
 ### Matrix Tools and Controls
 
-Hermes does not expose Matrix-specific agent tools (such as room creation, invites, or redaction) — the agent interacts with Matrix through normal message delivery. The adapter uses reactions and redactions internally to power approval prompts and pickers.
+Hermes does not expose Matrix-specific agent tools (such as room creation, invites, or redaction) — the agent interacts with Matrix through normal message delivery. The adapter uses reactions and redactions internally to power pickers.
 
 If `MATRIX_ALLOWED_ROOMS` is set, Hermes only responds in those rooms (DMs are exempt).
 
@@ -883,7 +883,7 @@ Session continuity is maintained via the `X-Hermes-Session-Id` header. The host'
 :::
 
 :::note
-**Limitations (v1):** Tool progress messages from the remote agent are not relayed back — the user sees the streamed final response only, not individual tool calls. Dangerous command approval prompts are handled on the host side, not relayed to the Matrix user. These can be addressed in future updates.
+**Limitations (v1):** Tool progress messages from the remote agent are not relayed back — the user sees the streamed final response only, not individual tool calls.
 :::
 
 ### Bot connects and sends, but ignores inbound messages

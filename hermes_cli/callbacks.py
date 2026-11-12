@@ -101,62 +101,6 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
 # The whole block is removed by reverting the commit that added it.
 
-def approval_callback(cli, command: str, description: str) -> str:
-    """Prompt for dangerous command approval through the TUI.
-
-    Shows a selection UI with choices: once / session / always / deny.
-    When the command is longer than 70 characters, a "view" option is
-    included so the user can reveal the full text before deciding.
-
-    Uses cli._approval_lock to serialize concurrent requests (e.g. from
-    parallel delegation subtasks) so each prompt gets its own turn.
-    """
-    lock = getattr(cli, "_approval_lock", None)
-    if lock is None:
-        import threading
-        cli._approval_lock = threading.Lock()
-        lock = cli._approval_lock
-
-    with lock:
-        timeout = 300  # fixed 300s window — the configurable approval-timeout key was removed
-        response_queue = queue.Queue()
-        choices = ["once", "session", "always", "deny"]
-        if len(command) > 70:
-            choices.append("view")
-
-        cli._approval_state = {
-            "command": command,
-            "description": description,
-            "choices": choices,
-            "selected": 0,
-            "response_queue": response_queue,
-        }
-        cli._approval_deadline = _time.monotonic() + timeout
-
-        if hasattr(cli, "_app") and cli._app:
-            cli._app.invalidate()
-
-        while True:
-            try:
-                result = response_queue.get(timeout=1)
-                cli._approval_state = None
-                cli._approval_deadline = 0
-                if hasattr(cli, "_app") and cli._app:
-                    cli._app.invalidate()
-                return result
-            except queue.Empty:
-                remaining = cli._approval_deadline - _time.monotonic()
-                if remaining <= 0:
-                    break
-                if hasattr(cli, "_app") and cli._app:
-                    cli._app.invalidate()
-
-        cli._approval_state = None
-        cli._approval_deadline = 0
-        if hasattr(cli, "_app") and cli._app:
-            cli._app.invalidate()
-        cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
-        return "timeout"
 
 def clarify_callback(cli, question, choices, multi_select=False):
     """Prompt for clarifying question through the TUI.

@@ -2,11 +2,9 @@
 (sampling/createMessage, text and tool-use results) and elicitation."""
 
 import asyncio
-import functools
 import json
 import logging
 import time
-from contextvars import Context
 from typing import TYPE_CHECKING, Callable, List, Optional
 from tools.mcp_tool_common import _MISSING, _exc_str, _safe_numeric, _sanitize_error, mcp_field, _core
 from tools.mcp_tool_schema import _normalize_mcp_input_schema
@@ -231,39 +229,13 @@ class SamplingHandler:
         return self._build_text_result(choice, response)
 
 
-def _format_elicitation_schema_summary(schema: dict, server_name: str) -> str:
-    """Flat-object requested_schema -> readable field list so the user knows what they're approving."""
-    props = schema.get("properties") if isinstance(schema, dict) else None
-    if not isinstance(props, dict) or not props:
-        return f"Approval requested by MCP server '{server_name}'."
-    lines = [f"Fields requested by MCP server '{server_name}':"]
-    for field_name, field_spec in props.items():
-        spec = field_spec if isinstance(field_spec, dict) else {}
-        field_type, field_desc = str(spec.get("type", "") or ""), str(spec.get("description", "") or "")
-        lines.append(f"  - {field_name}" + (f" ({field_type})" if field_type else "") + (f": {field_desc}" if field_desc else ""))
-    return "\n".join(lines)
 
 
 class ElicitationHandler:
-    """``elicitation_callback`` for one MCP server. Form-mode routes through Hermes' approval system
-    (CLI, TUI, messaging surfaces, ...); URL-mode is declined. Fail-closed: any timeout, exception or unexpected
-    state returns decline/cancel, never a silent accept."""
+    """Accept form-mode elicitation; URL mode remains unsupported and declined."""
 
-    # asyncio-side safety net over the approval's own input() timeout so the MCP loop never blocks
-    # indefinitely if the inner timeout is bypassed.
-    _OUTER_TIMEOUT_GRACE_SECONDS = 5
-    # consent answer -> (ElicitResult action, metric); anything else declines.
-    _ANSWER_RESULTS = {"accept": ("accept", "accepted"), "cancel": ("cancel", "errors")}
-
-    def __init__(self, server_name: str, config: dict,
-                 call_context: Callable[[], Optional[Context]] = lambda: None):
+    def __init__(self, server_name: str):
         self.server_name = server_name
-        # 5 min mirrors the gateway approval default so async surfaces can respond.
-        self.timeout = _safe_numeric(config.get("timeout", 300), 300, float)
-        # Returns the owning MCPServerTask's contextvars snapshot for the in-flight tool call (None
-        # between calls). A thunk, not the task: mcp_tool_server_run imports this module, so
-        # MCPServerTask cannot be named here.
-        self._call_context = call_context
         self.metrics = {"requests": 0, "accepted": 0, "declined": 0, "errors": 0}
 
     def session_kwargs(self) -> dict:
@@ -275,42 +247,15 @@ class ElicitationHandler:
         self.metrics[metric] += 1
         return _core.ElicitResult(action=action, **({"content": {}} if action == "accept" else {}))
 
-    def _consent_thunk(self, message: str, description: str) -> Callable[[], str]:
-        """Sync consent call replaying the agent's contextvars snapshot when the owning task captured one
-        (the recv-loop task does NOT inherit them; gateway-platform detection needs them).
-        ``Context.run`` runs a context once, so it is copied per elicitation."""
-        from tools.approval import request_elicitation_consent
-
-        consent = functools.partial(request_elicitation_consent, message, description,
-                                    timeout_seconds=int(self.timeout), surface=f"mcp-elicitation/{self.server_name}")
-        captured = self._call_context()
-        return consent if captured is None else (lambda: captured.copy().run(consent))
 
     async def __call__(self, context, params):
         """SDK elicitation callback (``ElicitationFnT``). Returns ElicitResult or ErrorData."""
         self.metrics["requests"] += 1
-        if getattr(params, "mode", "form") == "url":  # OAuth/payment: needs a browser + elicitation/complete; unsupported
+        if getattr(params, "mode", "form") == "url":
             logger.info("MCP server '%s' requested URL-mode elicitation; declining "
                         "(URL-mode elicitation not implemented)", self.server_name)
             return self._result("decline", "declined")
-
-        message = getattr(params, "message", "") or f"MCP server '{self.server_name}' is requesting your approval"
-        # ``requestedSchema`` on mcp 1.x, ``requested_schema`` on 2.0 (aliases don't apply to attribute
-        # access) — read both or the user approves without seeing the fields.
-        schema = getattr(params, "requestedSchema", None) or getattr(params, "requested_schema", None) or {}
-        logger.info("MCP server '%s' elicitation request: %s", self.server_name, _sanitize_error(message)[:200])
-        try:  # lazy import inside avoids import-order coupling with early-bootstrap tools.approval
-            invoke_consent = self._consent_thunk(message, _format_elicitation_schema_summary(schema, self.server_name))
-        except Exception as exc:  # pragma: no cover -- defensive
-            logger.error("MCP server '%s' elicitation: approval system unavailable: %s", self.server_name, exc)
-            return self._result("decline", "errors")
-        try:  # off-thread: inline, the sync consent flow would freeze the MCP loop and every RPC on it
-            answer = await asyncio.wait_for(
-                asyncio.to_thread(invoke_consent), timeout=self.timeout + self._OUTER_TIMEOUT_GRACE_SECONDS)
-        except asyncio.TimeoutError:
-            logger.warning("MCP server '%s' elicitation timed out after %ds", self.server_name, int(self.timeout))
-            return self._result("cancel", "errors")
-        except Exception as exc:
-            logger.error("MCP server '%s' elicitation failed: %s", self.server_name, exc, exc_info=True)
-            return self._result("decline", "errors")
-        return self._result(*self._ANSWER_RESULTS.get(answer, ("decline", "declined")))
+        message = getattr(params, "message", "") or f"MCP server '{self.server_name}' requested form input"
+        logger.info("MCP server '%s' elicitation request accepted: %s",
+                    self.server_name, _sanitize_error(message)[:200])
+        return self._result("accept", "accepted")

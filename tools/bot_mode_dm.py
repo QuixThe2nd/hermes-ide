@@ -717,12 +717,6 @@ def _spawn_delivery(
         proc_id = parsed.get("session_id") or ""
         if parsed.get("error"):
             return _err(f"Delivery to {label} failed to start: {parsed['error']}")
-        if parsed.get("status") == "pending_approval":
-            # terminal_tool's approval gate answers with an EMPTY error and no session_id: the runner
-            # never launched because nobody in this turn could approve its command.
-            return _err(f"Delivery to {label} failed to start: its command needs terminal approval that nobody "
-                        "in this turn can grant" + (", so nothing was sent. Approve it (or add it to "
-                                                    "command_allowlist) and send again." if dm_file else "."))
         if not proc_id:
             return _err(f"Delivery to {label} failed to start: no process id returned")
         # From here the background runner owns the file (removed after the consumer finishes).

@@ -308,7 +308,6 @@ class TestGatewayCleanupWiring:
         runner.adapters = {}
         runner._background_tasks = set()
         runner._pending_messages = {}
-        runner._pending_approvals = {}
         runner._pending_model_notes = {}
         runner._shutdown_event = asyncio.Event()
         runner._exit_reason = None

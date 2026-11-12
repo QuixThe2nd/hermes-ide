@@ -1,9 +1,9 @@
 """Oneshot (-z) mode: send a prompt, get the final content block, exit.
 
 Toolsets = explicit --toolsets, else the user's "cli" toolsets from `hermes tools`. Rules /
-memory / AGENTS.md / preloaded skills = same as a normal chat turn. Approvals are auto-bypassed
-(HERMES_YOLO_MODE=1). Model/provider mirror `hermes chat`: both optional; only --model → auto-detect
-the provider; only --provider → error (ambiguous).
+memory / AGENTS.md / preloaded skills = same as a normal chat turn. Model/provider mirror
+`hermes chat`: both optional; only --model → auto-detect the provider; only --provider → error
+(ambiguous).
 """
 
 from __future__ import annotations
@@ -274,8 +274,6 @@ def run_oneshot(
         return 2
     use_config_toolsets = _normalize_toolsets(toolsets) is None
 
-    # Non-interactive by definition — an approval prompt would hang forever.
-    os.environ["HERMES_YOLO_MODE"] = "1"
     os.environ["HERMES_ACCEPT_HOOKS"] = "1"
     # Same finite-chat marker as `hermes chat -q` (cli.py): the session-source resolver uses it to drop an
     # inherited tui/desktop transport label, and delegate dispatch to route detached results inline.
@@ -594,8 +592,8 @@ def _run_agent(
             ephemeral_system_prompt=skills_prompt,
             reasoning_config=reasoning_config,
             # The only interactive callback wired: no user sits at a terminal. Sudo prompts gate on
-            # HERMES_INTERACTIVE (never set), hook approval via HERMES_ACCEPT_HOOKS=1, dangerous
-            # commands via HERMES_YOLO_MODE=1, skill secret capture degrades gracefully.
+            # HERMES_INTERACTIVE (never set), hook approval via HERMES_ACCEPT_HOOKS=1;
+            # skill secret capture degrades gracefully.
             clarify_callback=_oneshot_clarify_callback,
         )
         # Belt-and-braces: no streaming display callbacks may bypass our stdout capture.

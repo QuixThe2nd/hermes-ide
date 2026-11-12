@@ -8,17 +8,15 @@ description: "A security-posture walkthrough for running Hermes Agent on the mac
 
 You're about to run an agent on the machine you live on — a personal laptop or an employer-managed workstation. What's the safe posture?
 
-Short answer: the defaults already do most of the work. Hermes ships secure-by-default, with a defense-in-depth model covering dangerous-command hard blocks, file-write safety, and credential handling. This page walks through what's on out of the box, which knobs to tighten for a shared or work machine, and how to undo mistakes when they happen. Every control here is covered in depth in the [Security](../user-guide/security.md) guide.
+Short answer: the defaults already do most of the work. Hermes ships secure-by-default, with a defense-in-depth model covering execution safeguards, file-write safety, and credential handling. This page walks through what's on out of the box, which knobs to tighten for a shared or work machine, and how to undo mistakes when they happen. Every control here is covered in depth in the [Security](../user-guide/security.md) guide.
 
 ## What the Defaults Already Protect
 
 Fresh install, no configuration — these protections are active:
 
-**Catastrophic commands are refused outright.** A small hard blocklist — filesystem wipes, fork bombs, direct block-device writes — is always on, with no override flag. Everything else runs immediately without asking.
+**Lifecycle and self-repository guards are active.** The terminal refuses operations that would stop or restart its own supervised gateway or rewrite Hermes' own checkout. Other commands run immediately without asking.
 
-**A hardline blocklist is the always-on floor.** Some commands — `rm -rf /`, fork bombs, zeroing a physical disk — are refused outright, with no override flag.
-
-**File writes to sensitive paths are blocked.** The `write_file` and `patch` tools cannot touch OS credential stores (`~/.ssh/`, `~/.aws/`, `~/.kube/`, `/etc/sudoers`, `~/.netrc`), Hermes credential stores (`auth.json`, `.env`, pairing data), or project secret files (`.env`, `.env.local`, `.envrc`) anywhere on disk. Blocked writes return an error immediately — there is no approval prompt and no way to override from the chat UI.
+**File writes to sensitive paths are blocked.** The `write_file` and `patch` tools cannot touch OS credential stores (`~/.ssh/`, `~/.aws/`, `~/.kube/`, `/etc/sudoers`, `~/.netrc`), Hermes credential stores (`auth.json`, `.env`, pairing data), or project secret files (`.env`, `.env.local`, `.envrc`) anywhere on disk. Blocked writes return an error immediately and cannot be overridden from the chat UI.
 
 **Secrets are redacted from output.** `security.redact_secrets` is on by default: patterns that look like API keys, tokens, and passwords in tool output are redacted before they enter the conversation context and logs.
 
@@ -32,19 +30,6 @@ There's more below the surface — SSRF protection on all URL-capable tools, fil
 
 On a machine with employer data, production credentials, or other people's files, layer these on top of the defaults.
 
-### Add your own deny rules
-
-`approvals.deny` is a list of glob patterns that block matching terminal commands unconditionally. It's the user-editable counterpart to the built-in hardline blocklist. Use it to declare things that must never run on this machine:
-
-```yaml
-approvals:
-  deny:
-    - "git push --force*"
-    - "*curl*|*sh*"
-    - "dd if=* of=/dev/*"
-```
-
-Patterns are case-insensitive [fnmatch](https://docs.python.org/3/library/fnmatch.html) globs matched against the whole command text, and matching runs over the same normalized/deobfuscated variants the dangerous-pattern detector uses, so simple quoting tricks don't slip past a rule. Always quote patterns — a bare leading `*` is a YAML parse error. Changes take effect immediately, no restart needed. Details: [User-Defined Deny Rules](../user-guide/security.md#user-defined-deny-rules-approvalsdeny).
 
 ### Sandbox file writes
 
@@ -66,7 +51,7 @@ The strongest isolation is not running commands on your machine at all. The term
 
 | Backend | Isolation |
 |---------|-----------|
-| `local` | None — runs on host (dangerous-command checks apply) |
+| `local` | None — runs on host with the current operating-system user's permissions |
 | `docker` | Container — the container itself is the security boundary |
 | `ssh` | Remote machine — keeps execution on a separate server |
 
@@ -77,7 +62,7 @@ terminal:
   docker_forward_env: []  # Explicit allowlist only; empty keeps secrets out of the container
 ```
 
-Every Docker container runs with hardened settings — all Linux capabilities dropped (with a minimal add-back set), `no-new-privileges`, a process-count limit, and size-limited tmpfs mounts. With a container backend, destructive commands inside the container can't harm the host, which is why dangerous-command checks are skipped there.
+Every Docker container runs with hardened settings — all Linux capabilities dropped (with a minimal add-back set), `no-new-privileges`, a process-count limit, and size-limited tmpfs mounts. With a container backend, destructive commands inside the container can't harm the host when mounts, credentials, and network access are appropriately restricted.
 
 For `ssh`, set `terminal.backend: ssh` in `config.yaml` and provide host details via `TERMINAL_SSH_HOST`, `TERMINAL_SSH_USER`, and `TERMINAL_SSH_KEY` in `~/.hermes/.env`. See [Network Isolation](../user-guide/security.md#network-isolation).
 
@@ -95,7 +80,7 @@ Or use DM pairing instead of hardcoding IDs: unknown users receive a one-time pa
 
 ## The Undo Layer: Checkpoints and `/rollback`
 
-Approval gates prevent damage; [checkpoints](../user-guide/checkpoints-and-rollback.md) reverse it. When enabled, Hermes automatically snapshots your project before destructive operations — `write_file`, `patch`, and destructive terminal commands like `rm`, `mv`, `sed -i`, and `git reset` — into a shadow git store under `~/.hermes/checkpoints/store/`. Your real project `.git` is never touched.
+[Checkpoints](../user-guide/checkpoints-and-rollback.md) can reverse accidental changes. When enabled, Hermes automatically snapshots your project before destructive operations — `write_file`, `patch`, and destructive terminal commands like `rm`, `mv`, `sed -i`, and `git reset` — into a shadow git store under `~/.hermes/checkpoints/store/`. Your real project `.git` is never touched.
 
 Checkpoints are opt-in. Enable per-session:
 

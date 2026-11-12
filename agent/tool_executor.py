@@ -194,7 +194,7 @@ def _resolve_unbounded_tools() -> frozenset[str]:
     return frozenset(expanded)
 # Upper bound a concurrent worker will wait at the start-order gate for all
 # earlier-ordered tools to advance before proceeding out of order. Long enough
-# to cover slow-but-legitimate authorization (e.g. an approval round-trip),
+# to cover slow-but-legitimate authorization (e.g. a sudo prompt),
 # short enough that one wedged dispatch cannot starve the batch forever.
 _START_ORDER_GATE_TIMEOUT_S = 120.0
 # Fallback only; the effective bound uses the fixed sudo-wait ceiling.
@@ -207,7 +207,7 @@ def _authorization_gate_lock_timeout() -> float:
     A wedged pre-tool hook must not park every concurrent worker forever.
     """
     try:
-        from tools.approval_human_wait import human_wait_ceiling
+        from tools.sudo_wait import human_wait_ceiling
 
         # The ceiling is capped for platform-safe Lock.acquire timeouts.
         return human_wait_ceiling()
@@ -464,7 +464,7 @@ class _ConcurrentToolAuthorizationGate:
             # Snapshot on the SUBMITTING thread: excluded_seconds() is polled from the
             # batch wait loop, whose context may differ from the workers'.
             try:
-                from tools.approval_context import get_current_session_key
+                from tools.session_context import get_current_session_key
 
                 self._session_key = get_current_session_key()
             except Exception:
@@ -477,7 +477,7 @@ class _ConcurrentToolAuthorizationGate:
 
     def _human_wait_seconds(self) -> float:
         try:
-            from tools.approval_human_wait import human_wait_seconds
+            from tools.sudo_wait import human_wait_seconds
 
             return human_wait_seconds(self._session_key)
         except Exception:
@@ -751,14 +751,14 @@ def _resolve_sequential_tool_timeout() -> float | None:
     """Deadline for one sequential call: ``timeouts.tools.sequential_call``, else the
     concurrent batch deadline so the two paths can't drift; ``0``/negative disables.
     Deliberately NOT ``agent.deadline.run_bounded_sync``: both executors extend the
-    deadline while an approval prompt is open, which a fixed deadline can't express."""
+    deadline while a sudo prompt is open, which a fixed deadline can't express."""
     from agent.deadline import resolve_timeout
 
     return resolve_timeout("tools.sequential_call", default=_resolve_concurrent_tool_timeout())
 
 
 # ``manage_connections`` waits on the connection operation's own deadline; the generic deadline
-# would return tool_timeout while its approval card is still open.
+# would return tool_timeout while its interactive card is still open.
 # Long blocking delegations are covered by ``tools.unbounded_tools``
 # (``_DEFAULT_UNBOUNDED_TOOLS``), which now also exempts ``terminal``: a foreground
 # terminal call supervises its own child and deadline.
@@ -773,7 +773,7 @@ def _abandoned_sequential_result(agent, ref: _ToolCallRef, message: str, result_
 
 
 def _poll_sequential_future(agent, future, function_name: str, deadline: float | None, started: float, authorization_gate) -> tuple[str, Any]:
-    """Wait for the worker in interrupt-poll slices, extending the deadline by human approval
+    """Wait for the worker in interrupt-poll slices, extending the deadline by sudo
     wait; returns ``("done", result)``, ``("timeout", None)`` or ``("interrupted", None)``.
     A disabled deadline still polls: this loop is what makes a non-cooperative tool
     interruptible, so no deadline must not mean no interrupt checks."""
@@ -1187,8 +1187,8 @@ class _ConcurrentBatch:
         abandoned at the gate (the main thread already wrote this slot; emitting would
         double-report the tool_call_id)."""
         agent = self.agent
-        # Approval/sudo callbacks (thread-local) and the agent turn's ContextVars are propagated by
-        # propagate_context_to_thread() at the submit site below (GHSA-qg5c-hvr5-hjgr, #13617).
+        # Sudo and staged-write callbacks (thread-local) and the agent turn's ContextVars are
+        # propagated by propagate_context_to_thread() at the submit site below (GHSA-qg5c-hvr5-hjgr, #13617).
         start = time.time()
         blocked = dispatched = False
         try:
@@ -1255,7 +1255,7 @@ class _ConcurrentBatch:
     def submit_all(self, executor, runnable: list[int]) -> tuple[list, dict]:
         """Submit every runnable slot; on interpreter shutdown, synthesize error results
         for the unsubmitted remainder instead of raising. ``propagate_context_to_thread``
-        carries turn ContextVars and thread-local approval/sudo callbacks into the worker."""
+        carries turn ContextVars and thread-local sudo/staged-write callbacks into the worker."""
         futures = []
         future_to_index = {}
         for submit_index, i in enumerate(runnable):

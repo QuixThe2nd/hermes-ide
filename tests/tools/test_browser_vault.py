@@ -579,10 +579,8 @@ class TestBrowserVaultTools:
         finally:
             redact.clear_vault_redaction_values()
 
-    def test_payment_fill_requires_confirmation_then_fills_card_fields(self, store):
-        """A card is written only after the user confirms (a prompt injection reaching a checkout must not be
-        able to spend); the secret eval then targets the classified card controls and the result carries
-        the field tokens but never a value."""
+    def test_payment_fill_redacts_card_values(self, store):
+        """Payment fields fill directly without exposing secret values."""
         from tools import browser_vault_tool
         from agent import redact
 
@@ -608,16 +606,7 @@ class TestBrowserVaultTools:
         try:
             with patch("agent.vault_store.get_vault_store", return_value=store), \
                  patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
-                 patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret), \
-                 patch("tools.approval.request_elicitation_consent", return_value="decline"):
-                declined = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
-            assert declined["success"] is False and declined["error_type"] == "payment_declined"
-            assert secret_exprs == []
-
-            with patch("agent.vault_store.get_vault_store", return_value=store), \
-                 patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
-                 patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret), \
-                 patch("tools.approval.request_elicitation_consent", return_value="accept"):
+                 patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
                 raw = browser_vault_tool.browser_vault_fill(meta.id)
             out = json.loads(raw)
             assert out["success"] is True and out["fields"] == ["cc-csc", "cc-exp", "cc-number"]

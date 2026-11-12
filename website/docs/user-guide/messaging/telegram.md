@@ -1327,7 +1327,7 @@ Telegram fires a push notification on every message the bot sends. For long agen
 
 | Mode | Behavior |
 |------|----------|
-| `important` (default) | Only **final responses**, **approval prompts**, and **slash-command confirmations** ring. Tool progress, streaming chunks, and status messages are delivered with `disable_notification=true`. |
+| `important` (default) | Only **final responses** and **slash-command confirmations** ring. Tool progress, streaming chunks, and status messages are delivered with `disable_notification=true`. |
 | `all` | Every outgoing message fires a push notification. Legacy behavior; opt in if you genuinely want to hear about every tool call. |
 
 Configure in `~/.hermes/config.yaml`:

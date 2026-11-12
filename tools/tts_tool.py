@@ -291,8 +291,8 @@ def _resolve_output_base(
         file_path = Path(output_path).expanduser()
         if command_provider_config is not None:
             file_path = _configured_command_tts_output_path(file_path, command_provider_config)
-        from agent.file_safety import is_write_approval_required, is_write_denied
-        if is_write_denied(str(file_path)) or is_write_approval_required(str(file_path)):
+        from agent.file_safety import is_write_denied
+        if is_write_denied(str(file_path)):
             return None, _error_json(
                 f"output_path targets a protected credential or system path: "
                 f"{file_path}. Choose a normal audio output location.")

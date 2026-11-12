@@ -1,4 +1,4 @@
-"""Modal overlays for the interactive CLI: clarify, approval, sudo/secret capture, command palette,
+"""Modal overlays for the interactive CLI: clarify, sudo/secret capture, command palette,
 slash-confirm, external editor.
 
 Mixin split out of ``cli.py``; bound onto ``HermesCLI`` via the MRO. cli.py-internal symbols are
@@ -14,66 +14,24 @@ import threading
 import time as _time
 
 from hermes_cli.callbacks import prompt_for_secret
-from typing import Optional
 
 _TIMED_OUT = object()  # sentinel returned by _poll_modal_queue when the deadline passes
 
 # Typed answers accepted by the slash-confirm modal, mapped onto the canonical choice values.
 _CONFIRM_ALIASES = {
-    "1": "once", "once": "once", "approve": "once", "yes": "once", "y": "once", "ok": "once",
-    "2": "always", "always": "always", "remember": "always",
-    "3": "cancel", "cancel": "cancel", "nevermind": "cancel", "no": "cancel", "n": "cancel"}
+    "once": "once", "approve": "once", "yes": "once", "y": "once", "ok": "once",
+    "always": "always", "remember": "always",
+    "cancel": "cancel", "nevermind": "cancel", "no": "cancel", "n": "cancel"}
 
 _CLARIFY_TIMEOUT_REPLY = (
     "The user did not provide a response within the time limit. "
     "Use your best judgement to make the choice and proceed.")
 
 
-def _approval_gate_on(key: str) -> bool:
-    """Read ``approvals.<key>`` (default on); any load failure keeps the prompt enabled."""
-    from cli import load_cli_config
-    try:
-        cfg = load_cli_config()
-        approvals = cfg.get("approvals") if isinstance(cfg, dict) else None
-        if isinstance(approvals, dict):
-            return bool(approvals.get(key, True))
-    except Exception:
-        pass
-    return True
-
-
-def _gated_confirm(self, command, key, *, title, detail, choices, unchanged, always_msg, once_verb):
-    """Shared once/always/cancel confirm behind ``approvals.<key>`` (destructive slash, /reload-mcp).
-
-    Returns ``"once"`` without prompting when the gate is off; ``None`` on cancel / no input /
-    unrecognized answer (already reported to the user). Picking "always" persists the opt-out.
-    """
-    from cli import save_config_value
-    if not _approval_gate_on(key):
-        return "once"
-    raw = self._prompt_text_input_modal(title=title, detail=detail, choices=choices)
-    if raw is None:
-        print(f"🟡 /{command} cancelled (no input).")
-        return None
-    choice = self._normalize_slash_confirm_choice(raw, choices)
-    if choice is None:
-        print(f"🟡 Unrecognized choice '{raw}'. /{command} cancelled.")
-        return None
-    if choice == "cancel":
-        print(f"🟡 /{command} cancelled. {unchanged}")
-        return None
-    if choice == "always":
-        if save_config_value(f"approvals.{key}", False):
-            print(always_msg)
-            print(f"   Re-enable via `approvals.{key}: true` in config.yaml.")
-        else:
-            print(f"⚠️  Couldn't persist opt-out — {once_verb} once.")
-    return choice
 
 
 class CLIModalMixin:
-    """Modal overlays for the interactive CLI: clarify, approval, sudo/secret capture, command
-    palette, slash-confirm, external editor."""
+    """Modal overlays for the interactive CLI."""
 
     def _open_external_editor(self, buffer=None) -> bool:
         """Open the active input buffer in an external editor."""
@@ -85,7 +43,7 @@ class CLIModalMixin:
         if self._command_running:
             _cprint(f"{_DIM}Wait for the current command to finish before opening the editor.{_RST}")
             return False
-        if (self._sudo_state or self._secret_state or self._approval_state
+        if (self._sudo_state or self._secret_state
                 or getattr(self, "_slash_confirm_state", None) or self._clarify_state):
             _cprint(f"{_DIM}Finish the active prompt before opening the editor.{_RST}")
             return False
@@ -386,6 +344,8 @@ class CLIModalMixin:
         if not choice_raw:
             return None
         allowed = {choice[0] for choice in choices}
+        if choice_raw.isdigit() and 1 <= int(choice_raw) <= len(choices):
+            return choices[int(choice_raw) - 1][0]
         normalized = _CONFIRM_ALIASES.get(choice_raw)
         if normalized in allowed:
             return normalized
@@ -416,7 +376,7 @@ class CLIModalMixin:
         """Open the Ctrl+P fuzzy command palette modal (never stacked over another modal)."""
         if getattr(self, "_command_palette_state", None):
             return
-        if (self._model_picker_state or self._clarify_state or self._approval_state
+        if (self._model_picker_state or self._clarify_state
                 or self._slash_confirm_state or self._sudo_state or self._secret_state):
             return
         self._capture_modal_input_snapshot()
@@ -492,49 +452,6 @@ class CLIModalMixin:
         except Exception:
             logger.debug("command palette prefill failed", exc_info=True)
 
-    @classmethod
-    def _split_destructive_skip(cls, cmd_text: Optional[str]) -> tuple[str, bool]:
-        """Split inline-skip tokens out of a destructive slash command → ``(remainder, skip)``.
-
-        ``remainder`` is the text minus the leading "/cmd" word and any skip tokens; ``skip`` is
-        True iff one was found: "/reset now" -> ("", True); "/reset --yes My title" ->
-        ("My title", True); "/new My title" -> ("My title", False).
-        """
-        tokens = (cmd_text or "").strip().split()
-        if not tokens:
-            return "", False
-        if tokens[0].startswith("/"):
-            tokens = tokens[1:]
-        kept = [tok for tok in tokens if tok.lower() not in cls._DESTRUCTIVE_SKIP_TOKENS]
-        return " ".join(kept), len(kept) != len(tokens)
-
-    def _confirm_destructive_slash(
-        self, command: str, detail: str, cmd_original: Optional[str] = None) -> Optional[str]:
-        """Confirm a destructive slash command (``/clear``, ``/new``/``/reset``, ``/undo``): returns
-        ``"once"``, ``"always"`` (persists the opt-out) or ``None`` (cancelled). Gate off → "once"
-        silently; ``now`` / ``--yes`` / ``-y`` in ``cmd_original`` bypasses the modal (callers strip
-        the tokens via :meth:`_split_destructive_skip`).
-
-        Inline-skip: if ``cmd_original`` contains ``now``, ``--yes``, or ``-y`` as an argument (e.g.
-        ``/reset now``, ``/new --yes My title``), the modal is bypassed and ``"once"`` is returned
-        immediately. This is an escape hatch for non-interactive use and for the degraded path where the
-        modal can't be marshaled onto the app loop (native Windows itself now drives the modal normally —
-        see #33961). Callers are responsible for stripping the skip tokens from any remaining argument
-        parsing (see :meth:`_split_destructive_skip`).
-        """
-        if cmd_original and self._split_destructive_skip(cmd_original)[1]:
-            return "once"
-        return _gated_confirm(
-            self, command, "destructive_slash_confirm",
-            title=f"⚠️  /{command} — destroys conversation state",
-            detail=detail,
-            choices=[
-                ("once", "Approve Once", "proceed this time only"),
-                ("always", "Always Approve", "proceed and silence this prompt permanently"),
-                ("cancel", "Cancel", "keep current conversation")],
-            unchanged="Conversation unchanged.",
-            always_msg="🔒 Future /clear, /new, /reset, and /undo will run without confirmation.",
-            once_verb="proceeding")
 
     def _ring_bell(self, prompt: bool = False, context: str = "", detail: str = "") -> None:
         """Terminal bell (\\a) gated by ``display.bell_on_prompt`` (``prompt=True``, blocking modals)
@@ -761,18 +678,12 @@ class CLIModalMixin:
             _cprint(f"\n{_DIM}  ⏭ Skipped{_RST}")
         return result
 
-    def _approval_callback(self, command: str, description: str,
-                           *, allow_permanent: bool = True,
-                           allow_session: bool = True,
-                           smart_denied: bool = False) -> str:
-        """Deprecated pass-through: this fork never asks a human to approve/deny agent
-        actions. The callback stays registered (terminal_tool binding) but never opens a
-        modal and always approves."""
+    def _write_review_callback(self, command: str, description: str,
+                               *, allow_permanent: bool = True,
+                               allow_session: bool = True,
+                               smart_denied: bool = False) -> str:
+        """Accept inline memory/skill staged writes, preserving current CLI behavior."""
         return "once"
-
-    def _handle_approval_selection(self) -> None:
-        """Deprecated no-op: no approval modal is ever opened, so there is no selection."""
-        return
 
     def _vault_unlock_callback(self, backend_name: str, display_name: str) -> str:
         """Masked master-password prompt for an external password manager (agent thread).
@@ -879,19 +790,16 @@ class CLIModalMixin:
             pass
 
     def _clear_active_overlays_for_interrupt(self) -> None:
-        """Drain and clear every input-blocking overlay left by an interrupted agent: the worker
-        thread is gone but the state dict still gates input (frozen terminal until its timeout).
-        Push a safe value onto each queue (approval -> "deny", others -> cancel), nil the state,
-        restore the draft; each step is wrapped so a dead queue can't block the others."""
+        """Drain input-blocking overlays left by an interrupted agent.
+
+        Push a safe cancellation onto each queue, clear state, and restore the draft.
+        """
         def _put(state, value) -> None:
             try:
                 state["response_queue"].put(value)
             except Exception:
                 pass
 
-        if self._approval_state:
-            _put(self._approval_state, "deny")
-            self._approval_state = None
         if self._clarify_state:
             _put(self._clarify_state, "The user cancelled. Use your best judgement to proceed.")
             self._clarify_state = None

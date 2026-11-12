@@ -247,7 +247,6 @@ LEGACY_FIELD_SPECS: Dict[str, _FieldSpec] = {
     "_pending_turn_sidecar_notes": _spec("conversation", "sidecar_notes", list),
     "_session_ephemeral_pin": _spec("conversation", "ephemeral_pin", None),
     "_session_vc_last": _spec("conversation", "vc_last", None),
-    "_pending_approvals": _spec("persistent", "approvals", None),
     "_update_prompt_pending": _spec("persistent", "update_prompt_pending", bool),
     "_pending_native_image_paths_by_session": _spec("persistent", "native_image_paths", list),
     "_pending_messages": _spec("persistent", "pending_command_text", None),

@@ -463,9 +463,8 @@ from gateway.platforms.helpers import (
 )
 from gateway.platforms.helpers import cancel_task
 from utils import atomic_json_write, env_float
-from gateway.platforms.base_exec_approval import EA_HEADER_TEXT, EA_REASON_LABEL_TEXT
 from gateway.platforms.base import (
-    BasePlatformAdapter, ExecApprovalPrompt, SendResult, unauthorized_action_notice,
+    BasePlatformAdapter, SendResult, unauthorized_action_notice,
     cache_image_from_url, cache_image_from_bytes_async, cache_audio_from_url, cache_audio_from_bytes_async,
     cache_document_from_bytes_async, SUPPORTED_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS,
     _prefix_within_utf16_limit, utf16_len, validate_inbound_media_size,
@@ -1172,11 +1171,8 @@ def _read_dm_role_auth_guild() -> Optional[int]:
     return guild_id if guild_id > 0 else None
 
 
-# Default timeout for Discord button views when ``approvals.discord_prompt_timeout`` is unset;
-# Discord interaction tokens expire at ~15 minutes, so 900s is the practical ceiling.
+# Fixed Discord button-view timeout; interaction tokens expire after ~15 minutes.
 _DISCORD_PROMPT_TIMEOUT_DEFAULT = 300
-_DISCORD_PROMPT_TIMEOUT_MIN = 30
-_DISCORD_PROMPT_TIMEOUT_MAX = 900
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -1186,28 +1182,6 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw in {"true", "1", "yes", "on"}
 
 
-def _read_discord_prompt_timeout() -> int:
-    """Timeout (seconds) for Discord button views from ``approvals.discord_prompt_timeout``
-    (default 300), clamped to [MIN, MAX] so a typo can't make prompts vanish or outlive tokens."""
-    raw: Any = None
-    try:
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config() or {}
-        approvals_cfg = cfg.get("approvals", {}) or {}
-        raw = approvals_cfg.get("discord_prompt_timeout")
-    except Exception:
-        return _DISCORD_PROMPT_TIMEOUT_DEFAULT
-    if raw is None or raw == "":
-        return _DISCORD_PROMPT_TIMEOUT_DEFAULT
-    try:
-        seconds = int(raw)
-    except (TypeError, ValueError):
-        return _DISCORD_PROMPT_TIMEOUT_DEFAULT
-    if seconds < _DISCORD_PROMPT_TIMEOUT_MIN:
-        return _DISCORD_PROMPT_TIMEOUT_MIN
-    if seconds > _DISCORD_PROMPT_TIMEOUT_MAX:
-        return _DISCORD_PROMPT_TIMEOUT_MAX
-    return seconds
 
 
 # ── Tool stage embeds (self-editing MoA progress cards) ─────────────────────
@@ -7990,15 +7964,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             body = body[: max(0, budget - len(truncated_suffix))] + truncated_suffix
         return f"{prefix}{body}{suffix}"
 
-    def _approval_mention_content(self) -> Optional[str]:
-        """User mentions for approval prompts, gated on ``discord.approval_mentions``
-        (``DISCORD_APPROVAL_MENTIONS``). Only numeric allowlist entries; default off."""
-        if not self._extra_or_env_flag("approval_mentions", "DISCORD_APPROVAL_MENTIONS", "false", truthy=True):
-            return None
-        user_ids = sorted(uid for uid in self._allowed_user_ids if str(uid).isdigit())
-        if not user_ids:
-            return None
-        return " ".join(f"<@{uid}>" for uid in user_ids)
 
     def _clarify_mention_content(self) -> Optional[str]:
         """Return a requester mention for clarify prompts when enabled.
@@ -8043,43 +8008,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 logger.warning("[%s] %s failed: %s", self.name, fail_log, e)
             return SendResult(success=False, error=str(e))
 
-    # Payload lives in plain content: embeds can be invisible/detached on web/mobile.
-    _EA_HEADER = (f"⚠️ **{EA_HEADER_TEXT}**\n\n"
-                  "Do you want Hermes to run this command?\n\n"
-                  "**Requested command:**\n")
-    _EA_CODE_OPEN = "```bash\n"
-    _EA_CODE_CLOSE = "\n```\n"
-    _EA_REASON_LABEL = f"**{EA_REASON_LABEL_TEXT}:** "
-    _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
-    # The reason shares the 2000-char content cap with the command; unbounded it would starve
-    # the command preview to zero and push the content past the cap.
-    _EA_REASON_BUDGET = 300
-
-    def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
-        # Mentions ride in front of the content and count against the 2000-char message cap too.
-        fixed = (len(self._EA_HEADER) + len(self._EA_CODE_OPEN) + len(self._EA_CODE_CLOSE)
-                 + len(self._EA_REASON_LABEL) + len(description) + len("...") + len(self._ea_deadline_line())
-                 + (len(self._EA_SMART_DENY_LINE) if smart_denied else 0)
-                 + len(self._approval_mention_content() or "") + 1)
-        return max(0, self.MAX_MESSAGE_LENGTH - fixed)
-
-    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
-        """Deprecated: this fork never asks a human to approve/deny agent actions, so no
-        approval prompt is ever posted (base ``send_exec_approval`` is a no-op pass-through)."""
-        return SendResult(success=False, error="Not supported")
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
-        confirm_id: str, metadata: Optional[dict] = None,
+        confirm_id: str, metadata: Optional[dict] = None, include_always: bool = True,
     ) -> SendResult:
-        """Send a three-button slash-command confirmation prompt."""
+        """Send a slash-command confirmation prompt."""
         def _build(_channel):
-            # Header-only card (same rule as the exec approval prompt): the message lives in
-            # content only, so embed-rendering clients don't see it twice (#114693).
+            # Header-only card: the message lives in content only, so embed-rendering
+            # clients don't see it twice (#114693).
             embed = discord.Embed(title=title or "Confirm", color=discord.Color.orange())
             content = self._self_contained_prompt_content(f"**{title or 'Confirm'}**", message)
             view = SlashConfirmView(
-                session_key=session_key, confirm_id=confirm_id,
+                session_key=session_key, confirm_id=confirm_id, include_always=include_always,
                 allowed_user_ids=self._allowed_user_ids, allowed_role_ids=self._allowed_role_ids,
             )
             return {"content": content, "embed": embed, "view": view}, view
@@ -8092,9 +8033,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Render a clarify prompt as numbered plain text — no buttons.
 
         Discord component views expire with their interaction token
-        (``approvals.discord_prompt_timeout``, default 300s, hard-capped by
-        Discord's 15-minute expiry), which left a dead button row on every
-        prompt the user didn't answer in time. Plain text has no such clock,
+        (300s, hard-capped by Discord's 15-minute expiry), which left a dead
+        button row on every prompt the user didn't answer in time.
         so both render modes are text-only and the gateway's text-intercept
         resolves the reply instead:
 
@@ -8129,7 +8069,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
 
-            # Header-only card (same rule as the exec approval prompt): the question and choices
+            # Header-only card: the question and choices
             # live in content only, so embed-rendering clients don't see them twice (#114693).
             embed = discord.Embed(title="❓ Hermes needs your input", color=discord.Color.orange())
 
@@ -8205,8 +8145,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             ]
 
 
-            # Mirror the question and the numbered choices in plain content —
-            # embeds are invisible on some clients (see send_exec_approval).
+            # Mirror the question and numbered choices in plain content; embeds are invisible
+            # on some clients.
             prompt_body = str(question or "").strip()
             if choice_lines:
                 prompt_body = "\n".join([prompt_body, ""] + choice_lines)
@@ -8922,22 +8862,6 @@ def _component_check_auth(
     return False
 
 
-def _resolve_exec_approval_admin_gate(config_extra: Optional[dict]) -> Tuple[bool, set]:
-    """Resolve the exec-approval admin gate from ``extra``; returns ``(require_admin, admin_user_ids)``.
-    Default OFF (user-scope buttons). When ``require_admin_for_exec_approval`` is true only
-    ``allow_admin_from`` ids may click; on with no admins -> ``(True, set())`` (fail closed, log once).
-    """
-    extra = config_extra if isinstance(config_extra, dict) else {}
-    raw_toggle = extra.get("require_admin_for_exec_approval", False)
-    require_admin = str(raw_toggle).strip().lower() in {"true", "1", "yes"}
-    if not require_admin:
-        return (False, set())
-    try:
-        from gateway.slash_access import _coerce_id_list
-        admin_ids = set(_coerce_id_list(extra.get("allow_admin_from")))
-    except Exception:
-        admin_ids = set()
-    return (True, admin_ids)
 
 
 def _define_discord_view_classes() -> None:
@@ -9013,13 +8937,17 @@ def _define_discord_view_classes() -> None:
             await self._expire_embed("⏱ Prompt expired — no action taken")
 
     class SlashConfirmView(_HermesView):
-        """Approve Once / Always Approve / Cancel for slash-command confirmations (``/reload-mcp``,
-        ``GatewayRunner._request_slash_confirm``); clicks call ``tools.slash_confirm.resolve(...)``."""
+        """Slash-command confirmation; clicks call ``tools.slash_confirm.resolve``."""
 
-        def __init__(self, session_key: str, confirm_id: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
-            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
+        def __init__(self, session_key: str, confirm_id: str, allowed_user_ids: set,
+                     allowed_role_ids: Optional[set] = None, include_always: bool = True):
+            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_DISCORD_PROMPT_TIMEOUT_DEFAULT)
             self.session_key = session_key
             self.confirm_id = confirm_id
+            if not include_always:
+                for item in list(self.children):
+                    if getattr(getattr(item, "callback", None), "__name__", "") == "approve_always":
+                        self.remove_item(item)
 
         async def _resolve(self, interaction: discord.Interaction, choice: str, color: discord.Color, label: str):
             if not await self._gate(
@@ -9059,7 +8987,7 @@ def _define_discord_view_classes() -> None:
         ``.update_response`` for the detached update process to pick up."""
 
         def __init__(self, session_key: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
-            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
+            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_DISCORD_PROMPT_TIMEOUT_DEFAULT)
             self.session_key = session_key
 
         async def _respond(self, interaction: discord.Interaction, answer: str, color: discord.Color, label: str):
@@ -9320,7 +9248,7 @@ def _define_discord_view_classes() -> None:
         Single-use: after the first valid click all buttons disable."""
 
         def __init__(self, choices: List[str], clarify_id: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
-            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
+            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_DISCORD_PROMPT_TIMEOUT_DEFAULT)
             self.choices = list(choices)[:24]
             self.clarify_id = clarify_id
             for index, choice in enumerate(self.choices):
@@ -9886,13 +9814,6 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     # grant in _is_allowed_user — never applies to DMs).
     _gate("allowed_guilds", "DISCORD_ALLOWED_GUILDS", from_platform_extra=True)
     _gate("allow_bots", "DISCORD_ALLOW_BOTS", from_platform_extra=True, lower=True)
-    approval_mentions_cfg = (
-        discord_cfg["approval_mentions"] if "approval_mentions" in discord_cfg
-        else platform_extra_cfg.get("approval_mentions")
-    )
-    if approval_mentions_cfg is not None:
-        seeded_extra["approval_mentions"] = approval_mentions_cfg
-        _env_default("DISCORD_APPROVAL_MENTIONS", str(approval_mentions_cfg).lower())
     clarify_mentions_cfg = (
         discord_cfg["clarify_mentions"] if "clarify_mentions" in discord_cfg
         else platform_extra_cfg.get("clarify_mentions")

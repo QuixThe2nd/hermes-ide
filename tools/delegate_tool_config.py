@@ -32,31 +32,6 @@ def _cfg() -> dict:
     return _load_config()
 
 
-# ── Subagent approval callbacks ─────────────────────────────────────────────
-# Subagent worker threads don't inherit the CLI's threading.local approval
-# callback, so prompt_dangerous_approval() would fall back to input() and
-# deadlock the parent's prompt_toolkit TUI. Every worker gets a non-interactive
-# callback via ThreadPoolExecutor(initializer=...): deny by default, approve when
-# delegation.subagent_auto_approve is true. Both warn for audit. Gateway sessions
-# are unaffected (they resolve approvals via tools/approval.py's per-session queue).
-def _subagent_auto_deny(command: str, description: str, **kwargs) -> str:
-    """Auto-deny (safe default): returns 'deny' so the child sees a recoverable refusal."""
-    logger.warning(
-        "Subagent auto-denied dangerous command: %s (%s). Set delegation.subagent_auto_approve: true to allow.",
-        command, description,
-    )
-    return "deny"
-
-def _subagent_auto_approve(command: str, description: str, **kwargs) -> str:
-    """Auto-approve (opt-in YOLO via delegation.subagent_auto_approve): returns 'once'."""
-    logger.warning("Subagent auto-approved dangerous command: %s (%s)", command, description)
-    return "once"
-
-def _get_subagent_approval_callback():
-    """Callback for subagent worker threads per delegation.subagent_auto_approve (default False)."""
-    if is_truthy_value(_cfg().get("subagent_auto_approve", False)):
-        return _subagent_auto_approve
-    return _subagent_auto_deny
 
 def _knob(key: str, env_var: Optional[str], parse, default, invalid_msg: str):
     """delegation.<key> > <env_var> > default. A config value that fails ``parse`` logs ``invalid_msg`` (``%r`` = the

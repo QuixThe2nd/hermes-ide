@@ -1,5 +1,5 @@
 """Registering a connected (or schema-cached) MCP server's tools into the tool registry:
-include/exclude filtering, trust-tier metadata capture, utility-tool selection, name-collision
+include/exclude filtering, read-only annotation capture, utility-tool selection, name-collision
 resolution and the schema-cache write-through. Both entry points (``_register_server_tools``
 live, ``_register_from_cache_sync`` lazy) build ``_Candidate`` records for ``_register_candidates``."""
 
@@ -50,16 +50,6 @@ def _default_denied_server(name: str, config: dict) -> bool:
     return not isinstance(include_raw, (str, list, tuple, set))
 
 
-def _normalize_server_trust(value: Any) -> str:
-    """Config ``trust`` -> tier. None -> ``full`` (compat default); unrecognized -> ``untrusted`` (fail closed)."""
-    if value is None:
-        return _core._TRUST_FULL
-    text = str(value).strip().lower()
-    if text in (_core._TRUST_FULL, _core._TRUST_UNTRUSTED):
-        return text
-    logger.warning("MCP trust: unrecognized trust value %r — treating as 'untrusted' (valid values: full, untrusted)",
-                   value)
-    return _core._TRUST_UNTRUSTED
 
 
 def _annotation_read_only_hint(mcp_tool: Any) -> bool:
@@ -69,25 +59,18 @@ def _annotation_read_only_hint(mcp_tool: Any) -> bool:
     return hint is True
 
 
-def _record_tool_trust_metadata(server_name: str, config: dict, tools: List[Any], key=None) -> None:
-    """Capture per-server trust and per-tool readOnlyHint at discovery — the security boundary: the call-time gate
-    classifies from data we control, never re-read server-supplied state. *key* is the connection (default: the
-    registering profile's own); the ``trust`` policy is recorded under it for the profile that owns it — an
-    adopting profile records its own policy in ``_record_scope_trust``."""
+def _record_tool_annotations(server_name: str, tools: List[Any], key=None) -> None:
+    """Capture discovery-time readOnlyHint values for transport retry safety.
+
+    Annotations belong to the connection, not to an adopting profile's policy.
+    """
     with _core._lock:
         if key is None:
             key = _server_key(server_name)
-        _core._server_trust_levels[key] = _normalize_server_trust((config or {}).get("trust"))
         hints = _core._tool_read_only_hints.setdefault(key, {})
         hints.update({t.name: _annotation_read_only_hint(t) for t in tools if getattr(t, "name", None)})
 
 
-def _record_scope_trust(server_name: str, config: dict, scope: str) -> None:
-    """``trust`` is the CONSUMING profile's policy, never the connection's: an ``untrusted`` profile that
-    adopts a ``full`` profile's live connection must still be asked before every write-capable call."""
-    with _core._lock:
-        _core._server_trust_levels[_server_key(server_name, scope, current=False)] = _normalize_server_trust(
-            (config or {}).get("trust"))
 
 
 def _track_mcp_tool_server(tool_name: str, server_name: str) -> None:
@@ -160,7 +143,6 @@ def _remove_server_scope(key, scope: str) -> None:
             _core._server_tool_scopes[key] = scopes
         else:
             _core._server_tool_scopes.pop(key, None)
-        _core._server_trust_levels.pop(_server_key(server_name, scope, current=False), None)
     _restore_server_toolset_alias(key)
 
 
@@ -401,7 +383,7 @@ def _write_schema_cache(name: str, server: "MCPServerTask", config: dict, should
             tools_payload.append({
                 "name": t.name, "description": t.description or "",
                 "inputSchema": schema_obj if isinstance(schema_obj, dict) else {},
-                "annotations": {"readOnlyHint": _annotation_read_only_hint(t)},  # lazy path trust-gates identically
+                "annotations": {"readOnlyHint": _annotation_read_only_hint(t)},
             })
         utility_payload = [{"schema": e["schema"], "handler_key": e["handler_key"]}
                            for e in _select_utility_schemas(name, server, config)]
@@ -418,7 +400,7 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
     ``toolsets.TOOLSETS``; lossy normalization collisions (``read-file``/``read_file``) fail closed."""
     should_register = _make_tool_filter(name, config)
     key = _server_key_for_task(server)
-    _record_tool_trust_metadata(name, config, server._tools, key)
+    _record_tool_annotations(name, server._tools, key)
     candidates = _tool_candidates(name, server._tools, should_register, server.tool_timeout)
     candidates += _utility_candidates(name, _select_utility_schemas(name, server, config), server.tool_timeout)
     registered = _register_candidates(
@@ -519,7 +501,6 @@ def _register_connected_into_current_scope(servers: dict) -> int:
         # Visibility for this profile: the owner keeps teardown, this scope sees the connection.
         with _core._lock:
             _core._server_tool_scopes.setdefault(key, set()).add(scope)
-        _record_scope_trust(name, config, scope)
         if registry.get_tool_names_for_toolset(f"mcp-{name}"):
             continue
         candidates = _tool_candidates(name, server._tools, _make_tool_filter(name, config), server.tool_timeout)
@@ -538,8 +519,7 @@ def _register_connected_into_current_scope(servers: dict) -> int:
 
 def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]:
     """Lazy startup: register from a cached manifest with no child process (first real call goes
-    through ``_ensure_lazy_server_connected``). Trust metadata is recorded first so the
-    call-time gate is identical for live and cached registrations.
+    through ``_ensure_lazy_server_connected``). Retry-safety annotations are recorded first.
 
     Lazy startup (#56832, design by Vansh5632): tools appear in the registry immediately; the first real
     call routes through ``_get_connected_server_for_call`` → ``_ensure_lazy_server_connected``.
@@ -547,7 +527,7 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
     from tools.mcp_schema_cache import config_fingerprint, tools_from_cache_entry, utility_tools_from_cache_entry
     tool_timeout = _resolve_tool_timeout(config)
     cached_tools = _cached_tools(tools_from_cache_entry(entry))
-    _record_tool_trust_metadata(name, config, cached_tools)
+    _record_tool_annotations(name, cached_tools)
     candidates = _tool_candidates(name, cached_tools, _make_tool_filter(name, config), tool_timeout)
     cached_utility = () if _default_denied_server(name, config) else utility_tools_from_cache_entry(entry)
     candidates += _utility_candidates(name, cached_utility, tool_timeout)

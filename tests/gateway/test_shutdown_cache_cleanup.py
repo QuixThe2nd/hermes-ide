@@ -48,7 +48,6 @@ class _FakeGateway:
         self._failed_platforms = []
         self._shutdown_event = asyncio.Event()
         self._pending_messages = {}
-        self._pending_approvals = {}
         self._busy_ack_ts = {}
 
     def _running_agent_count(self):

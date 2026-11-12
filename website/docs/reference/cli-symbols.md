@@ -1,6 +1,6 @@
 ---
 title: "CLI Symbols Glossary"
-description: "What every symbol in the Hermes terminal UI means — transcript markers, status-bar badges, overlay glyphs, and approval prompts."
+description: "What every symbol in the Hermes terminal UI means — transcript markers, status-bar badges, and overlay glyphs."
 ---
 
 # CLI Symbols Glossary
@@ -43,7 +43,6 @@ The single line at the bottom of the TUI. Segments appear only when relevant and
 | `⏲` | The same timer, frozen after the turn completes. |
 | `cmp N` | The session has been auto-compressed N times. |
 | `▶ N` | N `/bg` tasks currently running. |
-| `⚠ YOLO` | YOLO mode is on (auto-approval). Also shown in the startup banner. |
 | `⛓ N` | N subagents currently active. |
 | `↩ resumes when subagent finishes` | Reassurance shown while you are idle but delegated work is still in flight — the result returns on its own. |
 | `● REC` | Voice mode is recording. |

@@ -2627,7 +2627,6 @@ class GatewayShutdownMixin:
         self._running_agents.clear()
         self._running_agents_ts.clear()
         self._pending_messages.clear()
-        self._pending_approvals.clear()
         for _attr in ("_active_session_leases", "_busy_ack_ts"):  # absent on bare shutdown-path doubles
             if hasattr(self, _attr):
                 getattr(self, _attr).clear()

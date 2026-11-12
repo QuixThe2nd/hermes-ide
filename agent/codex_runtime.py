@@ -471,22 +471,9 @@ def _ensure_codex_session(agent) -> None:
             return
         _close_codex_session(agent)
     from agent.runtime_cwd import resolve_agent_cwd
-    from agent.transports.codex_app_server_session import CodexAppServerSession, _ServerRequestRouting
+    from agent.transports.codex_app_server_session import CodexAppServerSession
     from hermes_cli.codex_runtime_switch import get_configured_codex_binary
     from hermes_cli.config import load_config
-    # Approval callback: Hermes' standard prompt flow when a CLI thread installed one.
-    approval_callback = None
-    with suppress(Exception):
-        from tools.terminal_tool import _get_approval_callback
-        approval_callback = _get_approval_callback()
-    # Gateway/cron have no UI for codex approval requests, so exec/apply_patch fail closed by default. Only an
-    # explicit approval bypass (/yolo, --yolo, HERMES_YOLO_MODE) hands policy to codex's sandbox.
-    auto_approve_requests = False
-    try:
-        from tools.approval import is_approval_bypass_active
-        auto_approve_requests = is_approval_bypass_active()
-    except Exception:
-        logger.debug("codex app-server: approval-bypass lookup failed; keeping fail-closed default", exc_info=True)
     # Bridge codex JSON-RPC notifications (item/started, item/completed, item/agentMessage/delta, ...) into
     # Hermes' gateway UI callbacks (tool_progress_callback, _fire_stream_delta,
     # _emit_interim_assistant_message). Without this, Discord/Telegram users see no live tool-progress or
@@ -498,9 +485,8 @@ def _ensure_codex_session(agent) -> None:
     # conversation history is still not projected into the codex thread (#74712, #26035).
     agent._codex_session_prompt = developer_instructions
     agent._codex_session = CodexAppServerSession(
-        cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()), approval_callback=approval_callback,
+        cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()),
         codex_bin=get_configured_codex_binary(load_config()),
-        request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
         on_event=make_codex_app_server_event_bridge(agent),
         developer_instructions=developer_instructions or None,
     )

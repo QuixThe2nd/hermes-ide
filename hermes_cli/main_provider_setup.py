@@ -53,7 +53,6 @@ def _clear_stale_openai_base_url():
 _AUX_TASKS: list[tuple[str, str, str]] = [
     ("vision", "Vision", "image/screenshot analysis"),
     ("compression", "Compression", "context summarization"),
-    ("approval", "Approval", "smart command approval"),
     ("mcp", "MCP", "MCP tool reasoning"),
     ("title_generation", "Title generation", "session titles"),
     ("review", "Review", "/review reviewer subagent"),

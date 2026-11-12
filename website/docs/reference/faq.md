@@ -219,12 +219,12 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
 A model cannot reliably identify why it refused a request. If the refusal appears only in the assistant's prose, its claim that a hidden Hermes runtime policy caused it may be a hallucinated explanation or a restriction applied by the selected model or provider.
 
-Hermes enforcement is explicit: a blocked tool action returns a tool error naming the denied command or path, and an approval-required action shows an approval prompt. Hermes does not silently turn those execution controls into a general content-refusal layer. Provider-level controls can still apply when configured, such as Amazon Bedrock Guardrails.
+Hermes enforcement is explicit: a blocked tool action returns a tool error naming the denied command or path. Hermes does not silently turn those execution controls into a general content-refusal layer. Provider-level controls can still apply when configured, such as Amazon Bedrock Guardrails.
 
 To isolate the source:
 
 1. Run `/status` to confirm the active model and provider.
-2. Check whether the refusal includes an actual Hermes tool error or approval prompt. If it is prose only, do not treat the model's attribution as runtime evidence.
+2. Check whether the refusal includes an actual Hermes tool error. If it is prose only, do not treat the model's attribution as runtime evidence.
 3. Retry in a fresh session with another configured model or provider. A refusal that changes with the model is model/provider behavior, not a Hermes execution control.
 4. If an explicit tool error appears, use its exact text when reporting the problem.
 
@@ -353,13 +353,13 @@ See [Context Length Detection](../integrations/providers.md#context-length-detec
 
 ### Terminal Issues
 
-#### Command blocked as dangerous
+#### Command blocked by a Hermes execution guard
 
-**Cause:** The command matched the hard blocklist or an `approvals.deny` glob — catastrophic commands are refused without asking.
+**Cause:** The command matched an independent lifecycle or self-repository safeguard.
 
 **Solution:**
-- Ask the agent to use a safer alternative
-- See the hard blocklist and deny rules in the [Security docs](../user-guide/security.md)
+- Ask the agent to use an alternative that does not affect the supervised gateway or Hermes' own checkout
+- See the execution safeguards in the [Security docs](../user-guide/security.md#command-execution)
 
 #### `sudo` not working via messaging gateway
 

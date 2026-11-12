@@ -9,10 +9,10 @@ from typing import Any, Mapping
 
 from gateway.hosted_rooms_common import bounded_int, compact_json, identifier
 
-POLICY_VERSION = 1
+POLICY_VERSION = 2
 MAX_POLICY_TOOLSETS = 128
 MAX_POLICY_ITERATIONS = (1 << 53) - 1
-_POLICY_FIELDS = {"version", "target_profile", "enabled_toolsets", "approval_mode", "max_iterations", "policy_digest"}
+_POLICY_FIELDS = {"version", "target_profile", "enabled_toolsets", "max_iterations", "policy_digest"}
 
 
 class RoomExecutionPolicyError(ValueError): """A RoomLink execution policy is malformed or no longer current."""
@@ -29,11 +29,10 @@ def _identifier(value: Any, *, field: str) -> str:
 
 @dataclass(frozen=True)
 class RoomExecutionPolicy:
-    """Immutable target policy applied at the agent and approval boundaries."""
+    """Immutable target policy applied at the agent boundary."""
     version: int
     target_profile: str
     enabled_toolsets: tuple[str, ...]
-    approval_mode: str
     max_iterations: int
     policy_digest: str
 
@@ -50,15 +49,12 @@ class RoomExecutionPolicy:
         toolsets = tuple(sorted(_identifier(item, field="enabled_toolset") for item in raw_toolsets))
         if len(set(toolsets)) != len(toolsets) or "bot_room" not in toolsets:
             raise RoomExecutionPolicyError("enabled_toolsets are invalid")
-        approval_mode = str(value["approval_mode"] or "").strip().lower()
-        if approval_mode not in {"manual", "smart", "off"}:
-            raise RoomExecutionPolicyError("approval_mode is invalid")
         max_iterations = bounded_int(
             value["max_iterations"], error=RoomExecutionPolicyError, message="max_iterations is invalid", low=1,
             high=MAX_POLICY_ITERATIONS)
         unsigned = {
             "version": POLICY_VERSION, "target_profile": target_profile, "enabled_toolsets": list(toolsets),
-            "approval_mode": approval_mode, "max_iterations": max_iterations}
+            "max_iterations": max_iterations}
         supplied = str(value["policy_digest"] or "").strip().lower()
         if supplied != _policy_digest(unsigned):
             raise RoomExecutionPolicyError("policy_digest does not match the execution policy")
@@ -82,8 +78,6 @@ def execution_policy_mapping(*, target_profile: str, config: Mapping[str, Any] |
     unsigned = {
         "version": POLICY_VERSION, "target_profile": _identifier(target_profile, field="target_profile"),
         "enabled_toolsets": toolsets,
-        # Pass-through approval engine: no human approval, so the room policy is always "off".
-        "approval_mode": "off",
         "max_iterations": min(resolve_turn_limit(agent.get("max_turns")), MAX_POLICY_ITERATIONS)}
     value = {**unsigned, "policy_digest": _policy_digest(unsigned)}
     return RoomExecutionPolicy.from_mapping(value).as_mapping()

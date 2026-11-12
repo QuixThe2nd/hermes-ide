@@ -183,8 +183,7 @@ gateway:
 
   reload_mcp:
     cancelled:             "🟡 /reload-mcp cancelled. MCP tools unchanged."
-    always_followup:       "ℹ️ Future `/reload-mcp` calls will run without confirmation. Re-enable via `approvals.mcp_reload_confirm: true` in config.yaml."
-    confirm_prompt:        "⚠️ **Confirm /reload-mcp**\n\nReloading MCP servers rebuilds the tool set for this session and **invalidates the provider prompt cache** — the next message will re-send full input tokens.  On long-context or high-reasoning models this can be expensive.\n\nChoose:\n• **Approve Once** — reload now\n• **Always Approve** — reload now and silence this prompt permanently\n• **Cancel** — leave MCP tools unchanged"
+    confirm_prompt:        "⚠️ **Confirm /reload-mcp**\n\nReloading MCP servers rebuilds the tool set for this session and **invalidates the provider prompt cache** — the next message will re-send full input tokens.  On long-context or high-reasoning models this can be expensive.\n\nChoose:\n• **Approve Once** — reload now\n• **Cancel** — leave MCP tools unchanged"
     header:                "🔄 **MCP Servers Reloaded**\n"
     reconnected:           "♻️ Reconnected: {names}"
     added:                 "➕ Added: {names}"

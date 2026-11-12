@@ -81,14 +81,14 @@ def _job(job_id, deliver):
 
 @contextlib.contextmanager
 def _bound_session_key(key):
-    """Bind the approval session key contextvar (background dispatch gate)."""
-    from tools.approval_context import _approval_session_key
+    """Bind the tool-session ContextVar for background dispatch."""
+    from tools.session_context import _tool_session_key
 
-    token = _approval_session_key.set(key)
+    token = _tool_session_key.set(key)
     try:
         yield
     finally:
-        _approval_session_key.reset(token)
+        _tool_session_key.reset(token)
 
 
 def _dispatch_diag(res) -> str:

@@ -213,22 +213,19 @@ def test_handle_approval_off(hermes_home):
     assert "off" in out
 
 
-# ---------------------------------------------------------------------------
-# Inline (interactive CLI) approval path — regression for the bug where the
-# per-thread approval callback was never passed to prompt_dangerous_approval,
-# so every gated foreground memory write was silently denied.
+# Inline interactive review path
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def approval_callback_cleanup():
+def inline_prompt_cleanup():
     yield
-    from tools.terminal_tool import set_approval_callback
-    set_approval_callback(None)
+    from tools import write_approval as wa
+    wa.set_inline_prompt_callback(None)
 
 
-def test_memory_inline_approve_writes(hermes_home, approval_callback_cleanup):
+def test_memory_inline_approve_writes(hermes_home, inline_prompt_cleanup):
     from tools.memory_tool import memory_tool, MemoryStore
-    from tools.terminal_tool import set_approval_callback
+    from tools.write_approval import set_inline_prompt_callback
     from tools import write_approval as wa
     _set_approval("memory", True)
 
@@ -236,7 +233,7 @@ def test_memory_inline_approve_writes(hermes_home, approval_callback_cleanup):
     def approve_cb(command, description, **kw):
         calls.append((command, description))
         return "once"
-    set_approval_callback(approve_cb)
+    set_inline_prompt_callback(approve_cb)
 
     store = MemoryStore(); store.load_from_disk()
     r = json.loads(memory_tool("add", "memory", "approved fact", store=store))
@@ -249,12 +246,12 @@ def test_memory_inline_approve_writes(hermes_home, approval_callback_cleanup):
     assert "approved fact" in calls[0][0]
 
 
-def test_memory_inline_deny_blocks(hermes_home, approval_callback_cleanup):
+def test_memory_inline_deny_blocks(hermes_home, inline_prompt_cleanup):
     from tools.memory_tool import memory_tool, MemoryStore
-    from tools.terminal_tool import set_approval_callback
+    from tools.write_approval import set_inline_prompt_callback
     from tools import write_approval as wa
     _set_approval("memory", True)
-    set_approval_callback(lambda command, description, **kw: "deny")
+    set_inline_prompt_callback(lambda command, description, **kw: "deny")
 
     store = MemoryStore(); store.load_from_disk()
     r = json.loads(memory_tool("add", "memory", "denied fact", store=store))

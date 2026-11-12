@@ -208,13 +208,13 @@ $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 
 This keeps PowerShell and child processes on UTF-8 and helps avoid Windows-only failures.
 
-### Dangerous commands run without a prompt
+### Isolate command execution
 
-Dangerous commands run immediately, and a small hard blocklist refuses catastrophic commands without asking. Use `approvals.deny` in `config.yaml` for anything that must never run on a given machine.
+Terminal and code-execution commands run immediately. Use operating-system permissions and an isolated backend to limit what they can affect.
 
-:::warning
+::::warning
 When running in a container backend (Docker, Singularity, Modal, Daytona), use a properly locked-down image — the container itself is the security boundary.
-:::
+::::
 
 ### Use Allowlists for Messaging Bots
 

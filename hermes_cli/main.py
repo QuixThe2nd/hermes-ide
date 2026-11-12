@@ -999,8 +999,8 @@ def _confirm_startup_expensive_model_override(args) -> None:
     if not warnings:
         return
 
-    # Intentionally independent of --yolo / --accept-hooks: those approve local
-    # command risk, not paid aggregator spend or a surprising provider route.
+    # Intentionally independent of --accept-hooks: shell-hook trust does not
+    # authorize paid aggregator spend or a surprising provider route.
     is_interactive = sys.stdin.isatty()
     if not is_interactive and security_cfg.get("allow_data_training_tiers_noninteractive") is True:
         acknowledged = [w for w in warnings if w.kind == "data_policy"]
@@ -1613,12 +1613,6 @@ def cmd_chat(args):
 
     _start_chat_background_prefetch()
 
-    # --yolo: bypass all dangerous command approvals. main() also sets this
-    # before _prepare_agent_startup() — the authoritative site, since it runs
-    # before tool imports freeze _YOLO_MODE_FROZEN. This is a safety net for
-    # callers that invoke cmd_chat directly (e.g. subcommand dispatch).
-    if getattr(args, "yolo", False):
-        os.environ["HERMES_YOLO_MODE"] = "1"
     # --ignore-rules: skip AGENTS.md/SOUL.md/.cursorrules injection, memory
     # entries and preloaded skills (AIAgent(skip_context_files, skip_memory)).
     if getattr(args, "ignore_rules", False):
@@ -2023,12 +2017,6 @@ def cmd_security(args):
     sys.exit(2)
 
 
-def cmd_approvals(args):
-    """`hermes approvals` — approvals are not configurable in this fork: dangerous commands
-    are a pass-through (the hard blocklist still applies), so there is nothing to configure."""
-    print("Approvals are not configurable in this fork — dangerous commands run without a "
-          "human prompt. The hard blocklist (approvals.deny) still applies.")
-    return 0
 
 
 def cmd_config(args):
@@ -2348,7 +2336,7 @@ def cmd_console(args):
 # entry would let a plugin command silently fail to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "approvals", "auth", "backup", "bundles", "checkpoints", "claw", "codex-runtime", "completion",
+        "auth", "backup", "bundles", "checkpoints", "claw", "codex-runtime", "completion",
         "computer-use",
         "config", "console", "cron", "curator", "debug", "doctor",
         "dump", "egress", "fallback", "gateway", "goals", "hooks", "import", "import-agent", "insights",
@@ -2457,13 +2445,6 @@ def _should_background_mcp_startup(args) -> bool:
 
 def _prepare_agent_startup(args) -> None:
     """Discover plugins/MCP/hooks for commands that can run an agent turn."""
-    # --yolo chokepoint: HERMES_YOLO_MODE must be set before any discovery
-    # below imports tools.approval, which freezes _YOLO_MODE_FROZEN at import.
-    # main() sets it earlier too, but other launchers (Termux fast-CLI) reach
-    # here directly, so the guarantee lives where the import is triggered.
-    # See #7994.
-    if getattr(args, "yolo", False):
-        os.environ["HERMES_YOLO_MODE"] = "1"
     _apply_safe_mode(args)
     _apply_user_config_bypass(args)
     _guard_noninteractive_user_config(args)
@@ -2679,8 +2660,6 @@ def _try_fast_chat_launch() -> bool:
     if getattr(args, "command", None) not in {None, "chat"}:
         return False
 
-    if getattr(args, "yolo", False):
-        os.environ["HERMES_YOLO_MODE"] = "1"
     _prepare_agent_startup(args)
 
     if getattr(args, "oneshot", None):
@@ -2870,9 +2849,6 @@ def _build_cli_parser():
     build_doctor_parser(subparsers, cmd_doctor=cmd_doctor)
     build_verify_parser(subparsers, cmd_verify=cmd_verify)
     build_security_parser(subparsers, cmd_security=cmd_security)
-    _approvals_parser = subparsers.add_parser(
-        "approvals", help="Approvals are not configurable in this fork (dangerous commands pass through)")
-    _approvals_parser.set_defaults(func=cmd_approvals)
     build_dump_parser(subparsers, cmd_dump=cmd_dump)
     build_debug_parser(subparsers, cmd_debug=cmd_debug)
     build_backup_parser(subparsers, cmd_backup=cmd_backup)
@@ -3058,10 +3034,6 @@ def main():
         cmd_version(args)
         return
 
-    # --yolo must be set *before* plugin discovery: tools.approval freezes
-    # _YOLO_MODE_FROZEN at import; set later (inside cmd_chat) it does nothing.
-    if getattr(args, "yolo", False):
-        os.environ["HERMES_YOLO_MODE"] = "1"
 
     # Plugin discovery + shell hooks once, gated so introspection commands
     # (hooks list, cron list, gateway status, ...) pay no discovery cost and

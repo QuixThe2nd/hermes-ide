@@ -1762,10 +1762,6 @@ def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     if is_guardrail_refusal(data):
         return False, ""
 
-    # A denied/timed-out approval carries one human sentence; show it instead of the model-facing
-    # "BLOCKED: ... Do NOT retry" text (which stays in the JSON for the model).
-    if isinstance(data, dict) and data.get("user_summary"):
-        return True, f" [{_tail_trunc(str(data['user_summary']), _DEGRADED_SUFFIX_MAX_LEN)}]"
 
     # Terminal: non-zero exit code is the canonical failure signal.
     if tool_name == "terminal":
