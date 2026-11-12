@@ -4,6 +4,20 @@ The papercuts tool records workflow friction in `$HERMES_HOME/papercuts/events.j
 The optional **autofix** workflow triages open papercuts daily, fixes small mechanical
 issues in a scratch git clone, opens PRs, watches CI, and resolves items with evidence.
 
+## Inbox threads
+
+With `papercuts.threads.enabled: true`, triage opens one Discord thread per
+papercut through Hermes Starts. That shared opener applies the configured
+`plugins.entries.hermes_starts.settings.mention_user_id` owner ping and thread
+membership, so papercuts do not silently bypass inbox notifications.
+
+Openings lead with a short plain-English hook and why the friction matters;
+component, severity, and times seen follow as compact details. Each lifecycle
+transition produces one logical update (long updates split into multiple
+Discord messages), and closing posts once before archiving. Stage notes remain
+complete in the journal and in delivery rather than being truncated with an
+ellipsis.
+
 ## Prerequisites
 
 - `gh` CLI installed and authenticated (`gh auth login`)

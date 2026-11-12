@@ -22,18 +22,38 @@ def thread_title(item: Dict[str, object]) -> str:
 
 
 def thread_body(item: Dict[str, object]) -> str:
+    summary = " ".join(str(item.get("summary") or "").split())
+    if not summary:
+        summary = "A recurring workflow problem needs attention."
+    elif summary[-1] not in ".!?":
+        summary += "."
+    try:
+        occurrences = max(1, int(item.get("occurrences") or 1))
+    except (TypeError, ValueError):
+        occurrences = 1
+    if occurrences == 1:
+        impact = "It adds an avoidable detour to work that should be straightforward."
+    else:
+        impact = (
+            f"It has happened {occurrences} times, so the same detour keeps "
+            "interrupting work."
+        )
+
     lines = [
-        f"**{item.get('summary', '')}**",
+        f"{summary} {impact}",
         "",
-        f"Observed: {item.get('observed', '')}",
-        f"Suggested fix: {item.get('suggested_fix', '')}",
-        "",
-        f"Component: `{item.get('component') or 'unknown'}` · Severity: {item.get('severity', 'minor')}"
-        f" · Occurrences: {item.get('occurrences', 1)}",
+        f"Component: `{item.get('component') or 'unknown'}` · Severity: {item.get('severity') or 'minor'}"
+        f" · Times seen: {occurrences}",
     ]
+    observed = str(item.get("observed") or "").strip()
+    if observed:
+        lines.extend(["", f"What happens: {observed}"])
+    suggested_fix = str(item.get("suggested_fix") or "").strip()
+    if suggested_fix:
+        lines.extend(["", f"Suggested next step: {suggested_fix}"])
     session_id = str(item.get("session_id") or "")
     if session_id:
-        lines.append(f"First seen in session `{session_id}`")
+        lines.extend(["", f"First seen in session `{session_id}`"])
     return "\n".join(lines)
 
 

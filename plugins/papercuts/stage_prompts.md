@@ -26,8 +26,12 @@ Human steer notes since the last stage change:
 When your stage's work is done you MUST finish by calling the `papercuts` tool
 with action `advance` (id `{id}`, to_stage, note, pr_url when a PR was opened).
 That single call records the outcome and posts it to the papercut's Discord
-thread. Never edit the events journal by hand and never post to Discord
-directly — `advance` owns both.
+thread. The `advance` note is what the owner actually reads in Discord: lead
+with the plain-language verdict and why it matters in at most ~3 short
+sentences. Put technical evidence (commands, SHAs, file:line) after that under
+`Evidence:`, clearly secondary; never open with machinery or an audit dump.
+Never edit the events journal by hand and never post to Discord directly —
+`advance` owns both.
 
 <!-- template: triage -->
 Triage the papercut {id}.

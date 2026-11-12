@@ -46,7 +46,6 @@ _MAX_TEXT = {
     "workaround": 2_000,
     "suggested_fix": 2_000,
     "component": 120,
-    "note": 1_000,
 }
 
 
@@ -213,8 +212,10 @@ def _clean_text(name: str, value: Any, *, required: bool = False) -> str:
     text = str(value or "").strip()
     if required and not text:
         raise ValueError(f"{name} is required")
-    limit = _MAX_TEXT[name]
-    if len(text) > limit:
+    # Notes remain intact in the journal and on Discord; hermes_starts splits
+    # their delivery into message-sized parts instead of truncating them here.
+    limit = _MAX_TEXT.get(name)
+    if limit is not None and len(text) > limit:
         text = text[: limit - 1].rstrip() + "…"
     try:
         from agent.redact import redact_sensitive_text

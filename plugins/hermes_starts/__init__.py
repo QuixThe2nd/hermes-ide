@@ -1727,67 +1727,37 @@ def _send_reserved_start(
     try:
         thread_name = f"Start #{number} — {kind}"
 
-        # The full opening is the one visible starter message: it lands in the
-        # channel first, and the public thread is anchored on it. The mention
-        # prefixes only the first part, with its room reserved up front, so a
-        # long opening still splits into parts that each stay within the limit
-        # and the anchor keeps real opening text.
-        mention_uid = _mention_user_id()
-        parts = _split_delivery(composed, mention_uid)
+        # Every inbox opener uses the same delivery path: the configured owner
+        # mention, lossless splitting, anchor, thread, and member add cannot be
+        # bypassed by an individual caller. Callbacks retain the reservation's
+        # crash-recovery milestones at the moment each Discord id becomes known.
+        from plugins.hermes_starts.threads import _deliver_inbox_opening
 
-        anchor_id = _post_channel_message(token, state["channel_id"], parts[0])
-        _update_reservation(number, stage="anchor_posted", anchor_id=anchor_id)
-        channel_message_ids: List[str] = [anchor_id]
+        delivered = _deliver_inbox_opening(
+            token,
+            state["channel_id"],
+            thread_name,
+            composed,
+            require_thread=False,
+            on_anchor=lambda anchor_id: _update_reservation(
+                number, stage="anchor_posted", anchor_id=anchor_id
+            ),
+            on_thread=lambda thread_id: _update_reservation(
+                number, stage="thread_created", thread_id=thread_id
+            ),
+        )
+        mention_uid = str(delivered["mention_user_id"])
+        anchor_id = str(delivered["message_id"])
+        thread_id = str(delivered["thread_id"])
+        channel_message_ids: List[str] = list(delivered["channel_message_ids"])
+        thread_message_ids: List[str] = list(delivered["thread_message_ids"])
+        warnings: List[str] = list(delivered["warnings"])
 
-        thread_id = ""
-        warnings: List[str] = []
-        try:
-            thread_id = _create_thread_for_message(
-                token,
-                state["channel_id"],
-                anchor_id,
-                thread_name,
-            )
-        except urllib.error.HTTPError as exc:
-            warnings.append(f"thread creation failed: HTTP {exc.code}")
-        except urllib.error.URLError as exc:
-            reason = exc.reason if isinstance(exc.reason, str) else str(exc.reason)
-            warnings.append(f"thread creation failed: {reason}")
-        except Exception as exc:
-            # The opening is already posted, so this is a degraded start, not a
-            # failed one — a failure here would read as "nothing was sent".
-            warnings.append(f"thread creation failed: {type(exc).__name__}: {exc}")
-        if not thread_id and not warnings:
-            warnings.append("thread creation returned no id")
-        if thread_id:
-            _update_reservation(number, stage="thread_created", thread_id=thread_id)
-
-        thread_message_ids: List[str] = []
-        if thread_id:
-            if mention_uid:
-                try:
-                    _add_thread_member(token, thread_id, mention_uid)
-                except urllib.error.HTTPError as exc:
-                    warnings.append(
-                        f"thread member add failed for {mention_uid}: HTTP {exc.code}"
-                    )
-                except urllib.error.URLError as exc:
-                    reason = exc.reason if isinstance(exc.reason, str) else str(exc.reason)
-                    warnings.append(
-                        f"thread member add failed for {mention_uid}: {reason}"
-                    )
-                except Exception as exc:
-                    warnings.append(
-                        f"thread member add failed for {mention_uid}: "
-                        f"{type(exc).__name__}: {exc}"
-                    )
-            for part in parts[1:]:
-                thread_message_ids.append(_post_channel_message(token, thread_id, part))
-        else:
+        if not thread_id:
             # Thread creation failed — the opening already exists in the
             # channel, so continue it there instead of losing the tail or
             # posting the anchor twice.
-            for part in parts[1:]:
+            for part in delivered["parts"][1:]:
                 channel_message_ids.append(
                     _post_channel_message(token, state["channel_id"], part)
                 )

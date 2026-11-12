@@ -24,14 +24,16 @@ On the first `start` action, if no channel exists yet, the plugin auto-runs setu
 
 You can also provision explicitly with `action='setup'`.
 
-## How a start lands
+## How a conversation lands
 
-Each start is **one message in the channel**: the full opening in Hermes's own voice,
-with a `*Where I'd take this:*` paragraph when there is a next move. A public thread
-named `Start #N — <kind>` is anchored on that message, so replies stay out of the
-channel. Openings longer than the message limit split on paragraph boundaries — the
-first part is the channel message, the rest go in the thread. If thread creation fails,
-the whole opening stays in the channel and the start still reports success.
+Every public inbox opener uses the same delivery path. The opening is posted in
+the channel and a public thread is anchored on it; starts are named
+`Start #N — <kind>`. When `mention_user_id` is configured, its mention always
+shares the anchor with real opening text, and the owner is added to the thread
+on a best-effort basis. Openings longer than the message limit split on
+paragraph or word boundaries — the first part is the channel message, the rest
+go in the thread. If start thread creation fails, the whole opening stays in
+the channel and the start still reports success.
 
 ### Settings
 
@@ -39,7 +41,7 @@ Under `plugins.entries.hermes_starts.settings` in `config.yaml`:
 
 | Key | Default | What it does |
 |---|---|---|
-| `mention_user_id` | *(unset)* | Discord user ID pinged on each start. The mention prefixes the opening, and the same user is added to the thread so replies and subscription keep working. |
+| `mention_user_id` | *(unset)* | Discord user ID pinged on every inbox conversation, including threads opened by other plugins. The mention prefixes real opening text, and the same user is added to the thread so replies and subscription keep working. Unset disables both. |
 
 ## Duplicate-start protection
 
