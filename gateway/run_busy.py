@@ -1436,7 +1436,7 @@ class GatewayBusySessionMixin:
     # Ordinary slash handlers shared by idle and busy dispatch.
     _PLAIN_COMMANDS = (
         "status", "context", "restart", "pause", "agents", "bg", "btw",
-        "subgoal", "heartbeat", "busy", "verbose", "footer", "help",
+        "subgoal", "busy", "verbose", "footer", "help",
         "commands", "profile", "login", "update", "version",
     )
     # Dispatched only on the idle path (busy dispatch has its own allowlist).
@@ -1444,7 +1444,7 @@ class GatewayBusySessionMixin:
         "topic", "whoami", "platform", "stop", "reasoning", "memory", "skills", "fast",
         "model", "codex-runtime", "personality", "suggestions", "save", "retry",
         "setnotify", "clearnotify", "compress", "usage", "topup", "insights", "reload-mcp", "reload-skills",
-        "bundles", "debug", "title", "resume", "sessions", "branch", "rollback", "diff", "goal",
+        "debug", "title", "resume", "sessions", "branch", "rollback", "diff", "goal",
         "loop", "refine", "review", "voice",
     )
 
@@ -1477,7 +1477,7 @@ class GatewayBusySessionMixin:
 
     # busy_handler key (hermes_cli/commands.py CommandDef) → mid-run variant ``_busy_<key>_command``.
     _BUSY_SPECIAL_HANDLERS: Dict[str, str] = {
-        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "queue", "steer", "egress", "goal", "loop")
+        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "queue", "egress", "goal", "loop")
     }
 
     async def _dispatch_busy_slash_command(self, event: MessageEvent, cmd_def, quick_key: str, source):
@@ -1591,42 +1591,6 @@ class GatewayBusySessionMixin:
             ), adapter)
         depth = self._queue_depth(quick_key, adapter=adapter)
         return "Queued for the next turn." + (f" ({depth} queued)" if depth > 1 else "")
-
-    async def _busy_steer_command(self, event: MessageEvent, quick_key: str, source):
-        # /steer lands BETWEEN tool-call iterations of the same run (appended to the last tool
-        # result) — no interrupt, no new user turn, no role-alternation violation.
-        from gateway.run import _AGENT_PENDING_SENTINEL
-        steer_text = event.get_command_args().strip()
-        if not steer_text:
-            return "Usage: /steer <prompt>"
-        _steer_state = self._peek_session_state(quick_key)
-        running_agent = _steer_state.turn.agent if _steer_state else None
-
-        def _queue_fallback(reply: str) -> str:
-            # Turn-boundary fallback: queue the steer text as its own follow-up turn.
-            adapter = self._delivery_adapter_for(source)
-            if adapter:
-                self._enqueue_fifo(quick_key, MessageEvent(
-                    text=steer_text, message_type=MessageType.TEXT, source=event.source,
-                    message_id=event.message_id, channel_prompt=event.channel_prompt,
-                    channel_context=event.channel_context,
-                ), adapter)
-            return reply
-
-        if running_agent is _AGENT_PENDING_SENTINEL:
-            return _queue_fallback("Agent still starting — /steer queued for the next turn.")
-        if not running_agent or not hasattr(running_agent, "steer"):
-            return _queue_fallback("No active agent — /steer queued for the next turn.")
-        try:
-            accepted = self._steer_running_agent(running_agent, self._steer_text_with_origin(steer_text, event))
-        except Exception as exc:
-            logger.warning("Steer failed for session %s: %s", quick_key, exc)
-            return f"⚠️ Steer failed: {exc}"
-        if not accepted:
-            return "Steer rejected (empty payload)."
-        preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
-        target = "run and its active subagent(s)" if self._agent_has_active_subagents(running_agent) else "run"
-        return f"⏩ Steer queued into current {target} — arrives after the next tool call: '{preview}'"
 
     async def _busy_goal_command(self, event: MessageEvent, quick_key: str, source):
         # Control verbs are safe mid-run (state only); setting new goal text is rejected so we don't

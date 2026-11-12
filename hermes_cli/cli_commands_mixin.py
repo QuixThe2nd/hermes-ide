@@ -1716,7 +1716,7 @@ class CLICommandsMixin:
             from hermes_cli.cron import _run_outcome
             print(f"  {_run_outcome(job)}")
 
-    # ---- delegating handlers: /suggestions, /blueprint, /curator, /skills, /memory --
+    # ---- delegating handlers: /suggestions, /blueprint, /skills, /memory --
     def _handle_suggestions_command(self, cmd: str):
         """Handle /suggestions — review/accept/dismiss suggested automations via the shared handler.
         CLI origin is the local platform, so an accepted job needs an explicit deliver target —
@@ -1746,18 +1746,6 @@ class CLICommandsMixin:
             # One-shot: the interactive loop picks this up right after the slash command
             # returns and runs it as a normal agent turn.
             self._pending_agent_seed = seed
-
-    def _handle_curator_command(self, cmd: str):
-        """Handle /curator — delegates to hermes_cli.curator so the CLI and the `hermes curator`
-        subcommand share the same handler set."""
-        tokens = shlex.split(cmd)[1:] if cmd else []
-        try:
-            from hermes_cli.curator import cli_main
-            cli_main(tokens or ["status"])
-        except SystemExit:
-            pass  # argparse exits on --help/errors; don't kill the interactive session
-        except Exception as exc:
-            print(f"(._.) curator: {exc}")
 
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub, after intercepting the
@@ -2028,31 +2016,7 @@ class CLICommandsMixin:
                           header_lines=[f"  💬 /btw: \"{preview}\""], title_suffix="(btw)",
                           empty_note="  (No answer generated)").start()
 
-    # ---- /bundles, /browser ---------------------------------------------------------------
-    def _handle_bundles_command(self, cmd: str) -> None:
-        """In-session ``/bundles`` — show installed skill bundles (``hermes bundles list`` rendered
-        inside the running CLI). Bundles are loaded via ``/<bundle-name>``."""
-        from cli import ChatConsole, _BOLD, _RST, _accent_hex
-        from hermes_cli.slash_exec import CommandContext, execute_command
-        reply = execute_command("bundles", CommandContext(surface="cli"))
-        if "error" in reply.data:
-            return _cp(f"\033[1;31mBundle subsystem unavailable: {reply.data['error']}{_RST}")
-        bundles = reply.data["bundles"]
-        if not bundles:
-            return _cp("  No skill bundles installed.",
-                       _dim_line('Create one with: hermes bundles create <name> --skill <s1> --skill <s2>'),
-                       _dim_line(f"Directory: {reply.data['dir']}"))
-        _cp(f"\n  ▣ {_BOLD}Skill Bundles{_RST} ({len(bundles)} installed):")
-        for info in bundles:
-            skill_count = len(info.get("skills", []))
-            desc = info.get("description") or f"Load {skill_count} skills"
-            ChatConsole().print(
-                f"    [bold {_accent_hex()}]/{info['slug']:<20}[/] "
-                f"[dim]-[/] {_escape(desc)} [dim]({skill_count} skills)[/]")
-            for s in info.get("skills", []):
-                ChatConsole().print(f"        [dim]· {_escape(s)}[/]")
-        _cp("\n" + _dim_line("Invoke a bundle with /<slug>. Manage with `hermes bundles`."))
-
+    # ---- /browser ---------------------------------------------------------------
     def _handle_browser_command(self, cmd: str):
         """Handle /browser connect|disconnect|status|use — manage the live Chromium-family CDP connection."""
         sub = _command_arg(cmd).lower() or "status"
@@ -2074,7 +2038,7 @@ class CLICommandsMixin:
                 "   status       Show current browser mode",
                 "   use [off]    Switch to Browser Use mode (CLI 3.0) / back to built-in tools")
 
-    # ---- /heartbeat, /refine, /review -----------------------------------------------------
+    # ---- /refine, /review -----------------------------------------------------
     def _session_manager(self, getter, label: str):
         """The session-scoped manager from ``getter()``, or None after the standard dim
         "<label> unavailable (no active session)." line."""
@@ -2082,63 +2046,6 @@ class CLICommandsMixin:
         if mgr is None:
             _cp(_dim_line(f"{label} unavailable (no active session)."))
         return mgr
-
-    def _handle_heartbeat_command(self, cmd: str) -> None:
-        """Dispatch /heartbeat: set / status / pause / resume / clear. ``/heartbeat every 10m <prompt>``
-        sets the session's one recurring instruction, injected as a normal user turn when due.
-        Session-scoped and in-process — use `hermes cron` for durable schedules."""
-        from hermes_cli.heartbeat import format_interval
-        arg = _command_arg(cmd)
-        lower = arg.lower()
-        mgr = self._session_manager(self._get_heartbeat_manager, "Heartbeats")
-        if mgr is None:
-            return
-        if not arg or lower == "status":
-            _cp(f"  {mgr.status_line()}")
-        elif lower == "pause":
-            state = mgr.pause()
-            _cp(f"  ⏸ Heartbeat paused: {state.prompt}" if state else _dim_line('No heartbeat set.'))
-        elif lower == "resume":
-            state = mgr.resume()
-            if state is None:
-                _cp(_dim_line('No heartbeat to resume.'))
-            else:
-                self._start_heartbeat_watchdog()
-                _cp(f"  ▶ Heartbeat resumed (every {format_interval(state.interval_seconds)}): {state.prompt}")
-        elif lower in {"clear", "stop", "off"}:
-            _cp("  ✓ Heartbeat cleared." if mgr.clear() else _dim_line('No heartbeat set.'))
-        else:
-            self._heartbeat_set(mgr, arg)
-
-    def _heartbeat_set(self, mgr, arg: str) -> None:
-        """Set: ``/heartbeat every 10m <prompt>`` (also accepts ``10m <prompt>``)."""
-        from hermes_cli.heartbeat import parse_interval, format_interval
-        tokens = arg.split(None, 2)
-        interval = None
-        prompt = ""
-        if tokens and tokens[0].lower() == "every" and len(tokens) >= 2:
-            interval = parse_interval(f"every {tokens[1]}")
-            prompt = tokens[2] if len(tokens) > 2 else ""
-        elif tokens:
-            interval = parse_interval(tokens[0])
-            prompt = arg[len(tokens[0]):].strip() if interval and interval > 0 else ""
-        if interval is None:
-            return _cp(
-                "  Usage: /heartbeat every <interval> <prompt>   (e.g. /heartbeat every 10m Check CI)",
-                       _dim_line('Also: /heartbeat status | pause | resume | clear'))
-        if interval < 0:
-            from hermes_cli.heartbeat import MIN_INTERVAL_SECONDS
-            return _cp(f"  Interval too small — minimum is {MIN_INTERVAL_SECONDS}s.")
-        if not prompt.strip():
-            return _cp("  Usage: /heartbeat every <interval> <prompt> — the prompt is required.")
-        state = _attempt("Invalid heartbeat", ValueError, mgr.set, prompt, interval)
-        if state is _FAILED:
-            return
-        self._start_heartbeat_watchdog()
-        _cp(f"  ♥ Heartbeat set (every {format_interval(state.interval_seconds)}): {state.prompt}",
-            _dim_line("Fires as a normal turn whenever the session is idle and the interval has "
-                      "elapsed. /heartbeat pause | resume | clear to manage; lives only while this "
-                      "Hermes process runs — use `hermes cron` for durable schedules."))
 
     def _handle_refine_command(self, cmd: str) -> None:
         """Dispatch /refine — run the memory/skill review fork on demand (same machinery as the

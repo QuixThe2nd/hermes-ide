@@ -400,7 +400,7 @@ The `display.busy_input_mode` config key controls what happens when you press En
 |------|----------|
 | `"interrupt"` (default) | Your message redirects the active turn. Model generation restarts with displayed reasoning and completed work preserved. A running foreground terminal command is moved to the background (not killed — you get a completion notification) so your message is read immediately; other running tools finish first |
 | `"queue"` | Your message is silently queued and sent as the next turn after the agent finishes |
-| `"steer"` | Your message is injected into the current run via `/steer`, arriving at the agent after the next tool call — no interrupt, no new turn |
+| `"steer"` | Your message is injected into the current run, arriving at the agent after the next tool call — no interrupt, no new turn |
 
 ```yaml
 # ~/.hermes/config.yaml

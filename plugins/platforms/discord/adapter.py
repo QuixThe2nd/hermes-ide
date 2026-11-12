@@ -319,9 +319,6 @@ _NATIVE_SLASH_COMMANDS: tuple = (
      (("confirm", str, "", "Type 'confirm' to move an existing home server to this server", None),),
      "/sethomeserver {confirm}", None),
     ("stop", "Stop the running Hermes agent", (), "/stop", "Stop requested~"),
-    ("steer", "Inject a message after the next tool call (no interrupt)",
-     (("prompt", str, _REQUIRED, "Text to inject into the agent's next tool result", None),),
-     "/steer {prompt}", None),
     ("plan", "Write a markdown implementation plan (no execution)",
      (("task", str, "", "What to plan. Leave empty to infer from the conversation.", None),),
      "/plan {task}", None),
@@ -7556,6 +7553,20 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         except Exception:
             return None
 
+    @staticmethod
+    def _thread_placeholder_content(thread_name: str) -> str:
+        safe_name = thread_name.replace("`", "\u02cb")
+        return f"```\n\U0001f9f5 Creating thread: {safe_name}\n```"
+
+    async def _delete_thread_placeholder(self, seed_message) -> None:
+        try:
+            await seed_message.delete()
+        except Exception as exc:
+            logger.warning(
+                "[%s] Failed to delete thread-creation placeholder: %s",
+                self.name, exc,
+            )
+
     async def _create_thread(
         self, interaction: discord.Interaction, *, name: str, message: str = "",
         auto_archive_duration: int = 1440,
@@ -7587,11 +7598,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return self._thread_created(thread, name)
         except Exception as direct_error:
             try:
-                seed_content = starter_message or f"\U0001f9f5 Creating thread: **{name}**"
+                seed_content = starter_message or self._thread_placeholder_content(name)
                 seed_msg = await parent_channel.send(seed_content)
                 thread = await seed_msg.create_thread(
                     name=name, auto_archive_duration=auto_archive_duration, reason=reason,
                 )
+                if not starter_message:
+                    await self._delete_thread_placeholder(seed_msg)
                 return self._thread_created(thread, name)
             except Exception as fallback_error:
                 return {
@@ -7707,6 +7720,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         AUTO_THREAD_RATE_LIMIT_MAX_WAIT_SECONDS), and the reaction is
         cleared once the thread exists. Non-rate-limit failures keep the
         original two-attempt contract.
+        One placeholder is posted, reused across retries, and deleted before return.
+
         """
         thread_name = self._derive_auto_thread_name(message.content or "")
         display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
@@ -7719,27 +7734,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         waiting_reaction = False
 
         attempt = 0
-        while attempt < _AUTO_THREAD_MAX_CREATE_ATTEMPTS:
-            try:
-                thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
+        seed_msg = None
+        try:
+            while attempt < _AUTO_THREAD_MAX_CREATE_ATTEMPTS:
                 try:
-                    setattr(thread, "_hermes_auto_thread_initial_name", thread_name)
-                except Exception:
-                    pass
-                if waiting_reaction:
-                    await self._remove_reaction(message, "⏳")
-                return thread
-            except Exception as direct_error:
-                last_direct_error = direct_error
-                try:
-                    seed_msg = await message.channel.send(
-                        f"\U0001f9f5 Creating thread: **{thread_name}**"
-                    )
-                    thread = await seed_msg.create_thread(
-                        name=thread_name,
-                        auto_archive_duration=1440,
-                        reason=reason,
-                    )
+                    thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
                     try:
                         setattr(thread, "_hermes_auto_thread_initial_name", thread_name)
                     except Exception:
@@ -7747,48 +7746,70 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     if waiting_reaction:
                         await self._remove_reaction(message, "⏳")
                     return thread
-                except Exception as fallback_error:
-                    last_fallback_error = fallback_error
-                    attempt += 1
-
-                    delay = self._extract_rate_limit_delay(direct_error)
-                    if delay is None:
-                        delay = self._extract_rate_limit_delay(fallback_error)
-                    if (
-                        delay is None
-                        and rate_limit_waited
-                        and (
-                            self._is_discord_rate_limit(direct_error)
-                            or self._is_discord_rate_limit(fallback_error)
+                except Exception as direct_error:
+                    last_direct_error = direct_error
+                    try:
+                        if seed_msg is None:
+                            seed_msg = await message.channel.send(
+                                self._thread_placeholder_content(thread_name)
+                            )
+                        thread = await seed_msg.create_thread(
+                            name=thread_name,
+                            auto_archive_duration=1440,
+                            reason=reason,
                         )
-                    ):
-                        # Discord is still rate-limiting but stopped saying
-                        # for how long — probe again after a short wait.
-                        delay = _AUTO_THREAD_RATE_LIMIT_PROBE_SECONDS
+                        try:
+                            setattr(thread, "_hermes_auto_thread_initial_name", thread_name)
+                        except Exception:
+                            pass
+                        if waiting_reaction:
+                            await self._remove_reaction(message, "⏳")
+                        return thread
+                    except Exception as fallback_error:
+                        last_fallback_error = fallback_error
+                        attempt += 1
 
-                    if delay is not None:
-                        wait = min(delay, rate_limit_budget)
-                        if wait <= 0:
-                            break  # total rate-limit wait budget exhausted
-                        if not waiting_reaction:
-                            # Visible queue indicator: the message is being
-                            # held for thread creation, not dropped. Added
-                            # once, best-effort.
-                            if self._reactions_enabled():
-                                await self._add_reaction(message, "⏳")
-                                waiting_reaction = True
-                        await asyncio.sleep(wait)
-                        rate_limit_budget -= wait
-                        rate_limit_waited = True
-                        continue
+                        delay = self._extract_rate_limit_delay(direct_error)
+                        if delay is None:
+                            delay = self._extract_rate_limit_delay(fallback_error)
+                        if (
+                            delay is None
+                            and rate_limit_waited
+                            and (
+                                self._is_discord_rate_limit(direct_error)
+                                or self._is_discord_rate_limit(fallback_error)
+                            )
+                        ):
+                            # Discord is still rate-limiting but stopped saying
+                            # for how long — probe again after a short wait.
+                            delay = _AUTO_THREAD_RATE_LIMIT_PROBE_SECONDS
 
-                    if attempt == 1:
-                        # Brief backoff before the second attempt — most failures
-                        # in this path are transient connect errors that recover
-                        # within a second or two.
-                        await asyncio.sleep(0.75)
-                        continue
-                    break
+                        if delay is not None:
+                            wait = min(delay, rate_limit_budget)
+                            if wait <= 0:
+                                break  # total rate-limit wait budget exhausted
+                            if not waiting_reaction:
+                                # Visible queue indicator: the message is being
+                                # held for thread creation, not dropped. Added
+                                # once, best-effort.
+                                if self._reactions_enabled():
+                                    await self._add_reaction(message, "⏳")
+                                    waiting_reaction = True
+                            await asyncio.sleep(wait)
+                            rate_limit_budget -= wait
+                            rate_limit_waited = True
+                            continue
+
+                        if attempt == 1:
+                            # Brief backoff before the second attempt — most failures
+                            # in this path are transient connect errors that recover
+                            # within a second or two.
+                            await asyncio.sleep(0.75)
+                            continue
+                        break
+        finally:
+            if seed_msg is not None:
+                await self._delete_thread_placeholder(seed_msg)
 
         logger.warning(
             "[%s] Auto-thread creation failed after retry. Direct error: %s. Fallback error: %s",

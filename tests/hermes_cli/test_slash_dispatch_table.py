@@ -15,14 +15,14 @@ OLD_CHAIN_COMMANDS = [
     "config", "redraw", "clear", "history", "title", "handoff", "new", "resume",
     "sessions", "model", "codex-runtime", "personality", "retry",
     "prompt", "undo", "branch", "worktree", "save", "cron", "suggestions",
-    "blueprint", "curator", "skills", "learn", "init", "memory",
+    "blueprint", "skills", "learn", "init", "memory",
     "platforms", "status", "context", "egress", "statusbar", "diff", "battery",
     "timestamps", "verbose", "focus", "footer", "reasoning",
     "fast", "compress", "usage", "subscription", "topup", "insights", "copy",
     "debug", "update", "version", "paste", "image", "reload", "reload-mcp",
-    "reload-skills", "bundles", "browser", "plugins", "rollback", "snapshot",
+    "reload-skills", "browser", "plugins", "rollback", "snapshot",
     "export", "import", "stop", "agents", "journey", "bg", "btw", "queue",
-    "steer", "goal", "heartbeat", "refine", "review", "loop", "plan", "moa",
+    "goal", "refine", "review", "loop", "plan",
     "subgoal", "skin", "voice", "wake", "busy", "indicator",
 ]
 

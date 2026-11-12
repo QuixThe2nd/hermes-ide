@@ -1,4 +1,4 @@
-"""Simple slash-command wrappers plus goal/heartbeat/loop manager hooks for the interactive CLI.
+"""Simple slash-command wrappers plus goal/loop manager hooks for the interactive CLI.
 Mixin on ``HermesCLI``; cli.py symbols are imported lazily inside methods (import cycle)."""
 
 from __future__ import annotations
@@ -6,7 +6,6 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import threading
 import time
 
 from rich.markup import escape as _escape
@@ -42,7 +41,7 @@ def _print_decision_message(decision: dict) -> bool:
 
 
 class CLILoopsMixin:
-    """Simple slash-command wrappers plus goal/heartbeat/loop manager hooks for the interactive CLI"""
+    """Simple slash-command wrappers plus goal/loop manager hooks for the interactive CLI"""
 
     def _cmd_exit(self, cmd_original: str):
         # /exit --delete also removes the session's transcripts + SQLite history.
@@ -407,30 +406,8 @@ class CLILoopsMixin:
         else:
             self._queue_enqueue(payload)
 
-    def _cmd_steer(self, cmd_original: str):
-        # Inject a message after the next tool call without interrupting: while the
-        # agent runs, push into its pending_steer slot (drained by _execute_tool_calls_*
-        # into the next tool result); otherwise fall back to /queue semantics.
-        from cli import _cprint, _slash_args
-        payload = _slash_args(cmd_original)
-        if not payload:
-            _cprint("  Usage: /steer <prompt>")
-        elif self._agent_running and self.agent is not None and hasattr(self.agent, "steer"):
-            try:
-                accepted = self.agent.steer(payload)
-            except Exception as exc:
-                _cprint(f"  Steer failed: {exc}")
-            else:
-                if accepted:
-                    _cprint(f"  ⏩ Steer queued — arrives after the next tool call: {_preview(payload)}")
-                else:
-                    _cprint("  Steer rejected (empty payload).")
-        else:
-            self._pending_input.put(payload)
-            _cprint(f"  No agent running; queued as next turn: {_preview(payload)}")
-
     # ────────────────────────────────────────────────────────────────
-    # Session-bound managers: /goal (Ralph-style loop), /heartbeat, /loop
+    # Session-bound managers: /goal (Ralph-style loop), /loop
     # ────────────────────────────────────────────────────────────────
     def _session_bound_manager(self, attr: str, label: str, load):
         """Return the manager cached on ``self.<attr>``, rebuilt when ``session_id`` changed
@@ -470,53 +447,12 @@ class CLILoopsMixin:
             return make
         return self._session_bound_manager("_goal_manager", "goal manager", load)
 
-    def _get_heartbeat_manager(self):
-        """HeartbeatManager bound to the current session_id (see ``_session_bound_manager``)."""
-        def load():
-            from hermes_cli.heartbeat import HeartbeatManager
-            return lambda sid: HeartbeatManager(session_id=sid)
-        return self._session_bound_manager("_heartbeat_manager", "heartbeat manager", load)
-
     def _get_loop_manager(self):
         """LoopManager bound to the current session_id (see ``_session_bound_manager``)."""
         def load():
             from hermes_cli.loops import LoopManager
             return lambda sid: LoopManager(session_id=sid)
         return self._session_bound_manager("_loop_manager", "loop manager", load)
-
-    def _start_heartbeat_watchdog(self):
-        """Start the idle-poll daemon that injects a due heartbeat prompt into
-        ``_pending_input`` as a normal user turn when the session is idle. Missed ticks
-        coalesce (the anchor resets on fire, so a busy hour yields ONE heartbeat turn).
-        Idempotent; safe to call on every /heartbeat set."""
-        if getattr(self, "_heartbeat_watchdog_started", False):
-            return
-        self._heartbeat_watchdog_started = True
-        from hermes_cli.heartbeat import POLL_SECONDS
-
-        def _loop():
-            try:
-                while not getattr(self, "_should_exit", False):
-                    time.sleep(POLL_SECONDS)
-                    try:
-                        mgr = self._get_heartbeat_manager()
-                        if mgr is None or not mgr.is_active():
-                            continue
-                        busy = (
-                            self._agent_running
-                            or getattr(self, "_voice_recording", False)
-                            or getattr(self, "_voice_processing", False)
-                            or not self._pending_input.empty())
-                        if busy:
-                            continue
-                        prompt = mgr.due_prompt()
-                        if prompt:
-                            self._pending_input.put(prompt)
-                    except Exception as exc:
-                        logging.debug("heartbeat watchdog tick failed: %s", exc)
-            finally:
-                self._heartbeat_watchdog_started = False
-        threading.Thread(target=_loop, daemon=True, name="heartbeat-watchdog").start()
 
     def _maybe_resume_parked_goal(self) -> None:
         """Idle hook run from process_loop: when a parked /goal's barrier has lifted (the process

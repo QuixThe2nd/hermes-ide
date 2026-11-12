@@ -68,9 +68,11 @@ class _Channel:
     def __init__(self, seed_create_thread_side_effect=None):
         self.id = 100
         self.name = "general"
-        self.send = AsyncMock(return_value=SimpleNamespace(
+        self.seed_message = SimpleNamespace(
             create_thread=AsyncMock(side_effect=seed_create_thread_side_effect),
-        ))
+            delete=AsyncMock(),
+        )
+        self.send = AsyncMock(return_value=self.seed_message)
 
 
 def _make_message(channel, *, content="hello bot", create_thread_side_effect=None):
@@ -176,6 +178,86 @@ class TestAutoThreadRateLimitQueue:
         assert "Auto-thread creation failed" not in caplog.text
 
     @pytest.mark.asyncio
+    async def test_fallback_success_boxes_and_deletes_placeholder(self, adapter):
+        thread = _make_thread()
+        channel = _Channel(seed_create_thread_side_effect=[thread])
+        message = _make_message(
+            channel,
+            create_thread_side_effect=RuntimeError("direct failed"),
+        )
+
+        result = await adapter._auto_create_thread(message)
+
+        assert result is thread
+        sent_content = channel.send.await_args.args[0]
+        assert sent_content.startswith("```\n")
+        assert sent_content.endswith("\n```")
+        assert "🧵 Creating thread:" in sent_content
+        assert "hello bot" in sent_content
+        assert "**" not in sent_content
+        channel.seed_message.delete.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_repeated_rate_limits_reuse_and_delete_one_placeholder(self, adapter):
+        thread = _make_thread()
+        channel = _Channel(
+            seed_create_thread_side_effect=[
+                _RateLimited(0.01),
+                _RateLimited(0.01),
+                thread,
+            ]
+        )
+        message = _make_message(
+            channel,
+            create_thread_side_effect=_RateLimited(0.01),
+        )
+
+        result = await adapter._auto_create_thread(message)
+
+        assert result is thread
+        assert channel.send.await_count == 1
+        channel.seed_message.delete.assert_awaited_once()
+        assert message.events == [("add", WAITING_EMOJI), ("remove", WAITING_EMOJI)]
+
+    @pytest.mark.asyncio
+    async def test_delete_failure_does_not_block_success(self, adapter, caplog):
+        thread = _make_thread()
+        channel = _Channel(seed_create_thread_side_effect=[thread])
+        channel.seed_message.delete.side_effect = RuntimeError("missing permission")
+        message = _make_message(
+            channel,
+            create_thread_side_effect=RuntimeError("direct failed"),
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = await adapter._auto_create_thread(message)
+
+        assert result is thread
+        channel.seed_message.delete.assert_awaited_once()
+        assert any(
+            record.levelno >= logging.WARNING and "placeholder" in record.getMessage().lower()
+            for record in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_backticks_cannot_escape_placeholder_fence(self, adapter):
+        thread = _make_thread()
+        channel = _Channel(seed_create_thread_side_effect=[thread])
+        message = _make_message(
+            channel,
+            content="hello ``` bot",
+            create_thread_side_effect=RuntimeError("direct failed"),
+        )
+
+        result = await adapter._auto_create_thread(message)
+
+        assert result is thread
+        sent_content = channel.send.await_args.args[0]
+        assert sent_content.startswith("```\n")
+        assert sent_content.endswith("\n```")
+        assert sent_content.count("```") == 2
+
+    @pytest.mark.asyncio
     async def test_budget_exhaustion_returns_none_with_warning(
         self, adapter, monkeypatch, caplog
     ):
@@ -193,6 +275,7 @@ class TestAutoThreadRateLimitQueue:
         assert "Auto-thread creation failed" in caplog.text
         # Two attempts: one wait consumed the budget, the second saw none left.
         assert message.events == [("add", WAITING_EMOJI)]
+        channel.seed_message.delete.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_non_rate_limit_error_keeps_two_attempt_contract(
@@ -216,6 +299,8 @@ class TestAutoThreadRateLimitQueue:
         assert result is None
         assert len(attempts) == 2, "non-rate-limit failures must retry exactly once"
         assert message.events == [], "no queue reaction for non-rate-limit errors"
+        assert channel.send.await_count == 1
+        channel.seed_message.delete.assert_awaited_once()
         assert "Auto-thread creation failed" in caplog.text
 
     @pytest.mark.asyncio

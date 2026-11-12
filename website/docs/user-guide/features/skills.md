@@ -532,7 +532,7 @@ instruction: |
 
 Fields:
 - `name` (optional — defaults to the filename stem) — the bundle's display name. Normalized to a hyphen slug for the slash command (`Backend Dev` → `/backend-dev`).
-- `description` (optional) — short text shown in `/bundles` and `hermes bundles list`.
+- `description` (optional) — short text shown in `hermes bundles list`.
 - `skills` (required, non-empty list) — skill names or paths relative to your skills directory. Use the same identifier you'd pass to `/<skill-name>`.
 - `instruction` (optional) — extra guidance prepended to the loaded skill content. Useful for codifying "how we always use these together."
 
@@ -557,8 +557,6 @@ hermes bundles delete backend-dev
 # Re-scan ~/.hermes/skill-bundles/ and report changes
 hermes bundles reload
 ```
-
-From inside a chat session, `/bundles` lists every installed bundle and its skills.
 
 ### Behavior
 

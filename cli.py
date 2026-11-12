@@ -2424,11 +2424,11 @@ def save_config_value(key_path: str, value: any) -> bool:
 
 
 def _normalize_moa_model(model: Optional[str]) -> tuple[Optional[str], Optional[str]]:
-    """``moa:<preset>`` -> ``("moa", preset)`` (same routing as ``/moa``); anything else -> ``(None, model)``.
+    """``moa:<preset>`` -> ``("moa", preset)``; anything else -> ``(None, model)``.
 
     Returns ``("moa", "<preset>")`` when *model* selects the MoA virtual provider, otherwise ``(None,
     model)`` unchanged. This gives non-interactive ``hermes chat -Q -m moa:<preset>`` the same routing the
-    interactive ``/moa`` command and the model picker already use: ``resolve_runtime_provider`` handles
+    model picker already uses: ``resolve_runtime_provider`` handles
     ``requested_provider == "moa"`` and ``agent_init`` builds the MoAClient off ``provider == "moa"``.
     Without this the raw ``moa:<preset>`` string is sent to the real provider and rejected with a 401/400
     "model not supported" (#56828).
@@ -3227,7 +3227,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         "reload-mcp": ("_confirm_and_reload_mcp", True), "reload-skills": ("_cmd_reload_skills", True),
         "plugins": ("_cmd_plugins", True), "stop": ("_handle_stop_command", False),
         "agents": ("_handle_agents_command", False), "bg": ("_handle_background_command", True),
-        "queue": ("_cmd_queue", True), "steer": ("_cmd_steer", True), "moa": ("_cmd_moa", True),
+        "queue": ("_cmd_queue", True),
     }
 
     @classmethod

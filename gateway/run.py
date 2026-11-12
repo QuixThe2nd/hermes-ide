@@ -9947,7 +9947,6 @@ class GatewayRunner(
         "model": "Agent is running — wait or /stop first, then switch models.",
         "codex-runtime": ("Agent is running — wait or /stop first, then "
                           "change runtime."),
-        "moa": "Agent is running — wait or /stop first, then run /moa.",
     }
 
 
@@ -9955,29 +9954,6 @@ class GatewayRunner(
 
 
 
-
-
-
-
-
-
-    def _restore_moa_one_shot(self, event: "MessageEvent", quick_key: str) -> None:
-        """Revert a ``/moa <prompt>`` one-shot model override after its turn.
-
-        Called from the ``finally`` of the message-handling path so the revert
-        fires whether the turn succeeded, raised, or was interrupted. A no-op
-        unless ``event._moa_disable_after_turn`` is set. ``_moa_restore_override``
-        carries the prior per-session override (``None`` means the user had no
-        override, so the MoA override is cleared outright).
-        """
-        if not getattr(event, "_moa_disable_after_turn", False):
-            return
-        try:
-            _restore = getattr(event, "_moa_restore_override", None)
-            self._session_state(quick_key).conversation.model_override = _restore
-            self._evict_cached_agent(quick_key)
-        except Exception:
-            pass
 
 
 

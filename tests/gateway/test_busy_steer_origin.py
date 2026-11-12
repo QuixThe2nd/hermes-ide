@@ -11,7 +11,7 @@ from gateway.session import SessionSource
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("route", ["explicit", "priority", "normal", "redirect", "priority_redirect"])
+@pytest.mark.parametrize("route", ["priority", "normal", "redirect", "priority_redirect"])
 @pytest.mark.parametrize("platform", [Platform.TELEGRAM, Platform.SIGNAL, Platform.WHATSAPP, Platform.DISCORD])
 @pytest.mark.parametrize("redact_pii", [False, True])
 async def test_busy_injection_preserves_original_routing_fields(route, platform, redact_pii, tmp_path, monkeypatch):
@@ -30,7 +30,7 @@ async def test_busy_injection_preserves_original_routing_fields(route, platform,
         message_id="source-message",
     )
     original_source = asdict(source)
-    event = MessageEvent(text="/steer request" if route == "explicit" else "request", source=source, message_id="message")
+    event = MessageEvent(text="request", source=source, message_id="message")
 
     class Receiver:
         _supports_active_turn_redirect = True
@@ -44,9 +44,7 @@ async def test_busy_injection_preserves_original_routing_fields(route, platform,
 
     receiver = Receiver()
     runner._session_state("key").turn.agent = receiver
-    if route == "explicit":
-        await runner._busy_steer_command(event, "key", source)
-    elif route == "priority":
+    if route == "priority":
         runner._hm_busy_steer(event, receiver, "key")
     elif route == "priority_redirect":
         await runner._hm_busy_interrupt(event, source, receiver, "key")
@@ -69,7 +67,7 @@ async def test_busy_injection_preserves_original_routing_fields(route, platform,
             assert origin[key] != value
     assert origin == expected
     assert asdict(source) == original_source
-    assert event.text == ("/steer request" if route == "explicit" else "request")
+    assert event.text == "request"
 
 
 def test_origin_is_lossless_data_not_new_prompt_lines_or_a_guessed_target():
