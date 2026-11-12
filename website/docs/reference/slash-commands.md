@@ -275,7 +275,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/verbose` | Cycle tool progress display. **Off by default on messaging** — enable with `display.tool_progress_command: true` in `config.yaml`. |
 | `/commands [page]` | Browse all commands and skills (paginated). |
 | `/update` | Update Hermes Agent to the latest version. |
-| `/restart` | Restart the gateway after active runs finish. The wait is uncapped: new work is refused while it waits, and the restart proceeds only once every active session, cron run, and API run has drained — in-flight work is never interrupted, however long it takes. When the gateway comes back online, it sends a confirmation to the requester's chat/thread. |
+| `/restart [--hub]` | Restart the gateway after active runs finish. The wait is uncapped: new work is refused while it waits, and the restart proceeds only once every active session, cron run, and API run has drained — in-flight work is never interrupted, however long it takes. When the gateway comes back online, it sends a confirmation to the requester's chat/thread. `--hub` (opt-in) asks the successor gateway process to restart `hermes-discord-hub.service` after it comes up; the same opt-in is available to the agent as `restart` tool argument `restart_hub: true`. If the unit is missing or systemctl fails, the restart reports a warning and continues — the gateway restart itself never fails because of the hub. |
 | `/debug` | Upload debug report (system info + logs) and get shareable links. |
 | `/clearnotify` | Clear the gateway lifecycle-notification channel. | 
 | `/sethomeserver [confirm]` | Provision and wire the Discord home server. |

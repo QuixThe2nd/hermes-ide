@@ -8186,6 +8186,21 @@ class GatewayRunner(
         # _finish_startup_restore awaits it (bounded) before opening the gate.
         self._start_startup_warmup()
 
+        # Opt-in hub bounce (restart_hub / /restart --hub): consume the marker
+        # and bounce hermes-discord-hub.service BEFORE any adapter attaches.
+        # Overlap successors defer attach until they are authoritative; bouncing
+        # here would consume the marker while the predecessor is still attached.
+        # The authoritative hook bounces instead. Off-loop: systemctl can block.
+        if not getattr(self, "_overlap_successor_pending", False):
+            try:
+                from gateway.restart_hub import consume_restart_hub_bounce
+
+                await asyncio.get_running_loop().run_in_executor(
+                    None, consume_restart_hub_bounce, _hermes_home
+                )
+            except Exception:
+                logger.warning("restart-hub: successor hub bounce failed", exc_info=True)
+
         connected_count = 0
         enabled_platform_count = 0
         startup_nonretryable_errors: list[str] = []
@@ -8634,6 +8649,15 @@ class GatewayRunner(
         # helps Discord thread deliveries right after reconnect.
         if connected_count > 0:
             await asyncio.sleep(1.0)
+
+        # Finalize the opt-in hub bounce report (attach-marker verification)
+        # before the restart comeback notice and turn recovery read it.
+        try:
+            from gateway.restart_hub import complete_restart_hub_report
+
+            complete_restart_hub_report(_hermes_home)
+        except Exception:
+            logger.debug("restart-hub: hub attach verification failed", exc_info=True)
 
         # Notify the chat that initiated /restart that the gateway is back.
         chat_restart_notification_pending = _restart_notification_pending()
@@ -11813,6 +11837,8 @@ async def _start_gateway_start_control_socket(runner):
             restart_platforms = params.get("restart_platforms")
             if restart_platforms is None:
                 restart_platforms = _runner_restart_platforms(runner)
+            # Opt-in hub bounce: missing/false (old clients) never bounces.
+            restart_hub = is_truthy_value(params.get("restart_hub"))
             requester = params.get("requester")
             if not isinstance(requester, dict) or not requester:
                 requester = None
@@ -11834,6 +11860,7 @@ async def _start_gateway_start_control_socket(runner):
                             await queue_user_restart(
                                 runner, source, message_id,
                                 restart_platforms=bool(restart_platforms),
+                                restart_hub=bool(restart_hub),
                             )
                         )
                     finally:
@@ -12181,7 +12208,24 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             nonlocal _control_server, cron_stop, cron_provider, cron_thread, housekeeping_thread
             _control_server = await _start_gateway_start_control_socket(runner)
             _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
+            # Opt-in hub bounce (restart_hub): consume the marker and bounce
+            # hermes-discord-hub.service BEFORE adapters attach. Off-loop —
+            # systemctl can block for seconds. Never raises, never fails boot.
+            try:
+                from gateway.restart_hub import consume_restart_hub_bounce
+
+                await asyncio.get_running_loop().run_in_executor(
+                    None, consume_restart_hub_bounce, _hermes_home
+                )
+            except Exception:
+                logger.warning("restart-hub: successor hub bounce failed", exc_info=True)
             await start_deferred_adapters(runner)
+            try:
+                from gateway.restart_hub import complete_restart_hub_report
+
+                complete_restart_hub_report(_hermes_home)
+            except Exception:
+                logger.debug("restart-hub: hub attach verification failed", exc_info=True)
             await runner._send_restart_notification()
             cron_stop, cron_provider, cron_thread, housekeeping_thread = (
                 _start_gateway_start_cron_and_housekeeping(runner))
