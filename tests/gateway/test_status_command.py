@@ -196,7 +196,7 @@ async def test_status_command_uses_most_recent_persisted_model_route(tmp_path):
 
 @pytest.mark.asyncio
 async def test_status_command_prefers_rehydrated_session_model_override(tmp_path):
-    """A committed /model switch is current before the selected model records usage."""
+    """A committed session model switch is current before the selected model records usage."""
     source = _make_source()
     store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
     session_entry = store.get_or_create_session(source)
@@ -214,24 +214,19 @@ async def test_status_command_prefers_rehydrated_session_model_override(tmp_path
             input_tokens=480,
             api_call_count=48,
         )
-        result = SimpleNamespace(
-            new_model="model-b",
-            target_provider="provider-b",
-            provider_label="Provider B",
-            api_key="secret",
-            base_url="https://b.example/v1",
-            api_mode=None,
-            request_overrides={},
-            runtime_capabilities={},
-        )
-        switch_ctx = SimpleNamespace(
-            session_key=session_entry.session_key,
-            current_model="model-a",
-            persist_global=False,
-            restore_snapshot=None,
-        )
-        await runner._record_model_switch(
-            result, switch_ctx, source=source, one_turn=False, picker=False
+        # Seed the durable override the way a committed session model switch leaves it:
+        # session-state override + persisted model_config row (no resident agent).
+        runner._session_state(session_entry.session_key).conversation.model_override = {
+            "model": "model-b", "provider": "provider-b", "api_key": "secret",
+            "base_url": "https://b.example/v1", "api_mode": None,
+            "request_overrides": {}, "capabilities": {},
+        }
+        db.update_session_model(session_entry.session_id, "model-b", provider="provider-b")
+        await runner._async_session_store.set_model_override(
+            session_entry.session_key,
+            {"model": "model-b", "provider": "provider-b", "api_key": "secret",
+             "base_url": "https://b.example/v1", "api_mode": None,
+             "request_overrides": {}, "capabilities": {}},
         )
         # Simulate a restart: /status must lazily recover the durable override.
         runner._session_state(session_entry.session_key).conversation.model_override = None

@@ -295,7 +295,7 @@ async def test_slash_command_registration_stays_under_discord_limit(adapter):
 
     # Native, high-priority commands are registered first and must survive
     # the cap — they are the core UX, not droppable overflow.
-    for native in ("status", "stop", "new", "model", "help"):
+    for native in ("status", "stop", "new", "help"):
         assert native in tree_names, f"/{native} (native) was dropped by the cap"
 
     # The cap must actually have dropped overflow — not every plugin fit.

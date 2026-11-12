@@ -38,7 +38,7 @@ Portal 代理了来自整个生态系统的精选 agentic 模型目录——统�
 | **Hermes** | Hermes-4-70B、Hermes-4-405B（对话，见[下方说明](#a-note-on-hermes-4)） |
 | **+ 其他所有模型** | 240+ 额外模型——完整的 agentic 前沿生态 |
 
-底层上，Portal 会为每个模型选择最合适的后端——部分模型通过 OpenRouter 路由，其他模型则通过专有或备用提供商，且某个模型的路由方式可能随时间调整。所有用量都统一计入你的 Nous 订阅。在会话中途用 `/model` 即可在 Claude Sonnet 4.6（适合代码）和 Gemini 2.5 Pro（适合长上下文）之间切换——无需新凭证，无需充值，不会遇到余额为零的意外报错。
+底层上，Portal 会为每个模型选择最合适的后端——部分模型通过 OpenRouter 路由，其他模型则通过专有或备用提供商，且某个模型的路由方式可能随时间调整。所有用量都统一计入你的 Nous 订阅。用 `hermes model` 即可在 Claude Sonnet 4.6（适合代码）和 Gemini 2.5 Pro（适合长上下文）之间切换——无需新凭证，无需充值，不会遇到余额为零的意外报错。
 
 :::note
 由于路由是按模型进行的，并非总是经过 OpenRouter，OpenRouter 专有的请求扩展（如 `provider` 路由偏好、`session_id` 粘性路由或顶层 `cache_control`）不属于 Portal 的 API 契约，可能会被忽略，具体取决于该模型由哪个后端提供服务。
@@ -74,10 +74,10 @@ Nous Research 自家的 **Hermes 4** 系列（Hermes-4-70B、Hermes-4-405B）通
 但**不建议在 Hermes Agent 内部使用它们**。Hermes 4 针对对话和推理进行了调优，而非 agent 所依赖的高频工具调用循环。请将它们用于研究工作流，或通过[订阅代理](../user-guide/features/subscription-proxy.md)从其他工具调用——但在 agent 场景下，请从目录中选择前沿 agentic 模型：
 
 ```bash
-/model anthropic/claude-sonnet-4.6     # 最佳通用 agentic 模型
-/model openai/gpt-5.4                  # 强推理 + 工具调用
-/model google/gemini-2.5-pro           # 超大上下文窗口
-/model deepseek/deepseek-v3.2          # 高性价比代码模型
+hermes model anthropic/claude-sonnet-4.6     # 最佳通用 agentic 模型
+hermes model openai/gpt-5.4                  # 强推理 + 工具调用
+hermes model google/gemini-2.5-pro           # 超大上下文窗口
+hermes model deepseek/deepseek-v3.2          # 高性价比代码模型
 ```
 
 Portal 自身的[模型信息页](https://portal.nousresearch.com/info)也有相同警告，因此这不是 Hermes 侧的主观意见——这是 Nous Research 的官方指导。
@@ -111,7 +111,7 @@ hermes model
 # 浏览器打开，登录，完成
 ```
 
-你现有的提供商配置保持不变。可以在会话中途用 `/model` 切换，或在会话间用 `hermes model` 切换——Portal 成为你的可用提供商之一，而非唯一选项。
+你现有的提供商配置保持不变。可以用 `hermes model` 切换——Portal 成为你的可用提供商之一，而非唯一选项。
 
 ### 无头环境 / SSH / 远程配置
 
@@ -159,15 +159,15 @@ hermes portal open       # 在浏览器中打开订阅管理页面
 在会话中：
 
 ```bash
-/model anthropic/claude-sonnet-4.6
-/model openai/gpt-5.4
-/model google/gemini-2.5-pro
+hermes model anthropic/claude-sonnet-4.6
+hermes model openai/gpt-5.4
+hermes model google/gemini-2.5-pro
 ```
 
 或打开选择器：
 
 ```bash
-/model
+hermes model
 # 方向键选择，回车确认
 ```
 
@@ -250,10 +250,10 @@ hermes portal
 
 ### 想使用 Portal 未暴露的特定提供商模型
 
-Portal 会为每个模型选择合适的后端——部分模型通过 OpenRouter 路由，其他模型则通过专有或备用提供商——因此 OpenRouter 支持的大多数模型通常都可用。如果某个模型未出现在 `/model` 中，可直接尝试 OpenRouter 风格的 slug：
+Portal 会为每个模型选择合适的后端——部分模型通过 OpenRouter 路由，其他模型则通过专有或备用提供商——因此 OpenRouter 支持的大多数模型通常都可用。如果某个模型未出现在 `hermes model` 选择器中，可直接尝试 OpenRouter 风格的 slug：
 
 ```bash
-/model anthropic/claude-opus-4.6
+hermes model anthropic/claude-opus-4.6
 ```
 
 如果某个模型确实缺失，请[提交 issue](https://github.com/NousResearch/hermes-agent/issues)——我们将 Portal 目录同步至 Hermes，缺口通常意味着可以更新的路由配置。

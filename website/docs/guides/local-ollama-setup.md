@@ -82,7 +82,7 @@ ollama pull gemma4:31b
 ```
 
 :::info Multiple models
-You can pull several models and switch between them inside Hermes with `/model`. Ollama loads the active model into memory on demand and unloads idle ones automatically.
+You can pull several models and switch between them inside Hermes with `hermes model`. Ollama loads the active model into memory on demand and unloads idle ones automatically.
 :::
 
 Verify the model works:
@@ -154,10 +154,10 @@ Not every task needs the biggest model. Here's a practical guide:
 For full agentic work (editing files, running commands, browsing), `gemma4:31b` is currently the best local option with tool-call support. Check [Ollama's model library](https://ollama.com/library) for newer models — tool-calling support is expanding rapidly.
 :::
 
-Switch models on the fly inside a session:
+Switch models on the fly:
 
 ```
-/model gemma2:9b
+hermes model gemma2:9b
 ```
 
 ## Step 6: Optimize for Speed

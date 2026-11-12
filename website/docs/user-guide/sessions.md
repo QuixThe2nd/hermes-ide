@@ -860,7 +860,7 @@ That reverts groups/channels to a single shared session per room, which preserve
 ### Session continuity
 
 Gateway conversations do not reset after inactivity or at a daily boundary. Use `/new`
-or `/reset` for an explicit new conversation; context compression remains automatic.
+for an explicit new conversation; context compression remains automatic.
 Legacy `session_reset` settings, reset-policy overrides and reset-timer environment
 variables are ignored. Cached agents may be released to reclaim resources without
 replacing the durable conversation. Restart-recovery freshness limits automatic
@@ -896,7 +896,7 @@ See [Memory](features/memory.md) for what gets carried across boundaries.
 ### Continuity After Crashes and Restarts
 
 A gateway chat is designed to be **one continuous session** — compacted
-repeatedly as it grows — until you explicitly run `/new` (or `/reset`). This
+repeatedly as it grows — until you explicitly run `/new`. This
 holds across gateway crashes, restarts, and updates:
 
 - Session identity (routing key, chat, origin) is written **atomically** when
@@ -962,7 +962,7 @@ Key tables in `state.db`:
 
 ### Automatic Cleanup
 
-- Gateway conversations persist across inactivity; use `/new` or `/reset` for an explicit boundary
+- Gateway conversations persist across inactivity; use `/new` for an explicit boundary
 - Before reset, the agent saves memories and skills from the expiring session
 - Auto-pruning (**on by default** since #54189): when `sessions.auto_prune` is `true`, ended sessions inactive for `sessions.retention_days` (default 90) are pruned at CLI/gateway/cron startup
 - After a prune that actually removed rows, `state.db` is `VACUUM`ed to reclaim disk space only when **both** gates pass: at least `sessions.min_vacuum_interval_days` (default 30) have elapsed since the last successful `VACUUM`, **and** more than 25% of the file's pages are reclaimable (`PRAGMA freelist_count / page_count`). A dense database never pays for a full rewrite to reclaim a few MB (SQLite does not shrink the file on plain DELETE)

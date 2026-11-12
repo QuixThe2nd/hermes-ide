@@ -34,7 +34,7 @@ Fallback chain when the primary fails: `hermes fallback add|remove|list`.
 
 ### User-defined model aliases
 
-Work with `/model <name>` in CLI and every gateway platform. Resolved by
+Work with `hermes model <name>` (or `model.default` in config.yaml). Resolved by
 `hermes_cli/model_switch.py::resolve_alias()`; user aliases are checked BEFORE
 the built-in table, so a user `sonnet`/`grok` shadows the built-in.
 
@@ -61,7 +61,7 @@ model:
     fav: openrouter/anthropic/claude-sonnet-4.6
 ```
 
-`/model fav` — session-scoped; add `--global` to persist as default.
+`hermes model fav` — applies the alias and persists it as the default.
 
 An alias with its own `base_url` authenticates with its own credential
 (`api_key`, which also accepts a `"${VAR}"` reference, or `key_env`). With

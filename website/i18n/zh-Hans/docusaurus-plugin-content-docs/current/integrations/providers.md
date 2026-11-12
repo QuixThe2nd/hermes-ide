@@ -102,9 +102,9 @@ Hermes 有**两个**模型命令，用途不同：
 | 命令 | 运行位置 | 功能 |
 |---------|-------------|--------------|
 | **`hermes model`** | 终端（任何会话之外） | 完整配置向导——添加提供商、运行 OAuth、输入 API key、配置端点 |
-| **`/model`** | Hermes 聊天会话内部 | 在**已配置的**提供商和模型之间快速切换 |
+| **`hermes model`** | 终端（会话外） | 在**已配置的**提供商和模型之间快速切换 |
 
-如果你想切换到尚未配置的提供商（例如你只配置了 OpenRouter，想使用 Anthropic），需要使用 `hermes model`，而不是 `/model`。先退出会话（`Ctrl+C` 或 `/quit`），运行 `hermes model`，完成提供商配置，然后开启新会话。
+如果你想切换到尚未配置的提供商（例如你只配置了 OpenRouter，想使用 Anthropic），需要使用 `hermes model`。先退出会话（`Ctrl+C` 或 `/quit`），运行 `hermes model`，完成提供商配置，然后开启新会话。
 
 
 ### Anthropic（原生）
@@ -278,7 +278,7 @@ model:
 
 ### xAI（Grok）— Responses API + Prompt 缓存
 
-xAI 通过 Responses API（`codex_responses` 传输）接入，自动支持 Grok 4 模型的推理——无需 `reasoning_effort` 参数，服务端默认进行推理。在 `~/.hermes/.env` 中设置 `XAI_API_KEY` 并在 `hermes model` 中选择 xAI，或直接用 `grok` 作为快捷方式输入 `/model grok-4-1-fast-reasoning`。
+xAI 通过 Responses API（`codex_responses` 传输）接入，自动支持 Grok 4 模型的推理——无需 `reasoning_effort` 参数，服务端默认进行推理。在 `~/.hermes/.env` 中设置 `XAI_API_KEY` 并在 `hermes model` 中选择 xAI，或直接用 `grok` 作为快捷方式运行 `hermes model grok-4-1-fast-reasoning`。
 
 SuperGrok 和 X Premium+ 订阅者可以用浏览器 OAuth 登录，无需 API key——在 `hermes model` 中选择 **xAI Grok OAuth (SuperGrok / Premium+)**，或运行 `hermes auth add xai-oauth`。同一 OAuth bearer token 会被 xAI 直连工具（TTS、图像生成、视频生成、转录）自动复用。完整流程参见 [xAI Grok OAuth 指南](../guides/xai-grok-oauth.md)——如果 Hermes 运行在远程主机上，还需参见 [SSH / 远程主机上的 OAuth](../guides/oauth-over-ssh.md) 了解所需的 `ssh -L` 隧道配置。
 
@@ -558,35 +558,29 @@ model:
 
 两种方式都会持久化到 `config.yaml`，该文件是模型、提供商和基础 URL 的唯一来源。
 
-### 使用 `/model` 切换模型
+### 使用 `hermes model` 切换模型
 
-:::warning hermes model 与 /model
-**`hermes model`**（在终端中运行，任何聊天会话之外）是**完整的提供商配置向导**。用于添加新提供商、运行 OAuth 流程、输入 API key 和配置自定义端点。
+**`hermes model`**（在终端中运行，任何聊天会话之外）是**完整的提供商配置向导**。用于添加新提供商、运行 OAuth 流程、输入 API key 和配置自定义端点，并在**已配置的**提供商和模型之间**切换**。如果你只配置了一个提供商（如 OpenRouter），`hermes model` 只会显示该提供商的模型。
 
-**`/model`**（在活跃的 Hermes 聊天会话中输入）只能在**已配置的**提供商和模型之间**切换**。它无法添加新提供商、运行 OAuth 或提示输入 API key。如果你只配置了一个提供商（如 OpenRouter），`/model` 只会显示该提供商的模型。
-
-**添加新提供商：** 退出会话（`Ctrl+C` 或 `/quit`），运行 `hermes model`，配置新提供商，然后开启新会话。
-:::
-
-配置好至少一个自定义端点后，可以在会话中途切换模型：
+配置好至少一个自定义端点后，可以切换模型：
 
 ```
-/model custom:qwen-2.5          # 切换到自定义端点上的某个模型
-/model custom                    # 从端点自动检测模型
-/model openrouter:claude-sonnet-4 # 切换回云端提供商
+hermes model custom:qwen-2.5          # 切换到自定义端点上的某个模型
+hermes model custom                    # 从端点自动检测模型
+hermes model openrouter:claude-sonnet-4 # 切换回云端提供商
 ```
 
 如果你配置了**命名自定义提供商**（见下文），使用三段式语法：
 
 ```
-/model custom:local:qwen-2.5    # 使用"local"自定义提供商和 qwen-2.5 模型
-/model custom:work:llama3       # 使用"work"自定义提供商和 llama3
+hermes model custom:local:qwen-2.5    # 使用"local"自定义提供商和 qwen-2.5 模型
+hermes model custom:work:llama3       # 使用"work"自定义提供商和 llama3
 ```
 
 切换提供商时，Hermes 会将基础 URL 和提供商持久化到配置中，使更改在重启后保留。从自定义端点切换到内置提供商时，过时的基础 URL 会自动清除。
 
 :::tip
-`/model custom`（不带模型名称）会查询端点的 `/models` API，如果只加载了一个模型则自动选择。适用于运行单个模型的本地服务器。
+`hermes model custom`（不带模型名称）会查询端点的 `/models` API，如果只加载了一个模型则自动选择。适用于运行单个模型的本地服务器。
 :::
 
 以下所有内容遵循相同模式——只需更改 URL、key 和模型名称。
@@ -1186,9 +1180,9 @@ extra_body:
 使用三段式语法在会话中途切换：
 
 ```
-/model custom:local:qwen-2.5       # 使用"local"端点和 qwen-2.5
-/model custom:work:llama3-70b      # 使用"work"端点和 llama3-70b
-/model custom:anthropic-proxy:claude-sonnet-4  # 使用代理
+hermes model custom:local:qwen-2.5       # 使用"local"端点和 qwen-2.5
+hermes model custom:work:llama3-70b      # 使用"work"端点和 llama3-70b
+hermes model custom:anthropic-proxy:claude-sonnet-4  # 使用代理
 ```
 
 也可以从交互式 `hermes model` 菜单中选择命名自定义提供商。
@@ -1224,9 +1218,9 @@ TOGETHER_API_KEY=your-together-key
 会话中途切换模型：
 
 ```
-/model custom:together:meta-llama/Llama-3.3-70B-Instruct-Turbo
-/model custom:together:google/gemma-4-31b-it
-/model custom:together:deepseek-ai/DeepSeek-V3
+hermes model custom:together:meta-llama/Llama-3.3-70B-Instruct-Turbo
+hermes model custom:together:google/gemma-4-31b-it
+hermes model custom:together:deepseek-ai/DeepSeek-V3
 ```
 
 Together 的 `/v1/models` 端点可用，因此 `hermes model` 可以自动发现可用模型。
@@ -1275,7 +1269,7 @@ PERPLEXITY_API_KEY=your-perplexity-key
 
 #### 在单个配置中使用多个提供商
 
-三个示例可以组合使用——同时使用所有提供商，并通过 `/model custom:<name>:<model>` 按轮次切换：
+三个示例可以组合使用——同时使用所有提供商，并通过 `hermes model custom:<name>:<model>` 切换：
 
 ```yaml
 custom_providers:

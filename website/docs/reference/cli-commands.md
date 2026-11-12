@@ -233,39 +233,11 @@ Use this when you want to:
 - configure a custom/self-hosted endpoint
 - save the new default into config
 
-:::warning hermes model vs /model — know the difference
-**`hermes model`** (run from your terminal, outside any Hermes session) is the **full provider setup wizard**. It can add new providers, run OAuth flows, prompt for API keys, and configure endpoints.
-
-**`/model`** (typed inside an active Hermes chat session) can only **switch between providers and models you've already set up**. It cannot add new providers, run OAuth, or prompt for API keys.
-
-**If you need to add a new provider:** Exit your Hermes session first (`Ctrl+C` or `/quit`), then run `hermes model` from your terminal prompt.
-:::
-
-### `/model` slash command (mid-session)
-
-Switch between already-configured models without leaving a session:
-
-```
-/model                              # Show current model and available options
-/model claude-sonnet-4              # Switch model (auto-detects provider)
-/model zai:glm-5                    # Switch provider and model
-/model custom:qwen-2.5              # Use model on your custom endpoint
-/model custom                       # Auto-detect model from custom endpoint
-/model custom:local:qwen-2.5        # Use a named custom provider
-/model openrouter:anthropic/claude-sonnet-4  # Switch back to cloud
-```
-
-By default, `/model` changes apply **to the current session only**. Add `--global` to persist the change to `config.yaml` (or set `model.persist_switch_by_default: true` to make every switch persist):
-
-```
-/model claude-sonnet-4 --global     # Switch and save as new default
-```
-
 :::info What if I only see OpenRouter models?
-If you've only configured OpenRouter, `/model` will only show OpenRouter models. To add another provider (Anthropic, DeepSeek, Copilot, etc.), exit your session and run `hermes model` from the terminal.
+If you've only configured OpenRouter, `hermes model` will only show OpenRouter models. To add another provider (Anthropic, DeepSeek, Copilot, etc.), run `hermes model` from the terminal.
 :::
 
-On a `--global` switch, provider and base URL changes are persisted to `config.yaml` alongside the model. When switching away from a custom endpoint, the stale base URL is cleared to prevent it leaking into other providers.
+Provider and base URL changes are persisted to `config.yaml` alongside the model. When switching away from a custom endpoint, the stale base URL is cleared to prevent it leaking into other providers.
 
 ## `hermes gateway`
 
@@ -407,7 +379,7 @@ hermes slack manifest --slashes-only  # just the features.slash_commands array
 ```
 
 Generates a Slack app manifest that registers every gateway command in
-`COMMAND_REGISTRY` (`/btw`, `/stop`, `/model`, …) as a first-class
+`COMMAND_REGISTRY` (`/btw`, `/stop`, `/status`, …) as a first-class
 Slack slash command — matching Discord and Telegram parity. Paste the
 output into your Slack app config at
 [https://api.slack.com/apps](https://api.slack.com/apps) → your app →

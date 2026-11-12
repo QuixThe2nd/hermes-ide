@@ -150,10 +150,10 @@ def register(ctx):
 3. update_from_response() — 每次 API 调用后
 4. should_compress() — 每轮检查
 5. compress() — 当 should_compress() 返回 True 时调用
-6. on_session_end() — 会话边界（CLI 退出、/reset、gateway 过期）
+6. on_session_end() — 会话边界（CLI 退出、/new、gateway 过期）
 ```
 
-`on_session_reset()` 在 `/new` 或 `/reset` 时调用，用于清除会话级状态而不完全关闭。
+`on_session_reset()` 在 `/new` 时调用，用于清除会话级状态而不完全关闭。
 
 ## 配置
 

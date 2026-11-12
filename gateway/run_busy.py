@@ -1442,8 +1442,8 @@ class GatewayBusySessionMixin:
     )
     # Dispatched only on the idle path (busy dispatch has its own allowlist).
     _IDLE_COMMANDS = (
-        "topic", "whoami", "platform", "stop", "reasoning", "memory", "skills", "fast",
-        "model", "codex-runtime", "personality", "suggestions", "save", "retry",
+        "topic", "whoami", "platform", "stop", "memory", "skills",
+        "codex-runtime", "suggestions", "save", "retry",
         "setnotify", "clearnotify", "compress", "usage", "topup", "insights", "reload-mcp", "reload-skills",
         "debug", "title", "resume", "sessions", "branch", "rollback", "diff", "goal",
         "loop", "refine", "review", "voice",
@@ -1486,8 +1486,8 @@ class GatewayBusySessionMixin:
 
         Order: ``busy_handler`` (mid-run variant) → ``busy_policy == "dispatch"`` (normal handler)
         → catch-all reject text. Rejecting is required rather than falling through to
-        interrupt + discard: commands like /model, /reasoning, /voice, /insights, /title,
-        /resume, /retry, /undo, /compress, /usage, /reload-mcp, /setnotify, /reset (all
+        interrupt + discard: commands like /voice, /insights, /title,
+        /resume, /retry, /undo, /compress, /usage, /reload-mcp, /setnotify (all
         registered as Discord slash commands) would interrupt the agent AND get silently
         discarded by the slash-command safety net, producing a zero-char response.
         See #5057, #6252, #10370.

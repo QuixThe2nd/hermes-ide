@@ -79,7 +79,7 @@ That's it — you're talking to Nemotron 3 Ultra, free.
 Already set up with another model?
 
 - **Desktop app:** open the model picker, search for **nemotron 3 ultra**, and select the **Free tier** variant.
-- **CLI / TUI:** switch any time from inside a session with `/model nvidia/nemotron-3-ultra:free`, or run `/model` to open the picker and choose it from the list.
+- **CLI / TUI:** switch any time with `hermes model nvidia/nemotron-3-ultra:free`, or run `hermes model` to open the picker and choose it from the list.
 
 ## Troubleshooting
 

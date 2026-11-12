@@ -155,20 +155,6 @@ class GatewayConfigLoadersMixin:
         from hermes_constants import resolve_reasoning_config
         return resolve_reasoning_config(_load_gateway_config(), model)
 
-    @staticmethod
-    def _parse_reasoning_command_args(raw_args: str) -> tuple[str, bool]:
-        """Parse `/reasoning` args into `(value, persist_global)`; `--global` anywhere persists to config."""
-        import shlex
-        text = str(raw_args or "").strip().replace("—", "--")
-        if not text:
-            return "", False
-        try:
-            tokens = shlex.split(text)
-        except ValueError:
-            tokens = text.split()
-        value = " ".join(token for token in tokens if token != "--global")
-        return value.strip().lower(), "--global" in tokens
-
     def _resolve_session_reasoning_config(
         self,
         *,

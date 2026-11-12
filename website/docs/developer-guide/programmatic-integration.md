@@ -109,7 +109,7 @@ Every command in the Pi-mono RPC spec ([issue #360](https://github.com/NousResea
 | `steer` | `session.steer` |
 | `follow_up` | `prompt.submit` queued after current turn |
 | `abort` | `session.interrupt` |
-| `set_model` | `command.dispatch` for `/model <provider:model>` (mid-session, persistent) |
+| `set_model` | `hermes model <provider:model>` (persistent) |
 | `compact` | `session.compress` |
 | `get_state` | `session.status` |
 | `get_messages` | `session.history` |
@@ -205,10 +205,9 @@ A run is never reported as `completed` with `completed: false` or `partial: true
 
 ## Model hot-swapping
 
-Mid-session model switching works on every surface — it's the `/model` slash command under the hood.
+Model switching works on every surface — it's the shared switch pipeline in `hermes_cli/model_switch.py` under the hood.
 
-- **CLI / TUI:** `/model claude-sonnet-4` or `/model openrouter:anthropic/claude-sonnet-4.6`
-- **TUI gateway RPC:** `command.dispatch` with `{"command": "/model claude-sonnet-4"}`
+- **CLI / TUI:** `hermes model claude-sonnet-4` or `hermes model openrouter:anthropic/claude-sonnet-4.6`
 - **ACP:** the IDE sends the slash command as a prompt; the agent dispatches it
 - **API server:** include a `model` field in the request body
 

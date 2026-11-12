@@ -8,25 +8,6 @@ gateway:
   config_read_failed: "⚠️ config.yaml を読み込めませんでした: {error}"
   config_save_failed: "⚠️ 設定を保存できませんでした: {error}"
 
-  model:
-    error_prefix:           "エラー: {error}"
-    switched:               "モデルを `{model}` に切り替えました"
-    provider_label:         "プロバイダー: {provider}"
-    context_label:          "コンテキスト: {tokens} トークン"
-    max_output_label:       "最大出力: {tokens} トークン"
-    cost_label:             "コスト: {cost}"
-    capabilities_label:     "機能: {capabilities}"
-    prompt_caching_enabled: "プロンプトキャッシュ: 有効"
-    warning_prefix:         "警告: {warning}"
-    saved_global:           "config.yaml に保存しました (`--global`)"
-    session_only_hint:      "_(このセッションのみ — 永続化するには `--global` を追加)_"
-    current_label:          "現在: `{model}` ({provider})"
-    current_tag:            " (現在)"
-    more_models_suffix:     " (他 {count} 件)"
-    usage_switch_model:     "`/model <name>` — モデルを切り替え"
-    usage_switch_provider:  "`/model <name> --provider <slug>` — プロバイダーを切り替え"
-    usage_persist:          "`/model <name> --global` — 永続化"
-
   agents:
     header:                "🤖 **アクティブなエージェントとタスク**"
     active_agents:         "**アクティブなエージェント:** {count}"
@@ -88,22 +69,6 @@ gateway:
     full_logs_hint:        "完全なログのアップロードには、CLI から `hermes debug share` を使用してください。"
     share_hint:            "サポートを受けるには、このリンクを Hermes チームに共有してください。"
 
-  fast:
-    not_supported:         "⚡ /fast は Priority Processing をサポートする OpenAI モデルでのみ利用できます。"
-    status:                "⚡ Priority Processing\n\n現在のモード: `{mode}`\n\n_使い方:_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ 不明な引数: `{arg}`\n\n**有効なオプション:** normal、fast、status"
-    saved:                 "⚡ ✓ Priority Processing: **{label}** (設定に保存しました)\n_(次のメッセージから有効)_"
-    session_only:          "⚡ ✓ Priority Processing: **{label}** (このセッションのみ)"
-    label_fast:            "FAST"
-    label_normal:          "NORMAL"
-    status_fast:           "fast"
-    status_normal:         "normal"
-    picker_title:          "⚡ **Priority Processing**\\n\\n現在のモード: `{mode}`\\n\\nオプションを選択:"
-    choice_fast:           "fast — Priority Processing オン"
-    choice_normal:         "normal — 標準処理"
-    choice_auto:           "auto — 各ターンの最初の数秒間だけ高速"
-    choice_cold:           "cold — セッションの最初のターンのみ高速"
-
   footer:
     status:                "📎 ランタイムフッター: **{state}**\nフィールド: `{fields}`\nプラットフォーム: `{platform}`"
     usage:                 "使い方: `/footer [on|off|status]`"
@@ -130,42 +95,9 @@ gateway:
     invalid_days:          "--days の値が無効です: {value}"
     error:                 "インサイトの生成中にエラーが発生しました: {error}"
 
-  personality:
-    none_configured:       "`{path}/config.yaml` に人格が設定されていません"
-    header:                "🎭 **利用可能な人格**\n"
-    none_option:           "• `none` — (人格オーバーレイなし)"
-    item:                  "• `{name}` — {preview}"
-    usage:                 "\n使い方: `/personality <name>`"
-    save_failed:           "⚠️ 人格変更の保存に失敗しました: {error}"
-    cleared:               "🎭 人格をクリアしました — 基本のエージェント動作を使用します。\n_(次のメッセージから有効)_"
-    set_to:                "🎭 人格を **{name}** に設定しました\n_(次のメッセージから有効)_"
-    unknown:               "不明な人格: `{name}`\n\n利用可能: {available}"
-
   profile:
     header:                "👤 **プロファイル:** `{profile}`"
     home:                  "📂 **ホーム:** `{home}`"
-
-  reasoning:
-    level_default:             "medium (デフォルト)"
-    level_disabled:            "none (無効)"
-    scope_session:             "セッションのオーバーライド"
-    scope_global:              "グローバル設定"
-    status:                    "🧠 **推論設定**\n\n**強度:** `{level}`\n**スコープ:** {scope}\n**表示:** {display}\n\n_使い方:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
-    display_on:                "オン ✓"
-    display_off:               "オフ"
-    display_set_on:            "🧠 ✓ 推論表示: **オン**\n**{platform}** 上で各応答の前にモデルの思考が表示されます。"
-    display_set_off:           "🧠 ✓ **{platform}** での推論表示: **オフ**"
-    reset_global_unsupported:  "⚠️ `/reasoning reset --global` はサポートされていません。グローバルのデフォルトを変更するには `/reasoning <level> --global` を使用してください。"
-    reset_done:                "🧠 ✓ セッションの推論オーバーライドをクリアしました。グローバル設定にフォールバックします。"
-    unknown_arg:               "⚠️ 不明な引数: `{arg}`\n\n**有効なレベル:** none, minimal, low, medium, high, xhigh, max, ultra\n**表示:** show, hide\n**永続化:** セッションを越えて保存するには `--global` を追加"
-    picker_title:              "🧠 **推論設定**\\n\\n**強度:** `{level}`\\n**スコープ:** {scope}\\n**表示:** {display}\\n\\nオプションを選択:"
-    choice_none:               "none — 推論を無効化"
-    choice_reset:              "reset — セッション上書きをクリア"
-    choice_show:               "返信に推論を表示"
-    choice_hide:               "返信の推論を非表示"
-    set_global:                "🧠 ✓ 推論強度を `{effort}` に設定しました (設定に保存)\n_(次のメッセージから有効)_"
-    set_global_save_failed:    "🧠 ✓ 推論強度を `{effort}` に設定しました (セッションのみ — 設定の保存に失敗)\n_(次のメッセージから有効)_"
-    set_session:               "🧠 ✓ 推論強度を `{effort}` に設定しました (セッションのみ — 永続化するには `--global` を追加)\n_(次のメッセージから有効)_"
 
   reload_mcp:
     cancelled:             "🟡 /reload-mcp をキャンセルしました。MCP ツールは変更されていません。"

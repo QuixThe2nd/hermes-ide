@@ -94,7 +94,7 @@ model:
   base_url: http://localhost:11434/v1
 ```
 
-Hermes 会将端点、提供商和 base URL 持久化到 `config.yaml`，重启后仍然有效。如果您的本地服务器只加载了一个模型，`/model custom` 会自动检测到它。您也可以在 config.yaml 中设置 `provider: custom` — 这是一个一等提供商，不是其他任何东西的别名。
+Hermes 会将端点、提供商和 base URL 持久化到 `config.yaml`，重启后仍然有效。如果您的本地服务器只加载了一个模型，`hermes model custom` 会自动检测到它。您也可以在 config.yaml 中设置 `provider: custom` — 这是一个一等提供商，不是其他任何东西的别名。
 
 此方式适用于 Ollama、vLLM、llama.cpp server、SGLang、LocalAI 等。详情请参阅[配置指南](../user-guide/configuration.md)。
 
@@ -232,9 +232,9 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
 ### 提供商与模型问题
 
-#### `/model` 只显示一个提供商 / 无法切换提供商
+#### `hermes model` 只显示一个提供商 / 无法切换提供商
 
-**原因：** 会话内的 `/model` 只能在您**已配置**的提供商之间切换。如果您只设置了 OpenRouter，`/model` 就只会显示 OpenRouter。
+**原因：** `hermes model` 只能在您**已配置**的提供商之间切换。如果您只设置了 OpenRouter，`hermes model` 就只会显示 OpenRouter。
 
 **解决方案：** 退出当前会话，在终端中使用 `hermes model` 添加新提供商：
 
@@ -247,15 +247,15 @@ hermes model
 # 此命令可以：添加提供商、运行 OAuth、输入 API key、配置端点
 ```
 
-通过 `hermes model` 添加新提供商后，启动新的聊天会话 — `/model` 将显示所有已配置的提供商。
+通过 `hermes model` 添加新提供商后，`hermes model` 将显示所有已配置的提供商。
 
 :::tip 快速参考
 | 目标 | 使用方式 |
 |-----------|-----|
 | 添加新提供商 | `hermes model`（从终端） |
 | 输入/更改 API key | `hermes model`（从终端） |
-| 会话中途切换模型 | `/model <name>`（会话内） |
-| 切换到其他已配置的提供商 | `/model provider:model`（会话内） |
+| 更改当前模型 | `hermes model <name>`（从终端） |
+| 切换到其他已配置的提供商 | `hermes model provider:model`（从终端） |
 :::
 
 #### API key 不起作用
@@ -656,12 +656,12 @@ delegation:
 
 您也可以在 prompt 中明确指定：*"委托一个任务来撰写关于我们产品发布的社交媒体帖子。让你的子智能体负责实际写作。"* 智能体将使用 `delegate_task`，它会自动读取委托配置。
 
-如需一次性切换模型而不使用委托，请在 CLI 中使用 `/model`：
+如需一次性切换模型而不使用委托，请使用 `hermes model`：
 
 ```bash
-/model google/gemini-3-flash-preview    # 在本次会话中切换
+hermes model google/gemini-3-flash-preview    # 在本次会话中切换
 # ... 撰写内容 ...
-/model openai/gpt-5.4                   # 切换回来
+hermes model openai/gpt-5.4                   # 切换回来
 ```
 
 有关委托工作原理的更多信息，请参阅[子智能体委托](../user-guide/features/delegation.md)。
@@ -674,7 +674,7 @@ delegation:
 
 **变通方案：**
 
-1. **使用单个 profile 配合人格切换。** 创建不同的 `AGENTS.md` 上下文文件或使用 `/personality` 命令按聊天更改行为。智能体能感知当前所在的聊天并进行适应。
+1. **使用单个 profile 配合人格切换。** 创建不同的 `AGENTS.md` 上下文文件或设置 `display.personality` 按聊天更改行为。智能体能感知当前所在的聊天并进行适应。
 
 2. **使用 cron 作业处理专项任务。** 对于购物清单跟踪器，设置一个监控特定聊天并管理清单的 cron 作业 — 无需单独的智能体。
 

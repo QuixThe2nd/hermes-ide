@@ -187,18 +187,18 @@ model:
 
 ## Switching Models Mid-Session
 
-Use the `/model` command during a conversation:
+Use the `hermes model` command:
 
 ```text
-/model gemini-3.7-flash
-/model gemini-flash-latest
-/model gemini-3.1-pro-preview
-/model gemini-pro-latest
-/model gemma-4-31b-it
-/model gemini-3.1-flash-lite-preview
+hermes model gemini-3.7-flash
+hermes model gemini-flash-latest
+hermes model gemini-3.1-pro-preview
+hermes model gemini-pro-latest
+hermes model gemma-4-31b-it
+hermes model gemini-3.1-flash-lite-preview
 ```
 
-If you have not configured Gemini yet, exit the session and run `hermes model` first. `/model` switches among already-configured providers and models; it does not collect new API keys.
+If you have not configured Gemini yet, run `hermes model` first. `hermes model` switches among already-configured providers and models; it does not collect new API keys.
 
 ## Diagnostics
 

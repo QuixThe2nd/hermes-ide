@@ -8,25 +8,6 @@ gateway:
   config_read_failed: "⚠️ config.yaml okunamadı: {error}"
   config_save_failed: "⚠️ Yapılandırma kaydedilemedi: {error}"
 
-  model:
-    error_prefix:           "Hata: {error}"
-    switched:               "Model `{model}` olarak değiştirildi"
-    provider_label:         "Sağlayıcı: {provider}"
-    context_label:          "Bağlam: {tokens} token"
-    max_output_label:       "Maks. çıktı: {tokens} token"
-    cost_label:             "Maliyet: {cost}"
-    capabilities_label:     "Yetenekler: {capabilities}"
-    prompt_caching_enabled: "Prompt önbelleği: etkin"
-    warning_prefix:         "Uyarı: {warning}"
-    saved_global:           "config.yaml'a kaydedildi (`--global`)"
-    session_only_hint:      "_(yalnızca bu oturum — kalıcı yapmak için `--global` ekleyin)_"
-    current_label:          "Geçerli: `{model}` ({provider})"
-    current_tag:            " (geçerli)"
-    more_models_suffix:     " (+{count} tane daha)"
-    usage_switch_model:     "`/model <name>` — modeli değiştir"
-    usage_switch_provider:  "`/model <name> --provider <slug>` — sağlayıcıyı değiştir"
-    usage_persist:          "`/model <name> --global` — kalıcı kaydet"
-
   agents:
     header:                "🤖 **Aktif Ajanlar ve Görevler**"
     active_agents:         "**Aktif ajanlar:** {count}"
@@ -88,22 +69,6 @@ gateway:
     full_logs_hint:        "Tam günlük yüklemeleri için CLI'dan `hermes debug share` kullanın."
     share_hint:            "Destek için bu bağlantıları Hermes ekibiyle paylaşın."
 
-  fast:
-    not_supported:         "⚡ /fast yalnızca Priority Processing destekleyen OpenAI modellerinde kullanılabilir."
-    status:                "⚡ Priority Processing\n\nMevcut mod: `{mode}`\n\n_Kullanım:_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ Bilinmeyen argüman: `{arg}`\n\n**Geçerli seçenekler:** normal, fast, status"
-    saved:                 "⚡ ✓ Priority Processing: **{label}** (yapılandırmaya kaydedildi)\n_(sonraki mesajda geçerli olur)_"
-    session_only:          "⚡ ✓ Priority Processing: **{label}** (yalnızca bu oturum)"
-    label_fast:            "FAST"
-    label_normal:          "NORMAL"
-    status_fast:           "fast"
-    status_normal:         "normal"
-    picker_title:          "⚡ **Priority Processing**\\n\\nMevcut mod: `{mode}`\\n\\nBir seçenek seçin:"
-    choice_fast:           "fast — Priority Processing açık"
-    choice_normal:         "normal — standart işleme"
-    choice_auto:           "auto — her turun ilk saniyelerinde hızlı"
-    choice_cold:           "cold — yalnızca oturumun ilk turunda hızlı"
-
   footer:
     status:                "📎 Çalışma zamanı altbilgisi: **{state}**\nAlanlar: `{fields}`\nPlatform: `{platform}`"
     usage:                 "Kullanım: `/footer [on|off|status]`"
@@ -130,42 +95,9 @@ gateway:
     invalid_days:          "Geçersiz --days değeri: {value}"
     error:                 "Analiz oluşturulurken hata: {error}"
 
-  personality:
-    none_configured:       "`{path}/config.yaml` içinde yapılandırılmış kişilik yok"
-    header:                "🎭 **Mevcut Kişilikler**\n"
-    none_option:           "• `none` — (kişilik kaplaması yok)"
-    item:                  "• `{name}` — {preview}"
-    usage:                 "\nKullanım: `/personality <name>`"
-    save_failed:           "⚠️ Kişilik değişikliği kaydedilemedi: {error}"
-    cleared:               "🎭 Kişilik temizlendi — temel ajan davranışı kullanılıyor.\n_(bir sonraki mesajda etkili olur)_"
-    set_to:                "🎭 Kişilik **{name}** olarak ayarlandı\n_(bir sonraki mesajda etkili olur)_"
-    unknown:               "Bilinmeyen kişilik: `{name}`\n\nMevcut: {available}"
-
   profile:
     header:                "👤 **Profil:** `{profile}`"
     home:                  "📂 **Ana dizin:** `{home}`"
-
-  reasoning:
-    level_default:             "medium (varsayılan)"
-    level_disabled:            "none (devre dışı)"
-    scope_session:             "oturum geçersiz kılma"
-    scope_global:              "genel yapılandırma"
-    status:                    "🧠 **Akıl Yürütme Ayarları**\n\n**Güç:** `{level}`\n**Kapsam:** {scope}\n**Görüntüleme:** {display}\n\n_Kullanım:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
-    display_on:                "açık ✓"
-    display_off:               "kapalı"
-    display_set_on:            "🧠 ✓ Akıl yürütme görüntüleme: **AÇIK**\n**{platform}** üzerinde her yanıttan önce modelin düşüncesi gösterilecek."
-    display_set_off:           "🧠 ✓ **{platform}** için akıl yürütme görüntüleme: **KAPALI**"
-    reset_global_unsupported:  "⚠️ `/reasoning reset --global` desteklenmiyor. Genel varsayılanı değiştirmek için `/reasoning <level> --global` kullanın."
-    reset_done:                "🧠 ✓ Oturumun akıl yürütme geçersiz kılması temizlendi; genel yapılandırmaya geri dönülüyor."
-    unknown_arg:               "⚠️ Bilinmeyen argüman: `{arg}`\n\n**Geçerli seviyeler:** none, minimal, low, medium, high, xhigh, max, ultra\n**Görüntüleme:** show, hide\n**Kalıcı:** bu oturumun ötesinde kaydetmek için `--global` ekleyin"
-    picker_title:              "🧠 **Akıl Yürütme Ayarları**\\n\\n**Güç:** `{level}`\\n**Kapsam:** {scope}\\n**Görüntüleme:** {display}\\n\\nBir seçenek seçin:"
-    choice_none:               "none — akıl yürütmeyi kapat"
-    choice_reset:              "reset — oturum geçersiz kılmasını temizle"
-    choice_show:               "yanıtlarda akıl yürütmeyi göster"
-    choice_hide:               "yanıtlarda akıl yürütmeyi gizle"
-    set_global:                "🧠 ✓ Akıl yürütme gücü `{effort}` olarak ayarlandı (yapılandırmaya kaydedildi)\n_(sonraki mesajda etkili)_"
-    set_global_save_failed:    "🧠 ✓ Akıl yürütme gücü `{effort}` olarak ayarlandı (yalnızca bu oturum — yapılandırma kaydedilemedi)\n_(sonraki mesajda etkili)_"
-    set_session:               "🧠 ✓ Akıl yürütme gücü `{effort}` olarak ayarlandı (yalnızca bu oturum — kalıcı yapmak için `--global` ekleyin)\n_(sonraki mesajda etkili)_"
 
   reload_mcp:
     cancelled:             "🟡 /reload-mcp iptal edildi. MCP araçları değiştirilmedi."

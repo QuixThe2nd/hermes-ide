@@ -108,12 +108,12 @@ Bedrock 模型使用**推理配置文件 ID** 进行按需调用。`hermes model
 
 ## 会话中途切换模型
 
-在对话过程中使用 `/model` 命令：
+使用 `hermes model` 命令（在终端中、会话外运行）：
 
 ```
-/model us.amazon.nova-pro-v1:0
-/model deepseek.v3.2
-/model us.anthropic.claude-opus-4-6-v1
+hermes model us.amazon.nova-pro-v1:0
+hermes model deepseek.v3.2
+hermes model us.anthropic.claude-opus-4-6-v1
 ```
 
 ## 诊断

@@ -813,15 +813,6 @@ gateway:
 
 Use `/whoami` to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run.
 
-## Interactive Model Picker
-
-Send `/model` with no arguments in a Discord channel to open a dropdown-based model picker:
-
-1. **Provider selection** — a Select dropdown showing available providers (up to 25).
-2. **Model selection** — a second dropdown with models for the chosen provider (up to 25).
-
-The picker times out after 120 seconds. Only authorized users (those in `DISCORD_ALLOWED_USERS`) can interact with it. If you know the model name, type `/model <name>` directly.
-
 ## Native Slash Commands for Skills
 
 Hermes automatically registers installed skills as **native Discord Application Commands**. This means skills appear in Discord's autocomplete `/` menu alongside built-in commands.
@@ -829,7 +820,7 @@ Hermes automatically registers installed skills as **native Discord Application 
 - Each skill becomes a Discord slash command (e.g., `/code-review`, `/ascii-art`)
 - Skills accept an optional `args` string parameter
 - Discord has a limit of 100 application commands per bot — if you have more skills than available slots, extra skills are skipped with a warning in the logs
-- Skills are registered during bot startup alongside built-in commands like `/model`, `/reset`, and `/bg`
+- Skills are registered during bot startup alongside built-in commands like `/new` and `/bg`
 
 No extra configuration is needed — any skill installed via `hermes skills install` is automatically registered as a Discord slash command on the next gateway restart.
 

@@ -9,7 +9,7 @@ description: "通过全局 SOUL.md、内置个性预设和自定义角色定义�
 Hermes Agent 的个性完全可自定义。`SOUL.md` 是**主要身份标识**——它是系统提示词（prompt）中的第一项内容，定义了 Agent 是谁。
 
 - `SOUL.md` — 存放在 `HERMES_HOME` 中的持久角色文件，作为 Agent 的身份标识（系统提示词中的第 1 个槽位）
-- 内置或自定义的 `/personality` 预设 — 会话级系统提示词覆盖层
+- 内置或自定义的 personality 预设（`display.personality`） — 会话级系统提示词覆盖层
 
 如果你想改变 Hermes 的身份，或将其替换为完全不同的 Agent 角色，请编辑 `SOUL.md`。
 
@@ -156,23 +156,23 @@ You optimize for truth, clarity, and usefulness over politeness theater.
 - 如果它应该随你到处适用，属于 `SOUL.md`
 - 如果它属于某个项目，属于 `AGENTS.md`
 
-## SOUL.md 与 `/personality`
+## SOUL.md 与 personality 预设
 
 `SOUL.md` 是你的持久默认个性。
 
-`/personality` 是会话级覆盖层，用于更改或补充当前系统提示词。
+在 `~/.hermes/config.yaml` 中设置 `display.personality`，可用作更改或补充当前系统提示词的覆盖层。
 
 因此：
 - `SOUL.md` = 基础语气
-- `/personality` = 临时模式切换
+- `display.personality` = 临时模式切换
 
 示例：
-- 保持务实的默认 SOUL，然后在辅导对话中使用 `/personality teacher`
-- 保持简洁的 SOUL，然后在头脑风暴时使用 `/personality creative`
+- 保持务实的默认 SOUL，然后在辅导对话中设置 `display.personality: teacher`
+- 保持简洁的 SOUL，然后在头脑风暴时设置 `display.personality: creative`
 
 ## 内置个性
 
-Hermes 内置了多种个性，可通过 `/personality` 切换。
+Hermes 内置了多种个性，可通过 `display.personality` 切换。
 
 | 名称 | 描述 |
 |------|-------------|
@@ -191,23 +191,16 @@ Hermes 内置了多种个性，可通过 `/personality` 切换。
 | **philosopher** | 对每个问题深度沉思 |
 | **hype** | 最大能量与热情！！！ |
 
-## 使用命令切换个性
+## 切换个性
 
-### CLI
+在 `~/.hermes/config.yaml` 中设置：
 
-```text
-/personality
-/personality concise
-/personality technical
+```yaml
+display:
+  personality: concise   # 也可设为 technical、teacher 等；none 清除覆盖层
 ```
 
-### 消息平台
-
-```text
-/personality teacher
-```
-
-这些是便捷的覆盖层，但你的全局 `SOUL.md` 仍然赋予 Hermes 持久的默认个性，除非覆盖层对其进行了实质性更改。
+这是便捷的覆盖层，但你的全局 `SOUL.md` 仍然赋予 Hermes 持久的默认个性，除非覆盖层对其进行了实质性更改。
 
 ## 在配置中定义自定义个性
 
@@ -221,11 +214,7 @@ agent:
       performance concerns, and unclear design choices. Be precise and constructive.
 ```
 
-然后通过以下方式切换：
-
-```text
-/personality codereviewer
-```
+然后通过 `display.personality: codereviewer` 切换。
 
 ## 推荐工作流
 
@@ -233,7 +222,7 @@ agent:
 
 1. 在 `~/.hermes/SOUL.md` 中维护一个经过深思熟虑的全局 `SOUL.md`
 2. 将项目说明放在 `AGENTS.md` 中
-3. 仅在需要临时模式切换时使用 `/personality`
+3. 仅在需要临时模式切换时使用 `display.personality`
 
 这样你将获得：
 - 稳定的语气
@@ -250,7 +239,7 @@ agent:
 5. 上下文文件（`AGENTS.md`、`.cursorrules`）
 6. 时间戳
 7. 平台特定格式提示
-8. 可选的系统提示词覆盖层，如 `/personality`
+8. 可选的系统提示词覆盖层，如 `display.personality`
 
 `SOUL.md` 是基础——其他所有内容都建立在它之上。
 
@@ -265,7 +254,7 @@ agent:
 
 对话个性与 CLI 外观是相互独立的：
 
-- `SOUL.md`、`agent.system_prompt` 和 `/personality` 影响 Hermes 的说话方式
+- `SOUL.md`、`agent.system_prompt` 和 `display.personality` 影响 Hermes 的说话方式
 - `display.skin` 和 `/skin` 影响 Hermes 在终端中的显示外观
 
 关于终端外观，请参阅 [皮肤与主题](./skins.md)。

@@ -294,22 +294,7 @@ _DISCORD_MAX_APP_COMMANDS = 100
 # Placeholders are the arg names; text is `.strip()`ped unless ``strip`` is False.
 _REQUIRED = object()
 _NATIVE_SLASH_COMMANDS: tuple = (
-    ("new", "Start a new conversation", (), "/reset", "New conversation started~"),
-    ("reset", "Reset your Hermes session", (), "/reset", "Session reset~"),
-    ("model", "Show or change the model",
-     (("name", str, "", "Model name (e.g. anthropic/claude-sonnet-4). Leave empty to see current.", None),),
-     "/model {name}", None),
-    ("reasoning", "Show/change reasoning effort, or toggle showing it",
-     (("effort", str, "", "Pick a level, reset the override, or show/hide reasoning. Leave empty to see current.",
-       # One `/reasoning <arg>` handler; Discord has no free-text subcommand, so list every value.
-       (("none — disable reasoning", "none"), ("minimal", "minimal"), ("low", "low"),
-        ("medium", "medium"), ("high", "high"), ("xhigh", "xhigh"), ("max", "max"),
-        ("ultra — maximum reasoning", "ultra"), ("reset — clear this session's override", "reset"),
-        ("show — reveal reasoning in replies", "show"), ("hide — hide reasoning from replies", "hide"))),),
-     "/reasoning {effort}", None),
-    ("personality", "Set a personality",
-     (("name", str, "", "Personality name. Leave empty to list available.", None),),
-     "/personality {name}", None),
+    ("new", "Start a new conversation", (), "/new", "New conversation started~"),
     ("retry", "Retry your last message", (), "/retry", "Retrying~"),
     ("undo", "Remove the last exchange", (), "/undo", None),
     ("status", "Show Hermes session status", (), "/status", "Status sent~"),

@@ -9915,7 +9915,6 @@ class GatewayRunner(
     # busy_handler naming an entry here). All other rejected commands get
     # the generic catch-all text in _dispatch_busy_slash_command.
     _BUSY_REJECT_TEXT: Dict[str, str] = {
-        "model": "Agent is running — wait or /stop first, then switch models.",
         "codex-runtime": ("Agent is running — wait or /stop first, then "
                           "change runtime."),
     }

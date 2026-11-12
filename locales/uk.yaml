@@ -8,25 +8,6 @@ gateway:
   config_read_failed: "⚠️ Не вдалося прочитати config.yaml: {error}"
   config_save_failed: "⚠️ Не вдалося зберегти конфігурацію: {error}"
 
-  model:
-    error_prefix:           "Помилка: {error}"
-    switched:               "Модель змінено на `{model}`"
-    provider_label:         "Провайдер: {provider}"
-    context_label:          "Контекст: {tokens} токенів"
-    max_output_label:       "Макс. вихід: {tokens} токенів"
-    cost_label:             "Вартість: {cost}"
-    capabilities_label:     "Можливості: {capabilities}"
-    prompt_caching_enabled: "Кешування промптів: увімкнено"
-    warning_prefix:         "Попередження: {warning}"
-    saved_global:           "Збережено в config.yaml (`--global`)"
-    session_only_hint:      "_(лише для цього сеансу — додайте `--global`, щоб зберегти)_"
-    current_label:          "Поточна: `{model}` на {provider}"
-    current_tag:            " (поточна)"
-    more_models_suffix:     " (+{count} ще)"
-    usage_switch_model:     "`/model <name>` — змінити модель"
-    usage_switch_provider:  "`/model <name> --provider <slug>` — змінити провайдера"
-    usage_persist:          "`/model <name> --global` — зберегти назавжди"
-
   agents:
     header:                "🤖 **Активні агенти та завдання**"
     active_agents:         "**Активні агенти:** {count}"
@@ -88,22 +69,6 @@ gateway:
     full_logs_hint:        "Щоб завантажити повні журнали, використайте `hermes debug share` з CLI."
     share_hint:            "Поділіться цими посиланнями з командою Hermes для отримання підтримки."
 
-  fast:
-    not_supported:         "⚡ /fast доступний лише для моделей OpenAI, які підтримують Priority Processing."
-    status:                "⚡ Priority Processing\n\nПоточний режим: `{mode}`\n\n_Використання:_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ Невідомий аргумент: `{arg}`\n\n**Допустимі варіанти:** normal, fast, status"
-    saved:                 "⚡ ✓ Priority Processing: **{label}** (збережено в конфігурації)\n_(набуде чинності з наступного повідомлення)_"
-    session_only:          "⚡ ✓ Priority Processing: **{label}** (лише ця сесія)"
-    label_fast:            "FAST"
-    label_normal:          "NORMAL"
-    status_fast:           "fast"
-    status_normal:         "normal"
-    picker_title:          "⚡ **Priority Processing**\\n\\nПоточний режим: `{mode}`\\n\\nОберіть варіант:"
-    choice_fast:           "fast — Priority Processing увімкнено"
-    choice_normal:         "normal — стандартна обробка"
-    choice_auto:           "auto — швидко в перші секунди кожного ходу"
-    choice_cold:           "cold — швидко лише на першому ході сесії"
-
   footer:
     status:                "📎 Нижній колонтитул середовища: **{state}**\nПоля: `{fields}`\nПлатформа: `{platform}`"
     usage:                 "Використання: `/footer [on|off|status]`"
@@ -130,42 +95,9 @@ gateway:
     invalid_days:          "Недійсне значення --days: {value}"
     error:                 "Помилка при формуванні аналітики: {error}"
 
-  personality:
-    none_configured:       "У `{path}/config.yaml` не налаштовано жодної особистості"
-    header:                "🎭 **Доступні особистості**\n"
-    none_option:           "• `none` — (без накладання особистості)"
-    item:                  "• `{name}` — {preview}"
-    usage:                 "\nВикористання: `/personality <name>`"
-    save_failed:           "⚠️ Не вдалося зберегти зміну особистості: {error}"
-    cleared:               "🎭 Особистість очищено — використовується базова поведінка агента.\n_(набуде чинності з наступного повідомлення)_"
-    set_to:                "🎭 Особистість встановлено на **{name}**\n_(набуде чинності з наступного повідомлення)_"
-    unknown:               "Невідома особистість: `{name}`\n\nДоступні: {available}"
-
   profile:
     header:                "👤 **Профіль:** `{profile}`"
     home:                  "📂 **Домашня тека:** `{home}`"
-
-  reasoning:
-    level_default:             "medium (за замовчуванням)"
-    level_disabled:            "none (вимкнено)"
-    scope_session:             "перевизначення сеансу"
-    scope_global:              "глобальна конфігурація"
-    status:                    "🧠 **Налаштування мислення**\n\n**Зусилля:** `{level}`\n**Область:** {scope}\n**Показ:** {display}\n\n_Використання:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
-    display_on:                "увімкнено ✓"
-    display_off:               "вимкнено"
-    display_set_on:            "🧠 ✓ Показ мислення: **УВІМКНЕНО**\nДумки моделі будуть показуватися перед кожною відповіддю на **{platform}**."
-    display_set_off:           "🧠 ✓ Показ мислення: **ВИМКНЕНО** для **{platform}**"
-    reset_global_unsupported:  "⚠️ `/reasoning reset --global` не підтримується. Використовуйте `/reasoning <level> --global`, щоб змінити глобальне значення за замовчуванням."
-    reset_done:                "🧠 ✓ Перевизначення мислення для сеансу скинуто; повернення до глобальної конфігурації."
-    unknown_arg:               "⚠️ Невідомий аргумент: `{arg}`\n\n**Дійсні рівні:** none, minimal, low, medium, high, xhigh, max, ultra\n**Показ:** show, hide\n**Зберегти:** додайте `--global`, щоб зберегти поза цим сеансом"
-    picker_title:              "🧠 **Налаштування мислення**\\n\\n**Зусилля:** `{level}`\\n**Область:** {scope}\\n**Показ:** {display}\\n\\nОберіть варіант:"
-    choice_none:               "none — вимкнути мислення"
-    choice_reset:              "reset — скинути перевизначення сесії"
-    choice_show:               "показувати мислення у відповідях"
-    choice_hide:               "приховувати мислення у відповідях"
-    set_global:                "🧠 ✓ Зусилля мислення встановлено на `{effort}` (збережено в конфігурації)\n_(набуде чинності з наступного повідомлення)_"
-    set_global_save_failed:    "🧠 ✓ Зусилля мислення встановлено на `{effort}` (лише цей сеанс — не вдалося зберегти конфігурацію)\n_(набуде чинності з наступного повідомлення)_"
-    set_session:               "🧠 ✓ Зусилля мислення встановлено на `{effort}` (лише цей сеанс — додайте `--global`, щоб зберегти)\n_(набуде чинності з наступного повідомлення)_"
 
   reload_mcp:
     cancelled:             "🟡 /reload-mcp скасовано. MCP-інструменти без змін."

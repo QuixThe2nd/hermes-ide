@@ -1,7 +1,7 @@
 ---
 sidebar_position: 7
 title: "Use SOUL.md with Hermes"
-description: "How to use SOUL.md to shape Hermes Agent's default voice, what belongs there, and how it differs from AGENTS.md and /personality"
+description: "How to use SOUL.md to shape Hermes Agent's default voice, what belongs there, and how it differs from AGENTS.md and personality overlays"
 ---
 
 # Use SOUL.md with Hermes
@@ -183,16 +183,16 @@ What Hermes should not do.
 How Hermes should behave when ambiguity appears.
 ```
 
-## SOUL.md vs /personality
+## SOUL.md vs personality overlays
 
 These are complementary.
 
 Use `SOUL.md` for your durable baseline.
-Use `/personality` for temporary mode switches.
+Use `display.personality` (set via `hermes config set display.personality <name>`) for temporary mode switches.
 
 Examples:
 - your default SOUL is pragmatic and direct
-- then for one session you use `/personality teacher`
+- then for one session you use `hermes config set display.personality teacher`
 - later you switch back without changing your base voice file
 
 ## SOUL.md vs AGENTS.md
@@ -244,7 +244,7 @@ Check:
 - not some repo-local `SOUL.md`
 - the file is not empty
 - your session was restarted after the edit
-- a `/personality` overlay is not dominating the result
+- a personality overlay (`display.personality`) is not dominating the result
 
 ### Hermes is ignoring parts of my SOUL.md
 

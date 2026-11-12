@@ -36,7 +36,7 @@ Hermes 有两个斜杠命令入口，均由 `hermes_cli/commands.py` 中的中�
 
 | 命令 | 描述 |
 |---------|-------------|
-| `/new [name]`（别名：`/reset`） | 开始新会话（全新会话 ID + 历史记录）。可选的 `[name]` 设置初始会话标题——例如 `/new my-experiment` 打开一个已命名为 `my-experiment` 的新会话，便于之后用 `/resume` 或 `/sessions` 查找。追加 `now`、`--yes` 或 `-y` 可跳过确认弹窗——例如 `/reset now`、`/new --yes my-experiment`。 |
+| `/new [name]` | 开始新会话（全新会话 ID + 历史记录）。可选的 `[name]` 设置初始会话标题——例如 `/new my-experiment` 打开一个已命名为 `my-experiment` 的新会话，便于之后用 `/resume` 或 `/sessions` 查找。追加 `now`、`--yes` 或 `-y` 可跳过确认弹窗——例如 `/new --yes my-experiment`。 |
 | `/clear` | 清屏并开始新会话 |
 | `/history` | 显示对话历史 |
 | `/save` | 保存当前对话 |
@@ -65,12 +65,8 @@ Hermes 有两个斜杠命令入口，均由 `hermes_cli/commands.py` 中的中�
 | 命令 | 描述 |
 |---------|-------------|
 | `/config` | 显示当前配置 |
-| `/model [model-name]` | 显示或更改当前模型。支持：`/model claude-sonnet-4`、`/model provider:model`（切换提供商）、`/model custom:model`（自定义端点）、`/model custom:name:model`（命名自定义提供商）、`/model custom`（从端点自动检测）、`--reasoning <level>`（在同一步、同一作用域下设置推理强度：`none`、`minimal` … `ultra`；选择器在选完模型后会多出一步推理强度选择，目录标记为无推理控制的路线会跳过该步），以及用户自定义别名（`/model fav`、`/model grok`——见[自定义模型别名](#custom-model-aliases)）。使用 `--global` 将更改持久化到 config.yaml。**注意：** `/model` 只能在已配置的提供商之间切换。如需添加新提供商，请退出会话后在终端运行 `hermes model`。 |
 | `/codex-runtime [auto\|codex_app_server\|on\|off]` | 切换 OpenAI/Codex 模型的可选 [Codex app-server runtime](../user-guide/features/codex-app-server-runtime)。`auto`（默认）使用 Hermes 标准 chat completions；`codex_app_server` 将轮次交给 `codex app-server` 子进程，支持原生 shell、apply_patch、ChatGPT 订阅认证和迁移的 Codex 插件。下次会话生效。 |
-| `/personality` | 设置预定义的 personality（人格） |
 | `/verbose` | 循环切换工具进度显示：off → new → all → verbose。可通过配置[为消息平台启用](#notes)。 |
-| `/fast [normal\|fast\|status]` | 切换快速模式——OpenAI Priority Processing / Anthropic Fast Mode。选项：`normal`、`fast`、`status`。 |
-| `/reasoning` | 管理推理力度和显示（用法：/reasoning [level\|show\|hide]） |
 | `/skin` | 显示或更改显示皮肤/主题 |
 | `/statusbar`（别名：`/sb`） | 切换上下文/模型状态栏的显示与隐藏 |
 | `/voice [on\|off\|tts\|status]` | 切换 CLI 语音模式和语音播放。录音使用 `voice.record_key`（默认：`Ctrl+B`）。 |
@@ -149,7 +145,7 @@ quick_commands:
 
 ### 自定义模型别名
 
-为常用模型定义自己的短名称，然后在 CLI 或任意消息平台中通过 `/model <alias>` 调用。别名在两者中的行为完全一致，支持仅会话（默认）和 `--global` 切换。
+为常用模型定义自己的短名称，然后通过 `hermes model <alias>` 调用（也可在 `hermes chat --model <alias>` 中使用）。
 
 支持两种配置格式：
 
@@ -179,15 +175,15 @@ hermes config set model.aliases.grok x-ai/grok-4
 然后在聊天中：
 
 ```
-/model fav            # 仅当前会话
-/model grok --global  # 同时将当前模型更改持久化到 config.yaml
+hermes model fav            # 切换到别名 fav
+hermes model grok           # 切换到别名 grok
 ```
 
 用户别名优先于内置短名称，因此将别名命名为 `sonnet`、`kimi`、`opus` 等会覆盖内置名称。别名名称不区分大小写。
 
 ### 别名解析
 
-命令支持前缀匹配：输入 `/h` 解析为 `/help`，`/mod` 解析为 `/model`。当前缀有歧义（匹配多个命令）时，注册表顺序中的第一个匹配项优先。完整命令名和已注册别名始终优先于前缀匹配。
+命令支持前缀匹配：输入 `/h` 解析为 `/help`，`/ti` 解析为 `/title`。当前缀有歧义（匹配多个命令）时，注册表顺序中的第一个匹配项优先。完整命令名和已注册别名始终优先于前缀匹配。
 
 ## 消息平台斜杠命令
 
@@ -197,13 +193,9 @@ hermes config set model.aliases.grok x-ai/grok-4
 |---------|-------------|
 | `/start` | 平台协议命令。许多聊天平台（Telegram、Discord 等）会在用户首次打开 bot 对话时自动发送 `/start`。Hermes 会静默确认这个 ping——不触发 agent 回复，也不消耗会话轮次——因此首次握手不会浪费一次对话。你也可以显式发送它来确认 gateway 可达。 |
 | `/new` | 开始新对话。 |
-| `/reset` | 重置对话历史。 |
 | `/status` | 显示会话信息，随后显示本地**会话摘要**块（近期轮次数、最常用工具、访问的文件、最新 prompt + 回复）。 |
 | `/stop` | 终止所有正在运行的后台进程并中断运行中的 agent。 |
-| `/model [provider:model]` | 显示或更改模型。支持提供商切换（`/model zai:glm-5`）、自定义端点（`/model custom:model`）、命名自定义提供商（`/model custom:local:qwen`）、自动检测（`/model custom`），以及用户自定义别名（`/model fav`、`/model grok`——见[自定义模型别名](#custom-model-aliases)）。使用 `--global` 将更改持久化到 config.yaml；成功的 `--global` 选择（键入或选择器）还会清除本聊天的仅会话覆盖，因此网关重启后仅由 config.yaml 决定模型（设有 `channel_overrides` 模型的聊天会保留该覆盖，否则频道设置会优先于 config.yaml；CLI/TUI 则有意保留各自的会话固定，以便恢复时沿用该聊天所用的模型）。**注意：** `/model` 只能在已配置的提供商之间切换。如需添加新提供商或设置 API 密钥，请在终端（聊天会话外）运行 `hermes model`。 |
 | `/codex-runtime [auto\|codex_app_server\|on\|off]` | 切换可选的 [Codex app-server runtime](../user-guide/features/codex-app-server-runtime)。持久化到 config.yaml 中的 `model.openai_runtime` 并驱逐缓存的 agent，使下一条消息使用新 runtime。下次会话生效。 |
-| `/personality [name]` | 为会话设置 personality 覆盖层。 |
-| `/fast [normal\|fast\|status]` | 切换快速模式——OpenAI Priority Processing / Anthropic Fast Mode。 |
 | `/retry` | 重试最后一条消息。 |
 | `/undo` | 移除最后一轮对话。 |
 | `/compress [focus topic]` | 手动压缩对话上下文。可选的焦点主题可缩小摘要保留的范围。 |
@@ -213,7 +205,6 @@ hermes config set model.aliases.grok x-ai/grok-4
 | `/usage` | 显示 token 用量、估算费用明细（输入/输出）、上下文窗口状态、会话时长，以及——当活动提供商支持时——从提供商 API 实时拉取的**账户限额**部分，包含剩余配额/积分。 |
 | `/credits` | 显示你的 Nous 积分余额，以及会在浏览器中打开 portal 计费页的充值链接。 |
 | `/insights [days]` | 显示用量分析。 |
-| `/reasoning [level\|show\|hide]` | 更改推理力度或切换推理显示。 |
 | `/voice [on\|off\|tts\|join\|channel\|leave\|status]` | 控制聊天中的语音回复。`join`/`channel`/`leave` 管理 Discord 语音频道模式。 |
 | `/rollback [number]` | 列出或恢复文件系统检查点。 |
 | `/bg <prompt>` | 在独立的后台会话中运行 prompt。任务完成后结果投递回同一聊天。见 [消息平台后台会话](../user-guide/messaging/index.md#background-sessions)。 |
@@ -240,7 +231,7 @@ hermes config set model.aliases.grok x-ai/grok-4
 - `/skills` **仅在搜索/浏览/安装时属于 CLI-only**；其写入审批子命令（`pending`、`approve`、`reject`、`diff`、`approval`）在 `skills.write_approval` 开启时也可在消息平台使用。`/memory` 可在**两个表面**使用。
 - `/verbose` **默认仅限 CLI**，但可通过在 `config.yaml` 中设置 `display.tool_progress_command: true` 为消息平台启用。启用后，它会循环切换 `display.tool_progress` 模式并保存到配置。
 - `/restart`、`/topic`、`/platform` 和 `/commands` 是**仅限消息平台**的命令。
-- `/status`、`/version`、`/bg`、`/btw`、`/queue`、`/steer`、`/voice`、`/reload-mcp`、`/reload-skills`、`/rollback`、`/debug`、`/fast`、`/busy`、`/footer`、`/curator`、`/credits`、`/suggestions`、`/blueprint`、`/sessions` 在 **CLI 和消息 gateway 中均可使用**。
+- `/status`、`/version`、`/bg`、`/btw`、`/queue`、`/steer`、`/voice`、`/reload-mcp`、`/reload-skills`、`/rollback`、`/debug`、`/busy`、`/footer`、`/curator`、`/credits`、`/suggestions`、`/blueprint`、`/sessions` 在 **CLI 和消息 gateway 中均可使用**。
 - `/voice join`、`/voice channel` 和 `/voice leave` 仅在 Discord 上有意义。
 
 ## 破坏性命令的确认提示
@@ -250,12 +241,12 @@ CLI 在执行会丢弃未保存会话状态的斜杠命令前会提示确认。�
 | 命令 | 销毁的内容 |
 |---------|------------------|
 | `/clear` | 清屏并开始新会话——当前会话 ID 和内存中的历史记录将丢失。 |
-| `/new` / `/reset` | 开始新会话（新会话 ID + 空历史记录）。 |
+| `/new` | 开始新会话（新会话 ID + 空历史记录）。 |
 | `/undo` | 从历史记录中移除最后一轮用户/助手对话。 |
 | `/exit --delete` / `/quit --delete` | 退出**并**永久删除当前会话的 SQLite 历史记录和磁盘上的转录文件。 |
 
 对于上述每个命令，CLI 会打开一个三选项弹窗：**Approve Once**（本次执行）、**Always Approve**（执行并持久化 `approvals.destructive_slash_confirm: false`，使未来的破坏性命令无需提示直接运行），或 **Cancel**。
 
-**内联跳过：** 追加 `now`、`--yes` 或 `-y` 可为单次调用绕过弹窗——例如 `/reset now`、`/new --yes my-session`、`/clear -y`、`/undo -y`。适用于弹窗在你的终端无法正常渲染的情况（见 [issue #30768](https://github.com/NousResearch/hermes-agent/issues/30768)，原生 Windows PowerShell）或对 CLI 进行脚本化操作时。
+**内联跳过：** 追加 `now`、`--yes` 或 `-y` 可为单次调用绕过弹窗——例如 `/new --yes my-session`、`/clear -y`、`/undo -y`。适用于弹窗在你的终端无法正常渲染的情况（见 [issue #30768](https://github.com/NousResearch/hermes-agent/issues/30768)，原生 Windows PowerShell）或对 CLI 进行脚本化操作时。
 
 在 `~/.hermes/config.yaml` 中设置 `approvals.destructive_slash_confirm: false` 可全局禁用提示；设置回 `true` 可重新启用。背景说明见 [安全——破坏性斜杠命令确认](../user-guide/security.md#dangerous-command-approval)。

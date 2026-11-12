@@ -289,7 +289,7 @@ The same request fields are accepted on:
 
 Precedence is deterministic:
 
-1. Session `/model` override, if that session already has one
+1. Session model override, if that session already has one
 2. A static `gateway.platforms.api_server.model_routes` mapping selected when
    the request's `model` is a configured route alias
 3. Direct request `model` / `provider` when no route alias matches

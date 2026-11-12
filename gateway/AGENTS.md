@@ -31,7 +31,7 @@ helpers — never pre-boxed — so nothing double-boxes.
 While an agent is running, an inbound message passes two sequential guards: (1) the **base
 adapter** (`platforms/base.py`) queues it in `_pending_messages` when `session_key in
 self._active_sessions`; (2) the **runner** (`run.py`/`run_busy.py`) intercepts `/stop`, `/new`,
-`/queue`, `/status` and replies to pending clarify/slash/model/MCP prompts before they reach
+`/queue`, `/status` and replies to pending clarify/slash/MCP prompts before they reach
 `running_agent.interrupt()`. Any new command or prompt reply that must reach the runner while the
 agent is blocked MUST bypass BOTH guards and be dispatched inline — never via
 `_process_message_background()`, which races session lifecycle.
@@ -178,7 +178,7 @@ locks by widening the tree-kill.
   `session_identity.restore_identity`; `_delivery_adapter_for` then delivers through that bot's
   adapter or nothing (never the default bot by heuristic). Rows without the column (pre-PR-5)
   keep the `_is_shared_bot_satellite` fallback. Deferred callbacks capture the identity/home at
-  command time (`/model` picker); `_run_in_executor_with_context` carries the scope over thread
+  command time (deferred picker callbacks); `_run_in_executor_with_context` carries the scope over thread
   hops. Relay: `_with_scope` echoes the routed `profile` on every outbound frame and `follow_up`
   derives it from the key namespace so the connector stamps it on the next `passthrough_forward`.
   Ambient `get_active_profile_name()` reads in `gateway/` are boot-only and marked

@@ -157,18 +157,18 @@ model:
 
 ## 会话中途切换模型
 
-在对话中使用 `/model` 命令：
+使用 `hermes model` 命令（在终端中、会话外运行）：
 
 ```text
-/model gemini-3-flash-preview
-/model gemini-flash-latest
-/model gemini-3-pro-preview
-/model gemini-pro-latest
-/model gemma-4-31b-it
-/model gemini-3.1-flash-lite-preview
+hermes model gemini-3-flash-preview
+hermes model gemini-flash-latest
+hermes model gemini-3-pro-preview
+hermes model gemini-pro-latest
+hermes model gemma-4-31b-it
+hermes model gemini-3.1-flash-lite-preview
 ```
 
-如果尚未配置 Gemini，请退出会话并先运行 `hermes model`。`/model` 用于在已配置的 provider 和模型之间切换，不会收集新的 API 密钥。
+如果尚未配置 Gemini，请退出会话并先运行 `hermes model`。`hermes model` 用于在已配置的 provider 和模型之间切换，不会收集新的 API 密钥。
 
 ## 诊断
 

@@ -539,7 +539,7 @@ group_sessions_per_user: false
 ### 会话连续性
 
 Gateway 不会因空闲时间或每日时间边界而重置对话。需要新对话时使用 `/new`
-或 `/reset`；上下文压缩仍会自动运行。旧的 `session_reset` 配置、重置策略覆盖和
+；上下文压缩仍会自动运行。旧的 `session_reset` 配置、重置策略覆盖和
 重置计时环境变量均被忽略。缓存中的 agent 可以释放资源，但不会替换持久化对话。
 重启恢复的新鲜度限制仅约束自动继续执行，不会清除用户发送消息时加载的历史。
 
@@ -572,7 +572,7 @@ state.db 后可安全删除。
 
 ### 自动清理
 
-- Gateway 会话会持续保留；请使用 `/new` 或 `/reset` 显式开始新会话
+- Gateway 会话会持续保留；请使用 `/new` 显式开始新会话
 - 重置前，agent 保存即将过期 session 中的记忆和技能
 - 可选自动清理：当 `sessions.auto_prune` 为 `true` 时，在 CLI/gateway 启动时清理早于 `sessions.retention_days`（默认 90）天的已结束 session
 - 实际删除了行的清理操作完成后，如果距离上次成功执行 `VACUUM` 已达到 `sessions.min_vacuum_interval_days`（默认 30）天，`state.db` 会执行 `VACUUM` 以回收磁盘空间（SQLite 在普通 DELETE 后不会缩小文件）

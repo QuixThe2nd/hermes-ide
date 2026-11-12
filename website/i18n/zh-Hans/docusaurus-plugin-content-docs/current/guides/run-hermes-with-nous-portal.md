@@ -95,20 +95,20 @@ Hey, search the web for "Hermes Agent release notes" and summarize the top 3 hit
 
 ## 5. 选择你实际需要的模型
 
-`hermes setup --portal` 会在设置过程中让你选择模型，但订阅的意义在于可以访问完整的模型目录——随时可在会话中使用 `/model` 切换：
+`hermes setup --portal` 会在设置过程中让你选择模型，但订阅的意义在于可以访问完整的模型目录——随时可用 `hermes model` 切换：
 
 ```bash
-/model anthropic/claude-sonnet-4.6     # 最佳通用 agentic 模型
-/model openai/gpt-5.4                  # 强推理 + 工具调用
-/model google/gemini-2.5-pro           # 超大上下文窗口
-/model deepseek/deepseek-v3.2          # 高性价比编程模型
-/model anthropic/claude-opus-4.6       # 处理复杂问题的重量级模型
+hermes model anthropic/claude-sonnet-4.6     # 最佳通用 agentic 模型
+hermes model openai/gpt-5.4                  # 强推理 + 工具调用
+hermes model google/gemini-2.5-pro           # 超大上下文窗口
+hermes model deepseek/deepseek-v3.2          # 高性价比编程模型
+hermes model anthropic/claude-opus-4.6       # 处理复杂问题的重量级模型
 ```
 
 或者打开选择器浏览：
 
 ```bash
-/model
+hermes model
 ```
 
 永久设置不同的默认模型：
@@ -222,13 +222,13 @@ hermes auth add nous
 
 成功重新登录后，隔离状态会自动解除。
 
-### 我想要的模型不在 `/model` 选择器中
+### 我想要的模型不在 `hermes model` 选择器中
 
 Portal 目录基于 OpenRouter 的模型列表（300+ 个），并补充了通过专有或备用提供商提供的模型。如果某个模型缺失，尝试直接输入 OpenRouter 风格的 slug：
 
 ```bash
-/model anthropic/claude-opus-4.6
-/model openai/o1-2025-12-17
+hermes model anthropic/claude-opus-4.6
+hermes model openai/o1-2025-12-17
 ```
 
 如果某个模型确实不可用，请[提交 issue](https://github.com/NousResearch/hermes-agent/issues)——大多数缺失是我们可以更新的路由配置问题。

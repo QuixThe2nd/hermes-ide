@@ -145,9 +145,7 @@ hermes gateway status --system         # 仅 Linux：显式检查系统服务
 
 | 命令 | 说明 |
 |---------|-------------|
-| `/new` 或 `/reset` | 开始新对话 |
-| `/model [provider:model]` | 显示或切换模型（支持 `provider:model` 语法） |
-| `/personality [name]` | 设置人格 |
+| `/new` | 开始新对话 |
 | `/retry` | 重试上一条消息 |
 | `/undo` | 删除上一轮对话 |
 | `/status` | 显示会话信息 |
@@ -158,7 +156,6 @@ hermes gateway status --system         # 仅 Linux：显式检查系统服务
 | `/resume [name]` | 恢复之前命名的会话 |
 | `/usage` | 显示本会话的 token 用量 |
 | `/insights [days]` | 显示用量洞察与分析 |
-| `/reasoning [level\|show\|hide]` | 更改推理强度或切换推理显示 |
 | `/voice [on\|off\|tts\|join\|leave\|status]` | 控制消息语音回复和 Discord 语音频道行为 |
 | `/rollback [number]` | 列出或恢复文件系统检查点 |
 | `/bg <prompt>` | 在独立后台会话中运行 prompt（提示词） |
@@ -176,8 +173,7 @@ hermes gateway status --system         # 仅 Linux：显式检查系统服务
 
 ### 会话连续性
 
-Gateway 不会因空闲时间或每日时间边界而重置对话。需要新对话时使用 `/new`
-或 `/reset`；上下文压缩仍会自动运行。旧的 `session_reset` 配置、重置策略覆盖和
+Gateway 不会因空闲时间或每日时间边界而重置对话。需要新对话时使用 `/new`；上下文压缩仍会自动运行。旧的 `session_reset` 配置、重置策略覆盖和
 重置计时环境变量均被忽略。缓存中的 agent 可以释放资源，但不会替换持久化对话。
 重启恢复的新鲜度限制仅约束自动继续执行，不会清除用户发送消息时加载的历史。
 
