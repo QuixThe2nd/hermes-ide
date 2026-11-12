@@ -44,7 +44,6 @@ def _telegram_descriptor() -> CapabilityDescriptor:
         len_unit="utf16",
         emoji="\u2708\ufe0f",
         platform_hint="You are on Telegram.",
-        pii_safe=False,
     )
 
 

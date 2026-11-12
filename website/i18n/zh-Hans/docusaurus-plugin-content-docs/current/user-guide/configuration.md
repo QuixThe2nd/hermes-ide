@@ -1290,27 +1290,6 @@ display:
 
 `interim_assistant_messages` 仅限 gateway。启用后，Hermes 将已完成的轮次中 assistant 更新作为单独的聊天消息发送。这与 `tool_progress` 无关，不需要 gateway 流式传输。
 
-## 隐私
-
-```yaml
-privacy:
-  redact_pii: false  # 从 LLM 上下文中删除 PII（仅限 gateway）
-```
-
-当 `redact_pii` 为 `true` 时，gateway 在将系统提示词发送到受支持平台上的 LLM 之前，会从中删除个人身份信息：
-
-| 字段 | 处理方式 |
-|-------|-----------|
-| 电话号码（WhatsApp/Signal 上的用户 ID） | 哈希为 `user_<12-char-sha256>` |
-| 用户 ID | 哈希为 `user_<12-char-sha256>` |
-| 聊天 ID | 数字部分哈希，保留平台前缀（`telegram:<hash>`） |
-| 主频道 ID | 数字部分哈希 |
-| 用户名/昵称 | **不受影响**（用户选择的，公开可见） |
-
-**平台支持：** 删除适用于 WhatsApp、Signal 和 Telegram。Discord 和 Slack 被排除，因为它们的提及系统（`<@user_id>`）需要 LLM 上下文中的真实 ID。
-
-哈希是确定性的 —— 同一用户始终映射到同一哈希，因此模型仍然可以在群聊中区分用户。路由和传递在内部使用原始值。
-
 ## 语音转文字（STT）
 
 ```yaml

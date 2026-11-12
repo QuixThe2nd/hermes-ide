@@ -1998,17 +1998,6 @@ display:
 #     key_env: THETA_API_KEY               # or: api_key: "${THETA_API_KEY}"
 
 # =============================================================================
-# Privacy
-# =============================================================================
-# privacy:
-#   # Redact PII from the LLM context prompt.
-#   # When true, phone numbers are stripped and user/chat IDs are replaced
-#   # with deterministic hashes before being sent to the model.
-#   # Names and usernames are NOT affected (user-chosen, publicly visible).
-#   # Routing/delivery still uses the original values internally.
-#   redact_pii: false
-
-# =============================================================================
 # Shell-script hooks
 # =============================================================================
 # Register shell scripts as plugin-hook callbacks.  Each entry is executed as

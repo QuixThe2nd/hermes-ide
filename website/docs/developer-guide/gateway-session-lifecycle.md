@@ -563,19 +563,6 @@ def build_session_context(source, config, session_entry=None) -> SessionContext
 3. Determines `shared_multi_user_session` via `is_shared_multi_user_session()`.
 4. Attaches session metadata (key, id, timestamps) if `session_entry` is provided.
 
-### PII Redaction (`build_session_context_prompt`)
-
-The dynamic system prompt section (`## Current Session Context`) can optionally redact
-personally identifiable information before sending to the LLM:
-
-- User IDs → `user_<12hex>` (SHA-256 prefix)
-- Chat IDs → `<platform>:<12hex>` or just `<12hex>`
-- Platforms excluded from redaction: Discord (needs raw IDs for `@mentions`),
-  and any plugin-registered platform not marked `pii_safe`.
-
-Redaction applies only to the system prompt text. Routing, session keys, and adapter
-operations always use the original values.
-
 ---
 
 ## 10. Background Housekeeping
@@ -821,19 +808,6 @@ def build_session_context(source, config, session_entry=None) -> SessionContext
 2. Collects notification channels for each platform.
 3. Determines `shared_multi_user_session` via `is_shared_multi_user_session()`.
 4. Attaches session metadata (key, id, timestamps) if `session_entry` is provided.
-
-### PII Redaction (`build_session_context_prompt`)
-
-The dynamic system prompt section (`## Current Session Context`) can optionally redact
-personally identifiable information before sending to the LLM:
-
-- User IDs → `user_<12hex>` (SHA-256 prefix)
-- Chat IDs → `<platform>:<12hex>` or just `<12hex>`
-- Platforms excluded from redaction: Discord (needs raw IDs for `@mentions`),
-  and any plugin-registered platform not marked `pii_safe`.
-
-Redaction applies only to the system prompt text. Routing, session keys, and adapter
-operations always use the original values.
 
 ---
 

@@ -29,7 +29,7 @@ def make_adapter(monkeypatch, *, error="relay outbound timed out"):
         contract_version=CONTRACT_VERSION, platform="slack", label="Relay",
         max_message_length=39000, supports_draft_streaming=True, supports_edit=True,
         supports_threads=True, markdown_dialect="slack", len_unit="chars",
-        emoji="", platform_hint="", pii_safe=False,
+        emoji="", platform_hint="",
         supported_ops=("send", "edit", "task_card", "task_card_stop"),
     )
     transport = CardTransport(error)

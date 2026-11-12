@@ -2324,28 +2324,7 @@ Signal is listed as a valid platform key because the setting can be saved per pl
 
 `show_commentary` (default `true`) controls Codex Responses models' commentary channel — the polished progress narration these models produce alongside their private reasoning. When enabled, each completed commentary message is delivered as a visible mid-turn update (on the gateway this also requires `interim_assistant_messages`). Set it to `false` if the extra narration annoys you: commentary then falls back to the reasoning channel and is only shown when `show_reasoning` is enabled.
 
-## Privacy
-
-```yaml
-privacy:
-  redact_pii: false  # Strip PII from LLM context (gateway only)
-```
-
-When `redact_pii` is `true`, the gateway redacts personally identifiable information from the system prompt before sending it to the LLM on supported platforms:
-
-| Field | Treatment |
-|-------|-----------|
-| Phone numbers (user ID on WhatsApp/Signal) | Hashed to `user_<12-char-sha256>` |
-| User IDs | Hashed to `user_<12-char-sha256>` |
-| Chat IDs | Numeric portion hashed, platform prefix preserved (`telegram:<hash>`) |
-| Notification channel IDs | Numeric portion hashed |
-| User names / usernames | **Not affected** (user-chosen, publicly visible) |
-
-**Platform support:** Redaction applies to WhatsApp, Signal, and Telegram. Discord and Slack are excluded because their mention systems (`<@user_id>`) require the real ID in the LLM context.
-
-Hashes are deterministic — the same user always maps to the same hash, so the model can still distinguish between users in group chats. Routing and delivery use the original values internally.
-
-### OpenAI Codex request identity
+## OpenAI Codex request identity
 
 OpenAI requires third-party Codex harnesses to identify themselves.
 ChatGPT-authenticated requests to the official Codex endpoint automatically

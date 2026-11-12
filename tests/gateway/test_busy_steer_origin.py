@@ -13,15 +13,10 @@ from gateway.session import SessionSource
 @pytest.mark.asyncio
 @pytest.mark.parametrize("route", ["priority", "normal", "redirect", "priority_redirect"])
 @pytest.mark.parametrize("platform", [Platform.TELEGRAM, Platform.SIGNAL, Platform.WHATSAPP, Platform.DISCORD])
-@pytest.mark.parametrize("redact_pii", [False, True])
-async def test_busy_injection_preserves_original_routing_fields(route, platform, redact_pii, tmp_path, monkeypatch):
+async def test_busy_injection_preserves_original_routing_fields(route, platform, tmp_path, monkeypatch):
     from dataclasses import asdict
-    from gateway.session import _hash_chat_id, _hash_id, _hash_sender_id
 
     monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
-    (tmp_path / "config.yaml").write_text(
-        f"privacy:\n  redact_pii: {str(redact_pii).lower()}\n", encoding="utf-8",
-    )
     runner = GatewayRunner(config=GatewayConfig())
     source = SessionSource(
         platform=platform, chat_id="+15551230001", thread_id="thread", user_id="+15551230002",
@@ -57,14 +52,6 @@ async def test_busy_injection_preserves_original_routing_fields(route, platform,
         "parent_chat_id", "chat_id_alt", "user_id_alt", "prospective_thread_id",
     )}
     expected.update(platform=platform.value, message_id=event.message_id, source_message_id=source.message_id)
-    if redact_pii and platform != Platform.DISCORD:
-        for key, value in expected.items():
-            if key in ("platform", "chat_type"):
-                continue
-            hasher = (_hash_sender_id if key in ("user_id", "user_id_alt") else
-                      _hash_chat_id if key in ("chat_id", "chat_id_alt", "parent_chat_id") else _hash_id)
-            expected[key] = hasher(value)
-            assert origin[key] != value
     assert origin == expected
     assert asdict(source) == original_source
     assert event.text == "request"
