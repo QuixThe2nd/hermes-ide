@@ -944,7 +944,7 @@ auxiliary:
 
 ### OpenRouter 路由和辅助任务的 Pareto Code
 
-当辅助任务解析到 OpenRouter（显式或通过 `provider: "main"` 而您的主 agent 在 OpenRouter 上）时，主 agent 的 `provider_routing` 和 `openrouter.min_coding_score` 设置**不会传播** —— 按设计，每个辅助任务是独立的。要为特定辅助任务设置 OpenRouter provider 偏好或使用 [Pareto Code 路由器](../integrations/providers.md#openrouter-pareto-code-router)，请通过 `extra_body` 按任务设置：
+当辅助任务解析到 OpenRouter（显式或通过 `provider: "main"` 而您的主 agent 在 OpenRouter 上）时，主 agent 的 `provider_routing` 设置和 Pareto 编程分数下限**不会传播** —— 按设计，每个辅助任务是独立的。要为特定辅助任务设置 OpenRouter provider 偏好或使用 [Pareto Code 路由器](../integrations/providers.md#openrouter-pareto-code-router)，请通过 `extra_body` 按任务设置：
 
 ```yaml
 auxiliary:

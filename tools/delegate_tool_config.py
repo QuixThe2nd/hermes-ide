@@ -420,7 +420,6 @@ def _load_config() -> dict:
 
 # OpenRouter routing filters: inherited from the parent, but reset to these defaults under a pinned provider — parent
 # filters (e.g. only=["Anthropic"]) would silently force the child back onto the parent's provider.
-# openrouter_min_coding_score stays inherited: model-gated, no-op elsewhere.
 _ROUTING_FILTER_DEFAULTS = (
     ("providers_allowed", None), ("providers_ignored", None), ("providers_order", None), ("provider_sort", None),
     ("provider_require_parameters", False), ("provider_data_collection", ""),
@@ -544,7 +543,6 @@ def _resolve_child_runtime(
         "fallback_model": _resolve_child_fallback_chain(
             parent_agent, delegation_cfg if routing_cfg is None else routing_cfg,
             pinned=bool(override_provider or override_base_url or model)),
-        "openrouter_min_coding_score": getattr(parent_agent, "openrouter_min_coding_score", None),
         # Routing filters reset to their defaults under a pinned provider (see _ROUTING_FILTER_DEFAULTS).
         **{a: d if override_provider else getattr(parent_agent, a, d) for a, d in _ROUTING_FILTER_DEFAULTS},
     }

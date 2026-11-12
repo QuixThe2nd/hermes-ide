@@ -18,7 +18,7 @@ _OPENROUTER_DESCRIPTIONS = {
     "deepseek/deepseek-v4-flash-0731": "dated snapshot of v4-flash",
     "moonshotai/kimi-k3": "recommended",
     "z-ai/glm-5.2": "default",
-    "openrouter/pareto-code": "auto-routes to cheapest coder meeting openrouter.min_coding_score",
+    "openrouter/pareto-code": "auto-routes to cheapest coder with coding score >= 0.65",
     "openai/gpt-6-astra-fast": "2x price, priority tier",
     "openai/gpt-6-astra-flex": "0.5x price, flex tier",
     "openai/gpt-6-astra-pro-fast": "2x price, priority tier",

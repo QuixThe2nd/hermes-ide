@@ -2239,7 +2239,7 @@ _PASSTHROUGH_PARAMS = (
     "load_soul_identity", "pass_session_id", "log_prefix_chars",
     # OpenRouter provider preferences
     "providers_allowed", "providers_ignored", "providers_order", "provider_sort",
-    "provider_require_parameters", "provider_data_collection", "openrouter_min_coding_score",
+    "provider_require_parameters", "provider_data_collection",
     # Toolset filtering
     "enabled_toolsets", "disabled_toolsets",
     # Model response configuration (None = provider/model default)
@@ -2273,7 +2273,7 @@ def init_agent(
     log_prefix_chars: int = 100, log_prefix: str = "", providers_allowed: List[str] = None,
     providers_ignored: List[str] = None, providers_order: List[str] = None,
     provider_sort: str = None, provider_require_parameters: bool = False,
-    provider_data_collection: str = None, openrouter_min_coding_score: Optional[float] = None,
+    provider_data_collection: str = None,
     session_id: str = None, tool_progress_callback: callable = None,
     tool_start_callback: callable = None, tool_complete_callback: callable = None,
     thinking_callback: callable = None, reasoning_callback: callable = None,
@@ -2307,7 +2307,6 @@ def init_agent(
       requested_provider: provider identity before runtime canonicalization.
       cwd: logical session workspace, available to memory providers during construction;
         None or empty leaves the runtime cwd resolver unpinned.
-      openrouter_min_coding_score: coding-score floor for ``openrouter/pareto-code`` only.
       clarify_callback: ``(question, choices) -> str``; None → the clarify tool errors.
       reasoning_config: None → ``{"enabled": True, "effort": "medium"}`` on OpenRouter.
       prefill_messages: priming history. Anthropic Sonnet/Opus 4.6+ 400 on a trailing

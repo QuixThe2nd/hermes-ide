@@ -665,13 +665,6 @@ DEFAULT_CONFIG = {
     # non-falsy values are ignored; falsy (false, null, "off", "disabled", "no", "none") disables
     # caching.
     "prompt_caching": {"cache_ttl": "5m"},
-    # OpenRouter settings. response_cache: X-OpenRouter-Cache header — identical requests return
-    # cached responses at zero billing; independent of Anthropic prompt caching. response_cache_ttl:
-    # seconds (1-86400), only used when response_cache is on. min_coding_score (0.0-1.0):
-    # pareto-code router knob, applied only when model.model is "openrouter/pareto-code"; higher =
-    # stronger/pricier coders, 0.65 = mid-tier, "" = let OpenRouter pick the strongest. Docs:
-    # openrouter.ai/docs/guides/routing/routers/pareto-router
-    "openrouter": {"response_cache": True, "response_cache_ttl": 300, "min_coding_score": 0.65},
     "bedrock": {  # AWS Bedrock; only used when model.provider is "bedrock".
         "region": "",  # empty = AWS_REGION env var → us-east-1
         "discovery": {
@@ -698,7 +691,7 @@ DEFAULT_CONFIG = {
     #       extra_body:
     #         provider: {order: [anthropic, google], sort: throughput}  # or price | latency
     #         plugins: [{id: pareto-router, min_coding_score: 0.5}]
-    # Each task is independent — main-agent provider_routing and openrouter.min_coding_score
+    # Each task is independent — main-agent provider_routing and the Pareto coding-score floor
     # do NOT propagate to aux calls by design.
     "auxiliary": {
         # Same-provider retries for a transient blip (reset/timeout/5xx/408) on ANY aux call before
