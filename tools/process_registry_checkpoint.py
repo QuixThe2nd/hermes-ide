@@ -79,20 +79,30 @@ class ProcessCheckpointMixin:
             # recycled the PID onto a stranger, and adopting it would let a later
             # kill tree-kill e.g. a browser.
             if not self._host_pid_is_ours(pid, entry.get("host_start_time")):
-                if self._is_host_pid_alive(pid):
-                    logger.info(
-                        "Not recovering session %s: pid %d is alive but its "
-                        "start time no longer matches — PID was recycled onto "
-                        "an unrelated process; refusing to adopt it.",
-                        entry.get("session_id", "?"), pid)
-                systemd_unit = entry.get("systemd_unit", "")
-                if systemd_unit and not _stop_systemd_unit(systemd_unit):
-                    logger.warning(
-                        "Could not reap persisted scope %s for dead wrapper pid %s; "
-                        "retaining checkpoint entry for the next startup",
-                        systemd_unit, pid)
-                    unresolved_scope_entries.append(entry)
-                continue
+                systemd_unit = entry.get("systemd_unit", "") or ""
+                live_pid = None
+                if systemd_unit:
+                    from tools.harness_persist import active_service_main_pid
+                    live_pid = active_service_main_pid(systemd_unit)
+                if live_pid and self._host_pid_is_ours(live_pid, self._safe_host_start_time(live_pid)):
+                    entry = dict(entry)
+                    entry["pid"] = live_pid
+                    entry["host_start_time"] = self._safe_host_start_time(live_pid)
+                    pid = live_pid
+                else:
+                    if self._is_host_pid_alive(pid):
+                        logger.info(
+                            "Not recovering session %s: pid %d is alive but its "
+                            "start time no longer matches — PID was recycled onto "
+                            "an unrelated process; refusing to adopt it.",
+                            entry.get("session_id", "?"), pid)
+                    if systemd_unit and not _stop_systemd_unit(systemd_unit):
+                        logger.warning(
+                            "Could not reap persisted scope %s for dead wrapper pid %s; "
+                            "retaining checkpoint entry for the next startup",
+                            systemd_unit, pid)
+                        unresolved_scope_entries.append(entry)
+                    continue
             fields = {f: entry.get(f, _CHECKPOINT_DEFAULTS[f]) for f in _CHECKPOINT_FIELDS}
             fields.update(
                 command=entry.get("command", "unknown"),

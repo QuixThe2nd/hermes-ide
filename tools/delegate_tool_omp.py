@@ -16,6 +16,12 @@ from agent.secret_scope import load_env_file
 from tools.delegate_lane_specs import resolve_lane_path, soul_path
 from tools.delegate_tool_config import _cfg
 from tools.environments.local import build_subprocess_env
+from tools.harness_persist import (
+    caller_killed_service_cgroup,
+    launch_detached_service,
+    register_surviving_harness,
+    wait_service,
+)
 
 _QUOTA_STATUSES = {403, 429}
 _QUOTA_MARKERS = (
@@ -169,6 +175,44 @@ def _soul_file(soul: str):
         yield literal
 
 
+
+class _Completed:
+    def __init__(self, returncode: int, stdout: str, stderr: str) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _run_omp_process(argv, directory: Path, env: dict, *, timeout_seconds: int):
+    """Run omp in-process, or outside the gateway cgroup when a unit stop would kill it."""
+    if not caller_killed_service_cgroup():
+        return subprocess.run(
+            argv, cwd=str(directory), env=env, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL,
+            timeout=timeout_seconds or None, check=False,
+        )
+    stdout_path = directory / ".hermes-harness.stdout"
+    stderr_path = directory / ".hermes-harness.stderr"
+    launched = launch_detached_service(
+        argv, cwd=str(directory), env=env, stdout_path=stdout_path, stderr_path=stderr_path,
+    )
+    register_surviving_harness(
+        command=" ".join(argv[:8]), pid=launched["pid"], unit=launched["unit"], cwd=str(directory),
+    )
+    code = wait_service(launched["unit"], timeout_seconds=timeout_seconds)
+    code_path = Path(str(stdout_path) + ".code")
+    if code_path.exists():
+        try:
+            code = int(code_path.read_text(encoding="utf-8").strip())
+        except ValueError:
+            code = 1
+    return _Completed(
+        code,
+        stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.exists() else "",
+        stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.exists() else "",
+    )
+
+
 def run_omp_lane(
     spec: Mapping[str, Any],
     task: str,
@@ -194,11 +238,9 @@ def run_omp_lane(
             )
             mcp_path = stage_mcp_config(directory, spec.get("mcp"))
             env = build_subprocess_env(extra={"LITELLM_API_KEY": api_key})
-            completed = subprocess.run(
-                argv, cwd=str(directory), env=env, capture_output=True, text=True,
-                encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL,
-                timeout=int(timeout_seconds) if int(timeout_seconds) > 0 else None,
-                check=False,
+            completed = _run_omp_process(
+                argv, directory, env,
+                timeout_seconds=int(timeout_seconds) if int(timeout_seconds) > 0 else 0,
             )
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         return {**base, "error": str(exc), "duration_seconds": time.monotonic() - started}
