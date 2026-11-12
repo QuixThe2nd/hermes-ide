@@ -366,14 +366,19 @@ class TickTests(ThreadsTestCase):
 
 
 class SightingTests(ThreadsTestCase):
-    def test_repeat_log_posts_seen_again_to_thread(self):
+    def test_repeat_log_dedups_without_thread_post(self):
         first = self.log(turn="t0")
         lifecycle.tick()  # threads it into triage
+        posts_before = len(self.discord.posted())
         again = self.log(turn="t1")
         self.assertTrue(again["deduplicated"])
-        sightings = [c for c in self.discord.posted() if "seen again" in c[2]]
-        self.assertEqual(len(sightings), 1)
-        self.assertIn("the cli lacked a direct key lookup", sightings[0][2])
+        self.assertEqual(again["item"]["occurrences"], 2)
+        items = papercuts._fold(papercuts._read_events_unlocked())
+        self.assertEqual(items[first["item"]["id"]]["occurrences"], 2)
+        self.assertEqual(
+            len(self.discord.posted()), posts_before, "repeat log must not post to the thread"
+        )
+        self.assertFalse(any("seen again" in c[2] for c in self.discord.posted()))
 
     def test_repeat_log_on_closed_reopens_same_thread(self):
         first = self.log(turn="t0")
@@ -391,7 +396,11 @@ class SightingTests(ThreadsTestCase):
         reopens = [c for c in self.discord.updates() if c[3] is False]
         self.assertTrue(reopens, "reopening must unarchive the same thread")
         items = papercuts._fold(papercuts._read_events_unlocked())
-        self.assertTrue(any("seen again ×2" in c[2] for c in self.discord.posted()))
+        self.assertFalse(any("seen again" in c[2] for c in self.discord.posted()))
+        self.assertFalse(
+            any("the cli lacked a direct key lookup" in c[2] for c in self.discord.posted()),
+            "no raw observed dump on the reopen post",
+        )
         self.assertEqual(again["item"]["stage"], "triage")
         self.assertEqual(items[item_id]["stage"], "triage")
 
