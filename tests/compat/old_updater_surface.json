@@ -96,7 +96,6 @@
     "hermes_cli.gitlock::clear_stale_tmp_packs",
     "hermes_cli.gitlock::prune_stale_shallow_grafts",
     "hermes_cli.gitlock::repair_broken_shallow_boundaries",
-    "hermes_cli.model_catalog::seed_cache_from_checkout",
     "hermes_cli.plugin_compat::compat_report",
     "hermes_cli.plugin_compat::removal_in_effect",
     "hermes_cli.plugin_compat::summary_lines",

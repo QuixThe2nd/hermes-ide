@@ -151,15 +151,13 @@ _openrouter_catalog_cache: list[tuple[str, str]] | None = None
 
 # The in-memory ``_openrouter_catalog_cache`` is per-process, so without a disk cache every cold
 # picker open re-downloads the full ~686KB /api/v1/models catalog. The *curated* result
-# (post-filter) is persisted under the same TTL the catalog manifest uses, so both layers go
+# (post-filter) is persisted under a short TTL, so both layers go
 # stale together.
 
 
 def _openrouter_catalog_disk_ttl() -> float:
-    """Same TTL as the catalog manifest this list is filtered from (honours ``model_catalog.ttl_minutes``)."""
-    from hermes_cli.model_catalog import refresh_interval_seconds
-
-    return refresh_interval_seconds()
+    """Curated OpenRouter disk-cache TTL (20 minutes)."""
+    return 1200.0
 
 
 def _openrouter_catalog_disk_path() -> Path:
@@ -422,14 +420,9 @@ def get_nous_recommended_aux_model(
     return next((n for t in tiers if (n := _extract_model_name(payload.get(f"{t}Recommended{kind}Model")))), None)
 
 
-# In-repo fallback for the model Hermes silently lands on when the user never
+# In-repo table for the model Hermes silently lands on when the user never
 # picked one (GUI onboarding confirm card, empty ``model.default``,
-# provider-set-but-model-missing resolution). The AUTHORITATIVE source is the
-# remote model catalog: the manifest labels exactly one entry per provider
-# with ``"default": true`` (see get_default_model_from_cache in
-# model_catalog.py), so maintainers can rotate the default without shipping a
-# release. These constants are the offline/fresh-install fallback and MUST
-# match the labeled entries in website/static/api/model-catalog.json.
+# provider-set-but-model-missing resolution).
 #
 # The silent default is a (provider, model) PAIR and matches the reference
 # gateway's primary (``model.provider: xai-oauth`` + ``model.default:
@@ -450,10 +443,9 @@ PREFERRED_SILENT_DEFAULT_MODEL = "grok-4.6"
 # Per-provider spelling of the silent default. Aggregators that vendor-prefix
 # foreign models (OpenRouter, Nous Portal) serve grok-4.6 as
 # ``x-ai/grok-4.6``; every other provider uses the native id. This table —
-# not the bare constant — is what provider-scoped lookups fall back to when
-# no cached catalog label exists, so an aggregator never receives a model id
-# its API would reject (nor escalates to curated entry [0]: the priciest
-# Anthropic flagship).
+# not the bare constant — is what provider-scoped lookups use, so an
+# aggregator never receives a model id its API would reject (nor escalates
+# to curated entry [0]: the priciest Anthropic flagship).
 PREFERRED_SILENT_DEFAULT_MODEL_IDS: dict[str, str] = {
     PREFERRED_SILENT_DEFAULT_PROVIDER: PREFERRED_SILENT_DEFAULT_MODEL,
     "openrouter": "x-ai/grok-4.6",
@@ -462,27 +454,17 @@ PREFERRED_SILENT_DEFAULT_MODEL_IDS: dict[str, str] = {
 
 
 def get_preferred_silent_default_model(provider: str | None = None) -> str:
-    """Return the silent-default model id — catalog label first, table second.
+    """Return the silent-default model id from the in-repo table.
 
     ``provider`` unset is the no-override case (empty ``model.default``, no
     user picker choice): the lookup targets the silent-default provider's own
-    catalog block. An explicit provider looks up that provider's block — the
-    label a user who set the provider but never chose a model lands on.
+    entry. An explicit provider looks up that provider's entry — the model a
+    user who set the provider but never chose a model lands on.
 
-    Reads the ``"default": true`` label from the cached remote catalog
-    (never hits the network — safe on hot resolution paths), falling back to
-    :data:`PREFERRED_SILENT_DEFAULT_MODEL_IDS` (or the canonical constant for
-    providers the table doesn't cover) when no cached manifest exists or the
-    provider block carries no label.
+    Returns :data:`PREFERRED_SILENT_DEFAULT_MODEL_IDS` for the provider (or
+    the canonical constant for providers the table doesn't cover).
     """
     lookup = (provider or "").strip() or PREFERRED_SILENT_DEFAULT_PROVIDER
-    try:
-        from hermes_cli.model_catalog import get_default_model_from_cache
-        labeled = get_default_model_from_cache(lookup)
-        if labeled:
-            return labeled
-    except Exception:
-        pass
     return PREFERRED_SILENT_DEFAULT_MODEL_IDS.get(lookup, PREFERRED_SILENT_DEFAULT_MODEL)
 
 
@@ -510,14 +492,14 @@ def pick_silent_default_model(model_ids: list[str], provider: str | None = None)
 # when a profile sets a provider with no model silently bills the most
 # expensive model for traffic the user never opted into (a missing default
 # escalated to Opus and billed 863 requests before the user noticed). The
-# catalog manifest labels the default entry (``"default": true``) so it can
-# rotate without a release; a missing model must never escalate to the
-# flagship. ``xai-oauth`` — the silent-default provider itself — is in this
-# set for the same reason: its curated [0] is just "whatever model got pinned
-# top", while the labeled default is a deliberate maintainer choice.
+# in-repo table pins the default entry deliberately; a missing model must
+# never escalate to the flagship. ``xai-oauth`` — the silent-default
+# provider itself — is in this set for the same reason: its curated [0] is
+# just "whatever model got pinned top", while the table default is a
+# deliberate maintainer choice.
 #
 # This is deliberately a network-free lookup for the hot resolution path
-# (cache-only catalog read). The *interactive* default (GUI onboarding /
+# (in-repo table read). The *interactive* default (GUI onboarding /
 # ``hermes model``) uses the richer free/paid-tier-aware resolver — see
 # ``get_recommended_default_model`` (surface UIs) and
 # ``partition_nous_models_by_tier`` — which can hit the Portal.
@@ -629,8 +611,8 @@ def _fetch_live_catalog_index(url: str, timeout: float, opener) -> Optional[tupl
 def fetch_openrouter_models(
     timeout: float = 8.0, *, force_refresh: bool = False) -> list[tuple[str, str]]:
     """Return the curated OpenRouter picker list, refreshed from the live catalog when possible."""
-    # The curated list is filtered from this profile's manifest (``model_catalog.*`` config, its
-    # ``<home>/cache`` copy), so a routed profile keeps its own slot instead of the module one.
+    # The curated list is persisted per profile (this profile's ``<home>/cache`` copy), so a
+    # routed profile keeps its own slot instead of the module one.
     from hermes_cli.models_profile_cache import profile_slot_get, profile_slot_set
     _me = sys.modules[__name__]
     cached = profile_slot_get(_me, "_openrouter_catalog_cache")
@@ -646,14 +628,9 @@ def fetch_openrouter_models(
             profile_slot_set(_me, "_openrouter_catalog_cache", disk)
             return list(disk)
 
-    # Remote catalog manifest first, in-repo snapshot when unreachable; the live /v1/models filter
-    # (tool support, free pricing) is applied on top either way.
-    try:
-        from hermes_cli.model_catalog import get_curated_openrouter_models
-        remote = get_curated_openrouter_models()
-    except Exception:
-        remote = None
-    fallback = list(remote) if remote else list(OPENROUTER_MODELS)
+    # In-repo curated snapshot; the live /v1/models filter (tool support, free
+    # pricing) is applied on top.
+    fallback = list(OPENROUTER_MODELS)
 
     live = _fetch_live_catalog_index(_OPENROUTER_CATALOG_URL, timeout, _urlopen_model_catalog_request)
     if live is None:
@@ -697,14 +674,8 @@ def model_ids(*, force_refresh: bool = False) -> list[str]:
 
 
 def get_curated_nous_model_ids() -> list[str]:
-    """Curated Nous Portal model ids: the remote catalog manifest, else the in-repo
-    ``_PROVIDER_MODELS["nous"]`` snapshot. Always a list."""
-    try:
-        from hermes_cli.model_catalog import get_curated_nous_models
-        remote = get_curated_nous_models()
-    except Exception:
-        remote = None
-    return list(remote or _PROVIDER_MODELS.get("nous", []))
+    """Curated Nous Portal model ids: the in-repo ``_PROVIDER_MODELS["nous"]`` snapshot."""
+    return list(_PROVIDER_MODELS.get("nous", []))
 
 
 def _ai_gateway_model_is_free(pricing: Any) -> bool:
@@ -1419,8 +1390,7 @@ def _nous_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
                 return live
     except Exception:
         pass
-    # Live failed / no creds: the docs-hosted manifest — NOT the in-repo snapshot — so newly added
-    # Portal models still surface without a Hermes release.
+    # Live failed / no creds: the in-repo curated snapshot.
     return get_curated_nous_model_ids() or None
 
 

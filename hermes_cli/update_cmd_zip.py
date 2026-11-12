@@ -480,11 +480,6 @@ def _finish_zip_update(
     with suppress(Exception):
         print("→ Syncing bundled skills...")
         _print_bundled_skills_sync_report()
-    # Seed the model-catalog disk cache from the fresh checkout (same rationale as _cmd_update_impl). Non-fatal.
-    with _best_effort('Model catalog seed during zip update failed: %s'):
-        from hermes_cli.model_catalog import seed_cache_from_checkout
-        if seed_cache_from_checkout(_m().PROJECT_ROOT):
-            print("  ✓ Model catalog cache refreshed from checkout")
     # state.db integrity guard: root home AND every sibling profile, each auto-restored from its own snapshot.
     with _best_effort('Post-update state.db integrity check (zip path) failed: %s'):
         # See #97994.
