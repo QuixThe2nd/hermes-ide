@@ -1103,8 +1103,9 @@ class GatewayBusySessionMixin:
         effective_mode = self._effective_busy_input_mode(event.source)
 
         # --- Draining case (gateway restarting/stopping) ---
-        from gateway.overlap_restart import admits_owned_work
-        if self._draining and not admits_owned_work(self, event.source):
+        from gateway.overlap_restart import admits_local_drain_turn, admits_owned_work
+        if self._draining and not admits_owned_work(self, event.source) \
+                and not admits_local_drain_turn(self, event.source):
             adapter = self._adapter_for_source(event.source)
             if not adapter:
                 return True

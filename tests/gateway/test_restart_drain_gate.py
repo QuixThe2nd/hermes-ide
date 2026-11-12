@@ -33,6 +33,18 @@ from tests.gateway.restart_test_helpers import (
 _DRAIN_NOTICE_MARKER = "not accepting new work"
 
 
+@pytest.fixture(autouse=True)
+def _fast_overlap_park(monkeypatch):
+    """Hub-adapter drain tests exhaust the handoff path immediately instead of
+    parking for the 300s successor-attach deadline."""
+    from gateway import overlap_restart
+
+    monkeypatch.setattr(
+        overlap_restart, "DEFAULT_OVERLAP_SUCCESSOR_ATTACH_TIMEOUT_SECONDS", 0.0
+    )
+
+
+
 def _make_event(text: str):
     return MessageEvent(
         text=text,
@@ -76,7 +88,15 @@ def _make_gate_runner():
     mock_adapter = MagicMock()
     mock_adapter.send = AsyncMock()
     mock_adapter._pending_messages = {}
-    runner.adapters = {Platform.TELEGRAM: mock_adapter}
+    # Hub-capable drain posture: the events are Discord-sourced and the
+    # adapter can hand off to the successor (but never succeeds here), so the
+    # refusal under test is the hub path — a non-handoff adapter in the
+    # restart drain window is ADMITTED by design (see
+    # test_drain_nonoverlap_admit.py) and would not exercise this gate.
+    mock_adapter.supports_overlap_restart = True
+    mock_adapter.admits_owned_work_while_draining = MagicMock(return_value=False)
+    mock_adapter.handoff_event = AsyncMock(return_value=False)
+    runner.adapters = {Platform.TELEGRAM: mock_adapter, Platform.DISCORD: mock_adapter}
     runner.hooks = SimpleNamespace(
         emit=AsyncMock(),
         emit_collect=AsyncMock(return_value=[]),
@@ -119,10 +139,11 @@ def _make_gate_runner():
 
 
 def _mark_busy(runner, *, source=None):
-    """Put the event's session into the running-agent fast path."""
+    """Put the event's session into the running-agent fast path — WITHOUT an
+    owned running agent, so a hub adapter stays on the drain refusal path
+    (an owned agent would make ``admits_owned_work`` admit the follow-up)."""
     key = build_session_key(source or make_restart_source())
     runner._is_session_running = lambda _key: True
-    runner._running_agents[key] = MagicMock()
     return key
 
 
@@ -145,7 +166,7 @@ def test_gate_notice_denies_by_default_and_passes_only_allowed_commands():
     # command added tomorrow is gated until it is deliberately allowed.
     assert runner._slash_drain_gate_notice("some-future-command") is not None
 
-    for allowed in ("restart", "stop", "approve", "deny", "pause", "status",
+    for allowed in ("restart", "stop", "pause", "status",
                     "context", "agents", "help", "commands", "version",
                     "whoami", "start"):
         assert runner._slash_drain_gate_notice(allowed) is None, allowed
@@ -516,17 +537,18 @@ async def test_restart_request_entry_survives_the_gate_on_both_paths():
 
 @pytest.mark.asyncio
 async def test_in_flight_lifecycle_commands_survive_the_gate():
-    """/stop (interrupt the running turn) and /approve //deny (its approval
-    flow) stay dispatchable while draining — lifecycle of in-flight work."""
+    """/stop and /pause (lifecycle of the running turn) stay dispatchable
+    while draining. (/approve and /deny no longer exist — the human approval
+    gates were removed in #639.)"""
     runner, _adapter = _make_gate_runner()
     _mark_busy(runner)
     runner._draining = True
     resolver = AsyncMock(return_value="lifecycle-handled")
     runner._dispatch_busy_slash_command = resolver
 
-    for text in ("/stop", "/approve", "/deny"):
+    for text in ("/stop", "/pause"):
         assert await runner._handle_message(_make_event(text)) == "lifecycle-handled", text
-    assert resolver.await_count == 3
+    assert resolver.await_count == 2
 
 
 @pytest.mark.asyncio
