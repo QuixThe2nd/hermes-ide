@@ -165,18 +165,15 @@ def test_stale_env_pool_entry_does_not_count_when_var_unset(tmp_path, monkeypatc
     assert is_provider_explicitly_configured("deepseek") is False
 
 
-# ─── aws_sdk providers (Bedrock) ─────────────────────────────────────────
+# ─── AWS credentials in the environment ─────────────────────────────────
 #
-# Bedrock is registered with auth_type="aws_sdk" and an empty
-# api_key_env_vars tuple, so the api_key env-var loop never sees it.
-# Setting AWS_BEARER_TOKEN_BEDROCK (or an access-key pair) in .env is
-# exactly as explicit as pasting ANTHROPIC_API_KEY, and must count —
-# otherwise the desktop picker's explicit_only filter hides Bedrock even
-# though list_authenticated_providers builds a full row for it.
-#
-# Ambient AWS credential sources (SSO profiles, EC2 IMDS, container
-# credentials) must NOT count: aws_sdk detection here is env-var only,
-# never boto3's full chain.
+# AWS_* env vars describe the user's operator-shell toolchain (aws CLI,
+# terraform, boto3 scripts) or credentials issued by a removed provider.
+# They must never count as explicit configuration for an UNRELATED
+# provider: is_provider_explicitly_configured is registry-driven, so
+# ambient AWS credentials cannot leak a provider into the desktop picker's
+# explicit_only filter. Detection here is env-var only, never boto3's
+# full chain.
 
 
 @pytest.fixture()
