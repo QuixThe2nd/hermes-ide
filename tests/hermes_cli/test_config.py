@@ -251,6 +251,37 @@ class TestEmptyConfigSections:
         assert merged["section"] == {"a": 1}
 
 
+class TestLegacyKanbanConfigStillLoads:
+    """Configs written while the Kanban feature existed carry a top-level ``kanban:``
+    section and ``kanban`` entries in the per-platform toolset disable lists. The feature
+    is gone, but those configs must still load and the stale toolset name must stay a
+    silent no-op instead of a startup failure."""
+
+    def test_load_config_tolerates_legacy_kanban_keys(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text(
+                "model:\n"
+                "  default: test/custom\n"
+                "kanban:\n"
+                "  enabled: true\n"
+                "  default_board: work\n"
+                "tools:\n"
+                "  telegram:\n"
+                "    disabled: [kanban]\n"
+            )
+            config = load_config()
+            assert config["model"]["default"] == "test/custom"
+            assert config["kanban"] == {"enabled": True, "default_board": "work"}
+            assert config["tools"]["telegram"]["disabled"] == ["kanban"]
+
+    def test_legacy_kanban_toolset_name_is_a_silent_no_op(self):
+        from toolsets import get_toolset, resolve_multiple_toolsets, resolve_toolset
+
+        assert not get_toolset("kanban")
+        assert resolve_toolset("kanban") == []
+        assert resolve_multiple_toolsets(["kanban"]) == []
+
+
 class TestSaveAndLoadRoundtrip:
     @staticmethod
     def _deny_config_reads(config_path):
