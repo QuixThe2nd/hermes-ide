@@ -1,14 +1,14 @@
 """Webhook inbound during a restart drain (no overlap support).
 
-The webhook transport has NO overlap/hub attachment, so a webhook that fires
-while the predecessor drains gets the honest refusal — a restart never
-durably snapshots another endpoint's drain-window message (user contract,
-Nov 2026): no file is written, no successor turn is synthesized, and the
-caller's retry re-delivers after the bounce.
+The webhook transport has NO overlap/hub attachment, so the successor defers
+it until the predecessor exits — during the drain window the draining
+predecessor is the webhook's only server. A webhook that fires mid-drain is
+therefore ADMITTED and runs as a normal turn in the draining process (see
+``gateway.overlap_restart.admits_local_drain_turn``): no refusal text, no
+durable drain snapshot, no successor turn synthesized for it.
 """
 
 import asyncio
-import json
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -88,6 +88,8 @@ def _make_gate_runner():
     runner._begin_session_run_generation = lambda _key: 1
     runner._peek_session_state = lambda _key: None
     runner._is_session_running = lambda _key: False
+    runner._handle_message_with_agent = AsyncMock(return_value="turn-done")
+    runner._run_post_turn_hooks = AsyncMock()
     return runner, adapter
 
 
@@ -102,41 +104,36 @@ async def _settle(runner) -> None:
 
 
 @pytest.mark.asyncio
-async def test_webhook_message_mid_drain_is_refused_never_snapshotted():
-    """A webhook message that reaches the draining predecessor is answered
-    with the honest drain refusal — the predecessor starts no turn for it
-    and never writes a durable queue of it."""
+async def test_webhook_message_mid_drain_runs_in_the_draining_predecessor():
+    """A webhook message that reaches the draining predecessor runs as a
+    normal turn there — the predecessor is the webhook's only server until it
+    exits, so refusing it would lose the message for the whole drain."""
     runner, adapter = _make_gate_runner()
-    handler = adapter._message_handler
     runner._draining = True
     runner._restart_requested = True
     runner._busy_input_mode = "queue"
 
     result = await runner._handle_message(_make_event("hook arrived mid-drain"))
 
-    assert isinstance(result, str) and "not accepting new work" in result
-    handler.assert_not_called()  # the predecessor never starts the turn
-    session_key = runner._session_key_for_source(
-        make_restart_source(platform=Platform.WEBHOOK)
-    )
+    assert result == "turn-done"
+    runner._handle_message_with_agent.assert_awaited_once()
     assert not drain_queue_path().exists()
     assert not claimed_drain_queue_path().exists()
-    assert session_key not in adapter._pending_messages
+    assert not adapter._pending_messages
 
 
 @pytest.mark.asyncio
-async def test_webhook_interrupt_mode_refuses_honestly_without_a_queue_promise():
-    """Control: with the default interrupt busy mode the predecessor gives
-    the honest refusal — no queue promise, no file, no silent processing."""
+async def test_webhook_interrupt_mode_also_runs_the_turn_locally():
+    """Same admission under the default interrupt busy mode: no queue promise,
+    no file, no refusal — the turn simply runs here."""
     runner, adapter = _make_gate_runner()
-    handler = adapter._message_handler
     runner._draining = True
     runner._restart_requested = True
     runner._busy_input_mode = "interrupt"
 
     result = await runner._handle_message(_make_event("interrupt-mode hook"))
 
-    assert isinstance(result, str) and "not accepting new work" in result
-    assert handler.assert_not_called() is None
+    assert result == "turn-done"
+    runner._handle_message_with_agent.assert_awaited_once()
     assert not drain_queue_path().exists()
     assert not adapter._pending_messages

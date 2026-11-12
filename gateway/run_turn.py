@@ -6740,7 +6740,12 @@ class GatewayTurnMixin:
                         pending_event = None
                         pending = None
 
-        if self._draining and (pending_event or pending):
+        from gateway.overlap_restart import admits_local_drain_turn
+        if self._draining and (pending_event or pending) and not admits_local_drain_turn(self, source):
+            # Hub transports redeliver through the successor, so their queued
+            # follow-ups are dropped here. A non-handoff adapter has no such
+            # redelivery: its follow-up was admitted locally and must run as
+            # the next turn of this process, or it is silently lost.
             logger.info(
                 "Discarding pending follow-up for session %s during gateway %s",
                 session_key or "?", self._status_action_label(),
@@ -8618,7 +8623,8 @@ class GatewayTurnMixin:
                     except Exception:
                         pass
 
-            if self._draining and (pending_event or pending):
+            from gateway.overlap_restart import admits_local_drain_turn
+            if self._draining and (pending_event or pending) and not admits_local_drain_turn(self, source):
                 logger.info(
                     "Discarding pending follow-up for session %s during gateway %s",
                     session_key or "?",

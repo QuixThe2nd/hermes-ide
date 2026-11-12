@@ -6934,6 +6934,17 @@ class GatewayRunner(
         return len(self._running_agents)
 
 
+    def _drain_local_admission_count(self) -> int:
+        """Local-only drain turns between admission and pipeline completion.
+
+        ``_handle_message`` holds this above zero from the moment a
+        non-handoff-adapter event is admitted until its handling returns, so
+        the restart/stop drain cannot mistake the pre-claim window (before
+        ``_running_agents`` registration) for an idle gateway and stop()
+        through an admitted turn.
+        """
+        return getattr(self, "_drain_local_turns_inflight", 0)
+
 
 
     def _pending_background_task_count(self) -> int:
@@ -6976,6 +6987,7 @@ class GatewayRunner(
             + self._active_api_run_count(strict=True)
             + self._active_deferred_agent_worker_count()
             + self._pending_background_task_count()
+            + self._drain_local_admission_count()
         )
 
     def _probed_active_work_count(self) -> Optional[int]:
@@ -7571,8 +7583,14 @@ class GatewayRunner(
         if not self._draining:
             return None
         if source is not None:
-            from gateway.overlap_restart import admits_owned_work
+            from gateway.overlap_restart import admits_local_drain_turn, admits_owned_work
             if admits_owned_work(self, source):
+                return None
+            # Non-handoff adapter in the restart drain window: the successor
+            # defers that platform until this process exits, so this process
+            # is its only server — the event runs as a normal turn here
+            # instead of being refused (see admits_local_drain_turn).
+            if admits_local_drain_turn(self, source):
                 return None
         if canonical is not None and canonical in _DRAIN_ALLOWED_COMMANDS:
             return None

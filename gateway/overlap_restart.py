@@ -237,12 +237,18 @@ async def claim_when_predecessor_exits(
     return False
 
 
-def _overlap_adapter(runner: Any, source: Any) -> Optional[Any]:
+def _source_adapter(runner: Any, source: Any) -> Optional[Any]:
+    """The intake adapter serving *source*, else None when unresolvable."""
     resolver = getattr(runner, "_intake_adapter_for", None)
     adapter = resolver(source) if callable(resolver) else None
     if adapter is None:
         resolver = getattr(runner, "_adapter_for_source", None)
         adapter = resolver(source) if callable(resolver) else None
+    return adapter
+
+
+def _overlap_adapter(runner: Any, source: Any) -> Optional[Any]:
+    adapter = _source_adapter(runner, source)
     return adapter if getattr(adapter, "supports_overlap_restart", False) is True else None
 
 
@@ -258,6 +264,36 @@ def admits_owned_work(runner: Any, source: Any) -> bool:
         return False
     session_key = session_key_for_source(source)
     return (getattr(runner, "_running_agents", None) or {}).get(session_key) is not None
+
+
+def admits_local_drain_turn(runner: Any, source: Any) -> bool:
+    """True when a drain-window event must run as a normal turn in THIS process.
+
+    Only hub adapters (``supports_overlap_restart``) can hand an event to the
+    overlap successor; every other adapter (WhatsApp bridge, webhook,
+    api_server, ...) is deferred by the successor until the predecessor exits
+    (``defer_primary_adapter`` / ``defer_secondary_adapter``). During the
+    restart drain window — admission closed but adapters still connected
+    (``_running``, no ``stop()`` task yet) — the draining process is therefore
+    the only one that can serve those platforms, and refusing the event loses
+    it for as long as the drain lasts. Hub adapters keep the handoff path.
+    A source with NO resolvable adapter (restored row, hand-built/internal
+    source) keeps the old refusal: nothing proves which transport would serve
+    it, and those lanes have their own durable recovery. An external quiesce
+    (``_external_drain_active``) and terminal shutdown (``_running`` cleared
+    or ``stop()`` already tasked, adapters disconnecting) keep their refusal
+    too — only the overlap-drain window opens.
+    """
+    if not getattr(runner, "_draining", False):
+        return False
+    if getattr(runner, "_external_drain_active", False):
+        return False
+    if not getattr(runner, "_running", False):
+        return False
+    if getattr(runner, "_stop_task", None) is not None or _shutdown_requested(runner):
+        return False
+    adapter = _source_adapter(runner, source)
+    return adapter is not None and getattr(adapter, "supports_overlap_restart", False) is not True
 
 
 async def handoff_overlap_event(

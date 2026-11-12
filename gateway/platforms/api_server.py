@@ -1261,20 +1261,39 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 logger.debug("[api_server] failed interrupting active agent: %s", exc)
         return interrupted
 
-    @staticmethod
-    def _gateway_is_draining() -> bool:
-        """Whether the owning gateway currently refuses new agent turns."""
+    def _draining_response(self) -> Optional["web.Response"]:
+        """Retryable 503 only when this process can no longer serve the turn.
+
+        An overlap-restart drain is NOT such a state for the API transport:
+        the successor defers the api_server adapter until this process exits,
+        so an admitted request is served locally (its reservation already
+        holds the drain's active-work count above zero). Refusing it would
+        just surface a spurious 503 for a turn we could have completed. Two
+        drains still refuse:
+
+        - external quiesce (``_external_drain_active``): the operator is
+          deliberately driving active work to zero before stopping, so new
+          admissions would break that contract;
+        - terminal shutdown: ``_running`` cleared or ``stop()`` already
+          tasked — adapters are disconnecting and the turn would die with
+          the process.
+        """
         try:
             from gateway.run import _gateway_runner_ref
             runner = _gateway_runner_ref()
-            return bool(runner and (getattr(runner, "_draining", False)
-                                    or getattr(runner, "_external_drain_active", False)))
         except Exception:
-            return False
-
-    def _draining_response(self) -> Optional["web.Response"]:
-        """Return a retryable response while the gateway drains existing work."""
-        if not self._gateway_is_draining():
+            runner = None
+        if runner is None:
+            return None
+        external_quiesce = bool(getattr(runner, "_external_drain_active", False))
+        terminal_shutdown = bool(
+            getattr(runner, "_draining", False)
+            and (
+                not getattr(runner, "_running", False)
+                or getattr(runner, "_stop_task", None) is not None
+            )
+        )
+        if not external_quiesce and not terminal_shutdown:
             return None
         return _error_response(
             "Gateway is draining existing work; retry shortly.", 503, code="gateway_draining",

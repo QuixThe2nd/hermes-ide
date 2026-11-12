@@ -759,8 +759,11 @@ class GatewayInboundMixin:
             else:
                 self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)  # picked up after start
             return None
-        from gateway.overlap_restart import admits_owned_work, handoff_overlap_event
-        if self._draining and not admits_owned_work(self, event.source):
+        from gateway.overlap_restart import (
+            admits_local_drain_turn, admits_owned_work, handoff_overlap_event,
+        )
+        if self._draining and not admits_owned_work(self, event.source) \
+                and not admits_local_drain_turn(self, event.source):
             if await handoff_overlap_event(
                 self, event, _quick_key, require_successor_ready=True,
             ):
@@ -1084,8 +1087,11 @@ class GatewayInboundMixin:
         ``(handled, result, command)``; an alias quick command rewrites ``command``."""
         from gateway.run import logger
 
-        from gateway.overlap_restart import admits_owned_work, handoff_overlap_event
-        if self._draining and not admits_owned_work(self, event.source):
+        from gateway.overlap_restart import (
+            admits_local_drain_turn, admits_owned_work, handoff_overlap_event,
+        )
+        if self._draining and not admits_owned_work(self, event.source) \
+                and not admits_local_drain_turn(self, event.source):
             if await handoff_overlap_event(
                 self, event, self._session_key_for_source(event.source),
                 require_successor_ready=True,
@@ -1332,6 +1338,28 @@ class GatewayInboundMixin:
             return event, source, is_internal
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
+        """Drain-window admission accounting around the message pipeline.
+
+        A local-only drain turn (``admits_local_drain_turn``) is counted from
+        handler entry until handling completes: the restart/stop drain must
+        not observe zero active work in the window between admission and the
+        session claim registering in ``_running_agents`` — otherwise stop()
+        can begin mid-admission and the admitted message is lost to adapter
+        teardown, the same loss the admission exists to prevent. The count
+        overlaps the running-agent registration deliberately; only the zero
+        crossing matters to the drain.
+        """
+        from gateway.overlap_restart import admits_local_drain_turn
+
+        if not admits_local_drain_turn(self, event.source):
+            return await self._handle_message_pipeline(event)
+        self._drain_local_turns_inflight = getattr(self, "_drain_local_turns_inflight", 0) + 1
+        try:
+            return await self._handle_message_pipeline(event)
+        finally:
+            self._drain_local_turns_inflight -= 1
+
+    async def _handle_message_pipeline(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
 
@@ -2068,17 +2096,26 @@ class GatewayInboundMixin:
                 )
 
             from gateway.overlap_restart import (
+                admits_local_drain_turn,
                 admits_owned_work as _admits_overlap_work,
                 handoff_overlap_event,
             )
             _overlap_owned = _admits_overlap_work(self, source)
-            if self._draining and not _overlap_owned and await handoff_overlap_event(
+            # Drain refusals/queueing below apply only where this process is
+            # NOT the event's only server: hub adapters hand off to the
+            # successor, terminal shutdown keeps its refusal. A non-handoff
+            # adapter in the restart drain window runs the turn here.
+            _drain_refuses = (
+                self._draining and not _overlap_owned
+                and not admits_local_drain_turn(self, source)
+            )
+            if _drain_refuses and await handoff_overlap_event(
                 self, event, _quick_key, require_successor_ready=True,
             ):
                 return None
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
-                if self._draining and not _overlap_owned:
+                if _drain_refuses:
                     # Drain window: an in-memory-only merge would die with the
                     # process bounce. Route through the durable drain queue
                     # when the busy policy allows it (the photo merge happens
@@ -2107,7 +2144,7 @@ class GatewayInboundMixin:
                 and _started_at
                 and (time.time() - _started_at) <= _telegram_followup_grace
             ):
-                if self._draining:
+                if _drain_refuses:
                     # The grace window's in-memory queue dies with the process
                     # bounce — this sub-path takes the same durable admission
                     # as every other busy follow-up, never a silent loss.
@@ -2141,7 +2178,7 @@ class GatewayInboundMixin:
                     self._release_running_agent_state(_quick_key)
                     logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
                     return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
-                if self._draining and not _overlap_owned:
+                if _drain_refuses:
                     # The sentinel window's in-memory merge dies with the
                     # process bounce — same durable admission as every other
                     # busy follow-up. (/stop above stays reachable: it is the
@@ -2173,7 +2210,7 @@ class GatewayInboundMixin:
                         merge_text=True,
                     )
                 return None
-            if self._draining and not _overlap_owned:
+            if _drain_refuses:
                 return self._busy_drain_admission(
                     event, _quick_key, effective_busy_input_mode
                 )

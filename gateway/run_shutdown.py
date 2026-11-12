@@ -172,6 +172,7 @@ class GatewayShutdownMixin:
             + self._active_api_run_count()
             + self._active_deferred_agent_worker_count()
             + self._pending_background_task_count()
+            + self._drain_local_admission_count()
         )
 
     @staticmethod
@@ -969,11 +970,16 @@ class GatewayShutdownMixin:
         # or a cron job's tool work gets killed with zero warning the
         # instant it's the only active thing running (#60432).
         # API-server / desk sessions have the same structural gap (#63529).
+        # Local-only drain admissions (non-handoff adapter events accepted
+        # mid-drain) are work too: they count from handler entry, before the
+        # session claim registers in ``_running_agents``, so an immediate
+        # zero-work return here would stop() through an admitted turn.
         if (
             not self._running_agents
             and last_cron_count == 0
             and last_api_count == 0
             and last_deferred_count == 0
+            and self._drain_local_admission_count() == 0
         ):
             _maybe_update_status(force=True)
             return snapshot, False
@@ -998,6 +1004,7 @@ class GatewayShutdownMixin:
                 len(self._running_agents)
                 or self._active_api_run_count()
                 or self._active_deferred_agent_worker_count()
+                or self._drain_local_admission_count()
             ) and now < deadline:
                 return True
             return bool(self._active_cron_job_count()) and now < cron_deadline
@@ -1014,6 +1021,7 @@ class GatewayShutdownMixin:
             or bool(self._active_cron_job_count())
             or bool(self._active_api_run_count())
             or bool(self._active_deferred_agent_worker_count())
+            or bool(self._drain_local_admission_count())
         )
         _maybe_update_status(force=True)
         return snapshot, timed_out
