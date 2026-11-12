@@ -38,7 +38,6 @@ def _discord_descriptor() -> CapabilityDescriptor:
         len_unit="chars",
         emoji="\U0001f47e",
         platform_hint="You are on Discord.",
-        pii_safe=False,
     )
 
 

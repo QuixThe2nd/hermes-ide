@@ -458,15 +458,6 @@ hermes config set security.redact_secrets true       # 全局启用
 hermes config set security.redact_secrets false
 ```
 
-### Gateway 消息中的 PII 脱敏
-
-与密钥脱敏分开。启用后，gateway 在上下文到达模型之前对用户 ID 进行哈希处理并从会话上下文中去除电话号码：
-
-```bash
-hermes config set privacy.redact_pii true    # 启用
-hermes config set privacy.redact_pii false   # 禁用（默认）
-```
-
 ### 危险命令
 
 危险命令会立即执行——Hermes 不会暂停询问。一个小的硬性黑名单会直接拒绝极端破坏性命令，无需询问；`config.yaml` 中的 `approvals.deny` glob 会无条件拦截额外的模式。以上均不影响密钥脱敏，两者相互独立。
