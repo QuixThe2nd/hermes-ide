@@ -1208,3 +1208,22 @@ class TestNonConversationalTrackerOffload:
         assert sorted(writes[-1]) == ["1", "2"]
 
 
+
+
+def test_channel_gate_parses_json_array_string(adapter):
+    """``hermes config set discord.allowed_channels '["111","222"]'`` stores a string."""
+    adapter.config.extra["allowed_channels"] = '["111", "222"]'
+    assert adapter._get_allowed_channels() == {"111", "222"}
+
+
+def test_channel_gate_keeps_csv_and_list_forms(adapter):
+    adapter.config.extra["allowed_channels"] = "111, 222"
+    assert adapter._get_allowed_channels() == {"111", "222"}
+    adapter.config.extra["allowed_channels"] = ["111", "222"]
+    assert adapter._get_allowed_channels() == {"111", "222"}
+
+
+def test_clear_reaction_channels_are_opt_in(adapter):
+    assert adapter._clear_reaction_channels() == set()
+    adapter.config.extra["clear_reaction_channels"] = "111"
+    assert adapter._clear_reaction_channels() == {"111"}
