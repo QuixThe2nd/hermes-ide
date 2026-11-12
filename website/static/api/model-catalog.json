@@ -207,7 +207,7 @@
         },
         {
           "id": "openrouter/pareto-code",
-          "description": "auto-routes to cheapest coder meeting openrouter.min_coding_score"
+          "description": "auto-routes to cheapest coder with coding score >= 0.65"
         },
         {
           "id": "thinkingmachines/inkling:free",

@@ -1370,21 +1370,17 @@ provider_routing:
 
 ## OpenRouter Pareto Code 路由器
 
-OpenRouter 提供一个实验性编程模型路由器 `openrouter/pareto-code`，自动将请求路由到满足编程质量标准的最便宜模型（按 [Artificial Analysis](https://artificialanalysis.ai/) 排名）。选择此模型并在 `~/.hermes/config.yaml` 中调整 `min_coding_score` 参数：
+OpenRouter 提供一个实验性编程模型路由器 `openrouter/pareto-code`，自动将请求路由到满足编程质量标准的最便宜模型（按 [Artificial Analysis](https://artificialanalysis.ai/) 排名）。选择此模型后，路由器将使用固定为 0.65 的编程分数下限：
 
 ```yaml
 model:
   provider: openrouter
   model: openrouter/pareto-code
-
-openrouter:
-  min_coding_score: 0.65   # 0.0–1.0；越高 = 越强（越贵）的编程模型。默认 0.65。
 ```
 
 说明：
 
-- `min_coding_score` **仅**在 `model.model` 为 `openrouter/pareto-code` 时发送。对其他任何模型该值无效。
-- 设置为空字符串（或删除该行）让 OpenRouter 选择最强的可用编程模型——这是省略 plugins 块时的文档行为。
+- `pareto-router` 插件及 `min_coding_score: 0.65` **仅**在 `model.model` 为 `openrouter/pareto-code` 时发送。对其他任何模型无效。该下限没有对应的配置项。
 - 在给定日期内，按分数选择是确定性的，但随着 Pareto 前沿移动（新模型、基准更新），实际选择的模型可能变化。
 - 参见 OpenRouter 的 [Pareto Router 文档](https://openrouter.ai/docs/guides/routing/routers/pareto-router) 了解完整路由器行为。
 - 要将 Pareto Code 路由器用于特定**辅助任务**（压缩、视觉等）而非主智能体，在该任务下设置 `extra_body.plugins`——参见[辅助模型 → OpenRouter 路由与辅助任务的 Pareto Code](../user-guide/configuration.md#openrouter-routing--pareto-code-for-auxiliary-tasks)。

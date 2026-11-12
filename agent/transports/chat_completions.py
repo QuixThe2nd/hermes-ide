@@ -302,15 +302,6 @@ def _dump_extra_content(extra: Any) -> Any:
     return extra
 
 
-def _pareto_score(raw: Any) -> float | None:
-    """Coding-score floor for the Pareto router as a float in [0, 1], else None."""
-    try:
-        score = float(raw) if raw not in (None, "") else None
-    except (TypeError, ValueError):
-        return None
-    return score if score is not None and 0.0 <= score <= 1.0 else None
-
-
 def _swap_developer_role(sanitized: list, model_lower: str) -> list:
     """GPT-5/Codex models take a ``developer`` role instead of ``system``."""
     if (
@@ -483,9 +474,7 @@ class ChatCompletionsTransport(ProviderTransport):
             extra_body["provider"] = params["provider_preferences"]
         # Pareto Code router plugin (same shape as the OpenRouter profile path).
         if is_openrouter and model == "openrouter/pareto-code":
-            _pareto_score_f = _pareto_score(params.get("openrouter_min_coding_score"))
-            if _pareto_score_f is not None:
-                extra_body["plugins"] = [{"id": "pareto-router", "min_coding_score": _pareto_score_f}]
+            extra_body["plugins"] = [{"id": "pareto-router", "min_coding_score": 0.65}]
         if is_kimi:
             extra_body["thinking"] = {"type": "disabled" if thinking_off else "enabled"}
 
@@ -543,7 +532,6 @@ class ChatCompletionsTransport(ProviderTransport):
         profile_body = profile.build_extra_body(
             session_id=params.get("session_id"), provider_preferences=params.get("provider_preferences"), model=model,
             base_url=params.get("base_url"), reasoning_config=reasoning_config,
-            openrouter_min_coding_score=params.get("openrouter_min_coding_score"),
         )
         for part in (profile_body, extra_body_from_profile, params.get("extra_body_additions")):
             if part:

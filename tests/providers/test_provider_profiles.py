@@ -106,12 +106,9 @@ class TestOpenRouterProfile:
 
 
     def test_pareto_min_coding_score_emitted_for_pareto_model(self):
-        """min_coding_score → plugins block when model is openrouter/pareto-code."""
+        """The Pareto plugin uses the fixed coding-score floor."""
         p = get_provider_profile("openrouter")
-        body = p.build_extra_body(
-            model="openrouter/pareto-code",
-            openrouter_min_coding_score=0.65,
-        )
+        body = p.build_extra_body(model="openrouter/pareto-code")
         assert body["plugins"] == [
             {"id": "pareto-router", "min_coding_score": 0.65}
         ]
