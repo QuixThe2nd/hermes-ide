@@ -6343,12 +6343,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     async def _dispatch_raw_reaction(self, payload: Any) -> None:
         """One raw reaction event, routed by emoji to its owning feature.
 
-        Two consumers share this dispatcher: resolve-ticket confirmations
-        and prepared-action approvals (✅/❌ on their respective embeds).
-        Each filters to its own messages through its pending-listener
+        Consumer: resolve-ticket confirmations (✅/❌ on their embeds),
+        filtered to their own messages through the pending-listener
         store, so an unrelated reaction costs one cheap emoji check and
-        never reaches either. A failure in one branch can never leak into
-        the other.
+        never reaches the handler.
         """
         try:
             emoji_name = getattr(payload.emoji, "name", None)
@@ -6374,26 +6372,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 logger.exception(
                     "[%s] resolve_ticket reaction handler failed", self.name
                 )
-            try:
-                from tools.discord_approve_action_tool import handle_approve_reaction
-                reactor_id = str(payload.user_id)
-                authorized = reactor_id != "*" and reactor_id in self._allowed_user_ids
-                result = await asyncio.to_thread(
-                    handle_approve_reaction,
-                    str(payload.channel_id),
-                    str(payload.message_id),
-                    emoji_name,
-                    self.config.token,
-                    reactor_id=reactor_id,
-                    authorized=authorized,
-                )
-                if result.get("acted"):
-                    logger.info("[%s] approve_action reaction: %s", self.name, result)
-            except Exception:
-                logger.exception(
-                    "[%s] approve_action reaction handler failed", self.name
-                )
-            return
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Start a persistent typing loop (POST typing every 12s; indicator lasts ~10s).
