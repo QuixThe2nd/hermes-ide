@@ -237,7 +237,12 @@ def test_schema_describes_successor_tool_result_and_single_bounce():
     assert "Old process:" in description
     assert "New process:" in description
     assert "exactly 'Restarted successfully'" not in description
-    assert "continues the interrupted task" in description
+    # The rewritten tool result is context for the successor, not an
+    # outbound message.
+    assert "rewrites this tool result" in description
+    assert "not a message to send" in description
+    assert "do not repeat or quote it" in description
+    assert "Continue the interrupted task" in description
     assert "do not call restart again for the same restart" in description.lower()
     assert "ends this turn immediately" not in description.lower()
 

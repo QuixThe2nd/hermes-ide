@@ -31,6 +31,104 @@ class StopGateVerdict:
     pending_verification_response_previewed: Any
 
 
+# First lines of every restart-notice last-line wording ever shipped: the
+# original builder text ("This chat is no longer running in ..." / "You are
+# now running in ...") and the do-not-send instruction line. A text stop
+# made of the identity lines plus at most ONE of these is an echo of the
+# tool result, not an answer.
+_RESTART_NOTICE_TRAILING_PREFIXES = (
+    "This chat is no longer running",
+    "You are now running in",
+    "This is a tool result for you",
+)
+
+
+def _is_restart_notice_echo(text: Any) -> bool:
+    """True when *text* is (a quote of) the restart tool result, not an answer.
+
+    Shape, not bytes: the identity block (``Restarted successfully`` +
+    ``Old process:``/``New process:`` lines) with at most one trailing
+    instruction line in a known wording. Anything beyond that is task
+    content, so a genuine final that mentions the pids passes through.
+    """
+    if not isinstance(text, str):
+        return False
+    lines = [line.strip() for line in text.strip().split("\n")]
+    if not lines or not lines[0].startswith("Restarted successfully"):
+        return False
+    index = 1
+    if index < len(lines) and lines[index].startswith("Old process: "):
+        index += 1
+    if index >= len(lines) or not lines[index].startswith("New process: "):
+        return False
+    trailing = [line for line in lines[index + 1:] if line]
+    if not trailing:
+        return True
+    return len(trailing) == 1 and trailing[0].startswith(
+        _RESTART_NOTICE_TRAILING_PREFIXES
+    )
+
+
+def _history_has_restart_notice(messages: List[Dict[str, Any]]) -> bool:
+    """The transcript must actually carry the restart tool result this echo quotes."""
+    for row in messages:
+        if isinstance(row, dict) and row.get("role") == "tool":
+            content = row.get("content")
+            if (
+                isinstance(content, str)
+                and "Restarted successfully" in content
+                and "New process: " in content
+            ):
+                return True
+    return False
+
+
+def _restart_echo_nudge() -> str:
+    return (
+        "[System: that text was the restart tool result, not a reply to "
+        "send to the user. Do not repeat or quote it. Continue the "
+        "interrupted task with your tools, and answer the user only about "
+        "that work.]"
+    )
+
+
+def _gate_restart_echo(agent, final_msg, final_response, messages) -> Optional[StopGateVerdict]:
+    """Drop a verbatim echo of the restart notice and continue the turn once.
+
+    The echo is context, not an answer: it is not emitted, not persisted as
+    the reply, and not kept as the budget-exhaustion fallback. One nudge
+    only — a second echo is delivered as the answer so the turn cannot loop.
+    """
+    if getattr(agent, "_restart_echo_nudges", 0) > 0:
+        return None
+    if any(
+        isinstance(row, dict) and row.get("_restart_echo_synthetic")
+        for row in messages
+    ):
+        return None
+    if not _is_restart_notice_echo(final_response):
+        return None
+    if not _history_has_restart_notice(messages):
+        return None
+
+    agent._restart_echo_nudges = 1
+    if not (messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "tool"):
+        # user-tail: keep role alternation by persisting the echo as an
+        # assistant row first — WITHOUT emitting it to the user.
+        append_message(messages, final_msg)
+    append_message(
+        messages,
+        {"role": "user", "content": _restart_echo_nudge(), "_restart_echo_synthetic": True},
+    )
+    agent._session_messages = messages
+    logger.debug("restart-notice echo dropped; continuation nudge issued")
+    return StopGateVerdict(
+        continue_turn=True, final_response=None,
+        pending_verification_response=None,
+        pending_verification_response_previewed=False,
+    )
+
+
 def _verify_on_stop_nudge(agent) -> Optional[str]:
     try:
         from agent.verification_stop import (
@@ -110,6 +208,10 @@ def apply_stop_gates(
                 final_response or ""
             ),
         )
+
+    _echo_verdict = _gate_restart_echo(agent, final_msg, final_response, messages)
+    if _echo_verdict is not None:
+        return _echo_verdict
 
     _verify_nudge = _verify_on_stop_nudge(agent)
     if _verify_nudge:

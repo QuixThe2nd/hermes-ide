@@ -149,12 +149,18 @@ def _restart_success_content(old_process: Optional[str], new_process: str) -> st
     lines.append(f"New process: {new_process}")
     if old_process:
         lines.append(
-            f"This chat is no longer running in {old_process}. "
-            f"You are now running in {new_process}. Continue the original task."
+            "This is a tool result for you, not a message to send or quote "
+            f"to the user. This chat is no longer running in {old_process}; "
+            f"you are now running in {new_process}. Continue the interrupted "
+            "task with your tools until the original work is verified, then "
+            "reply to the user about that work."
         )
     else:
         lines.append(
-            f"You are now running in {new_process}. Continue the original task."
+            "This is a tool result for you, not a message to send or quote "
+            f"to the user. You are now running in {new_process}. Continue "
+            "the interrupted task with your tools until the original work is "
+            "verified, then reply to the user about that work."
         )
     return "\n".join(lines)
 
