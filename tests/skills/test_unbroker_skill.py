@@ -36,7 +36,6 @@ import time as _time      # noqa: E402
 
 import badbool          # noqa: E402
 import brokers          # noqa: E402
-import cdp              # noqa: E402
 import config           # noqa: E402
 import crypto           # noqa: E402
 import dossier          # noqa: E402
@@ -91,11 +90,6 @@ def _consenting(full_name="Jane Q. Public"):
 
 
 
-def test_browser_clears_captcha_logic():
-    assert config.browser_clears_captcha({"browser_backend": "browserbase"}) is True
-    assert config.browser_clears_captcha({"browser_backend": "agent-browser"}) is False
-    assert config.browser_clears_captcha({"browser_backend": "auto"}, env={}) is False
-    assert config.browser_clears_captcha({"browser_backend": "auto"}, env={"BROWSERBASE_API_KEY": "x"}) is True
 
 
 # --- storage ------------------------------------------------------------------
@@ -155,10 +149,9 @@ def test_every_broker_resolves_to_valid_tier():
 
 
 
-def test_captcha_tier_shifts_with_browser():
+def test_captcha_requires_the_human_verification_path():
     tps = brokers.get("truepeoplesearch")
-    assert tiers.select_tier(tps, "programmatic", browser_clears_captcha=False) == "T2"
-    assert tiers.select_tier(tps, "programmatic", browser_clears_captcha=True) == "T1"
+    assert tiers.select_tier(tps, "programmatic") == "T2"
 
 
 
@@ -293,7 +286,6 @@ def test_fanout_batches_large_runs():
 
 
 
-# --- cdp (operator browser over the DevTools protocol) --------------------------------------
 
 
 
@@ -385,17 +377,14 @@ def test_badbool_merge_keeps_curated_and_adds_new():
 
 def test_auto_configure_picks_most_autonomous():
     with temp_env():
-        # bare env -> draft_only floor, auto browser (still fully hands-off policy-wise)
+        # bare env -> draft_only floor
         cfg = config.auto_configure(env={})
         assert cfg["autonomy"] == "full"
         assert cfg["email_mode"] == "draft_only"
-        assert cfg["browser_backend"] == "auto"
-        # SMTP creds -> programmatic email; Browserbase key -> cloud browser
+        # SMTP creds -> programmatic email
         cfg = config.auto_configure(env={"EMAIL_ADDRESS": "agent@gmail.com",
-                                         "EMAIL_PASSWORD": "app-pass",
-                                         "BROWSERBASE_API_KEY": "bb"})
+                                         "EMAIL_PASSWORD": "app-pass"})
         assert cfg["email_mode"] == "programmatic"
-        assert cfg["browser_backend"] == "browserbase"
         # AgentMail only -> alias mode
         assert config.auto_configure(env={"AGENTMAIL_API_KEY": "am"})["email_mode"] == "alias"
         # encryption auto-on exactly when age is installed (free privacy, zero human cost)
@@ -522,13 +511,14 @@ def test_next_actions_scan_first_then_optouts_parents_first():
 
 
 
-def test_next_actions_blocked_stealth_or_operator_browser():
+def test_next_actions_blocked_camofox_or_operator_browser():
     with temp_env():
         d = _consenting()
         b = _mini_broker("gated")
         led = {"gated": {"state": "blocked"}}
-        q = autopilot.next_actions(d, [b], _auto_cfg(), led, env={"BROWSERBASE_API_KEY": "bb"})
-        assert any(a["type"] == "stealth_rescan" for a in q["actions"])
+        q = autopilot.next_actions(d, [b], _auto_cfg(), led, env={"CAMOFOX_URL": "http://localhost:9377"})
+        action = next(a for a in q["actions"] if a["type"] == "stealth_rescan")
+        assert "Camofox" in action["how"]
         q2 = autopilot.next_actions(d, [b], _auto_cfg(), led, env={})
         assert any("anti-bot" in t["reason"] for t in q2["human_digest"])
 

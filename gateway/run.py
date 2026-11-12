@@ -9202,7 +9202,7 @@ class GatewayRunner(
                 except Exception as _e:
                     logger.debug("cleanup_all_environments (%s) error: %s", phase, _e)
                 try:
-                    from tools.browser_tool import cleanup_all_browsers
+                    from tools.browser_tool_lifecycle import cleanup_all_browsers
                     cleanup_all_browsers()
                 except Exception as _e:
                     logger.debug("cleanup_all_browsers (%s) error: %s", phase, _e)

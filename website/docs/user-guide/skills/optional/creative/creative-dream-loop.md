@@ -52,9 +52,9 @@ non-visual quality — only the visual-fidelity loop.
 
 - **Concept art**: the `image_generate` tool. If unavailable, stop and ask the
   user for a concept image (or an image-generation API to connect to).
-- **Screenshots**: `browser_exec` — serve the build locally
-  (`python3 -m http.server` for static builds), then `new_tab(url)`,
-  `wait_for_load()`, `capture_screenshot()`.
+- **Screenshots**: Camofox `browser_navigate` followed by `browser_vision` —
+  serve the build locally (`python3 -m http.server` for static builds), then
+  save the returned `screenshot_path`. Use Playwright via `terminal` when exact viewport dimensions are required.
 - **Judging**: `vision_analyze` (see Judge section for the one-image-per-call
   workaround).
 - **Optional**: Blender for asset modeling — see the `blender-3d-automation`
@@ -151,11 +151,11 @@ style calls for it. Write intermediate files/plans to `.dream-loop/`.
 
 ### 5. Screenshot
 
-Serve the build (e.g. `python3 -m http.server` in the build dir), then via
-`browser_exec`: `new_tab('http://localhost:8000')`, `wait_for_load()`, allow
-the scene to settle, `capture_screenshot()`. Target the same resolution and
-aspect ratio as the concept art so the comparison is fair. Save as
-`.dream-loop/round-N.png`.
+Serve the build (e.g. `python3 -m http.server` in the build dir), then call
+`browser_navigate('http://localhost:8000')`, allow the scene to settle, and call
+`browser_vision`. Copy its returned `screenshot_path` to `.dream-loop/round-N.png`.
+Target the same resolution and aspect ratio as the concept art; use a Playwright
+script via `terminal` when exact dimensions are required.
 
 ### 6. Self-check before judging
 

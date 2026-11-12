@@ -430,15 +430,6 @@ def _update_node_dependencies() -> list[str]:
     # node_modules is shared by every profile on this checkout: one per-checkout cache.
     shared_hermes_root = get_default_hermes_root()
 
-    # Best-effort npx cache warm before the lockfile-unchanged early return. Can block
-    # ~11s on a cold cache — print first so it doesn't look like a hang.
-    # Runs before the lockfile-unchanged early return below since that's the common `hermes update` case.
-    # See #43564.
-    print("→ Warming npx cache for agent-browser...")
-    with suppress(Exception):
-        from tools.browser_tool_install import warm_agent_browser_npx_cache
-        warm_agent_browser_npx_cache()
-
     if not _m()._npm_lockfile_changed(shared_hermes_root):
         logger.info("npm lockfile unchanged, skipping npm install")
         return []

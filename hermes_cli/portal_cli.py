@@ -15,7 +15,6 @@ _CATALOG = [
     ("web", "Web search & extract", "Firecrawl"),
     ("image_gen", "Image generation", "FAL"),
     ("tts", "Text-to-speech", "OpenAI TTS"),
-    ("browser", "Browser automation", "Browser Use"),
     ("modal", "Cloud terminal", "Modal"),
 ]
 

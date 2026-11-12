@@ -31,7 +31,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import autopilot                   # noqa: E402
 import badbool                      # noqa: E402
-import cdp                          # noqa: E402
 import brokers as brokers_mod      # noqa: E402
 import config as config_mod        # noqa: E402
 import crypto                       # noqa: E402
@@ -65,7 +64,7 @@ def cmd_setup(args) -> None:
         cfg = config_mod.auto_configure(env=config_mod.dotenv_env())
     else:
         cfg = config_mod.load_config()
-    for key in ("autonomy", "email_mode", "browser_backend", "tracker_backend", "encryption"):
+    for key in ("autonomy", "email_mode", "tracker_backend", "encryption"):
         val = getattr(args, key)
         if val:
             cfg[key] = val
@@ -136,14 +135,14 @@ def cmd_doctor(args) -> None:
          f"Python      : {platform.python_version()}",
          f"Data dir    : {data} ({'writable' if writable else 'NOT writable'})",
          f"Config      : autonomy={cfg.get('autonomy', 'full')} email={cfg['email_mode']} "
-         f"browser={cfg['browser_backend']} "
+         f"browser=camofox "
          f"tracker={cfg['tracker_backend']} encryption={cfg['encryption']}",
          f"Brokers     : {total} available ({curated} curated + {live} live"
          + ("" if live else ", run `refresh-brokers` to expand to ~50") + ")",
          "", "Opt-in upgrades:"]
     rows = [
-        ("Cloud browser (Browserbase) *RECOMMENDED*", caps["browserbase"],
-         "default backend: clears soft CAPTCHAs (Turnstile/hCaptcha) -> more T1", "set BROWSERBASE_API_KEY"),
+        ("Camofox browser", caps["camofox"],
+         "anti-detect browser for site workflows; CAPTCHAs still require the human path", "set CAMOFOX_URL"),
         ("Email auto (AgentMail)", caps["agentmail"],
          "send + auto-verify, per-broker aliases (Mode B/C)", "install agentmail skill / set AGENTMAIL_API_KEY"),
         ("Email send (CLI SMTP)", caps["smtp_send"],
@@ -175,30 +174,19 @@ def cmd_doctor(args) -> None:
 
     L += ["", "Verdict:", "  Ready now in DRAFT mode (no setup needed): scan brokers, draft opt-out",
           "  emails for you to send, and track everything in the ledger."]
-    if caps["browserbase"]:
-        L.append("  Cloud browser ON (recommended default): soft/managed CAPTCHAs "
-                 "(Turnstile/hCaptcha) clear automatically -> those brokers stay T1.")
+    if caps["camofox"]:
+        L.append("  Camofox configured: browser workflows use the server at CAMOFOX_URL.")
     else:
-        L.append("  No cloud browser: set BROWSERBASE_API_KEY (the recommended default) so soft "
-                 "CAPTCHAs clear automatically; without it those brokers drop to T2 (human tasks).")
+        L.append("  Camofox is not configured: set CAMOFOX_URL for browser workflows; use the human path for CAPTCHAs.")
     if cfg["email_mode"] == "draft_only":
         L.append("  Email is draft-only: you send drafts + click verify links. For hands-off email "
                  "WITHOUT storing a password, run `setup --email-mode browser` (agent sends + opens "
                  "verify links via your logged-in webmail); or set EMAIL_* for SMTP/IMAP.")
     elif cfg["email_mode"] == "browser":
         L.append("  Email mode: browser (no password) - the agent sends opt-outs and opens verify "
-                 "links via the operator's logged-in webmail. This needs Hermes pointed at the "
-                 "operator's OWN Chrome over CDP (launch with --remote-debugging-port=9222 "
-                 "--user-data-dir=~/.hermes/chrome-debug, signed into the webmail once); else it falls "
-                 "back to drafts. Run `pdd.py cdp` to launch it (or `pdd.py cdp --print` for the command). "
-                 "See methods.md 'Browser backends'.")
-        cloud_scan = cfg.get("browser_backend") == "browserbase" or (
-            cfg.get("browser_backend") == "auto" and caps.get("browserbase"))
-        if cloud_scan:
-            L.append("  NOTE: your scan backend is a cloud browser (Browserbase). It is great for "
-                     "Phase-1 scanning but CANNOT be the browser that sends webmail (no inbox session) "
-                     "and is itself Cloudflare/DataDome-gated on session-bound gates (e.g. PeopleConnect). "
-                     "For Phase-2 email/verify, launch the operator's Chrome over CDP: `pdd.py cdp`.")
+                 "links via the operator's signed-in Camofox profile. Configure CAMOFOX_USER_ID and "
+                 "CAMOFOX_SESSION_KEY for that externally managed profile; otherwise it falls back to drafts. "
+                 "See methods.md 'Browser workflow'.")
     if not crypto.is_engaged():
         L.append("  Storage: dossiers are PLAINTEXT JSON (0600 under HERMES_HOME). "
                  "Run `setup --encryption age` for at-rest encryption.")
@@ -243,61 +231,6 @@ def cmd_doctor(args) -> None:
     print("\n".join(L))
 
 
-def cmd_cdp(args) -> None:
-    """Launch (or detect) the operator's Chrome over CDP for Phase-2 browser + webmail work.
-
-    A cloud browser cannot send the operator's webmail or clear session-bound gates; this points
-    Hermes at the operator's real Chrome on a dedicated debug profile (see methods.md).
-    """
-    import shlex
-    import time
-
-    port = args.port
-    profile = Path(args.profile).expanduser() if args.profile else cdp.default_profile()
-
-    live = cdp.endpoint_status(port)
-    if live:
-        _out({"running": True, "endpoint": f"127.0.0.1:{port}",
-              "browser": live.get("Browser"),
-              "webSocketDebuggerUrl": live.get("webSocketDebuggerUrl"),
-              "note": "a debuggable browser is already listening; point Hermes's browser tools at "
-                      f"127.0.0.1:{port} and make sure the operator's webmail is signed in in THAT browser."})
-        return
-
-    if getattr(args, "check", False):
-        _out({"running": False, "endpoint": f"127.0.0.1:{port}",
-              "note": f"no debuggable browser here yet; run `pdd.py cdp --port {port}` (no --check) to launch one."})
-        return
-
-    browser = cdp.find_browser(args.browser)
-    if not browser:
-        _out({"running": False, "error": "no Chrome/Chromium-family browser found",
-              "fix": "install Google Chrome, or pass --browser /path/to/chrome (or a command on PATH)"})
-        return
-
-    cmd = cdp.launch_command(browser, port, profile)
-    if getattr(args, "print_only", False):
-        _out({"running": False, "browser": browser, "profile": str(profile), "command": cmd,
-              "shell": " ".join(shlex.quote(c) for c in cmd),
-              "note": "run this yourself to launch the debug browser, then sign into your webmail once."})
-        return
-
-    pid = cdp.launch(browser, port, profile)
-    live = None
-    for _ in range(20):  # give Chrome a few seconds to open the debug port
-        live = cdp.endpoint_status(port)
-        if live:
-            break
-        time.sleep(0.5)
-    _out({"running": bool(live), "launched_pid": pid, "browser": browser,
-          "profile": str(profile), "endpoint": f"127.0.0.1:{port}",
-          "webSocketDebuggerUrl": (live or {}).get("webSocketDebuggerUrl"),
-          "next": ([f"point Hermes's browser tools at 127.0.0.1:{port} (CDP)",
-                    "in the launched browser, sign into the operator's webmail ONCE (dedicated debug profile)",
-                    "then run email/verify flows in browser mode -- they use this logged-in session"]
-                   if live else
-                   ["browser launched but the debug port has not answered yet; give it a few seconds, then "
-                    f"re-run `pdd.py cdp --check --port {port}`"])})
 
 
 def cmd_intake(args) -> None:
@@ -442,11 +375,10 @@ def cmd_plan(args) -> None:
     dossier_mod.require_authorized(d)
     cfg = config_mod.load_config()
     bl = brokers_mod.by_priority(*(args.priority or [])) if args.priority else brokers_mod.load_all()
-    bcc = config_mod.browser_clears_captcha(cfg)
     if getattr(args, "batch", False):
-        _out(tiers.batch_plan(d, bl, cfg, ledger_mod.load(args.subject), bcc))
+        _out(tiers.batch_plan(d, bl, cfg, ledger_mod.load(args.subject)))
     else:
-        _out(tiers.plan(d, bl, cfg, bcc))
+        _out(tiers.plan(d, bl, cfg))
 
 
 def cmd_fanout(args) -> None:
@@ -740,7 +672,6 @@ def build_parser() -> argparse.ArgumentParser:
                    help="detect capabilities and pick the most autonomous valid config (no questions)")
     s.add_argument("--autonomy", dest="autonomy", choices=sorted(config_mod.VALID["autonomy"]))
     s.add_argument("--email-mode", dest="email_mode", choices=sorted(config_mod.VALID["email_mode"]))
-    s.add_argument("--browser-backend", dest="browser_backend", choices=sorted(config_mod.VALID["browser_backend"]))
     s.add_argument("--tracker-backend", dest="tracker_backend", choices=sorted(config_mod.VALID["tracker_backend"]))
     s.add_argument("--encryption", dest="encryption", choices=sorted(config_mod.VALID["encryption"]))
     s.set_defaults(func=cmd_setup)
@@ -748,17 +679,6 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("doctor", help="readiness check: config, brokers, available upgrades")
     s.set_defaults(func=cmd_doctor)
 
-    s = sub.add_parser("cdp",
-                       help="launch/detect the operator's Chrome over CDP (Phase-2 browser + webmail)")
-    s.add_argument("--port", type=int, default=cdp.DEFAULT_PORT, help="remote debugging port (default 9222)")
-    s.add_argument("--profile",
-                   help="user-data-dir (default: $HERMES_HOME/chrome-debug, a dedicated debug profile)")
-    s.add_argument("--browser", help="path to (or PATH name of) a Chrome/Chromium/Brave/Edge binary")
-    s.add_argument("--check", action="store_true",
-                   help="only report whether a debug browser is live; do not launch")
-    s.add_argument("--print", dest="print_only", action="store_true",
-                   help="print the launch command instead of launching it (run it yourself)")
-    s.set_defaults(func=cmd_cdp)
 
     s = sub.add_parser("intake", help="create a subject dossier (records consent)")
     s.add_argument("--json", help="path to a dossier JSON file (overrides flags)")

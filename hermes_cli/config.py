@@ -711,7 +711,7 @@ from hermes_cli.personality import (  # noqa: E402,F401
 
 from hermes_cli.config_defaults import DEFAULT_MAX_TURNS  # noqa: F401
 ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
-    3: ["FIRECRAWL_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAL_KEY"],
+    3: ["FIRECRAWL_API_KEY", "FAL_KEY"],
     4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
     5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
@@ -956,7 +956,6 @@ _ENV_CONFIG_KEYS = frozenset({
     'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_URL', 'CONNECTOR_GATEWAY_URL',
     'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
     'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY', 'PERPLEXITY_API_KEY', 'API_SERVER_KEY',
-    'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
     'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
     'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
     'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
@@ -2851,7 +2850,7 @@ _SECRET_CONFIG_KEYS = frozenset({
 # the suffixes ``_is_env_config_key`` routes to .env. Suffix-only so ``token_count`` stays visible.
 _SECRET_CONFIG_KEY_SUFFIXES = ("_api_key", "_token", "_secret", "_password", "_key", "_access_key")
 # .env-routed keys are credentials by default; these suffixes name the non-secret exceptions
-# (``TERMINAL_SSH_HOST``, ``TOOL_GATEWAY_URL``, ``BROWSERBASE_PROJECT_ID``).
+# (``TERMINAL_SSH_HOST``, ``TOOL_GATEWAY_URL``).
 _NON_SECRET_KEY_SUFFIXES = ("_url", "_host", "_user", "_id", "_domain", "_scheme")
 _ENV_PLACEHOLDER_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
 
@@ -2913,8 +2912,6 @@ _SHOW_CONFIG_API_KEYS = (
     ("FIRECRAWL_API_KEY", "Firecrawl"),
     ("TAVILY_API_KEY", "Tavily"),
     ("PERPLEXITY_API_KEY", "Perplexity"),
-    ("BROWSERBASE_API_KEY", "Browserbase"),
-    ("BROWSER_USE_API_KEY", "Browser Use"),
     ("FAL_KEY", "FAL"))
 
 
@@ -3857,8 +3854,8 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
     # Phantom-key notice (#112348): a nested path under a KNOWN section that the schema does not
     # define (``compression.compressor.enabled``) is echoed straight from the user's file and is
     # usually read by nothing, so it must not look like a live setting. The check is a
-    # DEFAULT_CONFIG walk and some live keys are deliberately unseeded (``browser.cloud_provider``,
-    # ``stt.provider``, ``gateway.proxy_url``: a stored value counts as an explicit user pick), so
+    # DEFAULT_CONFIG walk and some live keys are deliberately unseeded (``stt.provider``,
+    # ``gateway.proxy_url``: a stored value counts as an explicit user pick), so
     # the wording hedges exactly like the set-path notice. Custom top-level keys stay exempt (they
     # are bridged into os.environ for skills) and ``_validate_config_key`` already accepts
     # open-subkey sections. stderr keeps stdout/--json parseable; the exit code stays 0.

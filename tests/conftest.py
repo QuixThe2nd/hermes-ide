@@ -194,7 +194,6 @@ _CREDENTIAL_NAMES = frozenset({
     "OPENVIKING_API_KEY",
     "COPILOT_API_KEY",
     "CLAUDE_CODE_OAUTH_TOKEN",
-    "BROWSERBASE_API_KEY",
     "FIRECRAWL_API_KEY",
     "PARALLEL_API_KEY",
     "EXA_API_KEY",
@@ -243,7 +242,6 @@ _CREDENTIAL_NAMES = frozenset({
     "WEBHOOK_SECRET",
     "AI_GATEWAY_API_KEY",
     "VOICE_TOOLS_OPENAI_KEY",
-    "BROWSER_USE_API_KEY",
     "CUSTOM_API_KEY",
     "GATEWAY_PROXY_URL",
     "GEMINI_BASE_URL",
@@ -332,7 +330,6 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
     "TERMINAL_DOCKER_ORPHAN_REAPER",
     "TERMINAL_DOCKER_RUN_AS_HOST_USER",
-    "BROWSER_CDP_URL",
     "CAMOFOX_URL",
     # Platform allowlists — not credentials, but if set from any source
     # (user shell, earlier leaky test, CI env), they change gateway auth

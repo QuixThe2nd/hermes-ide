@@ -42,12 +42,7 @@ web:
 
 ## 浏览器自动化
 
-Hermes 内置完整的浏览器自动化功能，提供多种后端选项，用于网站导航、表单填写和信息提取：
-
-- **Browserbase** — 托管云端浏览器，具备反机器人工具、CAPTCHA 解决和住宅代理
-- **Browser Use** — 备选云端浏览器提供商
-- **本地 Chromium 系 CDP** — 使用 `/browser connect` 连接正在运行的 Chrome、Brave、Chromium 或 Edge 浏览器
-- **本地 Chromium** — 通过 `agent-browser` CLI 使用无头本地浏览器
+Hermes 内置 Camofox 浏览器自动化，可导航网站、填写表单、提取信息、截图并执行 JavaScript。通过 npm 包或 Docker 镜像运行 Camofox，然后配置 `CAMOFOX_URL` 和可选的 `CAMOFOX_API_KEY`。
 
 详见[浏览器自动化](../user-guide/features/browser.md)的配置与使用说明。
 

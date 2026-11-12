@@ -242,9 +242,9 @@ build's row to `<workspace>/FINGERPRINTS.md`.
 ## Pitfalls
 
 - `scripts/shoot.mjs` needs Playwright (`npm install playwright` or
-  `playwright-core` plus a Chrome install). Hermes' `browser_exec` tool is the
-  lighter alternative for scroll-screenshot verification: serve the build,
-  scroll in steps, capture screenshots, and inspect them yourself.
+  `playwright-core` plus a Chrome install). Camofox `browser_navigate`,
+  `browser_scroll`, and `browser_vision` are the lighter alternative for
+  scroll-screenshot verification: serve the build, scroll in steps, and inspect the screenshots.
 - `scripts/kie.mjs` needs `KIE_AI_API_KEY` and paid credit; prefer
   `image_generate` or user assets when the budget is unclear.
 - `encode.sh` and `doctor.mjs` expect a full ffmpeg build; distro-stripped

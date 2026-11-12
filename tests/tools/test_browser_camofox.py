@@ -3,6 +3,8 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import requests
+
 
 from tools.browser_camofox import (
     camofox_back,
@@ -28,14 +30,19 @@ from tools.browser_camofox import (
 
 
 class TestCamofoxMode:
-    def test_disabled_by_default(self, monkeypatch):
+    def test_enabled_without_server_url(self, monkeypatch):
         monkeypatch.delenv("CAMOFOX_URL", raising=False)
-        assert is_camofox_mode() is False
+        assert is_camofox_mode() is True
 
+    def test_legacy_selectors_do_not_disable_camofox(self, monkeypatch):
+        monkeypatch.setenv("BROWSER_CDP_URL", "http://legacy-cdp:9222")
+        with patch("tools.tool_backend_helpers.read_selection", return_value="local"):
+            assert is_camofox_mode() is True
 
     def test_health_check_unreachable(self, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:19999")
-        assert check_camofox_available() is False
+        with patch("tools.browser_camofox.requests.get", side_effect=requests.ConnectionError("refused")):
+            assert check_camofox_available() is False
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +116,8 @@ class TestCamofoxNavigate:
 
     def test_connection_error_returns_helpful_message(self, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:19999")
-        result = json.loads(camofox_navigate("https://example.com", task_id="t_err"))
+        with patch("tools.browser_camofox.requests.post", side_effect=requests.ConnectionError("refused")):
+            result = json.loads(camofox_navigate("https://example.com", task_id="t_err"))
         assert result["success"] is False
         assert "Cannot connect" in result["error"]
 
@@ -358,7 +366,7 @@ class TestBrowserToolRouting:
 
     def test_check_requirements_passes_with_camofox(self, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        from tools.browser_tool_install import check_browser_requirements
+        from tools.browser_tool import check_browser_requirements
         assert check_browser_requirements() is True
 
 

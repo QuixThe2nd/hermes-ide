@@ -22,11 +22,11 @@ from hermes_cli.tools_config_cua import (  # noqa: F401
     _clear_stale_windows_cua_install_lock, _clear_stale_cua_install_lock, _cua_install_lock_held,
     _cua_release_endpoint_reachable, _repair_cua_driver_autostart_windows, _run_cua_driver_installer)
 from hermes_cli.tools_config_post_setup import (  # noqa: F401
-    _ensure_browser_use_cli, _run_post_setup, valid_post_setup_keys, run_post_setup_command, _POST_SETUP_INSTALLED,
+    _run_post_setup, valid_post_setup_keys, run_post_setup_command, _POST_SETUP_INSTALLED,
     _post_setup_already_installed, _module_installed, active_restorable_python_tool_dependencies,
     restorable_python_tool_dependency, _POST_SETUP_READY)
 from hermes_cli.tools_config_providers import (  # noqa: F401
-    _plugin_image_gen_providers, _plugin_video_gen_providers, _plugin_web_search_providers, _plugin_browser_providers,
+    _plugin_image_gen_providers, _plugin_video_gen_providers, _plugin_web_search_providers,
     _plugin_tts_providers, web_provider_capabilities, _visible_providers, provider_readiness_status,
     _toolset_needs_configuration_prompt, _configure_tool_category, _web_tier_matches, _is_provider_active,
     _detect_active_provider_index, IMAGEGEN_BACKENDS, _plugin_image_gen_catalog, _plugin_video_gen_catalog,
@@ -351,28 +351,10 @@ TOOL_CATEGORIES = {
     },
     "browser": {
         "name": "Browser Automation", "icon": "🌐",
-        # Cloud provider rows (Browserbase, Browser Use, Firecrawl) come from plugins.browser.<vendor> via
-        # _plugin_browser_providers(); only non-provider setup-flow rows live here. "Local Browser" MUST stay
-        # first so a fresh install's Enter lands on the free local backend (index 0), never on the paid Nous row.
-        # Lightpanda is local too (cloud_provider: local, browser.engine: lightpanda — Browser Use mode spawns
-        # ``lightpanda serve``, built-in tools use ``agent-browser --engine lightpanda``; no Chromium).
-        # Camofox short-circuits the cloud dispatch via _is_camofox_mode().
         "providers": [
-            _row("Local Browser", "★ recommended · free", "Headless Chromium, no API key needed", browser_provider="local",
-                 browser_engine="auto", post_setup="agent_browser"),
-            _row("Lightpanda", "free · local · no Chromium", "Zig headless browser spawned by Hermes, text-only (no screenshots)",
-                 browser_provider="local", browser_engine="lightpanda", post_setup="lightpanda"),
-            # Cloud hook installs only the agent-browser CLI: Browser Use hosts its own Chromium, so the
-            # local-Chromium install and readiness gate must not apply (with "agent_browser" this row read
-            # "needs setup" forever on machines without a local Chromium build).
-            _row("Nous Subscription (Browser Use cloud)", "subscription", "Managed Browser Use billed to your subscription",
-                 browser_provider="browser-use", **_NOUS, managed_nous_feature="browser",
-                 override_env_vars=["BROWSER_USE_API_KEY"], post_setup="browserbase"),
             _row("Camofox", "free · local", "Anti-detection browser (Firefox/Camoufox)",
                  [_key("CAMOFOX_URL", "Camofox server URL", "https://github.com/jo-inc/camofox-browser", default="http://localhost:9377")],
-                 browser_provider="camofox", post_setup="camofox"),
-            _row("Browser Use", "free · local · cloud", "New SOTA web harness (CLI 3.0)", browser_backend="browser-use",
-                 post_setup="browser_use_cli"),
+                 post_setup="camofox"),
         ],
     },
     "homeassistant": {
@@ -857,13 +839,13 @@ def _toolset_has_keys(
             return resolve_vision_provider_client()[1] is not None
         except Exception:
             return False
-    if ts_key in {"web", "image_gen", "video_gen", "tts", "stt", "browser"}:
+    if ts_key in {"web", "image_gen", "video_gen", "tts", "stt"}:
         if features is None:
             features = get_nous_subscription_features(config, force_fresh=force_fresh)
         feature = features.features.get(ts_key)
         if feature and (feature.available or feature.managed_by_nous):
             return True
-    # Provider-aware categories first: a no-key provider (Local Browser, Edge TTS) counts as configured.
+    # Provider-aware categories first: a no-key provider (Camofox, Edge TTS) counts as configured.
     cat = TOOL_CATEGORIES.get(ts_key)
     if cat:
         return any(_provider_env_ready(p) for p in _visible_providers(cat, config, force_fresh=force_fresh, features=features))
@@ -1087,8 +1069,8 @@ def _first_install_flow(config: dict, enabled_platforms: List[str]) -> None:
         for ts_key in sorted(auto_configured):
             label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts_key), ts_key)
             print(color(f"  ✓ {label}: using your Nous subscription defaults", Colors.GREEN))
-        # Walk through ALL selected tools with provider options or key requirements, so browser (Local vs
-        # Browserbase), TTS (Edge vs OpenAI vs ElevenLabs), etc. are shown even when a free provider exists.
+        # Walk through ALL selected tools with provider options or key requirements, so TTS
+        # (Edge vs OpenAI vs ElevenLabs), etc. are shown even when a free provider exists.
         _configure_list(
             [ts for ts in sorted(new_enabled) if _is_configurable(ts) and ts not in auto_configured],
             config, selected=False)

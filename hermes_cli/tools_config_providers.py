@@ -84,14 +84,12 @@ def _plugin_provider_rows(
     return rows
 
 
-# Category -> (registry module, marker keys, _plugin_provider_rows kwargs). ``*_plugin_name`` markers route
-# config writes + model pickers through the registry; ``browser_provider`` is the legacy ``browser.cloud_provider``
-# key; TTS rows write ``tts.provider: <name>``.
+# Category -> (registry module, marker keys, _plugin_provider_rows kwargs).
+# ``*_plugin_name`` markers route config writes + model pickers through the registry.
 _PLUGIN_PROVIDER_ROW_SPECS = {
     "image_gen": ("agent.image_gen_registry", ("image_gen_plugin_name",), {"require_name": False}),
     "video_gen": ("agent.video_gen_registry", ("video_gen_plugin_name",), {"require_name": False}),
     "web": ("agent.web_search_registry", ("web_backend", "web_search_plugin_name"), {"flatten_variants": True}),
-    "browser": ("agent.browser_registry", ("browser_provider", "browser_plugin_name"), {}),
     "tts": ("agent.tts_registry", ("tts_provider", "tts_plugin_name"), {"skip_builtin": True})}
 
 
@@ -101,9 +99,8 @@ def _plugin_rows_for(category: str) -> list[dict]:
     return _plugin_provider_rows(module, markers, **kwargs)
 
 
-_plugin_image_gen_providers, _plugin_video_gen_providers, _plugin_web_search_providers, \
-    _plugin_browser_providers, _plugin_tts_providers = (
-        partial(_plugin_rows_for, cat) for cat in ("image_gen", "video_gen", "web", "browser", "tts"))
+_plugin_image_gen_providers, _plugin_video_gen_providers, _plugin_web_search_providers, _plugin_tts_providers = (
+    partial(_plugin_rows_for, cat) for cat in ("image_gen", "video_gen", "web", "tts"))
 
 
 def web_provider_capabilities(backend: str) -> list:
@@ -127,7 +124,6 @@ _PLUGIN_ROW_BUILDERS = {
     "Image Generation": _plugin_image_gen_providers,
     "Video Generation": _plugin_video_gen_providers,
     "Web Search & Extract": _plugin_web_search_providers,
-    "Browser Automation": _plugin_browser_providers,
     "Text-to-Speech": _plugin_tts_providers}
 
 
@@ -277,7 +273,7 @@ def _toolset_needs_configuration_prompt(ts_key: str, config: dict, *, force_fres
             return True
 
     # Categories whose "configured" signal is a selected provider key.
-    selection_key = {"tts": "provider", "web": "backend", "browser": "cloud_provider"}.get(ts_key)
+    selection_key = {"tts": "provider", "web": "backend"}.get(ts_key)
     if selection_key:
         section = config.get(ts_key, {})
         return not isinstance(section, dict) or selection_key not in section
@@ -391,13 +387,10 @@ def _web_tier_matches(provider: dict, config: dict) -> bool:
 # Managed-row marker -> (config section, key) the pick writes, in check order.
 _MANAGED_SELECTION_KEYS: tuple[tuple[str, str, str], ...] = (
     ("tts_provider", "tts", "provider"), ("stt_provider", "stt", "provider"),
-    ("browser_provider", "browser", "cloud_provider"), ("web_backend", "web", "backend"))
-
+    ("web_backend", "web", "backend"))
 
 def _has_marker(provider: dict, marker: str) -> bool:
-    """``browser_provider`` is a membership test (a local row carries ``browser_provider: ""``); every other
-    marker is a truthiness test."""
-    return marker in provider if marker == "browser_provider" else bool(provider.get(marker))
+    return bool(provider.get(marker))
 
 
 def _managed_provider_active(provider: dict, config: dict, managed_feature: str, force_fresh: bool) -> bool:
@@ -420,8 +413,6 @@ def _managed_provider_active(provider: dict, config: dict, managed_feature: str,
                 and not is_truthy_value(gen_cfg.get("use_gateway"), default=False)):
                 return False
         return feature.managed_by_nous
-    # Browser Use mode is a driver on top of the provider (attaches to its CDP endpoint), so the browser
-    # provider row stays active alongside the Browser Use row.
     for marker, section, key in _MANAGED_SELECTION_KEYS:
         if _has_marker(provider, marker):
             current = cfg_get(config, section, key)
@@ -431,51 +422,6 @@ def _managed_provider_active(provider: dict, config: dict, managed_feature: str,
             return feature.managed_by_nous and selected
     return feature.managed_by_nous
 
-
-def _browser_use_default_active(config: dict) -> bool:
-    """``browser.backend`` unset: Browser Use mode is the default, so the row is active whenever the
-    effective mode resolves on (legacy direct-API cloud config, or CLI runnable and no Camofox)."""
-    browser_cfg = config.get("browser") if isinstance(config, dict) else None
-    try:
-        from tools.browser_use_cli import _find_cli, is_legacy_browser_use_cloud_config
-
-        if is_legacy_browser_use_cloud_config(browser_cfg or {}):
-            return True
-        try:
-            from tools.browser_camofox import is_camofox_mode
-
-            if is_camofox_mode():
-                return False
-        except Exception:
-            pass
-        return _find_cli() is not None
-    except Exception:
-        return False
-
-
-def _browser_provider_active(provider: dict, config: dict) -> bool:
-    # Browser Use mode composes with the provider (driver over its CDP endpoint) — don't deactivate the row.
-    if provider["browser_provider"] != cfg_get(config, "browser", "cloud_provider"):
-        return False
-    # Two local rows differ only by engine ("Local Browser" vs "Lightpanda"): config.yaml is the picker's
-    # source of truth here, the AGENT_BROWSER_ENGINE env var is not consulted.
-    if provider.get("browser_engine"):
-        engine = str(cfg_get(config, "browser", "engine") or "auto").strip().lower()
-        return engine == provider["browser_engine"]
-    return True
-
-
-def _browser_backend_active(provider: dict, config: dict) -> bool:
-    backend = cfg_get(config, "browser", "backend")
-    if backend is False:
-        backend = "off"  # YAML 1.1: unquoted `off` parses as boolean False
-    if backend == provider["browser_backend"]:
-        return True
-    if backend:
-        return False  # explicit other choice ("off", …) wins
-    if provider["browser_backend"] != "browser-use":
-        return False
-    return _browser_use_default_active(config)
 
 
 def _imagegen_backend_active(provider: dict, config: dict) -> bool:
@@ -492,8 +438,6 @@ def _imagegen_backend_active(provider: dict, config: dict) -> bool:
 _ACTIVE_CHECKS: tuple[tuple[str, Callable[[dict, dict], bool]], ...] = (
     ("tts_provider", lambda p, c: cfg_get(c, "tts", "provider") == p["tts_provider"]),
     ("stt_provider", lambda p, c: (cfg_get(c, "stt", "provider") or "local") == p["stt_provider"]),
-    ("browser_provider", _browser_provider_active),
-    ("browser_backend", _browser_backend_active),
     ("web_backend", lambda p, c: cfg_get(c, "web", "backend") == p["web_backend"] and _web_tier_matches(p, c)),
     ("computer_use_backend", lambda p, c: cfg_get(c, "computer_use", "backend") == p["computer_use_backend"]),
     ("imagegen_backend", _imagegen_backend_active))
@@ -722,7 +666,7 @@ def _configure_stt_model(stt_provider: str, config: dict) -> None:
 
 # Provider-row marker key -> config section it selects into.
 _PROVIDER_MARKER_SECTIONS = {
-    "tts_provider": "tts", "stt_provider": "stt", "browser_provider": "browser", "web_backend": "web",
+    "tts_provider": "tts", "stt_provider": "stt", "web_backend": "web",
     "image_gen_plugin_name": "image_gen", "imagegen_backend": "image_gen", "video_gen_plugin_name": "video_gen",
 }
 
@@ -739,18 +683,6 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
         if provider.get(marker):
             _select_into(config, section_key, "provider", provider[marker], managed_feature)
 
-    if "browser_provider" in provider:
-        bp = provider["browser_provider"]
-        if bp or managed_feature:
-            # Browser Use mode (browser.backend) composes with the provider — keep the driver choice intact.
-            _select_into(config, "browser", "cloud_provider", bp, managed_feature)
-        else:
-            config.setdefault("browser", {}).pop("use_gateway", None)
-    if provider.get("browser_backend"):
-        config.setdefault("browser", {})["backend"] = provider["browser_backend"]
-    # Local engine rows ("Local Browser" resets to auto, "Lightpanda" sets lightpanda); composes with browser.backend.
-    if provider.get("browser_engine"):
-        config.setdefault("browser", {})["engine"] = provider["browser_engine"]
 
     if provider.get("web_backend"):
         web_cfg = _select_into(config, "web", "backend", provider["web_backend"], managed_feature)
@@ -867,18 +799,6 @@ def _print_provider_selection(provider: dict, managed_feature, *, reconfigure: b
         _print_success(f"  TTS provider set to: {provider['tts_provider']}")
     if provider.get("stt_provider"):
         _print_success(f"  STT provider set to: {provider['stt_provider']}")
-    if "browser_provider" in provider:
-        bp = provider["browser_provider"]
-        if reconfigure and managed_feature:
-            _print_success(f"  Browser cloud provider set to: {bp or 'nous'}")
-        elif bp == "local":
-            _print_success("  Browser set to local mode")
-        elif bp:
-            _print_success(f"  Browser cloud provider set to: {bp}")
-    if provider.get("browser_backend"):
-        _print_success("  Browser set to Browser Use (browser_exec via CLI 3.0)")
-    if provider.get("browser_engine") and provider["browser_engine"] != "auto":
-        _print_success(f"  Browser engine set to: {provider['browser_engine']}")
     if provider.get("web_backend"):
         tier = f" ({provider['web_tier']} tier)" if reconfigure and provider.get("web_tier") else ""
         _print_success(f"  Web backend set to: {provider['web_backend']}{tier}")

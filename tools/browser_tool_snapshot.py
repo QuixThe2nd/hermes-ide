@@ -4,30 +4,10 @@ accessibility trees, model-boundary secret redaction, screenshot-path recovery.
 Facade-owned state is read through ``_bt`` (``tools.browser_tool``, resolved per call) — no import cycle.
 """
 
-import re
 from typing import Any, Optional
 from tools.browser_tool_origin import origin as _bt
 
 
-_SCREENSHOT_PATH_PATTERNS = (
-    r"Screenshot saved to ['\"](?P<path>/[^'\"]+?\.png)['\"]",
-    r"Screenshot saved to (?P<path>/\S+?\.png)(?:\s|$)",
-    r"(?P<path>/\S+?\.png)(?:\s|$)",
-)
-
-
-def _extract_screenshot_path_from_text(text: str) -> Optional[str]:
-    """Extract a screenshot file path from agent-browser human-readable output."""
-    if not text:
-        return None
-
-    for pattern in _SCREENSHOT_PATH_PATTERNS:
-        match = re.search(pattern, text)
-        if match:
-            path = match.group("path").strip().strip("'\"")
-            if path:
-                return path
-    return None
 
 
 def _store_full_snapshot(snapshot_text: str) -> Optional[str]:

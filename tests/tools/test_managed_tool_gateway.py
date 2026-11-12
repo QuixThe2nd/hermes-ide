@@ -42,17 +42,17 @@ def test_resolve_managed_tool_gateway_uses_vendor_specific_override():
     with patch.dict(
         os.environ,
         {
-            "BROWSER_USE_GATEWAY_URL": "http://browser-use-gateway.localhost:3009/",
+            "FIRECRAWL_GATEWAY_URL": "http://firecrawl-gateway.localhost:3009/",
         },
         clear=False,
     ), patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
         result = resolve_managed_tool_gateway(
-            "browser-use",
+            "firecrawl",
             token_reader=lambda: "nous-token",
         )
 
     assert result is not None
-    assert result.gateway_origin == "http://browser-use-gateway.localhost:3009"
+    assert result.gateway_origin == "http://firecrawl-gateway.localhost:3009"
 
 
 def test_resolve_managed_tool_gateway_is_inactive_without_nous_token():

@@ -708,41 +708,5 @@ if [ -d "$INSTALL_DIR/skills" ]; then
         || echo "[stage2] Warning: skills_sync.py failed; continuing"
 fi
 
-# --- Point agent-browser at the pinned Chromium binary ---
-# The image's Dockerfile pm-provisions the pinned Chromium pair into
-# $HERMES_RUNTIME_DIR (/opt/hermes/tools) at BUILD time and bakes the
-# resolved browser binary path into /etc/hermes/agent-browser-executable-path
-# (the layout differs per arch — chrome-linux64/chrome on amd64,
-# chromium-linux-arm64/chromium on arm64 — so it is resolved at build time,
-# not hard-coded). agent-browser (the runtime CLI Hermes spawns for the
-# browser tool) doesn't recognise Playwright's directory layout in its own
-# cache scan and fails with "Auto-launch failed: Chrome not found" — even
-# though the binary is right there (#15697).
-#
-# Fix: read the baked path and export ``AGENT_BROWSER_EXECUTABLE_PATH``
-# via /run/s6/container_environment so the `with-contenv` shebang on
-# main-wrapper.sh propagates it into the supervised ``hermes`` process
-# and thence to agent-browser subprocesses.
-#
-# - Skipped when the user has already set ``AGENT_BROWSER_EXECUTABLE_PATH``
-#   (lets users override with a system Chrome install).
-# - Quietly skipped when the baked path file is absent (e.g. custom builds
-#   that strip the pm tool store).
-if [ -z "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ] && \
-        [ -f /etc/hermes/agent-browser-executable-path ]; then
-    browser_bin="$(cat /etc/hermes/agent-browser-executable-path)"
-    if [ -n "$browser_bin" ] && [ -x "$browser_bin" ]; then
-        echo "[stage2] Using pinned agent-browser Chromium binary: $browser_bin"
-        # Write to s6's container_environment so with-contenv picks it
-        # up for all supervised services (main-hermes, etc.).
-        # Idempotent: each boot overwrites with the current path.
-        # Some container runtimes / s6-overlay versions do not create the
-        # envdir before cont-init hooks run, so create it defensively.
-        mkdir -p /run/s6/container_environment
-        printf '%s' "$browser_bin" > /run/s6/container_environment/AGENT_BROWSER_EXECUTABLE_PATH
-    else
-        echo "[stage2] Warning: baked Chromium binary is missing (${browser_bin:-<empty>}); browser tool may fail"
-    fi
-fi
 
 echo "[stage2] Setup complete; starting user services"

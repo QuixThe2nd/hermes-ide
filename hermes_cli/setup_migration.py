@@ -92,7 +92,6 @@ def _gateway_summary(config: dict) -> Optional[str]:
 
 _TOOL_ENV_LABELS = (
     ("ELEVENLABS_API_KEY", "TTS/ElevenLabs"),
-    ("BROWSERBASE_API_KEY", "Browser"),
     ("FIRECRAWL_API_KEY", "Firecrawl"),
 )
 

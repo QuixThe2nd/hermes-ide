@@ -67,7 +67,7 @@
       "class": "C4",
       "pattern_regex": "^(_active_sessions|_DB_CACHE|_servers|_backends|_session_owner_homes|_trust[a-z_]*|_parallel[a-z_]*|_cooldown[a-z_]*)\\s*[:=]\\s*(\\{\\}|dict\\(|\\{\\s*$)|\\.setdefault\\((task_id|session_id|server_name|name)\\b",
       "scope_hint": "Module-level dicts keyed by session_id / task_id / server_name / display alone. Key must include hermes_home_key() or (scope, name) when a profile override is active; release must use the same key.",
-      "why": "Two profiles legitimately share session names, DISPLAY numbers and MCP server names; the first profile's entry wins and B's release stops A's driver. #108935 keyed 36 caches and still missed browser_exec/computer_use."
+      "why": "Two profiles legitimately share session names, DISPLAY numbers and MCP server names; the first profile's entry wins and B's release stops A's driver. #108935 keyed 36 caches and still missed browser/computer_use."
     },
     {
       "id": "P13",

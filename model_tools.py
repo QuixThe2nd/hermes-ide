@@ -371,12 +371,6 @@ def _rewrite_browser_navigate(td: Dict[str, Any], available: set) -> Optional[Di
     return _fn_def({**td["function"], "description": td["function"].get("description", "") + hint})
 
 
-def _rewrite_browser_cdp(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
-    """Same rule for the CDP docs pointer: mention web_extract only when the session has it."""
-    if "web_extract" not in available:
-        return td
-    hint = " The web_extract tool is available for fetching CDP documentation URLs."
-    return _fn_def({**td["function"], "description": td["function"].get("description", "") + hint})
 
 
 def _rewrite_computer_use(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
@@ -389,11 +383,6 @@ def _rewrite_computer_use(td: Dict[str, Any], available: set) -> Optional[Dict[s
     return _fn_def({**td["function"], **schema_for_host(supported=False)})
 
 
-def _rewrite_browser_exec(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
-    """browser_exec runs arbitrary host Python: a session without the terminal surface
-    must not regain host execution via the browser toolset. Session-level gate rather
-    than a check_fn because check_fns are TTL-cached process-wide across sessions."""
-    return td if "terminal" in available else None
 
 
 def _rewrite_delegate_task(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
@@ -461,16 +450,11 @@ _VAULT_INPUT_TOOL_HINT = "the browser's input tool"
 
 
 def _rewrite_browser_vault(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
-    """Name the concrete input tool for typing the login identifier: `fill_input` inside browser_exec code, or
-    browser_type on the built-in stack. Resolved here because the two live in different toolsets."""
-    if "browser_exec" in available:
-        concrete = "`fill_input` inside browser_exec"
-    elif "browser_type" in available:
-        concrete = "browser_type"
-    else:
+    """Resolve the vault identifier's concrete input tool for this session."""
+    if "browser_type" not in available:
         return td
     fn = td["function"]
-    return _fn_def({**fn, "description": fn.get("description", "").replace(_VAULT_INPUT_TOOL_HINT, concrete)})
+    return _fn_def({**fn, "description": fn.get("description", "").replace(_VAULT_INPUT_TOOL_HINT, "browser_type")})
 
 
 _VAULT_NO_PASSWORD_NOTE = (" Vault note: on a login/checkout form call browser_vault_list first, then browser_vault_fill, or "
@@ -515,8 +499,6 @@ _DYNAMIC_SCHEMA_REWRITERS = {
     "discord": _discord_rewriter("get_dynamic_schema_core"),
     "discord_admin": _discord_rewriter("get_dynamic_schema_admin"),
     "browser_navigate": _rewrite_browser_navigate,
-    "browser_cdp": _rewrite_browser_cdp,
-    "browser_exec": _compose_rewriters(_rewrite_browser_exec, _rewrite_input_tool_for_vault),
     "browser_type": _rewrite_input_tool_for_vault,
     "browser_vault_list": _rewrite_browser_vault,
     "browser_vault_fill": _rewrite_browser_vault,

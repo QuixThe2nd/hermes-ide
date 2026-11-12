@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Dict, Iterable, Optional, Set
 
 from hermes_cli.config import get_env_value, load_config
@@ -13,7 +12,7 @@ from hermes_cli.nous_account import (
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 from utils import is_truthy_value
 from tools.tool_backend_helpers import (
-    fal_key_is_configured, has_direct_modal_credentials, normalize_browser_cloud_provider, normalize_modal_mode,
+    fal_key_is_configured, has_direct_modal_credentials, normalize_modal_mode,
     resolve_modal_backend_state, resolve_openai_audio_api_key
 )
 
@@ -60,11 +59,6 @@ _FEATURES: Dict[str, _FeatureSpec] = {
         "Speech-to-text", True, "openai-audio", "openai-audio", ("stt", "provider"),
         "Speech-to-text (OpenAI Whisper)", "OpenAI/Groq/Mistral key", ("GROQ_API_KEY", "MISTRAL_API_KEY"),
     ),
-    "browser": _FeatureSpec(
-        "Browser automation", True, "browser-use", "browser-use", ("browser", "cloud_provider"),
-        "Browser automation (Browser Use)", "Browser Use/Browserbase key or Camofox",
-        ("BROWSER_USE_API_KEY", "BROWSERBASE_API_KEY"),
-    ),
     "modal": _FeatureSpec("Modal execution", False, "modal", "modal"),
 }
 
@@ -75,7 +69,7 @@ _GATEWAY_SECTION_FIELDS = {k: s.section_field for k, s in _FEATURES.items() if s
 _ALL_GATEWAY_KEYS = tuple(_GATEWAY_SECTION_FIELDS)
 _GATEWAY_TOOL_LABELS = {k: _FEATURES[k].offer_label for k in _ALL_GATEWAY_KEYS}
 # Sections apply_*_defaults always materialise before writing selections.
-_DEFAULT_SECTIONS = ("web", "tts", "stt", "browser")
+_DEFAULT_SECTIONS = ("web", "tts", "stt")
 
 
 def _uses_gateway(section: object) -> bool:
@@ -181,61 +175,10 @@ def _toolset_enabled(config: Dict[str, object], toolset_key: str) -> bool:
     return False
 
 
-def _has_agent_browser() -> bool:
-    import shutil
-
-    from hermes_constants import agent_browser_runnable
-
-    # agent-browser resolves lazily via npx for most installs, which a bare PATH + node_modules
-    # probe can't see. Mirror the local-CLI tail of tools.browser_tool_install.check_browser_requirements
-    # (same cascade, same Termux carve-out) so setup/status can't diverge from runtime;
-    # validate=False keeps this a cheap existence check with no subprocess spawn.
-    try:
-        from tools.browser_tool_install import _find_agent_browser, _requires_real_termux_browser_install
-    except Exception:
-        # Runtime probe unavailable: fall back to binary presence rather than crashing. Rungs: PATH;
-        # Hermes-managed Node dirs ($HERMES_HOME/node, prepended to PATH at runtime but usually absent
-        # from the *probe* process's PATH); local node_modules/.bin (PATHEXT-aware ``shutil.which`` so
-        # Windows picks the ``.cmd`` shim). The hit must also run: a dangling symlink is reported by
-        # ``which`` but fails at exec.
-        # See #48521.
-        from hermes_constants import with_hermes_node_path
-
-        local_bin_dir = Path(__file__).parent.parent / "node_modules" / ".bin"
-        search_paths = [None, with_hermes_node_path().get("PATH", ""), str(local_bin_dir) if local_bin_dir.is_dir() else ""]
-        return any(
-            (hit := shutil.which("agent-browser", **({} if path is None else {"path": path}))) and agent_browser_runnable(hit)
-            for path in search_paths if path != ""
-        )
-
-    try:
-        browser_cmd = _find_agent_browser(validate=False)
-    except FileNotFoundError:
-        return False
-    # On Termux, the bare npx fallback is too fragile to advertise as ready.
-    return not _requires_real_termux_browser_install(browser_cmd)
-
-
-def _local_browser_runnable() -> bool:
-    """True when the *local* browser backend would actually start: the CLI must be present AND a
-    Chromium build on disk (else agent-browser hangs until the command timeout) unless the Lightpanda
-    engine is selected. Mirrors the local-mode tail of tools.browser_tool_install.check_browser_requirements."""
-    if not _has_agent_browser():
-        return False
-    try:
-        from tools.browser_tool_install import _chromium_installed
-        from tools.browser_tool_lightpanda_fallback import _using_lightpanda_engine
-    except Exception:
-        return True  # runtime probe unavailable: fall back to binary presence rather than crashing
-    return _using_lightpanda_engine() or _chromium_installed()
 
 
 # kind -> (default provider, provider -> display label)
 _PROVIDER_LABELS = {
-    "browser": ("local", {
-        "browserbase": "Browserbase", "browser-use": "Browser Use", "firecrawl": "Firecrawl",
-        "camofox": "Camofox", "local": "Local browser",
-    }),
     "tts": ("edge", {
         "openai": "OpenAI TTS", "elevenlabs": "ElevenLabs", "edge": "Edge TTS", "xai": "xAI TTS",
         "mistral": "Mistral Voxtral TTS", "neutts": "NeuTTS",
@@ -367,44 +310,6 @@ def _audio_features(
     return tts, stt
 
 
-def _browser_feature(
-    browser_cfg: Dict[str, object], tool_enabled: bool, managed: bool, selected: Optional[str], browser_gw: bool, direct_firecrawl: bool,
-) -> NousFeatureState:
-    """Resolve browser availability using the same precedence as runtime."""
-    explicit = "cloud_provider" in browser_cfg
-    provider = normalize_browser_cloud_provider(browser_cfg.get("cloud_provider") if explicit else None)
-    if provider == "nous" or browser_gw:
-        provider = "browser-use"
-    # CAMOFOX_URL is the server address, not a selection: an explicit different choice wins over it.
-    direct_camofox = _any_env("CAMOFOX_URL") and (selected is None or selected == "camofox")
-    direct_browserbase = bool(get_env_value("BROWSERBASE_API_KEY") and get_env_value("BROWSERBASE_PROJECT_ID")) and not browser_gw
-    direct_browser_use = _any_env("BROWSER_USE_API_KEY") and not browser_gw
-    # local_available = the agent-browser CLI is present, the only local requirement for cloud providers.
-    local_available = _has_agent_browser()
-    local_runnable = _local_browser_runnable()
-    browser_use_managed = bool(tool_enabled and local_available and managed and not direct_browser_use)
-
-    if explicit:
-        cloud_available = {
-            "camofox": direct_camofox, "browserbase": local_available and direct_browserbase,
-            "browser-use": local_available and (managed or direct_browser_use), "firecrawl": local_available and direct_firecrawl,
-        }
-        current = provider if provider in cloud_available else "local"
-        available = bool(cloud_available.get(current, local_runnable))
-        managed_now = browser_use_managed if current == "browser-use" else False
-    # Never-configured autodetect: CAMOFOX_URL activates Camofox when no selection was stored.
-    elif direct_camofox:
-        current, available, managed_now = "camofox", True, False
-    elif managed or direct_browser_use:
-        current, available, managed_now = "browser-use", bool(local_available), browser_use_managed
-    elif direct_browserbase:
-        current, available, managed_now = "browserbase", bool(local_available), False
-    else:
-        current, available, managed_now = "local", bool(local_runnable), False
-    return _state(
-        "browser", available=available, active=bool(tool_enabled and available), managed_by_nous=managed_now,
-        toolset_enabled=tool_enabled, current_provider=_provider_label("browser", current), explicit_configured=explicit,
-    )
 
 
 def _modal_feature(terminal_cfg: Dict[str, object], tool_enabled: bool, managed: bool, managed_tools_flag: bool) -> NousFeatureState:
@@ -439,7 +344,7 @@ def get_nous_subscription_features(config: Optional[Dict[str, object]] = None, *
     # availability is then narrowed by coverage (the pool funds image but not video, etc.).
     nous_auth_present = bool(account_info and account_info.logged_in)
     managed_tools_flag = nous_auth_present and account_info.tool_gateway_entitled
-    enabled = {key: _toolset_enabled(config, key) for key in ("web", "image_gen", "video_gen", "tts", "browser", "terminal")}
+    enabled = {key: _toolset_enabled(config, key) for key in ("web", "image_gen", "video_gen", "tts", "terminal")}
     # Stored selections (strict model): "nous" = managed gateway; vendor name = that vendor direct;
     # None = never configured (autodetect). Lockstep with tool_backend_helpers.read_selection: a
     # merged ``stt.provider: local`` here means the raw file holds it — a genuine selection.
@@ -472,9 +377,6 @@ def get_nous_subscription_features(config: Optional[Dict[str, object]] = None, *
         "video_gen": _fal("video_gen"),
         "tts": tts,
         "stt": stt,
-        "browser": _browser_feature(
-            _section(config, "browser"), enabled["browser"], managed["browser"], selected["browser"], use_gateway["browser"], direct_firecrawl,
-        ),
         "modal": _modal_feature(_section(config, "terminal"), enabled["terminal"], managed["modal"], managed_tools_flag),
     }
     return NousSubscriptionFeatures(
@@ -522,7 +424,7 @@ def apply_nous_managed_defaults(config: Dict[str, object], *, enabled_toolsets: 
 
 
 def _get_gateway_direct_credentials() -> Dict[str, bool]:
-    """tool_key -> has_direct_credentials. Env-configured keyless local backends (SearXNG, CAMOFOX_URL)
+    """tool_key -> has_direct_credentials. Env-configured keyless local backends (SearXNG)
     count as configured so they are never classified "unconfigured" and pre-checked; Whisper shares
     the audio key with TTS."""
     fal_direct = fal_key_is_configured()
@@ -536,10 +438,6 @@ def _get_gateway_direct_credentials() -> Dict[str, bool]:
         "video_gen": fal_direct,
         "tts": audio_direct or _any_env("ELEVENLABS_API_KEY"),
         "stt": audio_direct or _any_env("GROQ_API_KEY", "MISTRAL_API_KEY"),
-        "browser": (
-            _any_env("BROWSER_USE_API_KEY", "CAMOFOX_URL")
-            or bool(get_env_value("BROWSERBASE_API_KEY") and get_env_value("BROWSERBASE_PROJECT_ID"))
-        ),
     }
 
 

@@ -1,4 +1,4 @@
-"""External-tool checks for hermes doctor: terminal backends, git/rg, Node + agent-browser, npm audit, tool availability.
+"""External-tool checks for hermes doctor: terminal backends, git/rg, Node + Camofox, npm audit, tool availability.
 Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_cli.doctor.<name>`` keeps resolving (and monkeypatching)."""
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from pathlib import Path
 from hermes_cli.doctor_platform import _system_package_install_cmd
 from hermes_cli.doctor_report import Finding, _fail_and_issue, check_bool, check_info, check_ok, check_warn, doctor_check
 from hermes_cli.vercel_auth import describe_vercel_auth
-from hermes_constants import agent_browser_runnable, is_termux as _is_termux
+from hermes_constants import is_termux as _is_termux
 from tools.environments.docker import docker_runtime_name, docker_runtime_start_hint, find_docker
 
 
@@ -97,10 +97,6 @@ def _run_ok(cmd: list[str], timeout: int, **kw) -> bool:
         return False
 
 
-def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
-    steps = [] if node_installed else ["pkg install nodejs"]
-    steps += ["npm install -g agent-browser", "agent-browser install"]
-    return [f"{i}) {step}" for i, step in enumerate(steps, 1)]
 
 
 _TERMUX_INSTALL_ALL_FALLBACK_NOTES = (
@@ -322,107 +318,20 @@ def _check_terminal_backend(should_fix: bool, f: Finding) -> None:
         _check_plugin_backend(terminal_env, f.issues)
 
 
-def _check_agent_browser(should_fix: bool) -> bool:
-    """agent-browser resolution; returns True when browser tools will find a usable install.
-
-    Mirrors ``tools.browser_tool_install._find_agent_browser``'s own cascade (lazy npx or a global/Hermes-managed
-    install) so doctor can't diverge from the tools; validate=False keeps it a cheap, side-effect-free check.
-    """
-    try:
-        # agent-browser is no longer a root package.json dependency (#43564) — it resolves lazily via npx
-        # (or a global/Hermes-managed install) at first use.
-        from tools.browser_tool_install import _find_agent_browser, _is_npx_agent_browser_sentinel
-        resolved = _find_agent_browser(validate=False)
-    except Exception:
-        resolved = None
-    if resolved and _is_npx_agent_browser_sentinel(resolved):
-        check_ok("agent-browser", "(resolves via npx on first use)")
-        if should_fix:
-            # Can't tell whether npx's cache is warm — fire the same warm-up `hermes update` does.
-            from tools.browser_tool_install import warm_agent_browser_npx_cache
-            check_info("  Warmed npx cache for agent-browser" if warm_agent_browser_npx_cache()
-                       else "  Could not warm npx cache (offline or npx unavailable)")
-        return True
-    if resolved and agent_browser_runnable(resolved):
-        check_ok("agent-browser", "(browser automation)")
-        return True
-    if resolved:
-        # Almost always a dangling global symlink left by npm postinstall after `hermes update` wiped node_modules.
-        check_warn("agent-browser found but not runnable", f"(broken symlink at {resolved}? run: npx agent-browser --version)")
-    elif _is_termux():
-        _termux_browser_hints("agent-browser is not installed (expected in the tested Termux path)",
-                              "Install it manually later with: npm install -g agent-browser && agent-browser install", node_installed=True)
-    else:
-        check_warn("agent-browser not installed", "(requires npm/npx on PATH)")
-    return False
-
-
-def _termux_browser_hints(*lines: str, node_installed: bool) -> None:
-    for line in lines:
-        check_info(line)
-    check_info("Termux browser setup:")
-    for step in _termux_browser_setup_steps(node_installed=node_installed):
-        check_info(step)
-
-
-def _check_chromium() -> None:
-    """Playwright Chromium presence, using the exact predicate browser_tool uses to hide browser_* tools.
-
-    Lazy import: browser_tool is ~150KB; an import failure is a separate bug surfaced elsewhere. Camofox, a
-    CDP override, a cloud provider, or Lightpanda all bypass the local Chromium requirement (no warning).
-    """
-    from hermes_cli.doctor import PROJECT_ROOT
-    try:
-        from tools.browser_tool import _is_camofox_mode
-        from tools.browser_tool_cloud import _get_cloud_provider
-        from tools.browser_tool_cdp import _get_cdp_override_raw
-        from tools.browser_tool_install import _chromium_installed
-        from tools.browser_tool_lightpanda_fallback import _using_lightpanda_engine
-    except Exception:
-        return
-    if _is_camofox_mode() or bool(_get_cdp_override_raw()) or _get_cloud_provider() is not None or _using_lightpanda_engine():
-        return
-    if not check_bool(_chromium_installed(), ("Playwright Chromium", "(browser engine)"),
-                      ("Playwright Chromium not installed", "(browser_* tools will be hidden from the agent)")):
-        with_deps = "" if sys.platform == "win32" else "--with-deps "
-        check_info(f"Install with: cd {PROJECT_ROOT} && npx playwright install {with_deps}chromium")
-
-
-def _check_lightpanda() -> None:
-    """Lightpanda engine (browser.engine / AGENT_BROWSER_ENGINE); independent of Node since Browser Use mode spawns ``lightpanda serve`` itself."""
-    try:
-        from tools.browser_tool_lightpanda_fallback import _using_lightpanda_engine, lightpanda_engine_status
-        from tools.browser_lightpanda import LIGHTPANDA_INSTALL_HINT, find_lightpanda_binary
-    except Exception:
-        return
-    # _using_lightpanda_engine() is a cached config read — a failure there is exceptional, not hidden.
-    if not _using_lightpanda_engine():
-        return
-    try:
-        used, reason = lightpanda_engine_status()
-    except Exception as e:
-        used, reason = False, f"status check failed: {e}"
-    if not used:
-        check_warn("browser.engine=lightpanda is shadowed", f"({reason})")
-        check_info("Fix: pick Lightpanda in `hermes tools` → Browser Automation, or set browser.engine: auto")
-    elif not check_bool(find_lightpanda_binary(), ("Lightpanda", f"({reason})"),
-                        ("Lightpanda selected but binary not found", "(browser tools will fail until it is installed)")):
-        check_info(LIGHTPANDA_INSTALL_HINT)
 
 
 @doctor_check()
 def _check_node_and_browser(should_fix: bool, f: Finding) -> None:
-    """Node.js, agent-browser resolution, Playwright Chromium, Lightpanda engine."""
+    """Node.js for the optional local Camofox server, plus Camofox configuration."""
     if _safe_which("node"):
         check_ok("Node.js")
-        if _check_agent_browser(should_fix) and not _is_termux():  # Chromium check is not a tested Termux path
-            _check_chromium()
-    elif _is_termux():
-        _termux_browser_hints("Node.js not found (browser tools are optional in the tested Termux path)",
-                              "Install Node.js on Termux with: pkg install nodejs", node_installed=False)
     else:
-        check_warn("Node.js not found", "(optional, needed for browser tools)")
-    _check_lightpanda()
+        check_warn("Node.js not found", "(optional, needed to install/run a local Camofox server)")
+    from tools.browser_camofox import get_camofox_url
+    if get_camofox_url():
+        check_ok("Camofox server URL", "(configured)")
+    else:
+        check_info("Camofox server URL not configured — set CAMOFOX_URL before using browser tools")
 
 
 def _plural(n: int) -> str:
@@ -485,7 +394,7 @@ def _check_npm_audit(should_fix: bool, f: Finding) -> None:
         except Exception:
             whatsapp_bridge_dir = PROJECT_ROOT / "scripts" / "whatsapp-bridge"
         for npm_dir, label, audit_extra in (
-            (PROJECT_ROOT, "Browser tools (agent-browser)", ["--workspaces=false"]),
+            (PROJECT_ROOT, "Node.js dependencies", ["--workspaces=false"]),
             (whatsapp_bridge_dir, "WhatsApp bridge", []),
         ):
             # Workspace-scoped audits check the root node_modules; standalone dirs check their own.

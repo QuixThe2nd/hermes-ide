@@ -166,7 +166,6 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-computer-use',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent',
-                    'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-merge-reconciler',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode',
                   ],
                 },
@@ -302,6 +301,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-autonomous-ai-agents',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-agent-merge-conflict-arbiter',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-antigravity-cli',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-blackbox',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-dynamic-workflow',
@@ -337,8 +337,8 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/creative/creative-ai-presenter-video',
-                    'user-guide/skills/optional/creative/creative-ascii-art',
                     'user-guide/skills/optional/creative/creative-archify',
+                    'user-guide/skills/optional/creative/creative-ascii-art',
                     'user-guide/skills/optional/creative/creative-audiocraft-audio-generation',
                     'user-guide/skills/optional/creative/creative-auteur',
                     'user-guide/skills/optional/creative/creative-baoyu-article-illustrator',
@@ -788,7 +788,6 @@ const sidebars: SidebarsConfig = {
                 'developer-guide/image-gen-provider-plugin',
                 'developer-guide/video-gen-provider-plugin',
                 'developer-guide/web-search-provider-plugin',
-                'developer-guide/browser-provider-plugin',
                 'developer-guide/terminal-environment-plugin',
               ],
             },
@@ -801,7 +800,6 @@ const sidebars: SidebarsConfig = {
           label: 'Internals',
           items: [
             'developer-guide/tools-runtime',
-            'developer-guide/browser-supervisor',
             'developer-guide/cron-internals',
             'developer-guide/chronos-managed-cron-contract',
             'developer-guide/egress-internals',

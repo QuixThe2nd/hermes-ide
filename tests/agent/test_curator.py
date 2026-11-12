@@ -1125,7 +1125,7 @@ def test_review_fork_toolset_surface_excludes_execution_tools():
     # process steering (stdin is a second unguarded write sink), and no
     # generic filesystem-write tool.
     for tool in ("terminal", "process_manage", "write_file", "patch",
-                 "execute_code", "computer_use", "browser_exec"):
+                 "execute_code", "computer_use", "browser_navigate"):
         assert tool not in surface, (
             f"execution/write tool {tool!r} leaked into the curator fork's "
             "surface via the skills toolset — un-ledgered skill mutations "

@@ -267,42 +267,6 @@
    "target": "(deleted; BASE body restored)"
   },
   {
-   "facade": "agent.browser_provider",
-   "name": "Any",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "agent.browser_provider",
-   "name": "Optional",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "agent.browser_registry",
-   "name": "Dict",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "agent.browser_registry",
-   "name": "List",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "agent.browser_registry",
-   "name": "hermes_home_key",
-   "kind": "moved-lazy",
-   "target": "hermes_constants"
-  },
-  {
-   "facade": "agent.browser_registry",
-   "name": "threading",
-   "kind": "import",
-   "target": "threading"
-  },
-  {
    "facade": "agent.codex_runtime",
    "name": "run_codex_create_stream_fallback",
    "kind": "restored-def",
@@ -1258,12 +1222,6 @@
   },
   {
    "facade": "cli",
-   "name": "DEFAULT_BROWSER_CDP_URL",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.browser_connect"
-  },
-  {
-   "facade": "cli",
    "name": "Dimension",
    "kind": "import",
    "target": "prompt_toolkit.layout.dimension"
@@ -1438,12 +1396,6 @@
   },
   {
    "facade": "cli",
-   "name": "is_browser_debug_ready",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.browser_connect"
-  },
-  {
-   "facade": "cli",
    "name": "is_table_divider",
    "kind": "moved-lazy",
    "target": "agent.markdown_tables"
@@ -1453,12 +1405,6 @@
    "name": "looks_like_table_row",
    "kind": "moved-lazy",
    "target": "agent.markdown_tables"
-  },
-  {
-   "facade": "cli",
-   "name": "manual_chrome_debug_command",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.browser_connect"
   },
   {
    "facade": "cli",
@@ -1553,18 +1499,6 @@
   {
    "facade": "cron.scheduler_provider",
    "name": "provider_supports_fire_cancel",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "gateway.browser_control_artifacts",
-   "name": "ArtifactOverwrite",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "gateway.browser_control_broker",
-   "name": "BROWSER_CONTROL_ALL_CAPABILITIES",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
   },
@@ -2727,12 +2661,6 @@
    "target": "(deleted; BASE body restored)"
   },
   {
-   "facade": "hermes_cli.browser_connect",
-   "name": "try_launch_chrome_debug",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
    "facade": "hermes_cli.callbacks",
    "name": "approval_callback",
    "kind": "restored-def",
@@ -2965,12 +2893,6 @@
    "name": "STATE_DB_SIZE_WARN_BYTES",
    "kind": "moved-lazy",
    "target": "hermes_cli.doctor_state"
-  },
-  {
-   "facade": "hermes_cli.doctor",
-   "name": "agent_browser_runnable",
-   "kind": "moved-lazy",
-   "target": "hermes_constants"
   },
   {
    "facade": "hermes_cli.doctor",
@@ -4587,54 +4509,6 @@
    "target": "os"
   },
   {
-   "facade": "plugins.browser.browser_use.provider",
-   "name": "BrowserProvider",
-   "kind": "moved-lazy",
-   "target": "agent.browser_provider"
-  },
-  {
-   "facade": "plugins.browser.browser_use.provider",
-   "name": "os",
-   "kind": "import",
-   "target": "os"
-  },
-  {
-   "facade": "plugins.browser.browserbase.provider",
-   "name": "BrowserProvider",
-   "kind": "moved-lazy",
-   "target": "agent.browser_provider"
-  },
-  {
-   "facade": "plugins.browser.browserbase.provider",
-   "name": "requests",
-   "kind": "import",
-   "target": "requests"
-  },
-  {
-   "facade": "plugins.browser.browserbase.provider",
-   "name": "uuid",
-   "kind": "import",
-   "target": "uuid"
-  },
-  {
-   "facade": "plugins.browser.firecrawl.provider",
-   "name": "BrowserProvider",
-   "kind": "moved-lazy",
-   "target": "agent.browser_provider"
-  },
-  {
-   "facade": "plugins.browser.firecrawl.provider",
-   "name": "requests",
-   "kind": "import",
-   "target": "requests"
-  },
-  {
-   "facade": "plugins.browser.firecrawl.provider",
-   "name": "uuid",
-   "kind": "import",
-   "target": "uuid"
-  },
-  {
    "facade": "plugins.context_engine",
    "name": "importlib",
    "kind": "import",
@@ -5787,96 +5661,6 @@
    "target": "(deleted; BASE body restored)"
   },
   {
-   "facade": "tools.browser_dialog_tool",
-   "name": "logger",
-   "kind": "moved-lazy",
-   "target": "tools.approval"
-  },
-  {
-   "facade": "tools.browser_dialog_tool",
-   "name": "logging",
-   "kind": "import",
-   "target": "logging"
-  },
-  {
-   "facade": "tools.browser_supervisor",
-   "name": "CONSOLE_HISTORY_MAX",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "tools.browser_supervisor",
-   "name": "ConsoleEvent",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "tools.browser_supervisor",
-   "name": "DIALOG_BRIDGE_HOST",
-   "kind": "moved-lazy",
-   "target": "tools.browser_supervisor_dialogs"
-  },
-  {
-   "facade": "tools.browser_supervisor",
-   "name": "DIALOG_BRIDGE_URL_PATTERN",
-   "kind": "moved-lazy",
-   "target": "tools.browser_supervisor_dialogs"
-  },
-  {
-   "facade": "tools.browser_supervisor",
-   "name": "DIALOG_POLICY_AUTO_ACCEPT",
-   "kind": "moved-lazy",
-   "target": "tools.browser_supervisor_dialogs"
-  },
-  {
-   "facade": "tools.browser_supervisor",
-   "name": "DIALOG_POLICY_AUTO_DISMISS",
-   "kind": "moved-lazy",
-   "target": "tools.browser_supervisor_dialogs"
-  },
-  {
-   "facade": "tools.browser_supervisor",
-   "name": "DIALOG_POLICY_MUST_RESPOND",
-   "kind": "moved-lazy",
-   "target": "tools.browser_supervisor_dialogs"
-  },
-  {
-   "facade": "tools.browser_supervisor",
-   "name": "FRAME_TREE_MAX_ENTRIES",
-   "kind": "moved-lazy",
-   "target": "tools.browser_supervisor_frames"
-  },
-  {
-   "facade": "tools.browser_supervisor",
-   "name": "FRAME_TREE_MAX_OOPIF_DEPTH",
-   "kind": "moved-lazy",
-   "target": "tools.browser_supervisor_frames"
-  },
-  {
-   "facade": "tools.browser_tool",
-   "name": "BrowserUseProvider",
-   "kind": "moved-lazy",
-   "target": "plugins.browser.browser_use.provider.BrowserUseBrowserProvider"
-  },
-  {
-   "facade": "tools.browser_tool",
-   "name": "BrowserbaseProvider",
-   "kind": "moved-lazy",
-   "target": "plugins.browser.browserbase.provider.BrowserbaseBrowserProvider"
-  },
-  {
-   "facade": "tools.browser_tool",
-   "name": "CloudBrowserProvider",
-   "kind": "moved-lazy",
-   "target": "agent.browser_provider.BrowserProvider"
-  },
-  {
-   "facade": "tools.browser_tool",
-   "name": "FirecrawlProvider",
-   "kind": "moved-lazy",
-   "target": "plugins.browser.firecrawl.provider.FirecrawlBrowserProvider"
-  },
-  {
    "facade": "tools.browser_tool",
    "name": "List",
    "kind": "import",
@@ -5893,24 +5677,6 @@
    "name": "Tuple",
    "kind": "import",
    "target": "typing"
-  },
-  {
-   "facade": "tools.browser_tool",
-   "name": "agent_browser_runnable",
-   "kind": "moved-lazy",
-   "target": "hermes_constants"
-  },
-  {
-   "facade": "tools.browser_tool",
-   "name": "check_browser_requirements",
-   "kind": "moved-lazy",
-   "target": "tools.browser_tool_install"
-  },
-  {
-   "facade": "tools.browser_tool",
-   "name": "check_browser_vision_requirements",
-   "kind": "moved-lazy",
-   "target": "tools.browser_tool_install"
   },
   {
    "facade": "tools.browser_tool",
@@ -5962,21 +5728,9 @@
   },
   {
    "facade": "tools.browser_tool",
-   "name": "lightpanda_engine_status",
-   "kind": "moved-lazy",
-   "target": "tools.browser_tool_lightpanda_fallback"
-  },
-  {
-   "facade": "tools.browser_tool",
    "name": "node_tool_runnable",
    "kind": "moved-lazy",
    "target": "hermes_constants"
-  },
-  {
-   "facade": "tools.browser_tool",
-   "name": "normalize_browser_cloud_provider",
-   "kind": "moved-lazy",
-   "target": "tools.tool_backend_helpers"
   },
   {
    "facade": "tools.browser_tool",
@@ -6013,12 +5767,6 @@
    "name": "timezone",
    "kind": "import",
    "target": "datetime"
-  },
-  {
-   "facade": "tools.browser_tool",
-   "name": "warm_agent_browser_npx_cache",
-   "kind": "moved-lazy",
-   "target": "tools.browser_tool_install"
   },
   {
    "facade": "tools.browser_tool",
@@ -9025,24 +8773,6 @@
    "name": "resolve_profile",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "tui_gateway.methods_browser_control",
-   "name": "BROWSER_CONTROL_PROTOCOL_VERSION",
-   "kind": "moved-lazy",
-   "target": "gateway.browser_control_broker"
-  },
-  {
-   "facade": "tui_gateway.methods_browser_control",
-   "name": "browser_control_protocol_supported",
-   "kind": "moved-lazy",
-   "target": "gateway.browser_control_broker"
-  },
-  {
-   "facade": "tui_gateway.methods_browser_control",
-   "name": "filter_browser_control_capabilities",
-   "kind": "moved-lazy",
-   "target": "gateway.browser_control_broker"
   },
   {
    "facade": "tui_gateway.methods_prompt",

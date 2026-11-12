@@ -593,8 +593,7 @@ def activate() -> None:
 def uv(*, venv=None, realize: bool = True):
     """TRANSITIONAL: (uv path, sanitized env) for call sites that still
     drive uv themselves. Two classes remain: update/repair sites (die with
-    the update collapse, plan step 4) and side-venv installs — browser-use
-    tool venvs (tools_config, browser_use_cli) and hindsight's
+    the update collapse, plan step 4) and side-venv installs — hindsight's
     local_embedded daemon — which survive until pm grows the side-venv
     package kind (plan step 5's remaining half). Must not spread."""
     from pm.packages import uv_env

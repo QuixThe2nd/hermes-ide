@@ -14,7 +14,6 @@ from hermes_cli.nous_account import NousPortalAccountInfo
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOLS_DIR = REPO_ROOT / "tools"
-PLUGINS_DIR = REPO_ROOT / "plugins"
 
 
 def _load_tool_module(module_name: str, filename: str):
@@ -26,19 +25,6 @@ def _load_tool_module(module_name: str, filename: str):
     return module
 
 
-def _load_plugin_module(module_name: str, relpath: str):
-    """Load a plugin module by file path from ``plugins/``.
-
-    Mirror of :func:`_load_tool_module` for the plugin tree. Used by tests
-    that exercise the per-vendor browser plugins' session-lifecycle
-    behaviour after the PR #25214 migration.
-    """
-    spec = spec_from_file_location(module_name, PLUGINS_DIR / relpath)
-    assert spec and spec.loader
-    module = module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def _reset_modules(prefixes: tuple[str, ...]):
@@ -101,60 +87,12 @@ def _install_fake_tools_package():
     sys.modules["agent.auxiliary_client"] = types.SimpleNamespace(
         call_llm=lambda *args, **kwargs: "",
     )
-    # Keep unrelated imports real; only replace the collaborators this fixture
-    # isolates. tools.browser_tool imports redact_cdp_url;
     # hermes_cli.auth (imported transitively by nous_account /
     # tool_backend_helpers) imports sanitize_borrowed_credential_payload.
-    sys.modules["agent.redact"] = types.SimpleNamespace(
-        redact_cdp_url=lambda value: str(value),
-    )
     sys.modules["agent.credential_persistence"] = types.SimpleNamespace(
         sanitize_borrowed_credential_payload=lambda entry, provider_id=None: entry,
     )
 
-    # Stubs for the browser-provider plugin layer introduced in PR #25214.
-    # Install just enough stand-ins to isolate
-    # ``tools.browser_tool``'s top-level imports. The actual lifecycle
-    # tests instantiate the real plugin classes via _load_tool_module
-    # below, so the stubs only need to satisfy import + isinstance.
-    class _StubBrowserProvider:
-        """Minimal BrowserProvider stub for ``from agent.browser_provider import BrowserProvider``."""
-
-    sys.modules["agent.browser_provider"] = types.SimpleNamespace(
-        BrowserProvider=_StubBrowserProvider,
-    )
-    sys.modules["agent.browser_registry"] = types.SimpleNamespace(
-        get_provider=lambda name: None,
-        list_providers=lambda: [],
-        register_provider=lambda provider: None,
-        _resolve=lambda configured: None,
-    )
-
-    # Plugin module stubs — the real plugin classes are loaded from disk by
-    # the lifecycle tests below via _load_tool_module(). For the import
-    # phase, we just need the class names to exist on the right module path.
-    plugins_package = types.ModuleType("plugins")
-    plugins_package.__path__ = []  # type: ignore[attr-defined]
-    sys.modules["plugins"] = plugins_package
-    plugins_browser_package = types.ModuleType("plugins.browser")
-    plugins_browser_package.__path__ = []  # type: ignore[attr-defined]
-    sys.modules["plugins.browser"] = plugins_browser_package
-
-    for _name, _classname in (
-        ("browserbase", "BrowserbaseBrowserProvider"),
-        ("browser_use", "BrowserUseBrowserProvider"),
-        ("firecrawl", "FirecrawlBrowserProvider"),
-    ):
-        _vendor_pkg = types.ModuleType(f"plugins.browser.{_name}")
-        _vendor_pkg.__path__ = []  # type: ignore[attr-defined]
-        sys.modules[f"plugins.browser.{_name}"] = _vendor_pkg
-        _provider_stub_cls = type(_classname, (_StubBrowserProvider,), {})
-        sys.modules[f"plugins.browser.{_name}.provider"] = types.SimpleNamespace(
-            **{_classname: _provider_stub_cls},
-        )
-    # The fake ``plugins.browser`` package has an empty __path__, so the shared
-    # base the real vendor modules import must be loaded by path as well.
-    _load_plugin_module("plugins.browser._common", "browser/_common.py")
 
     sys.modules["tools.managed_tool_gateway"] = _load_tool_module(
         "tools.managed_tool_gateway",
@@ -214,46 +152,6 @@ def _install_fake_tools_package():
     sys.modules["tools.environments.managed_modal"] = types.SimpleNamespace(ManagedModalEnvironment=_DummyEnvironment)
 
 
-def test_browser_use_explicit_local_mode_stays_local_even_when_managed_gateway_is_ready(tmp_path):
-    _install_fake_tools_package()
-    (tmp_path / "config.yaml").write_text("browser:\n  cloud_provider: local\n", encoding="utf-8")
-    env = os.environ.copy()
-    env.pop("BROWSER_USE_API_KEY", None)
-    env.update({
-        "HERMES_HOME": str(tmp_path),
-        "TOOL_GATEWAY_USER_TOKEN": "nous-token",
-        "BROWSER_USE_GATEWAY_URL": "http://127.0.0.1:3009",
-    })
-
-    with patch.dict(os.environ, env, clear=True):
-        _load_tool_module("tools.browser_tool", "browser_tool.py")
-        browser_tool_cloud = sys.modules["tools.browser_tool_cloud"]
-
-        local_mode = browser_tool_cloud._is_local_mode()
-        provider = browser_tool_cloud._get_cloud_provider()
-
-    assert local_mode is True
-    assert provider is None
-
-
-def test_browserbase_does_not_use_gateway_only_configuration():
-    _install_fake_tools_package()
-    env = os.environ.copy()
-    env.pop("BROWSERBASE_API_KEY", None)
-    env.pop("BROWSERBASE_PROJECT_ID", None)
-    env.update({
-        "TOOL_GATEWAY_USER_TOKEN": "nous-token",
-        "BROWSERBASE_GATEWAY_URL": "http://127.0.0.1:3009",
-    })
-
-    with patch.dict(os.environ, env, clear=True):
-        browserbase_module = _load_plugin_module(
-            "plugins.browser.browserbase.provider",
-            "browser/browserbase/provider.py",
-        )
-        provider = browserbase_module.BrowserbaseBrowserProvider()
-
-    assert provider.is_available() is False
 
 
 def test_terminal_tool_respects_direct_modal_mode_without_falling_back_to_managed():

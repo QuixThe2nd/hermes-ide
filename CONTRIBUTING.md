@@ -52,7 +52,7 @@ This is the most common question for new contributors. The answer is almost alwa
 - It requires end-to-end integration with API keys, auth flows, or multi-component configuration managed by the agent harness
 - It needs custom processing logic that must execute precisely every time (not "best effort" from LLM interpretation)
 - It handles binary data, streaming, or real-time events that can't go through the terminal
-- Examples: browser automation (Browserbase session management), TTS (audio encoding + platform delivery), vision analysis (base64 image handling)
+- Examples: browser automation (Camofox session management), TTS (audio encoding + platform delivery), vision analysis (base64 image handling)
 
 ### Should the Skill be bundled?
 
@@ -544,7 +544,7 @@ metadata:
   hermes:
     requires_toolsets: [terminal]
 
-# Local browser fallback — shown when Browserbase is unavailable
+# Camofox browser fallback — shown when the primary browser toolset is unavailable
 metadata:
   hermes:
     fallback_for_toolsets: [browser]
@@ -817,10 +817,10 @@ that touches the OS, assume *any* platform can hit your code path.
     implementation.
 
 10. **`subprocess.Popen` with `.cmd` or `.bat` shims needs `shutil.which`
-    to resolve.** Passing `"agent-browser"` to `Popen` on Windows finds
-    the extensionless POSIX shebang shim in `node_modules/.bin/`, which
+    to resolve.** Passing `"my-tool"` to `Popen` on Windows can find an
+    extensionless POSIX shebang shim in `node_modules/.bin/`, which
     `CreateProcessW` can't execute — you'll get `WinError 193 "not a valid
-    Win32 application"`. Use `shutil.which("agent-browser", path=local_bin)`
+    Win32 application"`. Use `shutil.which("my-tool", path=local_bin)`
     which honors PATHEXT and picks the `.CMD` variant on Windows.
 
 11. **Don't use shell shebangs as a way to run Python.** `#!/usr/bin/env

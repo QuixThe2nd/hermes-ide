@@ -6,19 +6,28 @@ description: "Use, configure, theme, extend, and orchestrate Hermes Agent"
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
----
-name: hermes-agent
-description: "Use, configure, theme, extend, and orchestrate Hermes Agent."
-version: 3.2.0
-author: Hermes Agent + Teknium
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  hermes:
-    tags: [hermes, setup, configuration, multi-agent, spawning, cli, gateway, bots, bot-mode, features, themes, skins, tui-widgets, development]
-    homepage: https://github.com/NousResearch/hermes-agent
-    related_skills: [claude-code, codex, opencode]
----
+# Hermes Agent
+
+Use, configure, theme, extend, and orchestrate Hermes Agent.
+
+## Skill metadata
+
+| | |
+|---|---|
+| Source | Bundled (installed by default) |
+| Path | `skills/autonomous-ai-agents/hermes-agent` |
+| Version | `3.2.0` |
+| Author | Hermes Agent + Teknium |
+| License | MIT |
+| Platforms | linux, macos, windows |
+| Tags | `hermes`, `setup`, `configuration`, `multi-agent`, `spawning`, `cli`, `gateway`, `bots`, `bot-mode`, `features`, `themes`, `skins`, `tui-widgets`, `development` |
+| Related skills | [`claude-code`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code.md), [`codex`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-codex.md), [`opencode`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-opencode.md) |
+
+## Reference: full SKILL.md
+
+:::info
+The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+:::
 
 # Hermes Agent
 

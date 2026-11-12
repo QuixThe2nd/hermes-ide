@@ -102,28 +102,6 @@ class TestAutocompleteDevicePaths:
         assert "real.txt" in files
 
 
-class TestBrowserScreenshotPathRegex:
-    """#83884 — Windows drive-letter screenshot paths must be detected."""
-
-    def _re(self):
-        from tools.browser_use_cli import _IMAGE_PATH_RE
-
-        return _IMAGE_PATH_RE
-
-    def test_windows_backslash_path(self):
-        m = self._re().findall(r"Saved screenshot to C:\Users\u\shots\page.png done")
-        assert m == [r"C:\Users\u\shots\page.png"]
-
-    def test_windows_forward_slash_path(self):
-        m = self._re().findall("shot: C:/Users/u/shots/page.jpeg")
-        assert m == ["C:/Users/u/shots/page.jpeg"]
-
-    def test_posix_path_still_matches(self):
-        m = self._re().findall("wrote /tmp/bu-task/shot.webp")
-        assert m == ["/tmp/bu-task/shot.webp"]
-
-    def test_plain_words_do_not_match(self):
-        assert self._re().findall("no images here, just prose.png-like text /x") == []
 
 
 class TestSkillHashSymmetry:

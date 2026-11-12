@@ -33,7 +33,7 @@ _VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform
 _KNOWN_MANIFEST_FIELDS: Set[str] = {
     "name", "version", "description", "author", "requires_env", "provides_tools", "provides_hooks",
     "kind", "hooks", "label", "optional_env", "platforms", "external_dependencies",
-    "pip_dependencies", "provides_browser_providers", "provides_web_providers",
+    "pip_dependencies", "provides_web_providers",
     "manifest_version", "api_version", "requires_plugins", "python_dependencies", "config_schema",
     "license", "homepage", "tags",
     # the plugin's update feed address (plugin auto-update plan, 2026-09-03):

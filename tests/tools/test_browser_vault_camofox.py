@@ -1,17 +1,12 @@
 """Camofox contract tests for the vault browser tools.
 
-Covers the engine=camofox wiring (regression: browser_vault_fill used to fail with
-"Could not determine the current page origin" because ``_eval_js`` only knew the
-supervisor/CLI CDP paths):
+Camofox is the sole transport. These contracts cover:
 
 - ``_eval_js`` / ``_eval_js_secret`` dispatch to the Camofox REST evaluate endpoint
-  (``POST /tabs/{tabId}/evaluate``, bearer-auth) when the active backend is camofox,
-  reusing the session tab machinery browser_console uses.
+  (``POST /tabs/{tabId}/evaluate``), reusing the session tab machinery browser_console uses.
 - Secret-bearing expressions fail closed when the Camofox key or session tab is
   missing — no weaker fallback, no subprocess.
-- Origin binding still refuses mismatched origins on the camofox path.
-- ``browser.engine: camofox`` is a recognized engine value (no "Unknown browser
-  engine" fallback to auto) and is never passed to agent-browser as ``--engine``.
+- Origin binding still refuses mismatched origins.
 """
 
 from __future__ import annotations
@@ -31,7 +26,7 @@ from tools import browser_camofox  # noqa: E402
 
 @pytest.fixture()
 def camofox_mode(monkeypatch):
-    """Camofox selected, server URL set, session tab open for 'default'."""
+    """Server URL set and session tab open for 'default'."""
     monkeypatch.setattr(browser_camofox, "is_camofox_mode", lambda: True)
     monkeypatch.setattr(browser_camofox, "get_camofox_url", lambda: "http://camofox.lan:9377")
     monkeypatch.setattr(browser_camofox, "_get_session",
@@ -54,14 +49,13 @@ class TestEvalJsCamofoxDispatch:
         assert posts == [("/tabs/tab-9/evaluate",
                           {"expression": "window.location.href", "userId": "u1"})]
 
-    def test_eval_js_secret_routes_through_camofox_and_never_supervisor(self, camofox_mode):
+    def test_eval_js_secret_routes_through_camofox(self, camofox_mode):
         with patch("agent.secret_scope.get_secret", return_value="test-key"), \
-             patch.object(browser_camofox, "_post", return_value={"result": '{"filled": 1}'}), \
-             patch.object(browser_vault_tool, "_ensure_supervisor") as ensure_sup:
+             patch.object(browser_camofox, "_post", return_value={"result": '{"filled": 1}'}) as post:
             out = browser_vault_tool._eval_js_secret("default", "fill('s3cret')")
         assert out["success"] is True
         assert out["result"] == {"filled": 1}  # JSON-string results are parsed
-        ensure_sup.assert_not_called()
+        post.assert_called_once_with("/tabs/tab-9/evaluate", {"expression": "fill('s3cret')", "userId": "u1"})
 
     def test_current_page_origin_resolves_via_camofox(self, camofox_mode):
         with patch.object(browser_camofox, "_post", return_value={"result": "https://www.facebook.com/login"}):
@@ -86,13 +80,11 @@ class TestCamofoxFailClosed:
         assert out["error_type"] == "camofox_session_required"
         post.assert_not_called()
 
-    def test_no_fallback_to_cli_eval_in_camofox_mode(self, camofox_mode):
-        """With camofox active but the server unreachable there is NO CLI-eval fallback."""
-        with patch.object(browser_camofox, "_post", side_effect=RuntimeError("conn refused")), \
-             patch("tools.browser_tool_session._run_browser_command") as run_cmd:
+    def test_transport_failure_is_returned(self, camofox_mode):
+        with patch.object(browser_camofox, "_post", side_effect=RuntimeError("conn refused")) as post:
             out = browser_vault_tool._eval_js("default", "window.location.href")
         assert out["success"] is False
-        run_cmd.assert_not_called()
+        post.assert_called_once()
 
 
 class TestOriginBindingOnCamofox:
@@ -117,7 +109,6 @@ class TestOriginBindingOnCamofox:
                 return "s3cret-pw"
 
         with patch("agent.vault_backends.backend_for_handle", return_value=_Backend()), \
-             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=None), \
              patch.object(browser_camofox, "_post", return_value={"result": "https://evil.example/login"}):
             out = json.loads(browser_vault_tool.browser_vault_fill("vault_x", task_id="default"))
         assert out["success"] is False
@@ -125,21 +116,3 @@ class TestOriginBindingOnCamofox:
         assert "s3cret-pw" not in json.dumps(out)
 
 
-class TestEngineRecognition:
-    def test_camofox_is_a_valid_engine_value(self, monkeypatch):
-        """browser.engine=camofox must not be rewritten to 'auto' (the log-noise regression)."""
-        from tools import browser_tool, browser_tool_cloud
-
-        monkeypatch.setattr(browser_tool, "_browser_engine_resolved", False)
-        monkeypatch.setattr(browser_tool, "_cached_browser_engine", None)
-        monkeypatch.setattr(browser_tool, "_browser_cfg", lambda *a, **k: "camofox", )
-        assert browser_tool_cloud._get_browser_engine() == "camofox"
-
-    def test_camofox_engine_never_injected_into_agent_browser(self):
-        from tools.browser_tool_cloud import _should_inject_engine
-        from tools import browser_tool
-
-        with patch.object(browser_tool, "_is_camofox_mode", return_value=False), \
-             patch("tools.browser_tool_cloud._is_local_mode", return_value=True):
-            assert _should_inject_engine("camofox") is False
-            assert _should_inject_engine("chrome") is True

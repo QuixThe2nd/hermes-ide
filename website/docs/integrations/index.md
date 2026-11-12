@@ -49,12 +49,7 @@ If `web.backend` is not set, the backend is auto-detected from whichever API key
 
 ## Browser Automation
 
-Hermes includes full browser automation with multiple backend options for navigating websites, filling forms, and extracting information:
-
-- **Browser Use Cloud** — Managed Chromium with stealth, residential proxies, CAPTCHA solving, and reusable browser profiles
-- **Browserbase** — Alternative cloud browser provider with managed browsers, anti-bot tooling, CAPTCHA solving, and residential proxies
-- **Local Chromium-family CDP** — Connect to your running Chrome, Brave, Chromium, or Edge browser using `/browser connect`
-- **Local Chromium** — Headless local browser via the `agent-browser` CLI
+Hermes includes Camofox browser automation for navigating websites, filling forms, extracting information, taking screenshots, and evaluating JavaScript. Run Camofox through its npm package or Docker image and configure `CAMOFOX_URL` plus an optional `CAMOFOX_API_KEY`.
 
 See [Browser Automation](../user-guide/features/browser.md) for setup and usage.
 

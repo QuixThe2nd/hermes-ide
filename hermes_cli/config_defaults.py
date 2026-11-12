@@ -443,75 +443,27 @@ DEFAULT_CONFIG = {
     },
 
     "browser": {
-        # "" = Browser Use mode when the browser-use CLI (or uvx) is available, else built-in tools
-        # (Camofox setups always keep built-in tools: no CDP surface); "browser-use" = force one
-        # browser_exec tool driving the Browser Use CLI over any CDP backend (local Chrome, cloud);
-        # "off" = force the built-in browser_navigate/browser_click/... tools.
-        "backend": "",
         "inactivity_timeout": 120,
-        "command_timeout": 30,  # seconds per browser command (screenshot, navigate, etc.)
+        "command_timeout": 30,  # seconds per Camofox command (screenshot, navigate, etc.)
         "snapshot_threshold": 15000,  # max chars before snapshot truncate-and-store (min 1000)
-        "record_sessions": False,  # auto-record browser sessions as WebM videos
-        # headed: visible Chromium window (local); skips per-turn cleanup, idle reaper still applies
-        "headed": False,
-        "allow_private_urls": False,  # allow private/internal IPs (localhost, 192.168.x.x, ...)
-        # Local browser engine for both drivers. "auto" = Chrome; "lightpanda" = faster navigation,
-        # no screenshots (Browser Use mode spawns `lightpanda serve` per session; built-in tools
-        # pass `--engine <value>` to agent-browser with Chrome fallback); "chrome" = explicit.
-        # Ignored while a cloud provider, Camofox, cdp_url or use_real_profile is active. Also
-        # settable via AGENT_BROWSER_ENGINE.
-        "engine": "auto",
-        # With a cloud provider, auto-spawn local Chromium for LAN/localhost URLs instead
-        "auto_local_for_private_urls": True,
-        "cdp_url": "",  # persistent CDP endpoint for attaching to an existing Chromium/Chrome
-        # Consent to browse with the user's REAL logins locally: runs on a Hermes-managed SNAPSHOT
-        # of the ACTIVE default-Chromium profile (Local State -> profile.last_used; cookies, logins,
-        # prefs copied and re-synced per fresh session) driven by Hermes' packaged Chromium. The
-        # snapshot dir sidesteps Chrome 136+'s default-profile debugging block and never contends
-        # with the running browser. Turning off deletes ~/.hermes/browser-profile/ so credentials
-        # don't outlive consent. Chromium-family only (Chrome, Edge, Brave, Brave Origin, Chromium);
-        # Firefox etc. fails closed. Also gates the browser_exec `local` argument (real-profile
-        # local session even under a cloud backend). Desktop Settings -> Browser.
-        "use_real_profile": False,
-        # Windows only: a running Chrome/Edge/Brave locks its cookie DB, so the profile can't be
-        # copied. When on, a locked profile still blocks and the agent ASKS first; on approval it
-        # runs `hermes browser close-profile` (kills that profile's browser tree, unsaved tabs lost)
-        # and retries once; still locked -> stays blocked, no auto-kill. No effect on macOS/Linux,
-        # where a running browser instead makes the Login Data / Web Data SQLite backups miss
-        # their deadline; quit the browser by hand there.
-        "real_profile_autoclose": False,
-        # Pin WHICH source profile directory is snapshotted for real-profile browsing (e.g. "Profile
-        # 2"). Empty = browser's last-used profile, which on multi-profile machines can hand the
-        # agent the wrong identity. A pin naming a missing directory FAILS CLOSED.
-        "real_profile_pin": "",
+        "allow_private_urls": False,  # cloud metadata endpoints remain blocked even when enabled
         # restrict_evaluate: opt-in denylist blocking sensitive JS primitives (cookies/storage/
-        # clipboard/network/form values) in browser_console(expression=...); allow_unsafe_evaluate
-        # is the legacy override that bypasses that denylist entirely.
+        # clipboard/network/form values); allow_unsafe_evaluate bypasses that denylist entirely.
         "allow_unsafe_evaluate": False,
         "restrict_evaluate": False,
-        # CDP supervisor: dialog + frame detection over a persistent WebSocket; active only with a
-        # CDP-capable backend (Browserbase, or local Chrome via /browser connect). See
-        # website/docs/developer-guide/browser-supervisor.md.
-        "dialog_policy": "must_respond",  # must_respond | auto_dismiss | auto_accept
-        "dialog_timeout_s": 300,  # safety auto-dismiss after N seconds under must_respond
         "camofox": {
-            # true = send a stable profile-scoped userId so Camofox maps it to a persistent Firefox
-            # profile; false = random ephemeral userId per session.
+            # true = stable profile-scoped userId mapped to a persistent Firefox profile;
+            # false = random ephemeral userId per session.
             "managed_persistence": False,
             # Externally managed Camofox identity, for when another app owns the visible browser.
             "user_id": "",
             "session_key": "",
             "adopt_existing_tab": False,  # rehydrate tab_id from Camofox before creating a tab
-            # Docker Camofox opens page URLs from inside the container: rewrite loopback page URLs
-            # (localhost/127.0.0.1/::1) to the host alias; CAMOFOX_URL itself is unchanged.
+            # Docker Camofox opens page URLs inside the container: optionally rewrite loopback
+            # page URLs to the host alias; CAMOFOX_URL itself is unchanged.
             "rewrite_loopback_urls": False,
             "loopback_host_alias": "host.docker.internal",
         },
-        # Authenticated browser-extension controller lane: a registered extension can become the
-        # exact controller for a session's browser_* tools (fail-closed once bound). Local API
-        # registration also requires the API server bearer key. developer_mode gates the privileged
-        # browser_cdp / browser_evaluate capabilities.
-        "extension_control": {"enabled": False, "developer_mode": False},
     },
     # Filesystem checkpoints: snapshot the working directory once per turn (on the first
     # write_file/patch call); restore with /rollback. Opt-in via `hermes chat --checkpoints` or
@@ -2689,28 +2641,6 @@ OPTIONAL_ENV_VARS = {
     "BRAVE_SEARCH_API_KEY": _tool(
         "Brave Search API subscription token (free tier: 2,000 queries/mo)",
         "Brave Search subscription token", "https://brave.com/search/api/", tools=["web_search"]),
-    "BROWSERBASE_API_KEY": _tool(
-        "Browserbase API key for cloud browser (optional — local browser works without this)",
-        "Browserbase API key", "https://browserbase.com/",
-        tools=["browser_navigate", "browser_click"]),
-    "BROWSERBASE_PROJECT_ID": _tool(
-        "Browserbase project ID (optional — only needed for cloud browser)",
-        "Browserbase project ID", "https://browserbase.com/",
-        tools=["browser_navigate", "browser_click"], password=False),
-    "BROWSER_USE_API_KEY": _tool(
-        "Browser Use API key for cloud browser (optional — local browser works without this)",
-        "Browser Use API key", "https://browser-use.com/",
-        tools=["browser_navigate", "browser_click"]),
-    "FIRECRAWL_BROWSER_TTL": _tool(
-        "Firecrawl browser session TTL in seconds (optional, default 300)",
-        "Browser session TTL (seconds)", tools=["browser_navigate", "browser_click"],
-        password=False),
-    "AGENT_BROWSER_ENGINE": _env(
-        "Local browser engine: auto (default Chrome), lightpanda (faster, no screenshots; Browser Use mode "
-        "spawns lightpanda serve), chrome", "Browser engine (auto/lightpanda/chrome)",
-        url="https://lightpanda.io/docs/run-locally/installation/one-liner",
-        tools=["browser_exec", "browser_navigate", "browser_snapshot", "browser_click", "browser_vision"],
-        password=False, category="tool", advanced=True),
     "CAMOFOX_URL": _tool(
         "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",
         "Camofox server URL", "https://github.com/jo-inc/camofox-browser",

@@ -2,10 +2,9 @@
 
 :func:`shutil.copytree` cannot copy Unix sockets, FIFOs, or device nodes —
 it collects "[Errno 6] No such device or address" and raises
-``shutil.Error`` at the end of the walk. Profiles accumulate such files in
-normal operation (e.g. a stale agent-browser control socket under
-``home/.agent-browser/``), so exports must skip them instead of failing
-the whole archive.
+``shutil.Error`` at the end of the walk. Profiles can accumulate stale
+sockets under runtime directories, so exports must skip them instead of
+failing the whole archive.
 """
 
 import os
@@ -45,17 +44,17 @@ def test_named_profile_export_survives_unix_socket(tmp_path, monkeypatch):
     """Sockets and FIFOs in a named profile are skipped, not fatal."""
     profiles_root = tmp_path / "profiles"
     profile_dir = profiles_root / "sockety"
-    browser_dir = profile_dir / "home" / ".agent-browser"
-    browser_dir.mkdir(parents=True)
+    runtime_dir = profile_dir / "home" / ".cache" / "example-tool"
+    runtime_dir.mkdir(parents=True)
 
     (profile_dir / "config.yaml").write_text("model: gpt-4\n")
-    (browser_dir / "state.json").write_text("{}\n")
+    (runtime_dir / "state.json").write_text("{}\n")
 
     # One socket the *.sock suffix rule catches, one only lstat can catch,
     # and a FIFO — none of them may fail or enter the export.
-    _bind_unix_socket(monkeypatch, browser_dir / "dev-12345.sock")
-    _bind_unix_socket(monkeypatch, browser_dir / "control")
-    os.mkfifo(browser_dir / "events")
+    _bind_unix_socket(monkeypatch, runtime_dir / "dev-12345.sock")
+    _bind_unix_socket(monkeypatch, runtime_dir / "control")
+    os.mkfifo(runtime_dir / "events")
 
     _patch_named_profile(monkeypatch, profiles_root, profile_dir)
 

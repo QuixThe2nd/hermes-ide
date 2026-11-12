@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Exact secret values that transited a server-side vault fill (browser_vault_fill). Generic
 # credential-shaped regexes cannot catch an arbitrary user password, so the fill path registers
-# the exact bytes and every browser_* tool result (including browser_cdp Runtime.evaluate
-# passthrough) is scrubbed against them before it can reach the model. Memory only: never
+# the exact bytes and every browser_* tool result (including browser_console JavaScript
+# evaluation) is scrubbed against them before it can reach the model. Memory only: never
 # persisted or logged. Keyed by profile home so a multiplex gateway never scrubs profile B's
 # output with profile A's passwords (which would also confirm to B that the bytes exist), and
 # bounded per profile: a fill-heavy session evicts its oldest entries rather than growing forever.
@@ -745,21 +745,6 @@ def _redact_strict_url_credentials(text: str) -> str:
         text)
 
 
-def redact_cdp_url(value: object) -> str:
-    """Mask secrets in a CDP/browser endpoint URL before it is logged.
-
-    Unlike ``redact_sensitive_text`` (which passes web-URL query params and
-    ``user:pass@`` through for OAuth callbacks / magic links), CDP discovery
-    tokens are pure credentials, so this opts INTO both URL redactors.
-    """
-    text = redact_sensitive_text("" if value is None else str(value))
-    if not text:
-        return text
-    text = _URL_WITH_QUERY_RE.sub(
-        lambda m: f"{m.group(1)}://{m.group(2)}{m.group(3)}?{_redact_query_string(m.group(4))}{m.group(5) or ''}",
-        text,
-    )
-    return _URL_USERINFO_RE.sub(lambda m: f"{m.group(1)}://{m.group(2)}:***@", text)
 
 
 def _redact_form_body(text: str) -> str:

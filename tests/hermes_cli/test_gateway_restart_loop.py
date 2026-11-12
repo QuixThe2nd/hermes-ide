@@ -55,8 +55,8 @@ class TestGatewayLifecyclePattern:
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
 
     @pytest.mark.parametrize("text", [
-        # Other images stay killable (evals/browser_use/orchestrate.py uses the first one).
-        "taskkill /F /IM agent-browser.exe /T",
+        # Other images stay killable.
+        "taskkill /F /IM node.exe /T",
         "taskkill /F /IM notepad.exe",
         "Stop-Process -Name chrome",
         "killall node",

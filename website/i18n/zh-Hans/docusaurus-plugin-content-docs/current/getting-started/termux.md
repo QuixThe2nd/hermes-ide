@@ -148,14 +148,14 @@ hermes setup
 
 ### 手动安装可选的 Node 依赖
 
-已验证的 Termux 路径有意跳过 Node/浏览器引导。如果你之后想尝试浏览器工具：
+已验证的 Termux 路径有意跳过 Node/浏览器引导。如果之后想尝试 Camofox，请安装 Node.js 和 Hermes 的 npm 依赖：
 
 ```bash
 pkg install nodejs-lts
-npm install
+npm install --workspaces=false
 ```
 
-浏览器工具会自动将 Termux 目录（`/data/data/com.termux/files/usr/bin`）纳入 PATH 搜索，因此无需额外配置 PATH 即可发现 `agent-browser` 和 `npx`。
+使用 `npx @askjo/camofox-browser` 启动 Camofox，并将 `CAMOFOX_URL` 设置为其控制 API。PATH 搜索包含 Termux 目录（`/data/data/com.termux/files/usr/bin`），因此无需额外配置即可发现 `npx`。Camoufox 在 Android 上的兼容性仍为实验性；如果本地引擎不受支持，请在另一台可达主机上部署 Camofox Docker。
 
 在另有文档说明之前，请将 Android 上的浏览器 / WhatsApp 工具视为实验性功能。
 

@@ -718,36 +718,6 @@ def test_bundle_closure_uv_stays_internal_node_npm_ship(monkeypatch, tmp_path):
     assert "node" in names and "npm" in names
 
 
-def test_arch_guard_allows_emulated_x64_on_win32_arm64(monkeypatch, tmp_path):
-    """agent-browser on win32-arm64 ships the x64 PE (emulated). The guard
-    must not reject it when the package declares the target emulated."""
-    import pm.cli as cli
-    from pm.lock import Facts, Lockfile
-    from pm.registry import get_package
-
-    store = tmp_path / "store"
-    entry = store / "agent-browser-0.35.1"
-    bin_dir = entry / "bin"
-    bin_dir.mkdir(parents=True)
-    # A real x64 PE header (MZ + PE sig + machine 0x8664).
-    x64_pe = (
-        b"MZ" + b"\0" * 58 + (0x80).to_bytes(4, "little")
-        + b"PE\0\0" + (0x8664).to_bytes(2, "little") + b"\0" * 54
-    )
-    (bin_dir / "agent-browser-win32-x64.exe").write_bytes(x64_pe)
-
-    lock = Lockfile(tmp_path / "lock.json")
-    lock.set_pin("agent-browser", "0.35.1", {"any": {"url": "x", "sha256": "0" * 64}})
-    lock.save()
-    monkeypatch.setattr("pm.cli._lockfile", lambda: lock)
-    monkeypatch.setattr("pm.cli.current_target", lambda: "win32-arm64")
-    monkeypatch.setattr("pm.cli.get_package", lambda name: get_package(name))
-
-    facts = Facts(store / "facts.json")
-    facts.record("agent-browser", "0.35.1", entry.name, {}, store)
-
-    problems = cli._arch_guard(store)
-    assert problems == []
 
 
 def test_python_stage_drops_unloadable_x64_vc_runtime_on_arm64(monkeypatch, tmp_path):

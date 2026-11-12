@@ -21,7 +21,6 @@ Hermes 有多种不同的可插拔接口——有些使用 Python `register_*` A
 | **图像生成后端** | [图像生成提供商插件](../image-gen-provider-plugin.md) |
 | **视频生成后端** | [视频生成提供商插件](../video-gen-provider-plugin.md) |
 | **网页搜索/提取后端** | [网页搜索提供商插件](../web-search-provider-plugin.md) |
-| **云浏览器后端**（Browserbase 类 CDP 会话提供商） | [浏览器提供商插件](../browser-provider-plugin.md) |
 | **密钥管理器后端**（保险库 / 密码管理器 / 系统钥匙串） | [密钥源插件](../secret-source-plugin.md) |
 | **TTS 后端**（任意 CLI——Piper、VoxCPM、Kokoro、声音克隆等） | [TTS 自定义命令提供商](../../user-guide/features/tts.md#custom-command-providers)——配置驱动，无需 Python |
 | **STT 后端**（自定义 whisper / ASR CLI） | [语音消息转录](../../user-guide/features/tts.md#voice-message-transcription-stt)——将 `HERMES_LOCAL_STT_COMMAND` 设置为 shell 模板 |

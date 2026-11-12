@@ -212,9 +212,7 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
     mail = emailer.available(env)
     at = _now_iso()
 
-    batch = tiers.batch_plan(dossier, brokers_list, cfg, ledger,
-                             browser_clears_captcha=cfg.get("browser_backend") == "browserbase"
-                             or bool(env.get("BROWSERBASE_API_KEY")))
+    batch = tiers.batch_plan(dossier, brokers_list, cfg, ledger)
     groups = batch["groups"]
     playbook = {p["broker_id"]: p for p in batch.get("parent_playbook") or []}
     by_id = {b.get("id"): b for b in brokers_list}
@@ -357,15 +355,15 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
                                   prep=[f"python3 scripts/pdd.py render-email {subject_id} {bid} "
                                         f"--kind ccpa_indirect --listing <url>"]))
 
-    # 6) blocked sites: stealth pass if we have one, else the operator-browser path
+    # 6) blocked sites: Camofox retry when configured, else the operator-browser path
     blocked = groups.get("blocked") or []
     if blocked:
         ids = [r["broker_id"] for r in blocked]
-        if bool(env.get("BROWSERBASE_API_KEY")):
+        if bool(env.get("CAMOFOX_URL")):
             actions.append({
                 "type": "stealth_rescan",
                 "broker_ids": ids,
-                "how": "retry these with the cloud/stealth browser backend, then record real verdicts",
+                "how": "retry these with Camofox, then record real verdicts; solve any CAPTCHA manually",
             })
         else:
             for r in blocked:

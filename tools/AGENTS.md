@@ -70,22 +70,22 @@ Single `TOOLSETS` dict. Keys today: `browser, clarify, code_execution, cronjob, 
 delegation, discord, discord_admin, feishu_doc, feishu_drive, file, homeassistant, image_gen,
 memory, messaging, moa, rl, safe, search, session_search, skills, spotify, terminal, todo,
 tts, video, vision, web, yuanbao` (don't assert the list in tests). Per-platform enable/disable via
-`hermes tools` (curses) or `tools.<platform>.enabled/disabled` in config.yaml. `browser_exec`
-replaces the other browser tools when `browser.backend` is `browser-use`.
+`hermes tools` (curses) or `tools.<platform>.enabled/disabled` in config.yaml. Browser tools always use
+Camofox; set `CAMOFOX_URL` and optionally `CAMOFOX_API_KEY` to connect.
 
 ## Backends and providers inside tools/
 
 Several tools front pluggable backends: terminal environments in `tools/environments/` (local,
 docker, ssh, modal, daytona, singularity; `terminal_tool_backends.py`, `tool_backend_helpers.py`),
-browser (`browser_tool_*.py`: cdp, cloud, install, lifecycle, session, real_profile, vision), MCP
-client (`mcp_tool_*.py`: config, discovery, transport, registration, content, errors), TTS
+Camofox browser support (`browser_tool.py`, `browser_camofox.py`, lifecycle/snapshot/policy siblings),
+MCP client (`mcp_tool_*.py`: config, discovery, transport, registration, content, errors), TTS
 (`tts_tool_providers.py`, `tts_command_provider.py`), skills hub sources (`skills_hub_official.py`
 `OptionalSkillSource`). Adding a backend = a new sibling or provider entry in the existing table,
 never an `elif` on a backend name (root shape rules). Remote-backend file visibility problems are
 fixed at the mount, not by adding a tool.
 
 **Native vision embeds are history, not one-shot payloads.** `vision_tools.py::_vision_analyze_native`
-(and the browser screenshot twins in `browser_tool_vision.py` / `browser_use_cli.py`) bake the image
+(and the Camofox screenshot path in `browser_tool.py`) bake the image
 into a tool result that is re-sent on every later API call. Size and repeat policy live in
 `vision_tools_history_budget.py` (config section `vision`: `embed_target_bytes`, `max_calls_per_image`);
 the repeat counter is keyed on (session id, resolved source) so region crops share their file's count,

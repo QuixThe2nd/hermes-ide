@@ -1016,10 +1016,7 @@ class TestNodeRuntimeNpmResolution:
             lambda *a, **k: subprocess.CompletedProcess([], 1, stdout="", stderr=""),
         )
 
-        with patch(
-            "tools.browser_tool_install.warm_agent_browser_npx_cache", return_value=True
-        ):
-            failed = update_cmd._update_node_dependencies()
+        failed = update_cmd._update_node_dependencies()
         assert failed == ["ui-tui workspace"]
         out = capsys.readouterr().out
         assert "mixed state" in out
@@ -1062,23 +1059,8 @@ class TestNodeRuntimeNpmResolution:
 
 
 class TestUpdateNodeDependencies:
-    """Unit tests for _update_node_dependencies — issue #43564.
+    """Workspace installs honor lockfile changes without touching real node_modules."""
 
-    Root package.json has no dependencies of its own: agent-browser
-    resolves at runtime via npx (tools/browser_tool.py). A workspace-scoped
-    install targets ui-tui and web directly. Skipping is governed by
-    _npm_lockfile_changed (content hash over the lockfile + every workspace
-    package.json), tested separately in TestNpmLockfileChanged.
-    Uses a tmp_path root so tests never touch real node_modules.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _stub_npx_warmup(self):
-        """The npx cache warm-up is covered by its own dedicated test below;
-        stub it out everywhere else so it doesn't add a spurious npm/npx
-        call to the workspace-install assertions in this class."""
-        with patch("tools.browser_tool_install.warm_agent_browser_npx_cache", return_value=True):
-            yield
 
     def _npm_calls(self, mock_run):
         return [
@@ -1147,10 +1129,8 @@ class TestUpdateNodeDependencies:
     def test_install_includes_workspace_root_to_protect_root_devdependencies(
         self, _which, mock_popen, tmp_path, monkeypatch
     ):
-        """Root package.json still owns devDependencies (the shared ESLint
-        flat config every workspace's own eslint.config.mjs imports) even
-        though agent-browser and @streamdown/math were removed from root
-        `dependencies` (#43564). --include-workspace-root keeps them from
+        """Root package.json owns the shared ESLint flat-config devDependencies
+        imported by every workspace. --include-workspace-root keeps them from
         being pruned by this scoped install."""
         from hermes_cli import main as hm
 
@@ -1246,27 +1226,6 @@ class TestUpdateNodeDependencies:
 
         assert not recorded, "lockfile hash must not be recorded when npm install fails"
 
-    @patch("subprocess.Popen")
-    @patch("shutil.which", return_value="/usr/bin/npm")
-    def test_warms_npx_agent_browser_cache_regardless_of_install_result(
-        self, _which, mock_popen, tmp_path, monkeypatch
-    ):
-        """The npx warm-up must fire even when the workspace install fails —
-        it's independent of ui-tui/web dependency state (#43564)."""
-        from hermes_cli import main as hm
-
-        (tmp_path / "package.json").write_text("{}")
-        (tmp_path / "package-lock.json").write_text("{}")
-        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        monkeypatch.setattr(hm, "_npm_lockfile_changed", lambda root: True)
-        mock_popen.side_effect = self._make_popen([], returncode=1, stderr_lines=["npm ERR!\n"])
-
-        with patch(
-            "tools.browser_tool_install.warm_agent_browser_npx_cache", return_value=True
-        ) as mock_warm:
-            update_cmd._update_node_dependencies()
-
-        mock_warm.assert_called_once()
 
     @patch("subprocess.run")
     @patch("shutil.which", return_value=None)

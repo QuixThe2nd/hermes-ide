@@ -311,7 +311,6 @@ _PLUGIN_COMPAT_LAZY = {
     'FTS_STORAGE_VERSION': ('hermes_state_common', 'FTS_STORAGE_VERSION'),
     'OPENROUTER_MODELS_URL': ('hermes_constants', 'OPENROUTER_MODELS_URL'),
     'STATE_DB_SIZE_WARN_BYTES': ('hermes_cli.doctor_state', 'STATE_DB_SIZE_WARN_BYTES'),
-    'agent_browser_runnable': ('hermes_constants', 'agent_browser_runnable'),
     'base_url_host_matches': ('utils', 'base_url_host_matches'),
     'check_certificates': ('hermes_cli.doctor_platform', 'check_certificates'),
     'check_macos_full_disk_access': ('hermes_cli.doctor_platform', 'check_macos_full_disk_access'),

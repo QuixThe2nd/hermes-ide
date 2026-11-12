@@ -260,7 +260,6 @@
     "pm::",
     "pm::paths",
     "pm::receipt",
-    "tools.browser_tool_install::warm_agent_browser_npx_cache",
     "tools.checkpoint_manager::checkpoint_footprint_notice",
     "tools.skills_sync::sync_skills",
     "utils::atomic_json_write"

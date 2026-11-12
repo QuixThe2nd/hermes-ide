@@ -31,7 +31,7 @@ Full enumeration: `TOOLSETS` dict in `toolsets.py` (`_HERMES_CORE_TOOLS` is the 
 | Toolset | What it provides |
 |---------|-----------------|
 | `web` / `search` | Web search + extraction / search-only subset |
-| `browser` | Browser automation (Browserbase, Camofox, or local Chromium) |
+| `browser` | Browser automation through Camofox |
 | `terminal` | Shell commands and process management |
 | `file` | File read/write/search/patch |
 | `code_execution` | Sandboxed Python execution |

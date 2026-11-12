@@ -16,11 +16,6 @@ from hermes_cli.doctor_live import (
     maybe_run_live_checks,
     run_live_checks,
 )
-from tools import browser_tool_install as bt_install
-
-# Captured before the autouse fixture below stubs doctor_live._browser_available
-# to a constant, so TestBrowserAvailableNpxRung can exercise the real function.
-_real_browser_available = doctor_live._browser_available
 
 
 def _args(live: bool = True) -> argparse.Namespace:
@@ -31,12 +26,10 @@ def _args(live: bool = True) -> argparse.Namespace:
 def _clean_env(monkeypatch):
     """Strip backend credentials so each test opts in explicitly."""
     for var in ("FIRECRAWL_API_KEY", "FAL_KEY", "OPENAI_API_KEY",
-                "ELEVENLABS_API_KEY", "GROQ_API_KEY"):
+                "ELEVENLABS_API_KEY", "GROQ_API_KEY", "CAMOFOX_URL", "CAMOFOX_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     # Default: empty config, no MCP servers, local tts/stt.
     monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
-    # Default: browser not installed.
-    monkeypatch.setattr(doctor_live, "_browser_available", lambda: False)
 
 
 class TestLiveFlagGating:
@@ -182,52 +175,21 @@ class TestConfiguredOnlySelection:
         results = {r.name: r for r in run_live_checks([])}
         assert results["STT"].status == "warn"
 
-    def test_browser_probed_when_available(self, monkeypatch):
-        monkeypatch.setattr(doctor_live, "_browser_available", lambda: True)
-        monkeypatch.setattr(
-            doctor_live, "_launch_browser_probe",
-            lambda timeout: (True, "about:blank ok"))
+    def test_browser_probes_authenticated_camofox_health(self, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://camofox.test:9377/")
+        monkeypatch.setenv("CAMOFOX_API_KEY", "camofox-secret")
+        calls = []
+
+        def _fake_get(url, headers=None, timeout=None):
+            calls.append((url, headers))
+            return SimpleNamespace(status_code=200)
+
+        monkeypatch.setattr(doctor_live, "_http_get", _fake_get)
         results = {r.name: r for r in run_live_checks([])}
         assert results["Browser"].status == "pass"
+        assert calls == [("http://camofox.test:9377/health", {"Authorization": "Bearer camofox-secret"})]
 
 
-class TestBrowserAvailableNpxRung:
-    """agent-browser resolves lazily via npx on the default install (#43564),
-    invisible to the bare PATH/node_modules probes _browser_available starts
-    with. It must fall through to the same cascade `hermes doctor` uses."""
-
-    def _block_path_and_node_modules_checks(self, monkeypatch, tmp_path):
-        monkeypatch.setattr("shutil.which", lambda *a, **k: None)
-        monkeypatch.setattr("hermes_cli.doctor.HERMES_HOME", tmp_path / "home")
-        monkeypatch.setattr("hermes_cli.doctor.PROJECT_ROOT", tmp_path / "root")
-
-    def test_true_when_npx_resolves_agent_browser(self, monkeypatch, tmp_path):
-        self._block_path_and_node_modules_checks(monkeypatch, tmp_path)
-
-        monkeypatch.setattr(bt_install, "_find_agent_browser", lambda **_kw: "npx agent-browser")
-
-        assert _real_browser_available() is True
-
-    def test_false_when_nothing_resolves(self, monkeypatch, tmp_path):
-        self._block_path_and_node_modules_checks(monkeypatch, tmp_path)
-
-        def _raise(**_kw):
-            raise FileNotFoundError("agent-browser CLI not found")
-
-        monkeypatch.setattr(bt_install, "_find_agent_browser", _raise)
-
-        assert _real_browser_available() is False
-
-    def test_false_on_termux_local_bare_npx(self, monkeypatch, tmp_path):
-        """On Termux in local mode the bare npx fallback is too fragile to
-        advertise as ready — must not diverge from dep_ensure/nous_subscription's
-        same carve-out."""
-        self._block_path_and_node_modules_checks(monkeypatch, tmp_path)
-
-        monkeypatch.setattr(bt_install, "_find_agent_browser", lambda **_kw: "npx agent-browser")
-        monkeypatch.setattr("tools.browser_tool_install._requires_real_termux_browser_install", lambda cmd: True)
-
-        assert _real_browser_available() is False
 
 
 class TestFailureIsolation:

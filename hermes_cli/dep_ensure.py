@@ -7,8 +7,7 @@ that provide it, pm's lazy-install policy decides whether installing is
 allowed right now, and pm's InstallError carries the remedy when not.
 
 Deps that degrade gracefully (ffmpeg → skip conversion) are not wired
-here — only hard-fail sites call ensure_dependency (TUI needs node,
-browser tools need the browser stack).
+here — only hard-fail sites call ensure_dependency (the TUI needs node).
 """
 from __future__ import annotations
 
@@ -19,22 +18,10 @@ from hermes_constants import find_node_executable
 # dep name -> (availability check, pm packages that provide it)
 _DEPS = {
     "node": (lambda: find_node_executable("node") is not None, ("node",)),
-    "browser": (lambda: _browser_available(), ("agent-browser", "chromium")),
     "ripgrep": (lambda: shutil.which("rg") is not None, ("ripgrep",)),
 }
 
 
-def _browser_available() -> bool:
-    from hermes_constants import agent_browser_runnable
-
-    if agent_browser_runnable(shutil.which("agent-browser")):
-        return True
-    try:
-        import pm
-
-        return pm.is_installed("agent-browser")
-    except Exception:
-        return False
 
 
 def ensure_dependency(dep: str, interactive: bool = True) -> bool:

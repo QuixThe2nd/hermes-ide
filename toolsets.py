@@ -54,10 +54,8 @@ _HERMES_CORE_TOOLS = [
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
-    "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+    "browser_vision", "browser_console",
     "browser_vault_list", "browser_vault_unlock", "browser_vault_fill", "browser_vault_save_login", "browser_vault_enter_code",  # ride with the browser
-    # replaces other tools when browser.backend is "browser-use"
-    "browser_exec",
     # Text-to-speech
     "text_to_speech",
     # Planning & memory
@@ -193,13 +191,12 @@ TOOLSETS = {
     },
     
     "browser": {
-        "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
+        "description": "Camofox browser automation for web interaction with web search for finding URLs",
         "tools": [
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp",
-            "browser_dialog", "browser_exec", "web_search"
+            "browser_vision", "browser_console", "web_search"
         ],
         "includes": []
     },
@@ -404,8 +401,7 @@ TOOLSETS = {
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-            "browser_exec",
+            "browser_vision", "browser_console",
             "todo_list", "memory",
             "session_search", "clarify",
             "execute_code", "delegate_agent",
@@ -443,8 +439,7 @@ TOOLSETS = {
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-            "browser_exec",
+            "browser_vision", "browser_console",
             # Planning & memory
             "todo_list", "memory",
             # Session history search

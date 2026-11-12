@@ -1514,37 +1514,28 @@ web:
 
 ## 浏览器
 
-配置浏览器自动化行为：
+配置 Camofox 浏览器自动化：
 
 ```yaml
 browser:
-  inactivity_timeout: 120        # 自动关闭空闲会话前的秒数
-  command_timeout: 30             # 浏览器命令超时（截图、导航等）（秒）
-  record_sessions: false         # 自动将浏览器会话录制为 WebM 视频到 ~/.hermes/browser_recordings/
-  # 可选 CDP 覆盖 —— 设置后，Hermes 直接附加到您自己的
-  # Chromium 系浏览器（通过 /browser connect），而不是启动无头浏览器。
-  cdp_url: ""
-  # 对话框监督器 —— 控制当 CDP 后端附加时（Browserbase、本地 Chromium 系
-  # 浏览器通过 /browser connect）如何处理原生 JS 对话框（alert/confirm/prompt）。
-  # 在 Camofox 和默认本地 agent 浏览器模式下忽略。
-  dialog_policy: must_respond    # must_respond | auto_dismiss | auto_accept
-  dialog_timeout_s: 300          # must_respond 下的安全自动关闭（秒）
+  inactivity_timeout: 120        # 自动清理空闲会话前的秒数
+  command_timeout: 30            # Camofox 命令超时（秒）
+  snapshot_threshold: 15000      # 快照截断并保存的阈值
+  allow_private_urls: false      # 即使为 true，云元数据端点仍被阻止
+  restrict_evaluate: false       # 选择启用敏感 JavaScript 拒绝列表
+  allow_unsafe_evaluate: false   # 仅显式绕过该拒绝列表
   camofox:
-    managed_persistence: false   # 为 true 时，Camofox 会话跨重启持久化 cookie/登录
+    managed_persistence: false   # 跨重启复用 profile 级身份
     user_id: ""                  # 可选的外部管理 Camofox userId
-    session_key: ""              # Hermes 创建标签页时发送的可选会话密钥
-    adopt_existing_tab: false    # 在创建新标签页之前重用此身份的现有标签页
+    session_key: ""              # 创建/接管标签页时使用的可选 listItemId
+    adopt_existing_tab: false    # 创建前复用已有标签页
+    rewrite_loopback_urls: false # 为 Docker 中的 Camofox 重写页面回环主机
+    loopback_host_alias: host.docker.internal
 ```
 
-**对话框策略：**
+设置 `CAMOFOX_URL`；对于需认证的服务，还要设置 `CAMOFOX_API_KEY`。Camofox 是唯一的浏览器后端；加载现有配置时，旧引擎/提供商键会被忽略。
 
-- `must_respond`（默认）—— 捕获对话框，在 `browser_snapshot.pending_dialogs` 中显示，等待 agent 调用 `browser_dialog(action=...)`。在 `dialog_timeout_s` 秒内无响应后，对话框被自动关闭以防止页面的 JS 线程永久停滞。
-- `auto_dismiss` —— 捕获，立即关闭。Agent 仍然在事后的 `browser_snapshot.recent_dialogs` 中看到对话框记录，`closed_by="auto_policy"`。
-- `auto_accept` —— 捕获，立即接受。适用于有激进 `beforeunload` 提示的页面。
-
-完整对话框工作流请参阅[浏览器功能页面](./features/browser.md#browser_dialog)。
-
-浏览器工具集支持多个 provider。有关 Browserbase、Browser Use 和本地 Chromium 系 CDP 设置的详细信息，请参阅[浏览器功能页面](./features/browser.md)。
+服务配置、持久会话、外部标签页接管、VNC 和 URL/evaluate 策略请参阅[浏览器自动化](./features/browser.md)。
 
 ## 时区
 

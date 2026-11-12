@@ -1,15 +1,12 @@
 """Behavior tests for config-driven browser snapshot thresholds."""
 
 import json
-from unittest.mock import Mock
 
 import pytest
 
 from hermes_cli.config import DEFAULT_CONFIG
 from tools import browser_camofox, browser_tool
-from tools import browser_tool_cloud as bt_cloud
 from tools import browser_tool_lifecycle as bt_lifecycle
-from tools import browser_tool_session as bt_session
 
 
 @pytest.fixture(autouse=True)
@@ -76,83 +73,6 @@ def test_cleanup_reloads_updated_profile_config(isolated_snapshot_threshold):
     bt_lifecycle.cleanup_all_browsers()
     assert browser_tool.get_browser_snapshot_threshold() == 15001
 
-
-def test_browser_snapshot_applies_profile_threshold(
-    isolated_snapshot_threshold,
-    monkeypatch,
-):
-    _write_threshold(isolated_snapshot_threshold, 1000)
-    snapshot = _long_snapshot(1500)
-
-    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
-    monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: True)
-    monkeypatch.setattr(browser_tool, "_last_session_key", lambda task_id: task_id)
-    monkeypatch.setattr(
-        bt_session,
-        "_run_browser_command",
-        lambda *args, **kwargs: {
-            "success": True,
-            "data": {"snapshot": snapshot, "refs": {"e1": {}}},
-        },
-    )
-
-    result = json.loads(browser_tool.browser_snapshot(task_id="threshold-test"))
-
-    assert result["success"] is True
-    assert len(result["snapshot"]) < len(snapshot)
-    assert "more lines truncated" in result["snapshot"]
-
-
-def test_browser_navigation_applies_profile_threshold(
-    isolated_snapshot_threshold,
-    monkeypatch,
-):
-    _write_threshold(isolated_snapshot_threshold, 1000)
-    snapshot = _long_snapshot(1500)
-    task_id = "threshold-navigate-test"
-
-    monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: True)
-    monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: None)
-    monkeypatch.setattr(
-        bt_session,
-        "_get_session_info",
-        lambda session_key: {
-            "session_name": "threshold-test",
-            "_first_nav": False,
-            "features": {"local": True, "proxies": True},
-        },
-    )
-    monkeypatch.setattr(
-        bt_session,
-        "_run_browser_command",
-        Mock(
-            side_effect=[
-                {
-                    "success": True,
-                    "data": {
-                        "title": "Example",
-                        "url": "https://example.com/",
-                    },
-                },
-                {
-                    "success": True,
-                    "data": {"snapshot": snapshot, "refs": {"e1": {}}},
-                },
-            ]
-        ),
-    )
-
-    result = json.loads(
-        browser_tool.browser_navigate(
-            "https://example.com",
-            task_id=task_id,
-        )
-    )
-    browser_tool._last_active_session_key.pop(task_id, None)
-
-    assert result["success"] is True
-    assert len(result["snapshot"]) < len(snapshot)
-    assert "more lines truncated" in result["snapshot"]
 
 
 def test_camofox_navigation_applies_same_profile_threshold(

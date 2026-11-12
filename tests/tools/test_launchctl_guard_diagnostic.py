@@ -56,7 +56,7 @@ def test_interpreter_kill_rejection_names_the_owned_process_route(tmp_path, monk
     assert blocked["exit_code"] == 1
     assert "proc_" in blocked["error"] and "explicit PID" in blocked["error"]
     assert "proc_" in json.loads(run("pkill -9 python3"))["error"]
-    assert run("taskkill /F /IM agent-browser.exe /T") is None
+    assert run("taskkill /F /IM node.exe /T") is None
     assert run("taskkill /F /PID 46544") is None
     # Inherited launch markers remain set, but without a running GatewayRunner loop this is a
     # descendant/foreground process and must not inherit the gateway's lifecycle restrictions.

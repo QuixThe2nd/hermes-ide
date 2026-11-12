@@ -64,28 +64,15 @@ verifying re-scan.
 - `python` (stdlib only; no extra packages needed for the core engine).
 - **Optional upgrades** (the skill works zero-config without these; `setup --auto` turns on every
   one it detects, reading credentials from the shell env **and from `$HERMES_HOME/.env`** so keys
-  Hermes already loads for its own tools are picked up without re-exporting - each one converts a
-  class of human tasks into agent actions):
-  - **Cloud browser (recommended default): `BROWSERBASE_API_KEY`.** `setup --auto` selects it
-    whenever the key is present, and it is the intended baseline: a real residential-IP cloud
-    browser **clears soft/managed CAPTCHAs (Cloudflare Turnstile, hCaptcha/reCAPTCHA checkbox) as
-    normal operation**, so those brokers stay automated (T1) instead of becoming human tasks. This
-    is not CAPTCHA "solving" - no solver service, no fingerprint spoofing; only interactive/behavioral
-    ("hard") challenges the browser genuinely cannot pass fall back to a human task. Without the key,
-    the plain agent browser is used and soft-CAPTCHA brokers drop to T2 (human).
+  Hermes already loads for its own tools are picked up without re-exporting):
+  - **Camofox browser: `CAMOFOX_URL`.** All `browser_*` tools use Camofox. It does not solve
+    CAPTCHAs; interactive or behavioral challenges remain human tasks.
   - Email automation, two credential-free-or-not options:
     - **Browser mode (no password): `setup --email-mode browser`.** The agent sends opt-out/CCPA
       emails and opens verification links through the operator's **logged-in webmail** using
-      `browser_*` tools. Nothing is stored. This requires Hermes to be pointed at the operator's own
-      logged-in browser, **NOT** a cloud browser: a headless cloud browser (Browserbase) holds no
-      webmail session and is itself Cloudflare/DataDome-gated on webmail and on session-bound broker
-      gates (e.g. PeopleConnect guided-mode). Drive the operator's real Chrome over CDP - launch
-      `chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.hermes/chrome-debug"` (a dedicated
-      debug profile signed into the webmail once, not the Default profile) and connect the browser
-      tools to `127.0.0.1:9222`. **`$PDD cdp` launches this for you** (finds Chrome/Chromium/Brave/Edge,
-      starts it detached on the dedicated profile, prints the CDP endpoint; `--check` to test, `--print`
-      for the command). See `references/methods.md` -> "Browser backends: scan vs execute".
-      Falls back to drafts for an email if the inbox isn't reachable.
+      `browser_*` tools. Nothing is stored. Configure `CAMOFOX_USER_ID` and `CAMOFOX_SESSION_KEY`
+      for an externally managed Camofox profile already signed into webmail. See
+      `references/methods.md` -> "Browser workflow". Falls back to drafts if the inbox is unreachable.
     - **SMTP/IMAP (stored creds): `EMAIL_ADDRESS` + `EMAIL_PASSWORD`** (+ `EMAIL_SMTP_HOST` /
       `EMAIL_IMAP_HOST` for non-mainstream providers; gmail/outlook/yahoo/icloud/fastmail inferred).
       The CLI sends via `send-email` and reads verify links via `poll-verification`. The `agentmail`
@@ -111,7 +98,6 @@ breaks reading the dossier).
 |---|---|
 | `$PDD setup --auto` | **Autonomous setup**: detect capabilities, pick the most autonomous valid config (no questions) |
 | `$PDD doctor` | Readiness check: config, broker count, and which upgrades are on/available |
-| `$PDD cdp [--check] [--print] [--port N]` | Launch/detect the operator's Chrome over CDP for Phase-2 browser + webmail (dedicated debug profile; the reliable way to send webmail and clear session-bound gates) |
 | `$PDD intake --full-name "..." [--alias ...] [--email ... --phone ...] [--city --state] [--prior-location "City,ST"] --consent` | Create a consenting subject; captures aliases + multiple emails/phones + prior locations; prints `subject_id` |
 | `$PDD next <subject>` | **The autonomous loop driver**: ordered agent actions right now + human digest + `next_wake_at` |
 | `$PDD brokers [--priority crucial]` | List the people-search broker database (curated + live) |
@@ -147,7 +133,7 @@ For anything past a couple of brokers, run this as **map → reduce → act**, n
   field this timed out repeatedly (600s, ~5-6 brokers each, no summary) because browser navigation is
   heavy; the ledger writes that survived came at 10x the cost of parent `web_extract`. A `blocked`
   (DataDome/Cloudflare/`antibot`) site is *not* a subagent job either: record `blocked` and requeue it
-  for a stealth/cloud browser (Browserbase) pass. Subagent reports are self-reports - the parent
+  for the operator-in-the-loop pass. Subagent reports are self-reports - the parent
   re-fetches key URLs to confirm a `found` before trusting it (this cuts both ways: it caught a real
   listing the parent had wrongly assumed was a false positive).
 - **REDUCE - `$PDD plan <subject> --batch`.** Collapses the crawl into a phase-oriented plan: groups by
@@ -193,7 +179,7 @@ recording `found` and before any deletion.
 
 1. **Setup (once, no questions).** Run `$PDD setup --auto` - it detects capabilities and configures
    the most autonomous valid combination itself (programmatic email when `EMAIL_*` creds exist,
-   Browserbase when its key exists, `age` encryption when the binary exists, `autonomy=full`). Then
+   `age` encryption when the binary exists, `autonomy=full`). Then
    `$PDD doctor` and show the operator the readiness output **for information, not as a question** -
    proceed immediately. Mention what would unlock more automation (e.g. email creds) but do not wait.
 2. **Intake + consent (the ONE human conversation).** `$PDD intake ...` with `--consent` (and

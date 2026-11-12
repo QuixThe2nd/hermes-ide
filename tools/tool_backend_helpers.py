@@ -10,7 +10,6 @@ from typing import Any, Dict, Optional
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
-_DEFAULT_BROWSER_PROVIDER = "local"
 _DEFAULT_MODAL_MODE = "auto"
 _VALID_MODAL_MODES = {"auto", "direct", "managed"}
 
@@ -45,10 +44,6 @@ def nous_tool_gateway_unavailable_message(capability: str = "the Nous Tool Gatew
             "Nous Portal login and billing status.")
 
 
-def normalize_browser_cloud_provider(value: object | None) -> str:
-    """Return a normalized browser provider key."""
-    provider = str(value or _DEFAULT_BROWSER_PROVIDER).strip().lower()
-    return provider or _DEFAULT_BROWSER_PROVIDER
 
 
 def coerce_modal_mode(value: object | None) -> str:
@@ -176,10 +171,9 @@ def prefers_gateway(config_section: str) -> bool:
 NOUS_MANAGED_PROVIDER = "nous"
 # Per-capability keys that also count as "this category has been configured".
 _EXTRA_SELECTION_KEYS = {"web": ("search_backend", "extract_backend")}
-# Key(s) carrying the category's provider selection. ``browser.backend`` is the DRIVER
-# choice (browser-use CLI vs built-in), not the cloud provider — excluded.
-_SELECTION_NAME_KEYS = {"browser": ("cloud_provider",), "web": ("backend",)}
-_DEFAULT_NAME_KEYS = ("provider", "backend", "cloud_provider")
+# Key(s) carrying the category's provider selection.
+_SELECTION_NAME_KEYS = {"web": ("backend",)}
+_DEFAULT_NAME_KEYS = ("provider", "backend")
 
 
 def _raw_section(section: str) -> Dict[str, Any] | None:
