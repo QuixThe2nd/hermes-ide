@@ -394,8 +394,6 @@ def _migrate_to_29(results: Dict[str, Any], quiet: bool) -> None:
                 "  ✓ Renamed write_mode → write_approval (boolean gate)")
 
 
-# 29 → 30 (curator.consolidate defaults to false) is schema-default-only: deep-merge supplies it
-# at read time and persisting a default would only bloat a lean config. No registry entry.
 
 
 def _migrate_to_33(results: Dict[str, Any], quiet: bool) -> None:
@@ -1135,6 +1133,20 @@ def _migrate_to_45(results: Dict[str, Any], quiet: bool) -> None:
         f"  ✓ Enabled the Connections toolset (Gmail, Linear, Notion, local MCP servers) for {platforms}. "
         "Uncheck Connections in `hermes tools` to turn it off.")
 
+
+def _migrate_to_46(results: Dict[str, Any], quiet: bool) -> None:
+    # 45 → 46: consolidation is unconditional; the retired opt-out has no behavior to preserve.
+    config = read_raw_config()
+    curator = config.get("curator")
+    if not isinstance(curator, dict) or "consolidate" not in curator:
+        return
+    curator.pop("consolidate")
+    config["curator"] = curator
+    _commit(
+        config, results, quiet,
+        "removed curator.consolidate (consolidation is always enabled)",
+        "  ✓ Removed curator.consolidate — the LLM consolidation pass now runs on every curator review.")
+
 #: Registry of (target_version, migration_fn), strictly ascending. The driver
 #: applies every entry whose target version is greater than the on-disk
 #: observe earlier steps' writes via read_raw_config() (filesystem state).
@@ -1253,6 +1265,8 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
             "skills/.archive/ (recoverable with `hermes curator restore`). Set it back to 90 to keep the old window."))),
     # 44 → 45: saved platform_toolsets lists predate the connections toolset (see _migrate_to_45).
     (45, _migrate_to_45),
+    # 45 → 46: remove the retired curator.consolidate opt-out.
+    (46, _migrate_to_46),
 )
 
 

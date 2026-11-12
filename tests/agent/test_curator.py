@@ -27,7 +27,7 @@ def curator_env(tmp_path, monkeypatch):
     import agent.curator as curator
     importlib.reload(curator)
 
-    # Neutralize the real LLM pass by default — tests opt in per-case.
+    # Neutralize the real LLM pass by default — individual cases provide stubs.
     monkeypatch.setattr(curator, "_run_llm_review", lambda prompt: "llm-stub")
 
     # Default: no config file → curator defaults. Tests can override.
@@ -396,7 +396,7 @@ def test_llm_prompt_does_not_invite_bundled_writes_when_prune_builtins_on(
                 "tool_calls": [], "error": None}
 
     monkeypatch.setattr(c, "_run_llm_review", _stub)
-    c.run_curator_review(synchronous=True, consolidate=True, dry_run=True)
+    c.run_curator_review(synchronous=True, dry_run=True)
 
     prompt = captured["prompt"]
     assert "agent-fixture" in prompt
@@ -408,7 +408,7 @@ def test_llm_prompt_does_not_invite_bundled_writes_when_prune_builtins_on(
     import shutil
     shutil.rmtree(skills_dir / "agent-fixture")
     captured.clear()
-    c.run_curator_review(synchronous=True, consolidate=True, dry_run=True)
+    c.run_curator_review(synchronous=True, dry_run=True)
     assert "prompt" not in captured
 
 
@@ -570,11 +570,33 @@ def test_dry_run_injects_report_only_banner(curator_env, monkeypatch):
                 "tool_calls": [], "error": None}
     monkeypatch.setattr(c, "_run_llm_review", _stub)
 
-    c.run_curator_review(synchronous=True, dry_run=True, consolidate=True)
+    c.run_curator_review(synchronous=True, dry_run=True)
     assert "DRY-RUN" in captured["prompt"]
     assert "DO NOT" in captured["prompt"]
 
 
+
+
+def test_consolidation_pass_runs_even_when_legacy_config_disables_it(curator_env, monkeypatch):
+    """The legacy false toggle must not suppress the unconditional LLM pass."""
+    c = curator_env["curator"]
+    monkeypatch.setattr(c, "_load_config", lambda: {"consolidate": False})
+    calls = []
+
+    def _consolidation(prefix, auto_summary, dry_run, before_names):
+        calls.append({"prefix": prefix, "auto_summary": auto_summary,
+                      "dry_run": dry_run, "before_names": before_names})
+        return (
+            "dry-run auto: no changes; llm: called",
+            {"final": "", "summary": "called", "model": "", "provider": "",
+             "tool_calls": [], "error": None},
+        )
+
+    monkeypatch.setattr(c, "_consolidation_pass", _consolidation)
+    c.run_curator_review(synchronous=True, dry_run=True)
+
+    assert len(calls) == 1
+    assert calls[0]["dry_run"] is True
 
 
 def test_run_review_synchronous_invokes_llm_stub(curator_env, monkeypatch):
@@ -601,7 +623,6 @@ def test_run_review_synchronous_invokes_llm_stub(curator_env, monkeypatch):
     c.run_curator_review(
         on_summary=lambda s: captured.append(s),
         synchronous=True,
-        consolidate=True,
     )
 
     assert len(calls) == 1
@@ -708,7 +729,7 @@ def test_review_prompt_tells_reviewer_to_read_before_writing(curator_env, monkey
                 "tool_calls": [], "error": None}
     monkeypatch.setattr(c, "_run_llm_review", _stub)
 
-    c.run_curator_review(synchronous=True, consolidate=True)
+    c.run_curator_review(synchronous=True)
 
     prompt = captured["prompt"]
     assert "skill_view" in prompt

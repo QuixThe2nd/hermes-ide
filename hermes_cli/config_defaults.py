@@ -1491,8 +1491,8 @@ DEFAULT_CONFIG = {
     },
 
     # Curator — background maintenance of AGENT-CREATED skills (never hub-installed): marks
-    # long-unused skills stale, archives (never deletes) obsolete ones, optionally consolidates
-    # overlaps via a forked aux-model agent. Inactivity-triggered from session start, no cron
+    # long-unused skills stale, archives (never deletes) obsolete ones, and consolidates overlaps
+    # via a forked aux-model agent on every review. Inactivity-triggered from session start, no cron
     # daemon. `hermes curator status` shows the last run.
     "curator": {
         "enabled": True,
@@ -1500,9 +1500,6 @@ DEFAULT_CONFIG = {
         "min_idle_hours": 2,  # only run after the agent has been idle this long
         "stale_after_days": 14,  # mark "stale" after this many unused days
         "archive_after_days": 30,  # move to skills/.archive/ (recoverable) after this many
-        # LLM consolidation (umbrella-building) pass. OFF = deterministic inactivity prune only, no
-        # aux-model cost. `hermes curator run --consolidate` overrides once.
-        "consolidate": False,
         # Also prune bundled built-ins (a suppression list stops `hermes update` restoring them);
         # hub-installed skills are NEVER pruned. OFF by default: shipped skills vanishing from
         # `skills_list` because nobody loaded them for 30 days surprised people (57 gone in one
@@ -1511,9 +1508,9 @@ DEFAULT_CONFIG = {
         # TTL purge of skills/.archive/: 0 = never; > 0 lets the explicit `hermes curator purge`
         # delete older archived skills (never automatic; logged in the ledger).
         "archive_ttl_days": 0,
-        # Before a consolidation pass (the only one that rewrites skill content in place), snapshot
-        # ~/.hermes/skills/ to ~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz (`hermes curator
-        # rollback`). The prune-only pass just moves directories into .archive/ and takes none.
+        # Before every real curator run, snapshot ~/.hermes/skills/ to
+        # ~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz (`hermes curator rollback`).
+        # Dry-run reviews do not mutate the tree and take no snapshot.
         "backup": {
             "enabled": True,
             "keep": 2,  # retain last N regular snapshots
@@ -2515,7 +2512,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 45,  # Config schema version - bump this when adding new required fields
+    "_config_version": 46,  # Config schema version - bump this when adding new required fields
 }
 
 

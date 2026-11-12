@@ -63,11 +63,10 @@ so nothing is lost.
   Bundled + hub-installed skills are off-limits. **Never deletes** —
   max destructive action is archive. Pinned skills are exempt from
   every auto-transition and every LLM review pass.
-- **Cost:** the deterministic inactivity/prune sweep runs for free. The
-  aux-model "consolidate overlapping skills into umbrellas" pass is
-  **off by default** — opt in with `curator.consolidate: true` or
-  `hermes curator run --consolidate`. Routine background curation costs
-  zero tokens.
+- **Cost:** the deterministic inactivity/prune sweep runs for free. Every
+  review also runs the aux-model "consolidate overlapping skills into
+  umbrellas" pass (always on; a pre-run snapshot guards it). Route it to a
+  cheaper model via the `auxiliary.curator` slot.
 - **Telemetry:** sidecar at `~/.hermes/skills/.usage.json` holds
   per-skill `use_count`, `view_count`, `patch_count`,
   `last_activity_at`, `state`, `pinned`.
