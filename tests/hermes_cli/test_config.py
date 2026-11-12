@@ -1376,11 +1376,9 @@ class TestEnvWriteDenylist:
             "HERMES_OPTIONAL_MCPS",
             "HERMES_COPILOT_ACP_COMMAND",
             "HERMES_COPILOT_ACP_ARGS",
-            "HERMES_YOLO_MODE",
             "HERMES_ACCEPT_HOOKS",
             "HERMES_REDACT_SECRETS",
             "HERMES_INTERACTIVE",
-            "HERMES_EXEC_ASK",
             "HERMES_GATEWAY_SESSION",
             "HERMES_CRON_SESSION",
             "HERMES_SINGLE_QUERY_SESSION",
@@ -1389,7 +1387,7 @@ class TestEnvWriteDenylist:
         ],
     )
     def test_hermes_security_control_keys_are_not_writable(self, protected_key):
-        """Generic writers must not persist runtime or approval controls."""
+        """Generic writers must not persist runtime security controls."""
         with pytest.raises(ValueError, match="denylist"):
             save_env_value(protected_key, "1")
 
@@ -1412,7 +1410,7 @@ class TestEnvWriteDenylist:
         ("key", "expected"),
         [
             ("Path", "PATH"),
-            ("Hermes_Yolo_Mode", "HERMES_YOLO_MODE"),
+            ("Hermes_Accept_Hooks", "HERMES_ACCEPT_HOOKS"),
             ("Hermes_Optional_Mcps", "HERMES_OPTIONAL_MCPS"),
             ("Hermes_Copilot_Acp_Command", "HERMES_COPILOT_ACP_COMMAND"),
             ("Hermes_Copilot_Acp_Args", "HERMES_COPILOT_ACP_ARGS"),

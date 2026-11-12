@@ -1,9 +1,8 @@
 """Registry-facing sync handlers for MCP tools and utility tools (resources/prompts), plus the per-call recovery
-ladder: trust gating, circuit breaker, auth (401) refresh, session-expired reconnect and dead-stdio respawn retry."""
+ladder: circuit breaker, auth (401) refresh, session-expired reconnect and dead-stdio respawn retry."""
 
 import logging
 import asyncio
-import contextvars
 import inspect
 import json
 import time
@@ -52,32 +51,6 @@ def _tool_is_read_only(server_name: str, tool_name: str) -> bool:
     return _core._tool_read_only_hints.get(_resolve_server_key(server_name), {}).get(tool_name) is True
 
 
-def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
-    """Approval gate for write-capable tools on ``trust: untrusted`` servers. None to proceed,
-    else a ``tool_error``. Fail-closed: approval-system errors block."""
-    from tools.mcp_tool_scope import _server_key
-    # Trust is the calling profile's own policy (an adopter of a shared connection keeps its own tier).
-    trust = _core._server_trust_levels.get(_server_key(server_name), _core._TRUST_FULL)
-    if trust != _core._TRUST_UNTRUSTED or _tool_is_read_only(server_name, tool_name):
-        return None
-    try:  # lazy: tools.approval routes the prompt to whichever surface owns the session
-        from tools.approval import request_elicitation_consent
-        answer = request_elicitation_consent(
-            f"MCP tool '{tool_name}' on UNTRUSTED server '{server_name}' wants to run. This tool is write-capable "
-            f"(no readOnlyHint=true annotation) and may modify external state.",
-            f"Server '{server_name}' is configured 'trust: untrusted'. "
-            f"Approve to run '{tool_name}' once, or deny to block it.",
-            surface=f"mcp-trust/{server_name}", title=f"MCP server '{server_name}' is asking")
-    except Exception as exc:
-        logger.error("MCP trust gate: approval check failed for %s.%s: %s", server_name, tool_name, exc, exc_info=True)
-        return tool_error(f"MCP tool '{tool_name}' on untrusted server '{server_name}' was blocked: the approval "
-                          f"system was unavailable (fail-closed).")
-    if answer == "accept":
-        return None
-    logger.info("MCP trust gate: user %s '%s' on untrusted server '%s'",
-                "cancelled" if answer == "cancel" else "denied", tool_name, server_name)
-    return tool_error(f"The user did not approve running write-capable MCP tool '{tool_name}' on untrusted server "
-                      f"'{server_name}'. The command was NOT run. Do not retry without explicit user direction.")
 
 
 def _check_circuit_breaker(server_name: str) -> Optional[str]:
@@ -518,8 +491,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     op = f"tools/call {tool_name}"
 
     def _handler(args: dict, **kwargs) -> str:
-        # Security boundary: untrusted-server write tools need approval before ANY transport work (incl. lazy spawn).
-        error = _trust_gate_check(server_name, tool_name) or _check_circuit_breaker(server_name)
+        error = _check_circuit_breaker(server_name)
         if error is not None:
             return error
         server, error = _acquire_call_server(server_name, tool_timeout)
@@ -531,11 +503,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
         async def _call():
             async with server._rpc_lock, _track_inflight_rpc(server, server_name, op, retry_safe=read_only):
-                server._pending_call_context = contextvars.copy_context()  # for the elicitation callback
-                try:
-                    result = await _call_tool_racing_stdio_death(server, server_name, tool_name, args)
-                finally:
-                    server._pending_call_context = None
+                result = await _call_tool_racing_stdio_death(server, server_name, tool_name, args)
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
                 server._mark_session_proven()
             return _render_call_tool_result(result, server_name)

@@ -3,7 +3,7 @@
 ``registry.dispatch`` — the real tool-executor entry point — forwards only
 ``task_id`` / ``session_id`` / ``tool_call_id`` / ``user_task``; it never
 sends ``session_key``. These tests drive the missions plugin exactly that way
-(scoped registration + the gateway's approval ContextVar) instead of passing
+(scoped registration + the tool-session ContextVar) instead of passing
 the trusted key as a kwarg the production path never delivers, so they fail
 if origin capture ever regresses to reading the raw kwarg.
 
@@ -21,7 +21,7 @@ import queue
 import pytest
 
 from tools import async_delegation as ad
-from tools.approval import reset_current_session_key, set_current_session_key
+from tools.session_context import reset_current_session_key, set_current_session_key
 from tools.process_registry import (
     format_process_notification,
     process_registry,

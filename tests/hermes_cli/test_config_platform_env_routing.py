@@ -100,7 +100,7 @@ def test_env_writer_denylist_guards_upper_snake_names_and_unknown_names_get_a_no
     config_path.write_text("model:\n  default: test/model\n", encoding="utf-8")
 
     with pytest.raises(SystemExit):
-        cfg.set_config_value("HERMES_YOLO_MODE", "true", force=True)
+        cfg.set_config_value("HERMES_ACCEPT_HOOKS", "true", force=True)
     assert "denylist" in capsys.readouterr().err
     assert not (tmp_path / ".env").exists()
     assert yaml.safe_load(config_path.read_text(encoding="utf-8")) == {"model": {"default": "test/model"}}

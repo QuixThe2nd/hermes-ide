@@ -69,10 +69,6 @@ MIGRATION_OPTION_METADATA: Dict[str, Dict[str, str]] = {
         "label": "Allowlisted secrets",
         "description": "Import the small allowlist of Hermes-compatible secrets when explicitly enabled.",
     },
-    "command-allowlist": {
-        "label": "Command allowlist",
-        "description": "Merge OpenClaw exec approval patterns into Hermes command_allowlist.",
-    },
     "skills": {
         "label": "User skills",
         "description": "Copy OpenClaw skills into ~/.hermes/skills/openclaw-imports/.",
@@ -165,10 +161,6 @@ MIGRATION_OPTION_METADATA: Dict[str, Dict[str, str]] = {
         "label": "Tools configuration",
         "description": "Import tool settings (exec timeout, sandbox, web search) into Hermes config.yaml.",
     },
-    "approvals-config": {
-        "label": "Approval rules",
-        "description": "Import approval mode and rules into Hermes config.yaml approvals section.",
-    },
     "memory-backend": {
         "label": "Memory backend configuration",
         "description": "Archive OpenClaw memory backend settings (QMD, vector search, citations) for manual review.",
@@ -193,7 +185,6 @@ MIGRATION_PRESETS: Dict[str, set[str]] = {
         "memory",
         "user-profile",
         "messaging-settings",
-        "command-allowlist",
         "skills",
         "tts-assets",
         "discord-settings",
@@ -210,7 +201,6 @@ MIGRATION_PRESETS: Dict[str, set[str]] = {
         "session-config",
         "browser-config",
         "tools-config",
-        "approvals-config",
         "deep-channels",
         "full-providers",
         "plugins-config",
@@ -919,12 +909,10 @@ class Migrator:
         "deep-channels",
         "browser-config",
         "tools-config",
-        "approvals-config",
         "memory-backend",
         "skills-config",
         "ui-identity",
         "logging-config",
-        "command-allowlist",
     })
 
     def record(
@@ -1041,7 +1029,6 @@ class Migrator:
         self.run_if_selected("provider-keys", lambda: self.handle_provider_keys(config))
         self.run_if_selected("model-config", lambda: self.migrate_model_config(config))
         self.run_if_selected("tts-config", lambda: self.migrate_tts_config(config))
-        self.run_if_selected("command-allowlist", self.migrate_command_allowlist)
         self.run_if_selected("skills", self.migrate_skills)
         self.run_if_selected("shared-skills", self.migrate_shared_skills)
         self.run_if_selected("daily-memory", self.migrate_daily_memory)
@@ -1068,7 +1055,6 @@ class Migrator:
         self.run_if_selected("deep-channels", lambda: self.migrate_deep_channels(config))
         self.run_if_selected("browser-config", lambda: self.migrate_browser_config(config))
         self.run_if_selected("tools-config", lambda: self.migrate_tools_config(config))
-        self.run_if_selected("approvals-config", lambda: self.migrate_approvals_config(config))
         self.run_if_selected("memory-backend", lambda: self.migrate_memory_backend(config))
         self.run_if_selected("skills-config", lambda: self.migrate_skills_config(config))
         self.run_if_selected("ui-identity", lambda: self.migrate_ui_identity(config))
@@ -1334,67 +1320,6 @@ class Migrator:
         else:
             self.record(kind, source, destination, "migrated", "Would merge entries", overflow_preview=overflowed[:5], **details)
 
-    def migrate_command_allowlist(self) -> None:
-        source = self.source_root / "exec-approvals.json"
-        destination = self.target_root / "config.yaml"
-        if not source.exists():
-            self.record("command-allowlist", None, destination, "skipped", "No OpenClaw exec approvals file found")
-            return
-        if yaml is None:
-            self.record("command-allowlist", source, destination, "error", "PyYAML is not available")
-            return
-
-        try:
-            data = json.loads(source.read_text(encoding="utf-8", errors="replace"))
-        except json.JSONDecodeError as exc:
-            self.record("command-allowlist", source, destination, "error", f"Invalid JSON: {exc}")
-            return
-        except OSError as exc:
-            self.record("command-allowlist", source, destination, "error", f"Could not read file: {exc}")
-            return
-
-        patterns: List[str] = []
-        agents = data.get("agents", {})
-        if isinstance(agents, dict):
-            for agent_data in agents.values():
-                allowlist = agent_data.get("allowlist", []) if isinstance(agent_data, dict) else []
-                for entry in allowlist:
-                    pattern = entry.get("pattern") if isinstance(entry, dict) else None
-                    if pattern:
-                        patterns.append(pattern)
-
-        patterns = sorted(dict.fromkeys(patterns))
-        if not patterns:
-            self.record("command-allowlist", source, destination, "skipped", "No allowlist patterns found")
-            return
-        if not destination.exists():
-            self.record("command-allowlist", source, destination, "skipped", "Hermes config.yaml does not exist yet")
-            return
-
-        config = load_yaml_file(destination)
-        current = config.get("command_allowlist", [])
-        if not isinstance(current, list):
-            current = []
-        merged = sorted(dict.fromkeys(list(current) + patterns))
-        added = [pattern for pattern in merged if pattern not in current]
-        if not added:
-            self.record("command-allowlist", source, destination, "skipped", "All patterns already present")
-            return
-
-        if self.execute:
-            backup_path = self.maybe_backup(destination)
-            config["command_allowlist"] = merged
-            dump_yaml_file(destination, config)
-            self.record(
-                "command-allowlist",
-                source,
-                destination,
-                "migrated",
-                backup=str(backup_path) if backup_path else "",
-                added_patterns=added,
-            )
-        else:
-            self.record("command-allowlist", source, destination, "migrated", "Would merge patterns", added_patterns=added)
 
     def load_openclaw_config(self) -> Dict[str, Any]:
         # Check current name and legacy config filenames
@@ -2816,28 +2741,6 @@ class Migrator:
             self.record("tools-config", "openclaw.json tools (full)", "archive/tools-config.json",
                         "archived", "Full tools config archived for reference")
 
-    # ── Approvals config ──────────────────────────────────────
-    def migrate_approvals_config(self, config: Optional[Dict[str, Any]] = None) -> None:
-        config = config or self.load_openclaw_config()
-        approvals = config.get("approvals") or {}
-        if not approvals:
-            self.record("approvals-config", None, None, "skipped", "No approvals configuration found")
-            return
-
-        hermes_cfg_path = self.target_root / "config.yaml"
-        hermes_cfg = load_yaml_file(hermes_cfg_path)
-
-        # Hermes no longer has a configurable approval mode (dangerous commands pass
-        # through unconditional floors only), so the OpenClaw mode has no target key.
-
-        # Archive full approvals config
-        if len(approvals) > 1 and self.archive_dir:
-            if self.execute:
-                self.archive_dir.mkdir(parents=True, exist_ok=True)
-                dest = self.archive_dir / "approvals-config.json"
-                dest.write_text(json.dumps(approvals, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            self.record("approvals-config", "openclaw.json approvals (rules)",
-                        "archive/approvals-config.json", "archived")
 
     # ── Memory backend ────────────────────────────────────────
     def migrate_memory_backend(self, config: Optional[Dict[str, Any]] = None) -> None:

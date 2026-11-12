@@ -60,7 +60,6 @@ def _make_runner(max_concurrent_sessions: int | None = None) -> GatewayRunner:
     runner._active_session_leases = {}
     runner._session_run_generation = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._voice_mode = {}
     runner._background_tasks = set()
     runner._draining = False
@@ -96,7 +95,6 @@ def _silence_global_gateway_hooks(monkeypatch):
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *args, **kwargs: [])
     monkeypatch.setattr("tools.slash_confirm.get_pending", lambda *args, **kwargs: None)
     monkeypatch.setattr("tools.slash_confirm.clear_if_stale", lambda *args, **kwargs: None)
-    monkeypatch.setattr("tools.approval.has_blocking_approval", lambda *args, **kwargs: False)
 
 
 def test_new_session_gets_clean_error_at_active_session_limit(monkeypatch):

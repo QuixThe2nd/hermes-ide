@@ -2,9 +2,8 @@
 Hermes MCP Server — expose messaging conversations as MCP tools (`hermes mcp serve`).
 
 A stdio MCP server letting any MCP client (Claude Code, Cursor, Codex, ...) list
-conversations, read history, send messages, poll live events, and manage approvals.
-Matches OpenClaw's 9-tool channel bridge surface plus the Hermes-specific
-channels_list. Client config: {"mcpServers": {"hermes": {"command": "hermes", "args": ["mcp", "serve"]}}}
+conversations, read history, send messages, and poll live events. Client config:
+{"mcpServers": {"hermes": {"command": "hermes", "args": ["mcp", "serve"]}}}
 """
 
 from __future__ import annotations
@@ -233,7 +232,7 @@ POLL_INTERVAL = 0.2  # seconds between DB polls (200ms)
 class QueueEvent:
     """An event in the bridge's in-memory queue."""
     cursor: int
-    type: str  # "message", "approval_requested", "approval_resolved"
+    type: str  # "message"
     session_key: str = ""
     data: dict = field(default_factory=dict)
 
@@ -274,7 +273,6 @@ class EventBridge:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._last_poll_timestamps: Dict[str, float] = {}  # session_key -> unix timestamp
-        self._pending_approvals: Dict[str, dict] = {}  # populated from events
         self._state_db_mtime: float = 0.0  # skip polling work when state.db is unchanged
         self._cached_sessions_index: dict = {}
 
@@ -325,20 +323,6 @@ class EventBridge:
             self._new_event.wait(timeout=min(remaining, POLL_INTERVAL))
         return None
 
-    def list_pending_approvals(self) -> List[dict]:
-        """List approval requests observed during this bridge session."""
-        with self._lock:
-            return sorted(self._pending_approvals.values(), key=lambda a: a.get("created_at", ""))
-
-    def respond_to_approval(self, approval_id: str, decision: str) -> dict:
-        """Resolve a pending approval (best-effort without gateway IPC)."""
-        with self._lock:
-            approval = self._pending_approvals.pop(approval_id, None)
-        if not approval:
-            return {"error": f"Approval not found: {approval_id}"}
-        self._enqueue(QueueEvent(0, "approval_resolved", approval.get("session_key", ""),  # cursor set by _enqueue
-                                 {"approval_id": approval_id, "decision": decision}))
-        return {"resolved": True, "approval_id": approval_id, "decision": decision}
 
     def _enqueue(self, event: QueueEvent) -> None:
         """Add an event to the queue (trimmed to QUEUE_LIMIT) and wake any waiters."""
@@ -569,7 +553,7 @@ class _ToolHandlers:
         Returns events that have occurred since the given cursor. Use the
         returned next_cursor value for subsequent polls.
 
-        Event types: message, approval_requested, approval_resolved
+        Event types: message
 
         Args:
             after_cursor: Return events after this cursor (0 for all)
@@ -659,33 +643,12 @@ class _ToolHandlers:
                                      "name": ch.get("name", ch.get("display_name", "")), "chat_type": ch.get("type", "")})
         return json.dumps({"count": len(channels), "channels": channels}, indent=2)
 
-    def permissions_list_open(self) -> str:
-        """List pending approval requests observed during this bridge session.
-
-        Returns exec and plugin approval requests that the bridge has seen
-        since it started. Approvals are live-session only — older approvals
-        from before the bridge connected are not included.
-        """
-        approvals = self.bridge.list_pending_approvals()
-        return json.dumps({"count": len(approvals), "approvals": approvals}, indent=2)
-
-    def permissions_respond(self, id: str, decision: str) -> str:
-        """Respond to a pending approval request.
-
-        Args:
-            id: The approval ID from permissions_list_open
-            decision: One of "allow-once", "allow-always", or "deny"
-        """
-        if decision not in {"allow-once", "allow-always", "deny"}:
-            return json.dumps({"error": f"Invalid decision: {decision}. Must be allow-once, allow-always, or deny"})
-        return json.dumps(self.bridge.respond_to_approval(id, decision), indent=2)
 
 
 # Registration order == list_tools order (wire format).
 _TOOL_NAMES = (
     "conversations_list", "conversation_get", "messages_read", "attachments_fetch",
     "events_poll", "events_wait", "messages_send", "channels_list",
-    "permissions_list_open", "permissions_respond",
 )
 
 

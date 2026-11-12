@@ -38,18 +38,12 @@ from prompt_toolkit.widgets import TextArea
 from typing import Optional
 
 # Rows below an overlay panel taken by spinner/tool-progress, status bar, input, separators and
-# prompt symbol (measured ~6 during live PTY approval prompts) — shared by every panel budget.
+# prompt symbol (measured ~6 during live PTY interactive prompts) — shared by every panel budget.
 _PANEL_RESERVED_BELOW = 6
 # Enter within this many seconds of the last buffer change is a pasted/dictated newline, not a submit.
 _RAPID_INPUT_ENTER_WINDOW_S = 0.05
 _TYPING_CHARS = string.digits + string.ascii_letters + "-_.:/ "
 
-_APPROVAL_CHOICE_LABELS = {
-    "once": "Allow once",
-    "session": "Allow for this session",
-    "always": "Add to permanent allowlist",
-    "deny": "Deny",
-    "view": "Show full command"}
 
 
 def _num_prefix(i: int) -> str:
@@ -162,88 +156,6 @@ class CLITuiMixin:
         panel.row('class:approval-cmd', footer)
         return panel.close()
 
-    def _get_approval_display_fragments(self):
-        """Render the dangerous-command approval panel.
-
-        Layout priority: title + command + choices must always render, even in a short terminal
-        or with a long (tirith multi-paragraph) description. The description sits at the bottom
-        and is truncated to the remaining row budget, so HSplit never clips approve/deny off-screen.
-        """
-        from cli import _panel_box_width, _wrap_panel_text_keep_ws
-        state = self._approval_state
-        if not state:
-            return []
-        wrap = _wrap_panel_text_keep_ws
-        command = state["command"]
-        description = state["description"]
-        choices = state["choices"]
-        selected = state.get("selected", 0)
-        show_full = state.get("show_full", False)
-        title = "⚠️  Dangerous Command"
-
-        preview_lines = wrap(description, 60)
-        preview_lines.extend(wrap(command, 60))
-        for i, choice in enumerate(choices):
-            prefix = '❯ ' if i == selected else '  '
-            label = _APPROVAL_CHOICE_LABELS.get(choice, choice)
-            preview_lines.extend(wrap(f"{prefix}{label}", 60, subsequent_indent="  "))
-        box_width = _panel_box_width(title, preview_lines)
-        inner_text_width = max(8, box_width - 2)
-
-        # Pre-wrap the mandatory content — command + choices must always render.
-        cmd_wrapped = wrap(command, inner_text_width)
-        if not show_full and "view" in choices and len(cmd_wrapped) > 4:
-            cmd_wrapped = cmd_wrapped[:3] + wrap("… (choose Show full command)", inner_text_width)
-        choice_labels = [
-            f"{'❯' if i == selected else ' '} {_num_prefix(i)}. {_APPROVAL_CHOICE_LABELS.get(choice, choice)}"
-            for i, choice in enumerate(choices)]
-        choice_wrapped = _wrap_rows(wrap, choice_labels, inner_text_width, "    ")
-
-        # Row budget so HSplit never clips the command or choices. Full chrome = top border +
-        # title + blank + blank-between-cmd/choices + bottom border (5); when that doesn't fit,
-        # drop the separator blanks (3) so every choice stays on-screen in compact terminals.
-        available = max(0, _term_rows() - _PANEL_RESERVED_BELOW)
-        use_compact_chrome = 5 + len(cmd_wrapped) + len(choice_wrapped) > available
-        chrome_rows = 3 if use_compact_chrome else 5
-
-        # A command too long to leave room for the choices (e.g. "view" on a multi-hundred-char
-        # command) is truncated so approve/deny still render; keep at least 1 command row.
-        max_cmd_rows = max(1, available - chrome_rows - len(choice_wrapped))
-        if len(cmd_wrapped) > max_cmd_rows:
-            keep = max(1, max_cmd_rows - 1) if max_cmd_rows > 1 else 1
-            cmd_wrapped = cmd_wrapped[:keep] + wrap(
-                "… (command truncated — use /logs or /debug for full text)", inner_text_width)
-
-        # Remaining rows go to the description (minus the blank separator in full mode), capped
-        # at 10 so the panel stays compact even on huge terminals.
-        mandatory_no_desc = chrome_rows + len(cmd_wrapped) + len(choice_wrapped)
-        available_for_desc = available - mandatory_no_desc - (0 if use_compact_chrome else 1)
-        available_for_desc = max(0, min(available_for_desc, 10))
-        desc_wrapped = wrap(description, inner_text_width) if description else []
-        if available_for_desc < 1 or not desc_wrapped:
-            desc_wrapped = []
-        elif len(desc_wrapped) > available_for_desc:
-            desc_wrapped = desc_wrapped[:max(1, available_for_desc - 1)] + ["… (description truncated)"]
-
-        # Render title → command → choices → description; description last so any overflow
-        # clips the least-critical content, never the command or choices.
-        panel = _Panel('class:approval-border', box_width)
-        panel.row('class:approval-title', title)
-        if not use_compact_chrome:
-            panel.blank()
-        for wrapped in cmd_wrapped:
-            panel.row('class:approval-cmd', wrapped)
-        if not use_compact_chrome:
-            panel.blank()
-        for i, wrapped in choice_wrapped:
-            style = 'class:approval-selected' if i == selected else 'class:approval-choice'
-            panel.row(style, wrapped)
-        if desc_wrapped:
-            if not use_compact_chrome:
-                panel.blank()
-            for wrapped in desc_wrapped:
-                panel.row('class:approval-desc', wrapped)
-        return panel.close()
 
     def _get_tui_prompt_symbols(self) -> tuple[str, str]:
         """Return ``(normal_prompt, state_suffix)`` for the active skin.
@@ -305,7 +217,7 @@ class CLITuiMixin:
             return _state_fragment("class:sudo-prompt", "🔐")
         if self._secret_state:
             return _state_fragment("class:sudo-prompt", "🔑")
-        if self._approval_state or getattr(self, "_slash_confirm_state", None):
+        if getattr(self, "_slash_confirm_state", None):
             return _state_fragment("class:prompt-working", "⚠")
         if self._clarify_freetext:
             return _state_fragment("class:clarify-selected", "✎")
@@ -372,7 +284,6 @@ class CLITuiMixin:
         *,
         sudo_widget,
         secret_widget,
-        approval_widget,
         slash_confirm_widget=None,
         clarify_widget,
         model_picker_widget=None,
@@ -392,7 +303,6 @@ class CLITuiMixin:
             Window(height=0),
             sudo_widget,
             secret_widget,
-            approval_widget,
             slash_confirm_widget,
             clarify_widget,
             model_picker_widget,
@@ -766,7 +676,6 @@ class CLITuiMixin:
     _TUI_MODAL_HINTS = (
         ("_sudo_state", "_sudo_deadline", '  password hidden · Enter to skip'),
         ("_secret_state", "_secret_deadline", '  secret hidden · Enter to skip'),
-        ("_approval_state", "_approval_deadline", '  ↑/↓ to select, Enter to confirm'),
         ("_slash_confirm_state", "_slash_confirm_deadline", '  type 1/2/3, or ↑/↓ to select, Enter to confirm'),
     )
 
@@ -813,8 +722,6 @@ class CLITuiMixin:
             return "type password (hidden), Enter to submit · ESC to skip"
         if self._secret_state:
             return "type secret (hidden), Enter to submit · ESC to skip"
-        if self._approval_state:
-            return ""
         if self._slash_confirm_state:
             return "type 1/2/3, or use ↑/↓ then Enter"
         if self._clarify_freetext:
@@ -871,7 +778,7 @@ class CLITuiMixin:
             event.app.invalidate()
             return
         # Don't START recording during interactive prompts.
-        if self._clarify_state or self._sudo_state or self._approval_state or self._slash_confirm_state:
+        if self._clarify_state or self._sudo_state or self._slash_confirm_state:
             return
         # Cut TTS so the user can start talking: stop_playback() just terminates a subprocess;
         # the stop event drains the streaming pipeline if one is live.
@@ -930,13 +837,13 @@ class CLITuiMixin:
         return False
 
     def _tui_clear_blocking_overlays(self, event) -> bool:
-        """Clear every agent-blocking overlay (approval/clarify/sudo/secret) in one shot.
+        """Clear every agent-blocking overlay (clarify/sudo/secret) in one shot.
 
         Callers must NOT return on True alone: they fall through so a stale/orphaned overlay
         (left by an earlier interrupt) can't swallow the press before the agent-interrupt
         branch, leaving the chat frozen (#14026).
         """
-        if not (self._sudo_state or self._secret_state or self._approval_state or self._clarify_state):
+        if not (self._sudo_state or self._secret_state or self._clarify_state):
             return False
         self._clear_active_overlays_for_interrupt()
         event.app.current_buffer.reset()
@@ -1260,13 +1167,6 @@ class CLITuiMixin:
                 event.app.invalidate()
         return handler
 
-    def _tui_make_approval_number_handler(self, idx):
-        def handler(event):
-            if self._approval_state and idx < len(self._approval_state["choices"]):
-                self._approval_state["selected"] = idx
-                self._handle_approval_selection()
-                event.app.invalidate()
-        return handler
 
     def _tui_make_slash_confirm_number_handler(self, idx):
         def handler(event):
@@ -1348,17 +1248,6 @@ class CLITuiMixin:
             st["selected"] = max(0, st.get("selected", 0) - 1)
             event.app.invalidate()
 
-    def _tui_approval_down(self, event):
-        st = self._approval_state
-        if st:
-            st["selected"] = min(len(st["choices"]) - 1, st["selected"] + 1)
-            event.app.invalidate()
-
-    def _tui_approval_up(self, event):
-        st = self._approval_state
-        if st:
-            st["selected"] = max(0, st["selected"] - 1)
-            event.app.invalidate()
 
     def _tui_wake_startup(self):
         from cli import logger
@@ -1542,10 +1431,6 @@ class CLITuiMixin:
             value = buf.text
             buf.reset()
             self._submit_secret_response(value)
-            event.app.invalidate()
-            return True
-        if self._approval_state:
-            self._handle_approval_selection()
             event.app.invalidate()
             return True
         if self._slash_confirm_state:
@@ -1812,7 +1697,7 @@ class CLITuiMixin:
 
     def _tui_hint_height(self):
         if (
-            self._sudo_state or self._secret_state or self._approval_state
+            self._sudo_state or self._secret_state
             or self._slash_confirm_state or self._clarify_state or self._command_running):
             return 1
         # Keep a spacer while the agent runs on roomy terminals; reclaim the row on narrow screens.
@@ -1854,11 +1739,6 @@ class CLITuiMixin:
         self._sudo_state = None
         self._sudo_deadline = 0
         self._modal_input_snapshot = None
-        self._approval_state = None
-        self._approval_deadline = 0
-        self._approval_lock = threading.Lock()  # serialize concurrent approval prompts (delegation race)
-        # Destructive slash-command confirmations (/new, /clear, /undo) are answered through the
-        # composer, not raw input(), so the labels stay visible and Enter can't EOF the app.
         self._slash_confirm_state = None
         self._slash_confirm_deadline = 0
         self._command_running = False
@@ -1922,7 +1802,7 @@ class CLITuiMixin:
         # History: the TextArea is multiline so Up/Down alone only move the cursor;
         # Buffer.auto_up/auto_down browse history when on the first/last line.
         _normal_input = Condition(
-            lambda: not self._clarify_state and not self._approval_state and not self._slash_confirm_state
+            lambda: not self._clarify_state and not self._slash_confirm_state
             and not self._sudo_state and not self._secret_state and not self._model_picker_state
             and not self._command_palette_state)
         kb.add('up', filter=_normal_input)(self._tui_history_up)
@@ -1955,14 +1835,14 @@ class CLITuiMixin:
         # VSCode/Cursor bind Ctrl+G to "Find Next" so it never reaches the terminal; Alt+G is
         # unbound there and arrives as ('escape', 'g') — register it as a fallback.
         _editor_filter = Condition(
-            lambda: not self._clarify_state and not self._approval_state
+            lambda: not self._clarify_state
             and not self._sudo_state and not self._secret_state)
         kb.add('c-g', filter=_editor_filter)(
             kb.add('escape', 'g', filter=_editor_filter)(self._tui_handle_open_in_editor))
         # Ctrl+S prompt stash: park a draft, send something else, bring it back. Suppressed while
         # a modal prompt owns the composer so Ctrl+S can't stash a password.
         _stash_filter = Condition(
-            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state
+            lambda: not self._clarify_state and not self._sudo_state
             and not self._secret_state and not self._slash_confirm_state and not self._model_picker_state
         )
         _stash_panel_filter = Condition(lambda: self._prompt_stash.panel_open and bool(len(self._prompt_stash)))
@@ -1977,7 +1857,7 @@ class CLITuiMixin:
         kb.add('tab', eager=True)(self._tui_handle_tab)
 
     def _tui_bind_overlay_navigation(self, kb) -> None:
-        """Clarify / approval / slash-confirm / model picker / command palette navigation keys."""
+        """Clarify / slash-confirm / model picker / command palette navigation keys."""
         _clarify_nav = Condition(lambda: bool(self._clarify_state) and not self._clarify_freetext)
         _clarify_batch = Condition(
             lambda: bool(self._clarify_state) and bool(self._clarify_state.get("questions"))
@@ -1999,11 +1879,8 @@ class CLITuiMixin:
             _idx = 9 if _num == 0 else _num - 1
             kb.add(str(_num), filter=_clarify_nav)(self._tui_make_clarify_number_handler(_idx))
 
-        _approval = Condition(lambda: bool(self._approval_state))
         _slash_confirm = Condition(lambda: bool(self._slash_confirm_state))
         _picker = Condition(lambda: bool(self._model_picker_state))
-        kb.add('up', filter=_approval)(self._tui_approval_up)
-        kb.add('down', filter=_approval)(self._tui_approval_down)
         kb.add('up', filter=_slash_confirm)(self._tui_slash_confirm_up)
         kb.add('down', filter=_slash_confirm)(self._tui_slash_confirm_down)
         kb.add('up', filter=_picker)(self._tui_model_picker_up)
@@ -2023,7 +1900,7 @@ class CLITuiMixin:
         _palette = Condition(lambda: bool(self._command_palette_state))
         kb.add('c-p', filter=Condition(
             lambda: not self._command_palette_state and not self._model_picker_state and not self._clarify_state
-            and not self._approval_state and not self._slash_confirm_state and not self._sudo_state
+            and not self._slash_confirm_state and not self._sudo_state
             and not self._secret_state
         ))(self._tui_open_command_palette)
         kb.add('up', filter=_palette)(self._tui_command_palette_up)
@@ -2034,9 +1911,6 @@ class CLITuiMixin:
         for _pch in _TYPING_CHARS:
             kb.add(_pch, filter=_palette)(self._tui_make_palette_char_handler(_pch))
 
-        for _num in range(10):
-            _idx = 9 if _num == 0 else _num - 1
-            kb.add(str(_num), filter=_approval)(self._tui_make_approval_number_handler(_idx))
         for _num in range(10):
             _idx = 9 if _num == 0 else _num - 1
             kb.add(str(_num), filter=_slash_confirm)(self._tui_make_slash_confirm_number_handler(_idx))
@@ -2103,13 +1977,12 @@ class CLITuiMixin:
             content=FormattedTextControl(self._tui_spinner_text),
             height=self._tui_spinner_height,
             wrap_lines=True)
-        # Hint line above the input: only for interactive prompts that need extra instructions
-        # (sudo countdown, approval navigation, clarify); the agent-running hint is the placeholder.
+        # Hint line above the input for interactive prompts that need extra instructions;
+        # the agent-running hint is the placeholder.
         spacer = Window(content=FormattedTextControl(self._tui_hint_text), height=self._tui_hint_height)
         clarify_widget = self._tui_overlay_widget(self._get_clarify_display_fragments, "_clarify_state")
         sudo_widget = self._tui_overlay_widget(self._get_sudo_display_fragments, "_sudo_state")
         secret_widget = self._tui_overlay_widget(self._get_secret_display_fragments, "_secret_state")
-        approval_widget = self._tui_overlay_widget(self._get_approval_display_fragments, "_approval_state")
         slash_confirm_widget = self._tui_overlay_widget(
             self._get_slash_confirm_display_fragments, "_slash_confirm_state")
         model_picker_widget = self._tui_overlay_widget(
@@ -2150,7 +2023,6 @@ class CLITuiMixin:
         layout = Layout(HSplit(self._build_tui_layout_children(
             sudo_widget=sudo_widget,
             secret_widget=secret_widget,
-            approval_widget=approval_widget,
             slash_confirm_widget=slash_confirm_widget,
             clarify_widget=clarify_widget,
             model_picker_widget=model_picker_widget,
@@ -2264,7 +2136,6 @@ class CLITuiMixin:
             'status-bar-warn': 'bg:#1a1a2e #FFD700 bold',
             'status-bar-bad': 'bg:#1a1a2e #FF8C00 bold',
             'status-bar-critical': 'bg:#1a1a2e #FF6B6B bold',
-            'status-bar-yolo': 'bg:#1a1a2e #FF4444 bold',
             'status-bar-session-title': 'bg:#FFD700 #1a1a2e bold',
             'input-rule': '#CD7F32',
             'image-badge': '#87CEEB bold',

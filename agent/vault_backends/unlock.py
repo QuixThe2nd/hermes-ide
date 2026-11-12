@@ -9,15 +9,17 @@ dropped; nothing is written to disk or env.
 The surface owns the prompt: ``set_unlock_prompt_callback`` is installed by
 the CLI panel / TUI gateway bridge for the current thread, exactly like the
 sudo-password callback. Headless contexts (cron, webhook, api_server,
-single-query) install none and the vault stays locked — the same posture
-approvals take where nobody can answer.
+single-query) install none and the vault stays locked.
 """
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import Callable, Dict, Optional
+
+from utils import is_truthy_value
 
 _IDLE_TTL_S = 30 * 60
 
@@ -159,13 +161,23 @@ def is_unlocked(backend: str) -> bool:
     return _live(backend, touch=False) is not None
 
 
+def _session_env(name: str) -> str:
+    """Read a session marker without leaking another profile's environment."""
+    try:
+        from gateway.session_context import get_session_env
+
+        return get_session_env(name, "") or ""
+    except Exception:
+        return os.getenv(name, "") or ""
+
+
 def can_prompt_here() -> bool:
     """False in contexts where no human can answer (cron, webhook, api_server, -q)."""
-    from tools.approval_context import (
-        _is_cron_session,
-        _is_single_query_session,
-        _is_unattended_platform_session,
-    )
-    if _is_cron_session() or _is_unattended_platform_session() or _is_single_query_session():
+    unattended = _session_env("HERMES_SESSION_PLATFORM") in {
+        "webhook", "msgraph_webhook", "api_server",
+    }
+    if unattended or is_truthy_value(_session_env("HERMES_CRON_SESSION")):
+        return False
+    if is_truthy_value(_session_env("HERMES_SINGLE_QUERY_SESSION")):
         return False
     return get_unlock_prompt_callback() is not None

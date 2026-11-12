@@ -169,8 +169,7 @@ gateway:
 
   reload_mcp:
     cancelled:             "🟡 /reload-mcp iptal edildi. MCP araçları değiştirilmedi."
-    always_followup:       "ℹ️ Bundan sonraki `/reload-mcp` çağrıları onaysız çalışacak. `config.yaml` içinde `approvals.mcp_reload_confirm: true` ile yeniden etkinleştirebilirsiniz."
-    confirm_prompt:        "⚠️ **/reload-mcp Onayı**\n\nMCP sunucularını yeniden yüklemek bu oturumdaki araç kümesini yeniden oluşturur ve **sağlayıcı prompt önbelleğini geçersiz kılar** — bir sonraki mesaj tüm giriş token'larını yeniden gönderir. Uzun bağlam veya yüksek akıl yürütmeli modellerde bu maliyetli olabilir.\n\nSeçim yapın:\n• **Bir Kez Onayla** — şimdi yeniden yükle\n• **Her Zaman Onayla** — şimdi yeniden yükle ve bu onayı kalıcı olarak sustur\n• **İptal** — MCP araçlarını değiştirme"
+    confirm_prompt:        "⚠️ **/reload-mcp Onayı**\n\nMCP sunucularını yeniden yüklemek bu oturumdaki araç kümesini yeniden oluşturur ve **sağlayıcı prompt önbelleğini geçersiz kılar** — bir sonraki mesaj tüm giriş token'larını yeniden gönderir. Uzun bağlam veya yüksek akıl yürütmeli modellerde bu maliyetli olabilir.\n\nSeçim yapın:\n• **Bir Kez Onayla** — şimdi yeniden yükle\n• **İptal** — MCP araçlarını değiştirme"
     header:                "🔄 **MCP Sunucuları Yeniden Yüklendi**\n"
     reconnected:           "♻️ Yeniden bağlanan: {names}"
     added:                 "➕ Eklenen: {names}"

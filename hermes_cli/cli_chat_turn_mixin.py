@@ -304,27 +304,26 @@ class CLIChatTurnMixin:
                                  "2-3 sentences max. No code blocks or markdown.] ")
 
     def _chat_run_agent(self, turn, message):
-        """Agent-thread body: bind per-thread callbacks/approval key, prepend one-shot notes, run the turn."""
+        """Agent-thread body: bind per-thread callbacks and session key, then run the turn."""
         from cli import (
-            _prepend_note_to_message, set_approval_callback, set_secret_capture_callback,
+            _prepend_note_to_message, set_write_review_callback, set_secret_capture_callback,
             set_sudo_password_callback,
         )
         from agent.vault_backends.unlock import set_code_prompt_callback, set_save_login_prompt_callback, set_unlock_prompt_callback
         # terminal_tool callbacks are thread-local: run()'s registration is invisible here.
         set_sudo_password_callback(self._sudo_password_callback)
-        set_approval_callback(self._approval_callback)
+        set_write_review_callback(self._write_review_callback)
         set_secret_capture_callback(self._secret_capture_callback)
         set_unlock_prompt_callback(self._vault_unlock_callback)
         set_save_login_prompt_callback(self._vault_save_login_callback)
         set_code_prompt_callback(self._vault_code_callback)
-        # Bind the approval session key so ``is_current_session_yolo_enabled()`` resolves
-        # against the same key ``/yolo`` toggles under (``enable_session_yolo(self.session_id)``).
+        # Bind this conversation's session key for tool resource isolation.
         try:
-            from tools.approval_context import reset_current_session_key, set_current_session_key
-            _approval_session_token = set_current_session_key(self.session_id or "default")
+            from tools.session_context import reset_current_session_key, set_current_session_key
+            _session_token = set_current_session_key(self.session_id or "default")
         except Exception:
             reset_current_session_key = None  # type: ignore[assignment]
-            _approval_session_token = None
+            _session_token = None
         agent_message = turn.voice_prefix + message if turn.voice_prefix else message
         # One-shot /model and /reload-skills notes; _prepend_note_to_message also handles
         # multimodal content-part lists (string concat raised TypeError with an image).
@@ -373,17 +372,17 @@ class CLIChatTurnMixin:
             # A reused thread must never hold stale references to a disposed CLI instance.
             try:
                 set_sudo_password_callback(None)
-                set_approval_callback(None)
+                set_write_review_callback(None)
                 set_secret_capture_callback(None)
                 set_unlock_prompt_callback(None)
                 set_save_login_prompt_callback(None)
                 set_code_prompt_callback(None)
             except Exception:
                 pass
-            # Unbind the per-turn key; ``_session_yolo`` state itself persists across turns.
-            if _approval_session_token is not None and reset_current_session_key is not None:
+            # Unbind the per-turn tool resource key.
+            if _session_token is not None and reset_current_session_key is not None:
                 try:
-                    reset_current_session_key(_approval_session_token)
+                    reset_current_session_key(_session_token)
                 except Exception:
                     pass
 
@@ -493,7 +492,6 @@ class CLIChatTurnMixin:
         # titling and the exit summary target the live child, not the ended parent.
         if (self.agent and getattr(self.agent, "session_id", None)
                 and self.agent.session_id != self.session_id):
-            self._transfer_session_yolo(self.session_id, self.agent.session_id)
             self.session_id = self.agent.session_id
             self._write_terminal_breadcrumb()
             self._pending_title = None

@@ -266,8 +266,8 @@ Relay `plugins.toml`; see
 - If downstream provider or tool execution fails, middleware may let that error
   propagate or translate it deliberately. Hermes does not convert downstream
   failure into a successful `None` result.
-- Tool request middleware runs before approvals. If it mutates file paths,
-  commands, URLs, or arguments, the mutated values are what guardrails and
-  approvals evaluate.
+- Tool request middleware runs before execution guardrails. If it mutates file
+  paths, commands, URLs, or arguments, the mutated values are what those
+  guardrails evaluate.
 - Observer hooks remain the right place for read-only telemetry. Use middleware
   only when a plugin needs to alter or wrap behavior.

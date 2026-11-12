@@ -3,7 +3,7 @@
 Central map of registered pluggable terminal backends, populated by plugins via
 :meth:`PluginContext.register_terminal_environment_provider` and consumed by
 :func:`tools.terminal_tool_backends._create_environment` plus the classification helpers across the
-terminal/file/approval/prompt surfaces. Unlike the image/video/web registries there
+terminal/file/prompt surfaces. Unlike the image/video/web registries there
 is **no active-provider resolution**: the active backend is whatever ``TERMINAL_ENV`` /
 ``terminal.backend`` names. Built-in names are reserved (registration raises) so a plugin can
 never shadow the in-tree docker/modal/... implementations. Scope semantics mirror the other

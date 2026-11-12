@@ -2619,7 +2619,7 @@ def run_compress_context_with_progress_timeout(
         return worker(worker_fence)
 
     # Bare pool workers start with an empty ContextVar map; propagate the
-    # parent conversation/approval context into the worker.
+    # parent conversation context into the worker.
     try:
         future = executor.submit(
             propagate_context_to_thread(_fence_gated_worker), fence

@@ -899,44 +899,6 @@ def _redact_gateway_user_facing_secrets(text: str) -> str:
     return redact_for_egress(text)
 
 
-def _redact_approval_command(cmd: "str | None") -> str:
-    """Redact credentials from a command before it goes into an approval prompt.
-
-    Tirith's *findings* are already redacted, but the gateway approval prompt
-    is built from the raw command string, so a credential-shaped value Tirith
-    flagged would otherwise be echoed verbatim to the chat platform (#48456).
-    Uses ``redact_sensitive_text(force=True)`` — the same Tirith-grade redactor
-    — so the prompt honors redaction even when ``security.redact_secrets`` is
-    off. Module-level so the wiring is unit-testable (the call site is a deeply
-    nested gateway closure that cannot be driven directly).
-    """
-    from agent.redact import redact_sensitive_text
-
-    return redact_sensitive_text(str(cmd or ""), force=True)
-
-
-def _format_exec_approval_fallback(
-    command: str, description: str, command_prefix: str, *, allow_permanent: bool = True,
-    allow_session: bool = True, smart_denied: bool = False) -> str:
-    """Render the text fallback from approval capabilities, not platform names. Same words as
-    the button card (``BasePlatformAdapter._format_exec_approval``), plus the typed ``/approve``
-    steps a surface without buttons needs."""
-    from gateway.platforms.base_exec_approval import (
-        EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
-    cmd_preview = command[:200] + "..." if len(command) > 200 else command
-    heading = ("⚠️ **Smart DENY — owner override for one operation:**" if smart_denied
-               else f"⚠️ **{EA_HEADER_TEXT}**")
-
-    choices = [f"Reply `{command_prefix}approve` to run it once"]
-    if not smart_denied and allow_session:
-        choices.append(f"`{command_prefix}approve session` to allow this pattern for the rest of this session")
-        if allow_permanent:
-            choices.append(f"`{command_prefix}approve always` to allow it permanently")
-    choices.append(f"`{command_prefix}deny` to cancel")
-    return (
-        f"{heading}\n```\n{cmd_preview}\n```\n{EA_REASON_LABEL_TEXT}: {description}\n\n"
-        + ", ".join(choices[:-1]) + f", or {choices[-1]}.\n"
-        + format_approval_deadline_line(approval_timeout_seconds()))
 
 # Ordered: rate-limit beats auth beats policy beats connection; first match wins. Rate-limit goes
 # first because a quota/429 envelope often also carries an auth-shaped preamble ("Provider
@@ -1845,8 +1807,8 @@ def _adapter_can_edit_progress(adapter: Any) -> bool:
     )
 
 
-def _approval_send_outcome(future, timeout: float) -> str:
-    """Classify an approval prompt send as ``sent`` / ``failed`` / ``ambiguous``.
+def _prompt_send_outcome(future, timeout: float) -> str:
+    """Classify an interactive prompt send as ``sent`` / ``failed`` / ``ambiguous``.
 
     ``ambiguous`` = future timed out but the card may have posted: keep the registration, do NOT re-send.
     Only a DEFINITIVE failure (error result / non-timeout exception / no future) re-asks; logged here."""
@@ -3668,8 +3630,8 @@ def _bridge_terminal_config_to_env(_terminal_cfg: dict) -> None:
 
 
 def _bridge_auxiliary_config_to_env(_auxiliary_cfg: dict) -> None:
-    """Bridge auxiliary model/endpoint overrides (vision, approval, plugins); compression reads yaml."""
-    _aux_bridged_keys = {"vision", "approval"}
+    """Bridge auxiliary model/endpoint overrides (vision and plugins); compression reads yaml."""
+    _aux_bridged_keys = {"vision"}
     try:
         from hermes_cli.plugins import get_plugin_auxiliary_tasks
         for _entry in get_plugin_auxiliary_tasks():
@@ -3839,13 +3801,10 @@ if _config_path.exists():
                         os.environ[_env_var] = str(_val)
         # Compression config is read directly from config.yaml by run_agent.py
         # and auxiliary_client.py — no env var bridging needed.
-        # Auxiliary model/direct-endpoint overrides (vision,
-        # approval, plus any plugin-registered auxiliary tasks).
-        # Each task has provider/model/base_url/api_key; bridge non-default
-        # values to env vars named AUXILIARY_<KEY_UPPER>_*. The legacy
-        # hard-coded list (vision/approval) is replaced by a
-        # dynamic loop so plugin-registered tasks benefit from the same
-        # config→env bridging without core knowing about each one.
+        # Auxiliary model/direct-endpoint overrides (vision plus plugin-registered tasks).
+        # Each task has provider/model/base_url/api_key; bridge non-default values to env vars
+        # named AUXILIARY_<KEY_UPPER>_* through a dynamic loop so plugin-registered tasks benefit
+        # without core knowing about each one.
         _auxiliary_cfg = _cfg.get("auxiliary", {})
         if _auxiliary_cfg and isinstance(_auxiliary_cfg, dict):
             # Built-in tasks that previously had explicit env-var bridging.
@@ -4044,10 +4003,6 @@ except Exception as _bootstrap_exc:
 # Gateway runs in quiet mode - suppress debug output and use cwd directly (no temp dirs)
 os.environ["HERMES_QUIET"] = "1"
 
-# HERMES_EXEC_ASK is set in start_gateway(), not at import time. Importing this
-# module from CLI tools (e.g. send_message → _gateway_runner_ref) must not flip
-# interactive CLI sessions into ask-mode, or Dangerous Command prompts become
-# silent pending_approval with no Approve/Deny UI.
 
 # Set terminal working directory for messaging platforms.
 # config.yaml terminal.cwd is the canonical source (bridged to TERMINAL_CWD
@@ -4287,10 +4242,8 @@ _AGENT_PENDING_SENTINEL = object()
 # - _session_run_generation: monotonic by design; clearing it would reset
 #   the counter and break stale-run detection (#28686).
 # - _agent_cache: has its own eviction path (_evict_cached_agent) with
-#   resource cleanup; boundaries call it explicitly.
-# - _pending_approvals/_update_prompt_pending/slash-confirm/tool-approval
-#   state: cleared via _clear_session_boundary_security_state, which
-#   _clear_conversation_scope calls.
+# - _update_prompt_pending/slash-confirm state: cleared via
+#   _clear_session_boundary_security_state, which _clear_conversation_scope calls.
 _CONVERSATION_SCOPED_STATE: tuple = (
     "_session_model_overrides",
     "_pending_one_turn_model_restores",
@@ -6212,7 +6165,6 @@ class GatewayRunner(
     )
     _session_ephemeral_pin = legacy_dict_property("_session_ephemeral_pin")
     _session_vc_last = legacy_dict_property("_session_vc_last")
-    _pending_approvals = legacy_dict_property("_pending_approvals")
     _update_prompt_pending = legacy_dict_property("_update_prompt_pending")
 
     # -- SessionState accessors -----------------------------------------
@@ -6495,7 +6447,6 @@ class GatewayRunner(
         # SessionState.conversation — see gateway/session_state.py.
         self._primary_profile_name = self._active_profile_name()
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
-        # Pending exec approvals live on SessionState.persistent.approvals.
 
         # Track platforms that failed to connect for background reconnection.
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
@@ -9624,7 +9575,6 @@ class GatewayRunner(
             if hasattr(self, "_active_session_leases"):
                 self._active_session_leases.clear()
             self._pending_messages.clear()
-            self._pending_approvals.clear()
             if hasattr(self, '_busy_ack_ts'):
                 self._busy_ack_ts.clear()
             self._shutdown_event.set()
@@ -10131,16 +10081,13 @@ class GatewayRunner(
     # ------------------------------------------------------------------
     # Used by slash commands that have a non-destructive but expensive
     # side effect worth an explicit user confirmation (currently only
-    # /reload-mcp, which invalidates the prompt cache).  Two delivery
-    # paths:
-    #   1. Button UI — adapters that override ``send_slash_confirm``
-    #      (Telegram, Discord, Slack, Matrix, Feishu) render three
-    #      inline buttons.  The adapter routes the button click back via
+    # /reload-mcp, which invalidates the prompt cache). Two delivery paths:
+    #   1. Button UI — adapters that override ``send_slash_confirm`` render
+    #      the offered choices as inline buttons and route clicks through
     #      ``tools.slash_confirm.resolve(session_key, confirm_id, choice)``.
-    #   2. Text fallback — adapters that don't override the hook get a
-    #      plain text prompt.  Users reply with /approve, /always, or
-    #      /cancel; the early intercept in ``_handle_message`` matches
-    #      those replies against ``tools.slash_confirm.get_pending()``.
+    #   2. Text fallback — the prompt lists its offered choices; the early
+    #      intercept in ``_handle_message`` matches replies against
+    #      ``tools.slash_confirm.get_pending()``.
 
 
 
@@ -10263,11 +10210,6 @@ class GatewayRunner(
         return _reply_anchor_for_event(event)
 
 
-    # ------------------------------------------------------------------
-    # /approve & /deny — explicit dangerous-command approval
-    # ------------------------------------------------------------------
-
-    _APPROVAL_TIMEOUT_SECONDS = 300  # 5 minutes
 
 
     # Built-in messaging platforms where the ``/update`` command is allowed.
@@ -12055,8 +11997,6 @@ async def _start_gateway_shutdown_tail(
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """Start the gateway and run until interrupted; False if it failed to start (non-zero exit so
     systemd can auto-restart). ``replace`` kills any existing instance first (avoids restart-loop deadlocks)."""
-    # Set here (not at import) so incidental gateway.run imports from CLI code don't poison it.
-    os.environ["HERMES_EXEC_ASK"] = "1"
 
     from hermes_cli.resource_limits import apply_nofile_soft_limit
     apply_nofile_soft_limit()

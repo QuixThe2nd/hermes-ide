@@ -1430,7 +1430,7 @@ def _trusted_session_key(**kwargs: Any) -> str:
     session_key = str(kwargs.get("session_key") or "").strip()
     if not session_key:
         try:
-            from tools.approval_context import get_current_session_key
+            from tools.session_context import get_current_session_key
 
             session_key = str(get_current_session_key(default="") or "").strip()
         except Exception:

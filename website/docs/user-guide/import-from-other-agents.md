@@ -24,13 +24,11 @@ hermes import-agent claude-code --overwrite --yes  # replace conflicts, skip pro
 | Claude Code | Hermes |
 |---|---|
 | `CLAUDE.md` (global instructions) | Memory entries in `~/.hermes/memories/MEMORY.md` |
-| `settings.json` → `permissions.allow` (`Bash(...)` rules) | `command_allowlist` in `config.yaml` |
-| `settings.json` → `permissions.deny` (`Bash(...)` rules) | `approvals.deny` in `config.yaml` |
 | `mcpServers` (from `~/.claude.json` and `settings.json`) | `mcp_servers` in `config.yaml` |
 | `skills/<name>/` (dirs with `SKILL.md`) | `~/.hermes/skills/claude-code-imports/<name>/` |
 | `commands/*.md` (slash commands) | Skipped with a note — convert them into skills |
 
-Claude's `Bash(npm run test:*)` prefix rules become `npm run test*` globs. Non-`Bash` permission rules (`Read(...)`, `WebFetch`, ...) gate Claude-specific tools and are reported as unmapped rather than imported.
+Claude-specific permission rules are not imported. Non-`Bash` rules are reported as unmapped.
 
 ### Codex CLI (`~/.codex`)
 

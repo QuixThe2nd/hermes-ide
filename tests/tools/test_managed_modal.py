@@ -105,13 +105,6 @@ def _install_fake_tools_package():
         is_interrupted=lambda: interrupt_event.is_set(),
         _interrupt_event=interrupt_event,
     )
-    sys.modules["tools.approval"] = types.SimpleNamespace(
-        detect_dangerous_command=lambda *args, **kwargs: None,
-        check_dangerous_command=lambda *args, **kwargs: {"approved": True},
-        check_all_command_guards=lambda *args, **kwargs: {"approved": True},
-        load_permanent_allowlist=lambda *args, **kwargs: [],
-        DANGEROUS_PATTERNS=[],
-    )
 
     class _Registry:
         def register(self, **kwargs):
@@ -185,25 +178,3 @@ def test_terminal_tool_respects_direct_modal_mode_without_falling_back_to_manage
                 )
 
 
-class TestShellEscapeBypass:
-    """Regression for #36846/#36847: backslash escapes and empty-string
-    literals split tokens so a denylisted command (rm) slips past detection
-    while the shell still executes it."""
-
-    def test_backslash_escape_bypass_caught(self):
-        from tools.approval import detect_dangerous_command
-        # literal: r-backslash-m -rf /  (shell collapses r\m -> rm)
-        assert detect_dangerous_command("r\\m -rf /")[0] is True
-
-    def test_empty_string_literal_bypass_caught(self):
-        from tools.approval import detect_dangerous_command
-        assert detect_dangerous_command("r''m -rf /")[0] is True
-        assert detect_dangerous_command('r""m -rf /')[0] is True
-
-    def test_plain_dangerous_still_caught(self):
-        from tools.approval import detect_dangerous_command
-        assert detect_dangerous_command("rm -rf /")[0] is True
-
-    def test_benign_command_not_flagged(self):
-        from tools.approval import detect_dangerous_command
-        assert detect_dangerous_command("ls -la")[0] is False

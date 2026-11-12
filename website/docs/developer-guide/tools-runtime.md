@@ -181,19 +181,6 @@ When a tool handler is async, `_run_async()` bridges it to the sync dispatch pat
 - **Gateway path (running loop)** — spins up a disposable thread with `asyncio.run()`
 - **Worker threads (parallel tools)** — uses per-thread persistent loops stored in thread-local storage
 
-## The dangerous-command hard blocks
-
-The terminal tool integrates a dangerous-command guard defined in `tools/approval.py` (unconditional floors in `tools/approval_floors.py`):
-
-1. **Pattern detection** — the hard blocklist covers catastrophic operations:
-   - Filesystem wipes (`rm -rf /`, `mkfs`, `dd` to a block device)
-   - Fork bombs
-   - Piping untrusted URLs to `sh` at the rootfs top level
-
-2. **Detection** — before executing any terminal command, the guard checks the command against the blocklist and the user's `approvals.deny` globs.
-
-3. **Refusal** — a match returns a BLOCKED error to the agent and nothing runs. There is no prompt and no override flag.
-
 ## Terminal/runtime environments
 
 The terminal system supports multiple backends:

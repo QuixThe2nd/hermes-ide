@@ -169,8 +169,7 @@ gateway:
 
   reload_mcp:
     cancelled:             "🟡 /reload-mcp gekanselleer. MCP-gereedskap onveranderd."
-    always_followup:       "ℹ️ Toekomstige `/reload-mcp`-oproepe sal sonder bevestiging loop. Heraktiveer via `approvals.mcp_reload_confirm: true` in config.yaml."
-    confirm_prompt:        "⚠️ **Bevestig /reload-mcp**\n\nOm MCP-bedieners te herlaai, herbou die gereedskapsstel vir hierdie sessie en **maak die verskaffer se prompt-kasie ongeldig** — die volgende boodskap sal alle invoertokens herstuur. Op modelle met lang konteks of hoë redenering kan dit duur wees.\n\nKies:\n• **Eenmaal Goedkeur** — herlaai nou\n• **Altyd Goedkeur** — herlaai nou en stop hierdie prompt permanent\n• **Kanselleer** — laat MCP-gereedskap onveranderd"
+    confirm_prompt:        "⚠️ **Bevestig /reload-mcp**\n\nOm MCP-bedieners te herlaai, herbou die gereedskapsstel vir hierdie sessie en **maak die verskaffer se prompt-kasie ongeldig** — die volgende boodskap sal alle invoertokens herstuur. Op modelle met lang konteks of hoë redenering kan dit duur wees.\n\nKies:\n• **Eenmaal Goedkeur** — herlaai nou\n• **Kanselleer** — laat MCP-gereedskap onveranderd"
     header:                "🔄 **MCP-bedieners herlaai**\n"
     reconnected:           "♻️ Herverbind: {names}"
     added:                 "➕ Bygevoeg: {names}"

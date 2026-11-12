@@ -652,9 +652,11 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
             "edit_tool_stage_embed", chat_id, message_id, stage, metadata=metadata))
 
     async def send_slash_confirm(self, chat_id: str, title: str, message: str, session_key: str,
-                                 confirm_id: str, metadata: Optional[dict] = None) -> SendResult:
+                                 confirm_id: str, metadata: Optional[dict] = None,
+                                 include_always: bool = True) -> SendResult:
         return self._send_result(await self._rpc(
-            "send_slash_confirm", chat_id, title, message, session_key, confirm_id, metadata=metadata))
+            "send_slash_confirm", chat_id, title, message, session_key, confirm_id,
+            metadata=metadata, include_always=include_always))
 
     async def send_update_prompt(self, chat_id: str, prompt: str, default: str = "", session_key: str = "",
                                  metadata: Optional[Dict[str, Any]] = None) -> SendResult:

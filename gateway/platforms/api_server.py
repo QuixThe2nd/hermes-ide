@@ -49,8 +49,8 @@ _api_request_profile: ContextVar[Optional[str]] = ContextVar(
 # /v1/capabilities static feature flags (order is part of the JSON shape).
 _STATIC_FEATURE_FLAGS = {
     "run_status": True, "run_events_sse": True, "run_stop": True, "run_steer": True,
-    "run_approval_response": True, "tool_progress_events": True, "approval_events": True,
-    "session_resources": True, "model_options": True, "session_chat": True,
+    "tool_progress_events": True, "session_resources": True, "model_options": True,
+    "session_chat": True,
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
     "reasoning_streaming": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
@@ -65,7 +65,6 @@ _CAPABILITY_ENDPOINTS = (
     ("responses", ("POST", "/v1/responses")), ("runs", ("POST", "/v1/runs")),
     ("run_status", ("GET", "/v1/runs/{run_id}")),
     ("run_events", ("GET", "/v1/runs/{run_id}/events")),
-    ("run_approval", ("POST", "/v1/runs/{run_id}/approval")),
     ("run_steer", ("POST", "/v1/runs/{run_id}/steer")),
     ("run_stop", ("POST", "/v1/runs/{run_id}/stop")), ("skills", ("GET", "/v1/skills")),
     ("toolsets", ("GET", "/v1/toolsets")), ("sessions", ("GET", "/api/sessions")),
@@ -85,10 +84,6 @@ _CAPABILITY_ENDPOINTS = (
     ("sessions_waiting", ("GET", "/api/sessions/waiting")))
 
 
-def _approval_event_choices(*, smart_denied: bool, allow_session: bool, allow_permanent: bool) -> list[str]:
-    if smart_denied or not allow_session:
-        return ["once", "deny"]
-    return ["once", "session", "always", "deny"] if allow_permanent else ["once", "session", "deny"]
 
 
 try:
@@ -1244,7 +1239,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # "stopping" is not terminal: executor work continues until the agent notices.
         active_api_runs = sum(
             1 for status in self._run_statuses.values()
-            if status.get("status") in {"queued", "running", "waiting_for_approval", "stopping"})
+            if status.get("status") in {"queued", "running", "stopping"})
         process_depth = 0
         active_delegations = 0
         with suppress(Exception):
@@ -3533,7 +3528,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     _handle_get_run = _run_route_delegate("_handle_get_run")
     _handle_run_events = _run_route_delegate("_handle_run_events")
-    _handle_run_approval = _run_route_delegate("_handle_run_approval")
     _handle_steer_run = _run_route_delegate("_handle_steer_run")
     _handle_stop_run = _run_route_delegate("_handle_stop_run")
 

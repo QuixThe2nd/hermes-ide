@@ -25,19 +25,8 @@ from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseB
 
 logger = logging.getLogger(__name__)
 
-# ── Approval & safety ───────────────────────────────────────────────────────
-# Optional computer_use-specific prompt handed to the shared gate as its explicit ``approval_callback``; when None the
-# gate resolves the per-thread CLI callback (``tools.terminal_tool.set_approval_callback``) like every other tool, so
-# in-tree hosts never call this. Same contract as that callback: ``cb(command, description, **kw)`` ->
-# "once" | "session" | "always" | "deny" | "timeout".
-_approval_callback = None
-
-def set_approval_callback(cb) -> None:
-    global _approval_callback
-    _approval_callback = cb
-
-# Hard-blocked regardless of approval level (e.g. logout kills the session Hermes runs in). Alt is
-# canonicalized to option, so the Windows variants are blocked before any backend sees them.
+# Hard-blocked input (e.g. logout kills the session Hermes runs in). Alt is
+# canonicalized to option, so Windows variants are blocked before any backend sees them.
 # See #4562.
 _BLOCKED_KEY_COMBOS = {
     frozenset({"cmd", "shift", "backspace"}), frozenset({"cmd", "option", "backspace"}),  # empty trash / force delete
@@ -56,7 +45,7 @@ def _canon_key_combo(keys: str) -> frozenset:
     return frozenset(_KEY_ALIASES.get(p, p) for p in (q.strip().lower() for q in re.split(r"\s*[+\-]\s*", keys)) if p)
 
 def _reject_unsafe(action: str, args: Dict[str, Any]) -> Optional[str]:
-    """JSON error for hard-blocked input, else None. Runs BEFORE the approval prompt."""
+    """JSON error for hard-blocked input, else None. Runs BEFORE backend dispatch."""
     if action == "type" and (pat := next((p.pattern for p in _BLOCKED_TYPE_PATTERNS if p.search(args.get("text", ""))), None)):
         return json.dumps({"error": f"blocked pattern in type text: {pat!r}",
                            "hint": "Dangerous shell patterns cannot be typed via computer_use."})
@@ -86,11 +75,6 @@ _backend_displays: Dict[str, str] = {}  # DISPLAY the cached backend was spawned
 # (home key, provider, model) → bool. The decision reads the active profile's config (auxiliary.vision
 # override, declared supports_vision), so a multiplexed process must not serve profile A's verdict to B.
 _AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str, str], bool] = {}
-# Approval grants live in the shared store (``tools.approval``: session set + permanent allowlist), keyed by the
-# gate's session key, so a computer_use "always" is one allowlist entry like any terminal pattern. Only the
-# once-per-session escalation warning is tracked here.
-_approval_lock = threading.Lock()
-_escalation_warned: set = set()               # sids already warned that a bypass widened the driver mode
 
 # Screenshot dedup: a tight capture→act→capture loop on a static screen resends the same ~1200px image every step.
 # Every delivered frame is hashed (sha256 over mime + base64 payload); when the next capture of the SAME target
@@ -129,32 +113,12 @@ def reset_screenshot_dedup(session_id: str) -> None:
     "unchanged" note would point at, so the next capture of this session must deliver pixels again."""
     _reset_screenshot_dedup(_scoped_sid(session_id))
 
-def _cua_permission_mode(session_id: str) -> str:
-    """Map Hermes's approval bypass onto Cua's immutable mode; fails closed. Both identity namespaces are consulted
-    (DB ``session_id`` and gateway ``session_key`` contextvar) or a gateway ``/yolo`` would be invisible here.
-    Warns once per session that ``-z``/``--yolo`` swapped the driver onto a private ``unrestricted`` daemon, dropping
-    the configured ceiling: deliberate (``unrestricted`` is not a config value) but easy to trigger by accident."""
-    # Configured cua mode (standard | bounded; "standard" if unresolvable). bounded needs a
-    # computer_use.capability_manifest — the backend fails loudly without it.
+def _cua_permission_mode() -> str:
+    """Return the configured standard or manifest-bounded driver mode."""
     configured = "standard"
     with contextlib.suppress(Exception):
         from tools.computer_use.cua_backend import _cua_configured_permission_mode
         configured = _cua_configured_permission_mode()
-    with contextlib.suppress(Exception):
-        from tools.approval import is_approval_bypass_active_for_session
-        from tools.approval_context import get_current_session_key
-        if is_approval_bypass_active_for_session(session_id) or (
-                bool(key := get_current_session_key(default="")) and is_approval_bypass_active_for_session(key)):
-            with _approval_lock:
-                warn = (key := str(session_id or "")) not in _escalation_warned
-                _escalation_warned.add(key)
-            if warn:
-                logger.warning(
-                    "computer_use: approval bypass (--yolo / -z) escalated the cua-driver permission mode from the "
-                    "configured '%s' to 'unrestricted' for this session. Runtime approval prompts are disabled and the "
-                    "driver's residual ceilings no longer apply. Drop the bypass flag to keep '%s', or declare a "
-                    "version-3 computer_use.capability_manifest to keep a ceiling on bypassed runs.", configured, configured)
-            return "unrestricted"
     return configured
 
 def _new_backend(permission_mode: str) -> ComputerUseBackend:
@@ -207,11 +171,10 @@ def _scoped_sid(session_id: str) -> str:
     return sid if get_hermes_home_override() is None else f"{sid}@{hermes_home_key()}"
 
 def _get_backend(session_id: str = "") -> ComputerUseBackend:
-    bare_sid, sid = str(session_id or ""), _scoped_sid(session_id)
+    sid = _scoped_sid(session_id)
     while True:
         with _backend_lock:
-            # Mode resolved under the cache lock; YOLO mutation never holds the approval lock while releasing it.
-            permission_mode = _cua_permission_mode(bare_sid)  # approval state is keyed by the Hermes session id
+            permission_mode = _cua_permission_mode()
             if sid == "" and _backend is not None and sid not in _backends:
                 _install_backend(sid, _backend, permission_mode)  # fold the injection hook into the cache
             if (cached := _backends.get(sid)) is None:
@@ -222,15 +185,14 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
             if (_backend_permission_modes.get(sid, "standard") == permission_mode
                     and not backend_display_stale(_backend_displays.get(sid, ""), desktop_identity())):
                 return cached
-            # Cua's mode and DISPLAY are fixed at daemon startup: a /yolo toggle, or a Bot Desktop that started
-            # (or moved) after this backend was cached, replaces only this session's backend.
+            # Cua's mode and DISPLAY are fixed at daemon startup: a Bot Desktop
+            # started or moved after this backend was cached requires a new one.
             _, stale_lock = _detach_locked(sid)  # stopped outside the cache lock; the loop re-reads the mode first
         _stop_backend(cached, stale_lock, lambda e: None)
 
 def release_computer_use_session(session_id: str) -> bool:
     """Release one session-owned backend (lifecycle seam for hosts/plugins); idempotent, True iff one was released.
-    Cache entries are removed BEFORE stopping so new lookups cannot retain the stale target/ref namespace. Approval
-    grants are not touched here: they live in the shared store and die with ``tools.approval.clear_session``."""
+    Cache entries are removed BEFORE stopping so new lookups cannot retain the stale target/ref namespace."""
     sid = _scoped_sid(session_id)
     _reset_screenshot_dedup(sid)  # the next capture of a re-created session must deliver pixels
     with _backend_lock:
@@ -258,8 +220,6 @@ def _shutdown_backend_atexit() -> None:
             unique.setdefault(id(_backend), (_backend, _backend_call_locks.get("")))
         _backend = None
         _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear(), _backend_displays.clear()
-    with _approval_lock:
-        _escalation_warned.clear()
     for backend, call_lock in unique.values():
         _stop_backend(backend, call_lock, lambda e: logger.debug("cua-driver atexit teardown failed: %s", e))
 
@@ -292,13 +252,12 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
 
 # ── Dispatch ────────────────────────────────────────────────────────────────
 def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
-    """Main entry point (tools.registry): a JSON string (text-only) or a dict marked `_multimodal`. Order: hard
-    blocks (_reject_unsafe) -> approval scopes (destructive action, then 'bring_to_front' — persistent focus is a
-    separate visible side effect with its own scope) -> backend -> dispatch under the session call lock."""
+    """Main entry point (tools.registry): a JSON string (text-only) or a dict marked `_multimodal`.
+    Hard input blocks run before backend dispatch under the session call lock."""
     action = (args.get("action") or "").strip().lower()
     if not action:
         return json.dumps({"error": "missing `action`"})
-    session_id = str(kwargs.get("session_id") or "")  # approval-state / daemon-mode isolation key
+    session_id = str(kwargs.get("session_id") or "")
     # Bot Desktop lease: while a human drives the screen every action, capture included, is refused.
     from tools.bot_desktop import lease as _bd_lease
     from tools.bot_desktop.runtime import ensure_started_for_tool as _bd_ensure_started
@@ -311,11 +270,6 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     _bd_ensure_started()  # headless gateway: bring the profile's screen up before the backend probes DISPLAY
     if (err := _reject_unsafe(action, args)) is not None:
         return err
-    scopes = ([action] if action in _ACTIONS and _ACTIONS[action].destructive else []) + (
-        ["bring_to_front"] if args.get("bring_to_front") or (action == "focus_app" and args.get("raise_window")) else [])
-    for scope in scopes:
-        if (err := _request_approval(scope, args)) is not None:
-            return err
     try:
         backend = _get_backend(session_id=session_id)
     except Exception as e:
@@ -326,7 +280,7 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         with _backend_lock:
             call_lock = _backend_call_locks.setdefault(session_id, threading.RLock())
         with call_lock:
-            # Re-check under the dispatch lock: approval, backend start-up and lock waits above can take
+            # Re-check under the dispatch lock: backend start-up and lock waits above can take
             # seconds, and a human may have taken over meanwhile. A result produced after such a flip is
             # discarded too — it may picture what they typed.
             try:
@@ -351,33 +305,6 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         logger.exception("computer_use %s failed", action)
         return json.dumps({"error": f"{action} failed: {e}"})
 
-def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
-    """None if approved, else a JSON error string. The decision (yolo bypass, session/permanent grants, CLI prompt,
-    gateway pending, cron/unattended policy, fail-closed with nobody to ask) is ``tools.approval``'s shared gate,
-    so a computer_use grant is one store entry like any terminal pattern. Scope key ``cua:<action>:<mode>``:
-    foreground delivery is a visible focus change, so a background ``session`` grant must NOT cover it (#67052).
-    """
-    from tools.approval import _run_approval_gate
-
-    mode = "foreground" if args.get("delivery_mode") == "foreground" else "background"
-    description = f"Allow computer_use to perform `{action}`?"
-    result = _run_approval_gate(
-        pattern_key=f"cua:{action}:{mode}", description=description,
-        display_target=f"computer_use: {_summarize_action(action, args)}", approval_callback=_approval_callback,
-        subject=f"computer_use `{action}` requires approval", noun="desktop actions",
-        advice="Find an alternative approach that avoids driving the desktop.",
-        autoapprove_log_prefix="computer_use action in non-interactive non-gateway context",
-        fail_closed_when_no_human=True,
-        no_human_block_message=(f"BLOCKED: computer_use `{action}` requires approval but no interactive user or "
-                                "gateway is present to approve it."),
-    )
-    if result.get("approved"):
-        return None
-    return json.dumps({"error": result.get("message") or "denied by user", "action": action})
-
-def _summarize_action(action: str, args: Dict[str, Any]) -> str:
-    fg = " [FOREGROUND — briefly raises the window / changes focus]" if args.get("delivery_mode") == "foreground" else ""
-    return _ACTIONS.get(action, _ActionSpec(None)).summarize(action, args, fg)
 
 # --- handlers: (backend, action, args, **delivery) -> ActionResult (_dispatch applies the follow-up capture) or a
 #     final str/dict result. `delivery` = delivery_mode + bring_to_front; only input actions use it.
@@ -419,37 +346,25 @@ def _do_capture(backend, action, args, session_id=None, fence=lambda: None, **_)
 def _do_listing(backend, action, args, key, **_):
     return json.dumps({key: (items := getattr(backend, action)()), "count": len(items)})
 
-def _summarize_click(action: str, args: Dict[str, Any], fg: str) -> str:
-    where = (f" element #{args['element']}" if args.get("element") is not None
-             else f" at {tuple(args['coordinate'])}" if args.get("coordinate") else "")
-    return f"{action}{where}{fg}"
-
-# One `action`. ``input``: native input to the backend's sticky target (gets delivery kwargs + the `app=` mismatch
-# guard). ``destructive``: mutates user-visible state -> approval prompt (the rest only read).
-# ``summarize(action, args, fg_suffix)`` renders the one-line approval prompt.
-_ActionSpec = namedtuple("_ActionSpec", "handler input destructive summarize",
-                         defaults=(False, False, lambda a, args, fg: a + fg))
-_input = partial(_ActionSpec, input=True, destructive=True)
+# One `action`. ``input`` marks native input to the backend's sticky target.
+_ActionSpec = namedtuple("_ActionSpec", "handler input", defaults=(False,))
+_input = partial(_ActionSpec, input=True)
 
 _ACTIONS: Dict[str, _ActionSpec] = {
-    "click": _input(_do_click, summarize=_summarize_click),
-    "double_click": _input(partial(_do_click, count=2), summarize=_summarize_click),
-    "right_click": _input(partial(_do_click, button="right"), summarize=_summarize_click),
-    "middle_click": _input(partial(_do_click, button="middle"), summarize=_summarize_click),
-    "drag": _input(_do_drag, summarize=lambda a, args, fg: (f"drag {args.get('from_element') or args.get('from_coordinate')} → "
-                                                             f"{args.get('to_element') or args.get('to_coordinate')}{fg}")),
-    "scroll": _input(_do_scroll, summarize=lambda a, args, fg: f"scroll {args.get('direction', '?')} x{args.get('amount', 3)}{fg}"),
-    "type": _input(lambda backend, action, args, **delivery: backend.type_text(args.get("text", ""), **delivery),
-                   summarize=lambda a, args, fg: f"type {args.get('text', '')[:60]!r}" + ("..." if len(args.get("text", "")) > 60 else "") + fg),
-    "key": _input(lambda backend, action, args, **delivery: backend.key(args.get("keys", ""), **delivery),
-                  summarize=lambda a, args, fg: f"key {args.get('keys', '')!r}{fg}"),
+    "click": _input(_do_click),
+    "double_click": _input(partial(_do_click, count=2)),
+    "right_click": _input(partial(_do_click, button="right")),
+    "middle_click": _input(partial(_do_click, button="middle")),
+    "drag": _input(_do_drag),
+    "scroll": _input(_do_scroll),
+    "type": _input(lambda backend, action, args, **delivery: backend.type_text(args.get("text", ""), **delivery)),
+    "key": _input(lambda backend, action, args, **delivery: backend.key(args.get("keys", ""), **delivery)),
     "set_value": _input(lambda backend, action, args, **_: (
         json.dumps({"error": "set_value requires `value`"}) if args.get("value") is None
         else backend.set_value(value=str(args["value"]), element=args.get("element")))),
     "focus_app": _ActionSpec(lambda backend, action, args, **_: (
         json.dumps({"error": "focus_app requires `app`"}) if not args.get("app")
-        else backend.focus_app(args["app"], raise_window=bool(args.get("raise_window")))), destructive=True,
-        summarize=lambda a, args, fg: f"focus {args.get('app', '')!r}" + (" (raise)" if args.get("raise_window") else "")),
+        else backend.focus_app(args["app"], raise_window=bool(args.get("raise_window"))))),
     "capture": _ActionSpec(_do_capture),
     "wait": _ActionSpec(lambda backend, action, args, **_: _text_response(backend.wait(float(args.get("seconds", 1.0))))),
     "list_apps": _ActionSpec(partial(_do_listing, key="apps")),

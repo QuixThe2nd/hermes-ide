@@ -11,8 +11,7 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_PROCESS_NOTICES, MATRIX_ALLOW_ROOM_MENTIONS, MATRIX_ALLOW_PUBLIC_ROOMS (all default false);
   MATRIX_AUTO_THREAD (default true), MATRIX_DM_AUTO_THREAD, MATRIX_DM_MENTION_THREADS,
   MATRIX_SESSION_SCOPE auto|room|thread; MATRIX_MAX_MESSAGE_LENGTH (default 16000),
-  MATRIX_MAX_MEDIA_BYTES, MATRIX_ROOM_IDENTITY_TTL_SECONDS; MATRIX_APPROVAL_REQUIRE_SENDER (default
-  true), MATRIX_APPROVAL_TIMEOUT_SECONDS (default 300).
+  MATRIX_MAX_MEDIA_BYTES, MATRIX_ROOM_IDENTITY_TTL_SECONDS.
 """
 
 from __future__ import annotations
@@ -62,9 +61,8 @@ except ImportError:
     TrustState = type("_TrustStateStub", (), {"UNVERIFIED": 0, "VERIFIED": 1})  # type: ignore[misc,assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
+    gateway_trust_env, BasePlatformAdapter,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
 )
 from gateway.platforms.base import transcode_to_ogg_opus
@@ -333,17 +331,6 @@ class MatrixRoomIdentity:
     chat_type: str
     conflict: bool = False
 
-
-@dataclass
-class _MatrixApprovalPrompt:
-    """Pending reaction-based exec approval prompt."""
-    session_key: str
-    chat_id: str
-    message_id: str
-    resolved: bool = False
-    requester_user_id: str | None = None
-    expires_at: float | None = None
-    bot_reaction_events: dict[str, str] = field(default_factory=dict, init=False)  # emoji -> event_id
 
 
 @dataclass
@@ -888,13 +875,8 @@ class MatrixAdapter(BasePlatformAdapter):
         # Text batching merges client-side splits (~4000 chars) of one long message.
         self._text_batch_delay_seconds = float(os.getenv("HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS", "0.6"))
         self._text_batch_split_delay_seconds = float(os.getenv("HERMES_MATRIX_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
-        self._approval_reaction_map = {
-            "✅": "once", "🌀": "session", "♾️": "always", "♾": "always", "\u267e\ufe0f": "always",
-            "\u267e": "always", "❌": "deny", "❎": "deny"}
-        self._approval_prompts_by_event: Dict[str, _MatrixApprovalPrompt] = {}
-        self._approval_prompt_by_session: Dict[str, str] = {}
-        self._approval_require_sender: bool = _env_truthy("MATRIX_APPROVAL_REQUIRE_SENDER", "true")
-        self._approval_timeout_seconds = _env_number("MATRIX_APPROVAL_TIMEOUT_SECONDS", 300, int)
+        self._prompt_require_sender = True
+        self._prompt_timeout_seconds = 300
         self._model_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
         self._choice_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
         # Authz lists: scoped env → this profile's YAML (``allowed_users`` / ``ignore_user_patterns``,
@@ -1638,10 +1620,6 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         return await self._send_local_file(chat_id, video_path, "m.video", caption, reply_to, metadata=metadata)
 
-    # Template attrs for the shared _format_exec_approval core (header + fence + reason only;
-    # the smart-deny/scope wording lives in the reaction legend below).
-    _EA_HEADER = f"⚠️ **{EA_HEADER_TEXT}**\n"
-    _EA_CMD_BUDGET = 2000
 
     async def _send_reaction_prompt(
         self, chat_id: str, text: str, metadata: Optional[dict], make_prompt, registry: dict, emojis,
@@ -1653,7 +1631,7 @@ class MatrixAdapter(BasePlatformAdapter):
             return result
         prompt = make_prompt(
             result.message_id, str((metadata or {}).get("requester_user_id") or "") or None,
-            time.monotonic() + max(self._approval_timeout_seconds, 0))
+            time.monotonic() + self._prompt_timeout_seconds)
         registry[result.message_id] = prompt
         for emoji in emojis:
             try:
@@ -1664,16 +1642,6 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.debug("Matrix: failed to add %s reaction %s: %s", label, emoji, exc)
         return result
 
-    _EA_REACTIONS = {"once": "✅", "session": "🌀", "always": "♾️", "deny": "❌"}
-    _EA_LEGEND = {"once": "✅ = approve once", "session": "🌀 = approve for this session",
-                  "always": "♾️ = approve always", "deny": "❎ = deny"}
-    _EA_TYPED_HINT = {"session": "Reply `!approve session` to approve this pattern for the session, ",
-                      "always": "`!approve always` to approve permanently, "}
-
-    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
-        """Deprecated: this fork never asks a human to approve/deny agent actions, so no
-        approval prompt is ever posted (base ``send_exec_approval`` is a no-op pass-through)."""
-        return SendResult(success=False, error="Not supported")
 
     async def send_model_picker(
         self, chat_id: str, providers: list, current_model: str, current_provider: str, session_key: str,
@@ -2383,8 +2351,7 @@ class MatrixAdapter(BasePlatformAdapter):
             reacts_to = str(getattr(relates_to, "event_id", ""))
             key = str(getattr(relates_to, "key", ""))
         logger.info("Matrix: reaction %s from %s on %s in %s", key, sender, reacts_to, room_id)
-        for handler in (self._handle_approval_reaction, self._handle_model_picker_reaction,
-                        self._handle_choice_picker_reaction):
+        for handler in (self._handle_model_picker_reaction, self._handle_choice_picker_reaction):
             if await handler(room_id, reacts_to, key, sender):
                 return
 
@@ -2409,10 +2376,6 @@ class MatrixAdapter(BasePlatformAdapter):
             await self._send_invalid_reaction_feedback(room_id, reacts_to, invalid_text)
         return True, prompt, selection
 
-    async def _handle_approval_reaction(self, room_id: str, reacts_to: str, key: str, sender: str) -> bool:
-        """Deprecated: this fork never posts exec-approval prompts, so no reaction can resolve
-        one. Kept (importable, still in the reaction-handler loop) as a permanent no-op."""
-        return False
 
     async def _handle_model_picker_reaction(self, room_id: str, reacts_to: str, key: str, sender: str) -> bool:
         """Apply a model-picker reaction. True if the reaction targeted a pending picker."""
@@ -2478,7 +2441,7 @@ class MatrixAdapter(BasePlatformAdapter):
             return False
         requester = getattr(prompt, "requester_user_id", None)
         # getattr: object.__new__-built test doubles may lack the attribute.
-        if getattr(self, "_approval_require_sender", True) and requester and sender != requester:
+        if getattr(self, "_prompt_require_sender", True) and requester and sender != requester:
             logger.info("Matrix: ignoring %s reaction from %s; requester is %s", prompt_label, sender, requester)
             await self._send_invalid_reaction_feedback(
                 room_id, target_event_id, "Only the user who requested this action can use these controls.")
@@ -2491,14 +2454,6 @@ class MatrixAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("Matrix: failed to send invalid reaction feedback: %s", exc)
 
-    async def _expire_matrix_approval_prompt(self, room_id: str, target_event_id: str, prompt: Any) -> None:
-        prompt.resolved = True
-        self._approval_prompts_by_event.pop(target_event_id, None)
-        self._approval_prompt_by_session.pop(prompt.session_key, None)
-        await self._redact_bot_approval_reactions(room_id, prompt)
-        await self._send_invalid_reaction_feedback(
-            room_id, target_event_id,
-            "This approval prompt has expired. Run the command again if you still want to approve it.")
 
     async def _expire_matrix_model_picker_prompt(self, room_id: str, target_event_id: str, prompt: Any) -> None:
         prompt.resolved = True
@@ -2507,11 +2462,6 @@ class MatrixAdapter(BasePlatformAdapter):
         await self._send_invalid_reaction_feedback(
             room_id, target_event_id, "This model picker has expired. Run `/model` again to choose a model.")
 
-    async def _redact_bot_approval_reactions(self, room_id: str, prompt: Any) -> None:
-        """Redact the bot's seeded approval reactions (delayed), leaving only the user's reaction."""
-        for emoji, evt_id in prompt.bot_reaction_events.items():
-            self._schedule_reaction_redaction(room_id, evt_id, "approval resolved")
-            logger.debug("Matrix: scheduled bot reaction redaction %s (%s)", emoji, evt_id)
 
     async def _redact_bot_model_picker_reactions(self, room_id: str, prompt: Any) -> None:
         for emoji, evt_id in prompt.bot_reaction_events.items():
@@ -3160,7 +3110,6 @@ _MATRIX_CAPABILITIES: Dict[str, str] = {
     "text": "yes",
     "threads": "yes",
     "reactions": "yes",
-    "approvals": "yes",
     "model picker": "yes",
     "thinking panes": "yes",
     "images": "yes",

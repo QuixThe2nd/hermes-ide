@@ -18,7 +18,6 @@ from hermes_constants import is_termux as _is_termux_environment
 from rich.markup import escape as _escape
 from utils import base_url_hostname, file_signature
 
-from hermes_cli.cli_modal_mixin import _gated_confirm
 from hermes_cli.colors import Colors as _Colors
 
 CONFIG_WATCH_INTERVAL = 5.0  # seconds between config.yaml stat() calls
@@ -39,7 +38,6 @@ _TOOL_PROGRESS_LABELS = {
 
 _RELOAD_MCP_CHOICES = [
     ("once", "Approve Once", "reload now"),
-    ("always", "Always Approve", "reload now and silence this prompt permanently"),
     ("cancel", "Cancel", "leave MCP tools unchanged")]
 _RELOAD_MCP_DETAIL = (
     "Reloading MCP servers rebuilds the tool set for this session and\n"
@@ -473,7 +471,7 @@ class CLIInfoMixin:
         """
         from cli import _rich_text_from_ansi
         from hermes_cli.bang_shell import (
-            USAGE_HINT, bang_shell_enabled, check_bang_approval, is_bang_command,
+            USAGE_HINT, bang_shell_enabled, is_bang_command,
             parse_bang_command, resolve_bang_cwd, run_bang_command)
 
         if not is_bang_command(text):
@@ -488,12 +486,6 @@ class CLIInfoMixin:
             self._console_print(f"[dim]{USAGE_HINT}[/]")
             return True
 
-        approval = check_bang_approval(command)
-        if not approval.get("approved"):
-            message = approval.get("message") or (
-                f"Command denied: {approval.get('description', 'flagged as dangerous')}")
-            self._console_print(f"[bold red]{_escape(str(message))}[/]")
-            return True
 
         exit_code = run_bang_command(
             command,
@@ -885,19 +877,18 @@ class CLIInfoMixin:
         threading.Thread(target=self._reload_mcp, daemon=True).start()
 
     def _confirm_and_reload_mcp(self, cmd_original: str = "") -> None:
-        """Interactive /reload-mcp — confirm (Approve Once / Always Approve / Cancel, gated by
-        ``approvals.mcp_reload_confirm``, default on), then reload. The config watcher's
-        auto-reload calls ``_reload_mcp`` directly. Reloading invalidates the provider prompt cache
-        (tool schemas are baked into the system prompt), hence the warning."""
-        choice = _gated_confirm(
-            self, "reload-mcp", "mcp_reload_confirm",
+        """Confirm once, then reload MCP; legacy approval config is ignored."""
+        raw = self._prompt_text_input_modal(
             title="⚠️  /reload-mcp — Prompt cache invalidation warning",
-            detail=_RELOAD_MCP_DETAIL,
-            choices=_RELOAD_MCP_CHOICES,
-            unchanged="MCP tools unchanged.",
-            always_msg="🔒 Future /reload-mcp calls will run without confirmation.",
-            once_verb="reloading")
-        if choice is None:
+            detail=_RELOAD_MCP_DETAIL, choices=_RELOAD_MCP_CHOICES)
+        choice = self._normalize_slash_confirm_choice(raw, _RELOAD_MCP_CHOICES)
+        if choice != "once":
+            if raw is None:
+                print("🟡 /reload-mcp cancelled (no input).")
+            elif choice is None:
+                print(f"🟡 Unrecognized choice '{raw}'. /reload-mcp cancelled.")
+            else:
+                print("🟡 /reload-mcp cancelled. MCP tools unchanged.")
             return
         with self._busy_command(self._slow_command_status(cmd_original)):
             self._reload_mcp()

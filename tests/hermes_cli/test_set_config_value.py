@@ -410,16 +410,15 @@ class TestStringTypedConfigValues:
     @pytest.mark.parametrize("value", ["off", "on", "yes", "no", "true", "false", "01"])
     def test_string_typed_values_are_not_coerced(self, _isolated_hermes_home, value):
         """Values stay strings when DEFAULT_CONFIG declares the leaf as a string."""
-        set_config_value("approvals.mode", value)
+        set_config_value("display.skin", value)
 
         import yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
-        assert saved["approvals"]["mode"] == value
-        assert isinstance(saved["approvals"]["mode"], str)
+        assert saved["display"]["skin"] == value
+        assert isinstance(saved["display"]["skin"], str)
 
     @pytest.mark.parametrize("key, value, expected", [
         ("terminal.persistent_shell", "off", False),
-        ("approvals.timeout", "30", 30),
     ])
     def test_non_string_defaults_keep_existing_coercion(
         self, _isolated_hermes_home, key, value, expected
@@ -600,7 +599,6 @@ class TestValidateConfigKey:
         "gateway.strict",
         "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",
-        "approvals.mode",
         # _EXTRA_KNOWN_ROOT_KEYS: read by the runtime (setup wizard / tools_config save flow)
         # but absent from DEFAULT_CONFIG; they used to trip the false "not a recognized config
         # key" notice with a bogus near-miss suggestion (platform_hints.cli).

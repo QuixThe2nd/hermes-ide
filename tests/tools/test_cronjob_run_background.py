@@ -39,18 +39,18 @@ def _job(job_id):
 
 
 def _bound_session_key(key="agent:main:telegram:dm:123"):
-    """Context manager binding the approval session key contextvar."""
+    """Context manager binding the tool-session ContextVar."""
     import contextlib
 
-    from tools.approval_context import _approval_session_key
+    from tools.session_context import _tool_session_key
 
     @contextlib.contextmanager
     def _cm():
-        token = _approval_session_key.set(key)
+        token = _tool_session_key.set(key)
         try:
             yield
         finally:
-            _approval_session_key.reset(token)
+            _tool_session_key.reset(token)
 
     return _cm()
 

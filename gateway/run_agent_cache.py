@@ -398,10 +398,9 @@ class GatewayAgentCacheMixin:
 
         Use this at every site that ends a running turn, regardless of
         cause (normal completion, /stop, /reset, /resume, sentinel
-        cleanup, stale-eviction).  Per-session state that PERSISTS
-        across turns (``_session_model_overrides``, ``_voice_mode``,
-        ``_pending_approvals``, ``_update_prompt_pending``) is NOT
-        touched here — those have their own lifecycles.
+        cleanup, stale-eviction). Per-session state that PERSISTS across turns
+        (``_session_model_overrides``, ``_voice_mode``, ``_update_prompt_pending``)
+        is NOT touched here — those have their own lifecycles.
 
         When ``run_generation`` is provided, only clear the slot if that
         generation is still current for the session.  This prevents an
@@ -562,8 +561,8 @@ class GatewayAgentCacheMixin:
         Scope rules:
         - Conversation-scoped (cleared here): model/reasoning overrides,
           one-turn restore snapshots, pending model notes, last-resolved
-          model cache, queued follow-up events, and the boundary security
-          state (approvals, /yolo, slash-confirm, update prompts).
+          model cache, queued follow-up events, slash confirmations, and
+          update prompts).
         - Turn-scoped (NOT cleared here): _running_agents/_ts, slot leases,
           turn-lease tokens — owned by _release_running_agent_state and the
           dispatch finally.
@@ -615,7 +614,6 @@ class GatewayAgentCacheMixin:
 
         _sec_state = self._peek_session_state(session_key)
         if _sec_state is not None:
-            _sec_state.persistent.approvals = None
             _sec_state.persistent.update_prompt_pending = False
 
         try:
@@ -633,18 +631,19 @@ class GatewayAgentCacheMixin:
                 )
 
         try:
-            from tools.approval import clear_session as _clear_approval_session
-        except Exception:
-            return
+            from tools.computer_use.tool import release_computer_use_session
 
-        try:
-            _clear_approval_session(session_key)
-        except Exception as e:
-            logger.debug(
-                "Failed to clear approval state for session boundary %s: %s",
-                session_key,
-                e,
-            )
+            release_computer_use_session(session_key)
+        except Exception:
+            logger.debug("Failed to release computer-use resources for %s", session_key, exc_info=True)
+        for module, shutdown in (
+            ("tools.code_kernel", "shutdown_kernels_for_owner"),
+            ("tools.code_kernel_remote", "shutdown_remote_kernels_for_owner"),
+        ):
+            try:
+                getattr(importlib.import_module(module), shutdown)(session_key)
+            except Exception:
+                logger.debug("Failed to release %s for %s", module, session_key, exc_info=True)
 
     def _begin_session_run_generation(self, session_key: str) -> int:
         """Claim a fresh, monotonically increasing run generation token (NEVER reset): a late result

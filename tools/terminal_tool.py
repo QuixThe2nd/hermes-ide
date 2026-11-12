@@ -276,18 +276,8 @@ def _check_disk_usage_warning():
         return False
 
 
-# Optional UI callbacks for interactive prompts. When set, these are called
-# instead of the default /dev/tty or input() readers. The CLI registers these
-# so prompts route through prompt_toolkit's event loop.
-# Callback slots used by the approval prompt and sudo password prompt
-# routines. Stored in thread-local state so overlapping ACP sessions —
-# each running in its own ThreadPoolExecutor thread — don't stomp on
-# each other's callbacks. See GHSA-qg5c-hvr5-hjgr.
-#
-# CLI mode is single-threaded, so each thread (the only one) holds its
-# own callback exactly like before. Gateway mode resolves approvals via
-# the per-session queue in tools.approval, not through these callbacks,
-# so it's unaffected.
+# Sudo callbacks are thread-local so overlapping ACP sessions do not share
+# password prompt state. See GHSA-qg5c-hvr5-hjgr.
 _callback_tls = threading.local()
 
 
@@ -308,8 +298,6 @@ def _current_session_key() -> str:
     return get_session_env("HERMES_SESSION_KEY", "")
 
 
-def _get_approval_callback():
-    return getattr(_callback_tls, "approval", None)
 
 
 def set_sudo_password_callback(cb):
@@ -321,53 +309,6 @@ def set_sudo_password_callback(cb):
     _callback_tls.sudo_password = cb
 
 
-def set_approval_callback(cb):
-    """Register a callback for dangerous command approval prompts.
-
-    Per-thread scope — ACP sessions that run concurrently in a
-    ThreadPoolExecutor each have their own callback slot. See
-    GHSA-qg5c-hvr5-hjgr.
-    """
-    _callback_tls.approval = cb
-
-
-# =============================================================================
-# Dangerous Command Approval System
-# =============================================================================
-
-# Dangerous command detection + approval now consolidated in tools/approval.py
-from tools.approval import (
-    check_all_command_guards as _check_all_guards_impl,
-)
-
-
-def _docker_volume_uses_host_path(volume_spec: str) -> bool:
-    """Return True when a docker volume spec bind-mounts a host path."""
-    if not isinstance(volume_spec, str):
-        return False
-
-    vol = volume_spec.strip()
-    return bool(vol) and (
-        vol.startswith(("/", "~", "./", "../")) or
-        (len(vol) >= 3 and vol[1] == ":" and vol[2] in ("/", "\\"))
-    )
-
-
-def _docker_has_host_access(config: Dict[str, Any]) -> bool:
-    """Return True when a Docker sandbox exposes host paths through bind mounts."""
-    if config.get("env_type") != "docker":
-        return False
-    if config.get("host_cwd") and config.get("docker_mount_cwd_to_workspace"):
-        return True
-    return any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", []))
-
-
-def _check_all_guards(command: str, env_type: str,
-                      has_host_access: bool = False) -> dict:
-    """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
-    return _check_all_guards_impl(command, env_type,
-                                  approval_callback=_get_approval_callback(),
-                                  has_host_access=has_host_access)
 
 
 # Allowlist: characters that can legitimately appear in directory paths.
@@ -502,7 +443,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     if _sudo_cb is not None:
         try:
             # Blocked on a human typing their password: exclude from tool deadlines.
-            from tools.approval_human_wait import human_wait_window
+            from tools.sudo_wait import human_wait_window
             with human_wait_window():
                 return _sudo_cb() or ""
         except Exception:
@@ -576,7 +517,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
         password_thread = threading.Thread(target=read_password_thread, daemon=True)
         password_thread.start()
         # Blocked on a human typing their password: exclude from tool deadlines.
-        from tools.approval_human_wait import human_wait_window
+        from tools.sudo_wait import human_wait_window
         with human_wait_window():
             password_thread.join(timeout=timeout_seconds)
         
@@ -2392,59 +2333,6 @@ class _Rejected(Exception):
         self.result_json = result_json
 
 
-@dataclass
-class _ApprovalVerdict:
-    """Outcome of the pre-exec guard pass.
-
-    ``note`` is the audit note attached to the result. ``approved_run`` is True
-    when the user explicitly approved (or pre-confirmed via ``force``); it drives
-    the clean-interrupt-slate clear before ``env.execute`` so an approved command
-    can't be SIGINT-killed by a bit that landed during the approval-wait.
-    """
-    note: Optional[str] = None
-    approved_run: bool = False
-
-
-def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *, force: bool) -> _ApprovalVerdict:
-    """Run tirith + dangerous-command guards; ``force`` skips them entirely.
-    Raises :class:`_Rejected` when the command may not run (denied, or pending
-    gateway approval).
-
-    NOTE(future-me): kept verbatim from upstream; ``terminal_tool`` runs its
-    guards through the bounded ``_pre_exec_block`` below. Do not delete the
-    helper classes or the ``dataclass`` import upstream tests rely on when
-    importing this module.
-    """
-    if force:
-        return _ApprovalVerdict(approved_run=True)
-    approval = _check_all_guards(command, env_type, has_host_access=_docker_has_host_access(config))
-    if not approval["approved"]:
-        if approval.get("status") == "pending_approval":  # gateway ask mode
-            raise _Rejected(_error_json(
-                "", status="pending_approval",
-                approval_pending=True,
-                command=approval.get("command", command),
-                description=approval.get("description", "command flagged"),
-                pattern_key=approval.get("pattern_key", ""),
-                smart_denied=approval.get("smart_denied", False),
-                allow_permanent=approval.get("allow_permanent", True),
-            ))
-        desc = approval.get("description", "command flagged")
-        fallback_msg = (
-            f"Command denied: {desc}. "
-            "Use the approval prompt to allow it, or rephrase the command."
-        )
-        raise _Rejected(_error_json(approval.get("message", fallback_msg), status="blocked",
-                                    **({"user_summary": approval["user_summary"]} if approval.get("user_summary") else {})))
-    desc = approval.get("description", "flagged as dangerous")
-    if approval.get("user_approved"):
-        return _ApprovalVerdict(
-            note=f"Command required approval ({desc}) and was approved by the user.",
-            approved_run=True,
-        )
-    if approval.get("smart_approved"):
-        return _ApprovalVerdict(note=f"Command was flagged ({desc}) and auto-approved by smart approval.")
-    return _ApprovalVerdict()
 
 
 @dataclass
@@ -3133,7 +3021,6 @@ def terminal_tool(
     timeout: Optional[int] = None,
     task_id: Optional[str] = None,
     session_id: Optional[str] = None,
-    force: bool = False,
     workdir: Optional[str] = None,
     pty: bool = False,
     notify_on_complete: bool = False,
@@ -3149,7 +3036,6 @@ def terminal_tool(
         timeout: Command timeout in seconds (default: from config)
         task_id: Unique identifier for environment isolation (optional)
         session_id: Conversation/session identifier for durable observability
-        force: If True, skip dangerous command check (use after user confirms)
         workdir: Working directory for this command (optional, uses session cwd if not set)
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
         notify_on_complete: If True and background=True, you'll be notified exactly once when the process exits. The right choice for almost every long task. MUTUALLY EXCLUSIVE with watch_patterns.
@@ -3168,8 +3054,6 @@ def terminal_tool(
         # With custom timeout
         >>> result = terminal_tool(command="long_task.sh", timeout=300)
         
-        # Force run after user confirmation
-        # Note: force parameter is internal only, not exposed to model API
     """
     try:
         if not isinstance(command, str):
@@ -3372,7 +3256,7 @@ def terminal_tool(
         # contextvar doesn't cross tool-worker threads, so fall back to the raw
         # task_id (which IS the session_key for the top-level agent) — a
         # stable, thread-safe anchor.
-        from tools.approval_context import get_current_session_key
+        from tools.session_context import get_current_session_key
 
         session_key = get_current_session_key(default="") or (task_id or "")
 
@@ -3408,54 +3292,6 @@ def terminal_tool(
                 status="error",
             ))
 
-        # Pre-exec security checks (tirith + dangerous command detection)
-        # Skip check if force=True (user has confirmed they want to run it)
-        approval_note = None
-        # True when the user explicitly approved this run (or pre-confirmed via
-        # force).  Drives the clean-interrupt-slate clear before env.execute so
-        # an approved command can't be SIGINT-killed by a bit that landed during
-        # the approval-wait (see clear_current_thread_interrupt).
-        _approved_run = bool(force)
-        if not force:
-            approval = _check_all_guards(
-                command, env_type,
-                has_host_access=_docker_has_host_access(config),
-            )
-            if not approval["approved"]:
-                # Check if this is an approval_required (gateway ask mode)
-                if approval.get("status") == "pending_approval":
-                    return json.dumps({
-                        "output": "",
-                        "exit_code": -1,
-                        "error": "",
-                        "status": "pending_approval",
-                        "approval_pending": True,
-                        "command": approval.get("command", command),
-                        "description": approval.get("description", "command flagged"),
-                        "pattern_key": approval.get("pattern_key", ""),
-                        "smart_denied": approval.get("smart_denied", False),
-                        "allow_permanent": approval.get("allow_permanent", True),
-                    }, ensure_ascii=False)
-                # Command was blocked
-                desc = approval.get("description", "command flagged")
-                fallback_msg = (
-                    f"Command denied: {desc}. "
-                    "Use the approval prompt to allow it, or rephrase the command."
-                )
-                return json.dumps({
-                    "output": "",
-                    "exit_code": -1,
-                    "error": approval.get("message", fallback_msg),
-                    "status": "blocked"
-                }, ensure_ascii=False)
-            # Track whether approval was explicitly granted by the user
-            if approval.get("user_approved"):
-                desc = approval.get("description", "flagged as dangerous")
-                approval_note = f"Command required approval ({desc}) and was approved by the user."
-                _approved_run = True
-            elif approval.get("smart_approved"):
-                desc = approval.get("description", "flagged as dangerous")
-                approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
 
         # Prepare command for execution
         pty_disabled_reason = None
@@ -3522,11 +3358,6 @@ def terminal_tool(
                     "error": None,
                     "cwd": effective_cwd,
                 }
-                # Background spawns detached and returns exit_code 0 immediately;
-                # it never inline-polls is_interrupted(), so the stale-bit kill
-                # cannot occur here and this note never co-occurs with rc=130.
-                if approval_note:
-                    result_data["approval"] = approval_note
                 if pty_disabled_reason:
                     result_data["pty_note"] = pty_disabled_reason
 
@@ -3741,15 +3572,6 @@ def terminal_tool(
             result = None
             command_cwd = None
 
-            # Clean interrupt slate for an approved command, ONCE before the
-            # retry loop: drop a stale bit that landed on this thread during the
-            # approval-wait so it can't SIGINT the just-approved run.  Do NOT
-            # re-clear inside the loop -- a genuine interrupt arriving during the
-            # backoff sleep between retries must survive and abort the command
-            # (caught by the next attempt's _wait_for_process poll loop -> 130).
-            if _approved_run:
-                from tools.interrupt import clear_current_thread_interrupt
-                clear_current_thread_interrupt()
 
             while retry_count <= max_retries:
                 try:
@@ -4016,20 +3838,6 @@ def terminal_tool(
                     }
             except Exception:
                 logger.debug("verification evidence recording failed", exc_info=True)
-            if approval_note:
-                # Treat rc=130 as an interrupt only when the executor's marker is
-                # present.  A command can legitimately exit 130 on its own
-                # (e.g. `bash -c 'exit 130'`); _wait_for_process returns the
-                # child's natural returncode there with no marker, and that must
-                # NOT be relabelled as a user interrupt in the audit note.
-                if returncode == 130 and "[Command interrupted]" in output:
-                    # Approved command was interrupted mid-run by a genuine Stop.
-                    # Keep the audit trail but never imply success: the bare
-                    # "...approved by the user." note must not co-occur with the
-                    # interrupt exit code (satisfies the 3-part-signature DONE).
-                    result_dict["approval"] = approval_note.rstrip(".") + ", then interrupted."
-                else:
-                    result_dict["approval"] = approval_note
             if exit_note:
                 result_dict["exit_code_meaning"] = exit_note
             if failure_hint:

@@ -1,5 +1,5 @@
-"""Session lifecycle for the interactive CLI: new/resume/save, undo/retry rewinds, yolo
-persistence, manual compression, and exit summary.
+"""Session lifecycle for the interactive CLI: new/resume/save, undo/retry rewinds,
+manual compression, and exit summary.
 
 Mixin bound onto ``HermesCLI`` via the MRO. cli.py-internal symbols are imported LAZILY
 inside each method (``from cli import ...``) — never at module load time (import cycle).
@@ -133,8 +133,7 @@ def _apply_new_session_title(cli, title: str) -> Optional[str]:
 
 
 class CLISessionMixin:
-    """Session lifecycle for the interactive CLI: new/resume/save, undo/retry rewinds, yolo
-    persistence, manual compression, and exit summary."""
+    """Session lifecycle for the interactive CLI."""
 
     def _restore_session_cwd(self, session_meta: dict, *, quiet: bool = False) -> None:
         """Relaunch a resumed session in the directory it was started from.
@@ -165,25 +164,6 @@ class CLISessionMixin:
                 msg = f"⚠ Could not enter session's working directory {recorded}: {e}"
         _dim_notice(self, msg, quiet)
 
-    def _restore_session_yolo(self, session_meta: dict, *, quiet: bool = False) -> None:
-        """Re-enable YOLO bypass on resume when the session row's ``model_config.yolo_mode``
-        says so — the in-memory ``tools.approval._session_yolo`` set starts empty in a fresh
-        process. No-op when already active or when the process was launched with ``--yolo``."""
-        try:
-            from hermes_state import SessionDB
-            from tools.approval import (
-                _YOLO_MODE_FROZEN, enable_session_yolo, is_session_yolo_enabled)
-        except Exception:
-            return
-        if _YOLO_MODE_FROZEN or not SessionDB.session_yolo_enabled(session_meta):
-            return
-        session_key = self.session_id or "default"
-        if is_session_yolo_enabled(session_key):
-            return
-        enable_session_yolo(session_key)
-        _dim_notice(self,
-            "⚡ YOLO mode restored from session — all commands auto-approved. /yolo to turn off.",
-            quiet)
 
     def _render_resume_history_panel_lines(self, panel) -> list[str]:
         """Render the resume panel at the current terminal width for resize replay."""
@@ -269,15 +249,6 @@ class CLISessionMixin:
         if reasoning_label and show_r is not None:
             reasoning_label += f" (display: {'on' if show_r else 'off'})"
 
-        approval_label = None
-        try:
-            from tools.approval import is_approval_bypass_active_for_session
-            from tools.approval_context import _get_approval_mode
-            approval_label = _get_approval_mode()
-            if is_approval_bypass_active_for_session(getattr(self, "session_key", "") or ""):
-                approval_label += " (YOLO bypass active)"
-        except Exception:
-            pass
 
         # Context window usage: reuse the status-bar snapshot (tokens / max / percent).
         ctx_label = None
@@ -303,7 +274,7 @@ class CLISessionMixin:
                 lines.append(t("gateway.status.free_tier"))
         except Exception:
             pass
-        optional = (("Reasoning", reasoning_label), ("Approvals", approval_label), ("Context", ctx_label))
+        optional = (("Reasoning", reasoning_label), ("Context", ctx_label))
         for label, value in optional:
             if value:
                 lines.append(f"{label}: {value}")
@@ -842,48 +813,6 @@ class CLISessionMixin:
 
             write_breadcrumb(self.session_id)
 
-    def _transfer_session_yolo(self, old_session_id: str, new_session_id: str) -> None:
-        """Move YOLO bypass state to a new session key when ``self.session_id`` is reassigned
-        mid-run (/branch, auto-compression rotation) — ``_session_yolo`` is keyed by id, so
-        without this the toggle silently reverts."""
-        if not old_session_id or not new_session_id or old_session_id == new_session_id:
-            return
-        try:
-            from tools.approval import (
-                disable_session_yolo, enable_session_yolo, is_session_yolo_enabled)
-        except Exception:
-            return
-        if is_session_yolo_enabled(old_session_id):
-            enable_session_yolo(new_session_id)
-            disable_session_yolo(old_session_id)
-            # Carry the persisted flag onto the continuation row so a later --resume restores
-            # it too. getattr: tests call this unbound against a minimal stand-in.
-            _persist = getattr(self, "_persist_session_yolo", None)
-            if _persist:
-                _persist(new_session_id, True)
-
-    def _is_session_yolo_active(self) -> bool:
-        """Whether YOLO bypass is on for this session: reads ``tools.approval._session_yolo``
-        (not a stale env var) and honors the frozen process-start ``--yolo`` flag."""
-        try:
-            from tools.approval import _YOLO_MODE_FROZEN, is_session_yolo_enabled
-        except Exception:
-            return False
-        if _YOLO_MODE_FROZEN:
-            return True
-        # getattr: __new__-built test fixtures skip __init__; the status-bar builders
-        # swallow exceptions but would lose every field after the failure.
-        return is_session_yolo_enabled(getattr(self, "session_id", None) or "default")
-
-    def _persist_session_yolo(self, session_key: str, enabled: bool) -> None:
-        """Persist the YOLO flag to the session row so --resume restores it. Best-effort; the
-        in-memory toggle is authoritative. Skipped without a store or before the row exists
-        (rows are created lazily on the first turn)."""
-        db = getattr(self, "_session_db", None)
-        if db is None or not session_key or session_key == "default":
-            return
-        with contextlib.suppress(Exception):
-            db.set_session_yolo(session_key, enabled)
 
     def _manual_compress(self, cmd_original: str = ""):
         """Manually trigger context compression.

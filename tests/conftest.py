@@ -270,7 +270,6 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     # them per-test so a shell leak cannot carry into the next test.
     "HERMES_VOICE",
     "HERMES_VOICE_TTS",
-    "HERMES_YOLO_MODE",
     # Injected into subprocess envs by the terminal tool (_make_run_env), so
     # any test run launched FROM a Hermes agent session inherits them and
     # hermes_constants home-resolution helpers prefer them over monkeypatched
@@ -305,7 +304,6 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_TIMEZONE",
     "HERMES_REDACT_SECRETS",
     "HERMES_BACKGROUND_NOTIFICATIONS",
-    "HERMES_EXEC_ASK",
     "HERMES_HOME_MODE",
     "HERMES_AGENT_USE_LEGACY_SESSION_KEYS",
     # Pytest is routinely launched from a delegated worker.  The worker
@@ -689,9 +687,6 @@ def _state_db_write_guard(request, monkeypatch):
 # reset it explicitly in a fixture or split them across files.
 #
 # The skill ``test-suite-cascade-diagnosis`` documents the cascade patterns
-# this replaces; the running example was ``test_command_guards`` failing
-# 12/15 CI runs because ``tools.approval._session_approved`` carried
-# approvals from one test's session into another's.
 
 
 @pytest.fixture()
@@ -714,7 +709,6 @@ def mock_config():
         },
         "compression": {"enabled": False},
         "memory": {"memory_enabled": False, "user_profile_enabled": False},
-        "command_allowlist": [],
     }
 
 
@@ -1761,26 +1755,6 @@ def _audio_playback_guard(request, monkeypatch):
     yield
 
 
-@pytest.fixture(autouse=True)
-def _isolate_computer_use_approval_state():
-    """Reset the computer-use explicit approval callback after every test.
-
-    ``tools.computer_use.tool._approval_callback`` is a module-global handed to
-    the shared approval gate as its explicit callback, where it takes precedence
-    over the per-thread terminal one. A test that installs it and does not
-    reset it poisons every later computer-use test in the same process: a
-    leaked callback that raises becomes a deny, a leaked one that blocks (the
-    real CLI one waits on an answer queue) hangs the whole single-process run.
-    Both symptoms are order-dependent. Teardown-only, so tests that install
-    their own callback keep it for their own duration.
-    """
-    yield
-    try:
-        from tools.computer_use import tool as _cu_tool
-
-        _cu_tool.set_approval_callback(None)
-    except Exception:
-        pass
 
 
 @pytest.fixture(autouse=True)

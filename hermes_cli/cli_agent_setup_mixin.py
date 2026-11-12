@@ -535,9 +535,8 @@ class CLIAgentSetupMixin:
         return session_meta
 
     def _restore_session_state(self, session_meta, *, quiet: bool = False) -> None:
-        """Restore cwd / yolo / model from the resumed session's metadata."""
+        """Restore cwd and model from the resumed session's metadata."""
         self._restore_session_cwd(session_meta, quiet=quiet)
-        self._restore_session_yolo(session_meta, quiet=quiet)
         self._restore_session_model(session_meta, quiet=quiet)
 
     def _reopen_session(self) -> None:

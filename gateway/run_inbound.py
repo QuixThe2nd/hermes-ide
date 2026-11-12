@@ -266,8 +266,8 @@ class GatewayInboundMixin:
     def _hm_estop_turn_allowed(self, event: "MessageEvent", source: SessionSource) -> bool:
         """Whether a turn may bypass the global emergency stop: pause blocks NEW agent turns, never
         running work or control traffic — recognized slash commands (incl. /pause off, the in-band
-        resume) and replies owned by in-flight work (pending update prompt, running session,
-        pending slash-confirm, dangerous-command approval) all pass through."""
+        resume) and replies owned by in-flight work (pending update prompt, running session, or
+        pending slash-confirm) all pass through."""
         with suppress(Exception):
             _estop_cmd = event.get_command()
             if _estop_cmd:
@@ -279,7 +279,7 @@ class GatewayInboundMixin:
             _estop_state = self._peek_session_state(_estop_key)
             if _estop_state is not None and _estop_state.persistent.update_prompt_pending:
                 return True
-            # A running session covers steering plus pending clarify / tool approvals it holds.
+            # A running session covers steering plus pending clarify prompts it holds.
             if self._is_session_running(_estop_key):
                 return True
             from tools import slash_confirm as _estop_confirm_mod
@@ -465,8 +465,7 @@ class GatewayInboundMixin:
 
     async def _hm_slash_confirm_reply(self, event: "MessageEvent", _quick_key: str) -> Optional[str]:
         """Resolve a reply (/approve, /always, /cancel + aliases) to a pending slash-confirm prompt;
-        None when it falls through — a stale pending confirm does NOT block other commands. A pending
-        dangerous-command approval takes precedence: /approve there unblocks the waiting tool thread."""
+        None when it falls through — a stale pending confirm does NOT block other commands."""
         from tools import slash_confirm as _slash_confirm_mod
         _pending_confirm = _slash_confirm_mod.get_pending(_quick_key)
         if not _pending_confirm:
@@ -928,20 +927,11 @@ class GatewayInboundMixin:
             _cmd_def, canonical = _canon(command)
         return False, None, command, canonical
 
-    async def _hm_confirm_destructive(self, event, command: str, detail: str, handler) -> Tuple[bool, Optional[str]]:
-        async def _execute():
-            return await handler(event)
-        return True, await self._maybe_confirm_destructive_slash(
-            event=event, command=command, title=f"/{command}", detail=detail, execute=_execute,
-        )
 
     async def _hm_cmd_new(self, event, source, _quick_key):
         if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
             return True, self._telegram_topic_root_new_message()
-        return await self._hm_confirm_destructive(
-            event, "new", "This starts a fresh session and discards the current conversation history.",
-            self._handle_reset_command,
-        )
+        return True, await self._handle_reset_command(event)
 
     async def _hm_cmd_incognito(self, event, source, _quick_key):
         return await self._hm_confirm_destructive(
@@ -1018,17 +1008,7 @@ class GatewayInboundMixin:
         return False, None
 
     async def _hm_cmd_undo(self, event, source, _quick_key):
-        _undo_n = 1
-        _undo_raw = event.get_command_args().strip()
-        if _undo_raw:
-            with suppress(ValueError, IndexError):
-                _undo_n = max(1, int(_undo_raw.split()[0]))
-        _undo_detail = (
-            "This removes the last user/assistant exchange from history."
-            if _undo_n == 1
-            else f"This removes the last {_undo_n} user turns from history."
-        )
-        return await self._hm_confirm_destructive(event, "undo", _undo_detail, self._handle_undo_command)
+        return True, await self._handle_undo_command(event)
 
     # /queue on the idle path: no agent is running, so strip the prefix and send the
     # payload as a regular user turn; an empty payload surfaces the usage hint.
@@ -1622,14 +1602,13 @@ class GatewayInboundMixin:
         # silent/pairing behavior and can't probe pause state.
         #
         # Passthroughs (pause blocks new AGENT turns, not control traffic):
-        #   * recognized slash commands — /status, /help, /new, /approve and
-        #     friends must keep working while paused, and /pause off is the
-        #     in-band resume path for messaging-only users;
-        #   * replies owned by IN-FLIGHT work — a pending detached-update
-        #     prompt, clarify, slash-confirm, or dangerous-command approval,
-        #     plus any message steering a session whose agent is already
-        #     running. Swallowing those would stall work the pause promised
-        #     not to touch.
+        #   * recognized slash commands — /status, /help, /new and friends must
+        #     keep working while paused, and /pause off is the in-band resume path
+        #     for messaging-only users;
+        #   * replies owned by IN-FLIGHT work — a pending detached-update prompt,
+        #     clarify, or slash-confirm, plus any message steering a session whose
+        #     agent is already running. Swallowing those would stall work the pause
+        #     promised not to touch.
         if not is_internal:
             try:
                 from agent.estop import paused_reply as _estop_paused_reply
@@ -1874,16 +1853,10 @@ class GatewayInboundMixin:
                                     exc_info=True,
                                 )
 
-        # Intercept messages that are responses to a pending /reload-mcp
-        # (or future) slash-confirm prompt.  Recognized confirm replies are
-        # /approve, /always, /cancel (plus short aliases).  Anything else
-        # falls through to normal dispatch — a stale pending confirm does
-        # NOT block other commands.
-        #
-        # Important: if a dangerous-command approval is ALSO pending (agent
-        # blocked inside tools/approval.py), the tool approval takes
-        # precedence — /approve there unblocks the waiting tool thread.
-        # Slash-confirm only catches /approve when no tool approval is live.
+        # Intercept replies to a pending slash-confirm prompt. Recognized replies
+        # include /approve, /always, /cancel and short aliases; the registry rejects
+        # choices not offered by the individual prompt. Anything else falls through
+        # to normal dispatch — a stale pending confirm does NOT block other commands.
         from tools import slash_confirm as _slash_confirm_mod
         _pending_confirm = _slash_confirm_mod.get_pending(_quick_key)
         if allow_gateway_control and _pending_confirm:
@@ -2317,8 +2290,8 @@ class GatewayInboundMixin:
         #
         # Placement matters: this cold-path dispatch is only reached when NO
         # agent is running for the session. The running-agent intercept path
-        # above (/stop, /approve, busy_policy dispatch via
-        # _dispatch_busy_slash_command) deliberately does NOT fire this hook —
+        # above (/stop and busy_policy dispatch via _dispatch_busy_slash_command)
+        # deliberately does NOT fire this hook —
         # those are control-plane operations on an in-flight run, and giving
         # plugins an observation (and eventually veto) point there would let
         # a slow or hostile plugin interfere with the operator's escape
@@ -2425,18 +2398,7 @@ class GatewayInboundMixin:
         if canonical == "new":
             if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
                 return self._telegram_topic_root_new_message()
-            async def _do_reset():
-                return await self._handle_reset_command(event)
-            return await self._maybe_confirm_destructive_slash(
-                event=event,
-                command="new",
-                title="/new",
-                detail=(
-                    "This starts a fresh session and discards the current "
-                    "conversation history."
-                ),
-                execute=_do_reset,
-            )
+            return await self._handle_reset_command(event)
 
         if canonical == "topic":
             return await self._handle_topic_command(event)
@@ -2602,27 +2564,7 @@ class GatewayInboundMixin:
             return await self._handle_retry_command(event)
 
         if canonical == "undo":
-            async def _do_undo():
-                return await self._handle_undo_command(event)
-            _undo_n = 1
-            _undo_raw = event.get_command_args().strip()
-            if _undo_raw:
-                try:
-                    _undo_n = max(1, int(_undo_raw.split()[0]))
-                except (ValueError, IndexError):
-                    _undo_n = 1
-            _undo_detail = (
-                "This removes the last user/assistant exchange from history."
-                if _undo_n == 1
-                else f"This removes the last {_undo_n} user turns from history."
-            )
-            return await self._maybe_confirm_destructive_slash(
-                event=event,
-                command="undo",
-                title="/undo",
-                detail=_undo_detail,
-                execute=_do_undo,
-            )
+            return await self._handle_undo_command(event)
 
         if canonical == "sethomeserver":
             return await self._handle_set_home_server_command(event)
@@ -2920,9 +2862,6 @@ class GatewayInboundMixin:
             except Exception as e:
                 logger.debug("Skill command check failed (non-fatal): %s", e)
 
-        # Pending exec approvals are handled by /approve and /deny commands above.
-        # No bare text matching — "yes" in normal conversation must not trigger
-        # execution of a dangerous command.
 
         if not is_internal and await asyncio.to_thread(
             self._is_telegram_topic_root_lobby, source

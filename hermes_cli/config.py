@@ -166,9 +166,9 @@ _ENV_VAR_NAME_DENYLIST: frozenset[str] = frozenset({
     "HERMES_OPTIONAL_MCPS",
     # Local ACP subprocess selection (executable/argv authority).
     "HERMES_COPILOT_ACP_COMMAND", "HERMES_COPILOT_ACP_ARGS",
-    # Security policy / approval-routing context — set via their dedicated controls only.
-    "HERMES_YOLO_MODE", "HERMES_ACCEPT_HOOKS", "HERMES_REDACT_SECRETS",
-    "HERMES_INTERACTIVE", "HERMES_EXEC_ASK", "HERMES_GATEWAY_SESSION",
+    # Security policy and execution context — set via dedicated controls only.
+    "HERMES_ACCEPT_HOOKS", "HERMES_REDACT_SECRETS", "HERMES_INTERACTIVE",
+    "HERMES_GATEWAY_SESSION",
     "HERMES_CRON_SESSION", "HERMES_SINGLE_QUERY_SESSION",
     "HERMES_SESSION_KEY", "HERMES_SESSION_PLATFORM"})
 
@@ -188,9 +188,8 @@ def validate_env_var_name_for_write(key: str) -> None:
         raise ValueError(
             f"Environment variable {key!r} is on the writer denylist. "
             "Names that influence subprocess execution (LD_PRELOAD, PYTHONPATH, PATH, EDITOR, ...) "
-            "or Hermes runtime location and security policy (HERMES_HOME, HERMES_YOLO_MODE, ...) "
-            "cannot be persisted via the env writer. If you really need this, edit ~/.hermes/.env "
-            "directly.")
+            "or Hermes runtime location and security policy (HERMES_HOME, ...) cannot be persisted "
+            "via the env writer. If you really need this, edit ~/.hermes/.env directly.")
 
 
 # Serializes all config read/write paths and guards the module-level caches below. libyaml's
@@ -202,7 +201,7 @@ def validate_env_var_name_for_write(key: str) -> None:
 # read_raw_config; it takes its raw mapping from require_readable_config_before_write.
 _CONFIG_LOCK = threading.RLock()
 # path -> last successfully loaded (expanded) config; served after a parse failure so a
-# mid-edit broken YAML never silently drops user overrides (e.g. approvals.deny rules).
+# mid-edit broken YAML never silently drops user overrides.
 _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 # path -> (user_mtime_ns, user_size, managed_mtime_ns, managed_size, merged, env_ref_snapshot).
 # load_config() returns a deepcopy of the cached value while the signature matches (skips
@@ -2265,12 +2264,10 @@ def _load_config_cache_sig(config_path: Path) -> Tuple[Optional[Tuple[int, int, 
 def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: Exception) -> Optional[Dict[str, Any]]:
     """Warn about a parse failure and return the last-known-good config, or None (-> defaults).
     A parse failure must not silently replace the effective config with defaults — that drops
-    EVERY user override, including security-critical ``approvals.deny`` rules, when a gateway
-    user mid-edits config.yaml into broken YAML. Keep serving the last good config until fixed."""
-    # Falling through to DEFAULT_CONFIG here drops EVERY user override — including security-critical
-    # ``approvals.deny`` rules, which are supposed to block commands even under yolo. Within a running
-    # process we still have the last successfully loaded config — keep serving it until the file is fixed.
-    # See #31188.
+    every user override when a gateway user mid-edits config.yaml into broken YAML. Keep serving
+    the last good config until fixed."""
+    # Within a running process we still have the last successfully loaded config — keep serving
+    # it until the file is fixed. See #31188.
     lkg = _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key)
     fallback = "last-known-good"
     if lkg is None:
@@ -3282,7 +3279,7 @@ def _default_value_for_key(dotted_key: str):
 # user populates it): any path below is accepted without deep checking.
 _OPEN_DICT_TOP_LEVEL_KEYS = frozenset({
     "providers", "credential_pool_strategies", "mcp_servers", "hooks", "quick_commands",
-    "personalities", "command_allowlist", "model_catalog", "channel_prompts", "server_actions",
+    "personalities", "model_catalog", "channel_prompts", "server_actions",
     "secrets", "goals", "loops"})
 
 # Top-level keys whose sub-keys are partially schema-defined (e.g. a PlatformConfig dataclass) but
@@ -3705,8 +3702,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     if is_env_setting_key(key):
         # Every UPPER_SNAKE name is an environment setting: same file the platform setup flows and
         # /sethome write, and the only one os.getenv readers see. config.yaml never gets one from
-        # here, --force included (#111848). The env writer's denylist (HERMES_YOLO_MODE, PATH, ...)
-        # therefore also refuses the config.yaml detour that used to bridge those into os.environ.
+        # here, --force included (#111848); the env writer's denylist also refuses this detour.
         try:
             save_env_setting(key, value)
         except ValueError as exc:

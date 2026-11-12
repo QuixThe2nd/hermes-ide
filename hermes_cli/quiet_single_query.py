@@ -66,8 +66,8 @@ def read_turn_report(path: str, pid: int) -> dict | None:
 
 @contextlib.contextmanager
 def bind_quiet_session_key(session_id: str):
-    """Bind the approval/session key to *this* quiet session for the enclosing ``with`` block."""
-    from tools.approval_context import reset_current_session_key, set_current_session_key
+    """Bind this quiet session's tool resource key for the enclosing ``with`` block."""
+    from tools.session_context import reset_current_session_key, set_current_session_key
 
     token = set_current_session_key(session_id or "default")
     try:

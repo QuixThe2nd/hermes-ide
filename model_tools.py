@@ -694,10 +694,10 @@ def _pre_dispatch_guards(function_name: str, function_args: Dict[str, Any], skip
 
 
 @contextmanager
-def _approval_observability(ids: _CallIds):
-    """Bind the approval observability context (turn/tool_call/session ids) for the block."""
+def _tool_observability(ids: _CallIds):
+    """Bind tool correlation IDs for the duration of one dispatch."""
     try:
-        from tools.approval_context import reset_current_observability_context, set_current_observability_context
+        from tools.session_context import reset_current_observability_context, set_current_observability_context
         tokens = set_current_observability_context(turn_id=ids.turn_id or "", tool_call_id=ids.tool_call_id or "",
                                                    session_id=ids.session_id or "")
     except Exception:
@@ -741,7 +741,7 @@ def _execute_tool(function_name: str, function_args: Dict[str, Any], original_ar
             return dispatch_connector_call(function_name, next_args, ids.tool_call_id)
         return registry.dispatch(function_name, next_args, **dispatch_kwargs)
 
-    with _approval_observability(ids):
+    with _tool_observability(ids):
         if skip_tool_execution_middleware:
             return _dispatch(function_args)
         from hermes_cli.middleware import run_tool_execution_middleware

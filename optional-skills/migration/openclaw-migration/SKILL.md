@@ -37,7 +37,6 @@ It uses `scripts/openclaw_to_hermes.py` to:
 
 - import `SOUL.md` into the Hermes home directory as `SOUL.md`
 - transform OpenClaw `MEMORY.md` and `USER.md` into Hermes memory entries
-- merge OpenClaw command approval patterns into Hermes `command_allowlist`
 - migrate Hermes-compatible messaging settings such as `TELEGRAM_ALLOWED_USERS`, and map OpenClaw workspace settings to Hermes working-directory configuration
 - copy OpenClaw skills into `~/.hermes/skills/openclaw-imports/`
 - optionally copy the OpenClaw workspace instructions file into a chosen Hermes workspace
@@ -213,7 +212,6 @@ Prefer these two presets in normal use:
 - `memory`
 - `user-profile`
 - `messaging-settings`
-- `command-allowlist`
 - `skills`
 - `tts-assets`
 - `archive`

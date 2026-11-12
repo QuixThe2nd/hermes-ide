@@ -87,9 +87,8 @@ def _scan_context_content(content: str, filename: str, *, user_authored: bool = 
     cloned repo's docs); blocking, not warning, because the file would otherwise enter the prompt verbatim.
 
     *user_authored* (SOUL.md in the user's own HERMES_HOME): a hit is WARNED and the file still loads.
-    SOUL.md sits in the same trust class as config.yaml — file-tool writes to it go through the
-    protected-instruction approval gate (``tools/file_tools_write_guards.py``) and project checkouts never
-    supply it — so a user who *documents* "ignore previous instructions" in their security guidance
+    SOUL.md is user-authored and project checkouts never supply it — so a user
+    who *documents* "ignore previous instructions" in their security guidance
     must not lose their whole identity file to a one-line log entry (#112570). Project-dir files
     (repo AGENTS.md / .cursorrules / .hermes.md) arrive with the checkout and keep blocking, and so does
     a SOUL.md owned by a profile distribution (``hermes profile install <git-url>`` copies it in unscanned;
@@ -1463,8 +1462,8 @@ def load_soul_md(context_length: Optional[int] = None, home_override: "Path | No
         if not content:
             return None
         # `hermes profile install <git-url>` / `profile update` plant a third-party SOUL.md into a
-        # distribution profile (hermes_cli/profile_distribution.py, DEFAULT_DIST_OWNED) with no scan and no
-        # approval gate, so it is NOT the user's own file: when distribution.yaml owns SOUL.md (a manifest
+        # distribution profile (hermes_cli/profile_distribution.py, DEFAULT_DIST_OWNED) with no scan,
+        # so it is NOT the user's own file: when distribution.yaml owns SOUL.md (a manifest
         # with no `distribution_owned` list owns the whole payload) a scanner hit keeps BLOCKING.
         from hermes_cli.profile_distribution import read_manifest
         try:

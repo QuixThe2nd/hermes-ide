@@ -68,22 +68,6 @@ def resolve_bang_cwd(session_key: Optional[str] = None) -> Optional[str]:
         return None
 
 
-def check_bang_approval(command: str) -> dict:
-    """Run *command* through the terminal tool's approval gate.
-
-    Reuses ``tools.terminal_tool._check_all_guards`` — exactly what ``terminal_tool()`` calls — so the
-    hardline blocklist, user deny rules, tirith findings, and the dangerous-command prompt all apply
-    to user-typed bang commands too. Returns the gate's ``{"approved": bool, "message": ...}``;
-    falls back to *approved* only when the gate itself cannot be imported (a broken install, not a
-    policy decision).
-    """
-    try:
-        from tools.terminal_tool import _check_all_guards
-    except Exception:
-        return {"approved": True, "message": None}
-
-    # Bang commands always run locally in the CLI process, never inside a remote/sandbox backend.
-    return _check_all_guards(command, "local", has_host_access=False)
 
 
 def _bang_env() -> dict:

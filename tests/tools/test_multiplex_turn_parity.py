@@ -30,7 +30,6 @@ def two_homes(tmp_path, monkeypatch):
         (home / "config.yaml").write_text(yaml.safe_dump({
             "terminal": {"backend": "local" if name == "a" else "docker",
                          "credential_files": [f"cred_{name}.txt"]},
-            "command_allowlist": [f"{name}-only-cmd *"],
             "security": {"redact_secrets": name == "b"},
             "browser": {"command_timeout": 11 if name == "a" else 17},
             "lsp": {"enabled": name == "b"},
@@ -87,20 +86,6 @@ def test_terminal_backend_consumers_read_the_routed_scope(two_homes):
     assert translated != "/host/.hermes/x.png" or mounts == ["cred_b.txt"]
     assert mounts == ["cred_b.txt"]
 
-
-def test_permanent_allowlist_is_per_profile(two_homes):
-    """Profile A's ``command_allowlist`` must not pre-approve commands for routed profile B, and
-    B's own 'always' approvals must not be folded into A's set."""
-    from tools import approval
-
-    a, b = two_homes
-    approval.load_permanent_allowlist()  # launch-profile startup load (A)
-    assert approval.is_approved("s", "a-only-cmd *")
-    assert _under(b, lambda: approval.is_approved("s", "a-only-cmd *")) is False
-    assert _under(b, lambda: approval.is_approved("s", "b-only-cmd *")) is True
-    _under(b, lambda: approval.approve_permanent("b-always *"))
-    assert not approval.is_approved("s", "b-always *")
-    assert _under(a, lambda: approval.is_approved("s", "a-only-cmd *"))
 
 
 def test_profile_scoped_process_caches_follow_routed_home(two_homes, monkeypatch):

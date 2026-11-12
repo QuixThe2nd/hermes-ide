@@ -1,4 +1,4 @@
-"""Busy-session queueing, slot claims, slash dispatch tables and destructive-slash confirmation
+"""Busy-session queueing, slot claims, slash dispatch tables and confirmation prompts
 for GatewayRunner (mixin bound via the MRO).
 
 ``gateway.run`` internals are imported lazily inside method bodies (import cycle), so
@@ -73,7 +73,7 @@ def _same_chat_key_slots(
 
 
 class GatewayBusySessionMixin:
-    """Busy-session queueing, slot claims, slash dispatch tables, destructive-slash confirmation."""
+    """Busy-session queueing, slot claims, slash dispatch tables, and confirmation prompts."""
 
     def _queue_during_drain_enabled(self, busy_input_mode: Optional[str] = None) -> bool:
         # "queue"/"steer" mean messages survive a restart (queued for the new process); "interrupt" drops.
@@ -1792,97 +1792,12 @@ class GatewayBusySessionMixin:
             from hermes_cli.blueprint_cmd import BlueprintCommandResult
             return BlueprintCommandResult(f"Cron blueprint command failed: {e}")
 
-    async def _maybe_confirm_destructive_slash(
-        self, *, event: MessageEvent, command: str, title: str, detail: str, execute
-    ) -> Union[str, "EphemeralReply", None]:
-        """Gate a destructive session slash command (/new, /reset, /undo).
-
-        ``execute()`` (async → str | EphemeralReply) runs immediately when
-        ``approvals.destructive_slash_confirm`` is off; otherwise via ``_request_slash_confirm``:
-        ``once`` runs it, ``always`` persists the opt-out then runs it, ``cancel`` skips it.
-        """
-        confirm_required = True
-        try:
-            approvals = self._read_user_config().get("approvals")
-            if isinstance(approvals, dict):
-                confirm_required = bool(approvals.get("destructive_slash_confirm", True))
-        except Exception:
-            pass
-        if not confirm_required:
-            return await execute()
-
-        session_key = self._session_key_for_source(event.source)
-
-        async def _on_confirm(choice: str):
-            # Via the class, not ``self``: tests drive this gate on a bare SimpleNamespace runner.
-            return await GatewayBusySessionMixin._run_confirmed_destructive_slash(
-                choice, command, execute, session_key
-            )
-
-        _p = self._typed_command_prefix_for(event.source.platform)
-        prompt_message = (
-            f"⚠️ **Confirm /{command}**\n\n"
-            f"{detail}\n\n"
-            "Choose:\n"
-            "• **Approve Once** — proceed this time only\n"
-            "• **Always Approve** — proceed and silence this prompt permanently\n"
-            "• **Cancel** — keep current conversation\n\n"
-            f"_Text fallback: reply `{_p}approve`, `{_p}always`, or `{_p}cancel`._"
-        )
-        return await self._request_slash_confirm(
-            event=event, command=command, title=title, message=prompt_message, handler=_on_confirm
-        )
-
-    _DESTRUCTIVE_OPTOUT_NOTE = {
-        True: (
-            "\n\nℹ️ Future /clear, /new, /reset, and /undo will run "
-            "without confirmation. Re-enable via "
-            "`approvals.destructive_slash_confirm: true` in config.yaml."
-        ),
-        # The user did approve this run, so the action still goes ahead, but the preference did
-        # not stick and the prompt will be back next time. Say so rather than promising an
-        # opt-out that was never written.
-        False: (
-            "\n\n⚠️ Could not save that preference (config.yaml is not "
-            "writable), so /clear, /new, /reset, and /undo will ask "
-            "again next time. To silence it permanently, set "
-            "`approvals.destructive_slash_confirm: false` in config.yaml."
-        ),
-    }
-
-    @staticmethod
-    async def _run_confirmed_destructive_slash(choice: str, command: str, execute, session_key: str):
-        """Confirm-callback body: ``cancel`` → message; ``always`` persists the opt-out, then runs."""
-        if choice == "cancel":
-            return f"🟡 /{command} cancelled. Conversation unchanged."
-        persisted = False
-        if choice == "always":
-            try:
-                from cli import save_config_value
-                # save_config_value swallows its own errors and reports the outcome in the return
-                # value, so the try block alone says nothing about whether the write landed.
-                persisted = bool(save_config_value("approvals.destructive_slash_confirm", False))
-                if persisted:
-                    logger.info("User opted out of destructive slash confirm (session=%s)", session_key)
-                else:
-                    logger.warning(
-                        "Could not persist destructive_slash_confirm=false "
-                        "(session=%s); config.yaml is not writable", session_key,
-                    )
-            except Exception as exc:
-                logger.warning("Failed to persist destructive_slash_confirm=false: %s", exc)
-        result = await execute()
-        # Only plain-string results get the note: it would mangle an EphemeralReply.
-        if choice == "always" and isinstance(result, str):
-            return result + GatewayBusySessionMixin._DESTRUCTIVE_OPTOUT_NOTE[persisted]
-        return result
 
     async def _request_slash_confirm(
-        self, *, event: MessageEvent, command: str, title: str, message: str, handler
+        self, *, event: MessageEvent, command: str, title: str, message: str, handler,
+        include_always: bool = True,
     ) -> Optional[str]:
-        """Ask the user to confirm a slash command; ``handler(choice)`` runs on "once"/"always"/
-        "cancel" and its return is sent as a message. Returns None if buttons rendered, else the
-        text-fallback message (which IS the ack)."""
+        """Ask the user to confirm a slash command and invoke ``handler(choice)``."""
         from tools import slash_confirm as _slash_confirm_mod
         source = event.source
         session_key = self._session_key_for_source(source)
@@ -1894,7 +1809,9 @@ class GatewayBusySessionMixin:
         confirm_id = f"{next(counter)}"
 
         # Register FIRST so a fast button click cannot race the send_slash_confirm return.
-        _slash_confirm_mod.register(session_key, confirm_id, command, handler)
+        choices = ("once", "always", "cancel") if include_always else ("once", "cancel")
+        _slash_confirm_mod.register(
+            session_key, confirm_id, command, handler, allowed_choices=choices)
 
         adapter = self._delivery_adapter_for(source)
         metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
@@ -1903,7 +1820,7 @@ class GatewayBusySessionMixin:
             try:
                 button_result = await adapter.send_slash_confirm(
                     chat_id=source.chat_id, title=title, message=message, session_key=session_key,
-                    confirm_id=confirm_id, metadata=metadata,
+                    confirm_id=confirm_id, metadata=metadata, include_always=include_always,
                 )
                 if button_result and getattr(button_result, "success", False):
                     return None  # buttons rendered — no redundant text ack
@@ -1915,8 +1832,8 @@ class GatewayBusySessionMixin:
                 # rendered, so a later reply must not be captured as an answer
                 # to an invisible prompt.
                 #
-                # Classify the STRUCTURED response (see _approval_send_outcome):
-                # a code-only decline has no marker colon in its rendered text,
+                # Classify the STRUCTURED response: a code-only decline has no marker colon in its
+                # rendered text, and an ambiguous result is not a definite refusal.
                 # and an ambiguous result must not be treated as a definite
                 # refusal.
                 from gateway.relay.egress import declined_send

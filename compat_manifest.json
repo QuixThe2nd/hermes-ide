@@ -2662,12 +2662,6 @@
   },
   {
    "facade": "hermes_cli.callbacks",
-   "name": "approval_callback",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.callbacks",
    "name": "clarify_callback",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
@@ -5469,180 +5463,6 @@
    "target": "json"
   },
   {
-   "facade": "tools.approval",
-   "name": "DANGEROUS_PATTERNS",
-   "kind": "moved-lazy",
-   "target": "tools.approval_detection"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "DANGEROUS_PATTERNS_COMPILED",
-   "kind": "moved-lazy",
-   "target": "tools.approval_detection"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "HARDLINE_PATTERNS",
-   "kind": "moved-lazy",
-   "target": "tools.approval_detection"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "HARDLINE_PATTERNS_COMPILED",
-   "kind": "moved-lazy",
-   "target": "tools.approval_detection"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "HUMAN_WAIT_MARGIN_S",
-   "kind": "moved-lazy",
-   "target": "tools.approval_human_wait"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "cfg_get",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.config"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "contextlib",
-   "kind": "import",
-   "target": "contextlib"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "contextvars",
-   "kind": "import",
-   "target": "contextvars"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "fnmatch",
-   "kind": "import",
-   "target": "fnmatch"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "functools",
-   "kind": "import",
-   "target": "functools"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "get_plugin_manager",
-   "kind": "moved-lazy",
-   "target": "tools.approval_prompt"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "human_wait_ceiling",
-   "kind": "moved-lazy",
-   "target": "tools.approval_human_wait"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "human_wait_seconds",
-   "kind": "moved-lazy",
-   "target": "tools.approval_human_wait"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "human_wait_window",
-   "kind": "moved-lazy",
-   "target": "tools.approval_human_wait"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "is_interrupted",
-   "kind": "moved-lazy",
-   "target": "tools.interrupt"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "re",
-   "kind": "import",
-   "target": "re"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "request_elicitation_consent",
-   "kind": "moved-lazy",
-   "target": "tools.approval_prompt"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "reset_current_observability_context",
-   "kind": "moved-lazy",
-   "target": "tools.approval_context"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "reset_current_session_key",
-   "kind": "moved-lazy",
-   "target": "tools.approval_context"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "reset_hermes_interactive_context",
-   "kind": "moved-lazy",
-   "target": "tools.approval_context"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "set_current_observability_context",
-   "kind": "moved-lazy",
-   "target": "tools.approval_context"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "set_current_session_key",
-   "kind": "moved-lazy",
-   "target": "tools.approval_context"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "set_hermes_interactive_context",
-   "kind": "moved-lazy",
-   "target": "tools.approval_context"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "shlex",
-   "kind": "import",
-   "target": "shlex"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "sys",
-   "kind": "import",
-   "target": "sys"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "tempfile",
-   "kind": "import",
-   "target": "tempfile"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "time",
-   "kind": "import",
-   "target": "time"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "unicodedata",
-   "kind": "import",
-   "target": "unicodedata"
-  },
-  {
-   "facade": "tools.approval",
-   "name": "uuid",
-   "kind": "import",
-   "target": "uuid"
-  },
-  {
    "facade": "tools.async_delegation",
    "name": "active_for_session",
    "kind": "restored-def",
@@ -5885,12 +5705,6 @@
   {
    "facade": "tools.computer_use",
    "name": "release_computer_use_session",
-   "kind": "moved-lazy",
-   "target": "tools.computer_use.tool"
-  },
-  {
-   "facade": "tools.computer_use",
-   "name": "set_approval_callback",
    "kind": "moved-lazy",
    "target": "tools.computer_use.tool"
   },
@@ -6229,12 +6043,6 @@
    "name": "json",
    "kind": "import",
    "target": "json"
-  },
-  {
-   "facade": "tools.feishu_doc_tool",
-   "name": "logger",
-   "kind": "moved-lazy",
-   "target": "tools.approval"
   },
   {
    "facade": "tools.feishu_doc_tool",
@@ -6895,18 +6703,6 @@
    "name": "get_async_client",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "tools.path_security",
-   "name": "logger",
-   "kind": "moved-lazy",
-   "target": "tools.approval"
-  },
-  {
-   "facade": "tools.path_security",
-   "name": "logging",
-   "kind": "import",
-   "target": "logging"
   },
   {
    "facade": "tools.preview_tool",

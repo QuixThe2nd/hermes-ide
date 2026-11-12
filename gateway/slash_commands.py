@@ -1094,38 +1094,17 @@ class GatewaySlashCommandsMixin(
         return t("gateway.footer.saved", state=_state(new_state), example=example)
 
     async def _handle_reload_mcp_command(self, event: MessageEvent) -> Optional[str]:
-        """Handle /reload-mcp — reconnect MCP servers and rebuild the cached agent. Reloading
-        invalidates the provider prompt cache (tool schemas live in the system prompt), so it routes
-        through slash-confirm; "Always Approve" persists ``approvals.mcp_reload_confirm: false``."""
-        session_key = self._session_key_for_source(event.source)
-        # Read the gate fresh from disk so a prior "always" click takes effect on the next
-        # invocation without restarting the gateway.
-        user_config = self._read_user_config()
-        approvals = user_config.get("approvals") if isinstance(user_config, dict) else None
-        if isinstance(approvals, dict) and not approvals.get("mcp_reload_confirm", True):
-            return await self._execute_mcp_reload(event)
-        # Route through slash-confirm. The primitive sends the prompt and stores the resume handler;
-        # the button/text response triggers ``_resolve_slash_confirm`` which invokes the handler
-        # with the chosen outcome.
+        """Reconnect MCP after an unconditional Once/Cancel cache-invalidation confirmation."""
         async def _on_confirm(choice: str) -> Optional[str]:
             if choice == "cancel":
                 return t("gateway.reload_mcp.cancelled")
-            if choice == "always":
-                # Persist the opt-out and run the reload.
-                try:
-                    from cli import save_config_value
-                    save_config_value("approvals.mcp_reload_confirm", False)
-                    logger.info("User opted out of /reload-mcp confirmation (session=%s)", session_key)
-                except Exception as exc:
-                    logger.warning("Failed to persist mcp_reload_confirm=false: %s", exc)
-            # once / always → run the reload
-            result = await self._execute_mcp_reload(event)
-            if choice == "always":
-                return f"{result}\n\n" + t("gateway.reload_mcp.always_followup")
-            return result
+            return await self._execute_mcp_reload(event)
+
         return await self._request_slash_confirm(
             event=event, command="reload-mcp", title="/reload-mcp",
-            message=t("gateway.reload_mcp.confirm_prompt"), handler=_on_confirm)
+            message=t("gateway.reload_mcp.confirm_prompt"), handler=_on_confirm,
+            include_always=False,
+        )
 
     async def _handle_reload_skills_command(self, event: MessageEvent) -> str:
         """Handle /reload-skills — rescan skills dir, queue a note for next turn. Skills are invoked at

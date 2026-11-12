@@ -172,7 +172,6 @@ _HIGH_IMPACT_KIND_KEYWORDS = {
 
 _MIGRATION_WARNING_NOTES = (
     "  Note: OpenClaw config values may have different semantics in Hermes.",
-    "  For example, OpenClaw's tool_call_execution: \"auto\" ≠ Hermes's yolo mode.",
     "  Instruction files (.md) from OpenClaw may contain incompatible procedures.",
 )
 

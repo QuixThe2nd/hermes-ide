@@ -1,7 +1,8 @@
 """Regression tests for #30768, #32383, and #33961.
 
-``_prompt_text_input_modal`` answers destructive-slash confirmations through a
-queue-based modal driven by prompt_toolkit key bindings.  When invoked from the
+``_prompt_text_input_modal`` is the shared slash-confirm UI (still used by
+/reload-mcp). Destructive session commands no longer go through it. The modal
+is a queue driven by prompt_toolkit key bindings.  When invoked from the
 ``process_loop`` daemon thread it sets the modal up on the app's event loop via
 ``call_soon_threadsafe``, so it is safe on every platform — including native
 Windows (#33961), where the earlier ``sys.platform == "win32"`` → raw ``input()``
@@ -176,50 +177,6 @@ class TestModal:
         assert outcome["result"] is None
         assert cli._slash_confirm_state is None
 
-
-class TestConfirmDestructiveSlash:
-    """End-to-end _confirm_destructive_slash on the process_loop daemon thread.
-
-    This is the flow bug #33961 froze on native Windows.  The fix made it
-    platform-agnostic (modal via the app loop), so the assertion holds on
-    whichever host runs it.  The class carries no OS marker, so the
-    ``platforms("windows")`` lane deselects it — the deadlock tests above are the
-    Windows-side regression guard.
-    """
-
-    def _make_interactive_cli(self):
-        cli = _make_cli()
-        cli.model = "test-model"
-        cli._agent_running = False
-        cli._spinner_text = ""
-        cli._should_exit = False
-        cli._command_running = False
-        cli.session_id = "test-session"
-        cli._pending_tool_info = {}
-        cli._tool_start_time = 0.0
-        cli._last_scrollback_tool = ""
-        return cli
-
-    @pytest.mark.parametrize(
-        "response, expected",
-        [("once", "once"), ("cancel", None)],
-    )
-    def test_confirm_destructive_slash_uses_modal(self, response, expected):
-        """The bare /new confirm drives the modal (not stdin) and returns the
-        chosen outcome — bug #33961 froze this path on native Windows."""
-        cli = self._make_interactive_cli()
-        with patch("cli.load_cli_config", return_value={"approvals": {"destructive_slash_confirm": True}}):
-            outcome = _run_on_daemon(
-                lambda: cli._confirm_destructive_slash(
-                    "new",
-                    "This starts a fresh session.\nThe current conversation history will be discarded.",
-                ),
-                cli,
-                response=response,
-            )
-
-        assert outcome["stdin_called"] is False
-        assert outcome["result"] == expected
 
 
 @pytest.mark.platforms("windows")

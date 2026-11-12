@@ -194,7 +194,6 @@ class TestCronjobRequirements:
         """Cron is internal (JSON-based scheduler), no system crontab needed."""
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
         # Even with no crontab in PATH, the cronjob tool should be available
         # because hermes uses an internal scheduler, not system crontab.
         assert check_cronjob_requirements() is True
@@ -202,21 +201,20 @@ class TestCronjobRequirements:
     def test_accepts_interactive_mode(self, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
 
         assert check_cronjob_requirements() is True
 
 
     @pytest.mark.parametrize(
         "var_name",
-        ["HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK"],
+        ["HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION"],
     )
     @pytest.mark.parametrize("false_like_value", ["0", "false", "no", "off"])
     def test_rejects_false_like_any_session_env(
         self, monkeypatch, var_name, false_like_value
     ):
-        """All three session env vars share the same truthy semantics."""
-        for v in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK"):
+        """Both session env vars share the same truthy semantics."""
+        for v in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION"):
             monkeypatch.delenv(v, raising=False)
         monkeypatch.setenv(var_name, false_like_value)
         assert check_cronjob_requirements() is False

@@ -474,7 +474,7 @@ TOOLSETS = {
 
     
     "hermes-discord": {
-        "description": "Discord bot toolset - full access (terminal has safety checks via dangerous command approval)",
+        "description": "Discord bot toolset - full access with lifecycle and self-checkout guards",
         "tools": _HERMES_CORE_TOOLS + [
             "discord",
             "discord_admin",

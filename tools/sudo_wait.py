@@ -48,9 +48,9 @@ def _human_wait_state(session_key: str) -> _HumanWaitState:
 def _resolve_key(session_key: str | None) -> str:
     if session_key is not None:
         return session_key
-    from tools import approval_context
+    from tools.session_context import get_current_session_key
 
-    return approval_context.get_current_session_key()
+    return get_current_session_key()
 
 
 @contextlib.contextmanager

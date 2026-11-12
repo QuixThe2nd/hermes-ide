@@ -39,8 +39,7 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult, transcode_to_ogg_opus
-from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
+from gateway.platforms.base import BasePlatformAdapter, SendResult, transcode_to_ogg_opus
 from gateway.platforms.helpers import bounded_put
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecret
@@ -208,7 +207,6 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # the gateway resolver. Popped on tap; FIFO-capped via bounded_put so ignored
         # prompts don't accumulate (an evicted tap degrades to text fallback).
         self._clarify_state: "OrderedDict[str, str]" = OrderedDict()
-        self._exec_approval_state: "OrderedDict[str, str]" = OrderedDict()
         self._slash_confirm_state: "OrderedDict[str, str]" = OrderedDict()
         self._runner = self._http_client = None
 
@@ -464,23 +462,17 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             interactive = {"type": "list", "body": {"text": body_text}, "action": {"button": "Choose", "sections": [{"title": "Options", "rows": rows}]}}
         return await self._send_interactive(chat_id, interactive, metadata, self._clarify_state, clarify_id, session_key)
 
-    _EA_HEADER = f"⚠️ *{EA_HEADER_TEXT}*\n\n"
-    _EA_CODE_CLOSE = "\n```\n\n"
-    _EA_CMD_BUDGET = 800  # body caps at 1024; leave room for the framing prose
-
-    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
-        """Deprecated: this fork never asks a human to approve/deny agent actions, so no
-        approval prompt is ever posted (base ``send_exec_approval`` is a no-op pass-through)."""
-        return SendResult(success=False, error="Not supported")
 
     async def send_slash_confirm(
-        self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
+        self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,
+        metadata: Optional[Dict[str, Any]] = None, include_always: bool = True,
     ) -> SendResult:
-        """Approve Once / Always / Cancel buttons; ``confirm_id`` is caller-supplied."""
-        interactive = self._button_interactive(
-            self._truncate_body(f"*{title}*\n\n{message}"), (f"sc:once:{confirm_id}", "✅ Approve Once"),
-            (f"sc:always:{confirm_id}", "🔒 Always"), (f"sc:cancel:{confirm_id}", "❌ Cancel"),
-        )
+        """Render Once/Cancel buttons, plus Always when requested."""
+        buttons = [(f"sc:once:{confirm_id}", "✅ Approve Once")]
+        if include_always:
+            buttons.append((f"sc:always:{confirm_id}", "🔒 Always"))
+        buttons.append((f"sc:cancel:{confirm_id}", "❌ Cancel"))
+        interactive = self._button_interactive(self._truncate_body(f"*{title}*\n\n{message}"), *buttons)
         return await self._send_interactive(chat_id, interactive, metadata, self._slash_confirm_state, confirm_id, session_key)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
@@ -857,10 +849,6 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return False
         return True
 
-    async def _handle_approval_tap(self, to: str, inner: Dict[str, Any], parts: list) -> bool:
-        """Deprecated: this fork never posts exec-approval prompts, so an ``appr:`` tap can
-        never resolve one. Kept (importable, still in the tap dispatch) as a no-op."""
-        return False
 
     async def _handle_slash_confirm_tap(self, to: str, inner: Dict[str, Any], parts: list) -> bool:
         _, choice, confirm_id = parts
@@ -883,7 +871,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             await self._reply_best_effort(to, result_text, "[whatsapp_cloud] slash_confirm reply failed")
         return True
 
-    _INTERACTIVE_HANDLERS = {"cl:": _handle_clarify_tap, "appr:": _handle_approval_tap, "sc:": _handle_slash_confirm_tap}
+    _INTERACTIVE_HANDLERS = {"cl:": _handle_clarify_tap, "sc:": _handle_slash_confirm_tap}
 
     async def _collect_inbound_media(self, msg_type_str: str, raw_message: Dict[str, Any], body: str) -> tuple[list[str], list[str], str]:
         """Download inbound media by ``media_id``; returns ``(media_urls, media_types, body)``."""

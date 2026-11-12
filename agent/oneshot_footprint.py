@@ -4,7 +4,7 @@ A one-shot run has no later session in its HERMES_HOME to learn for: the process
 exits. The interactive self-improvement loop is pure overhead there, and a measured one — across 21
 one-shot benchmark trajectories the agent authored 7 new skills and patched a bundled one mid-task, 37 of
 ~215 tool calls were ``skill_view``/``skill_manage``, and skill text was 34% of every tool-result byte fed
-back into context. Three rules follow, all keyed on the same session marker the approval gate and the
+back into context. Three rules follow, all keyed on the same session marker the
 delegation dispatcher already read (``HERMES_SINGLE_QUERY_SESSION``), so interactive sessions are untouched:
 
 * ``skill_manage`` is not offered (``skills_list``/``skill_view`` stay: reading a domain skill can still win);

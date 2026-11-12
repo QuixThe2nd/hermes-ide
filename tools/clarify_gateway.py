@@ -1,6 +1,6 @@
 """Gateway-side clarify primitive (blocking event-based queue). The agent runs on a worker
 thread while the event loop handles the user's reply, so a pending clarify is stored
-module-level (same shape as ``tools.approval``) and the agent thread blocks on an ``Event``
+module-level and the agent thread blocks on an ``Event``
 until an adapter button callback or the gateway text-intercept resolves it, or the timeout
 fires. Adapters render inline buttons (an "Other" row flips the entry into text-capture
 mode) or a numbered-list text fallback."""
@@ -46,7 +46,7 @@ class _ClarifyEntry:
 _lock = threading.RLock()
 _entries: Dict[str, _ClarifyEntry] = {}  # clarify_id -> entry (button callbacks)
 _session_index: Dict[str, List[str]] = {}  # session_key -> [clarify_id] FIFO (text intercept, cleanup)
-# Per-session notify callbacks (gateway -> adapter bridge); mirrors tools.approval. Tests clear it.
+# Per-session notify callbacks (gateway -> adapter bridge). Tests clear it.
 _notify_cbs: Dict[str, Callable[[_ClarifyEntry], None]] = {}
 
 # Outcomes for typed clarify replies. Gateway cancels the pending prompt on

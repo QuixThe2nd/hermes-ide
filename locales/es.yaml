@@ -169,8 +169,7 @@ gateway:
 
   reload_mcp:
     cancelled:             "🟡 /reload-mcp cancelado. Las herramientas MCP no han cambiado."
-    always_followup:       "ℹ️ Las próximas llamadas a `/reload-mcp` se ejecutarán sin confirmación. Reactiva mediante `approvals.mcp_reload_confirm: true` en `config.yaml`."
-    confirm_prompt:        "⚠️ **Confirmar /reload-mcp**\n\nRecargar los servidores MCP reconstruye el conjunto de herramientas de esta sesión e **invalida la caché de prompt del proveedor** — el siguiente mensaje reenviará los tokens de entrada completos. En modelos de contexto largo o de razonamiento alto esto puede resultar costoso.\n\nElige:\n• **Aprobar una vez** — recargar ahora\n• **Aprobar siempre** — recargar ahora y silenciar esta confirmación permanentemente\n• **Cancelar** — dejar las herramientas MCP sin cambios"
+    confirm_prompt:        "⚠️ **Confirmar /reload-mcp**\n\nRecargar los servidores MCP reconstruye el conjunto de herramientas de esta sesión e **invalida la caché de prompt del proveedor** — el siguiente mensaje reenviará los tokens de entrada completos. En modelos de contexto largo o de razonamiento alto esto puede resultar costoso.\n\nElige:\n• **Aprobar una vez** — recargar ahora\n• **Cancelar** — dejar las herramientas MCP sin cambios"
     header:                "🔄 **Servidores MCP recargados**\n"
     reconnected:           "♻️ Reconectados: {names}"
     added:                 "➕ Añadidos: {names}"

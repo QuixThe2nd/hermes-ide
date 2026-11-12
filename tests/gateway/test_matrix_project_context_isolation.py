@@ -259,7 +259,6 @@ def _make_runner(current_source: SessionSource, entries: list[SessionEntry]):
     runner._running_agents = {}
     runner._session_run_generation = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._release_running_agent_state = MagicMock()
     runner._clear_session_boundary_security_state = MagicMock()
     runner._evict_cached_agent = MagicMock()

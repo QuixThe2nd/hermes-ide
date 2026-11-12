@@ -175,9 +175,8 @@ def get_nt_namespace_error(path: str, *, verb: str = "Access") -> Optional[str]:
 
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
-    # ``~/.ssh/config`` is deliberately NOT hard-denied: no key bytes, and editing
-    # it is routine. It can carry ProxyCommand / Match exec, so it goes through the
-    # approval gate instead (build_write_approval_paths).
+    # ``~/.ssh/config`` is deliberately NOT hard-denied: it contains no key
+    # bytes and editing it is routine. Credential files remain hard-denied.
     home_files = (
         (".ssh", "authorized_keys"), (".ssh", "id_rsa"), (".ssh", "id_ed25519"),
         (".netrc",), (".pgpass",), (".npmrc",), (".pypirc",), (".git-credentials",),
@@ -208,7 +207,7 @@ def build_write_denied_paths(home: str) -> set[str]:
 
 def build_write_denied_prefixes(home: str) -> list[str]:
     """Return sensitive directory prefixes that must never be written."""
-    # fork: /etc/systemd writes are approval-gated, not hard-denied.
+    # /etc/systemd is not in the hard-coded prefix denylist.
     paths = [
         *(os.path.join(home, d) for d in (".ssh", ".aws", ".gnupg", ".kube")),
         "/etc/sudoers.d",
@@ -226,14 +225,8 @@ def get_safe_write_roots() -> set[str]:
     return roots
 
 
-def build_write_approval_paths(home: str) -> set[str]:
-    """Paths that need human APPROVAL to write but are not hard-denied credentials.
-
-    ``~/.ssh/config`` is routine to edit and holds no key bytes, but can carry
-    ``ProxyCommand`` / ``Match exec``. Interactive file tools prompt
-    (approve-once/session/always, like the terminal tool's ``~/.ssh`` gate);
-    non-interactive callers (ACP shims, background jobs) fail closed.
-    """
+def _routine_write_exceptions(home: str) -> set[str]:
+    """Routine non-credential paths nested inside a denied prefix."""
     return {os.path.realpath(os.path.join(home, ".ssh", "config"))}
 
 
@@ -256,9 +249,8 @@ def _classify_write_denial(path: str) -> Optional[str]:
         return "nt_namespace"
     homes, resolved = _homes_and_resolved(path)
 
-    # Approval-gated paths are allowed at this layer so interactive tools can
-    # prompt; checked first so the ``.ssh/`` prefix deny doesn't swallow them.
-    if any(resolved in build_write_approval_paths(home) for home in homes):
+    # Routine exceptions must be checked before the ``.ssh/`` prefix deny.
+    if any(resolved in _routine_write_exceptions(home) for home in homes):
         return None
 
     if any(
@@ -300,11 +292,6 @@ def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
     return f"{verb} denied: '{path}' is a protected system/credential file." if denial else None
 
 
-def is_write_approval_required(path: str) -> bool:
-    """True if ``path`` is approval-gated (``~/.ssh/config``): interactive callers
-    prompt, callers without a channel treat it as a block (fail closed)."""
-    homes, resolved = _homes_and_resolved(path)
-    return any(resolved in build_write_approval_paths(home) for home in homes)
 
 
 # Secret-bearing project-local env file basenames, blocked anywhere on disk.

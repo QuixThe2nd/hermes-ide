@@ -261,7 +261,7 @@ def _resolve_async_session_key(parent_agent: Any, origin_ui_session_id: str) -> 
     the key resolves empty; its drain is a positive-ownership filter on the durable session_id (empty would fail
     closed), so stamp the parent's durable id.
     """
-    from tools.approval_context import get_current_session_key
+    from tools.session_context import get_current_session_key
     session_key = get_current_session_key(default="")
     agent_session_id = str(getattr(parent_agent, "session_id", "") or "")
     with _quiet(None):

@@ -103,10 +103,9 @@ target's own secrets overlaid. `os.environ.copy()` / `dict(os.environ)` pins the
 contextvars do not cross process boundaries, so resolve before `Popen`. A child's
 `UnscopedSecretError` is a spawn-site bug, never a reason to add environ fallthrough. New threads
 from scoped code use `agent.memory_provider.spawn_context_thread` (a bare `threading.Thread`
-drops the scope). **MCP trust is a per-profile record:** `mcp_tool_registration.py::
-_record_scope_trust` keys trust on the home; a secondary never adopts the launch profile's trust
-for a same-named server, and `mcp_tool_handlers.py::_trust_gate_check` consults the calling
-session's profile.
+drops the scope). **MCP read-only annotations are connection-scoped:**
+`mcp_tool_registration.py::_record_tool_annotations` records discovery metadata on the shared
+connection, and `mcp_tool_handlers.py::_tool_is_read_only` uses it only for transport retry safety.
 
 **Background-process teardown signals the parent first.** `process_registry.py::ProcessRegistry.
 _terminate_host_pid` snapshots the descendants, SIGTERMs only the recorded parent, waits
@@ -134,7 +133,7 @@ no `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`; keeps `execu
 `orchestrator` (keeps `delegate_task`; gated by `delegation.orchestrator_enabled`, bounded by
 `delegation.max_spawn_depth`, default 2). Config knobs under `delegation:`:
 `max_concurrent_children, independent_completions, max_spawn_depth, child_timeout_seconds, orchestrator_enabled,
-subagent_auto_approve, inherit_mcp_toolsets, max_iterations`. **Child processes:** a child's background
+inherit_mcp_toolsets, max_iterations`. **Child processes:** a child's background
 processes are killed at its teardown and their notices are suppressed in the parent; `process_manage(action="handoff")`
 (children only) flips `ProcessSession.owner_task_id` to the parent under the registry lock
 (`process_registry.transfer_ownership`) so the completion routes and reaps by the new owner; un-handed leftovers land on

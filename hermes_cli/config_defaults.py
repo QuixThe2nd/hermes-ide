@@ -729,7 +729,6 @@ DEFAULT_CONFIG = {
         # budget) — raising "timeout" alone does not widen this window. See #108104.
         "compression": _aux(120, no_progress_timeout=None),
         "skills_hub": _aux(30),
-        "approval": _aux(30),   # classifier — a fast/cheap model is recommended
         # /review reviewer: a full subagent on the async delegation rail, credentials resolved like
         # delegation.provider pins. "auto" + "" = main agent's model. api_mode forces transport:
         # chat_completions | anthropic_messages | codex_responses.
@@ -828,7 +827,7 @@ DEFAULT_CONFIG = {
         "notify_on_complete": False,
         "notify_on_complete_command": "",
         "notify_on_complete_ssh": "",
-        # Bell when a blocking prompt opens (clarify/approval/sudo/secret).
+        # Bell when a blocking prompt opens (clarify/slash/sudo/secret).
         "bell_on_prompt": False,
         # Stream the model's reasoning/thinking live before the response.
         # Default ON: on thinking models the reasoning phase can run tens of
@@ -879,8 +878,8 @@ DEFAULT_CONFIG = {
         "focus_view": False,
         "focus_saved_tool_progress": "all",
         "skin": "default",
-        # UI language for static messages (approval prompts, some gateway slash replies); not agent
-        # responses/logs/tool outputs. en, zh, ja, de, es, fr, tr, uk; unknown → en.
+        # UI language for static messages and some gateway slash replies; not agent responses,
+        # logs, or tool outputs. en, zh, ja, de, es, fr, tr, uk; unknown → en.
         "language": "en",
         # TUI busy indicator: kaomoji | emoji | unicode (braille) | ascii. `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
@@ -962,9 +961,8 @@ DEFAULT_CONFIG = {
         # config controls visibility not ordering); empty = default set. Available: model,
         # context_detail, context_pct, cache_hit, latency, tps, compressions, bg_tasks,
         # bg_processes, bg_subagents, goal, git_branch (⎇ current branch, opt-in only), duration,
-        # prompt_elapsed, idle_since, focus, yolo,
-        # stash, battery, title, total_tokens (session Σ, opt-in only). Narrow terminals still drop
-        # context_detail/prompt_elapsed/idle_since.
+        # prompt_elapsed, idle_since, focus, stash, battery, title, total_tokens (session Σ,
+        # opt-in only). Narrow terminals still drop context_detail/prompt_elapsed/idle_since.
         "status_bar": {
             "fields": [],
         },
@@ -1308,10 +1306,6 @@ DEFAULT_CONFIG = {
         # Each child re-pays a cold system prompt and re-explores the repo, and one-shot spawns are mostly
         # "review my own work" rather than parallel work (agent/oneshot_footprint.py).
         "oneshot_max_children": 2,
-        # Subagent threads ALWAYS resolve approvals non-interactively (the parent TUI owns stdin;
-        # input() from a worker would deadlock). false = auto-deny, true = auto-approve "once"; both
-        # log a warning audit line. true only for trusted batch work.
-        "subagent_auto_approve": False,
         # Subagent background processes (task_id "sa-...") route notify_on_complete / watch_pattern
         # notifications to the PARENT; false suppresses them (the child's result is the
         # deliverable). Async-delegation results are NEVER suppressed.
@@ -1533,9 +1527,6 @@ DEFAULT_CONFIG = {
         # Max bytes per cached attachment (held in memory while written); 0 = no cap. Env:
         # DISCORD_MAX_ATTACHMENT_BYTES.
         "max_attachment_bytes": 33554432,
-        # Mention allowed users on approval prompts so owners notice them in shared channels. Env:
-        # DISCORD_APPROVAL_MENTIONS.
-        "approval_mentions": False,
         # Voice-channel inactivity timeout (seconds); 0 = stay until `/voice leave`.
         "voice_channel_inactivity_timeout_seconds": 300,
         # Minimum seconds before force-stopping a VC playback; the adapter probes clip duration and
@@ -1574,24 +1565,6 @@ DEFAULT_CONFIG = {
         # message opens one private room instead of a synthetic thread.
         "inbox_rooms": {},
     },
-    # Approvals for dangerous commands: only the hard blocklist and the two slash-confirm
-    # gates remain — the engine passes everything else through (tools/approval.py) and the
-    # unconditional floors live in tools/approval_floors.py.
-    "approvals": {
-        # Case-insensitive fnmatch globs against terminal commands; a match blocks even under --yolo.
-        # Quote in YAML when starting with * or containing {}/!/: e.g. "git push
-        # --force*".
-        "deny": [],
-        # /reload-mcp confirms before rebuilding the MCP tool set (it invalidates the prompt cache,
-        # so the next message re-sends full input). "Always Approve" → false.
-        "mcp_reload_confirm": True,
-        # /clear, /new, /reset, /undo confirm before discarding state (Approve Once / Always Approve
-        # / Cancel via tools.slash_confirm; native buttons on Telegram/ Discord/Slack). "Always
-        # Approve" → false. HERMES_TUI_NO_CONFIRM=1 skips the TUI modal.
-        "destructive_slash_confirm": True,
-    },
-    # Permanently allowed dangerous command patterns (added via "always" approval).
-    "command_allowlist": [],
     # User-defined quick commands that bypass the agent loop (type: exec only).
     "quick_commands": {},
     # Per-platform system-prompt hint overrides, keyed by platform name (whatsapp, slack, telegram,
@@ -1651,22 +1624,12 @@ DEFAULT_CONFIG = {
         # Operator opt-out of the config-file write guard. When true, the
         # agent's write_file/patch tools may edit the Hermes config file
         # directly instead of refusing and deferring to `hermes config`.
-        # Trades away prompt-injection protection for the approval deny rules etc.
+        # Trades away prompt-injection protection for this file-safety guard.
         "allow_agent_config_writes": False,
         # Persisted acknowledgement for unattended model overrides whose tier
         # lets the vendor train on prompts/completions. The startup guard still
         # prints the full warning on every run and never bypasses cost guards.
         "allow_data_training_tiers_noninteractive": False,
-        # Human-approval presentation transport. "builtin" = CLI/TUI/gateway/ACP surfaces; a plugin
-        # transport is used only when named explicitly. Transport timeout/error/invalid response
-        # DENIES unless transport_fallback is "builtin". Presentation only: plugins cannot detect,
-        # suppress, or auto-approve commands outside a correlated human response.
-        "approval": {"transport": "builtin", "transport_fallback": "deny"},
-        # Writes to agent-instruction files (AGENTS.md/CLAUDE.md/SOUL.md/.cursorrules, project-local
-        # .hermes config) always need human approval, even under yolo. Extra patterns are fnmatch
-        # globs on the basename (e.g. "*.mdc").
-        "protected_instruction_files": True,
-        "protected_instruction_extra_patterns": [],
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,
@@ -2325,9 +2288,8 @@ DEFAULT_CONFIG = {
         # #47032; Linux/WSL2 idle spin #28152). cua-driver ≥ 0.6.x supports --no-overlay; Hermes also calls
         # set_agent_cursor_enabled(false) after start_session when this is on.
         "no_overlay": None,
-        # standard = cua-driver's own approval boundary; bounded = no runtime prompts, anything
-        # outside capability_manifest fails closed. `unrestricted` is NOT accepted here: it stays on
-        # the per-session YOLO toggle so config can't bypass approvals.
+        # standard = configured standard permissions; bounded = anything outside
+        # capability_manifest fails closed.
         "permission_mode": "standard",
         # Path (~ ok) to the reviewed manifest for permission_mode bounded; passed as
         # --capability-manifest. See cua.ai/docs/reference/cua-driver/permission-modes

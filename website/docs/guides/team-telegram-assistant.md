@@ -420,7 +420,7 @@ hermes gateway stop && hermes gateway start
 
 You've got a working team Telegram assistant. Here are some next steps:
 
-- **[Security Guide](../user-guide/security.md)** — deep dive into authorization, container isolation, and command approval
+- **[Security Guide](../user-guide/security.md)** — deep dive into authorization, execution safeguards, and container isolation
 - **[Messaging Gateway](../user-guide/messaging/index.md)** — full reference for gateway architecture, session management, and chat commands
 - **[Telegram Setup](../user-guide/messaging/telegram.md)** — platform-specific details including voice messages and TTS
 - **[Scheduled Tasks](../user-guide/features/cron.md)** — advanced cron scheduling with delivery options and cron expressions

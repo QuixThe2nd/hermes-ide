@@ -315,12 +315,6 @@ _AUXILIARY_TASK_ENV = {
         "base_url": "AUXILIARY_VISION_BASE_URL",
         "api_key": "AUXILIARY_VISION_API_KEY",
     },
-    "approval": {
-        "provider": "AUXILIARY_APPROVAL_PROVIDER",
-        "model": "AUXILIARY_APPROVAL_MODEL",
-        "base_url": "AUXILIARY_APPROVAL_BASE_URL",
-        "api_key": "AUXILIARY_APPROVAL_API_KEY",
-    },
 }
 _CWD_PLACEHOLDERS = (".", "auto", "cwd")
 
@@ -598,7 +592,7 @@ def _sync_process_session_id(session_id: str) -> None:
 
 _cleanup_all_terminals = _lazy_shim("tools.terminal_tool", "cleanup_all_environments", "_cleanup_all_terminals")
 set_sudo_password_callback = _lazy_shim("tools.terminal_tool", "set_sudo_password_callback")
-set_approval_callback = _lazy_shim("tools.terminal_tool", "set_approval_callback")
+set_write_review_callback = _lazy_shim("tools.write_approval", "set_inline_prompt_callback")
 set_secret_capture_callback = _lazy_shim("tools.skills_tool", "set_secret_capture_callback")
 _cleanup_all_browsers = _lazy_shim("tools.browser_tool_lifecycle", "_emergency_cleanup_all_sessions", "_cleanup_all_browsers")
 
@@ -2916,10 +2910,9 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._clarify_state = self._clarify_multi_base = None
         self._clarify_freetext = False
         self._clarify_prefill = ""
-        self._sudo_state = self._modal_input_snapshot = self._approval_state = None
+        self._sudo_state = self._modal_input_snapshot = None
         self._slash_confirm_state = self._model_picker_state = None
-        self._clarify_deadline = self._sudo_deadline = self._approval_deadline = self._slash_confirm_deadline = 0
-        self._approval_lock = threading.Lock()
+        self._clarify_deadline = self._sudo_deadline = self._slash_confirm_deadline = 0
         try:  # composer placeholder chosen once so it stays stable on screen
             from hermes_cli.tips import get_random_composer_placeholder
             self._composer_placeholder = get_random_composer_placeholder()
@@ -3024,7 +3017,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         if self._tool_callbacks_installed:
             return
         set_sudo_password_callback(self._sudo_password_callback)
-        set_approval_callback(self._approval_callback)
+        set_write_review_callback(self._write_review_callback)
         set_secret_capture_callback(self._secret_capture_callback)
         from agent.vault_backends.unlock import set_code_prompt_callback, set_save_login_prompt_callback, set_unlock_prompt_callback
         set_unlock_prompt_callback(self._vault_unlock_callback)
@@ -3435,14 +3428,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             return
         self._reasoning_preview_buf = getattr(self, "_reasoning_preview_buf", "") + reasoning_text
         self._flush_reasoning_preview(force=False)
-
-    # Inline tokens that bypass the destructive-slash confirmation modal (scripting, or
-    # when the modal can't be marshaled onto the app loop).
-    # A general escape hatch for non-interactive use (scripting/automation) and for the degraded path where
-    # the modal can't be marshaled onto the app loop — lets users self-serve without flipping
-    # approvals.destructive_slash_confirm in config. (Native Windows now drives the modal normally — see
-    # #33961.)
-    _DESTRUCTIVE_SKIP_TOKENS = frozenset({"now", "--yes", "-y"})
 
     def _tui_process_loop(self):
         """REPL worker thread: drain ``_pending_input``, run idle housekeeping, dispatch each input."""
@@ -3973,7 +3958,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             cleanup_temp_recordings()
         from agent.vault_backends.unlock import (lock as _vault_lock, set_code_prompt_callback,
                                                  set_save_login_prompt_callback, set_unlock_prompt_callback)
-        for _unset in (set_sudo_password_callback, set_approval_callback, set_secret_capture_callback,
+        for _unset in (set_sudo_password_callback, set_write_review_callback, set_secret_capture_callback,
                        set_unlock_prompt_callback, set_save_login_prompt_callback, set_code_prompt_callback):
             _unset(None)
         _vault_lock()  # session tokens for external password managers die with the session
