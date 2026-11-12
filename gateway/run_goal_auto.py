@@ -87,7 +87,7 @@ class GatewayGoalAutoMixin:
             label = str(decision.get("label") or "unknown")
             confidence = _confidence_of(decision)
             # chat / unknown / low confidence: nothing to do — the raw label and
-            # confidence are already in the shadow JSONL.
+            # confidence are already in the audit JSONL.
             if label not in CLASSIFICATION_LABELS or confidence < AUTO_GOAL_CONFIDENCE_MIN:
                 return None
             message = str(decision.get("message") or "").strip()
@@ -232,7 +232,7 @@ class GatewayGoalAutoMixin:
         logger.info("auto-goal: chase started a goal for session %s", sid)
         return None
 
-    # ── 'stop' pause (message arrival, mode on) ──────────────────────────
+    # ── 'stop' pause (message arrival) ──────────────────────────────────
 
     async def _pause_goal_for_stop(self: "GatewayRunner", source) -> None:
         """Pause any active goal for a ``stop`` message. Best-effort, off the reply path."""

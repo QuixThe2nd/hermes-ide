@@ -1,10 +1,9 @@
-"""Gateway wiring tests for non-blocking, log-only goal-intent shadow mode."""
+"""Gateway wiring tests for the non-blocking goal-intent audit trail."""
 
 from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import threading
 from pathlib import Path
 from unittest.mock import patch
@@ -51,14 +50,10 @@ def hermes_home(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def runner(hermes_home, monkeypatch, request):
+def runner(hermes_home, monkeypatch):
     import gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
-    mode = getattr(request, "param", "shadow")
-    (hermes_home / "config.yaml").write_text(
-        f"goals:\n  auto:\n    mode: {mode}\n", encoding="utf-8"
-    )
     instance = gateway_run.GatewayRunner(
         GatewayConfig(sessions_dir=hermes_home / "sessions")
     )
@@ -85,7 +80,7 @@ def _rows(home: Path):
 
 
 @pytest.mark.asyncio
-async def test_shadow_worker_does_not_delay_or_change_reply_and_writes_bounded_record(
+async def test_classification_does_not_delay_or_change_reply_and_writes_bounded_record(
     runner, hermes_home
 ):
     started = threading.Event()
@@ -126,13 +121,18 @@ async def test_shadow_worker_does_not_delay_or_change_reply_and_writes_bounded_r
         "ts", "session_id", "platform", "message_excerpt", "label",
         "reason", "confidence", "contract_draft",
     }
-    assert row["session_id"] == SESSION_KEY
+    # The audit row (and the parked decision) key by the REAL session id —
+    # the one goal state lives under — not the inbound quick key.
+    assert row["session_id"] and row["session_id"] != SESSION_KEY
     assert row["platform"] == "telegram"
     assert row["message_excerpt"] == "x" * 300
     assert row["label"] == "chat"
     assert row["reason"] == "shadow only"
     assert row["confidence"] == 0.42
     assert row["contract_draft"] is None
+    parked = runner._auto_goal_pending.get(SESSION_KEY)
+    assert parked is not None and parked.done()
+    assert parked.result()["session_id"] == row["session_id"]
 
 
 @pytest.mark.asyncio
@@ -148,7 +148,7 @@ async def test_shadow_worker_does_not_delay_or_change_reply_and_writes_bounded_r
 )
 async def test_shadow_skips_internal_bot_blank_and_slash_messages(runner, hermes_home, event):
     with patch("hermes_cli.goal_intent.classify") as classify:
-        runner._schedule_goal_intent_shadow(event, SESSION_KEY)
+        runner._schedule_auto_goal_intent(event, SESSION_KEY)
         await _drain(runner)
 
     classify.assert_not_called()
@@ -156,39 +156,20 @@ async def test_shadow_skips_internal_bot_blank_and_slash_messages(runner, hermes
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("runner", ["off"], indirect=True)
-async def test_off_mode_performs_no_shadow_work(runner, hermes_home):
-    # The fixture loads this mode before the runner's initial config reads.
-    with patch("hermes_cli.goal_intent.classify") as classify:
-        runner._schedule_goal_intent_shadow(_event("why is the service down?"), SESSION_KEY)
-        await asyncio.sleep(0)
-        await _drain(runner)
-
-    classify.assert_not_called()
-    assert not _shadow_path(hermes_home).exists()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("runner", ["on"], indirect=True)
-async def test_on_mode_parks_decision_and_notice_is_emitted_once(
-    runner, hermes_home, caplog
-):
-    # ``on`` is the real auto-goal mode: decisions are evaluated and parked
+async def test_eligible_message_is_classified_and_parked_for_turn_end(runner):
+    # Every eligible message is classified off-path and the decision parked
     # for the turn boundary (no goal mutation at arrival).
-    with (
-        patch(
-            "hermes_cli.goal_intent.evaluate_goal_intent",
-            side_effect=lambda text, sid, platform: {
-                "label": "chat", "reason": "jev decision", "confidence": 0.9,
-                "contract_draft": None, "message": text, "session_id": sid,
-                "last_assistant": "", "user_previous_message": "",
-                "record": {"label": "chat", "confidence": 0.9},
-            },
-        ) as evaluate,
-        caplog.at_level(logging.INFO),
-    ):
-        runner._schedule_goal_intent_shadow(_event("hi"), SESSION_KEY)
-        runner._schedule_goal_intent_shadow(_event("hi again"), SESSION_KEY)
+    with patch(
+        "hermes_cli.goal_intent.evaluate_goal_intent",
+        side_effect=lambda text, sid, platform: {
+            "label": "chat", "reason": "jev decision", "confidence": 0.9,
+            "contract_draft": None, "message": text, "session_id": sid,
+            "last_assistant": "", "user_previous_message": "",
+            "record": {"label": "chat", "confidence": 0.9},
+        },
+    ) as evaluate:
+        runner._schedule_auto_goal_intent(_event("hi"), SESSION_KEY)
+        runner._schedule_auto_goal_intent(_event("hi again"), SESSION_KEY)
         await _drain(runner)
 
     assert evaluate.call_count == 2
@@ -198,12 +179,6 @@ async def test_on_mode_parks_decision_and_notice_is_emitted_once(
     parked = runner._auto_goal_pending.get(SESSION_KEY)
     assert parked is not None and parked.done()
     assert parked.result()["session_id"] == resolved_sid
-    notices = [
-        record for record in caplog.records
-        if "goals.auto.mode=on" in record.getMessage()
-        and "automatic goal creation" in record.getMessage()
-    ]
-    assert len(notices) == 1
 
 
 def test_chase_papercut_contains_goal_context_and_dedupes_for_thirty_minutes(hermes_home):

@@ -1262,14 +1262,15 @@ For a user/plugin policy gate at the same point — keep the agent going with yo
 
 ## Standing Goals (auto-goal)
 
-When a standing goal is active, Hermes judges whether each assistant response satisfies it. If not, it feeds a continuation prompt back into the same session and keeps working until the goal is done, the turn budget is exhausted, or the user says "stop". With `goals.auto.mode: on`, task-like messages start goals automatically (see [Goals](./features/goals.md)); a single judge failure fails **open** (continue), two in a row pause the goal.
+When a standing goal is active, Hermes judges whether each assistant response satisfies it. If not, it feeds a continuation prompt back into the same session and keeps working until the goal is done, the turn budget is exhausted, or the user says "stop". Task-like messages start goals automatically (see [Goals](./features/goals.md)); a single judge failure fails **open** (continue), two in a row pause the goal.
 
 ```yaml
 goals:
   max_turns: 20   # Max continuation turns before Hermes auto-pauses the goal (default: 20)
-  auto:
-    mode: shadow  # off | shadow (default) | on
 ```
+
+Automatic goals are always on — there is no mode setting, and a `goals.auto`
+key left over in an existing config.yaml is ignored.
 
 `max_turns` caps how many continuation turns a goal can drive before Hermes auto-pauses it and asks you to keep going ("go ahead" resumes with a fresh budget). It protects against judge false negatives (goal actually done but judge says continue) and unbounded model spend on fuzzy or unachievable goals. See [Goals](./features/goals.md) for the full feature.
 

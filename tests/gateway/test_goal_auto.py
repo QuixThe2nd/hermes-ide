@@ -1,9 +1,11 @@
-"""Behavior tests for goals.auto.mode=on: Jev decisions drive the goal loop.
+"""Behavior tests for auto-goal: Jev decisions drive the goal loop.
 
 Covers the auto-goal contract end to end at the gateway layer: task creates a
 goal with exactly one 🎯 line, task-while-active appends, approval resumes,
-chase reopens recent work, suppression phrases pause/opt out, group threads
-gate non-owners, and shadow/off never mutate goals or call Jev.
+chase reopens recent work, suppression phrases pause/opt out, and group
+threads gate non-owners. Classification is always on — the runner fixture
+writes a leftover ``goals.auto`` key (from the retired mode setting) and every
+test still classifies and applies.
 """
 
 from __future__ import annotations
@@ -84,8 +86,10 @@ def runner(hermes_home, monkeypatch):
     import gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+    # A leftover ``goals.auto`` key from the retired mode setting: ignored,
+    # never an error — classification is always on.
     (hermes_home / "config.yaml").write_text(
-        "goals:\n  auto:\n    mode: on\n", encoding="utf-8"
+        "goals:\n  auto:\n    mode: off\n", encoding="utf-8"
     )
     instance = gateway_run.GatewayRunner(
         GatewayConfig(sessions_dir=hermes_home / "sessions")
@@ -249,7 +253,7 @@ async def test_stop_pauses_active_goal_and_makes_no_jev_call(runner):
     GoalManager(session_id=entry.session_id).set("long running job")
 
     with patch("hermes_cli.goal_intent.requests.post") as post:
-        runner._schedule_goal_intent_shadow(_event("stop"), SESSION_KEY)
+        runner._schedule_auto_goal_intent(_event("stop"), SESSION_KEY)
         await _drain(runner)
 
     post.assert_not_called()
@@ -261,7 +265,7 @@ async def test_stop_pauses_active_goal_and_makes_no_jev_call(runner):
 @pytest.mark.asyncio
 async def test_just_answer_suppresses_classification_and_goal(runner):
     with patch("hermes_cli.goal_intent.requests.post") as post:
-        runner._schedule_goal_intent_shadow(_event("just answer this one"), SESSION_KEY)
+        runner._schedule_auto_goal_intent(_event("just answer this one"), SESSION_KEY)
         await _drain(runner)
 
     post.assert_not_called()
@@ -297,7 +301,7 @@ async def test_session_owner_in_group_thread_can_start_goal(runner):
     assert _goal_state() is not None
 
 
-# ── failure and mode gates ────────────────────────────────────────────
+# ── failure gates ─────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -321,41 +325,28 @@ async def test_jev_http_error_fails_closed_no_goal(runner, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_off_mode_makes_no_http_call(runner, monkeypatch):
-    import gateway.run as gateway_run
-
-    home = gateway_run._hermes_home
-    (home / "config.yaml").write_text("goals:\n  auto:\n    mode: off\n", encoding="utf-8")
-
-    with patch("hermes_cli.goal_intent.requests.post") as post, patch(
-        "hermes_cli.goal_intent.evaluate_goal_intent"
-    ) as evaluate:
-        runner._schedule_goal_intent_shadow(_event("why is tdarr down?"), SESSION_KEY)
-        await _drain(runner)
-
-    post.assert_not_called()
-    evaluate.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_shadow_mode_never_parks_a_decision_or_starts_a_goal(runner, monkeypatch):
-    import gateway.run as gateway_run
-    from pathlib import Path
-    from hermes_cli.goal_intent import record_goal_intent_shadow
-
-    home = gateway_run._hermes_home
-    (home / "config.yaml").write_text("goals:\n  auto:\n    mode: shadow\n", encoding="utf-8")
-
+async def test_leftover_goals_auto_key_is_ignored_not_an_error(runner):
+    """The retired ``goals.auto.mode`` setting (here left at ``off`` in the
+    fixture's config.yaml) must neither disable classification nor error:
+    the message is classified, parked for the turn boundary, and applied."""
+    decision = _decision("task", "why is tdarr down")
     with patch(
-        "hermes_cli.goal_intent.record_goal_intent_shadow",
-        wraps=record_goal_intent_shadow,
-    ) as record:
-        runner._schedule_goal_intent_shadow(_event("why is tdarr down?"), SESSION_KEY)
+        "hermes_cli.goal_intent.evaluate_goal_intent",
+        return_value=decision,
+    ) as evaluate:
+        runner._schedule_auto_goal_intent(_event("why is tdarr down?"), SESSION_KEY)
         await _drain(runner)
 
-    record.assert_called_once()
-    assert not getattr(runner, "_auto_goal_pending", {})
-    assert _goal_state() is None
+    evaluate.assert_called_once()
+    parked = runner._auto_goal_pending.get(SESSION_KEY)
+    assert parked is not None and parked.done()
+
+    notice = await runner._apply_auto_goal_decision(
+        await parked, _session_entry(), _source()
+    )
+    assert notice is not None
+    state = _goal_state()
+    assert state is not None and state.status == "active"
 
 
 # ── turn-boundary integration ─────────────────────────────────────────

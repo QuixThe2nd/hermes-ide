@@ -161,9 +161,9 @@ class TestGoalManager:
 
 
 def test_goal_command_not_user_facing():
-    """/goal is unregistered: automatic goals (goals.auto.mode=on) replaced the
-    manual command, but the handler machinery stays for the CLI `hermes goals`
-    surface and internal callers."""
+    """/goal is unregistered: automatic goals replaced the manual command,
+    but the handler machinery stays for the CLI `hermes goals` surface and
+    internal callers."""
     from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command
 
     assert resolve_command("goal") is None

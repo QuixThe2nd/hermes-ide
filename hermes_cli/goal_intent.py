@@ -327,7 +327,7 @@ def classify(message_text: str, context: Optional[Dict[str, Any]] = None) -> Dic
 
 
 def auto_goal_suppression(message_text: str) -> Optional[str]:
-    """Control phrase that skips the Jev call entirely in ``goals.auto.mode=on``.
+    """Control phrase that skips the Jev call entirely.
 
     ``"stop"`` (case-insensitive; the message equals it or it is a prefix of
     the message) pauses the active goal and suppresses auto-goal; a
@@ -514,8 +514,8 @@ def _log_chase_papercut(
                     "summary": f"User had to chase while {cause}",
                     "observed": observed,
                     "suggested_fix": (
-                        "Review the auto-goal shadow classification and continuation behavior "
-                        "for this session."
+                        "Review the auto-goal classification and continuation "
+                        "behavior for this session."
                     ),
                     "component": "auto-goal",
                     "category": "workflow",
