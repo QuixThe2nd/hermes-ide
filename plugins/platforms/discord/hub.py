@@ -249,10 +249,6 @@ _SYNC_RPC_METHODS = frozenset({
     "prefers_fresh_final_streaming",
     "format_tool_preview",
     "claim_startup_resume_inbound",
-    "voice_mixer_active",
-    "is_in_voice_channel",
-    "get_voice_channel_info",
-    "get_voice_channel_context",
 })
 _MATRIX_SYNC_RPC_METHODS = frozenset({"get_diagnostics"})
 # Dispatched as tasks: they call out to Discord/Matrix and may block on rate limits.
@@ -384,9 +380,8 @@ class DiscordHubServer:
         self.socket_path.unlink(missing_ok=True)
 
     async def _disconnect_adapter_with_deadline(self, adapter: Any, context: str) -> None:
-        """Stop the event producer before detachable transport/voice cleanup."""
-        # DiscordAdapter.disconnect() deliberately leaves voice before awaiting bot cancellation.
-        # Recovery cannot let that earlier step strand a reconnecting bot after the deadline.
+        """Stop the event producer before detachable adapter cleanup."""
+        # Recovery cannot let a slow disconnect strand a reconnecting bot after the deadline.
         adapter._disconnecting = True
         bot_task = getattr(adapter, "_bot_task", None)
         if bot_task is not None and not bot_task.done():
@@ -785,14 +780,6 @@ class DiscordHubServer:
                 event.raw_message = raw_message
             args[0] = event
             args[1] = ProcessingOutcome(args[1])
-        elif method == "join_voice_channel" and args and isinstance(args[0], dict):
-            channel_id = int(args[0]["id"])
-            channel = adapter._client.get_channel(channel_id)
-            if channel is None:
-                channel = await adapter._client.fetch_channel(channel_id)
-            if channel is None:
-                raise RuntimeError(f"Discord voice channel {channel_id} is unavailable")
-            args[0] = channel
         callback_keyword = _PICKER_CALLBACK_KWARGS.get(method)
         if callback_keyword is not None:
             if client is None:
@@ -811,12 +798,6 @@ class DiscordHubServer:
         result = fn(*args, **kwargs)
         if inspect.isawaitable(result):
             result = await result
-        if method == "get_user_voice_channel":
-            if result is None:
-                return {"value": None}
-            return {"value": {
-                "id": result.id, "name": result.name, "guild_id": result.guild.id,
-            }}
         return _send_result_dict(result)
 
     async def _request_generation_control(self, generation_id: str, method: str,

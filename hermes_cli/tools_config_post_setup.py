@@ -53,8 +53,6 @@ def _post_setup_camofox() -> None:
         _print_info("      docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
 
 
-_KITTENTTS_WHEEL_URL = "https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl"
-
 # pip-only post-setup hooks: module (import probe), label, installing (progress line), args, manual
 # (fallback command), on_install (fresh-install notes), always. Also feeds _RESTORABLE_PYTHON_TOOL_DEPENDENCIES.
 def _pip_hook(module, label, installing, args, manual, on_install=(), always=()) -> dict:
@@ -63,22 +61,6 @@ def _pip_hook(module, label, installing, args, manual, on_install=(), always=())
 
 
 _PIP_POST_SETUP_HOOKS: dict = {
-    "faster_whisper": _pip_hook(
-        "faster_whisper", "faster-whisper", "Installing faster-whisper (model ~150MB downloads on first use)...",
-        ["-U", "faster-whisper", "--quiet"], "uv pip install -U faster-whisper",
-        on_install=("Model sizes: tiny, base (default), small, medium, large-v3",
-                    "Change via stt.local.model in ~/.hermes/config.yaml")),
-    "kittentts": _pip_hook(
-        "kittentts", "kittentts", "Installing kittentts (~25-80MB model, CPU-only)...",
-        ["-U", _KITTENTTS_WHEEL_URL, "soundfile", "--quiet"], f"uv pip install -U '{_KITTENTTS_WHEEL_URL}' soundfile",
-        on_install=("Voices: Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo",
-                    "Models: KittenML/kitten-tts-nano-0.8-int8 (25MB), micro (41MB), mini (80MB)")),
-    "piper": _pip_hook(
-        "piper", "piper-tts", "Installing piper-tts (~14MB wheel, voices downloaded on first use)...",
-        ["-U", "piper-tts", "--quiet"], "uv pip install -U piper-tts",
-        always=("Default voice: en_US-lessac-medium (downloaded on first TTS call)",
-                "Full voice list: https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md",
-                "Switch voices by setting tts.piper.voice in ~/.hermes/config.yaml")),
     "ddgs": _pip_hook(
         "ddgs", "ddgs", "Installing ddgs (DuckDuckGo search package)...", ["-U", "ddgs", "--quiet"],
         "uv pip install -U ddgs",
@@ -144,8 +126,34 @@ def _post_setup_langfuse() -> None:
     _info_lines("Restart Hermes for tracing to take effect.", "Verify: hermes plugins list")
 
 
+def _run_xai_oauth_login_from_setup() -> bool:
+    """Run the xAI Grok OAuth device-code login from inside the setup wizard. Saves OAuth tokens
+    only — does **not** switch the active provider or rewrite ``model.provider`` (callers only need
+    credentials for side tools). False on any failure (caller falls back)."""
+    try:
+        from hermes_cli.auth import (
+            _is_remote_session, _save_xai_oauth_tokens, _xai_oauth_device_code_login,
+            unsuppress_credential_source)
+    except Exception as exc:
+        _print_warning(f"xAI Grok OAuth helpers unavailable: {exc}")
+        return False
+    _print_info("Signing in to xAI Grok OAuth (SuperGrok / Premium+)...")
+    try:
+        creds = _xai_oauth_device_code_login(open_browser=not _is_remote_session())
+        _save_xai_oauth_tokens(
+            creds["tokens"], discovery=creds.get("discovery"), redirect_uri=creds.get("redirect_uri", ""),
+            last_refresh=creds.get("last_refresh"), auth_mode="oauth_device_code", set_active=False)
+        # Mirror model/dashboard re-login: clear device_code suppression so the pool can seed
+        # from the singleton after a prior `auth remove`.
+        unsuppress_credential_source("xai-oauth", "device_code")
+        return True
+    except Exception as exc:
+        _print_warning(f"xAI Grok OAuth login failed: {exc}")
+        return False
+
+
 def _post_setup_xai_grok() -> None:
-    """Shared xAI credential bootstrap for any picker row that talks to xAI (TTS, STT, Video Gen, x_search
+    """Shared xAI credential bootstrap for any picker row that talks to xAI (Video Gen, x_search,
     …). Accepts a SuperGrok-tier OAuth token (preferred — billed to the existing subscription) or a raw
     XAI_API_KEY; the rows declare empty env_vars so the auth UX lives here."""
     try:
@@ -163,7 +171,6 @@ def _post_setup_xai_grok() -> None:
     _print_info("    xAI needs credentials. Choose one:")
     try:
         from hermes_cli.setup import prompt_choice, prompt as _setup_prompt
-        from hermes_cli.setup_tts import _run_xai_oauth_login_from_setup
         from hermes_cli.config import save_env_value
     except Exception as exc:
         _print_warning(f"    Could not load setup helpers: {exc}")

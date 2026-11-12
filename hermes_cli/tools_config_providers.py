@@ -89,8 +89,7 @@ def _plugin_provider_rows(
 _PLUGIN_PROVIDER_ROW_SPECS = {
     "image_gen": ("agent.image_gen_registry", ("image_gen_plugin_name",), {"require_name": False}),
     "video_gen": ("agent.video_gen_registry", ("video_gen_plugin_name",), {"require_name": False}),
-    "web": ("agent.web_search_registry", ("web_backend", "web_search_plugin_name"), {"flatten_variants": True}),
-    "tts": ("agent.tts_registry", ("tts_provider", "tts_plugin_name"), {"skip_builtin": True})}
+    "web": ("agent.web_search_registry", ("web_backend", "web_search_plugin_name"), {"flatten_variants": True})}
 
 
 def _plugin_rows_for(category: str) -> list[dict]:
@@ -99,8 +98,8 @@ def _plugin_rows_for(category: str) -> list[dict]:
     return _plugin_provider_rows(module, markers, **kwargs)
 
 
-_plugin_image_gen_providers, _plugin_video_gen_providers, _plugin_web_search_providers, _plugin_tts_providers = (
-    partial(_plugin_rows_for, cat) for cat in ("image_gen", "video_gen", "web", "tts"))
+_plugin_image_gen_providers, _plugin_video_gen_providers, _plugin_web_search_providers = (
+    partial(_plugin_rows_for, cat) for cat in ("image_gen", "video_gen", "web"))
 
 
 def web_provider_capabilities(backend: str) -> list:
@@ -123,8 +122,7 @@ def web_provider_capabilities(backend: str) -> list:
 _PLUGIN_ROW_BUILDERS = {
     "Image Generation": _plugin_image_gen_providers,
     "Video Generation": _plugin_video_gen_providers,
-    "Web Search & Extract": _plugin_web_search_providers,
-    "Text-to-Speech": _plugin_tts_providers}
+    "Web Search & Extract": _plugin_web_search_providers}
 
 
 def _visible_providers(
@@ -273,7 +271,7 @@ def _toolset_needs_configuration_prompt(ts_key: str, config: dict, *, force_fres
             return True
 
     # Categories whose "configured" signal is a selected provider key.
-    selection_key = {"tts": "provider", "web": "backend"}.get(ts_key)
+    selection_key = {"web": "backend"}.get(ts_key)
     if selection_key:
         section = config.get(ts_key, {})
         return not isinstance(section, dict) or selection_key not in section
@@ -386,8 +384,7 @@ def _web_tier_matches(provider: dict, config: dict) -> bool:
 
 # Managed-row marker -> (config section, key) the pick writes, in check order.
 _MANAGED_SELECTION_KEYS: tuple[tuple[str, str, str], ...] = (
-    ("tts_provider", "tts", "provider"), ("stt_provider", "stt", "provider"),
-    ("web_backend", "web", "backend"))
+    ("web_backend", "web", "backend"),)
 
 def _has_marker(provider: dict, marker: str) -> bool:
     return bool(provider.get(marker))
@@ -434,10 +431,7 @@ def _imagegen_backend_active(provider: dict, config: dict) -> bool:
 
 
 # Non-managed active checks, evaluated in order; the first marker the row carries decides (see ``_has_marker``).
-# Default stt.provider is "local" — an unset key means Local Whisper.
 _ACTIVE_CHECKS: tuple[tuple[str, Callable[[dict, dict], bool]], ...] = (
-    ("tts_provider", lambda p, c: cfg_get(c, "tts", "provider") == p["tts_provider"]),
-    ("stt_provider", lambda p, c: (cfg_get(c, "stt", "provider") or "local") == p["stt_provider"]),
     ("web_backend", lambda p, c: cfg_get(c, "web", "backend") == p["web_backend"] and _web_tier_matches(p, c)),
     ("computer_use_backend", lambda p, c: cfg_get(c, "computer_use", "backend") == p["computer_use_backend"]),
     ("imagegen_backend", _imagegen_backend_active))
@@ -635,38 +629,9 @@ def _select_plugin_gen_provider(section: str, plugin_name: str, config: dict, *,
 _select_plugin_image_gen_provider = partial(_select_plugin_gen_provider, "image_gen")
 _select_plugin_video_gen_provider = partial(_select_plugin_gen_provider, "video_gen")
 
-# Per-provider STT model catalogs for the picker; keys are ``stt.<provider>`` sections, first entry is the
-# default. Kept in sync with the desktop settings
-# enums (apps/desktop/src/app/settings/constants.ts).
-STT_MODEL_CATALOG = {
-    "local": ["base", "tiny", "small", "medium", "large-v3"],
-    "groq": ["whisper-large-v3-turbo", "whisper-large-v3", "distil-whisper-large-v3-en"],
-    "openai": ["whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"],
-    "elevenlabs": ["scribe_v2", "scribe_v1"]}
-
-# ElevenLabs historically uses ``model_id`` instead of ``model``.
-_STT_MODEL_CONFIG_KEY = {"elevenlabs": "model_id"}
-
-
-def _configure_stt_model(stt_provider: str, config: dict) -> None:
-    """Prompt for the STT model after a provider pick (when a catalog exists)."""
-    from hermes_cli.tools_config import _cfg_section, _prompt_choice
-
-    catalog = STT_MODEL_CATALOG.get(stt_provider)
-    if not catalog:
-        return
-    prov_cfg = _cfg_section(_cfg_section(config, "stt"), stt_provider)
-    model_key = _STT_MODEL_CONFIG_KEY.get(stt_provider, "model")
-    current = str(prov_cfg.get(model_key) or "").strip()
-    ordered = list(catalog)
-    chosen = ordered[_prompt_choice("  Select STT model:", ordered, ordered.index(current) if current in ordered else 0)]
-    prov_cfg[model_key] = chosen
-    _print_success(f"  STT model set to: {chosen}")
-
-
 # Provider-row marker key -> config section it selects into.
 _PROVIDER_MARKER_SECTIONS = {
-    "tts_provider": "tts", "stt_provider": "stt", "web_backend": "web",
+    "web_backend": "web",
     "image_gen_plugin_name": "image_gen", "imagegen_backend": "image_gen", "video_gen_plugin_name": "video_gen",
 }
 
@@ -678,11 +643,6 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
     writes exactly ONE provider string per category (``nous`` for managed rows) and removes any legacy
     ``use_gateway`` key so the read-time shim cannot override the new choice."""
     from hermes_cli.tools_config import TOOL_CATEGORIES
-
-    for marker, section_key in (("tts_provider", "tts"), ("stt_provider", "stt")):
-        if provider.get(marker):
-            _select_into(config, section_key, "provider", provider[marker], managed_feature)
-
 
     if provider.get("web_backend"):
         web_cfg = _select_into(config, "web", "backend", provider["web_backend"], managed_feature)
@@ -697,7 +657,7 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
     if provider.get("computer_use_backend"):
         config.setdefault("computer_use", {})["backend"] = provider["computer_use_backend"]
 
-    if managed_feature and managed_feature not in {"web", "tts", "stt", "browser"}:
+    if managed_feature and managed_feature not in {"web", "browser"}:
         # Managed rows without a marker above (image_gen/video_gen "Nous Subscription" rows carry only
         # managed_nous_feature) still persist the "nous" selection.
         section = config.setdefault(managed_feature, {})
@@ -776,7 +736,7 @@ def _nous_provider_gate(provider: dict, config: dict, managed_feature, *, force_
 
 
 def _finish_provider_selection(provider: dict, config: dict, managed_feature) -> None:
-    """Model pickers that follow a provider pick: plugin image/video gen, in-tree FAL, STT."""
+    """Model pickers that follow a provider pick: plugin image/video gen, in-tree FAL."""
     for section in ("image_gen", "video_gen"):
         plugin_name = provider.get(f"{section}_plugin_name")
         if plugin_name:
@@ -788,17 +748,10 @@ def _finish_provider_selection(provider: dict, config: dict, managed_feature) ->
         # "nous" for the managed row (the picked model id chooses the FAL / Krea / Portal gateway at run time),
         # "fal" for BYOK, drop legacy use_gateway — never clobber a managed pick back onto direct keys.
         _select_into(config, "image_gen", "provider", "fal", managed_feature)
-    # STT rows prompt for a model after the pick (skipped for managed rows — the gateway pins it).
-    if provider.get("stt_provider") and not managed_feature:
-        _configure_stt_model(provider["stt_provider"], config)
 
 
 def _print_provider_selection(provider: dict, managed_feature, *, reconfigure: bool) -> None:
     """Status lines announcing which backend/provider keys a pick writes."""
-    if reconfigure and provider.get("tts_provider"):
-        _print_success(f"  TTS provider set to: {provider['tts_provider']}")
-    if provider.get("stt_provider"):
-        _print_success(f"  STT provider set to: {provider['stt_provider']}")
     if provider.get("web_backend"):
         tier = f" ({provider['web_tier']} tier)" if reconfigure and provider.get("web_tier") else ""
         _print_success(f"  Web backend set to: {provider['web_backend']}{tier}")

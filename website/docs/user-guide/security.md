@@ -635,7 +635,7 @@ The check itself is stdlib-only and runs from one `importlib.metadata.version()`
 
 ### Lazy install of optional dependencies
 
-Many features (Mistral TTS, ElevenLabs, Honcho memory, Bedrock, Slack, Matrix, …) depend on Python packages that not every user needs. Hermes installs these **on demand** at first use rather than eagerly under `hermes-agent[all]`. The implementation is the pm package system: each feature is a pyproject extra, and enabling one syncs the venv against the committed `uv.lock`.
+Many features (Honcho memory, Bedrock, Slack, Matrix, …) depend on Python packages that not every user needs. Hermes installs these **on demand** at first use rather than eagerly under `hermes-agent[all]`. The implementation is the pm package system: each feature is a pyproject extra, and enabling one syncs the venv against the committed `uv.lock`.
 
 The trade-off this fixes:
 

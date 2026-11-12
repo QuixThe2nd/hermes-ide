@@ -42,7 +42,7 @@ Pick the row that matches your goal:
 | I want a local or self-hosted model | `hermes model` → custom endpoint | Verify the endpoint, model name, and context length |
 | I want multi-provider fallback | `hermes model` first | Add routing and fallback only after the base chat works |
 
-**Rule of thumb:** if Hermes cannot complete a normal chat, do not add more features yet. Get one clean conversation working first, then layer on gateway, cron, skills, voice, or routing.
+**Rule of thumb:** if Hermes cannot complete a normal chat, do not add more features yet. Get one clean conversation working first, then layer on gateway, cron, skills, or routing.
 
 ---
 
@@ -81,7 +81,7 @@ hermes model
 ```
 
 :::tip Easiest path: Nous Portal
-One subscription covers 300+ models plus the [Tool Gateway](../user-guide/features/tool-gateway.md) (web search, image generation, TTS, cloud browser). On a fresh install:
+One subscription covers 300+ models plus the [Tool Gateway](../user-guide/features/tool-gateway.md) (web search, image generation, cloud browser). On a fresh install:
 
 ```bash
 hermes setup --portal
@@ -273,18 +273,6 @@ hermes config set terminal.backend ssh       # Remote server
 ```
 
 For Docker sandboxes, you can also enable the **egress credential-injection proxy** so the sandbox never sees your real API keys — only opaque proxy tokens that work exclusively from behind a local TLS-intercepting daemon. See [Egress proxy](../user-guide/egress/iron-proxy.md). Setup is `hermes egress setup && hermes egress start`; `hermes setup terminal` also points Docker users at it. Modal, SSH, Daytona, and Singularity are not wired yet.
-
-### Voice mode
-
-```bash
-# From the Hermes install directory (the curl installer placed it at
-# ~/.hermes/hermes-agent on Linux/macOS or %LOCALAPPDATA%\hermes\hermes-agent on Windows):
-cd ~/.hermes/hermes-agent
-uv pip install --python ./venv/bin/python -e ".[voice]"
-# Includes faster-whisper for free local speech-to-text
-```
-
-Then in the CLI: `/voice on`. Press `Ctrl+B` to record. See [Voice Mode](../user-guide/features/voice-mode.md).
 
 ### Skills
 

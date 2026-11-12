@@ -81,12 +81,8 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/import <archive.tar.gz> [--name <name>]` | **CLI only.** Install a profile archive as a new profile, inferring the name from the archive unless `--name` is given. Refuses to overwrite an existing profile and cannot import as `default`. Creates a shell wrapper when the name is free. See [Export and import a profile file](../user-guide/profile-distributions.md#export-and-import-a-profile-file). |
 | `/statusbar` (alias: `/sb`) | Toggle the context/model status bar on or off |
 | `/battery [on\|off\|status]` | Toggle a color-coded battery read-out as the first status-bar element (off by default; no-op without a battery). |
-| `/voice [on\|off\|tts\|status]` | Toggle CLI voice mode and spoken playback. Recording uses `voice.record_key` (default: `Ctrl+B`). |
-| `/footer [on\|off\|status]` | Toggle the gateway runtime-metadata footer on final replies (shows model, context, and API/tool timing). |
-| `/busy [queue\|steer\|interrupt\|status]` | Control what happens when you message while Hermes is working — queue the new message, steer mid-turn, or interrupt immediately. Works in the CLI and messaging gateway. |
 | `/indicator [kaomoji\|emoji\|unicode\|ascii]` | CLI-only: pick the TUI busy-indicator style. |
 | `/timestamps [on\|off\|status]` | CLI-only: toggle `[HH:MM]` timestamps on messages and in `/history`. |
-| `/wake [on\|off\|status]` | CLI-only: toggle the "Hey Hermes" wake word listener. |
 
 ### Tools & Skills
 
@@ -244,7 +240,6 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/login` | Sign in with a Nous account. **Paired direct messages only** — in a group, channel, or broadcast-shaped platform Hermes refuses. On Slack use `/hermes login`. |
 | `/whoami` | Show your slash command access level (admin / user). |
 | `/insights [days]` | Show usage analytics. |
-| `/voice [on\|off\|tts\|join\|channel\|leave\|status]` | Control spoken replies in chat. `join`/`channel`/`leave` manage Discord voice-channel mode. |
 | `/rollback [number]` | List or restore filesystem checkpoints. |
 | `/diff [staged\|all\|session] [--stat]` | Show git changes in the working directory (fenced and truncated to platform message limits). `session` shows the cumulative diff of everything Hermes changed; `--stat` shows just the summary. |
 | `/bg <prompt>` | Run a prompt in a separate background session. Results are delivered back to the same chat when the task finishes. See [Messaging Background Sessions](/user-guide/messaging/#background-sessions). |
@@ -263,7 +258,6 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/learn <what to learn from>` | Distill a reusable skill from anything you describe. |
 | `/plan [task]` | Write a markdown implementation plan to `.hermes/plans/`; no execution. |
 | `/reload-skills` (alias: `/reload_skills`) | Re-scan `~/.hermes/skills/` for newly installed or removed skills. |
-| `/footer [on\|off\|status]` | Toggle the runtime-metadata footer on final replies (shows model, context, and API/tool timing). |
 | `/suggestions [accept\|dismiss N\|catalog\|clear]` | Review suggested automations right in chat. `/suggestions` lists pending suggestions, `catalog` adds curated starter automations, and `clear` prunes resolved suggestion records. Accepted suggestions keep this chat/thread as the job delivery origin. |
 | `/blueprint [name] [slot=value ...]` | Browse cron blueprints, start a guided slot-filling conversation, or create a blueprint job directly. Directly created jobs deliver back to the current chat/thread. |
 | `/memory [pending\|approve\|reject\|approval]` | Review pending memory writes staged by the write-approval gate (`memory.write_approval`) — approve or reject them right in chat — and toggle the gate with `/memory approval on\|off`. See [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval). |
@@ -287,7 +281,6 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 - `/verbose` is **CLI-only by default**, but can be enabled for messaging platforms by setting `display.tool_progress_command: true` in `config.yaml`. When enabled, it cycles the `display.tool_progress` mode and saves to config.
 - `/focus` and `/verbose` share one suppression path (`display.tool_progress`), so they can never contradict each other: `/focus on` pins tool progress to `off` and stashes your mode under `display.focus_saved_tool_progress`; `/focus off` restores it; cycling `/verbose` while focus is on takes the mode back and clears the focus badge. Focus view is display-only — it never changes conversation history, the system prompt, or anything sent to the model, so it has zero prompt-cache impact.
 - `/restart`, `/topic`, `/platform`, `/commands`, and `/incognito` are **messaging-only** commands.
-- `/status`, `/egress`, `/version`, `/whoami`, `/bg`, `/btw`, `/queue`, `/steer`, `/voice`, `/reload-mcp`, `/reload-skills`, `/rollback`, `/diff`, `/debug`, `/busy`, `/footer`, `/curator`, `/topup`, `/login`, `/suggestions`, `/blueprint`, `/learn`, `/init`, `/sessions`, `/loop`, work in **both** the CLI and the messaging gateway.
-- `/voice join`, `/voice channel`, and `/voice leave` are only meaningful on Discord.
+- `/status`, `/egress`, `/version`, `/whoami`, `/bg`, `/btw`, `/queue`, `/steer`, `/reload-mcp`, `/reload-skills`, `/rollback`, `/diff`, `/debug`, `/curator`, `/topup`, `/login`, `/suggestions`, `/blueprint`, `/learn`, `/init`, `/sessions`, `/loop`, work in **both** the CLI and the messaging gateway.
 - In the TUI, `/sessions` shows live sessions in the current TUI process. Use `/resume [name]` or `hermes --tui --resume <id-or-title>` for saved or closed transcripts.
 

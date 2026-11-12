@@ -12,7 +12,7 @@ description: "配置 Hermes Agent — config.yaml、providers、模型、API 密
 
 ```text
 ~/.hermes/
-├── config.yaml     # 设置（模型、终端、TTS、压缩等）
+├── config.yaml     # 设置（模型、终端、压缩等）
 ├── .env            # API 密钥和机密
 ├── auth.json       # OAuth provider 凭据（Nous Portal 等）
 ├── SOUL.md         # 主要 agent 身份（系统提示词第 #1 槽位）
@@ -845,7 +845,7 @@ Hermes 中的每个模型槽位 —— 辅助任务、压缩、回退 —— 使
 :::
 
 :::tip xAI Grok OAuth
-`xai-oauth` 通过浏览器 OAuth 为 SuperGrok 和 X Premium+ 订阅者登录（无需 API 密钥）。运行 `hermes model` 并选择 **xAI Grok OAuth (SuperGrok / Premium+)** 进行认证。相同的 OAuth token 可重用于每个直接到 xAI 的接口（聊天、辅助任务、TTS、图像生成、视频生成、转录）。参阅 [xAI Grok OAuth 指南](../guides/xai-grok-oauth.md)，如果 Hermes 在远程主机上，请参阅 [SSH/远程主机上的 OAuth](../guides/oauth-over-ssh.md)。
+`xai-oauth` 通过浏览器 OAuth 为 SuperGrok 和 X Premium+ 订阅者登录（无需 API 密钥）。运行 `hermes model` 并选择 **xAI Grok OAuth (SuperGrok / Premium+)** 进行认证。相同的 OAuth token 可重用于每个直接到 xAI 的接口（聊天、辅助任务、图像生成、视频生成）。参阅 [xAI Grok OAuth 指南](../guides/xai-grok-oauth.md)，如果 Hermes 在远程主机上，请参阅 [SSH/远程主机上的 OAuth](../guides/oauth-over-ssh.md)。
 :::
 
 :::warning `"main"` 仅用于辅助任务
@@ -991,7 +991,7 @@ AUXILIARY_VISION_MODEL=openai/gpt-4o
 | `"nous"` | 强制 Nous Portal | `hermes auth` |
 | `"codex"` | 强制 Codex OAuth（ChatGPT 账户）。请显式设置 `model`（例如 `gpt-5.4`）。 | `hermes model` → ChatGPT or Codex Subscription |
 | `"minimax-oauth"` | 强制 MiniMax OAuth（浏览器登录，无需 API 密钥）。辅助任务使用 MiniMax-M2.7-highspeed。 | `hermes model` → MiniMax (OAuth) |
-| `"xai-oauth"` | 强制 xAI Grok OAuth（SuperGrok 或 X Premium+ 订阅者的浏览器登录，无需 API 密钥）。相同的 OAuth token 涵盖聊天、TTS、图像、视频和转录。 | `hermes model` → xAI Grok OAuth (SuperGrok / Premium+) |
+| `"xai-oauth"` | 强制 xAI Grok OAuth（SuperGrok 或 X Premium+ 订阅者的浏览器登录，无需 API 密钥）。相同的 OAuth token 涵盖聊天、辅助任务、图像和视频。 | `hermes model` → xAI Grok OAuth (SuperGrok / Premium+) |
 | `"main"` | 使用您的活跃自定义/主端点。可以来自 `OPENAI_BASE_URL` + `OPENAI_API_KEY` 或通过 `hermes model` / `config.yaml` 保存的自定义端点。适用于 OpenAI、本地模型或任何 OpenAI 兼容 API。**仅限辅助任务 —— 对 `model.provider` 无效。** | 自定义端点凭据 + 基础 URL |
 
 当您希望附带任务绕过默认路由器时，主 provider 目录中的直接 API 密钥 providers 也在这里工作。配置 `GMI_API_KEY` 后，`gmi` 有效：
@@ -1144,49 +1144,6 @@ agent:
   tool_use_enforcement: ["gpt", "codex", "gemini", "grok", "my-custom-model"]
 ```
 
-## TTS 配置
-
-```yaml
-tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts"
-  speed: 1.0                    # 全局速度倍数（所有 provider 的回退）
-  edge:
-    voice: "en-US-AriaNeural"   # 322 种声音，74 种语言
-    speed: 1.0                  # 速度倍数（转换为速率百分比，例如 1.5 → +50%）
-  elevenlabs:
-    voice_id: "pNInz6obpgDQGcFmaJgB"
-    model_id: "eleven_multilingual_v2"
-  openai:
-    model: "gpt-4o-mini-tts"
-    voice: "alloy"              # alloy、echo、fable、onyx、nova、shimmer
-    speed: 1.0                  # 速度倍数（API 限制为 0.25–4.0）
-    base_url: "https://api.openai.com/v1"  # 覆盖 OpenAI 兼容 TTS 端点
-  minimax:
-    speed: 1.0                  # 语音速度倍数
-    # base_url: ""              # 可选：覆盖 OpenAI 兼容 TTS 端点
-  mistral:
-    model: "voxtral-mini-tts-2603"
-    voice_id: "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral（默认）
-  gemini:
-    model: "gemini-2.5-flash-preview-tts"   # 或 gemini-2.5-pro-preview-tts
-    voice: "Kore"               # 30 种预置声音：Zephyr、Puck、Kore、Enceladus 等
-  xai:
-    voice_id: "eve"             # xAI TTS 声音
-    language: "en"              # ISO 639-1
-    sample_rate: 24000
-    bit_rate: 128000            # MP3 比特率
-    # base_url: "https://api.x.ai/v1"
-  neutts:
-    ref_audio: ''
-    ref_text: ''
-    model: neuphonic/neutts-air-q4-gguf
-    device: cpu
-```
-
-这控制 `text_to_speech` 工具和语音模式中的口语回复（CLI 中的 `/voice tts` 或消息 gateway）。
-
-**速度回退层次：** provider 特定速度（例如 `tts.edge.speed`）→ 全局 `tts.speed` → `1.0` 默认值。设置全局 `tts.speed` 以在所有 provider 上应用统一速度，或按 provider 覆盖以进行精细控制。
-
 ## 显示设置
 
 ```yaml
@@ -1205,7 +1162,6 @@ display:
   show_cost: false        # 在 CLI 状态栏中显示估计 $ 成本
   timestamps: false       # 为 true 时，在 CLI/TUI 记录中为用户和 assistant 标签添加 [HH:MM] 时间戳前缀
   tool_preview_length: 0  # 工具调用预览的最大字符数（0 = 无限制，显示完整路径/命令）
-  runtime_footer:         # Gateway：在最终回复中附加运行时上下文页脚
     enabled: false
     fields: ["model", "context_pct", "cwd"]
   file_mutation_verifier: true    # 当本轮 write_file/patch 调用失败时附加建议性页脚
@@ -1251,25 +1207,6 @@ display:
 
 ### 运行时元数据页脚（仅限 gateway）
 
-当 `display.runtime_footer.enabled: true` 时，Hermes 在每个 gateway 轮次的**最终**消息中附加一个小型运行时上下文页脚。目前页脚可显示模型、上下文窗口百分比和当前工作目录。默认关闭；如果您的团队希望每个回复都包含这些来源信息，请按 gateway 选择加入。
-
-```yaml
-display:
-  runtime_footer:
-    enabled: true
-    fields: ["model", "context_pct", "cwd"]   # 支持字段：model、context_pct、cwd
-```
-
-`/footer` 斜杠命令在任何会话中运行时切换此功能。
-
-附加到 Telegram/Discord/Slack 回复的示例页脚：
-
-```
-— claude-opus-4.7 · 12 tool calls · 2m 14s · $0.042
-```
-
-只有轮次的**最终**消息获得页脚；中间更新保持干净。
-
 ### 每平台进度覆盖
 
 不同平台有不同的详细程度需求。例如，Signal 无法编辑消息，因此每次进度更新都会成为单独的消息 —— 很嘈杂。使用 `display.platforms` 设置每平台模式：
@@ -1310,49 +1247,6 @@ privacy:
 **平台支持：** 删除适用于 WhatsApp、Signal 和 Telegram。Discord 和 Slack 被排除，因为它们的提及系统（`<@user_id>`）需要 LLM 上下文中的真实 ID。
 
 哈希是确定性的 —— 同一用户始终映射到同一哈希，因此模型仍然可以在群聊中区分用户。路由和传递在内部使用原始值。
-
-## 语音转文字（STT）
-
-```yaml
-stt:
-  provider: "local"            # "local" | "groq" | "openai" | "mistral"
-  local:
-    model: "base"              # tiny、base、small、medium、large-v3
-  openai:
-    model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe | gpt-transcribe
-  # model: "whisper-1"         # 旧版回退键仍受支持
-```
-
-Provider 行为：
-
-- `local` 使用在您机器上运行的 `faster-whisper`。使用 `pip install faster-whisper` 单独安装。静音幻觉防护默认开启:Silero VAD 过滤器让静音/噪声不会进入 Whisper,跨窗口条件预测被禁用,并且模型自己标记为"很可能不是语音"且低置信度的片段会被丢弃。设置 `stt.local.vad: false` 可用原始行为转录非语音音频(音乐、环境声)。
-- `groq` 使用 Groq 的 Whisper 兼容端点，读取 `GROQ_API_KEY`。
-- `openai` 使用 OpenAI 语音 API，读取 `VOICE_TOOLS_OPENAI_KEY`。
-
-如果请求的 provider 不可用，Hermes 按此顺序自动回退：`local` → `groq` → `openai`。
-
-Groq 和 OpenAI 模型覆盖由环境变量驱动：
-
-```bash
-STT_GROQ_MODEL=whisper-large-v3-turbo
-STT_OPENAI_MODEL=whisper-1
-GROQ_BASE_URL=https://api.groq.com/openai/v1
-STT_OPENAI_BASE_URL=https://api.openai.com/v1
-```
-
-## 语音模式（CLI）
-
-```yaml
-voice:
-  record_key: "ctrl+b"         # CLI 内的按键通话键
-  max_recording_seconds: 120    # 长录音的硬停止
-  auto_tts: false               # /voice on 时自动启用口语回复
-  beep_enabled: true            # 在 CLI 语音模式中播放录音开始/停止提示音
-  silence_threshold: 200        # 语音检测的 RMS 阈值
-  silence_duration: 3.0         # 自动停止前的静默秒数
-```
-
-在 CLI 中使用 `/voice on` 启用麦克风模式，使用 `record_key` 开始/停止录音，使用 `/voice tts` 切换口语回复。端到端设置和平台特定行为请参阅[语音模式](./features/voice-mode.md)。
 
 ## 流式传输
 

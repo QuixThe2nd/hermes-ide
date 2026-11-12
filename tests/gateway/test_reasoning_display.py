@@ -198,15 +198,14 @@ class TestServingProfileDisplayScope:
         """The serving profile's show_reasoning=false beats default-home true."""
         import gateway.run as run_mod
         from gateway.display_config import resolve_display_setting
-        from gateway.runtime_footer import resolve_footer_config
 
         self._write_config(
             tmp_path,
-            {"show_reasoning": True, "runtime_footer": {"enabled": True}},
+            {"show_reasoning": True},
         )
         self._write_config(
             tmp_path / "profiles" / "assistant",
-            {"show_reasoning": False, "runtime_footer": {"enabled": False}},
+            {"show_reasoning": False},
         )
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -217,7 +216,6 @@ class TestServingProfileDisplayScope:
 
         default_cfg = run_mod._load_gateway_config()
         assert resolve_display_setting(default_cfg, "discord", "show_reasoning") is True
-        assert resolve_footer_config(default_cfg, "discord")["enabled"] is True
 
         with runner._display_config_scope(source):
             scoped_cfg = run_mod._load_gateway_config()
@@ -225,7 +223,6 @@ class TestServingProfileDisplayScope:
                 resolve_display_setting(scoped_cfg, "discord", "show_reasoning")
                 is False
             )
-            assert resolve_footer_config(scoped_cfg, "discord")["enabled"] is False
 
         assert (
             resolve_display_setting(

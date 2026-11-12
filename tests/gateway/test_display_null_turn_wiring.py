@@ -21,8 +21,6 @@ def _wire(user_config):
     ctx = types.SimpleNamespace(
         progress_callback=None,
         native_tool_start_callback=None,
-        voice_ack_callback=None,
-        _voice_ack_guild=[None],
         _native_slack_task_cards=False,
         native_tool_complete_callback=None,
         _step_callback_sync=None,

@@ -409,15 +409,6 @@ unauthorized_dm_behavior: "pair"
 
 `slack:` 下的平台特定设置优先于全局设置。
 
-### 语音转录
-
-```yaml
-# 全局设置——启用/禁用传入语音消息的自动转录
-stt_enabled: true
-```
-
-为 `true`（默认值）时，传入的音频消息会在被 agent 处理之前，使用配置的 STT 提供商自动转录。
-
 ### 完整示例
 
 ```yaml
@@ -507,15 +498,6 @@ platforms:
 - 每个 token 在启动时通过 `auth.test` 进行认证。gateway 将每个 `team_id` 映射到其自己的 `WebClient` 和 `bot_user_id`。
 - 消息到达时，Hermes 使用正确的工作区特定客户端进行响应。
 - 主 `bot_user_id`（来自第一个 token）用于向后兼容期望单一机器人身份的功能。
-
----
-
-## 语音消息
-
-Hermes 支持 Slack 上的语音功能：
-
-- **传入：** 语音/音频消息使用配置的 STT 提供商自动转录：本地 `faster-whisper`、Groq Whisper（`GROQ_API_KEY`）或 OpenAI Whisper（`VOICE_TOOLS_OPENAI_KEY`）
-- **传出：** TTS 响应以音频文件附件形式发送
 
 ---
 

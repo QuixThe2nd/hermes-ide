@@ -194,7 +194,6 @@ When resuming a previous session (`hermes -c` or `hermes --resume <id>`), a "Pre
 | `Alt+Enter`, `Ctrl+J`, or `Shift+Enter` | New line (multi-line input). `Shift+Enter` requires a terminal that distinguishes it from `Enter` — see below. On Windows Terminal, `Alt+Enter` is captured by the terminal (fullscreen toggle); use `Ctrl+Enter` or `Ctrl+J` instead. |
 | `Alt+V` | Paste an image from the clipboard when supported by the terminal |
 | `Ctrl+V` | Paste text and opportunistically attach clipboard images |
-| `Ctrl+B` | Start/stop voice recording when voice mode is enabled (`voice.record_key`, default: `ctrl+b`) |
 | `Ctrl+G` | Open the current input buffer in `$EDITOR` (vim/nvim/nano/VS Code/etc.). Save and quit to send the edited text as the next prompt — ideal for long, multi-paragraph prompts. |
 | `Ctrl+X Ctrl+E` | Emacs-style alternate binding for the external editor (same behavior as `Ctrl+G`). |
 | `Ctrl+S` | **Stash the prompt.** Parks the current draft and clears the composer so you can send something else first. Press `Ctrl+S` again on an empty composer to bring the draft back (cursor at the end, attached images restored). Repeated presses build a stack rather than overwriting, so an earlier draft is never silently lost — with two or more stashed, `Ctrl+S` opens a browse panel (`↑`/`↓` to navigate, `Enter` to restore, `D` to discard, `Esc` or `Ctrl+S` to close). A `📌 N` badge in the status bar shows how many drafts are parked. Multi-line drafts round-trip exactly, including blank lines. The stash lives in memory for the session only — nothing is written to disk, since drafts often contain secrets. |
@@ -243,8 +242,6 @@ Common examples:
 | `/bg <prompt>` | Run a prompt in a separate background session |
 | `/btw <question>` | Ask a side question about the current conversation without interrupting it |
 | `/skin` | Show or switch the active CLI skin |
-| `/voice on` | Enable CLI voice mode (press `Ctrl+B` to record) |
-| `/voice tts` | Toggle spoken playback for Hermes replies |
 | `/title My Session` | Name the current session |
 | `/status` | Show session info — model/profile/tokens/duration — followed by a local **Session recap** block (recent turn counts, top tools used, files touched, latest user prompt + assistant reply). Pure local compute; no LLM call. |
 | `/context [all]` | Visual context-usage breakdown — glyph block grid + per-category token table (system prompt / tools / skills / memory / conversation / free space). `/context all` adds per-skill and per-toolset costs. |
@@ -252,7 +249,6 @@ Common examples:
 
 For the full built-in CLI and messaging lists, see [Slash Commands Reference](../reference/slash-commands.md).
 
-For setup, providers, silence tuning, and messaging/Discord voice usage, see [Voice Mode](features/voice-mode.md).
 
 :::tip
 Commands are case-insensitive — `/HELP` works the same as `/help`. Installed skills also become slash commands automatically.
@@ -389,39 +385,6 @@ While the agent is working, you can send a correction without starting a new tur
 - **`Ctrl+C`** — interrupt the current operation (press twice within 2s to force exit)
 - Completed tool work and reasoning already shown stay in context
 - A running tool reaches its safe boundary before the correction is applied
-
-### Busy Input Mode
-
-The `display.busy_input_mode` config key controls what happens when you press Enter while the agent is working:
-
-| Mode | Behavior |
-|------|----------|
-| `"interrupt"` (default) | Your message redirects the active turn. Model generation restarts with displayed reasoning and completed work preserved. A running foreground terminal command is moved to the background (not killed — you get a completion notification) so your message is read immediately; other running tools finish first |
-| `"queue"` | Your message is silently queued and sent as the next turn after the agent finishes |
-| `"steer"` | Your message is injected into the current run, arriving at the agent after the next tool call — no interrupt, no new turn |
-
-```yaml
-# ~/.hermes/config.yaml
-display:
-  busy_input_mode: "steer"   # or "queue" or "interrupt" (default)
-```
-
-`"queue"` mode prepares a separate follow-up turn. `"steer"` always waits for the next tool-result boundary. The default `"interrupt"` mode responds sooner during model generation while avoiding cancellation of a running tool; a long foreground `terminal` command (a build, a poller) is handed to the background so the agent sees your message right away instead of after the command exits. Use `/stop` when you want to cancel the turn and its foreground work. Unknown values fall back to `"interrupt"`.
-
-`"steer"` has two automatic fallbacks: if the agent hasn't started yet, or if images are attached, the message falls back to `"queue"` behavior so nothing is lost.
-
-You can also change it inside the CLI:
-
-```text
-/busy queue
-/busy steer
-/busy interrupt
-/busy status
-```
-
-:::tip First-touch hint
-The first time you press Enter while Hermes is working, Hermes prints a one-line reminder explaining the `/busy` knob. It only fires once per install; `onboarding.seen.busy_input_prompt` in `config.yaml` records that it was shown. Delete that key to see the tip again.
-:::
 
 ### Suspending to Background
 

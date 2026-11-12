@@ -6,7 +6,7 @@ description: "Set up Hermes Agent as a Telegram bot"
 
 # Telegram Setup
 
-Hermes Agent integrates with Telegram as a full-featured conversational bot. Once connected, you can chat with your agent from any device, send voice memos that get auto-transcribed, receive scheduled task results, and use the agent in group chats. The integration is built on [python-telegram-bot](https://python-telegram-bot.org/) and supports text, voice, images, and file attachments.
+Hermes Agent integrates with Telegram as a full-featured conversational bot. Once connected, you can chat with your agent from any device, send voice memos (delivered to the agent as audio files), receive scheduled task results, and use the agent in group chats. The integration is built on [python-telegram-bot](https://python-telegram-bot.org/) and supports text, audio files, images, and file attachments.
 
 ## Step 1: Create a Bot via BotFather
 
@@ -372,51 +372,13 @@ Replies in that topic continue the topic's existing session.
 
 ## Voice Messages
 
-### Incoming Voice (Speech-to-Text)
-
-Voice messages you send on Telegram are automatically transcribed by Hermes's configured STT provider and injected as text into the conversation.
-
-- `local` uses `faster-whisper` on the machine running Hermes — no API key required
-- `groq` uses Groq Whisper and requires `GROQ_API_KEY`
-- `openai` uses OpenAI Whisper and requires `VOICE_TOOLS_OPENAI_KEY`
-
-#### Skipping STT: pass the raw audio file to the agent
-
-If you'd rather have the **agent itself** handle audio — for diarization, a custom transcription tool, or just archiving the recording — set `stt.enabled: false` in `~/.hermes/config.yaml`:
-
-```yaml
-stt:
-  enabled: false
-```
-
-With STT disabled, the gateway still downloads the voice/audio attachment into Hermes's audio cache, but **does not transcribe it**. The agent receives the message with a marker like:
+Voice notes and audio attachments are automatically downloaded into Hermes's audio cache. Their content is **not** transcribed or inlined — the agent's inbound message carries a marker naming the cached file, e.g.:
 
 ```
 [The user sent a voice message: /home/<user>/.hermes/cache/audio/<hash>.ogg]
 ```
 
-Your tools or skills can then read that path directly (e.g., hand it off to a local diarization pipeline, a richer transcription model, or upload it to long-term storage). The file extension reflects the original format Telegram delivered (`.ogg` for voice notes, `.mp3`/`.m4a`/etc. for audio attachments).
-
-This pairs naturally with the [local Bot API server](#large-files-20mb-via-local-bot-api-server) section below, which lifts Telegram's 20MB getFile ceiling to 2GB — useful when the recordings you want to process are longer than a couple of minutes.
-
-### Outgoing Voice (Text-to-Speech)
-
-When the agent generates audio via TTS, it's delivered as native Telegram **voice bubbles** — the round, inline-playable kind.
-
-- **OpenAI and ElevenLabs** produce Opus natively — no extra setup needed
-- **Edge TTS** (the default free provider) outputs MP3 and requires **ffmpeg** to convert to Opus:
-
-```bash
-# Ubuntu/Debian
-sudo apt install ffmpeg
-
-# macOS
-brew install ffmpeg
-```
-
-Without ffmpeg, Edge TTS audio is sent as a regular audio file (still playable, but uses the rectangular player instead of a voice bubble).
-
-Configure the TTS provider in your `config.yaml` under the `tts.provider` key.
+Your tools or skills can then read that path directly (e.g. hand it off to a local transcription skill or pipeline, or upload it to long-term storage). The file extension reflects the original format Telegram delivered (`.ogg` for voice notes, `.mp3`/`.m4a`/etc. for audio attachments).
 
 ## Large Files (>20MB) via Local Bot API Server
 
@@ -545,7 +507,7 @@ Send the bot a voice note or audio file that's bigger than 20 MB. Tail the gatew
 tail -f ~/.hermes/logs/gateway.log | grep -iE "telegram|cache"
 ```
 
-You should see a `[Telegram] Cached user voice at /home/<user>/.hermes/cache/audio/...` line and **no** "too large" rejection. Combined with `stt.enabled: false` (above), the path to the original audio file then lands in the agent's inbound message for downstream processing.
+You should see a `[Telegram] Cached user voice at /home/<user>/.hermes/cache/audio/...` line and **no** "too large" rejection. The path to the original audio file lands in the agent's inbound message for downstream processing.
 
 ## Group Chat Usage
 
@@ -1288,8 +1250,6 @@ Numeric YAML keys are automatically normalized to strings.
 | Bot not responding at all | Verify `TELEGRAM_BOT_TOKEN` is correct. Check `hermes gateway` logs for errors. |
 | Bot responds with "unauthorized" | Your user ID is not in `TELEGRAM_ALLOWED_USERS`. Double-check with @userinfobot. |
 | Bot ignores group messages | Privacy mode is likely on. Disable it (Step 3) or make the bot a group admin. **Remember to remove and re-add the bot after changing privacy.** |
-| Voice messages not transcribed | Verify STT is available: install `faster-whisper` for local transcription, or set `GROQ_API_KEY` / `VOICE_TOOLS_OPENAI_KEY` in `~/.hermes/.env`. |
-| Voice replies are files, not bubbles | Install `ffmpeg` (needed for Edge TTS Opus conversion). |
 | Bot token revoked/invalid | Generate a new token via `/revoke` then `/newbot` or `/token` in BotFather. Update your `.env` file. |
 | Webhook not receiving updates | Verify `TELEGRAM_WEBHOOK_URL` is publicly reachable (test with `curl`). Ensure your platform/reverse proxy routes inbound HTTPS traffic from the URL's port to the local listen port configured by `TELEGRAM_WEBHOOK_PORT` (they do not need to be the same number). Ensure SSL/TLS is active — Telegram only sends to HTTPS URLs. Check firewall rules. |
 

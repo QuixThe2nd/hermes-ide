@@ -69,14 +69,6 @@ gateway:
     full_logs_hint:        "Für vollständige Log-Uploads verwenden Sie `hermes debug share` aus der CLI."
     share_hint:            "Teilen Sie diese Links mit dem Hermes-Team, um Unterstützung zu erhalten."
 
-  footer:
-    status:                "📎 Laufzeit-Fußzeile: **{state}**\nFelder: `{fields}`\nPlattform: `{platform}`"
-    usage:                 "Verwendung: `/footer [on|off|status]`"
-    saved:                 "📎 Laufzeit-Fußzeile: **{state}**{example}\n_(global gespeichert — wird ab nächster Nachricht wirksam)_"
-    example_line:          "\nBeispiel: `{preview}`"
-    state_on:              "ON"
-    state_off:             "OFF"
-
   goal:
     unavailable:           "Ziele sind in dieser Sitzung nicht verfügbar."
     no_goal_set:           "Kein Ziel gesetzt."
@@ -320,23 +312,6 @@ Re-Syncs laufen automatisch höchstens einmal pro Stunde."
     mode_log:              "⚙️ Tool-Fortschritt: **LOG** — still im Chat; Tool-Aufrufe werden in ~/.hermes/logs/tool_calls.log geschrieben."
     saved_suffix:          "_(für **{platform}** gespeichert — wird ab nächster Nachricht wirksam)_"
     save_failed:           "_(konnte nicht in der Konfiguration gespeichert werden: {error})_"
-
-  voice:
-    enabled_voice_only:    "Sprachmodus aktiviert.\nIch antworte mit Sprache, wenn Sie Sprachnachrichten senden.\nVerwenden Sie /voice tts für Sprachantworten auf alle Nachrichten."
-    disabled_text:         "Sprachmodus deaktiviert. Nur Textantworten."
-    tts_enabled:           "Auto-TTS aktiviert.\nAlle Antworten enthalten eine Sprachnachricht."
-    status_mode:           "Sprachmodus: {label}"
-    status_channel:        "Sprachkanal: #{channel}"
-    status_participants:   "Teilnehmer: {count}"
-    status_member:         "  - {name}{status}"
-    speaking:              " (spricht)"
-    enabled_short:         "Sprachmodus aktiviert."
-    disabled_short:        "Sprachmodus deaktiviert."
-    label_off:             "Aus (nur Text)"
-    label_voice_only:      "An (Sprachantwort auf Sprachnachrichten)"
-    label_all:             "TTS (Sprachantwort auf alle Nachrichten)"
-    help:                  "{toggle}\n\n**So funktioniert /voice**\n• `/voice on` — Sprachantwort, wenn du eine Sprachnachricht sendest\n• `/voice tts` — Sprachantwort auf *jede* Nachricht\n• `/voice off` — zurück zu reinen Textantworten\n• `/voice status` — aktuellen Modus anzeigen\n• `/voice` (ohne Argument) — schnelles Umschalten zwischen an und aus{channels}"
-    help_channels:         "\n\n**Live-Sprachkanäle (Discord)**\n• Tritt zuerst einem Sprachkanal bei, dann `/voice channel` — ich trete bei, höre zu und spreche meine Antworten\n• `/voice leave` — vom Sprachkanal trennen"
 
   shared:
     session_db_unavailable:      "Session-Datenbank nicht verfügbar."

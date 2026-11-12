@@ -68,7 +68,6 @@ def _make_runner(*, compression_in_flight: bool):
     adapter.send = AsyncMock()
     adapter._pending_messages = {}
     runner.adapters = {Platform.TELEGRAM: adapter}
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
 
     source = _make_source()

@@ -37,7 +37,6 @@ def _runner(store: SessionStore) -> GatewayRunner:
     runner._base_url = ""
     runner._has_setup_skill = lambda: False
     # _handle_reset_command rig (mirrors tests/gateway/test_session_model_reset.py).
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner._session_model_overrides = {}
     runner._session_reasoning_overrides = {}

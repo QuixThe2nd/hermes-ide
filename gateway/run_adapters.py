@@ -764,10 +764,8 @@ class GatewayAdapterLifecycleMixin:
         del self._failed_platforms[platform]
 
     def _publish_primary_adapter(self, platform, adapter) -> None:
-        """Register a connected primary adapter and wire voice mode/input (transcription without /voice join)."""
+        """Register a connected primary adapter."""
         self.adapters[platform] = adapter
-        self._sync_voice_mode_state_to_adapter(adapter)
-        self._bind_voice_input_callback(adapter)
 
     async def _install_reconnected_adapter(self, platform, adapter) -> None:
         """Publish a freshly reconnected primary adapter and replay what it missed while down."""
@@ -1302,9 +1300,6 @@ class GatewayAdapterLifecycleMixin:
                     )
                 if success:
                     profile_map[platform] = adapter
-                    # Restore persisted /voice state for this bot (#84872) —
-                    # primary startup and every reconnect path already do.
-                    self._sync_voice_mode_state_to_adapter(adapter)
                     if credential_claim is not None:
                         claimed[credential_claim] = profile_name
                     if listener_claim is not None:
@@ -1372,8 +1367,6 @@ class GatewayAdapterLifecycleMixin:
                 else self._busy_text_mode
             ),
         )
-        # Voice transcripts from this bot's channels dispatch through THIS adapter.
-        self._bind_voice_input_callback(adapter)
         # Secondary adapters carry their profile so prune paths namespace topic bindings correctly.
         # See #76423.
         adapter._hermes_profile_name = profile_name
@@ -1440,7 +1433,6 @@ class GatewayAdapterLifecycleMixin:
                         profile_map = self._profile_adapters.setdefault(profile_name, {})
                         if platform not in profile_map:
                             profile_map[platform] = adapter
-                            self._sync_voice_mode_state_to_adapter(adapter)
                             logger.info("✓ %s reconnected (profile: %s)", platform.value, profile_name)
                             await self._redeliver_failed_obligations_for_platform(
                                 platform, profile=profile_name

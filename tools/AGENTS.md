@@ -69,7 +69,7 @@ Rules for tool code:
 Single `TOOLSETS` dict. Keys today: `browser, clarify, code_execution, cronjob, debugging,
 delegation, discord, discord_admin, feishu_doc, feishu_drive, file, homeassistant, image_gen,
 memory, messaging, moa, rl, safe, search, session_search, skills, spotify, terminal, todo,
-tts, video, vision, web, yuanbao` (don't assert the list in tests). Per-platform enable/disable via
+video, vision, web, yuanbao` (don't assert the list in tests). Per-platform enable/disable via
 `hermes tools` (curses) or `tools.<platform>.enabled/disabled` in config.yaml. Browser tools always use
 Camofox; set `CAMOFOX_URL` and optionally `CAMOFOX_API_KEY` to connect.
 
@@ -78,8 +78,8 @@ Camofox; set `CAMOFOX_URL` and optionally `CAMOFOX_API_KEY` to connect.
 Several tools front pluggable backends: terminal environments in `tools/environments/` (local,
 docker, ssh, modal, daytona, singularity; `terminal_tool_backends.py`, `tool_backend_helpers.py`),
 Camofox browser support (`browser_tool.py`, `browser_camofox.py`, lifecycle/snapshot/policy siblings),
-MCP client (`mcp_tool_*.py`: config, discovery, transport, registration, content, errors), TTS
-(`tts_tool_providers.py`, `tts_command_provider.py`), skills hub sources (`skills_hub_official.py`
+MCP client (`mcp_tool_*.py`: config, discovery, transport, registration, content, errors),
+skills hub sources (`skills_hub_official.py`
 `OptionalSkillSource`). Adding a backend = a new sibling or provider entry in the existing table,
 never an `elif` on a backend name (root shape rules). Remote-backend file visibility problems are
 fixed at the mount, not by adding a tool.

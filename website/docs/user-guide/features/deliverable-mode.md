@@ -25,7 +25,6 @@ Three pieces fit together:
    matplotlib, the `docx` skill for Word documents, the `xlsx` skill for
    spreadsheets, the `pdf` and `latex-pdf-report` skills for PDFs, the
    `powerpoint` skill for decks, `image_generate` for images,
-   `text_to_speech` for audio, and so on.
 
 2. **The gateway scans agent responses for file paths.** Any absolute path
    (`~/.hermes/cache/scratch/...`) or home-relative path (`~/...`) ending in a supported

@@ -484,7 +484,7 @@ nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &
 
 #### macOS：网关找不到 Node.js / ffmpeg / 其他工具
 
-**原因：** launchd 服务继承的是最小 PATH（`/usr/bin:/bin:/usr/sbin:/sbin`），不包含 Homebrew、nvm、cargo 或其他用户安装的工具目录。这通常会导致 WhatsApp bridge（`node not found`）或语音转录（`ffmpeg not found`）失败。
+**原因：** launchd 服务继承的是最小 PATH（`/usr/bin:/bin:/usr/sbin:/sbin`），不包含 Homebrew、nvm、cargo 或其他用户安装的工具目录。这通常会导致 WhatsApp bridge（`node not found`）等依赖 PATH 的子进程失败。
 
 **解决方案：** 网关在您运行 `hermes gateway install` 时会捕获您的 shell PATH。如果您在设置网关后安装了新工具，请重新运行 install 以捕获更新后的 PATH：
 

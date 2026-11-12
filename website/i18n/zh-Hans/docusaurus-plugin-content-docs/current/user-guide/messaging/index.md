@@ -8,8 +8,6 @@ description: "通过 Telegram、Discord、Slack、WhatsApp、Signal、SMS、Emai
 
 通过 Telegram、Discord、Slack、WhatsApp、Signal、SMS、Email、Home Assistant、Mattermost、Matrix、DingTalk、Feishu/Lark、WeCom、Weixin、BlueBubbles（iMessage）、QQ、Yuanbao、Microsoft Teams、LINE、ntfy 或浏览器与 Hermes 对话。网关是一个单一后台进程，连接所有已配置的平台，管理会话，运行 cron 任务，并传递语音消息。
 
-完整的语音功能集——包括 CLI 麦克风模式、消息中的语音回复以及 Discord 语音频道对话——请参阅 [Voice Mode](/user-guide/features/voice-mode) 和 [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes)。
-
 ## 平台对比
 
 | 平台 | 语音 | 图片 | 文件 | 线程 | 表情反应 | 输入提示 | 流式输出 |
@@ -37,7 +35,7 @@ description: "通过 Telegram、Discord、Slack、WhatsApp、Signal、SMS、Emai
 | LINE | — | ✅ | ✅ | — | — | ✅ | — |
 | ntfy | — | — | — | — | — | — | — |
 
-**语音** = TTS 音频回复和/或语音消息转录。**图片** = 发送/接收图片。**文件** = 发送/接收文件附件。**线程** = 线程式对话。**表情反应** = 对消息添加 emoji 反应。**输入提示** = 处理时显示正在输入状态。**流式输出** = 通过编辑消息实现渐进式更新。
+**语音** = 以原生语音消息形式发送/接收音频（文件附件；无内置转录或 TTS）。**图片** = 发送/接收图片。**文件** = 发送/接收文件附件。**线程** = 线程式对话。**表情反应** = 对消息添加 emoji 反应。**输入提示** = 处理时显示正在输入状态。**流式输出** = 通过编辑消息实现渐进式更新。
 
 ## 架构
 
@@ -156,7 +154,6 @@ hermes gateway status --system         # 仅 Linux：显式检查系统服务
 | `/resume [name]` | 恢复之前命名的会话 |
 | `/usage` | 显示本会话的 token 用量 |
 | `/insights [days]` | 显示用量洞察与分析 |
-| `/voice [on\|off\|tts\|join\|leave\|status]` | 控制消息语音回复和 Discord 语音频道行为 |
 | `/rollback [number]` | 列出或恢复文件系统检查点 |
 | `/bg <prompt>` | 在独立后台会话中运行 prompt（提示词） |
 | `/btw <question>` | 在不打断当前对话的情况下，就当前对话提出顺带问题 |
@@ -274,7 +271,6 @@ gateway:
 
 ```yaml
 display:
-  busy_input_mode: steer   # 或 queue，或 interrupt（默认）
   busy_ack_enabled: true   # 设为 false 可完全抑制 ⚡/⏳/⏩ 聊天回复
 ```
 
@@ -439,7 +435,7 @@ launchd plist 是静态的——如果你在配置网关后安装了新工具（
 | QQBot | `hermes-qqbot` | 完整工具，包括终端 |
 | Yuanbao | `hermes-yuanbao` | 完整工具，包括终端 |
 | Microsoft Teams | `hermes-teams` | 完整工具，包括终端 |
-| API Server | `hermes-api-server` | 完整工具（去除 `clarify`、`send_message`、`text_to_speech`——程序化访问没有交互用户） |
+| API Server | `hermes-api-server` | 完整工具（去除 `clarify`——程序化访问没有交互用户） |
 | Webhooks | `hermes-webhook` | 完整工具，包括终端 |
 
 ## 运营多平台网关

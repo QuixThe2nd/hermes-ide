@@ -46,7 +46,7 @@ Codex, z.ai, and Cursor get automatic 7-day token enrichment. The channel names 
 
 `cache_trace` adds opt-in, metadata-only request tracing for cache and latency diagnosis. Enable it per profile with `hermes plugins enable cache_trace` to correlate request-component fingerprints, observed cache-field presence and API timing without storing prompt text, tool arguments or response content. Local traces are bounded and private; missing cache telemetry stays unknown rather than becoming a cache miss. See the [cache trace guide](plugins/cache_trace/README.md).
 
-X search, xAI speech, and Codex image generation can each pin a named proxy provider with profile-scoped credentials; an invalid pin fails closed, while leaving it unset preserves native routing. The speech and image provider pickers recognize a valid pin as ready and skip native sign-in; a broken pin reports a setup failure. The Desktop profile editor checks X search readiness using the selected profile's own credentials.
+X search and Codex image generation can each pin a named proxy provider with profile-scoped credentials; an invalid pin fails closed, while leaving it unset preserves native routing. The image provider pickers recognize a valid pin as ready and skip native sign-in; a broken pin reports a setup failure. The Desktop profile editor checks X search readiness using the selected profile's own credentials.
 
 The Codex rotation default is `gpt-6-astra` (config migration v42 advances older `gpt-5.6-sol` entries; Sol stays manually selectable). `fallback_watch` tails `agent.log` and alerts Discord when the primary model falls back; it is opt-in, off by default, and cooldown-deduped.
 
@@ -72,7 +72,7 @@ Tool-progress groups can render as one fenced code box per group via `display.to
 
 The smaller edges are handled too. Tool progress can also use **describe** mode (`tool_progress: describe`): each tool call renders as one short human phrase — and tools that accept an optional `description` argument fold that intent into the phrase, e.g. `Fetching recent Discord messages in channel 1234 to find the deploy report`. Sessions use your stable username instead of a server nickname. `DISCORD_ALLOWED_GUILDS` lets any member of a listed server talk to the bot without changing DM access. Threads rename once after the first reply lands, not halfway through a turn. Progress updates respect each platform's real message limit. Quote-replies in auto-threaded channels get their own thread by default, keeping the parent channel clean; set `discord.auto_thread_replies: false` to answer them inline instead.
 
-Every final reply can carry a one-line runtime footer — model, context %, per-turn timing breakdown, call counts, and the effective reasoning effort (e.g. `glm-5.3-flash · 12% · 16s · 1 call · medium`) — so you can see at a glance which model answered and how deep it thought. It is on by default; trim or disable it with `display.runtime_footer` (`/footer off` works from any chat), per-platform overrides included.
+Every final reply can carry a one-line runtime footer — model, context %, per-turn timing breakdown, call counts, and the effective reasoning effort (e.g. `glm-5.3-flash · 12% · 16s · 1 call · medium`) — so you can see at a glance which model answered and how deep it thought.
 
 Multiplexed profiles use their own `display.show_reasoning`. When enabled, a single `💭 Reasoned about <describe>` line summarizes the first non-empty reasoning line, using Discord subtext or italic text elsewhere. Streaming previews and interim updates stay standalone, and only the completed final answer reply-pings you. If an auto-threaded root turn cannot attach a reply reference, the final message uses an inline mention instead — with a masked jump link to the message that started the thread, so you can hop straight back to it; when the guild id is unavailable it degrades to the plain mention.
 
@@ -202,7 +202,7 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenR
 
 <table>
 <tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
-<tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>
+<tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Cross-platform conversation continuity.</td></tr>
 <tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. <a href="https://github.com/plastic-labs/honcho">Honcho</a> dialectic user modeling. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard.</td></tr>
 <tr><td><b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Daily reports, nightly backups, weekly audits — all in natural language, running unattended.</td></tr>
 <tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams. Write Python scripts that call tools via RPC, collapsing multi-step pipelines into zero-context-cost turns.</td></tr>
@@ -234,7 +234,7 @@ The installer handles everything: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **a
 
 If you already have Git installed, the installer detects it and uses that instead. Otherwise a ~45MB MinGit download is all you need — it won't touch or interfere with any system Git.
 
-> **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
+> **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible dependencies.
 >
 > **Windows:** Native Windows is fully supported — the PowerShell one-liner above installs everything. If you'd rather use WSL2, the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.
 
@@ -303,10 +303,10 @@ hermes doctor       # Diagnose any issues
 
 ## Skip the API-key collection — Nous Portal
 
-Hermes works with whatever provider you want — that's not changing. But if you'd rather not collect five separate API keys for the model, web search, image generation, TTS, and a cloud browser, **[Nous Portal](https://portal.nousresearch.com)** covers all of them under one subscription:
+Hermes works with whatever provider you want — that's not changing. But if you'd rather not collect four separate API keys for the model, web search, image generation, and a cloud browser, **[Nous Portal](https://portal.nousresearch.com)** covers all of them under one subscription:
 
 - **300+ models** — pick any of them with `/model <name>`
-- **Tool Gateway** — web search (Firecrawl), image generation (FAL), text-to-speech (OpenAI), all routed through your sub. No extra accounts.
+- **Tool Gateway** — web search (Firecrawl) and image generation (FAL), all routed through your sub. No extra accounts.
 
 One command from a fresh install:
 
@@ -387,7 +387,6 @@ What gets imported:
 - **Command allowlist** — approval patterns
 - **Messaging settings** — platform configs, allowed users, working directory
 - **API keys** — allowlisted secrets (Telegram, OpenRouter, OpenAI, Anthropic, ElevenLabs)
-- **TTS assets** — workspace audio files
 - **Workspace instructions** — AGENTS.md (with `--workspace-target`)
 
 See `hermes claw migrate --help` for all options, or use the `openclaw-migration` skill for an interactive agent-guided migration with dry-run previews.

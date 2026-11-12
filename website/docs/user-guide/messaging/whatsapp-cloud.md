@@ -41,7 +41,6 @@ The rest of this page is the manual reference.
 1. **A Meta Business account**.  Create one at [business.facebook.com](https://business.facebook.com/).
 2. **A Meta app with WhatsApp enabled**.  See "Creating the Meta app" below.
 3. **A way to expose a local port to the public internet** with HTTPS.  Cloudflare Tunnel (`cloudflared`) is recommended — free, no port forwarding, no domain required.  ngrok, your own domain with a reverse proxy + TLS, or a VPS with the gateway directly bound to a public IP all work too.
-4. **Optional but recommended**: ffmpeg on `PATH` so outbound voice messages render as native WhatsApp voice-note bubbles (green waveform) instead of MP3 audio attachments. Hermes degrades gracefully if absent.
 
 ---
 
@@ -240,7 +239,7 @@ You can have **both** the Baileys (`whatsapp`) and Cloud (`whatsapp_cloud`) adap
 
 - **Text messages** — passed straight to the agent.
 - **Images** — auto-downloaded and attached to the agent's input. Models with native vision (Claude, GPT-4o, Gemini, etc.) read the image directly; non-vision models receive an auto-generated text description.
-- **Voice notes** — auto-downloaded as `.ogg`, transcribed via your configured STT provider (local faster-whisper, OpenAI/Nous, Groq, etc.), then handed to the agent as text.
+- **Voice notes** — auto-downloaded as `.ogg` audio files; the agent's inbound message notes the cached file path (no built-in transcription — the agent processes the file itself when needed).
 - **Documents** — auto-downloaded. Small text-readable files (`.txt`, `.md`, `.json`, `.py`, `.csv`, etc.) up to 100KB get inlined into the agent's input so it can read them without a tool call. Larger files are cached locally for the agent's other tools to access.
 - **Button taps** — when the user taps a button the bot sent earlier (clarify choice or slash-command confirm), the tap is routed directly to the right handler. Stale taps fall back to being treated as regular text input.
 - **Reply context** — when the user replies to a previous message, the agent sees the original text as context. Quoting an image, voice note, video or document (yours or one the bot sent, e.g. a cron-delivered chart) also attaches that file to the turn, so "what is this?" under a quoted image works. Meta's webhook carries only the quoted message id, so this resolves from a local index of recent sends/receives (last 1000 messages per gateway); older quotes arrive without the attachment.
@@ -249,7 +248,6 @@ You can have **both** the Baileys (`whatsapp`) and Cloud (`whatsapp_cloud`) adap
 
 - **Text** — markdown is auto-converted to WhatsApp's flavored syntax (`**bold**` → `*bold*`, `~~strike~~` → `~strike~`, headers → bold, `[link](url)` → `link (url)`). Long messages split at 4096 chars per chunk.
 - **Images** — agent-generated images and local image files both supported, delivered as native photo attachments.
-- **Voice messages** — text-to-speech output is converted via ffmpeg into the native WhatsApp voice-note bubble (green waveform). Without ffmpeg installed, falls back to an MP3 audio attachment. See "Voice messages" below.
 - **Video / documents** — both supported, sent as native attachments.
 
 ### Interactive UX
@@ -270,29 +268,6 @@ Hermes acknowledges inbound messages immediately:
 - The typing indicator auto-dismisses when the bot's first response message arrives.
 
 This makes it obvious when the bot has seen your message versus when it's still working on a response.
-
-### Voice messages
-
-WhatsApp distinguishes between a "voice note" (the green waveform bubble) and a generic audio file attachment. The difference is purely codec: voice notes need to be `audio/ogg` with `opus` encoding.
-
-Hermes TTS produces MP3. Two paths:
-
-- **With ffmpeg on PATH** (recommended) — outbound TTS is converted and arrives as a proper voice note. Install:
-  - Windows: `winget install Gyan.FFmpeg`
-  - macOS: `brew install ffmpeg`
-  - Linux: package manager
-- **Without ffmpeg** — outbound TTS arrives as an MP3 audio attachment. Plays fine, just doesn't look like a voice note. A one-time warning fires in the gateway log so you know.
-
-You can check whether the gateway found ffmpeg via the health endpoint:
-
-```bash
-curl http://localhost:8090/health
-# look for "ffmpeg_present": true
-```
-
----
-
-## Known limitations
 
 ### 24-hour conversation window
 
@@ -361,55 +336,4 @@ Common cause: the toolset configured for `whatsapp_cloud` is missing the tools t
 
 If the model emits tool-call-shaped text instead of a structured call, it usually means the toolset was effectively empty.  See `hermes_cli/platforms.py` for the platform → default toolset mapping.
 
-### STT (voice note transcription) returns empty / "could not transcribe"
 
-The default `stt.provider: local` requires `pip install faster-whisper`.  If you're a Nous subscriber, you can route STT through the managed gateway instead — select **Nous Subscription** for speech-to-text in `hermes tools`, or set it directly:
-
-```bash
-hermes config set stt.provider nous
-hermes gateway restart
-```
-
-This uses your Nous Portal access token instead of needing a separate OpenAI key. (Older docs suggested `stt.use_gateway true` — that flag is legacy; the provider selection alone controls routing now.)
-
----
-
-## Security notes
-
-- **Treat the App Secret like a password** — anyone with it can forge webhook payloads that Hermes will accept as authentic.
-- **The verify token is a shared secret** — leaks are lower-stakes (worst case someone could re-subscribe Meta's webhook to a different URL of theirs), but still avoid committing it.
-- **The access token is your bot's identity** — System User tokens are equivalent to long-lived API keys.  Rotate immediately if a deployment is compromised.
-- **The webhook endpoint accepts only signed requests when `WHATSAPP_CLOUD_APP_SECRET` is set** — leave it set even in development.  Without it, the gateway refuses inbound delivery with HTTP 503.
-- **The `/health` endpoint is unauthenticated** — it's safe to expose because it only reports config-presence booleans, not the values themselves.  But if you'd rather not surface it, restrict access at the reverse proxy / tunnel layer.
-
----
-
-## Comparison to the Baileys bridge
-
-| | Baileys (`hermes whatsapp`) | Cloud API (`hermes whatsapp-cloud`) |
-|---|---|---|
-| Account type | Personal | Business |
-| Setup | QR code scan | Meta app + WABA + token |
-| Dependencies | Node.js + npm | Pure Python (httpx + aiohttp) |
-| Process | Managed Node subprocess | aiohttp webhook server |
-| Public URL needed? | No | Yes |
-| Account ban risk | Yes (unofficial API) | No (officially supported) |
-| Inbound | Polling Node bridge | Webhook POST from Meta |
-| Outbound | Local bridge → Baileys | HTTPS to graph.facebook.com |
-| Groups | Full support | DMs only (v1) |
-| 24h window | No restriction | Hard rule — templates required after |
-| Voice notes (out) | Native | Native with ffmpeg, MP3 fallback otherwise |
-| Read receipts | No | Yes (blue double-checkmarks) |
-| Typing indicator | No | Yes (auto-dismisses on response) |
-| Interactive buttons | Text fallback only | Native (clarify, approval, slash-confirm) |
-| Production use | Risky (Meta can ban) | Designed for it |
-
-Most users running Hermes for personal projects prefer Baileys. Most users running customer-facing bots prefer Cloud API.
-
----
-
-## See also
-
-- [Meta's official WhatsApp Business Cloud API docs](https://developers.facebook.com/documentation/business-messaging/whatsapp/) — authoritative reference for the underlying platform, pricing, App Review, and Meta-side rate limits.
-- [WhatsApp (Baileys bridge) Setup](whatsapp.md) — the alternative integration for personal projects.
-- [Messaging Platforms overview](index.md) — all messaging integrations at a glance.

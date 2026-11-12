@@ -305,5 +305,4 @@ If the TUI fails to launch (no Node, missing bundle, TTY issue), Hermes prints a
 - [CLI Interface](cli.md) — full slash command and keybinding reference (shared)
 - [Sessions](sessions.md) — resume, branch, and history
 - [Skins & Themes](features/skins.md) — theme the banner, status bar, and overlays
-- [Voice Mode](features/voice-mode.md) — works in both interfaces
 - [Configuration](configuration.md) — all config keys

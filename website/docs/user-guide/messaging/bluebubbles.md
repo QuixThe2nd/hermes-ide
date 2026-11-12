@@ -126,7 +126,7 @@ Send and receive iMessages. Markdown is automatically stripped for clean plain-t
 
 ### Rich Media
 - **Images:** Photos appear natively in the iMessage conversation
-- **Voice messages:** Audio files sent as iMessage voice messages
+- **Voice messages:** Audio files sent as iMessage voice messages (inbound audio is downloaded and cached for the agent to process)
 - **Videos:** Video attachments
 - **Documents:** Files sent as iMessage attachments
 

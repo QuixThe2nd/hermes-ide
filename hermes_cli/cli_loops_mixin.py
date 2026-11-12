@@ -262,13 +262,13 @@ class CLILoopsMixin:
     # A queued next-turn prompt can be inspected and changed before it is sent.
 
     def _pending_input_items(self) -> list:
-        """Snapshot of queued next-turn prompts (raw items; may include ``_VoiceInputMessage``)."""
+        """Snapshot of queued next-turn prompts (raw items)."""
         with self._pending_input.mutex:
             return list(self._pending_input.queue)
 
     def _mutate_pending_input(self, mutate) -> tuple[list, list]:
         """Apply ``mutate(items) -> items`` to the queued prompts under the queue's own mutex,
-        so a voice/interrupt ``put`` from another thread can't slip between snapshot and
+        so an interrupt ``put`` from another thread can't slip between snapshot and
         write-back. Returns ``(before, after)``."""
         q = self._pending_input
         with q.mutex:
@@ -289,15 +289,14 @@ class CLILoopsMixin:
         _cprint(f"  Queued{when}: {_preview(payload)}")
 
     def _queue_list(self, rest: str) -> None:
-        from cli import _VoiceInputMessage, _cprint
+        from cli import _cprint
         items = self._pending_input_items()
         if not items:
             _cprint("  Queue is empty." + ("" if rest else "  " + _QUEUE_USAGE))
             return
         _cprint(f"  Queue ({len(items)} pending):")
         for idx, item in enumerate(items, 1):
-            tag = " [voice]" if isinstance(item, _VoiceInputMessage) else ""
-            _cprint(f"    {idx}. {_preview(str(item).replace(chr(10), ' '))}{tag}")
+            _cprint(f"    {idx}. {_preview(str(item).replace(chr(10), ' '))}")
 
     def _queue_clear(self, rest: str) -> None:
         from cli import _cprint
@@ -316,7 +315,7 @@ class CLILoopsMixin:
             _cprint(f"  Queue item {idx} not found. Current size: {len(before)}")
 
     def _queue_edit(self, rest: str) -> None:
-        from cli import _VoiceInputMessage, _cprint
+        from cli import _cprint
         idx_text, _, new_prompt = rest.partition(" ")
         if not new_prompt.strip():
             _cprint("  Usage: /queue edit <number> <new prompt>")
@@ -326,10 +325,7 @@ class CLILoopsMixin:
 
         def _edit(items: list) -> list:
             if 1 <= idx <= len(items):
-                # A voice-queued item keeps its sentinel so the concise voice-response
-                # prefix still applies (#65827).
-                voice = isinstance(items[idx - 1], _VoiceInputMessage)
-                items[idx - 1] = _VoiceInputMessage(new_text) if voice else new_text
+                items[idx - 1] = new_text
             return items
 
         before, after = self._mutate_pending_input(_edit)

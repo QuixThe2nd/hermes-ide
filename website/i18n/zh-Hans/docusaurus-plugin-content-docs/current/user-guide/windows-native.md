@@ -57,7 +57,6 @@ iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 | --------------- | ----------------------------------------------------------------------------------------------- |
 | **PortableGit** | 为终端工具提供 `bash.exe`，为会话内克隆提供 `git`。在安装时配置，而非由 `dep_ensure` 负责。     |
 | **Node.js 22**  | 浏览器工具（`agent-browser`）、TUI 的 web 桥接以及 WhatsApp 桥接所必需。                        |
-| **ffmpeg**      | TTS / 语音消息的音频格式转换。                                                                  |
 | **ripgrep**     | 快速文件搜索——不可用时回退到 `grep`。                                                           |
 | **npm 包**      | `agent-browser`、Playwright Chromium 以及各工具集的 Node 依赖，在首次使用浏览器工具时安装一次。 |
 
@@ -79,7 +78,7 @@ iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 10. **运行 `hermes setup`** — 正常的首次运行向导（模型、提供商、工具集）。使用 `-SkipSetup` 跳过。
 
 :::tip 在 Windows 上跳过繁琐的提供商配置
-在 Windows 上，逐个配置工具 API key（Firecrawl、FAL、Browser Use、OpenAI TTS）是获得可用 agent 摩擦最大的部分。[Nous Portal](/user-guide/features/tool-gateway) 订阅通过一次 OAuth 登录即可覆盖模型**以及**所有这些工具。安装程序完成后，运行 `hermes setup --portal` 完成配置。
+在 Windows 上，逐个配置工具 API key（Firecrawl、FAL、Browser Use）是获得可用 agent 摩擦最大的部分。[Nous Portal](/user-guide/features/tool-gateway) 订阅通过一次 OAuth 登录即可覆盖模型**以及**所有这些工具。安装程序完成后，运行 `hermes setup --portal` 完成配置。
 :::
 
 ## 功能矩阵

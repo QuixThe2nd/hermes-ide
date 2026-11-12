@@ -83,14 +83,6 @@ gateway:
     full_logs_hint:        "For full log uploads, use `hermes debug share` from the CLI."
     share_hint:            "Share these links with the Hermes team for support."
 
-  footer:
-    status:                "📎 Runtime footer: **{state}**\nFields: `{fields}`\nPlatform: `{platform}`"
-    usage:                 "Usage: `/footer [on|off|status]`"
-    saved:                 "📎 Runtime footer: **{state}**{example}\n_(saved globally — takes effect on next message)_"
-    example_line:          "\nExample: `{preview}`"
-    state_on:              "ON"
-    state_off:             "OFF"
-
   goal:
     unavailable:           "Goals unavailable on this session."
     no_goal_set:           "No goal set."
@@ -342,23 +334,6 @@ gateway:
     mode_describe:         "⚙️ Tool progress: **DESCRIBE** — one short line saying what each tool call is for, instead of the raw command/code."
     saved_suffix:          "_(saved for **{platform}** — takes effect on next message)_"
     save_failed:           "_(could not save to config: {error})_"
-
-  voice:
-    enabled_voice_only:    "Voice mode enabled.\nI'll reply with voice when you send voice messages.\nUse /voice tts to get voice replies for all messages."
-    disabled_text:         "Voice mode disabled. Text-only replies."
-    tts_enabled:           "Auto-TTS enabled.\nAll replies will include a voice message."
-    status_mode:           "Voice mode: {label}"
-    status_channel:        "Voice channel: #{channel}"
-    status_participants:   "Participants: {count}"
-    status_member:         "  - {name}{status}"
-    speaking:              " (speaking)"
-    enabled_short:         "Voice mode enabled."
-    disabled_short:        "Voice mode disabled."
-    label_off:             "Off (text only)"
-    label_voice_only:      "On (voice reply to voice messages)"
-    label_all:             "TTS (voice reply to all messages)"
-    help:                  "{toggle}\n\n**How /voice works**\n• `/voice on` — voice reply when you send a voice message\n• `/voice tts` — voice reply to *every* message\n• `/voice off` — back to text-only replies\n• `/voice status` — show the current mode\n• `/voice` (no argument) — quick toggle between on and off{channels}"
-    help_channels:         "\n\n**Live voice channels (Discord)**\n• Join a voice channel first, then `/voice channel` — I'll join, listen, and speak my replies\n• `/voice leave` — disconnect from the voice channel"
 
   shared:
     session_db_unavailable:      "Session database not available."

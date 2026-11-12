@@ -56,8 +56,6 @@ _HERMES_CORE_TOOLS = [
     "browser_press", "browser_get_images",
     "browser_vision", "browser_console",
     "browser_vault_list", "browser_vault_unlock", "browser_vault_fill", "browser_vault_save_login", "browser_vault_enter_code",  # ride with the browser
-    # Text-to-speech
-    "text_to_speech",
     # Planning & memory
     "todo_list", "memory",
     # NOTE: the desktop Project tools (project_list/create/switch) are
@@ -231,12 +229,6 @@ TOOLSETS = {
     # plugin removes the toolset with it — the core catalog keeps no
     # plugin-specific lanes.
 
-    "tts": {
-        "description": "Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI",
-        "tools": ["text_to_speech"],
-        "includes": []
-    },
-    
     "todo": {
         "description": "Task planning and tracking for multi-step work",
         "tools": ["todo_list"],
@@ -383,7 +375,7 @@ TOOLSETS = {
 
     # Coding posture (base Hermes — CLI/TUI/desktop/ACP). Auto-selected in a
     # code workspace; see agent/coding_context.py. Keeps everything you reach
-    # for while pairing on code and drops the rest (messaging, tts, image_gen,
+    # for while pairing on code and drops the rest (messaging, image_gen,
     # home-assistant, cron, computer-use).
     #
     # The GUI pane/browser affordances are NOT listed here: they belong to the

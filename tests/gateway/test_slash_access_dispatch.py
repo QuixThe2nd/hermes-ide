@@ -66,7 +66,6 @@ def _make_runner(*, platform_extra: dict | None = None,
     adapter = MagicMock()
     adapter.send = AsyncMock()
     runner.adapters = {platform: adapter}
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(
         emit=AsyncMock(),
         emit_collect=AsyncMock(return_value=[]),
@@ -319,7 +318,6 @@ async def test_gating_isolated_per_platform():
         Platform.DISCORD: MagicMock(send=AsyncMock()),
         Platform.TELEGRAM: MagicMock(send=AsyncMock()),
     }
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(
         emit=AsyncMock(),
         emit_collect=AsyncMock(return_value=[]),

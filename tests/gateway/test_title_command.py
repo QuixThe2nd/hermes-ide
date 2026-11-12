@@ -31,7 +31,6 @@ def _make_runner(session_db=None):
     from gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
-    runner._voice_mode = {}
     # Gateway holds the async facade; the slash handlers await it.
     if session_db is not None:
         from hermes_state import AsyncSessionDB
@@ -171,7 +170,6 @@ class TestResetCommandWithTitle:
         adapter = MagicMock()
         adapter.send = AsyncMock()
         runner.adapters = {Platform.TELEGRAM: adapter}
-        runner._voice_mode = {}
         runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
         runner._session_model_overrides = {}
         runner._pending_model_notes = {}

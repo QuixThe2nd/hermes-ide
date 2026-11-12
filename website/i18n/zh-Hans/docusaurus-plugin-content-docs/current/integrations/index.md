@@ -46,20 +46,6 @@ Hermes 内置 Camofox 浏览器自动化，可导航网站、填写表单、提�
 
 详见[浏览器自动化](../user-guide/features/browser.md)的配置与使用说明。
 
-## 语音与 TTS 提供商
-
-跨所有消息平台的文字转语音与语音转文字：
-
-| 提供商 | 质量 | 费用 | API Key |
-|----------|---------|------|---------|
-| **Edge TTS**（默认） | 良好 | 免费 | 无需 |
-| **ElevenLabs** | 优秀 | 付费 | `ELEVENLABS_API_KEY` |
-| **OpenAI TTS** | 良好 | 付费 | `VOICE_TOOLS_OPENAI_KEY` |
-| **MiniMax** | 良好 | 付费 | `MINIMAX_API_KEY` |
-| **NeuTTS** | 良好 | 免费 | 无需 |
-
-语音转文字支持六个提供商：本地 faster-whisper（免费，设备端运行）、本地命令封装器、Groq、OpenAI Whisper API、Mistral 和 xAI。语音消息转录支持 Telegram、Discord、WhatsApp 及其他消息平台。详见[语音与 TTS](../user-guide/features/tts.md) 和[语音模式](../user-guide/features/voice-mode.md)。
-
 ## IDE 与编辑器集成
 
 - **[IDE 集成（ACP）](../user-guide/features/acp.md)** — 在兼容 ACP 的编辑器（如 VS Code、Zed 和 JetBrains）中使用 Hermes Agent。Hermes 作为 ACP 服务器运行，在编辑器内渲染聊天消息、工具活动、文件差异和终端命令。

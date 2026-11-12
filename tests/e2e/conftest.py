@@ -118,7 +118,6 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> Gatew
         platforms={platform: PlatformConfig(enabled=True, token="e2e-test-token")}
     )
     runner.adapters = {}
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
 
     runner.session_store = MagicMock()
@@ -148,7 +147,6 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> Gatew
     runner._running_agents_ts = {}
     runner._pending_model_notes = {}
     runner._update_prompt_pending = {}
-    runner._voice_mode = {}
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}

@@ -96,23 +96,7 @@ def test_format_footer_omits_breakdown_when_component_timings_are_unavailable():
 
 
 def test_build_footer_wires_timing_values_end_to_end():
-    user = {
-        "display": {
-            "runtime_footer": {
-                "enabled": True,
-                "fields": [
-                    "turn_time",
-                    "api_time",
-                    "tool_time",
-                    "overhead_time",
-                    "api_calls",
-                ],
-            }
-        }
-    }
     out = build_footer_line(
-        user_config=user,
-        platform_key="discord",
         model="x",
         context_tokens=0,
         context_length=100,
@@ -121,4 +105,4 @@ def test_build_footer_wires_timing_values_end_to_end():
         tool_time=15.0,
         api_calls=3,
     )
-    assert out == "1m10s · api 42s · tools 15s · other 13s · 3 calls"
+    assert out == "x · 0% · 1m10s · api 42s · tools 15s · other 13s · 3 calls"

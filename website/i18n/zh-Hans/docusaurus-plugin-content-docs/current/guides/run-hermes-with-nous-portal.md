@@ -34,7 +34,7 @@ hermes setup --portal
 2. 将 refresh token 存储至 `~/.hermes/auth.json`
 3. 在 `~/.hermes/config.yaml` 中设置 `model.provider: nous`
 4. 选择一个默认的 agentic 模型（`anthropic/claude-sonnet-4.6` 或类似模型）
-5. 为网页搜索、图像生成、TTS 和浏览器自动化开启 Tool Gateway
+5. 为网页搜索、图像生成和浏览器自动化开启 Tool Gateway
 
 命令执行完毕后，你将回到终端，可以直接开始对话。
 
@@ -126,13 +126,12 @@ Portal 的[信息页面](https://portal.nousresearch.com/info)也有此说明—
 
 ## 6. （可选）自定义 Tool Gateway 路由
 
-gateway 是按工具选择启用的，而非全部开启或全部关闭。例如，将网页搜索和图像生成路由至 Nous，同时保留自己的 ElevenLabs TTS 密钥：
+gateway 是按工具选择启用的，而非全部开启或全部关闭。例如，将网页搜索和图像生成路由至 Nous：
 
 ```bash
 hermes tools
 # → Web search       → "Nous Subscription"     （推荐）
 # → Image generation → "Nous Subscription"     （推荐）
-# → TTS              → "ElevenLabs"            （你自己的密钥）
 ```
 
 使用以下命令验证你的混合配置：
@@ -141,19 +140,7 @@ hermes tools
 hermes portal tools
 ```
 
-你将看到每个工具的路由情况——通过订阅路由的工具显示 `via Nous Portal`，使用你自己密钥的工具显示合作方名称（`elevenlabs`、`firecrawl` 等）。
-
-## 7. （可选）启用语音模式
-
-由于 Tool Gateway 包含 OpenAI TTS，无需单独的 OpenAI 密钥即可使用[语音模式](../user-guide/features/voice-mode.md)：
-
-```bash
-hermes setup voice
-# → 为 TTS 选择 "Nous Subscription"
-# → 选择语音转文字后端（本地 faster-whisper 免费，无需配置）
-```
-
-之后在任何消息平台会话中（Telegram、Discord、Signal 等），发送语音消息，Hermes 将转录内容、生成回复并以合成语音回复——全部通过你的 Portal 订阅完成。
+你将看到每个工具的路由情况——通过订阅路由的工具显示 `via Nous Portal`，使用你自己密钥的工具显示合作方名称（`fal`、`firecrawl` 等）。
 
 ## 8. （可选）Cron 定时任务与常驻工作流
 
@@ -210,7 +197,7 @@ hermes tools
 # 对需要通过 gateway 路由的工具选择 "Nous Subscription"
 ```
 
-部分用户会有意混合使用——例如网页搜索通过 Nous 路由，但 TTS 使用自己的 ElevenLabs 密钥。如果这是有意为之，保持不变即可。如果不是，此命令可修复。
+部分用户会有意混合使用——例如网页搜索通过 Nous 路由，但图像生成使用自己的 FAL 密钥。如果这是有意为之，保持不变即可。如果不是，此命令可修复。
 
 ### 会话中途出现"Re-authentication required"
 
@@ -255,9 +242,8 @@ hermes auth logout nous       # 清除本地 refresh token
 | 1 个 OpenRouter / Anthropic / OpenAI 密钥写入 `.env` | 1 个 OAuth refresh token，无需 `.env` 密钥 |
 | 1 个 Firecrawl 密钥用于网页搜索 | 网页搜索通过 gateway 路由 |
 | 1 个 FAL 密钥用于图像生成 | 图像生成通过 gateway 路由 |
-| 1 个 OpenAI 密钥用于 TTS / 语音模式 | TTS 通过 gateway 路由 |
-| 4 个独立的控制台、充值、发票 | 1 个订阅，1 张发票 |
-| 跨机器：复制全部 4 个密钥 | 跨机器：重新 OAuth 一次 |
+| 3 个独立的控制台、充值、发票 | 1 个订阅，1 张发票 |
+| 跨机器：复制全部 3 个密钥 | 跨机器：重新 OAuth 一次 |
 
 这就是 Portal 的价值。如果你本来就在使用其中两个以上的后端，订阅费用自然就回来了。
 
@@ -266,6 +252,5 @@ hermes auth logout nous       # 清除本地 refresh token
 - **[Nous Portal 集成页面](../integrations/nous-portal.md)** — 订阅内容概述
 - **[Tool Gateway](../user-guide/features/tool-gateway.md)** — 每个 gateway 路由工具的完整说明
 - **[订阅代理](../user-guide/features/subscription-proxy.md)** — 在非 Hermes 工具中使用你的 Portal 订阅
-- **[语音模式](../user-guide/features/voice-mode.md)** — 在 Portal 订阅上配置语音对话
 - **[OAuth over SSH](./oauth-over-ssh.md)** — 远程/无头主机登录方案
 - **[Profiles](../user-guide/profiles.md)** — 在多个 Hermes 配置之间共享一个 Portal 登录

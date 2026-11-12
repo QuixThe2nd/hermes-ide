@@ -1,6 +1,6 @@
 # QQ Bot
 
-通过**官方 QQ Bot API（v2）**将 Hermes 接入 QQ——支持私聊（C2C）、群组 @-提及、频道及直接消息，并具备语音转写功能。
+通过**官方 QQ Bot API（v2）**将 Hermes 接入 QQ——支持私聊（C2C）、群组 @-提及、频道及直接消息，。
 
 ## 概述
 
@@ -9,7 +9,7 @@ QQ Bot 适配器使用[官方 QQ Bot API](https://bot.q.qq.com/wiki/develop/api-
 - 通过持久 **WebSocket** 连接至 QQ Gateway（网关）接收消息
 - 通过 **REST API** 发送文本和 Markdown 回复
 - 下载并处理图片、语音消息及文件附件
-- 使用腾讯内置 ASR 或可配置的 STT（语音转文字）提供商转写语音消息
+- 在 QQ 为语音消息提供其内置 `asr_refer_text` 文本时将其用作消息内容
 
 ## 前提条件
 
@@ -52,9 +52,6 @@ QQ_CLIENT_SECRET=your-app-secret
 | `QQ_GROUP_ALLOWED_USERS` | 允许群组访问的群组 OpenID 列表（逗号分隔） | — |
 | `QQ_ALLOW_ALL_USERS` | 设为 `true` 以允许所有私聊 | `false` |
 | `QQ_PORTAL_HOST` | 覆盖 QQ portal 主机（沙盒路由设为 `sandbox.q.qq.com`） | `q.qq.com` |
-| `QQ_STT_API_KEY` | 语音转文字提供商的 API 密钥 | — |
-| `QQ_STT_BASE_URL` | （不直接读取——请在 `config.yaml` 中设置 `platforms.qqbot.extra.stt.baseUrl`） | n/a |
-| `QQ_STT_MODEL` | STT 模型名称 | `glm-asr` |
 
 ## 高级配置
 
@@ -74,23 +71,11 @@ platforms:
       group_policy: "open"       # open | allowlist | disabled
       group_allow_from:
         - "group_openid_1"
-      stt:
-        provider: "zai"          # zai (GLM-ASR), openai (Whisper), etc.
-        baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4"
-        apiKey: "your-stt-key"
-        model: "glm-asr"
 ```
 
-## 语音消息（STT）
+## 语音消息
 
-语音转写分两个阶段进行：
-
-1. **QQ 内置 ASR**（免费，始终优先尝试）——QQ 在语音消息附件中提供 `asr_refer_text`，使用腾讯自有语音识别
-2. **已配置的 STT 提供商**（备用）——若 QQ 的 ASR 未返回文本，适配器将调用兼容 OpenAI 的 STT API：
-
-   - **智谱/GLM（zai）**：默认提供商，使用 `glm-asr` 模型
-   - **OpenAI Whisper**：设置 `QQ_STT_BASE_URL` 和 `QQ_STT_MODEL`
-   - 任何兼容 OpenAI 的 STT 端点
+语音消息以音频文件形式下载。当 QQ 自身的语音识别返回文本（附件上的 `asr_refer_text`）时，该文本用作消息内容；否则音频作为文件附件说明交给 Agent，由 Agent 自行转录或处理。
 
 ## 故障排查
 
@@ -100,12 +85,6 @@ platforms:
 - **App ID / Secret 无效** — 在 q.qq.com 仔细核对您的凭据
 - **缺少权限** — 确保机器人已启用所需 intent
 - **仅限沙盒的机器人** — 若机器人处于沙盒模式，只能接收来自 QQ 沙盒测试频道的消息
-
-### 语音消息未被转写
-
-1. 检查附件数据中是否存在 QQ 内置的 `asr_refer_text`
-2. 若使用自定义 STT 提供商，验证 `QQ_STT_API_KEY` 是否正确设置
-3. 查看 gateway 日志中的 STT 错误信息
 
 ### 消息未送达
 

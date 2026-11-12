@@ -277,7 +277,6 @@ hermes uninstall            Uninstall Hermes
                      (subcommands: queue, steer, interrupt, status)
 /indicator [style]   Pick the TUI busy-indicator style (CLI)
                      (styles: kaomoji, emoji, unicode, ascii)
-/footer [on|off]     Toggle gateway runtime-metadata footer on final replies
 /skin [name]         Change theme (CLI)
 /statusbar           Toggle status bar (CLI)
 ```

@@ -97,7 +97,6 @@ hermes -w -z "Fix issue #123"     # 在 worktree 中以单次查询模式运行
 | `Alt+Enter`、`Ctrl+J` 或 `Shift+Enter` | 换行（多行输入）。`Shift+Enter` 需要终端能够将其与 `Enter` 区分——见下文。在 Windows Terminal 中，`Alt+Enter` 被终端捕获（切换全屏）；请改用 `Ctrl+Enter` 或 `Ctrl+J`。 |
 | `Alt+V` | 在终端支持时从剪贴板粘贴图片 |
 | `Ctrl+V` | 粘贴文本，并尝试附加剪贴板中的图片 |
-| `Ctrl+B` | 语音模式启用时开始/停止录音（`voice.record_key`，默认：`ctrl+b`） |
 | `Ctrl+G` | 在 `$EDITOR`（vim/nvim/nano/VS Code 等）中打开当前输入缓冲区。保存并退出后，编辑后的文本将作为下一条 prompt 发送——适合编写长篇多段落 prompt。 |
 | `Ctrl+X Ctrl+E` | 外部编辑器的 Emacs 风格备用绑定（与 `Ctrl+G` 行为相同）。 |
 | `Ctrl+C` | 中断 agent（2 秒内双击强制退出） |
@@ -125,15 +124,12 @@ hermes -w -z "Fix issue #123"     # 在 worktree 中以单次查询模式运行
 | `/bg <prompt>` | 在独立后台会话中运行一个 prompt |
 | `/btw <question>` | 在不打断当前对话的情况下，就当前对话提出顺带问题 |
 | `/skin` | 显示或切换当前 CLI 皮肤 |
-| `/voice on` | 启用 CLI 语音模式（按 `Ctrl+B` 录音） |
-| `/voice tts` | 切换 Hermes 回复的语音播放 |
 | `/title My Session` | 为当前会话命名 |
 | `/status` | 显示会话信息——模型/配置/token/时长——以及本地**会话摘要**块（近期轮次数、常用工具、涉及文件、最新用户 prompt + 助手回复）。纯本地计算，不调用 LLM。 |
 | `/sessions` | 在经典 CLI 中直接打开交互式会话选择器（与 TUI 使用同一界面）。输入过滤，方向键导航，Enter 恢复。 |
 
 完整的内置 CLI 和消息列表，参见[斜杠命令参考](../reference/slash-commands.md)。
 
-语音模式的设置、提供商、静音调节以及消息/Discord 语音用法，参见[语音模式](features/voice-mode.md)。
 
 :::tip
 命令不区分大小写——`/HELP` 与 `/help` 效果相同。已安装的 skill 也会自动成为斜杠命令。
@@ -244,39 +240,6 @@ personalities:
 - **`Ctrl+C`**——中断当前操作（2 秒内双击强制退出）
 - 正在进行的终端命令会立即被终止（SIGTERM，1 秒后 SIGKILL）
 - 中断期间输入的多条消息会合并为一条 prompt
-
-### 繁忙输入模式
-
-`display.busy_input_mode` 配置项控制在 agent 工作时按下 Enter 的行为：
-
-| 模式 | 行为 |
-|------|----------|
-| `"interrupt"`（默认） | 你的消息中断当前操作并立即处理 |
-| `"queue"` | 你的消息被静默排队，在 agent 完成后作为下一轮发送 |
-| `"steer"` | 你的消息以 steer 模式注入当前运行，在下一次工具调用后到达 agent——不中断，不开启新轮次 |
-
-```yaml
-# ~/.hermes/config.yaml
-display:
-  busy_input_mode: "steer"   # 或 "queue" 或 "interrupt"（默认）
-```
-
-`"queue"` 模式适合在不意外取消进行中工作的情况下准备后续消息。`"steer"` 模式适合在不中断的情况下在任务执行中途重定向 agent——例如在它还在编辑代码时说"顺便也检查一下测试"。未知值会回退到 `"interrupt"`。
-
-`"steer"` 有两个自动回退：如果 agent 尚未启动，或附有图片，消息会回退到 `"queue"` 行为，确保内容不丢失。
-
-你也可以在 CLI 中动态更改：
-
-```text
-/busy queue
-/busy steer
-/busy interrupt
-/busy status
-```
-
-:::tip 首次提示
-第一次在 Hermes 工作时按下 Enter，Hermes 会打印一行提示，说明 `/busy` 选项（`"(tip) Your message interrupted the current run…"`）。每次安装只触发一次——`config.yaml` 中 `onboarding.seen.busy_input_prompt` 下的标志会锁定它。删除该键可再次看到提示。
-:::
 
 ### 挂起到后台
 

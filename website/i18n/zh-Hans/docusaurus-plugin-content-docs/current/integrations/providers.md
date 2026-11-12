@@ -53,7 +53,7 @@ sidebar_position: 1
 
 ### Nous Portal
 
-[Nous Portal](https://portal.nousresearch.com) 是 Nous Research 的统一订阅网关，也是**运行 Hermes Agent 的推荐方式**。一次 OAuth 登录即可访问 300+ 前沿智能体模型（Claude、GPT、Gemini、DeepSeek、Qwen、Kimi、GLM、MiniMax、Grok 等）以及 [Tool Gateway](../user-guide/features/tool-gateway.md)（网页搜索、图像生成、TTS、浏览器自动化）——费用从你的 Nous 订阅中扣除，无需单独管理各提供商账户。
+[Nous Portal](https://portal.nousresearch.com) 是 Nous Research 的统一订阅网关，也是**运行 Hermes Agent 的推荐方式**。一次 OAuth 登录即可访问 300+ 前沿智能体模型（Claude、GPT、Gemini、DeepSeek、Qwen、Kimi、GLM、MiniMax、Grok 等）以及 [Tool Gateway](../user-guide/features/tool-gateway.md)（网页搜索、图像生成、浏览器自动化）——费用从你的 Nous 订阅中扣除，无需单独管理各提供商账户。
 
 ```bash
 hermes setup --portal     # 全新安装——一条命令完成 OAuth + 提供商 + 网关配置
@@ -92,7 +92,7 @@ Groups = x25519:secp256r1:secp384r1:x448
 :::
 
 :::tip Nous Tool Gateway
-付费 Nous Portal 订阅者还可访问 **[Tool Gateway](../user-guide/features/tool-gateway.md)**——网页搜索、图像生成、TTS 和浏览器自动化，均通过你的订阅路由。无需额外 API key。全新安装时，`hermes setup --portal` 一条命令即可完成登录、设置 Nous 为提供商并开启网关。现有用户可通过 `hermes model` 或 `hermes tools` 按工具启用。随时使用 `hermes portal info` 查看路由状态。
+付费 Nous Portal 订阅者还可访问 **[Tool Gateway](../user-guide/features/tool-gateway.md)**——网页搜索、图像生成和浏览器自动化，均通过你的订阅路由。无需额外 API key。全新安装时，`hermes setup --portal` 一条命令即可完成登录、设置 Nous 为提供商并开启网关。现有用户可通过 `hermes model` 或 `hermes tools` 按工具启用。随时使用 `hermes portal info` 查看路由状态。
 :::
 
 ### 模型管理的两个命令
@@ -280,13 +280,12 @@ model:
 
 xAI 通过 Responses API（`codex_responses` 传输）接入，自动支持 Grok 4 模型的推理——无需 `reasoning_effort` 参数，服务端默认进行推理。在 `~/.hermes/.env` 中设置 `XAI_API_KEY` 并在 `hermes model` 中选择 xAI，或直接用 `grok` 作为快捷方式运行 `hermes model grok-4-1-fast-reasoning`。
 
-SuperGrok 和 X Premium+ 订阅者可以用浏览器 OAuth 登录，无需 API key——在 `hermes model` 中选择 **xAI Grok OAuth (SuperGrok / Premium+)**，或运行 `hermes auth add xai-oauth`。同一 OAuth bearer token 会被 xAI 直连工具（TTS、图像生成、视频生成、转录）自动复用。完整流程参见 [xAI Grok OAuth 指南](../guides/xai-grok-oauth.md)——如果 Hermes 运行在远程主机上，还需参见 [SSH / 远程主机上的 OAuth](../guides/oauth-over-ssh.md) 了解所需的 `ssh -L` 隧道配置。
+SuperGrok 和 X Premium+ 订阅者可以用浏览器 OAuth 登录，无需 API key——在 `hermes model` 中选择 **xAI Grok OAuth (SuperGrok / Premium+)**，或运行 `hermes auth add xai-oauth`。同一 OAuth bearer token 会被 xAI 直连工具（图像生成、视频生成、X 搜索）自动复用。完整流程参见 [xAI Grok OAuth 指南](../guides/xai-grok-oauth.md)——如果 Hermes 运行在远程主机上，还需参见 [SSH / 远程主机上的 OAuth](../guides/oauth-over-ssh.md) 了解所需的 `ssh -L` 隧道配置。
 
 使用 xAI 作为提供商时（任何包含 `x.ai` 的基础 URL），Hermes 会在每次 API 请求中自动发送 `x-grok-conv-id` 请求头以启用 prompt（提示词）缓存。这会将同一会话的请求路由到同一服务器，使 xAI 基础设施能够复用已缓存的系统 prompt 和对话历史。
 
 无需任何配置——检测到 xAI 端点且存在会话 ID 时，缓存自动激活。这可降低多轮对话的延迟和成本。
 
-xAI 还提供专属 TTS 端点（`/v1/tts`）。在 `hermes tools` → 语音与 TTS 中选择 **xAI TTS**，或参见[语音与 TTS](../user-guide/features/tts.md#text-to-speech) 页面了解配置。
 
 ### NovitaAI
 
@@ -1321,9 +1320,6 @@ model:
 | 网页抓取 | [Firecrawl](https://firecrawl.dev/) | `FIRECRAWL_API_KEY`、`FIRECRAWL_API_URL` |
 | 浏览器自动化 | [Camofox](https://github.com/jo-inc/camofox-browser) | `CAMOFOX_URL`、`CAMOFOX_API_KEY`（可选） |
 | 图像生成 | [FAL](https://fal.ai/) | `FAL_KEY` |
-| 高级 TTS 语音 | [ElevenLabs](https://elevenlabs.io/) | `ELEVENLABS_API_KEY` |
-| OpenAI TTS + 语音转录 | [OpenAI](https://platform.openai.com/api-keys) | `VOICE_TOOLS_OPENAI_KEY` |
-| Mistral TTS + 语音转录 | [Mistral](https://console.mistral.ai/) | `MISTRAL_API_KEY` |
 | 跨会话用户建模 | [Honcho](https://honcho.dev/) | `HONCHO_API_KEY` |
 | 语义长期记忆 | [Supermemory](https://supermemory.ai) | `SUPERMEMORY_API_KEY` |
 

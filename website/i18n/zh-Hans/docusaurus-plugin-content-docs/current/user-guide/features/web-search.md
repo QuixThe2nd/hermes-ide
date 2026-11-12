@@ -343,7 +343,7 @@ web:
 | `EXA_API_KEY` | exa |
 | `SEARXNG_URL` | searxng |
 
-xAI Web Search **不在**自动检测链中——设置了 `XAI_API_KEY`（或通过 xAI Grok OAuth 登录）不会自动将网页流量路由至 xAI，因为这些凭证同时用于推理/TTS/图像生成，用户可能希望为网页使用不同的后端。请通过 `web.backend: "xai"` 显式启用。
+xAI Web Search **不在**自动检测链中——设置了 `XAI_API_KEY`（或通过 xAI Grok OAuth 登录）不会自动将网页流量路由至 xAI，因为这些凭证同时用于推理/图像生成，用户可能希望为网页使用不同的后端。请通过 `web.backend: "xai"` 显式启用。
 
 ---
 

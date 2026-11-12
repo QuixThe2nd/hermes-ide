@@ -80,7 +80,6 @@ def make_startup_runner(tmp_path):
     runner._pending_messages = {}
     runner._background_tasks = set()
     runner._failed_platforms = {}
-    runner._voice_mode = {}
 
     runner.hooks = MagicMock()
     runner.hooks.loaded_hooks = []
@@ -93,7 +92,6 @@ def make_startup_runner(tmp_path):
 
     runner._update_runtime_status = MagicMock()
     runner._update_platform_runtime_status = MagicMock()
-    runner._sync_voice_mode_state_to_adapter = MagicMock()
     runner._suspend_stuck_loop_sessions = MagicMock(return_value=0)
     runner._notify_active_sessions_of_shutdown = AsyncMock()
     runner._drain_active_agents = AsyncMock(return_value=({}, False))

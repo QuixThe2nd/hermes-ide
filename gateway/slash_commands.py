@@ -47,27 +47,9 @@ _ROLLBACK_SKIP_LINES = (("skipped_user_edits", "gateway.rollback.kept_user_edits
                         ("skipped_oversize", "gateway.rollback.kept_oversize"),
                         ("failed_deletes", "gateway.rollback.failed_deletes"))
 
-# /busy input modes -> (status-card behavior, set-confirmation behavior).
-_BUSY_MODE_BEHAVIOR = {
-    "queue": ("queues for next turn", "Messages will be queued for the next turn while Hermes is busy."),
-    "steer": ("steers into current run (after next tool call)",
-              "Messages will be steered into the current run (after the next tool call)."),
-    "interrupt": ("interrupts current run", "Messages will interrupt the current run while Hermes is busy."),
-}
-
 # /diff argument -> diff mode (unknown args leave the mode unchanged).
 _DIFF_MODE_BY_ARG = {**dict.fromkeys(("staged", "--staged", "cached", "--cached"), "staged"),
                      **dict.fromkeys(("all", "--all", "head"), "all"), "session": "session"}
-
-# /voice subcommand -> stored mode (None = auto-TTS disabled), confirmation i18n key.
-_VOICE_MODE_BY_ARG = {
-    **dict.fromkeys(("on", "enable"), ("voice_only", "gateway.voice.enabled_voice_only")),
-    **dict.fromkeys(("off", "disable"), ("off", "gateway.voice.disabled_text")),
-    "tts": ("all", "gateway.voice.tts_enabled")}
-
-# /footer argument -> new enabled state ("" toggles; anything else is a usage error).
-_FOOTER_STATE_BY_ARG = {**dict.fromkeys(("on", "enable", "true", "1"), True),
-                        **dict.fromkeys(("off", "disable", "false", "0"), False)}
 
 _PLATFORM_USAGE = ("Usage: /platform <list|pause|resume> [name]\n"
                    "  /platform list — show platform status\n"
@@ -724,59 +706,6 @@ class GatewaySlashCommandsMixin(
 
         return t("gateway.clear_notify.success")
 
-    async def _handle_voice_command(self, event: MessageEvent) -> str:
-        """Handle /voice [on|off|tts|channel|leave|status] command."""
-        args = event.get_command_args().strip().lower()
-        chat_id = event.source.chat_id
-        # Voice state belongs to the (bot, chat) pair: resolve the adapter that received the
-        # command and key the mode by its owning profile so two multiplexed bots in one chat keep
-        # independent /voice state.
-        # See #75198.
-        voice_key = self._voice_key_for_source(event.source)
-        adapter = self._delivery_adapter_for(event.source)
-
-        def _set_mode(mode: str) -> None:
-            self._voice_mode[voice_key] = mode
-            self._save_voice_modes()
-            if not adapter:
-                return
-            if mode == "off":
-                self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
-            else:
-                self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
-
-        if args in _VOICE_MODE_BY_ARG:
-            mode, reply_key = _VOICE_MODE_BY_ARG[args]
-            _set_mode(mode)
-            return t(reply_key)
-        if args in {"channel", "join"}:
-            return await self._handle_voice_channel_join(event)
-        if args == "leave":
-            return await self._handle_voice_channel_leave(event)
-        if args == "status":
-            mode = self._voice_mode.get(voice_key, "off")
-            label = t(f"gateway.voice.label_{mode}") if mode in ("off", "voice_only", "all") else mode
-            lines = [t("gateway.voice.status_mode", label=label)]
-            guild_id = self._get_guild_id(event)  # append voice channel info if connected
-            info = adapter.get_voice_channel_info(guild_id) if guild_id and hasattr(adapter, "get_voice_channel_info") else None
-            if info:
-                lines += [t("gateway.voice.status_channel", channel=info['channel_name']),
-                          t("gateway.voice.status_participants", count=info['member_count'])]
-                for m in info["members"]:
-                    status = t("gateway.voice.speaking") if m.get("is_speaking") else ""
-                    lines.append(t("gateway.voice.status_member", name=m['display_name'], status=status))
-            return "\n".join(lines)
-
-        # Toggle: off → on, on/all → off
-        turning_on = self._voice_mode.get(voice_key, "off") == "off"
-        _set_mode("voice_only" if turning_on else "off")
-        toggle_line = t("gateway.voice.enabled_short" if turning_on else "gateway.voice.disabled_short")
-        # Bare /voice still toggles, but append an explainer so users discover the on/off/tts/status
-        # subcommands (and, on Discord, live voice-channel join/leave). Toggle result shows first.
-        supports_voice_channels = adapter is not None and hasattr(adapter, "join_voice_channel")
-        channels = t("gateway.voice.help_channels") if supports_voice_channels else ""
-        return t("gateway.voice.help", toggle=toggle_line, channels=channels)
-
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""
         from tools.checkpoint_manager import format_checkpoint_list
@@ -1021,82 +950,6 @@ class GatewaySlashCommandsMixin(
         except Exception as e:
             logger.warning("Failed to save tool_progress mode: %s", e)
             return f"{description}\n" + t("gateway.verbose.save_failed", error=e)
-
-    async def _handle_busy_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
-        """Handle /busy — control what happens when messaging while Hermes is working."""
-        arg = event.get_command_args().strip().lower()
-        if not arg or arg == "status":
-            mode = self._effective_busy_input_mode(event.source)
-            behavior = _BUSY_MODE_BEHAVIOR.get(mode, _BUSY_MODE_BEHAVIOR["interrupt"])[0]
-            return EphemeralReply(
-                f"**Busy input mode: `{mode}`\nMessages while busy: _{behavior}_\n"
-                f"Change with `/busy queue`, `/busy steer`, or `/busy interrupt`.")
-        if arg not in _BUSY_MODE_BEHAVIOR:
-            return EphemeralReply(
-                f"Unknown mode `{arg}`. Use `/busy queue`, `/busy steer`, or `/busy interrupt`.")
-
-        # Persist before mutate
-        from cli import save_config_value
-        if not save_config_value("display.busy_input_mode", arg):
-            return EphemeralReply("Busy input mode could not be saved to config. Mode unchanged.")
-        profile_name = self._busy_profile_name_for_source(event.source)
-        if profile_name:
-            from gateway.run import _load_gateway_config
-            self._snapshot_profile_busy_modes(profile_name, _load_gateway_config())
-        else:
-            self._busy_input_mode = arg
-            # busy_input_mode is also the source of truth for the text mode — re-derive it so the
-            # adapter refresh below doesn't keep a stale value and keep interrupting.
-            self._busy_text_mode = self._load_busy_text_mode()
-
-        adapter = self._delivery_adapter_for(event.source)
-        if adapter is not None:
-            adapter._busy_text_mode = self._effective_busy_text_mode(event.source)
-        return EphemeralReply(
-            f"Busy input mode set to **`{arg}`** (saved).\n_{_BUSY_MODE_BEHAVIOR[arg][1]}_")
-
-    async def _handle_footer_command(self, event: MessageEvent) -> str:
-        """Handle /footer command — toggle the runtime-metadata footer."""
-        from gateway.run import _load_gateway_config, _resolve_gateway_model
-        from gateway.runtime_footer import format_runtime_footer, resolve_footer_config
-        config_path, platform_key = self._display_config_target(event)
-        arg = ""
-        try:
-            text = (getattr(event, "message", None) or "").strip()
-            if text.startswith("/"):
-                parts = text.split(None, 1)
-                arg = parts[1].strip().lower() if len(parts) > 1 else ""
-        except Exception:
-            arg = ""
-        try:
-            user_config: dict = _load_gateway_config()
-        except Exception as e:
-            return t("gateway.config_read_failed", error=e)
-        effective = resolve_footer_config(user_config, platform_key)
-
-        def _state(enabled: bool) -> str:
-            return t("gateway.footer.state_on") if enabled else t("gateway.footer.state_off")
-        if arg in {"status", "?"}:
-            return t("gateway.footer.status", state=_state(effective["enabled"]),
-                     fields=", ".join(effective.get("fields") or []), platform=platform_key)
-        if arg and arg not in _FOOTER_STATE_BY_ARG:
-            return t("gateway.footer.usage")
-        new_state = _FOOTER_STATE_BY_ARG[arg] if arg else not effective["enabled"]
-        try:
-            _nested_dict(user_config, "display", "runtime_footer")["enabled"] = new_state
-            atomic_config_write(config_path, user_config)
-        except Exception as e:
-            logger.warning("Failed to save runtime_footer.enabled: %s", e)
-            return t("gateway.config_save_failed", error=e)
-        example = ""
-        if new_state:
-            # Show a preview using current agent state if available.
-            preview = format_runtime_footer(
-                model=_resolve_gateway_model(user_config) or None, context_tokens=0, context_length=None,
-                fields=effective.get("fields") or ["model", "context_pct", "cwd"])
-            if preview:
-                example = t("gateway.footer.example_line", preview=preview)
-        return t("gateway.footer.saved", state=_state(new_state), example=example)
 
     async def _handle_reload_mcp_command(self, event: MessageEvent) -> Optional[str]:
         """Reconnect MCP after an unconditional Once/Cancel cache-invalidation confirmation."""

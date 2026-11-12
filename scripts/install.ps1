@@ -2047,7 +2047,7 @@ function Install-SystemPackages {
         $needRipgrep = $true
     }
 
-    Write-Info "Checking ffmpeg (TTS voice messages)..."
+    Write-Info "Checking ffmpeg (media conversions)..."
     if (Get-Command ffmpeg -ErrorAction SilentlyContinue) {
         Write-Success "ffmpeg found"
         $script:HasFfmpeg = $true
@@ -2070,7 +2070,7 @@ function Install-SystemPackages {
         $scoopPkgs += "ripgrep"
     }
     if ($needFfmpeg) {
-        $descParts += "ffmpeg for TTS voice messages"
+        $descParts += "ffmpeg for media conversions"
         $wingetPkgs += "Gyan.FFmpeg"
         $chocoPkgs += "ffmpeg"
         $scoopPkgs += "ffmpeg"
@@ -2191,7 +2191,7 @@ function Install-SystemPackages {
         Write-Info "  winget install BurntSushi.ripgrep.MSVC"
     }
     if ($needFfmpeg) {
-        Write-Warn "ffmpeg not installed (TTS voice messages will be limited)"
+        Write-Warn "ffmpeg not installed (media conversions will be limited)"
         Write-Info "  winget install Gyan.FFmpeg"
     }
 }
@@ -3740,7 +3740,7 @@ function Install-PlatformSdks {
     # Specs mirror pyproject.toml to avoid version drift.
     $sdkMap = @(
         @{ Var = "TELEGRAM_BOT_TOKEN"; Import = "telegram";  Spec = "python-telegram-bot[webhooks]>=22.6,<23" },
-        @{ Var = "DISCORD_BOT_TOKEN";  Import = "discord";   Spec = "discord.py[voice]>=2.7.1,<3" },
+        @{ Var = "DISCORD_BOT_TOKEN";  Import = "discord";   Spec = "discord.py>=2.7.1,<3" },
         @{ Var = "SLACK_BOT_TOKEN";    Import = "slack_sdk"; Spec = "slack-sdk>=3.27.0,<4" },
         @{ Var = "SLACK_APP_TOKEN";    Import = "slack_bolt";Spec = "slack-bolt>=1.18.0,<2" },
         @{ Var = "WHATSAPP_ENABLED";   Import = "qrcode";    Spec = "qrcode>=7.0,<8" }

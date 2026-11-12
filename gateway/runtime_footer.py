@@ -1,39 +1,9 @@
 
 """Gateway runtime-metadata footer.
 
-Renders a compact footer showing runtime state (model, context %, cwd, timing)
-and appends it to the FINAL message of an agent turn. On by default; disable
-with ``/footer off`` or ``display.runtime_footer.enabled: false``.
-
-Config (``~/.hermes/config.yaml``)::
-
-    display:
-      runtime_footer:
-        enabled: true
-        fields: [model, context_pct, turn_time, api_time, tool_time, overhead_time, api_calls, tool_calls]
-
-Available fields:
-    model        — bare model id, vendor prefix dropped (``gpt-5.4``); when a routing
-                   proxy reported a served model that differs from the request, shows the
-                   short served model instead; un-displayable served values (hashes, URLs)
-                   are ignored
-    context_pct  — last-call context occupancy as a percent (``5%``)
-    latency      — wall-clock duration of the turn (``22s``, ``1m05s``)
-    cwd          — home-relative working dir (``~``); opt-in
-    turn_time / api_time / tool_time / overhead_time — per-turn timing breakdown
-    api_calls    — model calls this turn (``3 calls``)
-    tool_calls   — tool calls executed this turn (``9 tools``)
-    reasoning    — effective reasoning effort (``medium``; ``off`` when disabled)
-
-``latency`` is opt-in: it is not in the default field set, so a footer whose
-``fields`` are unset renders exactly as before.
-``served_model`` is opt-in: it renders ``alias → served`` — the deployment a
-routing proxy reported via ``x-litellm-model-id`` / ``x-litellm-model-api-base``,
-or Hermes' own fallback route; skipped when the served model is the requested one.
-
-Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
-Users can toggle the global setting with ``/footer on|off`` from both the CLI
-and any gateway platform.
+Renders a compact footer showing runtime state (model, context %, timing) and
+appends it to the FINAL message of an agent turn. Always on with the default
+field set (``_DEFAULT_FIELDS``); not user-configurable.
 
 The footer is appended to the final response text in ``gateway/run.py`` right
 before returning the response to the adapter send path, so it only lands on
@@ -95,23 +65,6 @@ def _env_cwd() -> str:
     except ImportError:
         return os.environ.get("TERMINAL_CWD", "")
     return terminal_env("TERMINAL_CWD", "")
-
-
-def resolve_footer_config(user_config: dict[str, Any] | None, platform_key: str | None = None) -> dict[str, Any]:
-    """Resolve effective footer config: defaults (enabled=True) <
-    ``display.runtime_footer`` < ``display.platforms.<platform_key>.runtime_footer``."""
-    resolved = {"enabled": True, "fields": list(_DEFAULT_FIELDS)}
-    cfg = (user_config or {}).get("display") or {}
-    plat_cfg = (cfg.get("platforms") or {}).get(platform_key) if platform_key else None
-    sections = [cfg.get("runtime_footer"), plat_cfg.get("runtime_footer") if isinstance(plat_cfg, dict) else None]
-    for section in sections:
-        if not isinstance(section, dict):
-            continue
-        if "enabled" in section:
-            resolved["enabled"] = bool(section.get("enabled"))
-        if isinstance(section.get("fields"), list) and section["fields"]:
-            resolved["fields"] = [str(f) for f in section["fields"]]
-    return resolved
 
 
 def _format_latency(seconds: float) -> str:
@@ -202,29 +155,24 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
     return _SEP.join(v for field in fields if (render := renderers.get(field)) and (v := render()))
 
 
-def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str | None,
-                      model: Optional[str], context_tokens: int, context_length: Optional[int],
+def build_footer_line(*, model: Optional[str], context_tokens: int, context_length: Optional[int],
                       cwd: Optional[str] = None, turn_seconds: Optional[float] = None,
                       turn_time: Optional[float] = None, api_time: Optional[float] = None,
                       tool_time: Optional[float] = None, api_calls: Optional[int] = None,
                       tool_calls: Optional[int] = None,
                       requested_model: Optional[str] = None, served_model: Optional[str] = None,
                       reasoning_effort: Optional[str] = None) -> str:
-    """Entry point for gateway/run.py: footer text, or "" when disabled / no data. Callers append it
+    """Entry point for gateway/run.py: footer text, or "" when no field has data. Callers append it
     to the final response themselves, preserving a single blank line of separation.
     ``turn_seconds`` is the caller-measured (``time.monotonic()``) run duration; ``None`` skips the
     ``latency`` field. The optional ``turn_time`` / ``api_time`` / ``tool_time`` breakdown and
     ``api_calls`` / ``tool_calls`` feed the extended timing fields and are skipped when unset."""
-    cfg = resolve_footer_config(user_config, platform_key)
-    if not cfg.get("enabled"):
-        return ""
     return format_runtime_footer(model=model, context_tokens=context_tokens,
                                  context_length=context_length, cwd=cwd, turn_seconds=turn_seconds,
                                  turn_time=turn_time, api_time=api_time, tool_time=tool_time,
                                  api_calls=api_calls, tool_calls=tool_calls,
                                  requested_model=requested_model, served_model=served_model,
-                                 reasoning_effort=reasoning_effort,
-                                 fields=cfg.get("fields") or _DEFAULT_FIELDS)
+                                 reasoning_effort=reasoning_effort)
 
 
 def turn_metrics(result: dict[str, Any] | None) -> dict[str, Any]:

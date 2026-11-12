@@ -837,49 +837,6 @@ def _wal_is_usable() -> bool:
     return False
 
 
-# ── Audio-playback guard ───────────────────────────────────────────────────
-#
-# Same class of incident as the live-system guard above, different primitive:
-# a test run spoke the string "partial answer complete" out of the developer's
-# speakers. That string is a test fixture
-# (a removed gateway-server test's fake ``final_response``), and the
-# route it took is fully in-process — no leaked shell variable required:
-#
-#   1. ``test_voice_toggle_tts_branch_also_carries_record_key`` drives the
-#      ``voice.toggle`` RPC with ``action="tts"``. The handler
-#      flips the flag by writing the *real*
-#      process environment: ``os.environ["HERMES_VOICE_TTS"] = "1"``. The
-#      test's ``monkeypatch.delenv(..., raising=False)`` records no undo entry
-#      (pytest only records an undo when the key was present), so the "1"
-#      survives teardown and persists for the rest of the pytest process.
-#   2. Any later test in that process that drives a turn to completion hits
-#      the TTS dispatch in ``prompt.submit``, which checks
-#      ``_voice_tts_enabled()`` — now true — and fires
-#      ``hermes_cli.voice.speak_text(final_response)`` on a daemon thread.
-#   3. ``speak_text`` needs no API key to be audible: ``tools/tts_tool.py``
-#      defaults to the ``edge`` provider, which is keyless.
-#
-# Because the flag is set from *inside* the process, ``scripts/run_tests.sh``'s
-# ``env -i`` does not help, and neither does env-blanking on its own — the
-# hermetic fixture blanks at test setup, and step 1 re-sets it mid-test. So we
-# also intercept the primitive that does the damage, exactly as the
-# live-system guard intercepts ``os.kill`` rather than trusting every caller
-# to mock it:
-#
-#  • ``hermes_cli.voice.speak_text`` — the synth+playback entry point both
-#    gateway call sites late-import, so patching the module attribute catches
-#    them wherever they import it from.
-#  • ``hermes_cli.voice.play_audio_file`` — the module-level binding
-#    ``speak_text`` actually plays through. Patching the binding inside
-#    ``hermes_cli.voice`` (not ``tools.voice_mode``) keeps the real function
-#    available to the tests that legitimately exercise it with a mocked
-#    audio backend (``tests/tools/test_voice_mode.py``).
-#
-# Config cannot re-open this hole: the ``tts:`` section of ``config.yaml``
-# only selects *which* provider speaks, never *whether* to speak — that gate
-# is the env var alone.
-
-_AUDIO_GUARD_BYPASS_MARK = "real_audio_playback"
 _ALLOW_MACOS_KEYCHAIN_MARK = "allow_macos_keychain"
 
 # ---------------------------------------------------------------------------
@@ -1143,12 +1100,6 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         f"{_REQUIRES_WAL_MARK}: test needs the runtime to actually enable "
         "SQLite WAL mode; skipped on builds where Hermes falls back to "
         "journal_mode=DELETE for the WAL-reset bug.",
-    )
-    config.addinivalue_line(
-        "markers",
-        f"{_AUDIO_GUARD_BYPASS_MARK}: bypass the audio-playback guard (only "
-        "for tests that genuinely need real TTS synthesis and speaker "
-        "playback — there are none in the default suite).",
     )
     config.addinivalue_line(
         "markers",
@@ -1712,49 +1663,6 @@ def _live_system_guard(request, monkeypatch):
         pass
 
     yield
-
-
-@pytest.fixture(autouse=True)
-def _audio_playback_guard(request, monkeypatch):
-    """Stub TTS synthesis + speaker playback for every test.
-
-    See the block comment above for the incident this closes. Defence in
-    depth behind ``_HERMES_BEHAVIORAL_VARS``: the env blanking stops the flag
-    leaking *between* tests, this stops the speakers ever opening even when a
-    test sets the flag *itself* (which the ``voice.toggle`` RPC handler does,
-    by writing ``os.environ`` directly).
-
-    Deliberately silent rather than raising: unlike a stray ``os.kill``, a
-    stray ``speak_text`` is dispatched on a daemon thread whose exception
-    nobody would ever see, so a hard failure would neither stop the test nor
-    surface. Silence is the whole point. Tests that genuinely want real audio
-    can opt out with ``@pytest.mark.real_audio_playback``.
-    """
-    if request.node.get_closest_marker(_AUDIO_GUARD_BYPASS_MARK):
-        yield
-        return
-
-    try:
-        import hermes_cli.voice as _voice
-    except Exception:
-        # Optional audio deps missing — nothing importable to speak with.
-        yield
-        return
-
-    def _blocked_speak_text(text, *args, **kwargs):
-        return None
-
-    def _blocked_play_audio_file(path, *args, **kwargs):
-        return False
-
-    if hasattr(_voice, "speak_text"):
-        monkeypatch.setattr(_voice, "speak_text", _blocked_speak_text)
-    if hasattr(_voice, "play_audio_file"):
-        monkeypatch.setattr(_voice, "play_audio_file", _blocked_play_audio_file)
-
-    yield
-
-
 
 
 @pytest.fixture(autouse=True)

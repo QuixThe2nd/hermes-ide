@@ -12,7 +12,7 @@ When you sign in with an X account that has Premium+, xAI automatically links th
 
 The transport reuses the `codex_responses` adapter (xAI exposes a Responses-style endpoint), so reasoning, tool-calling, streaming, and prompt caching work without any adapter changes.
 
-The same OAuth bearer token is also reused by every direct-to-xAI surface in Hermes — TTS, image generation, video generation, and transcription — so a single login covers all four.
+The same OAuth bearer token is also reused by every direct-to-xAI surface in Hermes — image generation, video generation, and X Search — so a single login covers them all.
 
 ## Overview
 
@@ -126,7 +126,7 @@ hermes --provider x-ai-oauth       # alias
 hermes --provider xai-grok-oauth   # alias
 ```
 
-## Direct-to-xAI Tools (TTS / Image / Video / Transcription / X Search)
+## Direct-to-xAI Tools (Image / Video / X Search)
 
 Once you're logged in via OAuth, every direct-to-xAI tool reuses the same bearer token automatically — there is **no separate setup** unless you'd rather use an API key.
 
@@ -134,7 +134,6 @@ To pick a backend for each tool:
 
 ```bash
 hermes tools
-# → Text-to-Speech       → "xAI TTS"
 # → Image Generation     → "xAI Grok Imagine (image)"
 # → Video Generation     → "xAI Grok Imagine"
 # → X (Twitter) Search   → "xAI Grok OAuth (SuperGrok / X Premium+)"
@@ -165,7 +164,6 @@ The `x_search` toolset auto-enables whenever xAI credentials (a SuperGrok / X Pr
 | Image | `grok-imagine-image-quality` | Higher fidelity; ~10–20 s |
 | Video | `grok-imagine-video` | Text-to-video |
 | Video | `grok-imagine-video-1.5-preview` | Image-to-video; dated alias `grok-imagine-video-1.5-2026-05-30` |
-| TTS | (default voice) | xAI `/v1/tts` endpoint |
 
 The chat catalog is derived live from the on-disk `models.dev` cache; new xAI releases appear automatically once that cache refreshes. `grok-4.6` is always pinned to the top of the list.
 
@@ -240,4 +238,3 @@ This clears both the singleton OAuth entry in `auth.json` and any credential-poo
 - [AI Providers reference](../integrations/providers.md)
 - [Environment Variables](../reference/environment-variables.md)
 - [Configuration](../user-guide/configuration.md)
-- [Voice & TTS](../user-guide/features/tts.md)

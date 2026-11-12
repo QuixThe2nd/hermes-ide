@@ -141,9 +141,9 @@ def _register_extra_tui_keybindings(self, kb, *, input_area):
 
 ```python
 def _build_tui_layout_children(self, *, sudo_widget, secret_widget,
-    approval_widget, clarify_widget, model_picker_widget=None,
-    spinner_widget=None, spacer, status_bar, input_rule_top,
-    image_bar, input_area, input_rule_bot, voice_status_bar,
+    slash_confirm_widget=None, clarify_widget, model_picker_widget=None,
+    command_palette_widget=None, spinner_widget=None, spacer, status_bar,
+    input_rule_top, image_bar, input_area, input_rule_bot,
     completions_menu) -> list:
 ```
 
@@ -154,9 +154,10 @@ def _build_tui_layout_children(self, *, sudo_widget, secret_widget,
     Window(height=0),       # anchor
     sudo_widget,            # sudo password prompt (conditional)
     secret_widget,          # secret input prompt (conditional)
-    approval_widget,        # dangerous command approval (conditional)
+    slash_confirm_widget,   # slash-command confirmation prompt (conditional)
     clarify_widget,         # clarify question UI (conditional)
     model_picker_widget,    # model picker overlay (conditional)
+    command_palette_widget, # command palette overlay (conditional)
     spinner_widget,         # thinking spinner (conditional)
     spacer,                 # fills remaining vertical space
     *self._get_extra_tui_widgets(),  # YOUR WIDGETS GO HERE
@@ -165,7 +166,6 @@ def _build_tui_layout_children(self, *, sudo_widget, secret_widget,
     image_bar,              # attached images indicator
     input_area,             # user text input
     input_rule_bot,         # ─── border below input
-    voice_status_bar,       # voice mode status (conditional)
     completions_menu,       # autocomplete dropdown
 ]
 ```
@@ -180,8 +180,7 @@ def _build_tui_layout_children(self, *, sudo_widget, secret_widget,
 4. **状态栏** — 模型、上下文占比、已用时间
 5. **图片栏** — 已附加图片数量
 6. **输入区** — 用户 prompt（提示词）
-7. **语音状态** — 录音指示器
-8. **补全菜单** — 自动补全建议
+7. **补全菜单** — 自动补全建议
 
 ## 使用技巧
 

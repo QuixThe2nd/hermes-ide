@@ -52,7 +52,6 @@ def boot_notice(tmp_path, monkeypatch):
     runner.adapters = {}
     runner.delivery_router = SimpleNamespace(adapters=runner.adapters)
     runner._failed_platforms = {}
-    runner._sync_voice_mode_state_to_adapter = Mock()
     runner._bind_voice_input_callback = Mock()
     runner._update_platform_runtime_status = Mock()
     runner._redeliver_failed_obligations_for_platform = AsyncMock()

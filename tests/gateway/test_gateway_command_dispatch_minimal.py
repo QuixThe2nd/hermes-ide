@@ -52,7 +52,6 @@ def _make_runner():
     adapter.send = AsyncMock()
     adapter._pending_messages = {}
     runner.adapters = {Platform.TELEGRAM: adapter}
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(
         emit=AsyncMock(),
         emit_collect=AsyncMock(return_value=[]),

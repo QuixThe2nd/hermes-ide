@@ -48,7 +48,6 @@ def _make_runner():
     adapter = MagicMock()
     adapter.send = AsyncMock()
     runner.adapters = {Platform.TELEGRAM: adapter}
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(
         emit=AsyncMock(),
         emit_collect=AsyncMock(return_value=[]),

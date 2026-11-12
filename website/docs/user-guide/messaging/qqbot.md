@@ -1,6 +1,6 @@
 # QQ Bot
 
-Connect Hermes to QQ via the **Official QQ Bot API (v2)** — supporting private (C2C), group @-mentions, guild, and direct messages with voice transcription.
+Connect Hermes to QQ via the **Official QQ Bot API (v2)** — supporting private (C2C), group @-mentions, guild, and direct messages.
 
 ## Overview
 
@@ -8,8 +8,8 @@ The QQ Bot adapter uses the [Official QQ Bot API](https://bot.q.qq.com/wiki/deve
 
 - Receive messages via a persistent **WebSocket** connection to the QQ Gateway
 - Send text and markdown replies via the **REST API**
-- Download and process images, voice messages, and file attachments
-- Transcribe voice messages using Tencent's built-in ASR or a configurable STT provider
+- Download and process images, audio files, and file attachments
+- Surface Tencent's built-in `asr_refer_text` as the message text when QQ provides it for a voice message
 
 ## Prerequisites
 
@@ -52,9 +52,6 @@ QQ_CLIENT_SECRET=your-app-secret
 | `QQ_GROUP_ALLOWED_USERS` | Comma-separated group OpenIDs for group access | — |
 | `QQ_ALLOW_ALL_USERS` | Set to `true` to allow all DMs | `false` |
 | `QQ_PORTAL_HOST` | Override the QQ portal host (set to `sandbox.q.qq.com` for sandbox routing) | `q.qq.com` |
-| `QQ_STT_API_KEY` | API key for voice-to-text provider | — |
-| `QQ_STT_BASE_URL` | (Not read directly — set `platforms.qqbot.extra.stt.baseUrl` in `config.yaml` instead) | n/a |
-| `QQ_STT_MODEL` | STT model name | `glm-asr` |
 
 ## Advanced Configuration
 
@@ -74,24 +71,11 @@ platforms:
       group_policy: "open"       # open | allowlist | disabled
       group_allow_from:
         - "group_openid_1"
-      stt:
-        provider: "zai"          # zai (GLM-ASR), openai (Whisper), etc.
-        baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4"
-        apiKey: "your-stt-key"
-        model: "glm-asr"
-        timeout: 60              # seconds per transcription request (default 60)
 ```
 
-## Voice Messages (STT)
+## Voice Messages
 
-Voice transcription works in two stages:
-
-1. **QQ built-in ASR** (free, always tried first) — QQ provides `asr_refer_text` in voice message attachments, which uses Tencent's own speech recognition
-2. **Configured STT provider** (fallback) — If QQ's ASR doesn't return text, the adapter calls an OpenAI-compatible STT API:
-
-   - **Zhipu/GLM (zai)**: Default provider, uses `glm-asr` model
-   - **OpenAI Whisper**: Set `QQ_STT_BASE_URL` and `QQ_STT_MODEL`
-   - Any OpenAI-compatible STT endpoint
+Voice messages are downloaded as audio files. When QQ's own speech recognition returns text (`asr_refer_text` on the attachment), that text is used as the message content; otherwise the audio is handed to the agent as a file attachment note, and the agent can transcribe or process it itself.
 
 ## Troubleshooting
 
@@ -101,12 +85,6 @@ This usually means:
 - **Invalid App ID / Secret** — Double-check your credentials at q.qq.com
 - **Missing permissions** — Ensure the bot has the required intents enabled
 - **Sandbox-only bot** — If the bot is in sandbox mode, it can only receive messages from QQ's sandbox test channel
-
-### Voice messages not transcribed
-
-1. Check if QQ's built-in `asr_refer_text` is present in the attachment data
-2. If using a custom STT provider, verify `QQ_STT_API_KEY` is set correctly
-3. Check gateway logs for STT error messages
 
 ### Messages not delivered
 

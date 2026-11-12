@@ -23,15 +23,13 @@ Hermes has several distinct pluggable interfaces — some use Python `register_*
 | A **video-generation backend** | [Video Generation Provider Plugins](../video-gen-provider-plugin.md) |
 | A **web-search / extract backend** | [Web Search Provider Plugins](../web-search-provider-plugin.md) |
 | A **secret-manager backend** (vault / password manager / OS keystore) | [Secret Source Plugins](../secret-source-plugin.md) |
-| A **TTS backend** (any CLI — Piper, VoxCPM, Kokoro, voice cloning, …) | [TTS custom command providers](../../user-guide/features/tts.md#custom-command-providers) — config-driven, no Python needed |
-| An **STT backend** (custom whisper / ASR CLI) | [Voice Message Transcription](../../user-guide/features/tts.md#voice-message-transcription-stt) — set `HERMES_LOCAL_STT_COMMAND` to an argv-tokenized template |
 | **External tools via MCP** (filesystem, GitHub, Linear, any MCP server) | [MCP](../../user-guide/features/mcp.md) — declare `mcp_servers.<name>` in `config.yaml` |
 | **Gateway event hooks** (fire on startup, session events, commands) | [Event Hooks](../../user-guide/features/hooks.md#gateway-event-hooks) — drop `HOOK.yaml` + `handler.py` into `~/.hermes/hooks/<name>/` |
 | **Shell hooks** (run a shell command on events) | [Shell Hooks](../../user-guide/features/hooks.md#shell-hooks) — declare under `hooks:` in `config.yaml` |
 | **Additional skill sources** (custom GitHub repos, private skill indexes) | [Skills](../../user-guide/features/skills.md) — `hermes skills tap add <repo>` · [Publishing a tap](../../user-guide/features/skills.md#publishing-a-custom-skill-tap) |
 | A first-class **core** inference provider (not a plugin) | [Adding Providers](../adding-providers.md) |
 
-See the full [Pluggable interfaces table](../../user-guide/features/plugins.md#pluggable-interfaces--where-to-go-for-each) for a consolidated view of every extension surface including config-driven (TTS, STT, MCP, shell hooks) and drop-in directory (gateway hooks) styles.
+See the full [Pluggable interfaces table](../../user-guide/features/plugins.md#pluggable-interfaces--where-to-go-for-each) for a consolidated view of every extension surface including config-driven (MCP, shell hooks) and drop-in directory (gateway hooks) styles.
 :::
 
 :::caution Third-party-product plugins ship standalone — not into the core tree
@@ -1380,7 +1378,7 @@ def register(ctx):
 | Platform | `native` object | Typical hooks |
 |----------|-----------------|---------------|
 | `telegram` | PTB `Application` | `add_handler` — any update type, pattern-scoped callbacks |
-| `discord` | `discord.ext.commands.Bot` | `add_listener` — reactions, member events, threads, voice |
+| `discord` | `discord.ext.commands.Bot` | `add_listener` — reactions, member events, threads |
 | `slack` | `slack_bolt.AsyncApp` | `app.event()` / `app.action()` / `app.command()` |
 | `matrix` | Matrix client | event callbacks |
 | `teams` | Teams `App` | `on_message` / `on_card_action` decorators |
@@ -1704,25 +1702,6 @@ hermes skills install myorg/skills-repo/my-workflow
 Publishing your own tap is just a GitHub repo with `skills/<skill-name>/SKILL.md` directories — no server or registry signup needed.
 
 **Full guides:** [Skills Hub](../../user-guide/features/skills.md#skills-hub) · [Publishing a custom tap](../../user-guide/features/skills.md#publishing-a-custom-skill-tap) (repo layout, minimal example, non-default paths, trust levels).
-
-### TTS / STT via command templates
-
-Any CLI that reads/writes audio or text can be plugged in through `config.yaml` — no Python code:
-
-```yaml
-tts:
-  provider: voxcpm
-  providers:
-    voxcpm:
-      type: command
-      command: "voxcpm --ref ~/voice.wav --text-file {input_path} --out {output_path}"
-      output_format: mp3
-      voice_compatible: true
-```
-
-For STT, point `HERMES_LOCAL_STT_COMMAND` at an argv-tokenized template. It runs without implicit shell interpretation; wrap it in `sh -c`, `cmd /c`, or PowerShell explicitly if the trusted local command requires shell syntax. Supported placeholders: `{input_path}`, `{output_path}`, `{format}`, `{voice}`, `{model}`, `{speed}` (TTS); `{input_path}`, `{output_dir}`, `{language}`, `{model}` (STT). Any path-interacting CLI is automatically a plugin.
-
-**Full guides:** [TTS custom command providers](../../user-guide/features/tts.md#custom-command-providers) · [STT](../../user-guide/features/tts.md#voice-message-transcription-stt).
 
 ## Distribute via pip
 

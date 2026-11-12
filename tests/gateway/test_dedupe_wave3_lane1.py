@@ -43,7 +43,6 @@ _FACADE_MEMBER_NAMES = frozenset({
     "send_progress_messages",
     "send_tool_stage_embeds",
     "tool_stage_event_callback",
-    "voice_ack_callback",
 })
 
 _STAGE_CONSTANTS = {

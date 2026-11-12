@@ -1090,22 +1090,6 @@ class TurnRunner(_TurnRunnerCore):
 
     # ── ID-bearing lifecycle callbacks (agent thread) ───────────────────────────────────────
 
-    def voice_ack_callback(self, call_id, tool_name, args):
-        """tool_start_callback: speak a one-time ack in the voice channel."""
-        ctx = self._ctx
-        if ctx._voice_ack_fired[0] or ctx._voice_ack_guild[0] is None or not ctx._run_still_current():
-            return
-        ctx._voice_ack_fired[0] = True
-        adapter = self._runner.adapters.get(Platform.DISCORD)
-        if adapter is None or not hasattr(adapter, "play_ack_in_voice"):
-            return
-        try:
-            self._schedule(
-                adapter.play_ack_in_voice(ctx._voice_ack_guild[0]), "voice ack scheduling error", loop=ctx._voice_ack_loop,
-            )
-        except Exception as err:
-            logger.debug("voice ack schedule failed: %s", err)
-
     # Slack-native task cards ride agent.tool_start_callback / tool_complete_callback so start and
     # completion correlate by the REAL tool-call id; name-correlated progress_callback text events
     # would duplicate cards and mispair concurrent calls.
@@ -1146,9 +1130,7 @@ class TurnRunner(_TurnRunnerCore):
         })
 
     def combined_tool_start_callback(self, call_id, tool_name, args):
-        """Compose the voice ack + native task-card start consumers."""
-        if self._ctx._voice_ack_guild[0] is not None:
-            self.voice_ack_callback(call_id, tool_name, args)
+        """Native task-card start consumer (Slack)."""
         if self._ctx._native_slack_task_cards:
             self.native_tool_start_callback(call_id, tool_name, args)
         from gateway.run_claude_progress import claude_delegation_single_status, queue_claude_delegation_start
@@ -1293,9 +1275,6 @@ class TurnRunner(_TurnRunnerCore):
         if ctx.mute_notification_reply:
             return None, None, None, False
         stream_consumer = None
-        # The streaming-TTS consumer is created on the outer loop thread before run_sync launches;
-        # run_sync only reads it via the holder for delta-callback wiring.
-        stts = ctx.streaming_tts_consumer_holder[0]
         scfg = getattr(getattr(self._runner, 'config', None), 'streaming', None)
         if scfg is None:
             from gateway.config import StreamingConfig
@@ -1624,12 +1603,9 @@ class TurnRunner(_TurnRunnerCore):
         # ALWAYS attached (never gated to None): its body gates each event class, and subagent-
         # failure notices must fire even with tool_progress/thinking off.
         agent.tool_progress_callback = ctx.progress_callback
-        # Discord's one-time voice ack and Slack's task cards both ride the authoritative start
-        # callback, so neither infers identity from tool names.
-        agent.tool_start_callback = (
-            (ctx.native_tool_start_callback or ctx.voice_ack_callback)
-            if (ctx._voice_ack_guild[0] is not None or ctx._native_slack_task_cards) else None
-        )
+        # Slack's task cards ride the authoritative start callback, so they never infer
+        # identity from tool names.
+        agent.tool_start_callback = ctx.native_tool_start_callback if ctx._native_slack_task_cards else None
         agent.tool_complete_callback = ctx.native_tool_complete_callback if ctx._native_slack_task_cards else None
         agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
         agent.stream_delta_callback = stream_delta_cb

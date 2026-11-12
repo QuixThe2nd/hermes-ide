@@ -236,7 +236,7 @@ hermes lsp <subcommand>
 ## `hermes setup`
 
 ```bash
-hermes setup [model|tts|terminal|gateway|tools|agent] [--non-interactive] [--reset] [--quick] [--reconfigure] [--portal]
+hermes setup [model|terminal|gateway|tools|agent] [--non-interactive] [--reset] [--quick] [--reconfigure] [--portal]
 ```
 
 **首次运行：** 启动首次使用向导。
@@ -275,7 +275,7 @@ hermes portal [status|open|tools]
 |------------|-------------|
 | `status`（默认） | Portal 认证状态 + 每个工具的 Tool Gateway 路由摘要。不带子命令时也会显示。 |
 | `open` | 在默认浏览器中打开 `portal.nousresearch.com/manage-subscription`。 |
-| `tools` | 列出每个 Tool Gateway 合作伙伴（Firecrawl、FAL、OpenAI TTS、Modal）及哪些通过 Nous 路由。 |
+| `tools` | 列出每个 Tool Gateway 合作伙伴（Firecrawl、FAL、Modal）及哪些通过 Nous 路由。 |
 
 关于 gateway 本身的配置，请参阅 [Tool Gateway](../user-guide/features/tool-gateway.md)。关于一键设置路径，请参阅上方的 `hermes setup --portal`。
 
@@ -1025,9 +1025,9 @@ hermes claw migrate [options]
 
 ### 迁移内容
 
-迁移涵盖 30+ 个类别，包括 persona、memory、skill、模型 provider、消息平台、agent 行为、会话策略、MCP 服务器、TTS 等。条目要么**直接导入**到 Hermes 等效项，要么**归档**以供手动审查。
+迁移涵盖 30+ 个类别，包括 persona、memory、skill、模型 provider、消息平台、agent 行为、会话策略、MCP 服务器等。条目要么**直接导入**到 Hermes 等效项，要么**归档**以供手动审查。
 
-**直接导入：** SOUL.md、MEMORY.md、USER.md、AGENTS.md、skill（4 个源目录）、默认模型、自定义 provider、MCP 服务器、消息平台 token 和许可名单（Telegram、Discord、Slack、WhatsApp、Signal、Matrix、Mattermost）、agent 默认值（推理努力程度、压缩、时区、沙箱）、审批规则、TTS 配置、浏览器设置、工具设置、执行超时、命令许可名单、gateway 配置以及来自 3 个来源的 API 密钥。
+**直接导入：** SOUL.md、MEMORY.md、USER.md、AGENTS.md、skill（4 个源目录）、默认模型、自定义 provider、MCP 服务器、消息平台 token 和许可名单（Telegram、Discord、Slack、WhatsApp、Signal、Matrix、Mattermost）、agent 默认值（推理努力程度、压缩、时区、沙箱）、审批规则、浏览器设置、工具设置、执行超时、命令许可名单、gateway 配置以及来自 3 个来源的 API 密钥。
 
 **归档以供手动审查：** Cron 任务、plugin、hook/webhook、memory 后端（QMD）、skill 注册表配置、UI/身份、日志、多 agent 设置、频道绑定、IDENTITY.md、TOOLS.md、HEARTBEAT.md、BOOTSTRAP.md。
 

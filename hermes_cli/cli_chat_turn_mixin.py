@@ -44,17 +44,15 @@ class CLIChatTurnMixin:
             return
         GatewayRunner._apply_fallback_chain_to_agent(agent, self._fallback_model)
 
-    def chat(self, message, images: list = None, voice_input: bool = False) -> Optional[str]:
+    def chat(self, message, images: list = None) -> Optional[str]:
         """Run one user turn; returns the agent's response, or None on error.
 
         Input typed while the agent runs goes to ``_interrupt_queue`` (separate from
         ``_pending_input`` so process_loop and the interrupt monitor never compete); an
-        interrupting message is re-queued as the next turn. ``voice_input`` gates the
-        concise voice-response prefix.
+        interrupting message is re-queued as the next turn.
 
         Args: message: The user's message (str or multimodal content list) images: Optional list of Path
-        objects for attached images voice_input: True when the message came from voice transcription (gates
-        the concise voice-response prefix, #65827)
+        objects for attached images
         """
         from cli import ChatConsole, _ChatTurn, _DIM, _RST, _accent_hex, _cprint, set_secret_capture_callback
         from tools.process_registry_notifications import TimelineNotification
@@ -106,7 +104,6 @@ class CLIChatTurnMixin:
                 # Not part of _reset_stream_state: must persist across intermediate turn
                 # boundaries (tool-calling loops), reset once per user turn.
                 self._reasoning_shown_this_turn = False
-                self._chat_setup_turn_audio(turn, message, voice_input)
                 # Per-prompt elapsed timer — frozen when the agent thread finishes.
                 self._prompt_start_time = time.time()
                 self._prompt_duration = 0.0
@@ -119,32 +116,6 @@ class CLIChatTurnMixin:
             except Exception as e:
                 print(f"Error: {e}")
                 return None
-            finally:
-                self._chat_release_turn_audio(turn)
-
-    def _chat_release_turn_audio(self, turn):
-        """Every exit path: stop the thinking sound, send the TTS sentinel, cut TTS only if abnormal."""
-        from cli import logger
-        if turn.thinking_started:
-            try:
-                from tools.voice_mode import stop_thinking_sound
-                stop_thinking_sound()
-            except Exception:
-                pass
-        # Safety-net sentinel for exception paths that skipped _chat_settle_turn's; a
-        # duplicate is harmless (stream_tts_to_speaker exits on the first None).
-        # stop_event only on abnormal exit: after a normal drain it would race the
-        # playback worker and cut the final sentence mid-audio.
-        if turn.text_queue is not None:
-            try:
-                turn.text_queue.put_nowait(None)
-            except Exception:
-                pass
-        if turn.stop_event is not None and not turn.tts_normal_exit:
-            logger.info("TTS CUT: exception finally block setting stop_event")
-            turn.stop_event.set()
-        if turn.tts_thread is not None and turn.tts_thread.is_alive():
-            turn.tts_thread.join(timeout=5)
 
     def _chat_expand_context_references(self, message: str):
         """Expand ``@file:``/``@diff``/``@folder:`` references.
@@ -243,66 +214,6 @@ class CLIChatTurnMixin:
             agent._pending_cli_user_message = staged_user_message
             self.conversation_history.append(staged_user_message)
 
-    def _chat_setup_turn_audio(self, turn, message, voice_input):
-        """Arm the full-duplex listener and the streaming-TTS pipeline for this turn (voice mode only)."""
-        from cli import _ACCENT, _RST, _STREAM_PAD, _cprint, datetime
-        if getattr(turn, "mute_notification_reply", False):
-            return
-        # Continuous voice mode: arm the mic NOW (utterance-submit), not at TTS playback —
-        # it spans generation (speech interrupts the turn) and playback (speech cuts TTS)
-        # and disarms itself when the turn is done. See _voice_full_duplex_listener.
-        if self._voice_mode and self._voice_continuous:
-            self._voice_last_tts_text = ""
-            threading.Thread(target=self._voice_full_duplex_listener, daemon=True).start()
-
-        # Streaming TTS: any working provider speaks sentence-by-sentence as tokens arrive.
-        if self._voice_tts:
-            try:
-                from tools.tts_tool import _import_sounddevice, check_tts_requirements
-                from tools.tts_tool_speaker import stream_tts_to_speaker
-                _import_sounddevice()
-                turn.use_streaming_tts = check_tts_requirements()
-            except Exception:
-                pass
-
-        if turn.use_streaming_tts:
-            turn.text_queue = queue.Queue()
-            turn.stop_event = threading.Event()
-
-            # display_callback only when token streaming is off: with streaming on,
-            # _stream_delta already renders the text and this would print it twice.
-            def display_callback(sentence: str):
-                if not turn.box_opened:
-                    turn.box_opened = True
-                    label = " ☤ Hermes "
-                    if self.show_timestamps:
-                        label = f"{label}{datetime.now().strftime(self.timestamp_format)} "
-                    w = self._scrollback_box_width(getattr(self.console, "width", 80))
-                    fill = w - 2 - self._status_bar_display_width(label)
-                    _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
-                _cprint(f"{_STREAM_PAD}{sentence.rstrip()}")
-
-            turn.tts_thread = threading.Thread(
-                target=stream_tts_to_speaker, args=(turn.text_queue, turn.stop_event, self._voice_tts_done),
-                kwargs={"display_callback": None if self.streaming_enabled else display_callback},
-                daemon=True,
-            )
-            turn.tts_thread.start()
-            # Barge-in paths (voice key, full-duplex listener) cut playback via this event.
-            self._voice_tts_stop = turn.stop_event
-
-            def stream_callback(delta: str):
-                turn.text_queue.put(delta)
-                # Track what is being spoken so a playback-phase barge capture can be
-                # checked against it (echo guard).
-                self._voice_last_tts_text = (self._voice_last_tts_text or "") + delta
-            turn.stream_callback = stream_callback
-
-        # API-call-local only — run_conversation persists the original clean user message.
-        if voice_input and isinstance(message, str):
-            turn.voice_prefix = ("[Voice input — respond concisely and conversationally, "
-                                 "2-3 sentences max. No code blocks or markdown.] ")
-
     def _chat_run_agent(self, turn, message):
         """Agent-thread body: bind per-thread callbacks and session key, then run the turn."""
         from cli import (
@@ -324,7 +235,7 @@ class CLIChatTurnMixin:
         except Exception:
             reset_current_session_key = None  # type: ignore[assignment]
             _session_token = None
-        agent_message = turn.voice_prefix + message if turn.voice_prefix else message
+        agent_message = message
         # One-shot /model and /reload-skills notes; _prepend_note_to_message also handles
         # multimodal content-part lists (string concat raised TypeError with an image).
         for _note_attr in ("_pending_model_switch_note", "_pending_skills_reload_note"):
@@ -332,15 +243,11 @@ class CLIChatTurnMixin:
             if _note:
                 agent_message = _prepend_note_to_message(agent_message, _note)
                 setattr(self, _note_attr, None)
-        # Barged mid-speech (VAD or record key)? Tell the model it was cut off.
-        from tools.tts_streaming import SPEECH_INTERRUPTED_NOTE, take_speech_interrupted
-        if take_speech_interrupted():
-            agent_message = _prepend_note_to_message(agent_message, SPEECH_INTERRUPTED_NOTE)
         _moa_cfg = getattr(self, "_pending_moa_config", None)
         self._pending_moa_config = None
-        # Notes and voice prefix are API-local: the staged input stays the durable transcript
+        # Notes are API-local: the staged input stays the durable transcript
         # value so a close-path marker follows the same dict instead of a second user row.
-        _persist_clean_user_message = message if (turn.voice_prefix or agent_message != message) else None
+        _persist_clean_user_message = message if agent_message != message else None
         _one_turn_model_restore = getattr(self, "_pending_one_turn_model_restore", None)
         self._pending_one_turn_model_restore = None
         try:
@@ -389,17 +296,6 @@ class CLIChatTurnMixin:
     def _chat_monitor_agent_thread(self, turn, agent_thread):
         """Poll the interrupt queue while the agent thread runs; returns the interrupting message (or None)."""
         from cli import _hermes_home, logger
-        # Ambient "thinking" blips in voice mode; skipped per-blip while TTS speaks, the mic
-        # records or a barge capture is live. voice.thinking_sound gates it (default on).
-        if self._voice_mode:
-            try:
-                from tools.voice_mode import start_thinking_sound
-                turn.thinking_started = start_thinking_sound(should_play=lambda: (
-                    self._voice_tts_done.is_set() and not self._voice_recording
-                    and not self._voice_barge_capture.is_set()))
-            except Exception:
-                turn.thinking_started = False
-
         interrupt_msg = None
         while agent_thread.is_alive():
             try:
@@ -422,8 +318,6 @@ class CLIChatTurnMixin:
                 interrupt_msg = None
                 continue
             print("\n⚡ New message detected, interrupting...")
-            if turn.stop_event is not None:
-                turn.stop_event.set()
             self.agent.interrupt(interrupt_msg)
             # Modal prompts gate input until reset — otherwise the CLI freezes after an
             # interrupt until the prompt's own timeout.
@@ -461,7 +355,7 @@ class CLIChatTurnMixin:
         return interrupt_msg
 
     def _chat_settle_turn(self, turn):
-        """After the agent thread ends: freeze timers, flush streams, drain TTS, sync history/session id."""
+        """After the agent thread ends: freeze timers, flush streams, sync history/session id."""
         if self._prompt_start_time is not None:
             self._prompt_duration = max(0.0, time.time() - self._prompt_start_time)
             self._prompt_start_time = None
@@ -475,13 +369,6 @@ class CLIChatTurnMixin:
         except Exception:
             pass
         self._flush_stream()
-        if turn.use_streaming_tts and turn.text_queue is not None:
-            turn.text_queue.put(None)  # end-of-text sentinel
-            if turn.tts_thread is not None:
-                turn.tts_thread.join(timeout=120)
-                # A timed-out join leaves tts_normal_exit False so the release path's
-                # stop_event kills the runaway worker.
-                turn.tts_normal_exit = not turn.tts_thread.is_alive()
         # Drain the StdoutProxy buffer so tool/status lines render ABOVE the response
         # box; the sleep lets the renderer paint before we draw.
         sys.stdout.flush()
@@ -516,10 +403,6 @@ class CLIChatTurnMixin:
                 provider=str(getattr(self.agent, "provider", "") or self.provider or ""),
                 model=str(getattr(self.agent, "model", "") or self.model or ""),
                 failure_reason=turn.result.get("failure_reason"))
-            # Stop continuous voice on persistent errors (e.g. 429) — else error→record→error loops.
-            if self._voice_continuous:
-                self._voice_continuous = False
-                _cprint(f"\n{_DIM}Continuous voice mode stopped due to error.{_RST}")
 
         pending_message, _show_interrupt_marker = self._chat_resolve_interrupt(
             turn, agent_thread, interrupt_msg, response)
@@ -550,10 +433,6 @@ class CLIChatTurnMixin:
                         f"response may be incomplete{_RST}"
                     ),
                     platform="cli", user_config=getattr(self.agent, "_notification_config", None))
-
-        # Batch TTS unless streaming TTS already spoke the response.
-        if self._voice_tts and response and not turn.use_streaming_tts:
-            self._voice_speak_response_async(response)
 
         # Re-queue the interrupt message (plus any that arrived meanwhile) as the next
         # prompt. Only reached in busy_input_mode == "interrupt"; "queue" mode routes
@@ -652,7 +531,7 @@ class CLIChatTurnMixin:
                 _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")
 
     def _chat_print_response_panel(self, turn, response):
-        """Response box (close TTS-drawn box / post-stream transform / Rich Panel), then billing CTA."""
+        """Response box (post-stream transform / Rich Panel), then billing CTA."""
         from cli import (
             ChatConsole, _ACCENT, _RST, _cprint, _maybe_remap_for_light_mode, _post_stream_transform_output,
             _render_final_assistant_content,
@@ -671,10 +550,7 @@ class CLIChatTurnMixin:
 
             is_error_response = turn.result and (turn.result.get("failed") or turn.result.get("partial"))
             already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
-            if turn.use_streaming_tts and turn.box_opened and not is_error_response:
-                # Text already printed sentence-by-sentence; just close the box.
-                _cprint(f"\n{_ACCENT}╰{'─' * (self._scrollback_box_width() - 2)}╯{_RST}")
-            elif already_streamed:
+            if already_streamed:
                 # _flush_stream() already closed the streamed box; a post-stream transform
                 # hook shows a suffix for append-only changes, else the full replacement.
                 _post_stream_text = _post_stream_transform_output(response, turn.result)

@@ -151,7 +151,7 @@ sudo hermes gateway install --system   # 仅 Linux：开机自启系统服务
 **接收**（用户 → Agent）：
 
 - **图片** — PNG、JPEG、GIF、WebP（通过魔数自动检测）
-- **音频** — MP3、OGG、WAV、M4A（若已配置 Whisper，语音消息将自动转录）
+- **音频** — MP3、OGG、WAV、M4A（下载为文件附件；Agent 自行处理音频）
 - **文档** — PDF、ZIP 及其他文件类型
 
 **发送**（Agent → 用户）：

@@ -75,10 +75,10 @@ class TestHintMessages:
 
 
     def test_busy_input_hint_cli_steer(self):
+        """The /busy command is gone; every mode falls back to the /stop hint."""
         msg = busy_input_hint_cli("steer")
-        assert "/busy interrupt" in msg
-        assert "/busy queue" in msg
-        assert "steer" in msg.lower()
+        assert "/stop" in msg
+        assert "/busy" not in msg
 
 
     def test_hints_are_not_empty(self):

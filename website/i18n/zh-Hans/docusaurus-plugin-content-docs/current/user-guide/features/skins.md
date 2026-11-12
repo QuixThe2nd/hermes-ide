@@ -66,7 +66,6 @@ display:
 | `session_label` | 会话标签颜色 | `#DAA520` |
 | `session_border` | 会话 ID 弱化边框颜色 | `#8B8682` |
 | `status_bar_bg` | TUI 状态/用量栏的背景色 | `#1a1a2e` |
-| `voice_status_bg` | 语音模式状态徽章的背景色 | `#1a1a2e` |
 | `selection_bg` | TUI 鼠标选区高亮的背景色。未设置时回退到 `completion_menu_current_bg`。 | `#333355` |
 | `completion_menu_bg` | 补全菜单列表的背景色 | `#1a1a2e` |
 | `completion_menu_current_bg` | 当前活动补全行的背景色 | `#333355` |
@@ -139,7 +138,6 @@ colors:
   session_label: "#DAA520"
   session_border: "#8B8682"
   status_bar_bg: "#1a1a2e"
-  voice_status_bg: "#1a1a2e"
   selection_bg: "#333355"
   completion_menu_bg: "#1a1a2e"
   completion_menu_current_bg: "#333355"

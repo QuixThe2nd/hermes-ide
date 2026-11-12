@@ -422,7 +422,7 @@ You've got a working team Telegram assistant. Here are some next steps:
 
 - **[Security Guide](../user-guide/security.md)** — deep dive into authorization, execution safeguards, and container isolation
 - **[Messaging Gateway](../user-guide/messaging/index.md)** — full reference for gateway architecture, session management, and chat commands
-- **[Telegram Setup](../user-guide/messaging/telegram.md)** — platform-specific details including voice messages and TTS
+- **[Telegram Setup](../user-guide/messaging/telegram.md)** — platform-specific details including voice message handling
 - **[Scheduled Tasks](../user-guide/features/cron.md)** — advanced cron scheduling with delivery options and cron expressions
 - **[Context Files](../user-guide/features/context-files.md)** — AGENTS.md, SOUL.md, and .cursorrules for project knowledge
 - **[Personality](../user-guide/features/personality.md)** — built-in personality presets and custom persona definitions

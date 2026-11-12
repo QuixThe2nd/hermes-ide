@@ -12,7 +12,7 @@ Hermes Agent 通过基于浏览器的 OAuth 登录流程支持 xAI Grok，认证
 
 该传输层复用 `codex_responses` 适配器（xAI 暴露了 Responses 风格的端点），因此推理、工具调用、流式传输和 prompt（提示词）缓存无需任何适配器改动即可正常工作。
 
-同一 OAuth bearer token 也会被 Hermes 中所有直连 xAI 的功能复用——TTS、图像生成、视频生成和转录——因此单次登录即可覆盖全部四项功能。
+同一 OAuth bearer token 也会被 Hermes 中所有直连 xAI 的功能复用——图像生成、视频生成和 X 搜索——因此单次登录即可覆盖全部功能。
 
 ## 概览
 
@@ -126,7 +126,7 @@ hermes --provider x-ai-oauth       # 别名
 hermes --provider xai-grok-oauth   # 别名
 ```
 
-## 直连 xAI 工具（TTS / 图像 / 视频 / 转录 / X 搜索）
+## 直连 xAI 工具（图像 / 视频 / X 搜索）
 
 通过 OAuth 登录后，每个直连 xAI 的工具都会自动复用同一 bearer token——**无需单独配置**，除非你更倾向于使用 API 密钥。
 
@@ -134,7 +134,6 @@ hermes --provider xai-grok-oauth   # 别名
 
 ```bash
 hermes tools
-# → Text-to-Speech       → "xAI TTS"
 # → Image Generation     → "xAI Grok Imagine (image)"
 # → Video Generation     → "xAI Grok Imagine"
 # → X (Twitter) Search   → "xAI Grok OAuth (SuperGrok / X Premium+)"
@@ -165,7 +164,6 @@ hermes tools
 | 图像 | `grok-imagine-image-quality` | 更高保真度；约 10–20 秒 |
 | 视频 | `grok-imagine-video` | 文本转视频 |
 | 视频 | `grok-imagine-video-1.5-preview` | 图像转视频；日期别名 `grok-imagine-video-1.5-2026-05-30` |
-| TTS | （默认音色） | xAI `/v1/tts` 端点 |
 
 对话模型目录从磁盘上的 `models.dev` 缓存实时获取；缓存刷新后，新的 xAI 模型会自动出现。`grok-4.6` 始终固定在列表顶部。
 
@@ -240,4 +238,3 @@ hermes auth logout xai-oauth
 - [AI Providers 参考](../integrations/providers.md)
 - [环境变量](../reference/environment-variables.md)
 - [配置](../user-guide/configuration.md)
-- [语音与 TTS](../user-guide/features/tts.md)

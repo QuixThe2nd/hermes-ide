@@ -80,7 +80,7 @@ iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 See the full **[Installation Guide](./getting-started/installation.md)** for what the installer does, the per-user vs root layout, and Windows-specific notes. For the complete platform support matrix, see **[Platform Support](./getting-started/platform-support.md)**.
 
 :::tip Fastest path to a working agent
-After installing, run `hermes setup --portal` — one OAuth covers a model plus all four Tool Gateway tools (web search, image generation, TTS, browser). See [Nous Portal](./integrations/nous-portal.md).
+After installing, run `hermes setup --portal` — one OAuth covers a model plus the Tool Gateway tools (web search, image generation, browser). See [Nous Portal](./integrations/nous-portal.md).
 :::
 
 ## What is Hermes Agent?
@@ -102,8 +102,6 @@ It's not a coding copilot tethered to an IDE or a chatbot wrapper around a singl
 | 📚 **[Skills System](./user-guide/features/skills.md)**                     | Procedural memory the agent creates and reuses                        |
 | 🔌 **[MCP Integration](./user-guide/features/mcp.md)**                      | Connect to MCP servers, filter their tools, and extend Hermes safely  |
 | 🧭 **[Use MCP with Hermes](./guides/use-mcp-with-hermes.md)**               | Practical MCP setup patterns, examples, and tutorials                 |
-| 🎙️ **[Voice Mode](./user-guide/features/voice-mode.md)**                    | Real-time voice interaction in CLI, Telegram, Discord, and Discord VC |
-| 🗣️ **[Use Voice Mode with Hermes](./guides/use-voice-mode-with-hermes.md)** | Hands-on setup and usage patterns for Hermes voice workflows          |
 | 🎭 **[Personality & SOUL.md](./user-guide/features/personality.md)**        | Define Hermes' default voice with a global SOUL.md                    |
 | 📄 **[Context Files](./user-guide/features/context-files.md)**              | Project context files that shape every conversation                   |
 | 🔒 **[Security](./user-guide/security.md)**                                 | Execution safeguards, authorization, container isolation                 |
@@ -121,7 +119,7 @@ It's not a coding copilot tethered to an IDE or a chatbot wrapper around a singl
 - **[Bot Mode](./user-guide/bot-mode.md)** — Build a durable team of specialist Bots that work together in group chats and through `@mentions`
 - **Delegates & parallelizes** — Spawn isolated subagents for parallel workstreams. Programmatic Tool Calling via `execute_code` collapses multi-step pipelines into single inference calls
 - **Open standard skills** — Compatible with [agentskills.io](https://agentskills.io). Skills are portable, shareable, and community-contributed via the Skills Hub
-- **Full web control** — Search, extract, browse, vision, image generation, TTS — one subscription via [Nous Portal](./integrations/nous-portal.md) bundles all of them
+- **Full web control** — Search, extract, browse, vision, image generation — one subscription via [Nous Portal](./integrations/nous-portal.md) bundles all of them
 - **MCP support** — Connect to any MCP server for extended tool capabilities
 - **Research-ready** — Batch processing, trajectory export, RL training with Atropos. Built by [Nous Research](https://nousresearch.com) — the lab behind Hermes, Nomos, and Psyche models
 

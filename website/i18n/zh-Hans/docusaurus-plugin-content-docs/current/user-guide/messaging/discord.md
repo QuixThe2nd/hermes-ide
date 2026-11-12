@@ -691,21 +691,13 @@ Cron 任务和提醒投递到你在每个任务上配置的显式目标 — 例�
 
 Gateway 生命周期通知（重启/关机）发送到平台的**通知频道**：在目标频道中运行 `/setnotify` 指定它，运行 `/clearnotify` 移除它。
 
-## 语音消息
+## 语音消息附件
 
-Hermes Agent 支持 Discord 语音消息：
-
-- **传入语音消息**使用配置的 STT 提供商自动转录：本地 `faster-whisper`（无需密钥）、Groq Whisper（`GROQ_API_KEY`）或 OpenAI Whisper（`VOICE_TOOLS_OPENAI_KEY`）。
-- **文字转语音**：使用 `/voice tts` 让机器人在文字回复的同时发送语音音频响应。
-- **Discord 语音频道**：Hermes 还可以加入语音频道，聆听用户说话，并在频道中回话。
-
-完整的设置和操作指南，请参阅：
-- [语音模式](/user-guide/features/voice-mode)
-- [与 Hermes 使用语音模式](/guides/use-voice-mode-with-hermes)
+Discord 语音消息以普通音频文件附件的形式到达。Agent 只能通过处理附件文件来听取其内容（例如通过技能或 `execute_code`）；Hermes 不再内置转录、TTS 或语音频道播放——外发音频文件通过下方的常规附件通道投递。
 
 ## 论坛频道
 
-Discord 论坛频道（类型 15）不接受直接消息——论坛中的每个帖子都必须是线程。Hermes 自动检测论坛频道，并在需要发送消息时创建新的线程帖子，因此 `send_message`、TTS、图片、语音消息和文件附件都无需 agent 进行特殊处理即可正常工作。
+Discord 论坛频道（类型 15）不接受直接消息——论坛中的每个帖子都必须是线程。Hermes 自动检测论坛频道，并在需要发送消息时创建新的线程帖子，因此 `send_message`、图片、音频文件和文件附件都无需 agent 进行特殊处理即可正常工作。
 
 - **线程名称**从消息的第一行派生（去除 markdown 标题前缀，上限 100 个字符）。当消息仅包含附件时，文件名用作备用线程名称。
 - **附件**随新线程的起始消息一起发送——无需单独上传步骤，不会出现部分发送。

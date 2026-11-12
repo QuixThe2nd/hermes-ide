@@ -65,7 +65,6 @@ def _make_adapter(bridge_script: str = "/tmp/test-bridge.js",
     adapter._active_sessions = {}
     adapter._pending_messages = {}
     adapter._background_tasks = set()
-    adapter._auto_tts_disabled_chats = set()
     adapter._message_queue = asyncio.Queue()
     adapter._http_session = None
     return adapter

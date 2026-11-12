@@ -22,15 +22,13 @@ Hermes 有多种不同的可插拔接口——有些使用 Python `register_*` A
 | **视频生成后端** | [视频生成提供商插件](../video-gen-provider-plugin.md) |
 | **网页搜索/提取后端** | [网页搜索提供商插件](../web-search-provider-plugin.md) |
 | **密钥管理器后端**（保险库 / 密码管理器 / 系统钥匙串） | [密钥源插件](../secret-source-plugin.md) |
-| **TTS 后端**（任意 CLI——Piper、VoxCPM、Kokoro、声音克隆等） | [TTS 自定义命令提供商](../../user-guide/features/tts.md#custom-command-providers)——配置驱动，无需 Python |
-| **STT 后端**（自定义 whisper / ASR CLI） | [语音消息转录](../../user-guide/features/tts.md#voice-message-transcription-stt)——将 `HERMES_LOCAL_STT_COMMAND` 设置为 shell 模板 |
 | **通过 MCP 接入外部工具**（文件系统、GitHub、Linear、任意 MCP 服务器） | [MCP](../../user-guide/features/mcp.md)——在 `config.yaml` 中声明 `mcp_servers.<name>` |
 | **网关事件钩子**（在启动、会话事件、命令时触发） | [事件钩子](../../user-guide/features/hooks.md#gateway-event-hooks)——将 `HOOK.yaml` + `handler.py` 放入 `~/.hermes/hooks/<name>/` |
 | **Shell 钩子**（在事件发生时运行 shell 命令） | [Shell 钩子](../../user-guide/features/hooks.md#shell-hooks)——在 `config.yaml` 的 `hooks:` 下声明 |
 | **额外技能来源**（自定义 GitHub 仓库、私有技能索引） | [技能](../../user-guide/features/skills.md)——`hermes skills tap add <repo>` · [发布 tap](../../user-guide/features/skills.md#publishing-a-custom-skill-tap) |
 | 一流的**核心**推理提供商（非插件） | [添加提供商](../adding-providers.md) |
 
-查看完整的[可插拔接口表](../../user-guide/features/plugins.md#pluggable-interfaces--where-to-go-for-each)，获取每种扩展接口的汇总视图，包括配置驱动（TTS、STT、MCP、shell 钩子）和放入目录（网关钩子）两种方式。
+查看完整的[可插拔接口表](../../user-guide/features/plugins.md#pluggable-interfaces--where-to-go-for-each)，获取每种扩展接口的汇总视图，包括配置驱动（MCP、shell 钩子）和放入目录（网关钩子）两种方式。
 :::
 
 ## 你将构建什么
@@ -1030,25 +1028,6 @@ hermes skills install myorg/skills-repo/my-workflow
 发布你自己的 tap 只需一个包含 `skills/<skill-name>/SKILL.md` 目录的 GitHub 仓库——无需服务器或注册表注册。
 
 **完整指南：** [技能中心](../../user-guide/features/skills.md#skills-hub) · [发布自定义 tap](../../user-guide/features/skills.md#publishing-a-custom-skill-tap)（仓库结构、最小示例、非默认路径、信任级别）。
-
-### 通过命令模板接入 TTS / STT
-
-任何读写音频或文本的 CLI 都可以通过 `config.yaml` 接入——无需 Python 代码：
-
-```yaml
-tts:
-  provider: voxcpm
-  providers:
-    voxcpm:
-      type: command
-      command: "voxcpm --ref ~/voice.wav --text-file {input_path} --out {output_path}"
-      output_format: mp3
-      voice_compatible: true
-```
-
-对于 STT，将 `HERMES_LOCAL_STT_COMMAND` 指向一个 shell 模板。支持的占位符：`{input_path}`、`{output_path}`、`{format}`、`{voice}`、`{model}`、`{speed}`（TTS）；`{input_path}`、`{output_dir}`、`{language}`、`{model}`（STT）。任何与路径交互的 CLI 都自动成为插件。
-
-**完整指南：** [TTS 自定义命令提供商](../../user-guide/features/tts.md#custom-command-providers) · [STT](../../user-guide/features/tts.md#voice-message-transcription-stt)。
 
 ## 通过 pip 分发
 

@@ -6,7 +6,7 @@ description: "Set up Hermes Agent as a Discord bot"
 
 # Discord Setup
 
-Hermes Agent integrates with Discord as a bot, letting you chat with your AI assistant through direct messages or server channels. The bot receives your messages, processes them through the Hermes Agent pipeline (including tool use, memory, and reasoning), and responds in real time. It supports text, voice messages, file attachments, and slash commands.
+Hermes Agent integrates with Discord as a bot, letting you chat with your AI assistant through direct messages or server channels. The bot receives your messages, processes them through the Hermes Agent pipeline (including tool use, memory, and reasoning), and responds in real time. It supports text, audio/voice message attachments, file attachments, and slash commands.
 
 Before setup, here's the part most people want to know: how Hermes behaves once it's in your server.
 
@@ -304,7 +304,7 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_FREE_RESPONSE_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds without requiring an `@mention`, even when `DISCORD_REQUIRE_MENTION` is `true`. |
 | `DISCORD_IGNORE_NO_MENTION` | No | `true` | When `true`, the bot stays silent if a message `@mentions` other users but does **not** mention the bot. Prevents the bot from jumping into conversations directed at other people. Only applies in server channels, not DMs. |
 | `DISCORD_AUTO_THREAD` | No | `true` | When `true`, automatically creates a new thread for every `@mention` in a text channel, so each conversation is isolated (similar to Slack behavior). Messages already inside threads or DMs are unaffected. |
-| `DISCORD_FREE_RESPONSE_AUTO_THREAD` | No | `false` | When `true`, free-response channels (listed in `DISCORD_FREE_RESPONSE_CHANNELS`) also auto-create a thread for each top-level message, while staying mention-free. Default `false` preserves the lightweight inline-chat behavior. Requires `DISCORD_AUTO_THREAD=true`; `DISCORD_NO_THREAD_CHANNELS` still wins, and voice-linked channels always ignore it. |
+| `DISCORD_FREE_RESPONSE_AUTO_THREAD` | No | `false` | When `true`, free-response channels (listed in `DISCORD_FREE_RESPONSE_CHANNELS`) also auto-create a thread for each top-level message, while staying mention-free. Default `false` preserves the lightweight inline-chat behavior. Requires `DISCORD_AUTO_THREAD=true`; `DISCORD_NO_THREAD_CHANNELS` still wins. |
 | `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. By default, either enabled mode still requires a literal inline mention; see the next setting. |
 | `DISCORD_BOTS_REQUIRE_INLINE_MENTION` | No | `true` | Require a literal `<@BOT_ID>` / `<@!BOT_ID>` token to start a bot handoff. Reply metadata alone does not start one. Brief same-sender/channel continuations are admitted as described below. Set to `false` only for trusted relays needing legacy admission. Human messages are unaffected. |
 | `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
@@ -378,8 +378,6 @@ discord:
     max_dispatches: 10            # Recovery dispatch cap per reconnect
     max_attempts: 3               # Lifetime re-dispatch cap per message
   channel_prompts: {}             # Per-channel ephemeral system prompts
-  voice_channel_inactivity_timeout_seconds: 300  # Set 0 to stay in VC until explicit /voice leave
-  voice_playback_timeout_seconds: 120             # Minimum playback watchdog; long clips get duration+padding
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
     everyone: false               # @everyone / @here pings (default: false)
     roles: false                  # @role pings (default: false)
@@ -448,7 +446,7 @@ discord:
   free_response_auto_thread: true  # thread every top-level message there
 ```
 
-Requires `discord.auto_thread: true` (with it off, nothing threads anywhere). [`discord.no_thread_channels`](#discordno_thread_channels) still wins, voice-linked text channels always reply inline, and reply-type messages follow [`discord.auto_thread_replies`](#discordauto_thread_replies) (auto-threaded by default).
+Requires `discord.auto_thread: true` (with it off, nothing threads anywhere). [`discord.no_thread_channels`](#discordno_thread_channels) still wins and reply-type messages follow [`discord.auto_thread_replies`](#discordauto_thread_replies) (auto-threaded by default).
 
 `DISCORD_FREE_RESPONSE_AUTO_THREAD` wins over the `config.yaml` key when both are set — the YAML value only seeds the env var when it isn't already set, like every other `discord.*` bridge.
 
@@ -566,7 +564,7 @@ discord:
   auto_thread_replies: false  # answer quote-replies inline instead of threading them
 ```
 
-Requires `discord.auto_thread: true`. All other exclusions still apply: DMs and existing threads are unaffected, and [`discord.no_thread_channels`](#discordno_thread_channels), voice-linked text channels, and free-response channels (unless [`discord.free_response_auto_thread`](#discordfree_response_auto_thread) is `true`) keep their inline replies.
+Requires `discord.auto_thread: true`. All other exclusions still apply: DMs and existing threads are unaffected, and [`discord.no_thread_channels`](#discordno_thread_channels) and free-response channels (unless [`discord.free_response_auto_thread`](#discordfree_response_auto_thread) is `true`) keep their inline replies.
 
 #### `discord.reactions`
 
@@ -900,54 +898,13 @@ Cron jobs and reminders deliver to an explicit target you configure per job — 
 
 Gateway lifecycle notices (restart/shutdown) go to the platform's **notification channel**: run `/setnotify` in the destination channel to designate it, and `/clearnotify` to remove it.
 
-## Voice Messages
+## Voice Message Attachments
 
-Hermes Agent supports Discord voice messages:
-
-- **Incoming voice messages** are automatically transcribed using the configured STT provider: local `faster-whisper` (no key), Groq Whisper (`GROQ_API_KEY`), or OpenAI Whisper (`VOICE_TOOLS_OPENAI_KEY`).
-- **Text-to-speech**: Use `/voice tts` to have the bot send spoken audio responses alongside text replies.
-- **Discord voice channels**: Hermes can also join a voice channel, listen to users speaking, and talk back in the channel.
-
-For the full setup and operational guide, see:
-- [Voice Mode](../features/voice-mode.md)
-- [Use Voice Mode with Hermes](../../guides/use-voice-mode-with-hermes.md)
-
-### Voice Channel Audio Effects (ambient + verbal acks)
-
-When the bot is in a voice channel, you can give it a more conversational feel: a short verbal acknowledgement ("let me look into that") before it starts working, and a subtle ambient "thinking" bed that plays underneath while tools run — the speech ducks the ambient down and swells it back when finished, similar to Grok voice mode.
-
-discord.py plays only one audio stream per connection, so Hermes installs a software mixer on the outgoing stream that sums an ambient loop, acknowledgements, and TTS replies into that single stream — they overlap instead of cutting each other off.
-
-This is **off by default**. Enable it in `config.yaml`:
-
-```yaml
-discord:
-  voice_fx:
-    enabled: true          # master switch
-    ambient_enabled: true  # idle "thinking" bed while tools run
-    ambient_path: ""       # custom loop file (any audio format); "" = built-in synthesised pad
-    ambient_gain: 0.18     # idle bed loudness (0.0–1.0)
-    duck_gain: 0.06        # ambient loudness while the bot is speaking
-    speech_gain: 1.0       # TTS / acknowledgement loudness
-    ack_enabled: true      # speak a short phrase before the first tool call of a turn
-    ack_phrases:           # picked at random; set to [] to disable the spoken ack
-      - "Let me look into that."
-      - "One moment."
-      - "Checking on that now."
-```
-
-Notes:
-- Set `voice_channel_inactivity_timeout_seconds: 0` if you want the bot to remain in the voice channel until an explicit `/voice leave` or manual disconnect. The default preserves the historical 300-second idle auto-leave.
-- `voice_playback_timeout_seconds` is a floor, not a hard cap for long TTS. Hermes probes the generated audio duration and waits for `duration + 30s` when that is longer than the configured floor.
-- The acknowledgement fires at most once per turn, only when the bot is in a voice channel and the mixer is active. It uses your configured TTS provider.
-- `ambient_path` accepts any file `ffmpeg` can decode; it's looped seamlessly. Leave it empty to use the built-in synthesised pad (no asset needed).
-- All settings live in `config.yaml` (not `.env`) — they're behavioral, not secrets.
-- When `voice_fx.enabled` is `false`, voice playback uses the original one-shot path and nothing changes.
-
+Discord voice messages arrive as regular audio file attachments. The agent can listen to their content only by processing the attached file (e.g. via a skill or `execute_code`); there is no built-in transcription, TTS, or voice-channel playback — outgoing audio files are delivered through the normal attachment lane below.
 
 ## Forum Channels
 
-Discord forum channels (type 15) don't accept direct messages — every post in a forum must be a thread. Hermes auto-detects forum channels and creates a new thread post whenever it needs to send there, so text replies, TTS, images, voice messages, and file attachments all work without special handling from the agent.
+Discord forum channels (type 15) don't accept direct messages — every post in a forum must be a thread. Hermes auto-detects forum channels and creates a new thread post whenever it needs to send there, so text replies, images, audio files, and file attachments all work without special handling from the agent.
 
 - **Thread name** is derived from the first line of the message (markdown heading prefix stripped, capped at 100 chars). When the message is attachment-only, the filename is used as the fallback thread name.
 - **Attachments** ride along on the starter message of the new thread — no separate upload step, no partial sends.

@@ -38,7 +38,6 @@ async def test_config_saved_during_connect_is_rescanned(tmp_path, monkeypatch, s
     runner._busy_text_modes_by_profile, runner._busy_input_modes_by_profile = {}, {}
     runner._register_config_hooks = lambda *a, **kw: None
     runner._configure_profile_adapter = lambda *a: None
-    runner._sync_voice_mode_state_to_adapter = lambda *a: None
     runner._restore_secondary_completion_ledgers = lambda *a: None
     runner._adapter_credential_claim = lambda *a: None
     runner._adapter_listener_claim = lambda *a: None

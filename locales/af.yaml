@@ -69,14 +69,6 @@ gateway:
     full_logs_hint:        "Vir volledige loglae, gebruik `hermes debug share` vanaf die CLI."
     share_hint:            "Deel hierdie skakels met die Hermes-span vir ondersteuning."
 
-  footer:
-    status:                "📎 Looptyd-voetstuk: **{state}**\nVelde: `{fields}`\nPlatform: `{platform}`"
-    usage:                 "Gebruik: `/footer [on|off|status]`"
-    saved:                 "📎 Looptyd-voetstuk: **{state}**{example}\n_(globaal gestoor — neem effek by die volgende boodskap)_"
-    example_line:          "\nVoorbeeld: `{preview}`"
-    state_on:              "AAN"
-    state_off:             "AF"
-
   goal:
     unavailable:           "Doelwitte is nie beskikbaar in hierdie sessie nie."
     no_goal_set:           "Geen doelwit gestel nie."
@@ -320,23 +312,6 @@ Hersinchronisasie loop outomaties hoogstens een keer per uur."
     mode_log:              "⚙️ Gereedskap-vordering: **LOG** — stil in die klets; gereedskaps-oproepe word na ~/.hermes/logs/tool_calls.log geskryf."
     saved_suffix:          "_(gestoor vir **{platform}** — neem effek by die volgende boodskap)_"
     save_failed:           "_(kon nie in konfigurasie stoor nie: {error})_"
-
-  voice:
-    enabled_voice_only:    "Stemmodus geaktiveer.\nEk sal met stem antwoord wanneer jy stemboodskappe stuur.\nGebruik /voice tts om stemantwoorde vir alle boodskappe te kry."
-    disabled_text:         "Stemmodus gedeaktiveer. Slegs teks-antwoorde."
-    tts_enabled:           "Outo-TTS geaktiveer.\nAlle antwoorde sal 'n stemboodskap insluit."
-    status_mode:           "Stemmodus: {label}"
-    status_channel:        "Stemkanaal: #{channel}"
-    status_participants:   "Deelnemers: {count}"
-    status_member:         "  - {name}{status}"
-    speaking:              " (praat)"
-    enabled_short:         "Stemmodus geaktiveer."
-    disabled_short:        "Stemmodus gedeaktiveer."
-    label_off:             "Af (slegs teks)"
-    label_voice_only:      "Aan (stemantwoord op stemboodskappe)"
-    label_all:             "TTS (stemantwoord op alle boodskappe)"
-    help:                  "{toggle}\n\n**Hoe /voice werk**\n• `/voice on` — stemantwoord wanneer jy 'n stemboodskap stuur\n• `/voice tts` — stemantwoord op *elke* boodskap\n• `/voice off` — terug na slegs-teks antwoorde\n• `/voice status` — wys die huidige modus\n• `/voice` (geen argument) — wissel vinnig tussen aan en af{channels}"
-    help_channels:         "\n\n**Lewendige stemkanale (Discord)**\n• Sluit eers by 'n stemkanaal aan, dan `/voice channel` — ek sluit aan, luister en praat my antwoorde\n• `/voice leave` — ontkoppel van die stemkanaal"
 
   shared:
     session_db_unavailable:      "Sessie-databasis is nie beskikbaar nie."

@@ -21,47 +21,28 @@ OPENCLAW_RESIDUE_FLAG = "openclaw_residue_cleanup"
 PROFILE_BUILD_FLAG = "profile_build_offered"
 
 
-# Busy-input hints are keyed by the effective busy_input_mode that was just
-# applied so the message matches reality; "interrupt" is the default branch.
+# Busy-input hints are keyed by the effective busy-input behavior that was just
+# applied so the message matches reality; the interrupt/redirect branch is the default.
 _BUSY_INPUT_HINTS_GATEWAY = {
-    "queue": (
-        "💡 First-time tip — I queued your message instead of interrupting. Send `/busy interrupt` to make new messages "
-        "stop the current task immediately, or `/busy status` to check. This notice won't appear again."
-    ),
-    "steer": (
-        "💡 First-time tip — I steered your message into the current run; it will arrive after the next tool "
-        "call instead of interrupting. Send `/busy interrupt` or `/busy queue` to change this, or `/busy "
-        "status` to check. This notice won't appear again."
-    ),
     "redirect": (
         "💡 First-time tip — I redirected the current run using your message. Completed work stays in "
-        "context, and `/stop` still cancels the task. Send `/busy queue` to wait for a separate turn, or "
-        "`/busy status` to check. This notice won't appear again."
+        "context, and `/stop` still cancels the task. This notice won't appear again."
     ),
 }
 _BUSY_INPUT_HINT_GATEWAY_DEFAULT = (
-    "💡 First-time tip — I just interrupted my current task to answer you. Send `/busy queue` to queue "
-    "follow-ups for after the current task instead, `/busy steer` to inject them mid-run without "
-    "interrupting, or `/busy status` to check. This notice won't appear again."
+    "💡 First-time tip — I just interrupted my current task to answer you. `/stop` cancels the task "
+    "outright. This notice won't appear again."
 )
 
 _BUSY_INPUT_HINTS_CLI = {
-    "queue": (
-        "(tip) Your message was queued for the next turn. Use /busy interrupt to make Enter stop the current "
-        "run instead, or /busy steer to inject mid-run. This tip only shows once."
-    ),
-    "steer": (
-        "(tip) Your message was steered into the current run; it arrives after the next tool call. Use /busy "
-        "interrupt or /busy queue to change this. This tip only shows once."
-    ),
     "redirect": (
         "(tip) Your correction redirected the current run without discarding completed work. Use /stop to "
-        "cancel or /busy queue to wait for a separate turn. This tip only shows once."
+        "cancel. This tip only shows once."
     ),
 }
 _BUSY_INPUT_HINT_CLI_DEFAULT = (
-    "(tip) Your message interrupted the current run. Use /busy queue to queue messages for the next turn "
-    "instead, or /busy steer to inject mid-run. This tip only shows once."
+    "(tip) Your message interrupted the current run. Use /stop to cancel the task outright. "
+    "This tip only shows once."
 )
 
 

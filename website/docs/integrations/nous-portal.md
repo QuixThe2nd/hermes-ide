@@ -56,10 +56,9 @@ The same subscription unlocks the [Tool Gateway](../user-guide/features/tool-gat
 |------|---------|--------------|
 | **Web search & extract** | Firecrawl | Agent-grade search and full-page extraction. No Firecrawl API key, no rate limit babysitting. |
 | **Image generation** | FAL | Nine models under one endpoint: FLUX 2 Klein 9B, FLUX 2 Pro, Z-Image Turbo, Nano Banana Pro (Gemini 3 Pro Image), GPT Image 1.5, GPT Image 2, Ideogram V3, Recraft V4 Pro, Qwen Image. |
-| **Text-to-speech** | OpenAI TTS | High-quality TTS without a separate OpenAI key. Enables [voice mode](../user-guide/features/voice-mode.md) across messaging platforms. |
 | **Cloud terminal sandbox** | Modal | Serverless terminal sandboxes for code execution (optional add-on). |
 
-Without the gateway, hooking each of those up means a Firecrawl account, a FAL account, an OpenAI key, and a Modal account — four separate signups, four separate dashboards, four separate top-up flows. With the gateway, all of it routes through one subscription.
+Without the gateway, hooking each of those up means a Firecrawl account, a FAL account, and a Modal account — separate signups, dashboards, and top-up flows. With the gateway, all of it routes through one subscription.
 
 You can also enable just specific gateway tools (e.g. web search but not image generation) — see [Mixing the gateway with your own backends](#mixing-the-gateway-with-your-own-backends) below.
 
@@ -100,7 +99,7 @@ This runs the full setup in one shot:
 2. Stores the refresh token at `~/.hermes/auth.json`
 3. Lets you pick a Nous model from the curated list (or skip to keep your current one)
 4. Sets Nous as your inference provider in `~/.hermes/config.yaml` (when you pick a model)
-5. Turns on the Tool Gateway (web, image, TTS, browser routing)
+5. Turns on the Tool Gateway (web, image, browser routing)
 6. Returns you to your terminal ready to `hermes chat`
 
 If you don't have a subscription yet, sign up at [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription) first.
@@ -184,13 +183,12 @@ hermes model
 
 ### Mixing the gateway with your own backends
 
-If you already have an ElevenLabs account and want to keep using it while routing web search and image generation through Nous, that's supported. Use `hermes tools` to pick backends per tool:
+Use `hermes tools` to pick backends per tool:
 
 ```bash
 hermes tools
 # → Web search       → "Nous Subscription"
 # → Image generation → "Nous Subscription"
-# → TTS              → "ElevenLabs"  (your existing key)
 ```
 
 The Tool Gateway is opt-in per tool, not all-or-nothing. The managed backends show up in `hermes tools` whether or not you're logged into Nous Portal — if you pick "Nous Subscription" before authenticating, Hermes runs the Portal login inline (it won't change your inference provider or touch your other tools). See the [Tool Gateway docs](../user-guide/features/tool-gateway.md) for the full per-tool configuration matrix.
@@ -220,9 +218,6 @@ web:
   backend: nous          # web search/extract routes through Tool Gateway
 
 image_gen:
-  provider: nous
-
-tts:
   provider: nous
 
 browser:
@@ -280,7 +275,6 @@ Check `hermes portal info` first — if it shows you're using a different provid
 
 - **[Tool Gateway](../user-guide/features/tool-gateway.md)** — Full details on every gateway tool, per-tool config, and pricing
 - **[Subscription proxy](../user-guide/features/subscription-proxy.md)** — Use your Portal subscription from non-Hermes tools (other agents, scripts, third-party clients)
-- **[Voice mode](../user-guide/features/voice-mode.md)** — Voice conversations using the Portal's OpenAI TTS
 - **[AI Providers](./providers.md)** — Full provider catalog if you want to compare alternatives
 - **[OAuth over SSH](../guides/oauth-over-ssh.md)** — Login from remote hosts or browser-only environments
 - **[Profiles](../user-guide/profiles.md)** — Multiple Hermes configurations sharing one Portal login

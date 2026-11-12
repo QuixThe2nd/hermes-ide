@@ -563,36 +563,3 @@ class TestAutoAttachClipboardImageOnPaste:
     ])
     def test_auto_attach_decision(self, pasted, expected):
         assert _should_auto_attach_clipboard_image_on_paste(pasted) is expected
-
-
-class TestVoiceSubmission:
-    @pytest.fixture
-    def cli(self):
-        from cli import HermesCLI
-        cli_obj = HermesCLI.__new__(HermesCLI)
-        cli_obj._attached_images = [Path("/tmp/stale.png")]
-        cli_obj._pending_input = queue.Queue()
-        cli_obj._voice_lock = MagicMock()
-        cli_obj._voice_processing = True
-        cli_obj._voice_recording = True
-        cli_obj._voice_continuous = False
-        cli_obj._no_speech_count = 0
-        cli_obj._voice_recorder = MagicMock()
-        cli_obj._voice_recorder.stop.return_value = "/tmp/fake.wav"
-        cli_obj._app = None
-        return cli_obj
-
-    def test_voice_transcript_clears_stale_attached_images(self, cli):
-        with patch("tools.voice_mode.play_beep"):
-            with patch("tools.voice_mode.transcribe_recording", return_value={"success": True, "transcript": "hello"}):
-                with patch("os.path.isfile", return_value=False):
-                    with patch("cli._cprint"):
-                        cli._voice_stop_and_transcribe()
-
-        assert cli._attached_images == []
-        queued = cli._pending_input.get_nowait()
-        # Voice transcripts are wrapped in the _VoiceInputMessage sentinel
-        # (#65827) so process_loop can distinguish STT output from typed text.
-        from cli import _VoiceInputMessage
-        assert isinstance(queued, _VoiceInputMessage)
-        assert queued.text == "hello"

@@ -2620,9 +2620,6 @@ class GatewayInboundMixin:
         if canonical == "review":
             return await self._handle_review_command(event)
 
-        if canonical == "voice":
-            return await self._handle_voice_command(event)
-
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
             if isinstance(self.config, dict):
@@ -3124,32 +3121,12 @@ class GatewayInboundMixin:
         with scoped_runtime_main(vision_runtime):
             return await self._enrich_message_with_vision(message_text, image_paths)
 
-    async def _echo_stt_transcripts(
-        self, adapter, source: SessionSource, transcripts: List[str], *, metadata=None, log_context: str = "Transcript"
-    ) -> None:
-        """Send each transcript back as ``🎙️ "…"`` (best-effort; failures are logged, never raised)."""
-        from gateway.run import logger
-
-        for tx in transcripts:
-            try:
-                await adapter.send(source.chat_id, f'🎙️ "{tx}"', metadata=metadata)
-            except Exception as echo_exc:
-                logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
-
     async def _enrich_inbound_voice(
         self, event: MessageEvent, source: SessionSource, message_text: str, audio_paths: list[str]
     ) -> str:
         message_text, _successful_transcripts = await self._enrich_message_with_transcription(
             message_text, audio_paths,
         )
-        # Echo each successful transcript back immediately when configured so users can verify STT
-        # quality in real time. On transcription failure do NOT send a hardcoded notice: that
-        # bypassed the LLM and produced two replies; enrichment leaves one neutral marker instead.
-        if _successful_transcripts and self._should_echo_stt_transcripts():
-            _echo_adapter = self._delivery_adapter_for(source)
-            if _echo_adapter:
-                _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-                await self._echo_stt_transcripts(_echo_adapter, source, _successful_transcripts, metadata=_echo_meta)
         return message_text
 
     @staticmethod
@@ -3502,25 +3479,6 @@ class GatewayInboundMixin:
                     message_text,
                     audio_paths,
                 )
-                # Echo each successful transcript back to the user immediately
-                # when configured. Lets users verify STT quality in real-time,
-                # while allowing quiet STT for users who only want the agent to
-                # receive the transcription.
-                if _successful_transcripts and self._should_echo_stt_transcripts():
-                    _echo_adapter = self._adapter_for_source(source)
-                    _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-                    if _echo_adapter:
-                        for _tx in _successful_transcripts:
-                            try:
-                                await _echo_adapter.send(
-                                    source.chat_id,
-                                    f'🎙️ "{_tx}"',
-                                    metadata=_echo_meta,
-                                )
-                            except Exception as _echo_exc:
-                                logger.debug(
-                                    "Transcript echo failed (non-fatal): %s", _echo_exc,
-                                )
                 # NOTE: Previously, when transcription failed (e.g. no STT
                 # provider configured), the gateway also emitted a hardcoded
                 # English notice via `_stt_adapter.send()`. That bypassed the
@@ -4228,185 +4186,38 @@ class GatewayInboundMixin:
             return f"{prefix}\n\n{user_text}"
         return prefix
 
-    @staticmethod
-    def _untranscribed_audio_note(path: str) -> str:
-        """One minimal neutral marker for every STT failure. Never mention "no STT provider" or setup
-        steps — persisted in history they make the model keep volunteering STT-setup advice."""
-        from tools.credential_files import to_agent_visible_cache_path
-        agent_path = to_agent_visible_cache_path(os.path.abspath(path))
-        return f"[voice message could not be transcribed automatically; the audio is available at: {agent_path}]"
-
-    async def _transcribe_one_clip(self, path: str, transcribe_audio, transcribe_audio_local_fallback) -> Tuple[Optional[str], str]:
-        """``(transcript_or_None, note)`` for one clip via configured STT with local fallback."""
-        from gateway.run import logger
-
-        result = await asyncio.to_thread(transcribe_audio, path, None, "gateway")
-        if not result.get("success"):
-            fallback = await asyncio.to_thread(transcribe_audio_local_fallback, path)
-            if fallback.get("success"):
-                logger.info("Configured STT failed for %s; recovered with local STT", path)
-                result = fallback
-        if not result["success"]:
-            logger.info("Voice transcription failed for %s: %s", path, result.get("error", "unknown error"))
-            return None, self._untranscribed_audio_note(path)
-        transcript = result["transcript"]
-        # STT may return success=True with an empty/whitespace transcript (silence, cut-off);
-        # empty quotes make the agent reply to nothing and can loop, so emit a sentinel note.
-        # See #41603.
-        if not (transcript or "").strip():
-            return None, (
-                "[The user sent a voice message but it came through "
-                "empty or inaudible — speech-to-text returned no "
-                "words. Do not guess at the content; ask the user "
-                "to resend or type it out.]"
-            )
-        # Plain quoted line: a "The user sent a voice message..." wrapper read as a meta-instruction
-        # and made the LLM comment on voice mode instead.
-        return transcript, f'"{transcript}"'
-
     async def _enrich_message_with_transcription(
         self,
         user_text: str,
         audio_paths: List[str],
     ) -> tuple[str, List[str]]:
-        """
-        Auto-transcribe user voice/audio messages using the configured STT provider
-        and prepend the transcript to the message text.
+        """Describe inbound voice/audio attachments as plain file notes.
 
-        Args:
-            user_text:   The user's original caption / message text.
-            audio_paths: List of local file paths to cached audio files.
-
-        Returns:
-            A tuple of ``(enriched_text, successful_transcripts)``:
-              - ``enriched_text``: the message string with transcription wrappers
-                prepended (same as before).
-              - ``successful_transcripts``: the raw transcript strings for audio
-                clips that were successfully transcribed, in input order. Empty
-                list if every clip failed or STT is disabled. Callers can use
-                this to echo transcripts back to the user before the agent loop.
+        The automatic STT pipeline is gone; audio arrives as an attachment the
+        agent can open with its own tools. Returns ``(enriched_text, [])`` —
+        the transcript list stays (empty) so callers' echo paths no-op.
         """
-        from gateway.run import _probe_audio_duration, logger
+        from gateway.run import _probe_audio_duration
 
         seen = set()
         audio_paths = [p for p in audio_paths if p not in seen and not seen.add(p)]
-        if not getattr(self.config, "stt_enabled", True):
-            notes = []
-            for path in audio_paths:
-                abs_path = os.path.abspath(path)
-                duration_str = await _probe_audio_duration(abs_path)
-                if duration_str:
-                    notes.append(
-                        f"[The user sent a voice message: {abs_path} (duration: {duration_str})]"
-                    )
-                else:
-                    notes.append(f"[The user sent a voice message: {abs_path}]")
-            if not notes:
-                return user_text, []
-            prefix = "\n\n".join(notes)
-            _placeholder = "(The user sent a message with no text content)"
-            if user_text and user_text.strip() == _placeholder:
-                return prefix, []
-            if user_text:
-                return f"{prefix}\n\n{user_text}", []
-            return prefix, []
-
-        try:
-            from tools.transcription_tools import (
-                transcribe_audio,
-                transcribe_audio_local_fallback,
-            )
-        except ModuleNotFoundError as e:
-            logger.error("Transcription module unavailable: %s", e)
-            unavailable_note = "[voice message could not be transcribed]"
-            _placeholder = "(The user sent a message with no text content)"
-            if user_text and user_text.strip() == _placeholder:
-                return unavailable_note, []
-            if user_text:
-                return f"{unavailable_note}\n\n{user_text}", []
-            return unavailable_note, []
-
-        enriched_parts = []
-        successful_transcripts: List[str] = []
+        notes = []
         for path in audio_paths:
-            try:
-                logger.debug("Transcribing user voice: %s", path)
-                result = await asyncio.to_thread(
-                    transcribe_audio, path, None, "gateway",
-                )
-                if not result.get("success"):
-                    fallback = await asyncio.to_thread(
-                        transcribe_audio_local_fallback,
-                        path,
-                    )
-                    if fallback.get("success"):
-                        logger.info(
-                            "Configured STT failed for %s; recovered with local STT",
-                            path,
-                        )
-                        result = fallback
-                if result["success"]:
-                    transcript = result["transcript"]
-                    # Speech-to-text can return success=True with an empty or
-                    # whitespace-only transcript on silence, cut-off, or
-                    # inaudible audio. Emitting empty quotes ('""') makes the
-                    # agent reply to nothing and can loop, so that case gets a
-                    # clear sentinel note instead (#41603).
-                    if not (transcript or "").strip():
-                        enriched_parts.append(
-                            "[The user sent a voice message but it came through "
-                            "empty or inaudible — speech-to-text returned no "
-                            "words. Do not guess at the content; ask the user "
-                            "to resend or type it out.]"
-                        )
-                        continue
-                    successful_transcripts.append(transcript)
-                    # Pass the transcript through as a plain quoted line. The
-                    # earlier wording ("The user sent a voice message~ Here's
-                    # what they said: ...") read as a meta-instruction and made
-                    # the LLM volunteer commentary about voice mode rather than
-                    # reply to the content.
-                    enriched_parts.append(f'"{transcript}"')
-                else:
-                    error = result.get("error", "unknown error")
-                    # All failure branches: a single, minimal, neutral marker.
-                    # Do NOT mention "no STT provider configured", "setup
-                    # instructions", or the "hermes-agent-setup" skill, and do
-                    # NOT claim a direct message was sent — those phrases get
-                    # persisted in conversation history and poison every later
-                    # turn, so the model keeps volunteering STT-setup advice
-                    # even after transcription starts working. The cause is
-                    # logged for operator diagnosis but kept out of the
-                    # LLM-visible prompt.
-                    logger.info("Voice transcription failed for %s: %s", path, error)
-                    from tools.credential_files import to_agent_visible_cache_path
-
-                    agent_path = to_agent_visible_cache_path(os.path.abspath(path))
-                    enriched_parts.append(
-                        "[voice message could not be transcribed automatically; "
-                        f"the audio is available at: {agent_path}]"
-                    )
-            except Exception as e:
-                logger.error("Transcription error: %s", e)
-                from tools.credential_files import to_agent_visible_cache_path
-
-                agent_path = to_agent_visible_cache_path(os.path.abspath(path))
-                enriched_parts.append(
-                    "[voice message could not be transcribed automatically; "
-                    f"the audio is available at: {agent_path}]"
-                )
-
-        if enriched_parts:
-            prefix = "\n\n".join(enriched_parts)
-            # Strip the empty-content placeholder from the Discord adapter
-            # when we successfully transcribed the audio — it's redundant.
-            _placeholder = "(The user sent a message with no text content)"
-            if user_text and user_text.strip() == _placeholder:
-                return prefix, successful_transcripts
-            if user_text:
-                return f"{prefix}\n\n{user_text}", successful_transcripts
-            return prefix, successful_transcripts
-        return user_text, successful_transcripts
+            abs_path = os.path.abspath(path)
+            duration_str = await _probe_audio_duration(abs_path)
+            if duration_str:
+                notes.append(f"[The user sent a voice message: {abs_path} (duration: {duration_str})]")
+            else:
+                notes.append(f"[The user sent a voice message: {abs_path}]")
+        if not notes:
+            return user_text, []
+        prefix = "\n\n".join(notes)
+        _placeholder = "(The user sent a message with no text content)"
+        if user_text and user_text.strip() == _placeholder:
+            return prefix, []
+        if user_text:
+            return f"{prefix}\n\n{user_text}", []
+        return prefix, []
 
     def _pending_event_audio_paths(self, event) -> List[str]:
         """Return STT-eligible paths from a pending voice message."""
@@ -4472,11 +4283,7 @@ class GatewayInboundMixin:
         """
         from gateway.run import logger
 
-        if (
-            not transcripts
-            or not self._should_echo_stt_transcripts()
-            or adapter is None
-        ):
+        if not transcripts or adapter is None:
             return
         already_echoed = int(getattr(event, "_gateway_pending_stt_echoed", 0) or 0)
         unsent = transcripts[already_echoed:]

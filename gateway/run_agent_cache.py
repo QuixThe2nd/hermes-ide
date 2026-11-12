@@ -399,7 +399,7 @@ class GatewayAgentCacheMixin:
         Use this at every site that ends a running turn, regardless of
         cause (normal completion, /stop, /reset, /resume, sentinel
         cleanup, stale-eviction). Per-session state that PERSISTS across turns
-        (``_session_model_overrides``, ``_voice_mode``, ``_update_prompt_pending``)
+        (``_session_model_overrides``, ``_update_prompt_pending``)
         is NOT touched here — those have their own lifecycles.
 
         When ``run_generation`` is provided, only clear the slot if that
@@ -909,36 +909,6 @@ class GatewayAgentCacheMixin:
         state.conversation.sidecar_notes = []
         return list(staged) if isinstance(staged, list) else []
 
-    def _voice_channel_sidecar_note(self, event, source: SessionSource, session_key: str) -> Optional[str]:
-        """Return a ``[Voice channel now: ...]`` note when VC state changed.
-
-        Compares the live Discord voice-channel context against the last
-        value delivered for this session and returns a note only on change
-        (including leaving the channel).  Unchanged state returns ``None`` so
-        the per-turn member/speaking serialization cannot churn the prompt.
-        """
-        if source.platform != Platform.DISCORD:
-            return None
-        adapter = self.adapters.get(Platform.DISCORD)
-        guild_id = self._get_guild_id(event)
-        if not (guild_id and adapter and hasattr(adapter, "get_voice_channel_context")):
-            return None
-        try:
-            vc_now = adapter.get_voice_channel_context(guild_id) or ""
-        except Exception:
-            logger.debug("voice-channel context read failed", exc_info=True)
-            return None
-        vc_prev = None
-        if session_key:
-            _vc_state = self._session_state(session_key)
-            vc_prev = _vc_state.conversation.vc_last
-            _vc_state.conversation.vc_last = vc_now
-        if vc_now == (vc_prev if vc_prev is not None else ""):
-            return None
-        if not vc_now:
-            return "[Voice channel now: not connected to a voice channel]"
-        return f"[Voice channel now: {vc_now}]"
-
     def _hub_restart_sidecar_note(self, event) -> Optional[str]:
         """Return the restart-resume note on the first turn after a hub restart.
 
@@ -1122,12 +1092,10 @@ class GatewayAgentCacheMixin:
         """
         from gateway.run import _AGENT_PENDING_SENTINEL
         # Prompt-stability state rides the agent-cache lifecycle: a fresh
-        # agent must re-render its session-context bytes (the pin) and re-see
-        # the current voice-channel state once.
+        # agent must re-render its session-context bytes (the pin) once.
         _evict_state = self._peek_session_state(session_key)
         if _evict_state is not None:
             _evict_state.conversation.ephemeral_pin = None
-            _evict_state.conversation.vc_last = None
 
         _lock = getattr(self, "_agent_cache_lock", None)
         evicted = None

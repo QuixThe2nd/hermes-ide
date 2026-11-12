@@ -46,8 +46,8 @@ class CLIProcessNotificationsMixin:
             self._pending_input.put(pending)
 
     def _tui_unwrap_input(self, user_input):
-        """Unwrap ``_VoiceInputMessage`` / ``_SeededQueryMessage`` -> ``(text_or_tuple, is_voice_input, is_seeded_query)``."""
-        from cli import _VoiceInputMessage, _SeededQueryMessage
+        """Unwrap ``_SeededQueryMessage`` -> ``(text_or_tuple, is_seeded_query)``."""
+        from cli import _SeededQueryMessage
         from tools.process_registry import process_registry
         from tools.process_registry_notifications import (
             PROCESS_COMPLETE_DISPLAY_KIND, ProcessNotificationBatch, TimelineNotification)
@@ -55,13 +55,8 @@ class CLIProcessNotificationsMixin:
             rendered = user_input.render(process_registry)
             user_input = rendered and TimelineNotification(
                 rendered, user_input.display_text(process_registry), PROCESS_COMPLETE_DISPLAY_KIND)
-        # Voice-transcribed messages arrive wrapped in a sentinel so only genuine STT output gets the voice
-        # prefix (#65827).
-        is_voice_input = isinstance(user_input, _VoiceInputMessage)
-        if is_voice_input:
-            user_input = user_input.text
         is_seeded_query = isinstance(user_input, _SeededQueryMessage)
         if is_seeded_query:
             user_input = (user_input.text, user_input.images) if user_input.images else user_input.text
-        return user_input, is_voice_input, is_seeded_query
+        return user_input, is_seeded_query
 

@@ -248,5 +248,4 @@ TUI 附带有主见的按区块默认值，将轮次以实时转录形式流式�
 - [CLI 界面](cli.md) — 完整的斜杠命令和快捷键参考（共享）
 - [会话](sessions.md) — 恢复、分支和历史记录
 - [Skins & Themes](features/skins.md) — 自定义 banner、状态栏和浮层主题
-- [语音模式](features/voice-mode.md) — 在两种界面中均可使用
 - [配置](configuration.md) — 所有配置键

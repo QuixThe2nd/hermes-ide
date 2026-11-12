@@ -186,14 +186,6 @@ class CLITuiMixin:
         # Icon-only custom prompts should still remain visible in special states.
         return symbol, symbol
 
-    def _audio_level_bar(self) -> str:
-        """One-char audio level indicator from the recorder's current RMS."""
-        rec = getattr(self, "_voice_recorder", None)
-        if rec is None:
-            return ""
-        # RMS 0-32767 → index 0-7; typical speech is 500-5000, display caps at ~8000.
-        return " ▁▂▃▄▅▆▇"[min(rec.current_rms, 8000) * 7 // 8000]
-
     def _get_tui_prompt_fragments(self):
         """prompt_toolkit fragments for the current interactive state."""
         symbol, state_suffix = self._get_tui_prompt_symbols()
@@ -209,10 +201,6 @@ class CLITuiMixin:
                 return [(style, f"{icon} {extra} {state_suffix}")]
             return [(style, f"{icon} {state_suffix}")]
 
-        if self._voice_recording:
-            return _state_fragment("class:voice-recording", "●", self._audio_level_bar())
-        if self._voice_processing:
-            return _state_fragment("class:voice-processing", "◉")
         if self._sudo_state:
             return _state_fragment("class:sudo-prompt", "🔐")
         if self._secret_state:
@@ -227,8 +215,6 @@ class CLITuiMixin:
             return _state_fragment("class:prompt-working", self._command_spinner_frame())
         if self._agent_running:
             return _state_fragment("class:prompt-working", "☤")
-        if self._voice_mode:
-            return _state_fragment("class:voice-prompt", "🎤")
         return [("class:prompt", symbol)]
 
     def _get_tui_prompt_text(self) -> str:
@@ -295,7 +281,6 @@ class CLITuiMixin:
         image_bar,
         input_area,
         input_rule_bot,
-        voice_status_bar,
         completions_menu) -> list:
         """Ordered children of the root ``HSplit``; override only for full control over ordering
         (wrappers normally override ``_get_extra_tui_widgets`` instead)."""
@@ -317,7 +302,6 @@ class CLITuiMixin:
             image_bar,
             input_area,
             input_rule_bot,
-            voice_status_bar,
             completions_menu]
         return [item for item in ordered if item is not None]
 
@@ -658,10 +642,6 @@ class CLITuiMixin:
         return []
 
     def _tui_placeholder_text(self):
-        if self._voice_recording:
-            return f"recording... {self._voice_record_key_label()} to stop, Ctrl+C to cancel"
-        if self._voice_processing:
-            return "transcribing..."
         if self._sudo_state:
             if (self._sudo_state.get("vault_save") or {}).get("step") == "identifier":
                 return "type your email / username, Enter to continue · ESC to skip"
@@ -680,8 +660,6 @@ class CLITuiMixin:
             return f"{self._command_spinner_frame()} {self._command_status or 'Processing command...'}"
         if self._agent_running:
             return "msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel"
-        if self._voice_mode:
-            return f"type or {self._voice_record_key_label()} to record"
         # Advertise a parked draft so the stash can never be silently forgotten.
         try:
             _stash_hint = self._prompt_stash.placeholder_hint()
@@ -700,79 +678,6 @@ class CLITuiMixin:
                 _stash.panel_rows(), _stash.panel_cursor, self._get_tui_terminal_width())
         except Exception:
             return []
-
-    def _tui_handle_voice_record(self, event):
-        """Toggle voice recording when voice mode is active.
-
-        Runs on prompt_toolkit's event-loop thread: any blocking call here (locks, sd.wait,
-        disk I/O) freezes the whole UI, so all heavy work goes to daemon threads.
-        """
-        from cli import _DIM, _RST, _cprint, logger
-        if not self._voice_mode:
-            return
-        if self._voice_recording:
-            # Always allow STOPPING (even while the agent runs); manual stop ends continuous
-            # mode. Flag clearing happens atomically inside _voice_stop_and_transcribe.
-            with self._voice_lock:
-                self._voice_continuous = False
-            event.app.invalidate()
-            threading.Thread(target=self._voice_stop_and_transcribe, daemon=True).start()
-            return
-        # Allow disarming continuous mode while the agent runs or transcribes — otherwise the
-        # user is stuck in an auto-restart loop until /voice off.
-        if self._agent_running or self._voice_processing:
-            with self._voice_lock:
-                self._voice_continuous = False
-            event.app.invalidate()
-            return
-        # Don't START recording during interactive prompts.
-        if self._clarify_state or self._sudo_state or self._slash_confirm_state:
-            return
-        # Cut TTS so the user can start talking: stop_playback() just terminates a subprocess;
-        # the stop event drains the streaming pipeline if one is live.
-        if not self._voice_tts_done.is_set():
-            try:
-                logger.info("TTS CUT: record key handler cutting TTS")
-                from tools.tts_streaming import mark_speech_interrupted
-                mark_speech_interrupted()
-                if self._voice_tts_stop is not None:
-                    self._voice_tts_stop.set()
-                from tools.voice_mode import stop_playback
-                stop_playback()
-                self._voice_tts_done.set()
-            except Exception:
-                pass
-        with self._voice_lock:
-            self._voice_continuous = True
-
-        # play_beep(sd.wait), AudioRecorder.start(lock) and config I/O must never block the loop.
-        def _start_recording():
-            try:
-                self._voice_start_recording()
-                if hasattr(self, '_app') and self._app:
-                    self._app.invalidate()
-            except Exception as e:
-                _cprint(f"\n{_DIM}Voice recording failed: {e}{_RST}")
-
-        threading.Thread(target=_start_recording, daemon=True).start()
-        event.app.invalidate()
-
-    def _tui_cancel_voice_recording(self, event) -> bool:
-        """Cancel an active recording; True when one was cancelled (caller stops there)."""
-        from cli import _DIM, _RST, _cprint
-        _recorder_ref = None
-        with self._voice_lock:
-            if self._voice_recording and self._voice_recorder:
-                _recorder_ref = self._voice_recorder
-                self._voice_recording = False
-                self._voice_continuous = False
-        if _recorder_ref is None:
-            return False
-        _cprint(f"\n{_DIM}Recording cancelled.{_RST}")
-        # cancel() may block on AudioRecorder._lock / CoreAudio — keep it off the event loop.
-        threading.Thread(target=_recorder_ref.cancel, daemon=True).start()
-        event.app.invalidate()
-        return True
 
     def _tui_cancel_foreground_ui(self, event, *, closers) -> bool:
         """Close the first active foreground UI (slash-confirm / picker / palette); True if any."""
@@ -809,12 +714,10 @@ class CLITuiMixin:
             event.app.exit()
 
     def _tui_handle_ctrl_c(self, event):
-        """Ctrl+C priority: cancel voice recording → cancel foreground UI/overlay prompt →
+        """Ctrl+C priority: cancel foreground UI/overlay prompt →
         interrupt the running agent (first press) → force exit (second press within 2s) → when
         idle clear the draft or exit."""
         now = time.time()
-        if self._tui_cancel_voice_recording(event):
-            return
         if self._tui_cancel_foreground_ui(event, closers=(
             ("_slash_confirm_state", lambda: self._submit_slash_confirm_response("cancel")),
             ("_command_palette_state", self._close_command_palette))):
@@ -836,8 +739,6 @@ class CLITuiMixin:
 
     def _tui_handle_ctrl_q(self, event):
         """Ctrl+Q: like Ctrl+C minus the double-press force exit (and it leaves the palette)."""
-        if self._tui_cancel_voice_recording(event):
-            return
         if self._tui_cancel_foreground_ui(event, closers=(
             ("_slash_confirm_state", lambda: self._submit_slash_confirm_response("cancel")))):
             return
@@ -1143,13 +1044,6 @@ class CLITuiMixin:
             st["selected"] = max(0, st.get("selected", 0) - 1)
             event.app.invalidate()
 
-
-    def _tui_wake_startup(self):
-        from cli import logger
-        try:
-            self._maybe_start_wake_word()
-        except Exception as e:
-            logger.debug("wake-word startup skipped: %s", e)
 
     def _tui_suppress_closed_loop_errors(self, loop, context):
         exc = context.get("exception")
@@ -1563,9 +1457,6 @@ class CLITuiMixin:
         badges = _format_image_attachment_badges(self._attached_images, self._image_counter)
         return [("class:image-badge", f" {badges} ")]
 
-    def _tui_voice_status_fragments(self):
-        return self._get_voice_status_fragments()
-
     def _tui_spinner_text(self):
         spinner_line = self._render_spinner_text()
         return [('class:hint', spinner_line)] if spinner_line else []
@@ -1582,7 +1473,7 @@ class CLITuiMixin:
         return self._agent_spacer_height()
 
     def _tui_init_run_state(self):
-        """Reset the per-run REPL state (queues, modal states, voice state, config watcher)."""
+        """Reset the per-run REPL state (queues, modal states, config watcher)."""
         self._agent_running = False
         self._pending_input = queue.Queue()     # normal input (commands + new queries)
         self._interrupt_queue = queue.Queue()   # messages typed while the agent is running
@@ -1627,21 +1518,6 @@ class CLITuiMixin:
 
         self._attached_images: list[Path] = []  # clipboard image attachments
         self._image_counter = 0
-
-        # Voice mode state (protected by _voice_lock for cross-thread access).
-        self._voice_lock = threading.Lock()
-        self._voice_mode = False
-        self._voice_tts = False
-        self._voice_recorder = None     # AudioRecorder (lazy init)
-        self._voice_recording = False
-        self._voice_processing = False  # STT in progress
-        self._voice_continuous = False  # auto-restart after the agent responds
-        self._voice_tts_done = threading.Event()  # TTS playback finished
-        self._voice_tts_done.set()  # initially "done" (no TTS pending)
-        self._voice_tts_stop = None  # active streaming pipeline's stop event
-        self._voice_barge_capture = threading.Event()  # barge monitor is capturing the interruption
-        self._voice_last_tts_text = ""  # most recently spoken TTS text (echo guard, #75780)
-        self._voice_barge_phase = None  # "generation" or "playback" phase of the last barge trip
 
         if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
             self._install_tool_callbacks()
@@ -1697,7 +1573,6 @@ class CLITuiMixin:
         kb.add('escape', 'escape', filter=~_modal_prompt_active)(self._tui_handle_double_escape)
         kb.add('c-z')(self._tui_handle_ctrl_z)
 
-        kb.add(*self._tui_voice_record_key_sequence())(self._tui_handle_voice_record)
         kb.add(Keys.BracketedPaste, eager=True)(self._tui_handle_paste)
         kb.add('c-v')(self._tui_handle_ctrl_v)
         kb.add('escape', 'v')(self._tui_handle_alt_v)
@@ -1779,52 +1654,6 @@ class CLITuiMixin:
             _idx = 9 if _num == 0 else _num - 1
             kb.add(str(_num), filter=_slash_confirm)(self._tui_make_slash_confirm_number_handler(_idx))
 
-    def _tui_voice_record_key_sequence(self) -> tuple:
-        """Resolve the push-to-talk key (voice.record_key, default Ctrl+B) to a prompt_toolkit
-        key sequence and cache the UI label.
-
-        Config spellings (ctrl/control/alt/option/opt) are normalized to c-x / a-x so the same
-        value binds identically in TUI and CLI. super/win/windows silently fall back to the
-        default (prompt_toolkit has no super modifier) — warn so users notice the split. The
-        label cache uses the same ``_raw_key`` that drives the binding, so status/placeholder/
-        recording-hint renders can never drift from the live key even if the config is edited
-        mid-session.
-        """
-        from cli import logger
-        # Voice push-to-talk key: configurable via config.yaml (voice.record_key) Default: Ctrl+B (avoids
-        # conflict with Ctrl+R readline reverse-search). Config spellings (ctrl/control/alt/option/opt) are
-        # normalized to prompt_toolkit's c-x / a-x format via
-        # ``normalize_voice_record_key_for_prompt_toolkit`` so the same config value binds identically in
-        # the TUI and CLI (Copilot round-9 review on #19835). ``super``/``win``/``windows`` configs silently
-        # fall back to the default here since prompt_toolkit has no super modifier — log a warning so users
-        # notice the TUI/CLI split instead of a silent mismatch (round-11).
-        _raw_key: object = "ctrl+b"
-        try:
-            from hermes_cli.config import load_config
-            from hermes_cli.voice import (
-                normalize_voice_record_key_for_prompt_toolkit,
-                pt_key_to_sequence,
-                voice_record_key_from_config)
-            _raw_key = voice_record_key_from_config(load_config())
-            _voice_key = normalize_voice_record_key_for_prompt_toolkit(_raw_key)
-            if (
-                isinstance(_raw_key, str)
-                and _raw_key.strip().lower().split("+", 1)[0].strip() in {"super", "win", "windows"}
-                and _voice_key == "c-b"):
-                logger.warning(
-                    "voice.record_key %r uses a TUI-only modifier (super/win); "
-                    "CLI fell back to Ctrl+B. Use ctrl+<key> or alt+<key> for "
-                    "cross-runtime parity.",
-                    _raw_key)
-        except Exception:
-            _voice_key = "c-b"
-        # Cache the UI label here — same ``_raw_key`` that drives the prompt_toolkit binding below. Every
-        # status / placeholder / recording-hint render reads this cached value so display can never drift
-        # from the live keybinding even if the user edits voice.record_key mid-session (Copilot round-13 on
-        # #19835).
-        self.set_voice_record_key_cache(_raw_key)
-        return pt_key_to_sequence(_voice_key)
-
     def _tui_overlay_widget(self, fragments_fn, state_attr: str):
         """Wrapped, auto-sized panel shown while ``self.<state_attr>`` is not None."""
         return ConditionalContainer(
@@ -1861,9 +1690,6 @@ class CLITuiMixin:
         image_bar = Window(
             content=FormattedTextControl(self._tui_image_bar_fragments),
             height=Condition(lambda: bool(cli_ref._attached_images)))
-        voice_status_bar = ConditionalContainer(
-            Window(FormattedTextControl(self._tui_voice_status_fragments), height=1),
-            filter=Condition(lambda: cli_ref._voice_mode))
         status_bar = ConditionalContainer(
             Window(
                 content=FormattedTextControl(lambda: cli_ref._get_status_bar_fragments()),
@@ -1895,7 +1721,6 @@ class CLITuiMixin:
             image_bar=image_bar,
             input_area=input_area,
             input_rule_bot=input_rule_bot,
-            voice_status_bar=voice_status_bar,
             completions_menu=CompletionsMenu(max_height=12, scroll_offset=1))))
         self._tui_set_base_style()
         return layout, PTStyle.from_dict(self._build_tui_style_dict())
@@ -2023,8 +1848,4 @@ class CLITuiMixin:
             'approval-cmd': '#AAAAAA italic',
             'approval-choice': '#AAAAAA',
             'approval-selected': '#FFD700 bold',
-            'voice-prompt': '#87CEEB',
-            'voice-recording': '#FF4444 bold',
-            'voice-processing': '#FFA500 italic',
-            'voice-status': 'bg:#1a1a2e #87CEEB',
-            'voice-status-recording': 'bg:#1a1a2e #FF4444 bold'}
+            }

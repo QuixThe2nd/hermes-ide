@@ -53,7 +53,6 @@ def _make_multiplex_runner():
     runner._profile_adapters = {
         "medicina": {Platform.TELEGRAM: _adapter("medicina")},
     }
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(
         emit=AsyncMock(), emit_collect=AsyncMock(return_value=[]), loaded_hooks=False,
     )

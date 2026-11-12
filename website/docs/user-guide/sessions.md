@@ -654,7 +654,7 @@ profile that owns the conversation (`agent:main:…` for the default profile,
 `agent:<name>:…` for a named one). Older releases could leave the two
 disagreeing — a named profile's rows written into the default store, a child
 session inheriting from another profile's row, a routing row copied into the
-wrong store, a Telegram topic or `/voice` setting saved without the bot's
+wrong store, a Telegram topic saved without the bot's
 profile. Current versions put new state in the right place; `hermes sessions
 repair-profiles` settles what is already crossed.
 
@@ -678,7 +678,7 @@ What it finds and does:
 | `parent_session_id` pointing at another profile's row | sever the link; the row's own identity is kept |
 | routing rows outside the default store (under multiplexing) | move to the default store; an existing row there wins |
 | routing rows / `sessions.json` entries for a profile that no longer exists | delete |
-| Telegram topic bindings and voice-mode entries missing their bot's profile | relabel from the sessions that hold the chat |
+| Telegram topic bindings missing their bot's profile | relabel from the sessions that hold the chat |
 
 Two cases are reported but never repaired without being told what they are:
 rows keyed to a profile that does not exist (create the profile, or

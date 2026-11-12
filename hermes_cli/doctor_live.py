@@ -21,12 +21,6 @@ _KEYED_PROBES = {
     "FAL": ("https://fal.ai/api/models?page=1", "FAL_KEY", "Key"),
 }
 # TTS/STT providers that never touch the network (nothing to probe).
-_LOCAL_AUDIO_PROVIDERS = {"", "local", "edge", "neutts", "kittentts", "piper"}
-_AUDIO_PROBES = {
-    "openai": ("https://api.openai.com/v1/models", "OPENAI_API_KEY", "Bearer"),
-    "groq": ("https://api.groq.com/openai/v1/models", "GROQ_API_KEY", "Bearer"),
-    "elevenlabs": ("https://api.elevenlabs.io/v1/voices", "ELEVENLABS_API_KEY", "xi"),
-}
 
 
 @dataclass
@@ -87,24 +81,6 @@ def _probe_browser(timeout: float) -> ProbeResult:
     return result
 
 
-def _probe_audio(kind: str, config: dict, timeout: float) -> ProbeResult:
-    """Shared TTS/STT metadata probe (voices/models list GET only)."""
-    name = kind.upper()
-    provider = (((config.get(kind) or {}).get("provider")) or "").strip().lower()
-    if provider in _LOCAL_AUDIO_PROVIDERS:
-        return ProbeResult(name, "skip", f"(provider '{provider or 'local'}' — no remote backend to probe)")
-    if provider not in _AUDIO_PROBES:
-        return ProbeResult(name, "skip", f"(provider '{provider}' — no live probe implemented)")
-    url, env_var, scheme = _AUDIO_PROBES[provider]
-    key = os.getenv(env_var, "").strip()
-    if not key:
-        return ProbeResult(name, "warn", f"(provider '{provider}' configured but {env_var} is not set)")
-    headers = {"xi-api-key": key} if scheme == "xi" else {"Authorization": f"Bearer {key}"}
-    result = _classify_http(name, _http_get(url, headers=headers, timeout=timeout), env_var)
-    result.detail = f"({provider}) {result.detail}"
-    return result
-
-
 # ── Orchestration ──
 
 _REPORTERS = {"pass": check_ok, "warn": check_warn, "fail": check_fail}
@@ -160,8 +136,6 @@ def run_live_checks(issues: List[str]) -> List[ProbeResult]:
     else:
         results.append(ProbeResult("MCP", "skip", "(no servers configured)"))
         _report(results[-1], issues)
-    for kind in ("tts", "stt"):
-        results.append(_run_one(kind.upper(), lambda k=kind: _probe_audio(k, config, timeout), issues))
     return results
 
 

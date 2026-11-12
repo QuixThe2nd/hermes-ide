@@ -60,7 +60,6 @@ def _make_runner(max_concurrent_sessions: int | None = None) -> GatewayRunner:
     runner._active_session_leases = {}
     runner._session_run_generation = {}
     runner._pending_messages = {}
-    runner._voice_mode = {}
     runner._background_tasks = set()
     runner._draining = False
     runner._restart_requested = False

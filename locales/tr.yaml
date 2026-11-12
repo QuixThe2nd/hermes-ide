@@ -69,14 +69,6 @@ gateway:
     full_logs_hint:        "Tam günlük yüklemeleri için CLI'dan `hermes debug share` kullanın."
     share_hint:            "Destek için bu bağlantıları Hermes ekibiyle paylaşın."
 
-  footer:
-    status:                "📎 Çalışma zamanı altbilgisi: **{state}**\nAlanlar: `{fields}`\nPlatform: `{platform}`"
-    usage:                 "Kullanım: `/footer [on|off|status]`"
-    saved:                 "📎 Çalışma zamanı altbilgisi: **{state}**{example}\n_(genel olarak kaydedildi — sonraki mesajda geçerli olur)_"
-    example_line:          "\nÖrnek: `{preview}`"
-    state_on:              "ON"
-    state_off:             "OFF"
-
   goal:
     unavailable:           "Bu oturumda hedefler kullanılamıyor."
     no_goal_set:           "Hedef ayarlanmadı."
@@ -320,23 +312,6 @@ Yeniden eşitleme en fazla saatte bir otomatik çalışır."
     mode_log:              "⚙️ Araç ilerlemesi: **LOG** — sohbette sessiz; araç çağrıları ~/.hermes/logs/tool_calls.log dosyasına yazılır."
     saved_suffix:          "_(**{platform}** için kaydedildi — sonraki mesajda geçerli olur)_"
     save_failed:           "_(yapılandırmaya kaydedilemedi: {error})_"
-
-  voice:
-    enabled_voice_only:    "Sesli mod etkinleştirildi.\nSesli mesaj gönderdiğinizde sesli yanıt vereceğim.\nTüm mesajlara sesli yanıt almak için /voice tts kullanın."
-    disabled_text:         "Sesli mod devre dışı. Yalnızca metin yanıtları."
-    tts_enabled:           "Otomatik TTS etkinleştirildi.\nTüm yanıtlar bir sesli mesaj içerecek."
-    status_mode:           "Sesli mod: {label}"
-    status_channel:        "Ses kanalı: #{channel}"
-    status_participants:   "Katılımcılar: {count}"
-    status_member:         "  - {name}{status}"
-    speaking:              " (konuşuyor)"
-    enabled_short:         "Sesli mod etkinleştirildi."
-    disabled_short:        "Sesli mod devre dışı."
-    label_off:             "Kapalı (yalnızca metin)"
-    label_voice_only:      "Açık (sesli mesajlara sesli yanıt)"
-    label_all:             "TTS (tüm mesajlara sesli yanıt)"
-    help:                  "{toggle}\n\n**/voice nasıl çalışır**\n• `/voice on` — sesli mesaj gönderdiğinde sesli yanıt\n• `/voice tts` — *her* mesaja sesli yanıt\n• `/voice off` — yalnızca metin yanıtlarına dön\n• `/voice status` — geçerli modu göster\n• `/voice` (argümansız) — açık ve kapalı arasında hızlı geçiş{channels}"
-    help_channels:         "\n\n**Canlı ses kanalları (Discord)**\n• Önce bir ses kanalına katıl, sonra `/voice channel` — katılırım, dinlerim ve yanıtlarımı sesli söylerim\n• `/voice leave` — ses kanalından ayrıl"
 
   shared:
     session_db_unavailable:      "Oturum veritabanı kullanılamıyor."

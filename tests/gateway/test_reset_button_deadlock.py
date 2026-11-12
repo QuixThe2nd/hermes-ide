@@ -52,7 +52,6 @@ def _make_runner_with_cached_agent(close_fn):
     adapter = MagicMock()
     adapter.send = AsyncMock()
     runner.adapters = {Platform.TELEGRAM: adapter}
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner._session_model_overrides = {}
     runner._pending_model_notes = {}
