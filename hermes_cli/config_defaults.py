@@ -755,7 +755,6 @@ DEFAULT_CONFIG = {
         "tts_audio_tags": _aux(30),
         "profile_describer": _aux(60),   # 1-2 sentence profile blurb; short, cheap
         "goal_judge": _aux(60),          # /goal satisfaction + contract drafting; JSON calls
-        "goal_intent": _aux(60),         # Phase 1 auto-goal shadow classifier; JSON calls
         # Curator skill-usage review can take minutes on reasoning models (umbrellas over hundreds
         # of skills); route cheaper via `hermes model` → auxiliary → Curator.
         "curator": _aux(600),
@@ -1344,15 +1343,18 @@ DEFAULT_CONFIG = {
     # Ephemeral prefill messages file — JSON list of {role, content} dicts injected at the start of
     # every API call for few-shot priming. Never saved to sessions/logs/trajectories.
     "prefill_messages_file": "",
-    # Goals — persistent cross-turn /goal loop: after each turn an aux-model judge checks if the
-    # goal is satisfied, else a continuation prompt re-enters the session until done, budget
-    # exhausted, or paused. Judge failures fail OPEN; the budget is the backstop.
+    # Goals — persistent cross-turn goal loop: after each turn an aux-model judge checks
+    # if the goal is satisfied, else a continuation prompt re-enters the session until
+    # done, budget exhausted, or paused. With goals.auto.mode=on goals are created
+    # automatically from task-like messages (see `hermes goals`). Judge failures fail
+    # OPEN; the budget is the backstop.
     "goals": {
-        # Max continuation turns before auto-pause (/goal resume) — guards against judge false
+        # Max continuation turns before auto-pause — guards against judge false
         # negatives and unbounded spend.
         "max_turns": 20,
         # off = no work; shadow = background classification + local JSONL only;
-        # on = reserved for automatic goal creation, currently behaves as shadow with a notice.
+        # on = Jev Decisions classify eligible messages and auto goals are
+        # created/appended/resumed at the end of the turn.
         "auto": {"mode": "shadow"},
     },
     # Loops — /loop re-runs a prompt or slash command on a cadence in-session. Fixed interval fires

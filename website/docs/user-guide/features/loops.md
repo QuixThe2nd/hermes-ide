@@ -61,7 +61,7 @@ A loop ends when any of these fires:
 |---|---|
 | The agent decides it's done | The wakeup prompt teaches the agent to end its reply with `LOOP_COMPLETE` on its own line when the task is finished or moot. |
 | A run cap | `--times N` — stop after N wakeups. |
-| An evidence-based condition | `--until <condition>` — after each wakeup, the same auxiliary judge that powers `/goal` checks the reply against your condition. If the judge rules the condition unachievable, the loop **pauses** with the reason instead of re-firing until the tick budget (fail-open: a broken judge never wedges the loop). |
+| An evidence-based condition | `--until <condition>` — after each wakeup, the same auxiliary judge that powers standing goals checks the reply against your condition. If the judge rules the condition unachievable, the loop **pauses** with the reason instead of re-firing until the tick budget (fail-open: a broken judge never wedges the loop). |
 | You | `/loop stop` (or `/loop pause` to keep it around). |
 | The backstop budget | `loops.max_ticks` (default 100) pauses the loop so an unattended session can't burn tokens forever. `0` = unlimited. |
 
@@ -85,16 +85,16 @@ Examples:
 
 Works on the CLI, the TUI (`hermes --tui`), the web dashboard chat, the desktop app, and every gateway platform (Telegram, Discord, Slack, WhatsApp, …). On messaging platforms the gateway fires wakeups even between your messages — the loop belongs to the chat's session, and its results arrive as ordinary replies — also when that session is open in the TUI / Desktop app, which leaves the routed wakeup to the gateway.
 
-## Mixing with `/goal`
+## Mixing with standing goals
 
-Both features inject synthetic turns at idle boundaries, so they follow one rule: **an active goal owns the session.** While a `/goal` is actively driving (judge saying "continue"), loop wakeups defer. The loop resumes using idle time as soon as the goal finishes, pauses, or parks itself on a wait barrier (`/goal wait`, or the judge's automatic WAIT verdict). A parked goal plus a `/loop` is a natural combo: the goal waits on the big async thing while the loop keeps a heartbeat on something else.
+Both features inject synthetic turns at idle boundaries, so they follow one rule: **an active goal owns the session.** While a goal is actively driving (judge saying "continue"), loop wakeups defer. The loop resumes using idle time as soon as the goal finishes, pauses, or parks itself on a wait barrier (the judge's automatic WAIT verdict — see [Persistent Goals](./goals.md)). A parked goal plus a `/loop` is a natural combo: the goal waits on the big async thing while the loop keeps a heartbeat on something else.
 
 A real user message always wins over both — wakeups only fire while the session is idle and nothing of yours is queued.
 
 ## Behavior details
 
 - **A wakeup is a normal user-role turn.** No system-prompt mutation, no toolset swap — prompt caching stays intact. In the messaging gateway a wakeup is not a reply to the message that set the loop, so its output is posted to the chat/topic without quoting that message.
-- **Survives `/resume` and compression.** Loop state persists per session and migrates across context-compression boundaries, same as `/goal`.
+- **Survives `/resume` and compression.** Loop state persists per session and migrates across context-compression boundaries, same as goal state.
 - **One loop per session.** Setting a new `/loop` replaces the old one. Run several loops by running several sessions (or use cron for a fleet of schedules).
 - **Interrupting a wakeup turn (Ctrl+C) pauses the loop** — recoverable with `/loop resume`, so cancel actually means cancel.
 - **Token cost scales with cadence.** Every tick is a full agent turn. Match the interval to how often the state actually changes; prefer self-pacing for idle waits.
@@ -112,9 +112,9 @@ loops:
 
 The `--until` judge routes through the `goal_judge` auxiliary task, so `auxiliary.goal_judge.*` routing overrides (provider, model) apply to loop conditions too.
 
-## `/loop` vs `/goal` vs cron
+## `/loop` vs standing goals vs cron
 
-| | `/loop` | `/goal` | cron |
+| | `/loop` | standing goal | cron |
 |---|---|---|---|
 | **Trigger** | Timer (or self-paced) | Judge verdict after each turn | Schedule, outside any session |
 | **Lives in** | Your current session | Your current session | Its own session per run |
