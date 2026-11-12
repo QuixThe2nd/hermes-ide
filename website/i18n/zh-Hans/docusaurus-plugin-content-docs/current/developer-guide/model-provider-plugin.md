@@ -6,7 +6,7 @@ description: "如何为 Hermes Agent 构建模型提供商（推理后端）插�
 
 # 构建模型提供商插件
 
-模型提供商插件声明一个推理后端——兼容 OpenAI 的端点、Anthropic Messages 服务器、Codex 风格的 Responses API，或 Bedrock 原生接口——Hermes 可通过这些后端路由 `AIAgent` 调用。每个内置提供商（OpenRouter、Anthropic、GMI、DeepSeek、Nvidia……）都以此类插件形式提供。第三方可通过在 `$HERMES_HOME/plugins/model-providers/` 下放置一个目录来添加自己的提供商，无需对仓库做任何修改。
+模型提供商插件声明一个推理后端——兼容 OpenAI 的端点、Anthropic Messages 服务器、Codex 风格的 Responses API，——Hermes 可通过这些后端路由 `AIAgent` 调用。每个内置提供商（OpenRouter、Anthropic、GMI、DeepSeek、Nvidia……）都以此类插件形式提供。第三方可通过在 `$HERMES_HOME/plugins/model-providers/` 下放置一个目录来添加自己的提供商，无需对仓库做任何修改。
 
 :::tip
 模型提供商插件是**提供商插件**的第三种类型。其他两种分别是 [Memory Provider 插件](./memory-provider-plugin.md)（跨会话知识）和 [Context Engine 插件](./context-engine-plugin.md)（上下文压缩策略）。三者均遵循相同的"放入目录、声明 profile、无需编辑仓库"模式。
@@ -91,7 +91,7 @@ author: Your Name
 |---|---|---|
 | `name` | str | 规范 ID——与 `config.yaml` 中的 `model.provider` 及 `--provider` 标志匹配 |
 | `aliases` | `tuple[str, ...]` | 由 `get_provider_profile()` 解析的别名（如 `grok` → `xai`） |
-| `api_mode` | str | `chat_completions` \| `codex_responses` \| `anthropic_messages` \| `bedrock_converse` |
+| `api_mode` | str | `chat_completions` \| `codex_responses` \| `anthropic_messages` |
 | `display_name` | str | 在 `hermes model` 选择器中显示的人类可读标签 |
 | `description` | str | 选择器副标题 |
 | `signup_url` | str | 首次运行设置时显示（"在此获取 API key"） |
@@ -137,7 +137,7 @@ class AcmeProfile(ProviderProfile):
 
     def fetch_models(self, *, api_key=None, timeout=8.0) -> list[str] | None:
         """实时目录获取。默认使用 Bearer 认证访问 {models_url or base_url}/models。
-        以下情况需覆盖：自定义认证（Anthropic）、无 REST 端点（Bedrock → None），
+        以下情况需覆盖：自定义认证（Anthropic）、无 REST 端点，
         或公开/无认证目录（OpenRouter）。"""
         return super().fetch_models(api_key=api_key, timeout=timeout)
 ```
@@ -154,7 +154,6 @@ class AcmeProfile(ProviderProfile):
 | `plugins/model-providers/qwen-oauth/` | 消息规范化、`cache_control` 注入、VL 高分辨率 |
 | `plugins/model-providers/nous/` | 归因标签、"禁用时省略 reasoning" |
 | `plugins/model-providers/custom/` | Ollama 的 `num_ctx` + `think: false` 特殊处理 |
-| `plugins/model-providers/bedrock/` | `api_mode="bedrock_converse"`，`fetch_models` 返回 None（无 REST 端点） |
 
 ## 用户覆盖——不修改仓库替换内置提供商
 
@@ -196,7 +195,6 @@ register_provider(ProviderProfile(
 | `oauth_device_code` | 设备码 OAuth 流程 | — |
 | `oauth_external` | 用户在其他地方登录，token 存入 `auth.json` | Anthropic OAuth、MiniMax OAuth、Qwen Portal、Nous Portal |
 | `copilot` | GitHub Copilot token 刷新周期 | 仅 `copilot` 插件 |
-| `aws_sdk` | AWS SDK 凭据链（IAM role、profile、env） | 仅 `bedrock` 插件 |
 | `external_process` | 认证由 agent 启动的子进程处理 | 仅 `copilot-acp` 插件 |
 
 `auth_type` 控制哪些代码路径将你的提供商视为"简单 api-key 提供商"——若不是 `api_key`，PluginManager 仍会记录 manifest，但 Hermes CLI 层面的自动化（doctor 检查、`--provider` 标志、设置向导委托）可能会跳过它。

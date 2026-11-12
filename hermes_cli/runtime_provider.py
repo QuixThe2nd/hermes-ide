@@ -1,7 +1,7 @@
 """Shared runtime provider resolution for CLI, gateway, cron, and helpers: the resolution ORDER
 (:func:`resolve_runtime_provider`), api_mode / base_url helpers and the pool / OAuth / explicit paths.
 Custom-provider lookup lives in :mod:`hermes_cli.runtime_provider_custom`; Azure Foundry,
-OpenRouter/bare-custom, Bedrock and external-process builders in
+OpenRouter/bare-custom and external-process builders in
 :mod:`hermes_cli.runtime_provider_backends` — both re-exported here so
 ``hermes_cli.runtime_provider.<name>`` imports and test patches keep working."""
 
@@ -93,7 +93,7 @@ _HOST_MANDATED_API_MODES = {
 
 # codex_app_server is opt-in: hand the whole turn to a `codex app-server` subprocess (Codex's own
 # tool runtime), gated on `model.openai_runtime == "codex_app_server"` AND provider in {openai, openai-codex}.
-_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}
+_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages", "codex_app_server"}
 
 
 def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
@@ -459,7 +459,7 @@ from hermes_cli.runtime_provider_custom import (  # noqa: E402,F401
     find_custom_provider_identity_by_model, has_named_custom_provider, is_routable_provider,
 )
 from hermes_cli.runtime_provider_backends import (  # noqa: E402,F401
-    _is_external_process_provider, _resolve_azure_foundry_runtime, _resolve_bedrock_runtime,
+    _is_external_process_provider, _resolve_azure_foundry_runtime,
     _resolve_external_process_runtime, _resolve_openrouter_runtime,
 )
 
@@ -905,7 +905,7 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
       6. credential pool (OpenRouter pool only without custom endpoint/override)
       7. OAuth specs (nous/codex/xai/qwen; "auto" swallows AuthError, logs, and stamps it on a
          keyless fallback as ``auth_error``) → minimax-oauth
-         → external-process → anthropic env → bedrock → registry api_key providers
+         → external-process → anthropic env → registry api_key providers
       8. OpenRouter / bare-custom fallback
     target_model overrides model_cfg["default"] when computing provider-specific api_mode (e.g.
     OpenCode Zen/Go where different models route through different API surfaces)."""
@@ -972,8 +972,6 @@ def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, targe
         yield _resolve_external_process_runtime(provider, requested_provider)
     if provider == "anthropic":
         yield _anthropic_env_runtime(requested_provider, model_cfg, target_model)
-    if provider == "bedrock":
-        yield _resolve_bedrock_runtime(requested_provider, model_cfg, target_model)
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         yield _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, target_model)

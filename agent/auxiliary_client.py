@@ -1807,65 +1807,6 @@ class AsyncAnthropicAuxiliaryClient(_AsyncAuxiliaryClientBase):
     pass
 
 
-class _BedrockCompletionsAdapter:
-    """Translates ``chat.completions.create(**kwargs)`` into Bedrock Converse."""
-
-    def __init__(self, region: str, model: str):
-        self._region = region
-        self._model = model
-
-    def create(self, **kwargs) -> Any:
-        from agent.bedrock_adapter import call_converse
-        model = kwargs.get("model", self._model)
-        max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens")
-        # OpenAI accepts ``stop`` as str or list; Converse requires a list.
-        stop = kwargs.get("stop")
-        if isinstance(stop, str):
-            stop = [stop]
-        if kwargs.get("tool_choice") is not None:
-            # Converse toolChoice isn't wired through call_converse(); surface the drop.
-            logger.debug(
-                "BedrockAuxiliaryClient: tool_choice=%r not supported by the "
-                "Converse shim — ignored.", kwargs.get("tool_choice"),
-            )
-        if kwargs.get("stream"):
-            # Converse streaming isn't wired here; call_llm's streaming consumer
-            # detects a final object and downgrades to non-live output.
-            logger.debug(
-                "BedrockAuxiliaryClient: stream=True requested for %s — returning a complete response "
-                "(Converse shim does not stream); caller downgrades to non-streaming.", model,
-            )
-        response = call_converse(
-            region=self._region, model=model, messages=kwargs.get("messages", []), tools=kwargs.get("tools"),
-            # Converse specifically defaults to the model maximum when omitted.
-            # Truthiness mirrors the Anthropic shim: explicit 0 means omit.
-            max_tokens=int(max_tokens) if max_tokens else None, temperature=kwargs.get("temperature"),
-            top_p=kwargs.get("top_p"), stop_sequences=stop,
-        )
-        # Converse is complete-response here: mark provider progress only after
-        # return so TTFP reflects real Bedrock latency, not dispatch/setup.
-        _notify_aux_provider_response()
-        return response
-
-
-class BedrockAuxiliaryClient:
-    """OpenAI-client-compatible wrapper over AWS Bedrock Converse API."""
-
-    def __init__(self, region: str, model: str):
-        self._region = region
-        self._model = model
-        self.chat = _ChatShim(_BedrockCompletionsAdapter(region, model))
-        self.api_key = "aws-sdk"
-        self.base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
-
-    def close(self):
-        pass
-
-
-class AsyncBedrockAuxiliaryClient(_AsyncAuxiliaryClientBase):
-    pass
-
-
 def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
     """True if ``base_url`` speaks Anthropic Messages, not OpenAI chat.completions.
 
@@ -1890,12 +1831,12 @@ def _maybe_wrap_anthropic(
     ``client_obj`` unchanged for probe stubs/specialized adapters, OpenAI-wire, explicit non-Anthropic
     ``api_mode``, or missing ``anthropic`` SDK.
     """
-    # Anthropic/Bedrock/Codex wrappers, plus any client declaring HERMES_SKIP_TRANSPORT_WRAP
+    # Anthropic/Codex wrappers, plus any client declaring HERMES_SKIP_TRANSPORT_WRAP
     # (native/ACP shims, in-tree or plugin), must never be re-dispatched through a wire adapter —
     # a class-attribute declaration rather than isinstance so this hot path never imports them.
     if (
         isinstance(client_obj, _AuxProbeClientStub)
-        or _safe_isinstance(client_obj, (AnthropicAuxiliaryClient, BedrockAuxiliaryClient, CodexAuxiliaryClient))
+        or _safe_isinstance(client_obj, (AnthropicAuxiliaryClient, CodexAuxiliaryClient))
         or _client_declares(client_obj, "HERMES_SKIP_TRANSPORT_WRAP")
     ):
         return client_obj
@@ -4595,8 +4536,6 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         return AsyncCodexAuxiliaryClient(sync_client), model
     if isinstance(sync_client, AnthropicAuxiliaryClient):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
-    if isinstance(sync_client, BedrockAuxiliaryClient):
-        return AsyncBedrockAuxiliaryClient(sync_client), model
     with contextlib.suppress(ImportError):
         from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
         if isinstance(sync_client, GeminiNativeClient):
@@ -4676,53 +4615,6 @@ def _named_custom_api_key(custom_entry: Dict[str, Any], provider: str, custom_ba
                     custom_key = str(pool_api_key).strip()
                     break
     return custom_key or "no-key-required"
-
-
-def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: bool) -> Tuple[Optional[Any], Optional[str]]:
-    """AWS Bedrock: Claude → Anthropic Bedrock SDK (prompt caching, thinking); OpenAI models
-    (GPT-5.5/5.6) → Bedrock Mantle's OpenAI Responses endpoint; everything else → Converse API."""
-    try:
-        from agent.bedrock_adapter import (
-            has_aws_credentials, is_anthropic_bedrock_model, resolve_bedrock_runtime_region,
-            is_openai_bedrock_model, bedrock_openai_base_url, resolve_bedrock_bearer_token,
-            configure_bedrock_openai_client_kwargs,
-        )
-        from agent.anthropic_adapter import build_anthropic_bedrock_client
-    except ImportError:
-        logger.warning("resolve_provider_client: bedrock requested but boto3, httpx/openai, or anthropic SDK not installed")
-        return None, None
-    if not has_aws_credentials():
-        logger.debug("resolve_provider_client: bedrock requested but no AWS credentials found")
-        return None, None
-    # Region must match the main runtime's resolution (bedrock.region in config first, then
-    # env/profile) so aux calls never leave the primary runtime's configured region.
-    # See #53880, #65076.
-    region = resolve_bedrock_runtime_region()
-    default_model = "anthropic.claude-haiku-4-5-20251001-v1:0"
-    final_model = _normalize_resolved_model(model or default_model, provider) or default_model
-    if is_openai_bedrock_model(final_model):
-        # Module-level lazy ``OpenAI`` proxy on purpose so tests can patch("agent.auxiliary_client.OpenAI").
-        client_kwargs: Dict[str, Any] = {
-            "api_key": resolve_bedrock_bearer_token() or "aws-sdk",
-            "base_url": bedrock_openai_base_url(region),
-        }
-        configure_bedrock_openai_client_kwargs(client_kwargs)
-        client = OpenAI(**client_kwargs)
-        logger.debug("resolve_provider_client: bedrock-openai (%s, %s)", final_model, region)
-        return (client if raw_codex else CodexAuxiliaryClient(client, final_model)), final_model
-    base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
-    if is_anthropic_bedrock_model(final_model):
-        try:
-            real_client = build_anthropic_bedrock_client(region)
-        except ImportError as exc:
-            logger.warning("resolve_provider_client: cannot create Bedrock client: %s", exc)
-            return None, None
-        client = AnthropicAuxiliaryClient(real_client, final_model, api_key="aws-sdk", base_url=base_url)
-        logger.debug("resolve_provider_client: bedrock anthropic (%s, %s)", final_model, region)
-    else:
-        client = BedrockAuxiliaryClient(region, final_model)
-        logger.debug("resolve_provider_client: bedrock converse (%s, %s)", final_model, region)
-    return client, final_model
 
 
 def _build_vertex_client(provider: str, model: Optional[str]) -> Tuple[Optional[Any], Optional[str]]:
@@ -5270,8 +5162,6 @@ def _resolve_registry_branch(req: _ResolveRequest) -> _ResolveResult:
         return _resolve_external_process_branch(req, resolve_external_process_provider_credentials(provider))
     if auth_type == "vertex":
         client, final_model = _build_vertex_client(provider, req.model)
-    elif auth_type == "aws_sdk":
-        client, final_model = _build_bedrock_client(provider, req.model, raw_codex=req.raw_codex)
     elif auth_type in {"oauth_device_code", "oauth_external"}:
         # nous / openai-codex / xai-oauth already returned from their explicit branches.
         _log_once_debug(_LOGGED_UNSUPPORTED_OAUTH_KEYS, provider,
@@ -6414,7 +6304,7 @@ def _forwards_max_tokens(provider: str, provider_norm: str, model: str, effectiv
 
 
 def _dedupe_tool_names(tools: list, provider: str, model: str) -> list:
-    """Drop duplicate tool names (Vertex/Azure/Bedrock 400 on them) with a warning."""
+    """Drop duplicate tool names (Vertex/Azure 400 on them) with a warning."""
     seen: set = set()
     deduped: list = []
     for tool in tools:
@@ -6746,9 +6636,9 @@ def _aux_stream_total_ceiling(effective_timeout: Optional[float]) -> float:
 
 
 def _client_streams_internally(client: Any) -> bool:
-    """Adapters that stream inside .create() tick the hook themselves (Codex, Anthropic) or
-    cannot stream (Bedrock); none accept ``stream=True`` from us."""
-    return isinstance(client, (CodexAuxiliaryClient, AnthropicAuxiliaryClient, BedrockAuxiliaryClient))
+    """Adapters that stream inside .create() tick the hook themselves (Codex, Anthropic);
+    none accept ``stream=True`` from us."""
+    return isinstance(client, (CodexAuxiliaryClient, AnthropicAuxiliaryClient))
 
 
 _MANAGED_LOCAL_STATE_TTL_S = 15.0
@@ -7102,7 +6992,7 @@ async def _acreate_with_stream(client: Any, kwargs: Dict[str, Any], task: Option
 
 def _async_client_streams_internally(client: Any) -> bool:
     """Async twin of :func:`_client_streams_internally` (the async adapters are separate classes)."""
-    return isinstance(client, (AsyncCodexAuxiliaryClient, AsyncAnthropicAuxiliaryClient, AsyncBedrockAuxiliaryClient))
+    return isinstance(client, (AsyncCodexAuxiliaryClient, AsyncAnthropicAuxiliaryClient))
 
 
 async def _acreate_with_progress(

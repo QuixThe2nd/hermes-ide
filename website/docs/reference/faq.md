@@ -219,7 +219,7 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
 A model cannot reliably identify why it refused a request. If the refusal appears only in the assistant's prose, its claim that a hidden Hermes runtime policy caused it may be a hallucinated explanation or a restriction applied by the selected model or provider.
 
-Hermes enforcement is explicit: a blocked tool action returns a tool error naming the denied command or path. Hermes does not silently turn those execution controls into a general content-refusal layer. Provider-level controls can still apply when configured, such as Amazon Bedrock Guardrails.
+Hermes enforcement is explicit: a blocked tool action returns a tool error naming the denied command or path. Hermes does not silently turn those execution controls into a general content-refusal layer. Provider-level controls can still apply when the selected provider offers them.
 
 To isolate the source:
 

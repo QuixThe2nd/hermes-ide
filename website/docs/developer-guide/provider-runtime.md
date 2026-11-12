@@ -67,7 +67,6 @@ Current provider families include (see `plugins/model-providers/` for the comple
 - Kilo Code
 - Hugging Face
 - OpenCode Zen / OpenCode Go
-- AWS Bedrock
 - Azure Foundry
 - NVIDIA NIM
 - xAI (Grok)

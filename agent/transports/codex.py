@@ -293,36 +293,16 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
     return clamp_effort(reasoning_effort, supported), reasoning_enabled
 
 
-_EXTENDED_PROMPT_CACHE_MODELS = (
-    "gpt-5.5-pro", "gpt-5.5", "gpt-5.4", "gpt-5.2",
-    "gpt-5.1-codex-max", "gpt-5.1-codex-mini", "gpt-5.1-chat-latest", "gpt-5.1-codex", "gpt-5.1",
-    "gpt-5-codex", "gpt-5", "gpt-4.1",
-)
-_EXTENDED_PROMPT_CACHE_MODEL_RE = re.compile(
-    rf"(?:^|[./:])(?:{'|'.join(re.escape(name) for name in _EXTENDED_PROMPT_CACHE_MODELS)})"
-    r"(?:-\d{4}-\d{2}-\d{2})?$"
-)
-
-
-def _default_prompt_cache_retention_for_request(model: str, base_url: Any) -> Optional[str]:
-    """Return ``24h`` for supported hosts/models (Bedrock Mantle, Meta)."""
+def _default_prompt_cache_retention_for_request(base_url: Any) -> Optional[str]:
+    """Return ``24h`` for Meta's Responses API."""
     from utils import base_url_hostname
 
     hostname = base_url_hostname(str(base_url or "")).lower()
     # Meta Model API: caching is opt-in via prompt_cache_retention (0% hits without).
-    # Meta Model API (api.meta.ai) only achieves prompt-cache hits on the Responses API with
-    # prompt_cache_retention; chat/completions stays cache-cold (0% vs 93-99% measured). Exact-hostname
-    # match per #32243.
-    # Meta Model API: prompt caching only on Responses API (0% on chat/completions vs 93-99% on /responses
-    # with retention). See #32243.
-    if hostname == "api.meta.ai":
-        return "24h"
-    parts = hostname.split(".")
-    is_bedrock_mantle = len(parts) == 4 and parts[0] == "bedrock-mantle" and bool(parts[1]) and parts[2:] == ["api", "aws"]
-    if not is_bedrock_mantle:
-        return None
-    normalized = str(model or "").strip().lower().replace("_", "-")
-    return "24h" if _EXTENDED_PROMPT_CACHE_MODEL_RE.search(normalized) else None
+    # Only the Responses API achieves hits (93-99% measured); chat/completions stays
+    # cache-cold. Exact-hostname match per #32243.
+    return "24h" if hostname == "api.meta.ai" else None
+
 
 
 def _is_openai_api_origin(base_url: Any) -> bool:
@@ -738,7 +718,7 @@ class ResponsesApiTransport(ProviderTransport):
         if not is_github_responses and not is_xai_responses and cache_key:
             kwargs["prompt_cache_key"] = cache_key
 
-        cache_retention = _default_prompt_cache_retention_for_request(model, params.get("base_url"))
+        cache_retention = _default_prompt_cache_retention_for_request(params.get("base_url"))
         if cache_retention:
             kwargs.setdefault("prompt_cache_retention", cache_retention)
 

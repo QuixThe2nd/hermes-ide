@@ -21,9 +21,8 @@ logger = logging.getLogger(__name__)
 _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
 _CACHEABLE_TYPES = frozenset(("text", "tool_use"))
 _EMPTY_TEXT_PLACEHOLDER = "(empty)"
-_EMPTY_SCHEMA = {"type": "object", "properties": {}}
-_BEDROCK_REGION_PREFIXES = ("global.", "us.", "eu.", "apac.", "ap.", "au.", "jp.", "ca.", "sa.", "me.", "af.")
 
+_EMPTY_SCHEMA = {"type": "object", "properties": {}}
 
 def _block_type(b: Any) -> Any:
     """``type`` of a dict block, None for non-dicts."""
@@ -96,20 +95,14 @@ def _split_blank_text_blocks(blocks: List[Any]) -> Tuple[List[Any], Any, List[in
     return kept, relocated[-1] if relocated else None, dropped
 
 
-def _is_bedrock_model_id(model: str) -> bool:
-    """Bedrock ids (``anthropic.claude-opus-4-7``, ``us.anthropic.claude-*``) use dots as namespace
-    separators that must be preserved verbatim."""
-    return model.lower().startswith(_BEDROCK_REGION_PREFIXES + ("anthropic.",))
-
-
 def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
     """Strip the ``anthropic/`` prefix (case-insensitive) and, unless ``preserve_dots`` (DashScope:
     ``qwen3.5-plus``), convert version dots to hyphens for Claude models only (``claude-opus-4.6``
-    -> ``claude-opus-4-6``). Bedrock ids keep their namespace dots; non-Anthropic names
-    (``gpt-5.4``) keep dots as part of their canonical form."""
+    -> ``claude-opus-4-6``). Non-Anthropic names (``gpt-5.4``) keep dots as part of their
+    canonical form."""
     if model.lower().startswith("anthropic/"):
         model = model[len("anthropic/"):]
-    if not preserve_dots and not _is_bedrock_model_id(model) and model.lower().startswith(("claude-", "anthropic/")):
+    if not preserve_dots and model.lower().startswith(("claude-", "anthropic/")):
         # Only convert dots to hyphens for Anthropic/Claude models. See issue #17171.
         model = model.replace(".", "-")
     return model
@@ -279,7 +272,7 @@ def _content_parts_to_anthropic_blocks(parts: Any) -> List[Dict[str, Any]]:
 def _safe_text(text: Any) -> str:
     """``text`` if non-whitespace, else the placeholder. A blank text block stored in history (e.g.
     by compression) is replayed on every turn and wedges the session with HTTP 400; the placeholder
-    is self-healing. Mirrors ``bedrock_adapter._safe_text`` (kept separate on purpose)."""
+    is self-healing."""
     text = "" if text is None else str(text)
     return text if text.strip() else _EMPTY_TEXT_PLACEHOLDER
 

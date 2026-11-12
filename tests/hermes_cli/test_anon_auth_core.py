@@ -78,7 +78,6 @@ class TestIdentityLifecycle:
     def test_opt_out_bool_disables_everything(self, portal, monkeypatch):
         _write_config(monkeypatch, guest=False)
         # A developer machine's ~/.aws would answer the Bedrock rung and hide the AuthError.
-        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
         assert anon_auth.ensure_portal_identity(explicit=True) is None
         assert portal.calls == []
         with pytest.raises(anon_auth.AuthError):
@@ -88,7 +87,6 @@ class TestIdentityLifecycle:
         """Without ``HERMES_GUEST_ONBOARDING=1`` the free tier does not exist: no mint, no portal
         traffic, ``nous.guest``'s default is never consulted, and an identity already on disk is
         not treated as enabled. The env var is the only lever; ``0``/``true``/anything but ``1`` is off."""
-        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
         for raw in ("", "0", "true", "yes", "new"):
             monkeypatch.setenv("HERMES_GUEST_ONBOARDING", raw)
             assert anon_auth.guest_enabled() is False
@@ -347,7 +345,6 @@ class TestBootstrapIsTheOneCreator:
     def test_reads_never_mint(self, portal, monkeypatch):
         """status, provider resolution and the connector bearer are reads: with no identity they
         answer 'nothing' and touch no network."""
-        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
         from tools.managed_tool_gateway import read_nous_access_token
         assert read_nous_access_token() is None
         with pytest.raises(anon_auth.AuthError):
@@ -360,7 +357,6 @@ class TestBootstrapIsTheOneCreator:
             anon_auth.ensure_portal_identity(explicit=False)
 
     def test_bootstrap_with_the_gate_closed_records_the_refusal_and_stops(self, portal, monkeypatch):
-        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
         portal.gate_closed = True
         fb = self._fresh()
         record = fb.run_bootstrap()

@@ -1288,10 +1288,6 @@ def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):
     assert resolved["requested_provider"] == "custom:local-llm"
 
 
-
-
-
-
 def test_named_custom_provider_wins_over_builtin_alias(monkeypatch):
     """A custom_providers entry named after a built-in *alias* (not a canonical
     provider name) must win over the built-in.  Regression guard for #15743:
@@ -1416,13 +1412,7 @@ def test_explicit_openrouter_config_mirror_bypasses_pool(monkeypatch):
     assert custom["base_url"] == "http://localhost:11434/v1" and custom["api_key"] != "router-key"
 
 
-
-
-
-
 # ── api_mode config override tests ──────────────────────────────────────
-
-
 
 
 def test_minimax_config_base_url_overrides_hardcoded_default(monkeypatch):
@@ -1525,10 +1515,6 @@ def test_opencode_go_explicit_key_matches_env_key_route(monkeypatch, model):
 # ------------------------------------------------------------------
 
 
-
-
-
-
 def test_auto_detected_nous_auth_failure_falls_through_to_openrouter(monkeypatch):
     """When auto-detect picks Nous but credentials are revoked, fall through to OpenRouter."""
     from hermes_cli.auth import AuthError
@@ -1563,8 +1549,6 @@ def test_auto_detected_nous_auth_failure_falls_through_to_openrouter(monkeypatch
 # ------------------------------------------------------------------
 # fix #7828 — custom_providers model field must propagate to runtime
 # ------------------------------------------------------------------
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -1639,7 +1623,6 @@ class TestOllamaUrlSubstringLeak:
         resolved = rp.resolve_runtime_provider(requested="custom")
 
         assert resolved["api_key"] == "ol-legit-key"
-
 
 
 # =============================================================================
@@ -1849,7 +1832,6 @@ class TestProviderEntryApiKeyEnvAlias:
 # =============================================================================
 
 
-
 # ---------------------------------------------------------------------------
 # minimax-oauth runtime resolution tests (added by feat/minimax-oauth-provider)
 # ---------------------------------------------------------------------------
@@ -1934,10 +1916,6 @@ def test_minimax_oauth_pool_forces_anthropic_messages_despite_stale_config(monke
 # ----------------------------------------------------------------------
 
 
-
-
-
-
 def test_openai_key_only_sent_to_openai_host(monkeypatch):
     """OPENAI_API_KEY must only be forwarded to api.openai.com, not to
     arbitrary custom endpoints (issue #28660)."""
@@ -2010,10 +1988,6 @@ def test_openrouter_key_reaches_openrouter_host(monkeypatch):
 # ----------------------------------------------------------------------
 
 
-
-
-
-
 def test_host_derived_key_does_not_leak_to_lookalike_host(monkeypatch):
     """DEEPSEEK_API_KEY must NOT be sent to an attacker-controlled lookalike
     host (e.g. api.deepseek.com.attacker.test). The host-derive helper uses
@@ -2063,48 +2037,6 @@ def test_host_derived_key_skips_already_handled_vendors(monkeypatch):
     # example.com has no EXAMPLE_API_KEY set, and OPENAI/OPENROUTER are gated
     # on their own hosts — chain falls through to no-key-required.
     assert resolved["api_key"] == "no-key-required"
-
-
-
-
-def _patch_bedrock(monkeypatch, config_default=""):
-    """Stub the bedrock_adapter helpers resolve_runtime_provider imports.
-
-    Leaves the real ``is_anthropic_bedrock_model`` in place so the dual-path
-    routing decision is exercised for real. ``config_default`` is the persisted
-    ``model.default`` — kept non-Claude here to prove ``target_model`` (not the
-    stale config default) drives the api_mode decision.
-    """
-    import agent.bedrock_adapter as ba
-
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "bedrock")
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {"default": config_default})
-    monkeypatch.setattr(rp, "load_config", lambda: {"bedrock": {}})
-    monkeypatch.setattr(ba, "has_aws_credentials", lambda: True)
-    monkeypatch.setattr(ba, "resolve_aws_auth_env_var", lambda: "AWS_PROFILE")
-    monkeypatch.setattr(ba, "resolve_bedrock_region", lambda: "eu-north-1")
-
-
-def test_resolve_runtime_provider_bedrock_claude_target_model_uses_anthropic_messages(monkeypatch):
-    """Claude-on-Bedrock delegation must route through the AnthropicBedrock SDK.
-
-    Regression for #49095: the bedrock branch derived api_mode from the stale
-    persisted ``model.default`` instead of ``target_model``. When delegation
-    targets a Claude model but the parent's default is non-Claude, the wrong
-    branch (Converse) was picked, and the child silently fell back to
-    openrouter/free. ``target_model`` must win so Claude keeps the
-    anthropic_messages path (prompt caching, thinking budgets).
-    """
-    _patch_bedrock(monkeypatch, config_default="amazon.nova-pro-v1:0")
-
-    resolved = rp.resolve_runtime_provider(
-        requested="bedrock",
-        target_model="global.anthropic.claude-sonnet-4-6",
-    )
-
-    assert resolved["provider"] == "bedrock"
-    assert resolved["api_mode"] == "anthropic_messages"
-    assert resolved.get("bedrock_anthropic") is True
 
 
 def test_auto_provider_with_local_base_url_bypasses_anthropic_key(monkeypatch):
@@ -2209,10 +2141,6 @@ def test_auto_provider_lookalike_cloud_host_does_not_bypass_to_cloud(monkeypatch
 # ---------------------------------------------------------------------------
 # extra_headers support for named custom providers (#3526 salvage)
 # ---------------------------------------------------------------------------
-
-
-
-
 
 
 def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeypatch):

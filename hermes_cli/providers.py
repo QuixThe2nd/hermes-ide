@@ -83,7 +83,6 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "ollama-cloud": HermesOverlay(base_url_override="https://ollama.com/v1", base_url_env_var="OLLAMA_BASE_URL"),
     # Azure Foundry serves OpenAI- and Anthropic-style endpoints; transport comes from model.api_mode.
     "azure-foundry": HermesOverlay(base_url_env_var="AZURE_FOUNDRY_BASE_URL"),
-    "bedrock": HermesOverlay(transport="bedrock_converse", auth_type="aws_sdk"),
     # Vertex is OAuth2 (service-account JSON / ADC), resolved by agent/vertex_adapter.py. Without an
     # overlay get_provider("vertex") is None and auxiliary_client._preserve_provider_with_base_url
     # would treat a Vertex MoA slot as an unknown custom endpoint, losing the identity
@@ -127,7 +126,7 @@ _ALIAS_GROUPS: Dict[str, Tuple[str, ...]] = {
     "huggingface": ("hf", "hugging-face", "huggingface-hub"), "novita": ("novita-ai", "novitaai"),
     "xiaomi": ("mimo", "xiaomi-mimo"), "tencent-tokenhub": ("tencent", "tokenhub", "tencent-cloud", "tencentmaas"),
     "tencent-tokenplan": ("tokenplan", "tencent-lkeap"),
-    "bedrock": ("aws", "aws-bedrock", "amazon-bedrock", "amazon"), "arcee": ("arcee-ai", "arceeai"),
+    "arcee": ("arcee-ai", "arceeai"),
     "gmi": ("gmi-cloud", "gmicloud"), "fireworks": ("fireworks-ai", "fw"), "upstage": ("solar",),
     "actual": ("actual-computer", "actualcomputer", "aci"),
     "nebius-token-factory": ("nebius", "nebius-tokenfactory", "nebius-tf", "token-factory", "tokenfactory"),
@@ -144,7 +143,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "copilot-acp": "GitHub Copilot ACP", "stepfun": "StepFun Step Plan", "xiaomi": "Xiaomi MiMo", "gmi": "GMI Cloud",
     "upstage": "Upstage Solar", "actual": "Actual Computer", "tencent-tokenhub": "Tencent TokenHub",
     "nebius-token-factory": "Nebius Token Factory", "tencent-tokenplan": "Tencent TokenPlan", "lmstudio": "LM Studio",
-    "local": "Local endpoint", "bedrock": "AWS Bedrock", "vertex": "Google Vertex AI", "ollama-cloud": "Ollama Cloud",
+    "local": "Local endpoint", "vertex": "Google Vertex AI", "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }
 
@@ -153,7 +152,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
 
 TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "openai_chat": "chat_completions", "anthropic_messages": "anthropic_messages",
-    "codex_responses": "codex_responses", "bedrock_converse": "bedrock_converse",
+    "codex_responses": "codex_responses",
 }
 
 
@@ -311,8 +310,6 @@ def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
         # summaries, and prompt caching live on /v1/responses, and /v1/chat/completions is only a minimal
         # compatibility shim (docs.router.com/api/endpoint). Exact-hostname match per #32243.
         return "codex_responses"
-    if hostname.startswith("bedrock-runtime.") and base_url_host_matches(base_url, "amazonaws.com"):
-        return "bedrock_converse"
     return None
 
 
@@ -350,7 +347,7 @@ def _nous_anthropic_wire() -> str:
 def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> str:
     """API mode (wire protocol) for a provider/endpoint: host-mandated mode, then Nous dual-wire
     (model-derived — the overlay alone says openai_chat and would pin Claude on the wrong wire),
-    then the known provider's transport, then bedrock, else ``chat_completions``."""
+    then the known provider's transport, else ``chat_completions``."""
     if is_actual_route(provider, base_url):
         return "chat_completions"
     mandated = host_mandated_api_mode(base_url)
@@ -361,8 +358,6 @@ def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> st
     pdef = get_provider(provider)
     if pdef is not None:
         return TRANSPORT_TO_API_MODE.get(pdef.transport, "chat_completions")
-    if provider == "bedrock":
-        return "bedrock_converse"
     return "chat_completions"
 
 

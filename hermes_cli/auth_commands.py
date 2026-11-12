@@ -695,25 +695,6 @@ def auth_logout_command(args) -> None:
 
 
 
-def _print_bedrock_status() -> None:
-    """Show AWS Bedrock credential status (not in the pool — uses boto3 chain)."""
-    try:
-        from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
-        if not has_aws_credentials():
-            return
-        region = resolve_bedrock_region()
-        print("bedrock (AWS SDK credential chain):")
-        print(f"  Auth: {resolve_aws_auth_env_var() or 'unknown'}")
-        print(f"  Region: {region}")
-        try:
-            import boto3
-            arn = boto3.client("sts", region_name=region).get_caller_identity().get("Arn", "unknown")
-            print(f"  Identity: {arn}")
-        except Exception:
-            print("  Identity: (could not resolve — boto3 STS call failed)")
-        print()
-    except ImportError:
-        pass  # boto3 or bedrock_adapter not available
 
 
 def _print_azure_entra_status() -> None:
@@ -756,7 +737,6 @@ def _interactive_auth() -> None:
     print("Credential Pool Status")
     print("=" * 50)
     auth_list_command(SimpleNamespace(provider=None))
-    _print_bedrock_status()
     _print_azure_entra_status()
     print()
 

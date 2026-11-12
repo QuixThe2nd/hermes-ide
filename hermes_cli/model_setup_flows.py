@@ -2,7 +2,7 @@
 
 main / config / auth / models helpers are imported lazily inside bodies: avoids the main.py import
 cycle and lets tests patch ``hermes_cli.config.load_config`` etc. at call time. The shared skeleton
-lives in :mod:`hermes_cli.model_setup_flows_common`; the custom / Azure / Bedrock flows live in their
+lives in :mod:`hermes_cli.model_setup_flows_common`; the custom / Azure flows live in their
 own ``model_setup_flows_*`` modules.
 """
 
@@ -21,7 +21,6 @@ from hermes_cli.model_setup_flows_common import (
     _run_login, _say, _show_curated)
 from hermes_cli.model_setup_flows_custom import _model_flow_custom, _model_flow_named_custom
 from hermes_cli.model_setup_flows_azure import _model_flow_azure_foundry
-from hermes_cli.model_setup_flows_bedrock import _model_flow_bedrock
 
 
 def _env_base_url(base_url_env: str) -> str:
@@ -1055,9 +1054,6 @@ import urllib.parse  # noqa: F401,E402
 
 
 _PLUGIN_COMPAT_LAZY = {
-    'BEDROCK_GEO_PREFIXES': ('hermes_cli.model_setup_flows_bedrock', 'BEDROCK_GEO_PREFIXES'),
-    'bedrock_model_routable_from_region': ('hermes_cli.model_setup_flows_bedrock', 'bedrock_model_routable_from_region'),
-    'bedrock_region_geo_prefix': ('hermes_cli.model_setup_flows_bedrock', 'bedrock_region_geo_prefix'),
     'custom_provider_slug': ('hermes_cli.providers', 'custom_provider_slug'),
     'line_input': ('hermes_cli.cli_output', 'line_input'),
 }

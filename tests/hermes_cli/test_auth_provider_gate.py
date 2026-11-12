@@ -24,10 +24,6 @@ def _clean_anthropic_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
-
-
-
-
 def test_ambient_pool_source_does_not_count_as_explicit(tmp_path, monkeypatch):
     """gh_cli-seeded Copilot pool entries are ambient, not explicit config (#56974)."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
@@ -123,27 +119,6 @@ def test_vertex_credentials_path_must_be_readable_file(tmp_path, monkeypatch):
     assert is_provider_explicitly_configured("vertex") is False
 
 
-def test_bedrock_region_counts_as_explicit(tmp_path, monkeypatch):
-    """Bedrock (AWS SDK auth, no API key) is explicitly configured once the
-    user pins a region in config.yaml, mirroring the Vertex keyless case."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    _write_auth_store(tmp_path, {"version": 1, "providers": {}, "active_provider": None})
-
-    from hermes_cli.auth import is_provider_explicitly_configured
-
-    _write_config(tmp_path, {
-        "model": {"provider": "anthropic", "default": "claude-opus-4-8"},
-        "bedrock": {"region": "us-east-1"},
-    })
-    assert is_provider_explicitly_configured("bedrock") is True
-
-    _write_config(tmp_path, {
-        "model": {"provider": "anthropic", "default": "claude-opus-4-8"},
-        "bedrock": {"region": ""},
-    })
-    assert is_provider_explicitly_configured("bedrock") is False
-
-
 def test_returns_true_when_moa_reference_slot_uses_provider(tmp_path, monkeypatch):
     """MoA advisor slots are explicit provider selections for auth gating."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
@@ -217,57 +192,6 @@ def _clean_aws_env(monkeypatch):
         "AWS_WEB_IDENTITY_TOKEN_FILE",
     ):
         monkeypatch.delenv(key, raising=False)
-
-
-def test_bedrock_not_explicit_without_aws_env(tmp_path, monkeypatch, _clean_aws_env):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
-
-    from hermes_cli.auth import is_provider_explicitly_configured
-    assert is_provider_explicitly_configured("bedrock") is False
-
-
-def test_bedrock_bearer_token_counts_as_explicit(tmp_path, monkeypatch, _clean_aws_env):
-    """AWS_BEARER_TOKEN_BEDROCK is Bedrock-specific — the user set it for
-    exactly this provider, so it gates like a provider API key."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "ABSKexample-bearer-token-value")
-
-    from hermes_cli.auth import is_provider_explicitly_configured
-    assert is_provider_explicitly_configured("bedrock") is True
-
-
-def test_bedrock_access_key_pair_counts_as_explicit(tmp_path, monkeypatch, _clean_aws_env):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAEXAMPLE1234567890")
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "examplesecretexamplesecretexample0000000")
-
-    from hermes_cli.auth import is_provider_explicitly_configured
-    assert is_provider_explicitly_configured("bedrock") is True
-
-
-def test_bedrock_access_key_without_secret_is_not_explicit(tmp_path, monkeypatch, _clean_aws_env):
-    """A lone AWS_ACCESS_KEY_ID can't authenticate anything — require the pair."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAEXAMPLE1234567890")
-
-    from hermes_cli.auth import is_provider_explicitly_configured
-    assert is_provider_explicitly_configured("bedrock") is False
-
-
-def test_bedrock_ambient_aws_profile_is_not_explicit(tmp_path, monkeypatch, _clean_aws_env):
-    """AWS_PROFILE is ambient machine state (SSO / shared credentials file),
-    not an explicit Hermes provider choice — same principle as gh_cli-seeded
-    Copilot pool entries (#56974)."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("AWS_PROFILE", "default")
-
-    from hermes_cli.auth import is_provider_explicitly_configured
-    assert is_provider_explicitly_configured("bedrock") is False
 
 
 def test_aws_env_does_not_leak_into_other_providers(tmp_path, monkeypatch, _clean_aws_env):

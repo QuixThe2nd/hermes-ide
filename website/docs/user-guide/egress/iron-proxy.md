@@ -164,7 +164,7 @@ Auth schemes that involve request signing or SDK-minted OAuth cannot be swapped 
 
 | Env var | Provider | Reason |
 |---|---|---|
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | AWS Bedrock / SageMaker | SigV4-signed requests |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | AWS SigV4 tooling (`aws` CLI, boto3-based tools) | SigV4-signed requests |
 | `GOOGLE_APPLICATION_CREDENTIALS` | GCP Vertex AI | OAuth minted from a service-account file |
 
 These env vars are present on most developer laptops for unrelated tooling (terraform, gcloud, aws CLI, ECR push). They surface as warnings in the wizard and `hermes egress status` but never block the proxy from starting. If you don't use those providers from sandboxes, `unset` the vars to clear the warning.
@@ -419,7 +419,7 @@ If the nonce check fails, the code falls back to matching `argv[0]` basename aga
 - Sandbox processes that bypass `HTTPS_PROXY` by using a raw socket. The proxy can't intercept what doesn't route to it. Node.js is partially mitigated via `NODE_OPTIONS=--use-openssl-ca` (see caveat above).
 - Credential files explicitly mounted into Docker (`terminal.credential_files` or skill-registered mounts). Egress protects provider env vars; it does not inspect arbitrary mounted files. Do not mount real provider credentials into an enforced egress sandbox.
 - Allowlisted-host data exfiltration. If `api.openai.com` is allowed, an agent could embed exfil data in a request body to that host. The daemon log captures the request happened but doesn't prevent it.
-- Uncovered providers (AWS Bedrock SigV4, GCP Vertex service-account OAuth). Their env vars stay in the sandbox; if you enable them, those credentials bypass the proxy entirely. See [Uncovered providers](#uncovered-providers).
+- Uncovered providers (AWS SigV4-signed APIs, GCP Vertex service-account OAuth). Their env vars stay in the sandbox; if you enable them, those credentials bypass the proxy entirely. See [Uncovered providers](#uncovered-providers).
 - iron-proxy in-memory secret zeroisation. The Go binary holds swapped-in real credentials in process memory; a core-dump or `/proc/<pid>/mem` read from a same-uid attacker would expose them. Out of scope for this layer.
 
 ## Failure modes

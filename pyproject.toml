@@ -283,7 +283,6 @@ mistral = ["mistralai==2.4.8"]
 # tools/lazy_deps.py on first use; never a core dependency and deliberately
 # NOT in [all].
 otlp = ["opentelemetry-sdk==1.39.1", "opentelemetry-exporter-otlp-proto-http==1.39.1"]
-bedrock = ["boto3==1.42.89"]
 vertex = ["google-auth==2.55.1"]
 azure-identity = ["azure-identity==1.25.3"]
 termux = [
@@ -337,7 +336,7 @@ all = [
   # Removed from [all] on 2026-05-12 (covered by lazy-install):
   #   anthropic, exa, firecrawl, parallel-web, fal,
   #   modal, daytona, vercel, messaging (discord),
-  #   matrix, honcho, bedrock
+  #   matrix, honcho
   #
   # Why: the matrix extra in particular pulls `mautrix[encryption]`
   # which depends on `python-olm`. python-olm has Linux-only wheels and
@@ -452,7 +451,6 @@ alibabacloud-dingtalk = false
 anthropic = false
 asyncpg = false
 azure-identity = false
-boto3 = false
 brotlicffi = false
 certifi = false
 concurrent-log-handler = false

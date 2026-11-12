@@ -963,9 +963,6 @@ def _rebuild_primary_client(agent, rt: Dict[str, Any], *, reason: str) -> None:
         # factory so the restored facade keeps the reference_callback relay wired at init — a bare
         # MoAClient() would silently stop emitting moa.reference/moa.aggregating display events (#53802).
         agent._anthropic_client = None
-    elif agent.provider == "bedrock" and agent.api_mode in ("anthropic_messages", "bedrock_converse"):
-        from agent.bedrock_adapter import bind_bedrock_runtime
-        bind_bedrock_runtime(agent, agent.base_url, agent.api_mode)
     elif agent.api_mode == "anthropic_messages":
         _build_anthropic_client_from_runtime(agent, rt)
     else:
@@ -1596,7 +1593,7 @@ def anthropic_prompt_cache_policy(
         eff_provider == "anthropic" or base_url_hostname(eff_base_url) == "api.anthropic.com"
     )
     # Honor a configured route's per-model ``prompt_caching`` capability (explicit false too); only
-    # for the two transports this planner handles, not Responses/Bedrock.
+    # for the two transports this planner handles, not Responses.
     supports_cache_markers = eff_api_mode in {"anthropic_messages", "chat_completions"}
     litellm_openai_wire = (
         eff_api_mode == "chat_completions" and is_claude and _is_litellm_route(provider_lower, eff_base_url)
@@ -1644,7 +1641,7 @@ def anthropic_prompt_cache_policy(
     # LiteLLM fronting Claude on the OpenAI wire supports cache_control but matched no grant above.
     # Claude-only: strict relays reject the block format for other models. Envelope layout: native
     # top-level markers are only relocated by the anthropic_messages adapter and 400 via LiteLLM.
-    # Gated on chat_completions; codex_responses/bedrock_converse have their own handling.
+    # Gated on chat_completions; codex_responses has its own handling.
     if litellm_openai_wire:
         return True, False
     # MiniMax's own models (M2.x) on its Anthropic-compatible endpoint support cache_control; opt
@@ -1826,15 +1823,6 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # gets its OWN fresh ``httpx.Client`` whose lifetime is tied to the OpenAI client it is passed to. When
     # the OpenAI client is closed (rebuild, teardown, credential rotation), the paired ``httpx.Client``
     # closes with it, and the next call constructs a fresh one — no stale closed transport can be reused.
-    # Bedrock Mantle: the ``aws-sdk`` placeholder is a sentinel for IAM-chain auth, not a bearer token.
-    # Every rebuild from bare ``{api_key, base_url}`` kwargs (switch_model, fallback restore, credential
-    # rotation, request-scoped clients) must reinstall the SigV4 http_client or Mantle answers 401.
-    if "bedrock-mantle." in str(client_kwargs.get("base_url") or ""):
-        from agent.bedrock_adapter import configure_bedrock_openai_client_kwargs
-        timeout = client_kwargs.get("timeout")
-        configure_bedrock_openai_client_kwargs(
-            client_kwargs, timeout=timeout if isinstance(timeout, (int, float)) else None,
-        )
     if "http_client" not in client_kwargs:
         keepalive_http = agent._build_keepalive_http_client(client_kwargs.get("base_url", ""), verify=httpx_verify)
         if keepalive_http is not None:
@@ -1971,12 +1959,6 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
         # is applied inside the fan-out. The binder pins api_mode so the loop never dispatches
         # client.responses.create against the facade (same pins as agent_init / fallback).
         bind_moa_runtime(agent, agent.model, api_key)
-        return
-    if new_provider == "bedrock" and api_mode in ("anthropic_messages", "bedrock_converse"):
-        # Non-Mantle Bedrock wires authenticate through boto3, never through the generic
-        # Anthropic/OpenAI builders (which would ship the ``aws-sdk`` sentinel as a credential).
-        from agent.bedrock_adapter import bind_bedrock_runtime
-        bind_bedrock_runtime(agent, base_url or agent.base_url, api_mode)
         return
     if api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client
@@ -2604,7 +2586,7 @@ def _log_empty_non_final_heal(healed: int) -> None:
 
 def repair_empty_non_final_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Substitute a placeholder for empty-content non-final messages on the per-call copy.
-    Anthropic/litellm/Bedrock 400 on any empty non-final message and a persisted stub poisons
+    Anthropic/litellm 400 on any empty non-final message and a persisted stub poisons
     every later turn; repairing the wire copy heals the session in memory. Substitution (not
     deletion) keeps role alternation and tool-call pairing intact. The final message is untouched."""
     if not messages or len(messages) < 2:

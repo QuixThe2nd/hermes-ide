@@ -36,12 +36,6 @@ def test_astra_whole_request_price_tier_includes_cache_writes():
     assert below.amount_usd < above.amount_usd
 
 
-
-
-
-
-
-
 def test_normalize_usage_reads_deepseek_native_cache_hit_tokens():
     """DeepSeek's native API (api.deepseek.com) reports context-cache hits as
     top-level prompt_cache_hit_tokens / prompt_cache_miss_tokens (with
@@ -62,8 +56,6 @@ def test_normalize_usage_reads_deepseek_native_cache_hit_tokens():
     # prompt_tokens includes cached; input = 2000 - 1500 = the miss bucket
     assert normalized.input_tokens == 500
     assert normalized.output_tokens == 400
-
-
 
 
 def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
@@ -93,20 +85,6 @@ def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
     # input_tokens = prompt_total - cache_read - cache_write = 1000 - 500 - 300 = 200
     assert normalized.input_tokens == 200
     assert normalized.output_tokens == 200
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def test_deepseek_v4_pro_pricing_entry_exists():
@@ -173,8 +151,6 @@ def test_unknown_model_falls_back_to_endpoint_metadata(monkeypatch):
     assert entry.output_cost_per_million == Decimal("2")
 
 
-
-
 def test_deepseek_deprecated_aliases_price_as_flash():
     """Invariant: deepseek-v4-flash / deepseek-chat / deepseek-reasoner are retired aliases
     served by the current Flash model — they must bill at identical rates to the
@@ -189,128 +165,6 @@ def test_deepseek_deprecated_aliases_price_as_flash():
         assert (
             entry.cache_read_cost_per_million == flash.cache_read_cost_per_million
         ), alias
-
-
-
-
-def test_bedrock_claude_rows_all_carry_cache_pricing():
-    """Invariant: every Bedrock Claude pricing row must carry cache-read AND
-    cache-write rates, otherwise a cached session prices as ``unknown``.
-
-    Bedrock Claude routes through the AnthropicBedrock SDK and injects
-    cache_control, so cached tokens are always reported — the pricing layer
-    must be able to value them.  See #50295.
-    """
-    from agent.usage_pricing import _OFFICIAL_DOCS_PRICING
-
-    claude_rows = [
-        (prov, model)
-        for (prov, model) in _OFFICIAL_DOCS_PRICING
-        if prov == "bedrock" and "claude" in model
-    ]
-    assert claude_rows, "expected at least one bedrock Claude pricing row"
-    for key in claude_rows:
-        entry = _OFFICIAL_DOCS_PRICING[key]
-        assert entry.input_cost_per_million is not None, key
-        assert entry.cache_read_cost_per_million is not None, key
-        assert entry.cache_write_cost_per_million is not None, key
-        # Cache reads are cheaper than fresh input; cache writes cost more.
-        assert entry.cache_read_cost_per_million < entry.input_cost_per_million, key
-        assert entry.cache_write_cost_per_million > entry.input_cost_per_million, key
-
-
-def test_bedrock_current_gen_claude_rows_resolve():
-    """Current-gen Claude models (Opus 4.8/4.7, Sonnet 5) must have Bedrock
-    pricing rows so cached sessions report a dollar cost, not ``unknown``.
-    Assert each resolves via the bare id and a cross-region inference profile
-    (us./global. prefix), that every id for a given model resolves to the same
-    entry, and that the row carries the cache fields a Bedrock Claude session
-    needs.
-
-    (Version-suffixed IDs like ``...-v1:0`` are covered separately by the
-    normalizer test in the suffix-strip change; this test intentionally sticks
-    to id shapes that resolve on ``main`` so it is independent of that PR.)
-    """
-    url = "https://bedrock-runtime.us-east-1.amazonaws.com"
-    for bare in (
-        "anthropic.claude-opus-4-8",
-        "anthropic.claude-opus-4-7",
-        "anthropic.claude-sonnet-5",
-    ):
-        ref = get_pricing_entry(bare, provider="bedrock", base_url=url)
-        assert ref is not None, bare
-        assert ref.input_cost_per_million is not None, bare
-        assert ref.output_cost_per_million is not None, bare
-        # Output costs more than input across the Claude line; sanity-check the
-        # row isn't malformed (input < output).
-        assert ref.output_cost_per_million > ref.input_cost_per_million, bare
-        # Cache fields present so cached sessions price correctly (the #50295
-        # symptom was unknown cost on cached Bedrock Claude sessions).
-        assert ref.cache_read_cost_per_million is not None, bare
-        assert ref.cache_write_cost_per_million is not None, bare
-        # Cross-region inference profiles resolve to the same entry.
-        for mid in (f"us.{bare}", f"global.{bare}"):
-            entry = get_pricing_entry(mid, provider="bedrock", base_url=url)
-            assert entry is not None, mid
-            assert entry.input_cost_per_million == ref.input_cost_per_million, mid
-            assert entry.output_cost_per_million == ref.output_cost_per_million, mid
-
-
-
-
-def test_bedrock_versioned_inference_profile_resolves_to_bare_pricing():
-    """Bedrock profile IDs may include the provider's dated version suffix.
-
-    The pricing table intentionally uses shorter model-family IDs, so the
-    lookup needs a longest-prefix fallback after stripping the region scope.
-    """
-    bare = get_pricing_entry("anthropic.claude-sonnet-4-6", provider="bedrock")
-    assert bare is not None
-
-    for model in (
-        "us.anthropic.claude-sonnet-4-6-20250514-v1:0",
-        "global.anthropic.claude-sonnet-4-6-20250514-v1:0",
-    ):
-        scoped = get_pricing_entry(model, provider="bedrock")
-        assert scoped is not None, model
-        assert scoped.input_cost_per_million == bare.input_cost_per_million
-        assert scoped.output_cost_per_million == bare.output_cost_per_million
-        assert scoped.cache_read_cost_per_million == bare.cache_read_cost_per_million
-        assert scoped.cache_write_cost_per_million == bare.cache_write_cost_per_million
-
-
-
-
-
-
-def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
-    """A Bedrock Claude session with cache hits must produce a dollar estimate,
-    not ``unknown`` — the user-visible symptom in #50295.
-    """
-    bedrock_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
-    usage = SimpleNamespace(
-        input_tokens=55,
-        output_tokens=7113,
-        cache_read_input_tokens=1369379,
-        cache_creation_input_tokens=42135,
-    )
-    canonical = normalize_usage(usage, provider="bedrock", api_mode="anthropic_messages")
-    assert canonical.cache_read_tokens == 1369379
-    assert canonical.cache_write_tokens == 42135
-
-    result = estimate_usage_cost(
-        "us.anthropic.claude-opus-4-6",
-        canonical,
-        provider="bedrock",
-        base_url=bedrock_url,
-    )
-    assert result.status == "estimated"
-    assert result.amount_usd is not None
-
-
-
-
-
 
 
 def test_fireworks_router_fast_tier_prices_distinctly():
@@ -330,16 +184,6 @@ def test_fireworks_router_fast_tier_prices_distinctly():
     assert standard is not None and fast is not None
     assert fast.input_cost_per_million > standard.input_cost_per_million
     assert fast.output_cost_per_million > standard.output_cost_per_million
-
-
-
-
-
-
-
-
-
-
 
 
 def test_google_and_vertex_routes_share_official_pricing_snapshot():

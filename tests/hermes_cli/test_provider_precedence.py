@@ -23,11 +23,6 @@ def _config(monkeypatch, model_cfg):
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": model_cfg})
 
 
-def _no_aws(monkeypatch):
-    # Neutralize any ambient AWS creds so Bedrock auto-detect can't interfere.
-    monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
-
-
 def _clear_provider_env(monkeypatch):
     for var in ("OPENAI_API_KEY", "OPENROUTER_API_KEY", "GLM_API_KEY", "ZAI_API_KEY",
                 "KIMI_API_KEY", "MINIMAX_API_KEY", "HERMES_INFERENCE_PROVIDER"):
@@ -38,7 +33,6 @@ class TestProviderPrecedence:
     def test_config_provider_beats_stale_oauth(self, monkeypatch):
         """config.yaml model.provider wins over a logged-in OAuth active_provider."""
         _clear_provider_env(monkeypatch)
-        _no_aws(monkeypatch)
         _login(monkeypatch, "anthropic")           # stale OAuth login
         _config(monkeypatch, {"provider": "zai", "default": "glm-4.6"})
         assert resolve_provider("auto") == "zai"
@@ -46,7 +40,6 @@ class TestProviderPrecedence:
     def test_env_key_beats_stale_oauth(self, monkeypatch):
         """An exported provider API key wins over a logged-in OAuth active_provider."""
         _clear_provider_env(monkeypatch)
-        _no_aws(monkeypatch)
         _login(monkeypatch, "anthropic")
         _config(monkeypatch, {"default": "some-model"})  # dict, NO provider key
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
@@ -57,7 +50,6 @@ class TestProviderPrecedence:
         """With NO config provider and NO env keys, the logged-in OAuth provider
         is still used (it's the last-resort fallback, not removed)."""
         _clear_provider_env(monkeypatch)
-        _no_aws(monkeypatch)
         _login(monkeypatch, "anthropic")
         _config(monkeypatch, {})  # empty model config, no provider
         assert resolve_provider("auto") == "anthropic"
@@ -68,7 +60,6 @@ class TestProviderPrecedence:
         emits a WARN so the silent override is visible (#29285)."""
         import logging
         _clear_provider_env(monkeypatch)
-        _no_aws(monkeypatch)
         _login(monkeypatch, "anthropic")
         _config(monkeypatch, {"default": "claude-x"})  # populated, no provider
         with caplog.at_level(logging.WARNING, logger="hermes_cli.auth"):
@@ -80,7 +71,6 @@ class TestProviderPrecedence:
         """An OpenRouter credential-pool entry (no env var) wins over a logged-in
         OAuth provider — the pool rung sits above OAuth (#42130 + #29285)."""
         _clear_provider_env(monkeypatch)
-        _no_aws(monkeypatch)
         _login(monkeypatch, "anthropic")
         _config(monkeypatch, {})
 
@@ -109,19 +99,17 @@ def _free_tier(monkeypatch, *, on=True, identity=False):
 class TestFreeTierBeatsImplicitHostCredentials:
     """NS-829: a leftover ~/.aws profile must not pre-empt the free tier on a fresh install.
 
-    The ladder: explicit intent still wins, an EXISTING free-tier identity sits above the implicit
-    Bedrock chain, the free tier off (or its identity absent) restores Bedrock. The resolver never
-    creates the identity; the boot bootstrap does, before any turn asks."""
+    The ladder: explicit intent still wins, an existing free-tier identity is used, and with
+    no identity (or the free tier off) resolution raises AuthError. Bedrock is not a fallback.
+    The resolver never creates the identity; the boot bootstrap does, before any turn asks."""
 
     @pytest.mark.parametrize("free_tier_on, identity, env_key, login, expected", [
-        (True, True, None, None, "nous"),                 # existing identity beats the AWS chain
-        (True, False, None, None, "bedrock"),             # no identity yet: Bedrock, nothing minted
-        (False, True, None, None, "bedrock"),             # free tier off: Bedrock as before
-        (True, True, "OPENAI_API_KEY", None, "openrouter"),  # env key still wins
-        (True, True, None, "anthropic", "anthropic"),        # a sign-in still wins
+        (True, True, None, None, "nous"),
+        (True, True, "OPENAI_API_KEY", None, "openrouter"),
+        (True, True, None, "anthropic", "anthropic"),
     ])
-    def test_free_tier_sits_above_the_bedrock_chain(self, monkeypatch, free_tier_on, identity,
-                                                     env_key, login, expected):
+    def test_free_tier_identity_still_resolves(self, monkeypatch, free_tier_on, identity,
+                                               env_key, login, expected):
         _clear_provider_env(monkeypatch)
         _config(monkeypatch, "")
         if login:
@@ -130,9 +118,17 @@ class TestFreeTierBeatsImplicitHostCredentials:
             _logged_out(monkeypatch)
         if env_key:
             monkeypatch.setenv(env_key, "sk-test-key")
-        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: True)
         _free_tier(monkeypatch, on=free_tier_on, identity=identity)
         assert resolve_provider("auto") == expected
+
+    @pytest.mark.parametrize("free_tier_on, identity", [(True, False), (False, True)])
+    def test_no_implicit_cloud_fallback(self, monkeypatch, free_tier_on, identity):
+        _clear_provider_env(monkeypatch)
+        _config(monkeypatch, "")
+        _logged_out(monkeypatch)
+        _free_tier(monkeypatch, on=free_tier_on, identity=identity)
+        with pytest.raises(AuthError):
+            resolve_provider("auto")
 
     def test_skip_free_tier_answers_what_else_would_carry_inference(self, monkeypatch):
         """The bootstrap's question: with the free tier hidden, an existing identity is not an
@@ -140,7 +136,6 @@ class TestFreeTierBeatsImplicitHostCredentials:
         _clear_provider_env(monkeypatch)
         _config(monkeypatch, "")
         _logged_out(monkeypatch)
-        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
         _free_tier(monkeypatch, on=True, identity=True)
         assert resolve_provider("auto") == "nous"
         with pytest.raises(AuthError):

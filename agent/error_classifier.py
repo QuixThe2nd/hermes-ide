@@ -138,8 +138,8 @@ _BILLING_ERROR_CODES = frozenset({
     "organization_usage_limit_exceeded", "project_spend_limit_exceeded",
 })
 
-# Transient rate limiting. Bedrock "Throttling error: Too many tokens" also
-# contains an overflow phrase; rate limit is matched first so throttle wins.
+# Rate limiting is matched before context overflow so throttling wins when
+# an error message contains both kinds of phrases.
 _RATE_LIMIT_PATTERNS = (
     "rate limit", "rate_limit", "too many requests", "throttled", "requests per minute",
     "tokens per minute", "requests per day", "try again in", "please retry after",
@@ -245,7 +245,7 @@ _MEMORY_CEILING_ERROR_CODES = frozenset({
 
 # Bare "max_tokens" is load-bearing: the output-cap-retry path keys off it;
 # empty-response advisories mentioning it are intercepted earlier. Groups:
-# generic; vLLM; Ollama; llama.cpp; Chinese; Z.AI (1210); Bedrock; Together.
+# generic; vLLM; Ollama; llama.cpp; Chinese; Z.AI (1210); Together.
 _CONTEXT_OVERFLOW_PATTERNS = (
     "context length", "context size", "maximum context", "token limit", "too many tokens",
     "reduce the length", "exceeds the limit", "context window", "prompt is too long",
@@ -317,9 +317,9 @@ _REQUEST_VALIDATION_PATTERNS = (
 # Parameters Hermes sends on SOME routes only → hosts where that is deliberate.
 # A rejection from any other host means the provider's gateway injected the
 # field itself: a server-side flake, not our request shape. prompt_cache_retention
-# is only sent for api.meta.ai / bedrock-mantle (agent/transports/codex.py).
+# is only sent for api.meta.ai (agent/transports/codex.py).
 _SERVER_INJECTED_PARAM_SENDERS: Dict[str, tuple] = {
-    "prompt_cache_retention": ("meta", "muse", "msl", "model-api", "bedrock", "mantle"),
+    "prompt_cache_retention": ("meta", "muse", "msl", "model-api"),
 }
 _PARAM_REJECTION_WORDS = ("not supported", "unsupported", "unknown", "unrecognized")
 
@@ -475,10 +475,9 @@ _V_MALFORMED_TOOL_ARGS = _v(_R.format_error, retryable=False, should_fallback=Fa
 # A reasoning-mandatory route answering ``reasoning: {enabled: false}`` (Nous Portal + OpenRouter wording).
 _REASONING_MANDATORY_PATTERN = "reasoning is mandatory"
 
-# Generic markers a provider 400 puts next to the offending parameter name. Bedrock Converse
-# rejects sampling params for reasoning-first models with the contraction ("This model doesn't
-# support the temperature field", xAI Grok) and inference-profile Claude with "`temperature` is
-# deprecated for this model" (#111043); strict pydantic gateways (Fireworks) name the unknown
+# Generic markers a provider 400 puts next to the offending parameter name.
+# Reasoning-first models may reject sampling params with a contraction ("This model doesn't
+# support the temperature field", xAI Grok) or call a field deprecated; strict pydantic gateways (Fireworks) name the unknown
 # field as "extra inputs are not permitted" (#109774). Enum-rejecting aggregators (commandcode.ai)
 # say "Invalid option: expected one of ..." with no "unsupported" anywhere, naming the field only
 # in the structured 'param' tail (#115277). Shared with the auxiliary retry ladder
@@ -1098,7 +1097,7 @@ def _classify_400(c: _Ctx) -> Verdict:
     if any(p in msg for p in _400_VALIDATION_PATTERNS) or code in _400_VALIDATION_CODES:
         return _V_FORMAT_ERROR
     # Malformed message array before overflow: input can be tiny and compression
-    # cannot fix it. litellm/Bedrock proxies use errorCode=INVALID_REQUEST_BODY.
+    # cannot fix it. Some proxies use errorCode=INVALID_REQUEST_BODY.
     if any(p in msg for p in _INVALID_MESSAGE_BODY_PATTERNS) or code == "invalid_request_body":
         logger.warning(
             "Malformed message array 400 (invalid request body) classified as format_error, NOT context "
@@ -1275,7 +1274,7 @@ def _build_error_msg(error: Exception, body: Any) -> str:
 
 
 def _body_message_candidates(body: dict) -> Iterator[Any]:
-    """Body message fields in priority order (OpenAI, flat, litellm/Bedrock proxy, FastAPI shapes)."""
+    """Body message fields in priority order (OpenAI, flat, proxy, FastAPI shapes)."""
     yield _error_obj(body).get("message")
     yield body.get("message")
     yield body.get("errorMessage")

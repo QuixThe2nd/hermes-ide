@@ -665,22 +665,6 @@ DEFAULT_CONFIG = {
     # non-falsy values are ignored; falsy (false, null, "off", "disabled", "no", "none") disables
     # caching.
     "prompt_caching": {"cache_ttl": "5m"},
-    "bedrock": {  # AWS Bedrock; only used when model.provider is "bedrock".
-        "region": "",  # empty = AWS_REGION env var → us-east-1
-        "discovery": {
-            "enabled": True,           # auto-discover models via ListFoundationModels
-            "provider_filter": [],     # restrict to these providers, e.g. ["anthropic", "amazon"]
-            "refresh_interval": 3600,  # cache discovery results (seconds)
-        },
-        # Bedrock Guardrails: create one in the console, then set ID and version.
-        # https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails.html
-        "guardrail": {
-            "guardrail_identifier": "",  # e.g. "abc123def456"
-            "guardrail_version": "",     # e.g. "1" or "DRAFT"
-            "stream_processing_mode": "async",  # "sync" | "async"
-            "trace": "disabled",         # "enabled" | "disabled" | "enabled_full"
-        },
-    },
     # Auxiliary model config — provider/model per side task. provider "auto" = auto-detect;
     # empty model = provider's default aux model; all tasks fall back to
     # openrouter:google/gemini-3-flash-preview when the configured provider is unavailable.
@@ -2251,11 +2235,6 @@ OPTIONAL_ENV_VARS = {
         "https://console.upstage.ai/api-keys", advanced=False),
     "UPSTAGE_BASE_URL": _prov("Upstage base URL override (default: https://api.upstage.ai/v1)",
         "Upstage base URL (leave empty for default)", None, password=False),
-    "AWS_REGION": _prov("AWS region for Bedrock API calls (e.g. us-east-1, eu-central-1)",
-        "AWS Region", "https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-regions.html",
-        password=False),
-    "AWS_PROFILE": _prov("AWS named profile for Bedrock authentication (from ~/.aws/credentials)",
-        "AWS Profile", None, password=False),
     "AZURE_FOUNDRY_API_KEY": _prov("Azure Foundry API key for custom Azure endpoints",
         "Azure Foundry API Key", "https://ai.azure.com/", advanced=False),
     "AZURE_FOUNDRY_BASE_URL": _prov(
