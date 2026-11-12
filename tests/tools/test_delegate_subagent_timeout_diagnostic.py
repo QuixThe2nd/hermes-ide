@@ -18,10 +18,13 @@ from __future__ import annotations
 
 import threading
 import time
+from queue import Empty
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
+from tools.process_registry import process_registry
 
 
 @pytest.fixture
@@ -210,6 +213,19 @@ class TestRunSingleChildTimeoutDump:
         assert "without making any API call" in result["error"]
         assert "Diagnostic:" in result["error"]
         assert str(dump_path) in result["error"]
+        # The healthy timed-out worker was adopted onto the async-delegation rail;
+        # settle it INSIDE this test so its terminal event cannot land on the shared
+        # completion queue mid-way through a later test.
+        assert result.get("delegation_id"), result["error"]
+        child._hang.set()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                evt = process_registry.completion_queue.get(timeout=0.5)
+            except Empty:
+                continue
+            if evt.get("type") == "async_delegation" and evt.get("delegation_id") == result["delegation_id"]:
+                break
 
 
     # ── explicit timeout metadata (#51690, salvaged from PR #60378) ────

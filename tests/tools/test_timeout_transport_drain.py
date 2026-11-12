@@ -92,6 +92,13 @@ def _run(child, monkeypatch, timeout=0.4):
 
 def test_timeout_drains_transports_so_blocked_worker_can_unwind(monkeypatch):
     child = _SslBlockedChild()
+    # A healthy timed-out worker is adopted onto the async-delegation rail (kept
+    # running); the FD-safe drain below belongs to the ABANDONED worker, i.e. the
+    # rail refused the adoption. Simulate that refusal to keep exercising #94248.
+    monkeypatch.setattr(
+        "tools.async_delegation.dispatch_background_delegation",
+        lambda **_kw: {"status": "rejected", "error": "capacity"},
+    )
 
     result = _run(child, monkeypatch)
 
@@ -112,6 +119,11 @@ def test_timeout_drains_transports_so_blocked_worker_can_unwind(monkeypatch):
 
 def test_timeout_drain_failure_does_not_break_timeout_result(monkeypatch):
     child = _SslBlockedChild()
+    # See the first test: the drain belongs to the ABANDONED worker, so refuse adoption.
+    monkeypatch.setattr(
+        "tools.async_delegation.dispatch_background_delegation",
+        lambda **_kw: {"status": "rejected", "error": "capacity"},
+    )
 
     def _raising_drain(*, reason: str) -> int:
         child.drain_calls.append(reason)
@@ -146,6 +158,23 @@ def test_timeout_without_drain_hook_still_defers_close(monkeypatch):
     assert child.unwound.wait(timeout=5)
     assert child.closed.wait(timeout=5)
     assert not child.close_while_blocked
+    # This path adopts the worker onto the async-delegation rail; absorb its
+    # terminal event so it cannot leak onto the shared completion queue after
+    # this test ends and break a later test's queue assertions.
+    from queue import Empty
+
+    from tools.process_registry import process_registry
+
+    delegation_id = result.get("delegation_id")
+    assert delegation_id, result.get("error")
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            evt = process_registry.completion_queue.get(timeout=0.5)
+        except Empty:
+            continue
+        if evt.get("type") == "async_delegation" and evt.get("delegation_id") == delegation_id:
+            break
 
 
 class _FakeSocket:
