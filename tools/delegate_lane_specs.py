@@ -23,7 +23,7 @@ _DEFAULT_MODELS = ["openai/gpt-5.2", "anthropic/claude-sonnet-5-5"]
 _CODING_TOOLS = ["read", "write", "edit", "glob", "grep", "bash", "lsp"]
 
 
-def _lane(soul: str, tools: Iterable[str]) -> Dict[str, Any]:
+def _lane(soul: str, tools: Iterable[str], *, goal: bool = False) -> Dict[str, Any]:
     return {
         "harness": "omp",
         "models": list(_DEFAULT_MODELS),
@@ -33,6 +33,9 @@ def _lane(soul: str, tools: Iterable[str]) -> Dict[str, Any]:
         "tools_allowlist": list(tools),
         "reviewer": "requesting agent",
         "receipt_fields": list(RECEIPT_FIELDS),
+        # goal=True drives OMP RPC goal continuation (the lane keeps working
+        # until the goal completes); False stays a one-shot print-mode turn.
+        "goal": goal,
     }
 
 
@@ -41,7 +44,7 @@ DEFAULT_LANE_SPECS: Dict[str, Dict[str, Any]] = {
     "client_dev": _lane("client", _CODING_TOOLS),
     "backend_dev": _lane("backend", _CODING_TOOLS),
     "reverse_engineer": _lane(
-        "reverse_engineer", ["read", "glob", "grep"]
+        "reverse_engineer", ["read", "glob", "grep"], goal=True
     ),
 }
 
@@ -124,6 +127,9 @@ def resolve_lane_spec(name: str, lanes: Any = None) -> Dict[str, Any]:
         spec.get("receipt_fields") or RECEIPT_FIELDS, "receipt_fields"
     )
     spec["soul"] = str(spec.get("soul") or "")
+    # Operator overlays merge field by field, so an overlay that omits ``goal``
+    # keeps the lane default; an explicit ``goal: false`` stays one-shot.
+    spec["goal"] = bool(spec.get("goal"))
     raw_reviewer = spec.get("reviewer")
     # Dict reviewers ({provider, model, reasoning_effort}) stay structured for
     # the reviewer pass; everything else stays the display string.

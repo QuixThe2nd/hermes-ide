@@ -33,7 +33,9 @@ delegation:
 
 The secrets file is a dotenv file containing `LITELLM_API_KEY`. Hermes reads only that value and injects it into the OMP child environment; it never puts the key in argv. There is no hardcoded secrets-file location or environment fallback. `delegation.omp.binary` is optional and defaults to `omp` on `PATH`.
 
-Each lane supports `harness`, `models`, `soul`, `skills`, `mcp`, `tools_allowlist`, `reviewer`, and `receipt_fields`. A soul may be literal text or a fragment path. Skills are directories containing `SKILL.md`; their complete contents are injected into the task prompt. Relative paths resolve to an existing in-tree path first, then to the active profile home.
+Each lane supports `harness`, `models`, `soul`, `skills`, `mcp`, `tools_allowlist`, `reviewer`, `receipt_fields`, and `goal`. A soul may be literal text or a fragment path. Skills are directories containing `SKILL.md`; their complete contents are injected into the task prompt. Relative paths resolve to an existing in-tree path first, then to the active profile home.
+
+`reverse_engineer` defaults to `goal: true`, which drives OMP RPC goal continuation — the lane keeps working (multi-turn, OMP decides when to continue) until the goal completes, is budget-limited, or is paused. Print-mode one-shot (`goal: false`) sends a single prompt and does not continue; set it explicitly to keep that behavior.
 
 For OMP, `tools_allowlist` becomes `--tools` and a declared `mcp` source is copied to `<workdir>/.omp/mcp.json`. No MCP file is staged for lanes without `mcp`. MCP staging is OMP-specific. Claude receives its allowlist through its existing backend option; Cursor and native subagents retain their own tool policy.
 
