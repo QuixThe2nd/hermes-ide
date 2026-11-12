@@ -804,6 +804,7 @@ DEFAULT_CONFIG = {
         "tts_audio_tags": _aux(30),
         "profile_describer": _aux(60),   # 1-2 sentence profile blurb; short, cheap
         "goal_judge": _aux(60),          # /goal satisfaction + contract drafting; JSON calls
+        "goal_intent": _aux(60),         # Phase 1 auto-goal shadow classifier; JSON calls
         # Curator skill-usage review can take minutes on reasoning models (umbrellas over hundreds
         # of skills); route cheaper via `hermes model` → auxiliary → Curator.
         "curator": _aux(600),
@@ -1406,6 +1407,9 @@ DEFAULT_CONFIG = {
         # Max continuation turns before auto-pause (/goal resume) — guards against judge false
         # negatives and unbounded spend.
         "max_turns": 20,
+        # off = no work; shadow = background classification + local JSONL only;
+        # on = reserved for automatic goal creation, currently behaves as shadow with a notice.
+        "auto": {"mode": "shadow"},
     },
     # Loops — /loop re-runs a prompt or slash command on a cadence in-session. Fixed interval fires
     # on the user's clock; self-paced (no interval) starts at the floor and backs off exponentially
