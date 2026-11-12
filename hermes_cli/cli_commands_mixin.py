@@ -1251,7 +1251,7 @@ class CLICommandsMixin:
         else:
             print("  Nothing to reclaim — remaining trees/branches carry real work.")
         kept = [r for r in tree_records
-                if r.verdict == "keep" and "kanban" not in r.reason and "in use" not in r.reason]
+                if r.verdict == "keep" and "in use" not in r.reason]
         if kept:
             _pr(f"  Preserved {len(kept)} tree(s) with real work:",
                 *(f"    {record.name}: {record.reason}" for record in kept))
