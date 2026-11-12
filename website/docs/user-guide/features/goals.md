@@ -167,7 +167,7 @@ After every turn, Hermes calls an auxiliary model with:
 - The agent's most recent final response (last ~4 KB of text)
 - A system prompt telling the judge to reply with strict one-line JSON: `{"verdict": "done" | "blocked" | "continue" | "wait", "reason": "<one-sentence rationale>"}` (wait verdicts add `wait_on_session` / `wait_on_pid` / `wait_for_seconds`; the legacy `{"done": <bool>, "reason": "..."}` shape is still accepted)
 
-The judge is deliberately conservative: it marks a goal `done` only when the response **explicitly** confirms the goal is complete, when the final deliverable is clearly produced. A goal the agent explains is **unachievable** (impossible, out of scope, needs user input) gets a `blocked` verdict instead — never `done`: the goal **pauses** with the judge's reason (`🚫 Goal judged unachievable — paused`), so you can re-scope it with `/goal <text>` or override with `/goal resume` rather than burning budget or having an impossible task waved through as complete.
+The judge is deliberately conservative: it marks a goal `done` only when the response **explicitly** confirms the goal is complete, when the final deliverable is clearly produced, and when there is **no obvious remaining next step the user would clearly want**. Unfinished edges and explicitly in-scope untried options require `continue` with the missing piece named in the reason. A goal the agent explains is **unachievable** (impossible, out of scope, needs user input) gets a `blocked` verdict instead — never `done`: the goal **pauses** with the judge's reason (`🚫 Goal judged unachievable — paused`), so you can re-scope it with `/goal <text>` or override with `/goal resume` rather than burning budget or having an impossible task waved through as complete.
 
 ### Fail-open semantics
 
@@ -182,6 +182,8 @@ Default is 20 continuation turns (`goals.max_turns` in `config.yaml`). When the 
 ```
 
 `/goal resume` resets the counter to zero, so you can keep going in measured chunks.
+
+Exhausting the budget is also a completion barrier: even a `done` verdict on the final allowed turn pauses instead of reporting the goal achieved.
 
 ### User messages always preempt
 
@@ -213,7 +215,44 @@ goals:
   # /goal resume. Default 20. Lower this if you want tighter loops;
   # raise it for long-running refactors.
   max_turns: 20
+
+  # Phase 1 auto-goal intent collection (gateway only). Default: shadow.
+  # off: no classification or log writes.
+  # shadow: classify in the background and write local audit records only.
+  # on: reserved for automatic goal creation; currently behaves as shadow and
+  #     logs a one-time notice that automatic creation is not implemented.
+  auto:
+    mode: shadow
 ```
+
+
+### Shadow intent classification (Phase 1)
+
+The gateway can observe every eligible human message with a separate auxiliary classifier. It assigns `chat`, `task`, `approval`, `chase`, or `unknown` (the fail-safe result for an unavailable classifier or malformed response). The classifier uses goal state and the latest assistant snippet to distinguish approvals from status/resume chases. A `task` result also includes a completion-contract draft when the existing contract drafter is available.
+
+This phase is **log-only**: classification never sets a goal, changes a reply, alters the system prompt or toolsets, or runs inline with the reply. Internal/system events, bot-authored messages, blank messages, and slash commands are skipped. `goals.auto.mode: off` disables the work entirely. `on` does **not** enable automatic goal creation yet; it behaves as `shadow` and emits one informational notice per gateway/profile.
+
+Records are appended to `<HERMES_HOME>/goals/intent_shadow.jsonl` (profile-aware). The directory and file use private permissions (`0700`/`0600` where supported), and each stored message excerpt is capped at 300 characters. Inspect counts and the newest examples per label without making an LLM call:
+
+```bash
+hermes goals intent-report --since 7d
+# Choose how many recent examples to print per label:
+hermes goals intent-report --since 24h --examples 5
+```
+
+`--since` accepts positive durations in seconds, minutes, hours, days, or weeks (`s`, `m`, `h`, `d`, `w`). Malformed or torn JSONL rows are skipped.
+
+The classifier uses the `auxiliary.goal_intent` task and resolves provider/model/timeout like `auxiliary.goal_judge`; the default timeout is 60 seconds. Shadow mode makes one auxiliary call per eligible message, plus a contract-draft call for `task`, so a cheap fast model is recommended:
+
+```yaml
+auxiliary:
+  goal_intent:
+    provider: openrouter
+    model: google/gemini-3-flash-preview
+    timeout: 60
+```
+
+`chase` results also use the existing papercuts plugin to record operator-visible friction, with fields including session id and goal-active state. Duplicate chase papercuts are suppressed per session for 30 minutes. If papercuts is unavailable, shadow logging continues without any user-visible effect.
 
 ### Choosing the judge model
 

@@ -119,7 +119,10 @@ JUDGE_SYSTEM_PROMPT = (
     "- The response clearly shows the final deliverable was produced.\n"
     "DONE requires the deliverable to actually exist. If the response only "
     "explains why the goal cannot be reached, the verdict is BLOCKED, not "
-    "DONE.\n\n"
+    "DONE. DONE also requires no obvious remaining next step that the user "
+    "would clearly want. This includes unfinished edges and explicitly "
+    "in-scope untried options. Otherwise return CONTINUE and name the missing "
+    "piece in the reason.\n\n"
     "BLOCKED — the goal cannot be satisfied as stated:\n"
     "- The response explains the goal is genuinely unachievable (impossible, "
     "out of scope, no valid path to the deliverable), or refuses to "
@@ -1499,6 +1502,11 @@ class GoalManager:
                 f"judged unachievable: {reason}", "blocked", reason,
                 f"🚫 Goal judged unachievable — paused: {reason} Re-scope with /goal set, or override with /goal resume.",
             )
+
+        # The budget is an absolute completion barrier: a DONE claim on the final
+        # allowed turn still pauses instead of certifying an unreviewed result.
+        if verdict == "done" and state.turns_used >= state.max_turns:
+            return self._budget_pause(state, "continue", reason)
 
         if verdict == "done":
             state.status = "done"
