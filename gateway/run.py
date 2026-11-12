@@ -4091,6 +4091,7 @@ from gateway.run_notifications import GatewayNotificationsMixin
 from gateway.run_inbound import GatewayInboundMixin
 from gateway.run_goals import GatewayGoalsMixin
 from gateway.run_goal_intent import GatewayGoalIntentMixin
+from gateway.run_goal_auto import GatewayGoalAutoMixin
 from gateway.run_agent_cache import GatewayAgentCacheMixin
 from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
 from gateway.run_hygiene_compression import GatewayHygieneCompressionMixin
@@ -6094,8 +6095,8 @@ class GatewayRunner(
     GatewayVoiceMixin, GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
     GatewayShutdownMixin, GatewayBusySessionMixin, GatewayConfigLoadersMixin, GatewayStartupMixin,
     GatewaySessionWatchersMixin, GatewayNotificationsMixin, GatewayInboundMixin, GatewayGoalsMixin,
-    GatewayGoalIntentMixin, GatewayAgentCacheMixin, GatewayProfileReconcileMixin, GatewayHygieneCompressionMixin,
-    GatewayIncognitoMixin):
+    GatewayGoalIntentMixin, GatewayGoalAutoMixin, GatewayAgentCacheMixin, GatewayProfileReconcileMixin,
+    GatewayHygieneCompressionMixin, GatewayIncognitoMixin):
     """Main gateway controller: manages adapter lifecycles, routes messages to/from the agent."""
 
     # Class-level defaults so partial construction in tests doesn't

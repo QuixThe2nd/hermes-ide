@@ -215,6 +215,7 @@ class GatewayGoalsMixin:
         session_entry: Any,
         source: Any,
         final_response: str,
+        auto_decision: Any = None,
     ) -> None:
         """Run the goal judge after a gateway turn and, if still active,
         enqueue a continuation prompt for the same session.
@@ -225,6 +226,10 @@ class GatewayGoalsMixin:
         We use the adapter's pending-message / FIFO machinery so any real
         user message that arrives simultaneously is handled by the same
         queue and takes priority naturally.
+
+        ``auto_decision`` (goals.auto.mode=on) is applied FIRST — before the
+        judge — so a goal minted by this turn's message is judged against
+        this turn's response in the same boundary.
         """
         try:
             from hermes_cli.goals import GoalManager
@@ -243,6 +248,20 @@ class GatewayGoalsMixin:
         # 2026-08-14 crash-loop seam). A slow init can drop the goal
         # read and silently end the goal loop.
         await self._warm_goals_session_db("goal continuation")
+
+        if auto_decision is not None:
+            try:
+                notice = await self._apply_auto_goal_decision(auto_decision, session_entry, source)
+            except Exception as exc:
+                logger.debug("auto-goal apply failed: %s", exc)
+                notice = None
+            if notice and source is not None:
+                # Deferred like the judge line: after the reply, before it.
+                # Registration order preserves reading order (🎯, then verdict).
+                try:
+                    await self._defer_goal_status_notice_after_delivery(source, notice)
+                except Exception as exc:
+                    logger.debug("auto-goal notice deferral failed: %s", exc)
 
         mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
         if not mgr.is_active():
@@ -325,6 +344,12 @@ class GatewayGoalsMixin:
             logger.debug("post-turn session resolution failed: %s", exc)
             return
 
+        # Auto-goal (goals.auto.mode=on): consume the decision parked at
+        # message arrival. Popped before the final-text gate and dropped —
+        # not deferred — when the turn produced no text: an interrupted or
+        # errored turn must not mint a goal.
+        auto_decision = await self._take_pending_auto_goal_decision(source)
+
         # Empty interrupted/errored responses must not drive /goal, but an
         # in-flight /loop tick still needs to be released and rescheduled.
         if final_text.strip():
@@ -333,6 +358,7 @@ class GatewayGoalsMixin:
                     session_entry=session_entry,
                     source=source,
                     final_response=final_text,
+                    auto_decision=auto_decision,
                 )
             except Exception as exc:
                 logger.debug("goal continuation hook failed: %s", exc)
