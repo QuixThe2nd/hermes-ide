@@ -1,10 +1,8 @@
 """Characterization + unit tests for the `run_one_job` shared helper (Phase 4A).
 
 `tick`'s per-job body (`_process_job`) is the execute → save → deliver → mark
-sequence that fires ONE due job. Phase 4A extracts it into a module-level
-`run_one_job(job, *, adapters=None, loop=None, verbose=False)` so the external
-Chronos provider's `fire_due` can reuse the IDENTICAL body — no duplicated
-correctness.
+sequence that fires ONE due job. `run_one_job(job, *, adapters=None, loop=None,
+verbose=False)` lets external providers reuse that body without duplicating it.
 
 The first test characterizes the sequence as driven through `tick()` (proving
 the extraction didn't change `tick`'s behavior); the rest unit-test the

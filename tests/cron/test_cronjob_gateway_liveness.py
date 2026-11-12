@@ -84,9 +84,8 @@ class TestCreateSurfacesGatewayLiveness:
         assert "gateway" in warning.lower()
 
     def test_non_builtin_provider_is_exempt(self, hermes_env):
-        """External schedulers (e.g. Chronos) fire without the gateway —
-        no false alarm may be raised for them."""
-        with patch_liveness(provider="chronos", pids=[]):
+        """External providers fire without the gateway, so no false alarm may be raised."""
+        with patch_liveness(provider="external", pids=[]):
             result = _create_job()
 
         assert result["success"] is True
@@ -147,7 +146,7 @@ class TestListSurfacesGatewayLiveness:
 
     def test_list_non_builtin_provider_is_exempt(self, hermes_env):
         _create_job()
-        with patch_liveness(provider="chronos", pids=[]):
+        with patch_liveness(provider="external", pids=[]):
             result = self._list_jobs()
 
         assert result["success"] is True

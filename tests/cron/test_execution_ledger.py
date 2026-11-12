@@ -380,23 +380,6 @@ def test_provider_start_recovers_interrupted_records_before_tick(monkeypatch):
     assert events[:2] == ["recover", "heartbeat"]
 
 
-def test_external_provider_start_recovers_interrupted_records(monkeypatch):
-    from plugins.cron_providers.chronos import ChronosCronScheduler
-
-    provider = ChronosCronScheduler()
-    provider._client = type("Client", (), {"arm": lambda self, **kwargs: None})()
-    events = []
-    monkeypatch.setattr(
-        "cron.executions.recover_interrupted_executions",
-        lambda: events.append("recover") or 0,
-    )
-    monkeypatch.setattr(provider, "reconcile", lambda: events.append("reconcile"))
-
-    provider.start(__import__("threading").Event())
-
-    assert events == ["recover", "reconcile"]
-
-
 class _TrackingConnection:
     """Delegates to a real sqlite3.Connection while recording close() calls.
 

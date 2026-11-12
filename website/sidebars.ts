@@ -804,7 +804,6 @@ const sidebars: SidebarsConfig = {
             'developer-guide/tools-runtime',
             'developer-guide/browser-supervisor',
             'developer-guide/cron-internals',
-            'developer-guide/chronos-managed-cron-contract',
             'developer-guide/egress-internals',
             'developer-guide/gateway-monitoring',
             'developer-guide/relay-connector-contract',

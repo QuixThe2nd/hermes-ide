@@ -117,7 +117,7 @@ class CronScheduler(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """Short identifier, e.g. 'builtin', 'chronos'."""
+        """Short identifier, e.g. 'builtin'."""
 
     def is_available(self) -> bool:
         """Whether this provider can run here. MUST NOT make network calls; False → built-in."""
@@ -237,21 +237,6 @@ def provider_fire_due_accepts(provider: Any, name: str) -> bool:
         )
         for p in parameters
     )
-
-
-def provider_supports_split_fire(provider: Any) -> bool:
-    """Whether a provider implements the two-phase fire contract. A legacy provider overriding only
-    ``fire_due`` must keep being driven through it — routing around the override would drop its
-    custom claim/re-arm/telemetry behavior."""
-    cls = type(provider)
-
-    def overrides(name: str) -> bool:
-        impl = getattr(cls, name, None)
-        return impl is not None and impl is not getattr(CronScheduler, name)
-
-    if overrides("claim_fire") or overrides("fire_claimed"):
-        return True
-    return not overrides("fire_due")
 
 
 def _misfire_grace_minutes() -> float:
