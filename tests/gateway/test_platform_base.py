@@ -1161,37 +1161,6 @@ class TestTruncateMessage:
 
 
 # ---------------------------------------------------------------------------
-# _get_human_delay
-# ---------------------------------------------------------------------------
-
-
-class TestGetHumanDelay:
-
-
-    def test_natural_mode_ignores_malformed_custom_env_vars(self):
-        env = {
-            "HERMES_HUMAN_DELAY_MODE": "natural",
-            "HERMES_HUMAN_DELAY_MIN_MS": "oops",
-            "HERMES_HUMAN_DELAY_MAX_MS": "still-bad",
-        }
-        with patch.dict(os.environ, env):
-            delay = BasePlatformAdapter._get_human_delay()
-            assert 0.8 <= delay <= 2.5
-
-
-    def test_custom_mode_tolerates_malformed_env_vars(self):
-        env = {
-            "HERMES_HUMAN_DELAY_MODE": "custom",
-            "HERMES_HUMAN_DELAY_MIN_MS": "oops",
-            "HERMES_HUMAN_DELAY_MAX_MS": "still-bad",
-        }
-        with patch.dict(os.environ, env):
-            # falls back to the custom-mode defaults instead of crashing
-            delay = BasePlatformAdapter._get_human_delay()
-            assert 0.8 <= delay <= 2.5
-
-
-# ---------------------------------------------------------------------------
 # utf16_len / _prefix_within_utf16_limit / truncate_message with len_fn
 # ---------------------------------------------------------------------------
 # Ported from nearai/ironclaw#2304 — Telegram counts message length in UTF-16

@@ -1463,17 +1463,6 @@ quick_commands:
 
 仅字符串的 prompt 快捷方式不是有效的快速命令。对于可重用的 prompt 工作流，请创建技能或别名到现有斜杠命令。
 
-## 人类延迟
-
-在消息平台中模拟类人响应节奏：
-
-```yaml
-human_delay:
-  mode: "off"                  # off | natural | custom
-  min_ms: 800                  # 最小延迟（自定义模式）
-  max_ms: 2500                 # 最大延迟（自定义模式）
-```
-
 ## 代码执行
 
 配置 `execute_code` 工具：

@@ -2607,17 +2607,6 @@ Usage: type `/status`, `/disk`, `/update`, `/gpu`, or `/restart` in the CLI or a
 
 String-only prompt shortcuts are not valid quick commands. For reusable prompt workflows, create a skill or alias to an existing slash command.
 
-## Human Delay
-
-Simulate human-like response pacing in messaging platforms:
-
-```yaml
-human_delay:
-  mode: "off"                  # off | natural | custom
-  min_ms: 800                  # Minimum delay (custom mode)
-  max_ms: 2500                 # Maximum delay (custom mode)
-```
-
 ## Code Execution
 
 Configure the `execute_code` tool:

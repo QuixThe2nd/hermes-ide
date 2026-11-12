@@ -732,9 +732,6 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_SAFE_MODE` | Troubleshooting mode: disable ALL customizations — skips plugin discovery, MCP server loading, and shell-hook registration. Set automatically by `--safe-mode` (which also sets the two flags above). |
 | `HERMES_TOOL_PROGRESS` | Unsupported since the config-v12 support floor — the variable is ignored. Use `display.tool_progress` in `config.yaml`. |
 | `HERMES_TOOL_PROGRESS_MODE` | Deprecated compatibility variable for tool progress mode (still read by the gateway as a fallback). Prefer `display.tool_progress` in `config.yaml`. |
-| `HERMES_HUMAN_DELAY_MODE` | Response pacing: `off`/`natural`/`custom` |
-| `HERMES_HUMAN_DELAY_MIN_MS` | Custom delay range minimum (ms) |
-| `HERMES_HUMAN_DELAY_MAX_MS` | Custom delay range maximum (ms) |
 | `HERMES_QUIET` | Suppress non-essential output (`true`/`false`) |
 | `CODEX_HOME` | When [Codex app-server runtime](../user-guide/features/codex-app-server-runtime) is enabled, override the directory Codex CLI reads its config + auth from (default: `~/.codex`). Hermes' migration writes the managed block to `<CODEX_HOME>/config.toml`. |
 | `HERMES_ACP_SKIP_CONFIGURED_MCP` | Set by an [ACP host](../user-guide/features/acp#host-integration) on the Hermes subprocess it spawns. `1` skips starting the globally configured `config.yaml` MCP servers before the ACP JSON-RPC loop, for hosts that pass the session's MCP servers through `session/new` themselves. Servers supplied by the ACP session are still registered; any other value keeps the default. Don't set manually. |

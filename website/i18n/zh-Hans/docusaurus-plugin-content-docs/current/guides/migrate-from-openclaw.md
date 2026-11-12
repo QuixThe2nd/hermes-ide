@@ -81,8 +81,6 @@ Skill 冲突由 `--skill-conflict` 处理：`skip` 保留现有 Hermes skill，`
 | 推理强度 | `agents.defaults.thinkingDefault` | `agent.reasoning_effort` | "always"/"high"/"xhigh" → "high"，"auto"/"medium"/"adaptive" → "medium"，"off"/"low"/"none"/"minimal" → "low" |
 | 压缩 | `agents.defaults.compaction.mode` | `compression.enabled` | "off" → false，其他 → true |
 | 压缩模型 | `agents.defaults.compaction.model` | `compression.summary_model` | 直接字符串复制 |
-| 人工延迟 | `agents.defaults.humanDelay.mode` | `human_delay.mode` | "natural" / "custom" / "off" |
-| 人工延迟时间 | `agents.defaults.humanDelay.minMs` / `.maxMs` | `human_delay.min_ms` / `.max_ms` | 直接复制 |
 | 时区 | `agents.defaults.userTimezone` | `timezone` | 直接字符串复制 |
 | 执行超时 | `tools.exec.timeoutSec` | `terminal.timeout` | 直接复制（字段名为 `timeoutSec`，非 `timeout`） |
 | Docker 沙箱 | `agents.defaults.sandbox.backend` | `terminal.backend` | "docker" → "docker" |

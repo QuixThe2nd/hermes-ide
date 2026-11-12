@@ -724,10 +724,10 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
         return bool(self._value(await self._rpc("play_in_voice_channel", guild_id, audio_path)))
 
     async def send_multiple_images(self, chat_id: str, images: list, metadata: Optional[dict] = None,
-                                   human_delay: float = 0.0, reply_to: Optional[str] = None) -> SendResult:
+                                   reply_to: Optional[str] = None) -> SendResult:
         return self._send_result(await self._rpc(
             "send_multiple_images", chat_id, images,
-            metadata=metadata, human_delay=human_delay, reply_to=reply_to))
+            metadata=metadata, reply_to=reply_to))
 
     async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: Optional[dict] = None, **kwargs) -> SendResult:

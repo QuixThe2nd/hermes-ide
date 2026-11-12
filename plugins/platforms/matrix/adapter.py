@@ -1590,15 +1590,13 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def send_multiple_images(
         self, chat_id: str, images: list[tuple[str, str]], metadata: Optional[Dict[str, Any]] = None,
-        human_delay: float = 0.0) -> SendResult:
+    ) -> SendResult:
         if not images:
             return SendResult(success=False, error="no images to send")
         from urllib.parse import unquote as _unquote
         total = len(images)
         delivered = False
         for idx, (image_url, alt_text) in enumerate(images, start=1):
-            if human_delay > 0 and idx > 1:
-                await asyncio.sleep(human_delay)
             caption = f"{alt_text} ({idx}/{total})" if alt_text and total > 1 else (alt_text or None)
             if image_url.startswith("file://"):
                 result = await self.send_image_file(
