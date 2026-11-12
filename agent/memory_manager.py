@@ -386,6 +386,10 @@ class MemoryManager:
     """
 
     def __init__(self, *, external_prefetch_timeout: Optional[float] = None) -> None:
+        # Incognito gate: while the owning session is incognito, no transcript content reaches
+        # providers (sync, end-of-session extraction, pre-compress checkpoints). The agent binds
+        # this to its own per-turn flag after construction; the default keeps a bare manager inert.
+        self._incognito_check: Callable[[], bool] = lambda: False
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
         self._external_prefetch_spill_config: Optional[Dict[str, Any]] = None
@@ -606,7 +610,7 @@ class MemoryManager:
         """
         providers = list(self._providers)
         clean_user_content = self._strip_skill_scaffolding(user_content) if providers else None
-        if not clean_user_content:
+        if not clean_user_content or self._incognito_check():
             return
         optional_kwargs = {"messages": messages, "turn_author": turn_author}
 
@@ -731,6 +735,8 @@ class MemoryManager:
         self._each_provider("on_turn_start failed", _tick)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+        if self._incognito_check():
+            return
         self._each_provider("on_session_end failed", lambda p: p.on_session_end(messages), level=logging.WARNING,
                             exc_info=True)
 
@@ -803,6 +809,8 @@ class MemoryManager:
         only to checkpoint (v2+) providers. With ``require_checkpoint`` at least one checkpoint provider
         must succeed — its exception propagates so the caller keeps the uncompressed transcript.
         """
+        if self._incognito_check():
+            return ""
         parts = []
         checkpoint_succeeded = False
         for provider in self._providers:

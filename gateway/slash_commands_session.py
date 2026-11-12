@@ -150,7 +150,7 @@ class GatewaySessionCommandsMixin:
         await self.hooks.emit("session:reset", dict(hook_payload))
 
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
-        """Handle /new or /reset command."""
+        """Handle /new or /reset by creating a fresh ordinary session."""
         source = event.source
         session_key = self._session_key_for_source(source)
         self._invalidate_session_run_generation(session_key, reason="session_reset")

@@ -1285,6 +1285,9 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
                 from agent.memory_manager import MemoryManager as _MemoryManager
                 from plugins.memory import load_memory_provider as _load_mem
                 agent._memory_manager = _MemoryManager()
+                # Incognito sessions never reach external memory providers; the gateway refreshes
+                # ``agent._incognito`` from session metadata before every turn.
+                agent._memory_manager._incognito_check = lambda: bool(getattr(agent, "_incognito", False))
                 _mp = _load_mem(_mem_provider_name)
                 if _mp is None:
                     # The provider left core for the catalog (or was never installed): fetch it once.

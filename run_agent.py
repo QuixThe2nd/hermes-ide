@@ -3769,6 +3769,9 @@ class AIAgent(
         """
         if interrupted or not (self._memory_manager and final_response and original_user_message):
             return
+        # Incognito session: completed turns are never mirrored into external memory.
+        if getattr(self, "_incognito", False):
+            return
         # Flatten multimodal parts to text (newline-joined for memory).
         user_text = _summarize_user_message_for_log(original_user_message, sep="\n")
         response_text = _summarize_user_message_for_log(final_response, sep="\n")
