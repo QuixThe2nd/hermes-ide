@@ -141,6 +141,24 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("max_spawn_depth=4", overrides["description"])
         self.assertNotIn("up to 7", overrides["description"])
 
+    def test_background_guidance_prefers_blocking_unless_multitasking(self):
+        from tools.registry import registry
+
+        definition = registry.get_definitions({"delegate_agent"})[0]["function"]
+        guidance = (
+            "Prefer blocking (background=false): avoid running in the background "
+            "unless you are doing multiple things at a time"
+        )
+        descriptions = {
+            "background parameter": definition["parameters"]["properties"][
+                "background"
+            ]["description"],
+            "top-level description": definition["description"],
+        }
+        for surface, description in descriptions.items():
+            with self.subTest(surface=surface):
+                self.assertIn(guidance, description)
+
     def test_old_name_hidden_from_definitions_but_dispatchable(self):
         """``delegate_task`` → ``delegate_agent`` rename (uniform delegation
         lifecycle): advertised definitions carry only the new name, the old

@@ -1210,6 +1210,10 @@ DELEGATE_ASSISTANT_SCHEMA = {
                 # capability-conditional (see resolve_background_arg), so a
                 # plain schema default would lie on half the sessions.
                 "description": (
+                    "Prefer blocking (background=false): avoid running in "
+                    "the background unless you are doing multiple things at "
+                    "a time (other independent work to continue, or several "
+                    "parallel delegations). "
                     "Delivery mode for the outcome. Omitted: runs in the "
                     "background — a handle returns immediately and the "
                     "outcome re-enters the conversation as a new message "

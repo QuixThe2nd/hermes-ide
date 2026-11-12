@@ -132,6 +132,16 @@ class TestDispatchAgent:
 
 
 class TestDispatchAssistant:
+
+    def test_background_guidance_prefers_blocking_unless_multitasking(self, missions_home):
+        description = missions_home.DELEGATE_ASSISTANT_SCHEMA["parameters"][
+            "properties"
+        ]["background"]["description"]
+        assert (
+            "Prefer blocking (background=false): avoid running in the background "
+            "unless you are doing multiple things at a time"
+        ) in description
+
     def test_start_captures_origin_session(self, missions_home):
         r = _start_origin(missions_home)
         assert r["ok"] is True
