@@ -1,4 +1,4 @@
-"""Auto-goal (``goals.auto.mode=on``): apply a Jev decision at the turn boundary.
+"""Auto-goal: apply a Jev decision at the turn boundary.
 
 The decision is classified off-path at message arrival
 (``gateway/run_goal_intent.py``) and applied here, at turn end, BEFORE the goal
@@ -47,7 +47,7 @@ class GatewayGoalAutoMixin:
     async def _take_pending_auto_goal_decision(self: "GatewayRunner", source) -> Optional[Dict[str, Any]]:
         """Pop this session's pending classification and bounded-await it.
 
-        Returns None when nothing is pending (shadow mode, internal turns,
+        Returns None when nothing is pending (internal turns,
         suppressed messages) or the decision did not land in time — never
         raises, never defers a stale decision to a later turn.
         """
