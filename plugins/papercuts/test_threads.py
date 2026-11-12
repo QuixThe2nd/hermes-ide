@@ -396,6 +396,111 @@ class SightingTests(ThreadsTestCase):
         self.assertEqual(items[item_id]["stage"], "triage")
 
 
+class ChaseClassTests(ThreadsTestCase):
+    """One "User had to chase" class is one conversation: one papercut id,
+    one inbox thread — never one per excerpt."""
+
+    @staticmethod
+    def cut(item_id, summary, epoch):
+        return {
+            "kind": "cut",
+            "id": item_id,
+            "summary": summary,
+            "observed": "the user had to ask again",
+            "workaround": "",
+            "suggested_fix": "review continuation behavior",
+            "severity": "minor",
+            "category": "workflow",
+            "component": "auto-goal",
+            "ts": f"t{epoch}",
+            "ts_epoch": epoch,
+        }
+
+    def seed_raw(self, *events):
+        events_path = Path(self.tmp.name) / "events.jsonl"
+        with events_path.open("a", encoding="utf-8") as fh:
+            for event in events:
+                fh.write(json.dumps(event) + "\n")
+
+    def test_tick_opens_one_thread_per_chase_class(self):
+        # Two legacy chase ids (distinct fingerprints) plus one unrelated
+        # papercut, all queued in the same tick.
+        self.seed_raw(
+            self.cut("pc_chase_a", "User had to chase: hurry up", 1.0),
+            self.cut("pc_chase_b", "User had to chase: fixed?", 2.0),
+            self.cut("pc_other", "config lookup is awkward", 3.0),
+        )
+
+        rc = lifecycle.tick()
+        self.assertEqual(rc, 0)
+
+        opened = self.discord.opened()
+        self.assertEqual(
+            len(opened), 2, "the chase pair shares one thread; the unrelated papercut keeps its own"
+        )
+        items = papercuts._fold(papercuts._read_events_unlocked())
+        shared = items["pc_chase_a"]["thread_id"]
+        self.assertTrue(shared)
+        self.assertEqual(items["pc_chase_b"]["thread_id"], shared)
+        self.assertNotEqual(items["pc_other"]["thread_id"], shared)
+        # The merged id opened nothing, posted nothing, launched no run.
+        self.assertEqual(self.discord.posted(), [])
+        chase_runs = [l for l in self.launches if l[0] in {"pc_chase_a", "pc_chase_b"}]
+        self.assertEqual(chase_runs, [("pc_chase_a", "triage", mock.ANY)])
+        self.assertEqual(
+            items["pc_chase_b"]["stage"], "closed", "merged out of the queue for good"
+        )
+
+        # The next tick does not retry the open for the merged id.
+        before = (len(self.discord.calls), len(self.launches))
+        lifecycle.tick()
+        self.assertEqual((len(self.discord.calls), len(self.launches)), before)
+
+    def test_tick_merges_queued_chase_into_existing_thread(self):
+        # The class thread already exists when the duplicate is still queued.
+        self.seed_raw(self.cut("pc_chase_a", "User had to chase: hurry up", 1.0))
+        lifecycle.tick()
+        thread_id = [c[1] for c in self.discord.opened()][0]
+        self.seed_raw(self.cut("pc_chase_b", "User had to chase: fixed?", 2.0))
+
+        lifecycle.tick()
+
+        self.assertEqual(len(self.discord.opened()), 1, "never a second thread for the class")
+        items = papercuts._fold(papercuts._read_events_unlocked())
+        self.assertEqual(items["pc_chase_b"]["thread_id"], thread_id)
+        self.assertEqual(
+            [l[0] for l in self.launches], ["pc_chase_a"], "no second triage run for the class"
+        )
+
+    def test_chase_excerpts_log_to_one_papercut(self):
+        first = self.log(
+            summary="User had to chase: hurry up",
+            component="auto-goal",
+            category="workflow",
+            turn="t0",
+        )
+        second = self.log(
+            summary="User had to chase: fixed?",
+            component="auto-goal",
+            category="workflow",
+            turn="t1",
+        )
+
+        self.assertTrue(first["success"])
+        self.assertTrue(second["deduplicated"])
+        self.assertEqual(second["item"]["id"], first["item"]["id"])
+        self.assertEqual(second["item"]["occurrences"], 2)
+        # The stable summary fingerprints; the excerpt rides in observed only.
+        self.assertEqual(first["item"]["summary"], "User had to chase")
+        self.assertIn("hurry up", first["item"]["observed"])
+
+    def test_non_chase_summaries_keep_distinct_fingerprints(self):
+        a = self.log(summary="alpha friction", component="auto-goal", category="workflow", turn="t0")
+        b = self.log(summary="beta friction", component="auto-goal", category="workflow", turn="t1")
+        self.assertNotEqual(a["item"]["id"], b["item"]["id"])
+        self.assertFalse(b["deduplicated"])
+
+
 class AdvanceSteerTests(ThreadsTestCase):
     def threaded_item(self):
         first = self.log(turn="t0")

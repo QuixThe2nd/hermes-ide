@@ -242,6 +242,12 @@ def _normalize(value: str) -> str:
     return value
 
 
+_CHASE_SUMMARY = "User had to chase"
+# Chase summaries are ONE class: the excerpt after the colon is per-message
+# detail that belongs in ``observed``, not a different papercut.
+_CHASE_RE = re.compile(r"(?i)^user had to chase\b[\s:–—-]*(.*)$")
+
+
 def _fingerprint(summary: str, category: str, component: str) -> str:
     basis = "\x1f".join((_normalize(summary), category, _normalize(component)))
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()
@@ -431,6 +437,14 @@ def _handle_log(args: Dict[str, Any], kwargs: Dict[str, Any]) -> str:
     if category not in _ALLOWED_CATEGORIES:
         return _error("invalid_input", f"category must be one of {sorted(_ALLOWED_CATEGORIES)}")
 
+    match = _CHASE_RE.match(summary)
+    if match:
+        # The excerpt rides in observed only, so every chase sighting
+        # fingerprints to the one stable class summary.
+        tail = match.group(1).strip()
+        if tail:
+            observed = f"{observed}; {tail}" if observed else tail
+        summary = _CHASE_SUMMARY
     meta = _metadata(kwargs)
     fingerprint = _fingerprint(summary, category, component)
     item_id = "pc_" + fingerprint[:12]

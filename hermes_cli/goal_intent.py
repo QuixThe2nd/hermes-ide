@@ -444,7 +444,8 @@ def _log_chase_papercut(
         f"session_id={session_id}; goal_active={context.get('goal_active')}; "
         f"goal_recently_completed={context.get('goal_recently_completed')}; "
         f"goal_paused={context.get('goal_paused')}; platform={record['platform']}; "
-        f"label={record['label']}; confidence={record['confidence']}"
+        f"label={record['label']}; confidence={record['confidence']}; "
+        f"message={excerpt}"
     )
     now = time.time()
     key = (str(get_hermes_home()), session_id)
@@ -461,7 +462,7 @@ def _log_chase_papercut(
             raw = handle_papercuts(
                 {
                     "action": "log",
-                    "summary": f"User had to chase: {excerpt}",
+                    "summary": "User had to chase",
                     "observed": observed,
                     "suggested_fix": (
                         "Review the auto-goal shadow classification and continuation behavior "

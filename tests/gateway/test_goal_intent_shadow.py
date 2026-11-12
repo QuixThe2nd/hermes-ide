@@ -247,8 +247,34 @@ def test_chase_papercut_contains_goal_context_and_dedupes_for_thirty_minutes(her
     assert args["action"] == "log"
     assert args["component"] == "auto-goal"
     assert "goal_active=True" in args["observed"]
+    # The excerpt is per-message detail: it belongs in observed only, so the
+    # summary fingerprints to one stable chase class.
+    assert args["summary"] == "User had to chase"
+    assert "status?" in args["observed"]
     assert handle.call_args.kwargs["session_id"] == SESSION_KEY
     assert len(_rows(hermes_home)) == 3
+
+
+def test_chase_papercut_summary_is_the_stable_chase_class(hermes_home):
+    """The excerpt must ride in observed only: a phrasing is a sighting, not
+    a new papercut class with its own thread."""
+    from hermes_cli.goal_intent import record_goal_intent_shadow
+
+    classification = {
+        "label": "chase", "reason": "status ping", "confidence": 0.95,
+        "contract_draft": None,
+    }
+    with (
+        patch("hermes_cli.goal_intent.classify", return_value=classification),
+        patch("hermes_cli.goal_intent.build_goal_context", return_value={"goal_active": True}),
+        patch("plugins.papercuts.handle_papercuts", return_value='{"success":true}') as handle,
+    ):
+        record_goal_intent_shadow("is the deploy done yet?", SESSION_KEY, "telegram")
+
+    args = handle.call_args.args[0]
+    assert args["summary"] == "User had to chase"
+    assert "is the deploy done yet?" in args["observed"]
+    assert "is the deploy done yet?" not in args["summary"]
 
 
 def test_unavailable_papercuts_never_blocks_shadow_logging(hermes_home):

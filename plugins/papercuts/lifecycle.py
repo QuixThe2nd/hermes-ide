@@ -239,7 +239,15 @@ def tick(dry_run: bool = False, now: Optional[float] = None) -> int:
         ]
         free = max_active - len(active)
         queue = sorted(
-            (item for item in items if item.get("stage") == "queued" and item.get("status") == "open"),
+            (
+                item
+                for item in items
+                if item.get("stage") == "queued"
+                and item.get("status") == "open"
+                # A queued id that already carries a thread (chase-class reuse)
+                # must not open a second one on a later tick.
+                and not item.get("thread_id")
+            ),
             key=_priority_key,
         )
         for item in queue[: max(0, free)]:
@@ -300,11 +308,54 @@ def tick(dry_run: bool = False, now: Optional[float] = None) -> int:
     return 0
 
 
+def _is_chase_summary(summary: Any) -> bool:
+    """Chase summaries form one conversation class: the excerpt after the
+    colon is per-message detail, not a different papercut."""
+    from plugins.papercuts import _CHASE_RE
+
+    return bool(_CHASE_RE.match(str(summary or "").strip()))
+
+
+def _chase_thread_for(items: Dict[str, Dict[str, Any]], exclude_id: str) -> str:
+    """Best existing thread for the chase class: prefer an open active-stage
+    thread, otherwise the most recently touched one. Empty when none exists."""
+    best_rank: Optional[Tuple[int, float]] = None
+    best_thread = ""
+    for other in items.values():
+        other_id = str(other.get("id") or "")
+        if other_id == exclude_id or not other.get("thread_id"):
+            continue
+        if not _is_chase_summary(other.get("summary")):
+            continue
+        active = other.get("stage") in ACTIVE_STAGES and other.get("status") == "open"
+        try:
+            recency = float(other.get("stage_since") or other.get("ts_epoch") or 0)
+        except (TypeError, ValueError):
+            recency = 0.0
+        rank = (0 if active else 1, -recency)
+        if best_rank is None or rank < best_rank:
+            best_rank = rank
+            best_thread = str(other["thread_id"])
+    return best_thread
+
+
 def _enter_triage(item: Dict[str, Any]) -> Optional[str]:
     """queued → triage: persist, open the thread (once per id), launch work."""
+    from plugins.papercuts import _fold, _read_events_unlocked, _store_lock
     from plugins.papercuts import threads as pc_threads
 
     item_id = str(item["id"])
+    if _is_chase_summary(item.get("summary")):
+        # One chase class = one inbox thread. A duplicate chase id merges
+        # into the class's existing thread (no open, no post, no run) and
+        # closes out of the queue so no later tick retries the open.
+        with _store_lock():
+            reused = _chase_thread_for(_fold(_read_events_unlocked()), item_id)
+        if reused:
+            _append_stage_event(
+                item_id, "closed", thread_id=reused, note="merged into the chase-class thread"
+            )
+            return None
     _append_stage_event(item_id, "triage", attempts=0)
     thread_id = str(item.get("thread_id") or "")
     if not thread_id:
