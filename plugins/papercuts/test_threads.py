@@ -80,6 +80,10 @@ class ThreadsTestCase(unittest.TestCase):
         patcher = mock.patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("offline"))
         patcher.start()
         self.addCleanup(patcher.stop)
+        # The opening rewrite retries once after a 2s pause; never sleep in tests.
+        patcher = mock.patch.object(pc_threads, "time")
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self):
         os.environ.pop("HERMES_PAPERCUTS_DIR", None)
@@ -121,23 +125,38 @@ class ThreadBodyTests(unittest.TestCase):
             "component": "auto-goal",
             "severity": "minor",
             "occurrences": 6,
+            # Present in the record (and the stage prompt) but never in the opening.
+            "suggested_fix": "cache the status probe for a minute",
+            "session_id": "agent:main:discord:thread:123",
         }
         patcher = mock.patch("agent.auxiliary_client.call_llm")
         self.call_llm = patcher.start()
         self.addCleanup(patcher.stop)
+        time_patcher = mock.patch.object(pc_threads, "time")
+        self.time = time_patcher.start()
+        self.addCleanup(time_patcher.stop)
 
     @staticmethod
     def response(text):
         return {"choices": [{"message": {"content": text}}]}
 
-    def assert_fallback(self, body):
-        opening = body.splitlines()[0]
-        self.assertTrue(opening.startswith("Status checks keep forcing a detour."))
-        self.assertIn("It has happened 6 times", opening)
+    def assert_opening_shape(self, body):
+        """The opening hook plus exactly ONE compact detail line, nothing else."""
+        self.assertEqual(
+            len(body.splitlines()), 3, "opening, blank line, detail line only"
+        )
         self.assertIn(
             "Component: `auto-goal` · Severity: minor · Times seen: 6",
             body.splitlines(),
         )
+        self.assertNotIn("Suggested next step", body)
+        self.assertNotIn("First seen in session", body)
+
+    def assert_fallback(self, body):
+        opening = body.splitlines()[0]
+        self.assertTrue(opening.startswith("Status checks keep forcing a detour."))
+        self.assertIn("It has happened 6 times", opening)
+        self.assert_opening_shape(body)
         self.assertNotIn("What happens:", body)
         self.assertNotIn(self.item["observed"], body)
 
@@ -153,8 +172,19 @@ class ThreadBodyTests(unittest.TestCase):
         body = pc_threads.thread_body(self.item)
 
         self.assertEqual(body.splitlines()[0], rewritten)
-        self.assertIn("Component: `auto-goal` · Severity: minor · Times seen: 6", body.splitlines())
+        self.assert_opening_shape(body)
         self.assertNotIn(self.item["observed"], body)
+
+    def test_opening_uses_the_configured_dedup_aux_task(self):
+        # A papercut-specific task is unconfigured: it falls through to the
+        # main provider with no fallback chain — the 2026-11-12 outage shape.
+        self.call_llm.return_value = self.response("Fine.")
+
+        pc_threads.thread_body(self.item)
+
+        kwargs = self.call_llm.call_args.kwargs
+        self.assertEqual(kwargs["task"], "hermes_starts_dedup")
+        self.assertEqual(kwargs["timeout"], 45.0)
 
     def test_model_output_echoing_observed_data_is_rejected(self):
         self.call_llm.return_value = self.response(
@@ -168,10 +198,28 @@ class ThreadBodyTests(unittest.TestCase):
 
         self.assert_fallback(pc_threads.thread_body(self.item))
 
-    def test_model_error_uses_fallback(self):
-        self.call_llm.side_effect = RuntimeError("auxiliary model unavailable")
+    def test_model_error_retries_once_then_uses_rewrite(self):
+        rewritten = "Recurring status checks keep breaking your flow. Fixing them would remove a repeated detour."
+        self.call_llm.side_effect = [
+            RuntimeError("auxiliary model unavailable"),
+            self.response(rewritten),
+        ]
+
+        body = pc_threads.thread_body(self.item)
+
+        self.assertEqual(body.splitlines()[0], rewritten)
+        self.assertEqual(self.call_llm.call_count, 2)
+        self.time.sleep.assert_called_once_with(2.0)
+
+    def test_two_model_errors_use_fallback_without_raising(self):
+        self.call_llm.side_effect = [
+            RuntimeError("auxiliary model unavailable"),
+            TimeoutError("provider timed out"),
+        ]
 
         self.assert_fallback(pc_threads.thread_body(self.item))
+        self.assertEqual(self.call_llm.call_count, 2)
+        self.time.sleep.assert_called_once_with(2.0)
 
 
 class FoldTests(ThreadsTestCase):
