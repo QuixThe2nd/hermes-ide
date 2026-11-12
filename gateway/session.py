@@ -9,7 +9,6 @@ Handles:
 """
 
 import asyncio
-import hashlib
 import logging
 import os
 import json
@@ -63,33 +62,6 @@ def auto_continue_freshness_window() -> float:
         return float(raw)
     except (TypeError, ValueError):
         return float(_AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT)
-
-
-# ---------------------------------------------------------------------------
-# PII redaction helpers
-# ---------------------------------------------------------------------------
-
-def _hash_id(value: str) -> str:
-    """Deterministic 12-char hex hash of an identifier."""
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
-
-
-def _hash_sender_id(value: str) -> str:
-    """Hash a sender ID to ``user_<12hex>``."""
-    return f"user_{_hash_id(value)}"
-
-
-def _hash_chat_id(value: str) -> str:
-    """Hash the numeric portion of a chat ID, preserving platform prefix.
-
-    ``telegram:12345`` → ``telegram:<hash>``
-    ``12345``          → ``<hash>``
-    """
-    colon = value.find(":")
-    if colon > 0:
-        prefix = value[:colon]
-        return f"{prefix}:{_hash_id(value[colon + 1:])}"
-    return _hash_id(value)
 
 
 from .config import (
@@ -385,29 +357,6 @@ class SessionContext:
         }
 
 
-_PII_SAFE_PLATFORMS = frozenset({
-    Platform.WHATSAPP,
-    Platform.SIGNAL,
-    Platform.TELEGRAM,
-    Platform.BLUEBUBBLES,
-})
-
-
-def _should_redact_pii(platform: Platform, enabled: bool) -> bool:
-    """Keep model-visible identifiers usable on platforms requiring raw mentions."""
-    if not enabled or platform in _PII_SAFE_PLATFORMS:
-        return enabled
-    try:
-        from gateway.platform_registry import platform_registry
-        entry = platform_registry.get(platform.value)
-        return bool(entry and entry.pii_safe)
-    except Exception:
-        return False
-"""Platforms where user IDs can be safely redacted (no in-message mention system
-that requires raw IDs).  Discord is excluded because mentions use ``<@user_id>``
-and the LLM needs the real ID to tag users."""
-
-
 def _slack_tools_loaded() -> bool:
     """True iff the agent will actually have Slack tools this session.
 
@@ -527,11 +476,7 @@ def neutralize_untrusted_inline_text(value: Any, *, max_chars: int = _MAX_PROMPT
     return text
 
 
-def build_session_context_prompt(
-    context: SessionContext,
-    *,
-    redact_pii: bool = False,
-) -> str:
+def build_session_context_prompt(context: SessionContext) -> str:
     """
     Build the dynamic system prompt section that tells the agent about its context.
 
@@ -539,25 +484,7 @@ def build_session_context_prompt(
     - Where messages are coming from
     - What platforms are connected
     - Where it can deliver scheduled task outputs
-
-    When *redact_pii* is True **and** the source platform is in
-    ``_PII_SAFE_PLATFORMS``, phone numbers are stripped and user/chat IDs
-    are replaced with deterministic hashes before being sent to the LLM.
-    Platforms like Discord are excluded because mentions need real IDs.
-    Routing still uses the original values (they stay in SessionSource).
     """
-    # Only apply redaction on platforms where IDs aren't needed for mentions.
-    # Check both the hardcoded set (builtins) and the plugin registry.
-    _is_pii_safe = context.source.platform in _PII_SAFE_PLATFORMS
-    if not _is_pii_safe:
-        try:
-            from gateway.platform_registry import platform_registry
-            entry = platform_registry.get(context.source.platform.value)
-            if entry and entry.pii_safe:
-                _is_pii_safe = True
-        except Exception:
-            pass
-    redact_pii = redact_pii and _is_pii_safe
     lines = [
         "## Current Session Context",
         "",
@@ -574,26 +501,8 @@ def build_session_context_prompt(
     if context.source.platform == Platform.LOCAL:
         lines.append(f"**Source:** {platform_name} (the machine running this agent)")
     else:
-        # Build a description that respects PII redaction
-        src = context.source
-        if redact_pii:
-            # Build a safe description without raw IDs
-            _uname = src.user_name or (
-                _hash_sender_id(src.user_id) if src.user_id else "user"
-            )
-            _cname = src.chat_name or _hash_chat_id(src.chat_id)
-            if src.chat_type == "dm":
-                desc = f"DM with {_uname}"
-            elif src.chat_type == "group":
-                desc = f"group: {_cname}"
-            elif src.chat_type == "channel":
-                desc = f"channel: {_cname}"
-            else:
-                desc = _cname
-        else:
-            desc = src.description
         lines.append(
-            f"**Source:** {platform_name} ({_format_untrusted_prompt_value(desc)})"
+            f"**Source:** {platform_name} ({_format_untrusted_prompt_value(context.source.description)})"
         )
 
     # Bot's own display name on this platform (set by adapters that know
@@ -615,13 +524,11 @@ def build_session_context_prompt(
     if context.source.platform == Platform.MATRIX:
         src = context.source
         room_name = src.chat_name or src.chat_id
-        room_id = _hash_chat_id(src.chat_id) if redact_pii else src.chat_id
         lines.append("")
         lines.append(f"**Matrix Room:** {_format_untrusted_prompt_value(room_name)}")
-        lines.append(f"**Matrix Room ID:** {room_id}")
+        lines.append(f"**Matrix Room ID:** {src.chat_id}")
         if src.thread_id:
-            thread_id = _hash_chat_id(src.thread_id) if redact_pii else src.thread_id
-            lines.append(f"**Matrix Thread:** {thread_id}")
+            lines.append(f"**Matrix Thread:** {src.thread_id}")
         lines.append(
             "**Matrix room boundary:** Treat this turn as scoped to the current "
             "Matrix room/thread only. Do not assume unresolved references are "
@@ -646,10 +553,7 @@ def build_session_context_prompt(
             f"**User:** {_format_untrusted_prompt_value(context.source.user_name)}"
         )
     elif context.source.user_id:
-        uid = context.source.user_id
-        if redact_pii:
-            uid = _hash_sender_id(uid)
-        lines.append(f"**User ID:** {_format_untrusted_prompt_value(uid)}")
+        lines.append(f"**User ID:** {_format_untrusted_prompt_value(context.source.user_id)}")
 
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:
@@ -820,10 +724,7 @@ def build_session_context_prompt(
     if context.source.platform == Platform.LOCAL:
         lines.append("- `\"origin\"` → Local output (saved to files)")
     else:
-        _origin_label = context.source.chat_name or (
-            _hash_chat_id(context.source.chat_id) if redact_pii else context.source.chat_id
-        )
-        _origin_label = _format_untrusted_prompt_value(_origin_label)
+        _origin_label = _format_untrusted_prompt_value(context.source.chat_name or context.source.chat_id)
         lines.append(f"- `\"origin\"` → Back to this chat ({_origin_label})")
 
     # Local always available

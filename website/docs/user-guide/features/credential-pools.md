@@ -151,7 +151,7 @@ position when that rule changes it. Other strategies may override priority, and
 reordering does not rebind credentials already held by a running session.
 
 Every successful pool selection increments `request_count`, regardless of strategy.
-Refresh-only lookups and peeks do not count. Status reads (`hermes doctor`, the `/model`
+Refresh-only lookups and peeks do not count. Status reads (`hermes doctor`, the `hermes model`
 picker's provider rows, dashboard auth cards) are peeks: they never refresh, rotate, or
 bench a pool credential, so a token endpoint hiccup while the picker is open cannot hide
 a provider that is still serving requests. These are selection counters, not
@@ -217,7 +217,7 @@ credential, that session checks at the start of each turn whether the benched cr
 rotation and moves back to it as soon as its cooldown lifts — the same choice a new session would make.
 A long-running chat (the gateway keeps agents cached) therefore returns to a subscription seat once
 its window reopens instead of billing the metered fallback for the rest of its life. A `401` bench
-does not trigger this; an explicit `/model` switch cancels a pending switch-back.
+does not trigger this; an explicit `hermes model` switch cancels a pending switch-back.
 
 **Anthropic 429s are per model.** Anthropic enforces its rate limits per model, so a generic 429 for
 one Claude model cools that credential down for *that model only* — the same key keeps serving every

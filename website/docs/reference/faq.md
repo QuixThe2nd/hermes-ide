@@ -75,7 +75,7 @@ model:
   base_url: http://localhost:11434/v1
 ```
 
-Hermes persists the endpoint, provider, and base URL in `config.yaml` so it survives restarts. If your local server has exactly one model loaded, `/model custom` auto-detects it. You can also set `provider: custom` in config.yaml — it's a first-class provider, not an alias for anything else.
+Hermes persists the endpoint, provider, and base URL in `config.yaml` so it survives restarts. If your local server has exactly one model loaded, `hermes model custom` auto-detects it. You can also set `provider: custom` in config.yaml — it's a first-class provider, not an alias for anything else.
 
 This works with Ollama, vLLM, llama.cpp server, SGLang, LocalAI, and others. See the [Configuration guide](../user-guide/configuration.md) for details.
 
@@ -230,11 +230,11 @@ To isolate the source:
 
 See [Security](../user-guide/security.md) for Hermes' documented execution controls and [Providers](../integrations/providers.md) for provider configuration.
 
-#### `/model` only shows one provider / can't switch providers
+#### The model picker only shows one provider / can't switch providers
 
-**Cause:** `/model` (inside a chat session) can only switch between providers you've **already configured**. If you've only set up OpenRouter, that's all `/model` will show.
+**Cause:** the model picker can only switch between providers you've **already configured**. If you've only set up OpenRouter, that's all it will show.
 
-**Solution:** Exit your session and use `hermes model` from your terminal to add new providers:
+**Solution:** Use `hermes model` from your terminal to add new providers:
 
 ```bash
 # Exit the Hermes chat session first (Ctrl+C or /quit)
@@ -245,15 +245,15 @@ hermes model
 # This lets you: add providers, run OAuth, enter API keys, configure endpoints
 ```
 
-After adding a new provider via `hermes model`, start a new chat session — `/model` will now show all your configured providers.
+After adding a new provider via `hermes model`, the picker will show all your configured providers.
 
 :::tip Quick reference
 | Want to... | Use |
 |-----------|-----|
 | Add a new provider | `hermes model` (from terminal) |
 | Enter/change API keys | `hermes model` (from terminal) |
-| Switch model mid-session | `/model <name>` (inside session) |
-| Switch to different configured provider | `/model provider:model` (inside session) |
+| Switch model | `hermes model <name>` (from terminal) |
+| Switch to different configured provider | `hermes model provider:model` (from terminal) |
 :::
 
 #### API key not working
@@ -665,16 +665,16 @@ Now when you tell Hermes "write me a Twitter thread about X" and it spawns a `de
 
 You can also be explicit in your prompt: *"Delegate a task to write social media posts about our product launch. Use your subagent for the actual writing."* The agent will use `delegate_agent`, which automatically picks up the delegation config.
 
-For one-off model switches without delegation, use `/model` in the CLI:
+For one-off model switches without delegation, use `hermes model` from your terminal:
 
 ```bash
-/model google/gemini-3-flash-preview    # switch for this session
+hermes model google/gemini-3-flash-preview    # switch model
 # ... write your content ...
-/model openai/gpt-5.4                   # switch back
+hermes model openai/gpt-5.4                   # switch back
 ```
 
 :::warning
-Each `/model` switch resets the prompt cache — the cache key includes the model, so the first message after every switch re-reads the whole conversation at full input price. On long sessions, prefer delegation (subagents get their own fresh context) or a new session over repeated back-and-forth switching.
+Each model switch resets the prompt cache — the cache key includes the model, so the first message after every switch re-reads the whole conversation at full input price. On long sessions, prefer delegation (subagents get their own fresh context) or a new session over repeated back-and-forth switching.
 :::
 
 See [Subagent Delegation](../user-guide/features/delegation.md) for more on how delegation works.
@@ -687,7 +687,7 @@ See [Subagent Delegation](../user-guide/features/delegation.md) for more on how 
 
 **Workarounds:**
 
-1. **Use a single profile with personality switching.** Create different `AGENTS.md` context files or use the `/personality` command to change behavior per chat. The agent sees which chat it's in and can adapt.
+1. **Use a single profile with personality switching.** Create different `AGENTS.md` context files or use the `display.personality` config setting to change behavior per chat. The agent sees which chat it's in and can adapt.
 
 2. **Use cron jobs for specialized tasks.** For a shopping list tracker, set up a cron job that monitors a specific chat and manages the list — no separate agent needed.
 

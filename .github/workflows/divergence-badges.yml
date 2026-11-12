@@ -1,0 +1,49 @@
+name: Divergence badges
+
+# Refreshes the Divergence section of README.md after pushes to main.
+# NOTE: the upstream fetch inside scripts/divergence_badges.py is a READ-ONLY
+# ancestry comparison against NousResearch/hermes-agent — never a sync, merge,
+# or push target.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['README.md'] # the badge commit itself must not retrigger
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: divergence-badges
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4d402903747dcbc # v5
+        with:
+          python-version: '3.x'
+
+      - name: Compute and update badges
+        run: python scripts/divergence_badges.py --repo . --readme README.md
+
+      - name: Commit if the badge region changed
+        # GITHUB_TOKEN (not a GitHub App token) on purpose: App-token pushes
+        # retrigger workflows, GITHUB_TOKEN pushes do not (see js-autofix.yml).
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          if git diff --cached --quiet; then
+            echo "Badge region unchanged; nothing to commit."
+          else
+            git commit -m "chore(readme): refresh divergence badges"
+            git push
+          fi

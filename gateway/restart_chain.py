@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from utils import atomic_json_write
+from utils import atomic_json_write, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -62,12 +62,17 @@ def record_chained_restart(
     message_id: Optional[str] = None,
     request_kind: str = "user",
     via_service: bool = False,
+    restart_hub: bool = False,
 ) -> bool:
     """Synchronously record one successor restart; repeated requests coalesce.
 
     There is deliberately no await or worker hop in this write. A cancelled or
     failed hand-off therefore cannot publish a marker after its caller has
     already been told that no chain was accepted.
+
+    ``restart_hub`` rides the chain payload instead of a direct hub marker: a
+    ``--hub`` request joining an existing chain is merged into it, so the
+    already-up successor re-hands the bounce to the NEXT one.
     """
     if not has_pending_overlap_successor(runner):
         return False
@@ -77,8 +82,12 @@ def record_chained_restart(
         "source": _requesting_source_summary(source, message_id, kind=request_kind),
         "via_service": bool(via_service),
     }
+    if restart_hub:
+        payload["restart_hub"] = True
     try:
         if path.exists():
+            if restart_hub:
+                _merge_hub_flag_into_marker(path)
             return True
         atomic_json_write(path, payload, indent=None)
     except Exception as exc:
@@ -91,12 +100,28 @@ def record_chained_restart(
     return True
 
 
+def _merge_hub_flag_into_marker(path: Path) -> None:
+    """A ``--hub`` request joining an existing chain must not be lost to coalescing."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(payload, dict) or payload.get("restart_hub") is True:
+        return
+    payload["restart_hub"] = True
+    try:
+        atomic_json_write(path, payload, indent=None)
+    except Exception as exc:
+        logger.warning("Could not record hub flag on chained gateway restart: %s", exc)
+
+
 def chained_restart_status(
     runner: Any,
     *,
     source: Any = None,
     message_id: Optional[str] = None,
     via_service: bool = False,
+    restart_hub: bool = False,
 ) -> Optional[dict[str, Any]]:
     """Return the shared user-restart ACK when this request joined the chain."""
     if not record_chained_restart(
@@ -104,6 +129,7 @@ def chained_restart_status(
         source=source,
         message_id=message_id,
         via_service=via_service,
+        restart_hub=restart_hub,
     ):
         return None
     return {
@@ -145,6 +171,19 @@ async def run_chained_restart(runner: Any) -> bool:
     if payload is None:
         return False
     await asyncio.sleep(POST_CLAIM_STARTUP_SETTLE_SECONDS)
+    if is_truthy_value(payload.get("restart_hub")):
+        # This already-up successor stays alive to hand off to the NEXT one:
+        # persist the hub bounce marker BEFORE request_restart() so the next
+        # successor bounces the hub. Never bounce from a draining process.
+        try:
+            from gateway.restart_hub import write_hub_pending
+
+            write_hub_pending(_restart_chain_path().parent)
+        except Exception as exc:
+            logger.warning(
+                "restart-hub: could not persist hub bounce marker for chained restart: %s",
+                exc,
+            )
     try:
         started = runner.request_restart(
             overlap=True,

@@ -42,6 +42,35 @@ def turn_control_field_for(status: Any) -> dict[str, str] | None:
         return {TURN_CONTROL_FIELD: GATEWAY_RESTART_CONTROL}
     return None
 
+# Model-facing restart-success notice lines. The gateway's
+# ``gateway.run_turn_recovery._restart_success_content`` builds the exact
+# trusted result from these; every consumer that must recognize the shape
+# (builder, trusted-result parser, echo gate) shares them so rewording the
+# trailing instruction cannot drift between producer and matcher.
+RESTART_NOTICE_FIRST_LINE = "Restarted successfully"
+RESTART_NOTICE_OLD_PROCESS_PREFIX = "Old process: "
+RESTART_NOTICE_NEW_PROCESS_PREFIX = "New process: "
+
+
+def parse_restart_notice_lines(content: Any) -> list[str] | None:
+    """Non-empty lines of a rich restart-success notice, else ``None``.
+
+    Deliberately looser than the gateway's trusted-result parser (which
+    accepts only its own builder's exact output): any trailing instruction
+    line passes, so a successor build still recognizes a notice written by
+    an older build's wording.
+    """
+    if not isinstance(content, str):
+        return None
+    lines = [line.strip() for line in content.split("\n") if line.strip()]
+    if not lines or lines[0] != RESTART_NOTICE_FIRST_LINE:
+        return None
+    if not any(
+        line.startswith(RESTART_NOTICE_NEW_PROCESS_PREFIX) for line in lines[1:]
+    ):
+        return None
+    return lines
+
 
 def arm_gateway_restart_control(agent: Any, tool_name: str, result: Any) -> bool:
     """Arm the per-turn gateway-restart flag from trusted tool output.

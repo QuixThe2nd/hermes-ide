@@ -4527,18 +4527,6 @@
    "target": "sys"
   },
   {
-   "facade": "plugins.cron_providers.chronos",
-   "name": "Optional",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "plugins.cron_providers.chronos._nas_client",
-   "name": "Optional",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
    "facade": "plugins.image_gen.deepinfra",
    "name": "ImageGenProvider",
    "kind": "moved-lazy",

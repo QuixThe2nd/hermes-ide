@@ -752,7 +752,7 @@ unaffected.
 
 Topics with a `skill` field automatically load that skill when a new session starts in the topic. This works exactly like typing `/skill-name` at the start of a conversation — the skill content is injected into the first message, and subsequent messages see it in the conversation history.
 
-For example, a topic with `skill: arxiv` will have the arxiv skill pre-loaded whenever its session resets (after an explicit `/new` or `/reset`).
+For example, a topic with `skill: arxiv` will have the arxiv skill pre-loaded whenever its session resets (after an explicit `/new`).
 
 :::tip
 Topics created outside of the config (e.g., by manually calling the Telegram API) are discovered automatically when a `forum_topic_created` service message arrives. You can also add topics to the config while the gateway is running — they'll be picked up on the next cache miss.
@@ -1162,19 +1162,6 @@ gateway:
 
 Use `/whoami` to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run.
 
-## Interactive Model Picker
-
-When you send `/model` with no arguments in a Telegram chat, Hermes shows an interactive inline keyboard for switching models:
-
-1. **Provider selection** — buttons showing each available provider with model counts (e.g., "OpenAI (15)", "✓ Anthropic (12)" for the current provider).
-2. **Model selection** — paginated model list with **Prev**/**Next** navigation, a **Back** button to return to providers, and **Cancel**.
-
-The current model and provider are displayed at the top. All navigation happens by editing the same message in-place (no chat clutter).
-
-:::tip
-If you know the exact model name, type `/model <name>` directly to skip the picker. You can also type `/model <name> --global` to persist the change across sessions.
-:::
-
 ## DNS-over-HTTPS Fallback IPs
 
 In some restricted networks, `api.telegram.org` may resolve to an IP that is unreachable. The Telegram adapter includes a **fallback IP** mechanism that transparently retries connections against alternative IPs while preserving the correct TLS hostname and SNI.
@@ -1205,7 +1192,7 @@ platforms:
 ```
 
 :::tip
-You usually don't need to configure this manually. The auto-discovery via DoH handles most restricted-network scenarios. The `TELEGRAM_FALLBACK_IPS` env var is only needed if DoH is also blocked on your network. If IPv6 is broken on the host, you can also set `network.force_ipv4: true` in `config.yaml` to skip AAAA lookups process-wide.
+You usually don't need to configure this manually. The auto-discovery via DoH handles most restricted-network scenarios. The `TELEGRAM_FALLBACK_IPS` env var is only needed if DoH is also blocked on your network.
 :::
 
 ## Proxy Support

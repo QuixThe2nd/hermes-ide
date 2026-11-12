@@ -25,7 +25,7 @@ description: "使用 Socket Mode 将 Hermes Agent 设置为 Slack 机器人"
 
 ## 第一步：创建 Slack 应用
 
-最快的方式是粘贴 Hermes 为你生成的 manifest（清单文件）。它会一次性声明所有内置斜杠命令（`/btw`、`/stop`、`/model`……）、所有必需的 OAuth 权限范围、所有事件订阅，并启用 Socket Mode。
+最快的方式是粘贴 Hermes 为你生成的 manifest（清单文件）。它会一次性声明所有内置斜杠命令（`/btw`、`/stop`……）、所有必需的 OAuth 权限范围、所有事件订阅，并启用 Socket Mode。
 
 ### 方式 A：使用 Hermes 生成的 manifest（推荐）
 
@@ -210,7 +210,7 @@ sudo hermes gateway install --system   # 仅 Linux：开机启动系统服务
 
 ## 斜杠命令
 
-每个 Hermes 命令（`/btw`、`/stop`、`/new`、`/model`、`/help`……）都是原生 Slack 斜杠命令——与它们在 Telegram 和 Discord 上的工作方式完全相同。在 Slack 中输入 `/`，自动补全选择器会列出每个 Hermes 命令及其描述。
+每个 Hermes 命令（`/btw`、`/stop`、`/new`、`/help`……）都是原生 Slack 斜杠命令——与它们在 Telegram 和 Discord 上的工作方式完全相同。在 Slack 中输入 `/`，自动补全选择器会列出每个 Hermes 命令及其描述。
 
 底层实现：Hermes 附带一个生成的 Slack 应用 manifest（见第一步，方式 A），它将 [`COMMAND_REGISTRY`](https://github.com/NousResearch/hermes-agent/blob/main/hermes_cli/commands.py) 中的每个命令声明为斜杠命令。在 Socket Mode 下，无论 manifest 的 `url` 字段如何，Slack 都会通过 WebSocket 路由命令事件。
 
@@ -328,7 +328,7 @@ group_sessions_per_user: true
 
 为 `true`（默认值）时，共享频道中的每个用户都有自己独立的对话会话。在 `#general` 中与 Hermes 对话的两个人将有各自独立的历史记录和上下文。
 
-设为 `false` 可启用协作模式，整个频道共享一个对话会话。请注意，这意味着用户共享上下文增长和 token 成本，且一个用户的 `/reset` 会清除所有人的会话。
+设为 `false` 可启用协作模式，整个频道共享一个对话会话。请注意，这意味着用户共享上下文增长和 token 成本，且一个用户的 `/new` 会清除所有人的会话。
 
 ### 提及与触发行为
 

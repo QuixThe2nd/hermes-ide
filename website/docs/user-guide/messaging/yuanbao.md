@@ -161,7 +161,6 @@ All standard Hermes commands work on Yuanbao:
 | Command | Description |
 |---------|-------------|
 | `/new` | Start a fresh conversation |
-| `/model [provider:model]` | Show or change the model |
 | `/status` | Show session info |
 | `/help` | Show available commands |
 

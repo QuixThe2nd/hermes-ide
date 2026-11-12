@@ -51,7 +51,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("start", "Acknowledge platform start pings without a reply", "Session",
                gateway_only=True, busy_policy="dispatch", busy_handler="start"),
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
-               aliases=("reset",), args_hint="[name]",
+               args_hint="[name]",
                busy_policy="interrupt_then_dispatch", busy_handler="new"),
     CommandDef("incognito", "Start a new incognito session (no external memory, no prior history)", "Session",
                gateway_only=True, args_hint="[name|status]", subcommands=("status",),
@@ -107,9 +107,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("q",), args_hint="[<prompt>|list|edit N <prompt>|rm N|move A B|clear]",
                subcommands=("list", "edit", "rm", "move", "clear", "add"),
                busy_policy="dispatch", busy_handler="queue"),
-    CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
-               args_hint="[text | draft <text> | show | gate add <cmd> | pause | resume | clear | status | wait <pid> | unwait]",
-               argument_mode="mixed", busy_policy="dispatch", busy_handler="goal"),
     CommandDef("refine", "Review this conversation now and save lessons to memory/skills", "Session",
                args_hint="[focus instructions]"),
     CommandDef("review", "Spawn an independent subagent to review the work just discussed (PR, code, docs)", "Session",
@@ -145,14 +142,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True, desktop="terminal"),
-    CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
-               args_hint="[model] [--provider name] [--reasoning level] [--global|--session] [--refresh]",
-               busy_policy="reject", busy_handler="model", desktop="hidden"),
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",), args_hint="[auto|codex_app_server]",
                busy_policy="reject", busy_handler="codex-runtime"),
-    CommandDef("personality", "Set a predefined personality", "Configuration",
-               args_hint="[name]", argument_mode="options"),
     CommandDef("statusbar", "Toggle the context/model status bar", "Configuration",
                cli_only=True, aliases=("sb",), desktop="terminal"),
     CommandDef("battery", "Toggle a color-coded battery indicator in the status bar",
@@ -173,13 +165,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("footer", "Toggle gateway runtime-metadata footer on final replies",
                "Configuration", args_hint="[on|off|status]", subcommands=("on", "off", "status"),
                busy_policy="dispatch", desktop="terminal"),
-    CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
-               args_hint="[level|show|hide|full|clamp] [--global]",
-               subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "show", "hide", "on", "off", "full", "clamp", "--global")),
-    CommandDef("fast", "Fast mode — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)", "Configuration",
-               args_hint="[normal|fast|auto|cold|status] [--global]",
-               subcommands=("normal", "fast", "auto", "cold", "status", "on", "off", "--global"),
-               desktop="advanced"),
     CommandDef("skin", "Show or change the display skin/theme", "Configuration",
                cli_only=True, args_hint="[name]", argument_mode="options"),
     CommandDef("indicator", "Pick the TUI busy-indicator style", "Configuration",
@@ -339,7 +324,7 @@ for _cmd in COMMAND_REGISTRY:
 HELP_SESSION_SUBGROUPS: dict[str, tuple[str, ...]] = {
     "Context": ("compress", "compact", "context", "ctx", "status"),
     "Background & Automation": (
-        "bg", "btw", "agents", "tasks", "queue", "q", "goal", "subgoal",
+        "bg", "btw", "agents", "tasks", "queue", "q", "subgoal",
         "refine", "loop", "proactive", "journey", "learning", "memory-graph")}
 
 # All names + aliases the gateway dispatches. Config-gated commands are

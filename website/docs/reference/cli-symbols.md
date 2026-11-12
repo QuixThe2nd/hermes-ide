@@ -114,6 +114,7 @@ Goal lifecycle notices (from [goals](../user-guide/features/goals.md)) lead with
 
 | Symbol | Meaning |
 |--------|---------|
+| `🎯` | Auto-goal created — "Done when:" names the goal's completion condition. |
 | `✓` | Goal complete. |
 | `↻` | Goal continuing — another iteration was scheduled. |
 | `⏸` | Goal paused. |

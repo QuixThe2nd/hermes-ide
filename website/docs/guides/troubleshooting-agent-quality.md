@@ -12,15 +12,15 @@ Sometimes Hermes seems less sharp than it was yesterday, or forgets something yo
 
 **Symptom:** Answers are shallower, code quality dropped, reasoning feels off — across the board.
 
-**Check:** Run `/model` with no arguments to show the current model, or `/status` to see the session's model, provider, and profile in one view.
+**Check:** Run `/status` to see the session's model, provider, and profile in one view, or `hermes model` to show the current model.
 
 **What it means:** A model switch is a capability change, and it's easy to end up on a different model than you think:
 
-- A plain `/model <name>` switch is **session-only** by default (unless `model.persist_switch_by_default: true` is set), so the model you're on may not match what's in `config.yaml`.
+- A plain `hermes model <name>` switch is **session-only** by default (unless `model.persist_switch_by_default: true` is set), so the model you're on may not match what's in `config.yaml`.
 - Changing the main model from the dashboard's Models page applies to **new sessions only** — an already-open chat keeps running whatever model it started with.
 - If you switched to a faster model for a simple task (a pattern [Tips & Best Practices](./tips.md#choose-the-right-model) recommends), remember to switch back for complex reasoning work.
 
-If the model is wrong, `/model <name>` fixes it for this session; add `--global` to persist the change to `config.yaml`. Note that a mid-session switch resets the prompt cache, so the next turn re-reads the conversation at full input price — on a long session it can be cheaper to start fresh on the right model.
+If the model is wrong, `hermes model <name>` fixes it for this session; add `--global` to persist the change to `config.yaml`. Note that a mid-session switch resets the prompt cache, so the next turn re-reads the conversation at full input price — on a long session it can be cheaper to start fresh on the right model.
 
 ## 2. Check context usage
 
@@ -136,7 +136,7 @@ See [Context Compression](../user-guide/configuration.md#context-compression) fo
 
 | Symptom | First command | Likely cause |
 |---------|--------------|--------------|
-| Everything feels less capable | `/model` | Session is on a different model than you think |
+| Everything feels less capable | `/status` | Session is on a different model than you think |
 | Long session degrading | `/usage` | Context pressure — compress or start fresh |
 | Limits hit surprisingly early | CLI startup line / `/usage` | Wrong auto-detected context length |
 | Forgot what I said this session | — (by design) | Frozen memory snapshot — appears next session |

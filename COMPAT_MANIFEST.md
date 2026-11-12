@@ -1711,7 +1711,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `create_profile_endpoint` | moved-lazy | `hermes_cli.web_routers.profiles` |
 | `create_skill` | moved-lazy | `hermes_cli.web_routers.skills` |
 | `create_webhook` | moved-lazy | `hermes_cli.web_routers.ops` |
-| `cron_fire_webhook` | moved-lazy | `hermes_cli.web_routers.cron` |
 | `custom_endpoint_key_env` | moved-lazy | `hermes_cli.config` |
 | `dataclass` | import | `dataclasses` |
 | `datetime` | import | `datetime` |
@@ -2085,18 +2084,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `importlib` | import | `importlib.util` |
 | `sys` | import | `sys` |
-
-### `plugins.cron_providers.chronos`
-
-| name | kind | new location |
-|---|---|---|
-| `Optional` | import | `typing` |
-
-### `plugins.cron_providers.chronos._nas_client`
-
-| name | kind | new location |
-|---|---|---|
-| `Optional` | import | `typing` |
 
 
 | name | kind | new location |

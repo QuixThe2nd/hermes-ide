@@ -36,6 +36,7 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_verification_stop_synthetic",  # verify-on-stop nudge; the assistant candidate itself is NOT synthetic
     "_pre_verify_synthetic",
     "_dropped_toolcall_nudge",  # internal retry instruction; must not replay as user context
+    "_restart_echo_synthetic",  # restart-notice echo nudge; dropped echo never reaches the user
 )
 
 _IMAGE_PART_TYPES = {"image", "image_url", "input_image"}

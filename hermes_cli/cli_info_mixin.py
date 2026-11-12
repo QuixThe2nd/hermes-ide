@@ -232,17 +232,7 @@ class CLIInfoMixin:
 
         self._console_print()
 
-    def _fast_command_available(self) -> bool:
-        try:
-            from hermes_cli.models import model_supports_fast_mode
-        except Exception:
-            return False
-        agent = getattr(self, "agent", None)
-        return model_supports_fast_mode(getattr(agent, "model", None) or getattr(self, "model", None))
-
     def _command_available(self, slash_command: str) -> bool:
-        if slash_command == "/fast":
-            return self._fast_command_available()
         return True
 
     def show_help(self, arg: str = ""):

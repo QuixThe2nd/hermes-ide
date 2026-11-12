@@ -184,7 +184,6 @@ gateway:
 | 频道目录 | Plugin 平台包含在枚举中 |
 | 系统 prompt 提示 | `platform_hint` 注入 LLM 上下文 |
 | 消息分块 | `max_message_length` 用于智能分割 |
-| PII 脱敏 | `pii_safe` 标志 |
 | `hermes status` | 显示带 `(plugin)` 标签的 plugin 平台 |
 | `hermes gateway setup` | Plugin 平台出现在设置菜单中 |
 | `hermes tools` / `hermes skills` | Plugin 平台出现在每平台配置中 |

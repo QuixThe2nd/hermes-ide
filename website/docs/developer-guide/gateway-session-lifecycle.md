@@ -95,7 +95,7 @@ behavior on the next access.
 | `was_auto_reset` | `bool` | `False` | Set when explicit suspension causes a replacement session. Also retained for historical records. |
 | `auto_reset_reason` | `Optional[str]` | `None` | `"suspended"` for explicit suspension; older rows may retain historical reset reasons. |
 | `reset_had_activity` | `bool` | `False` | Whether the replaced session had prior activity. |
-| `is_fresh_reset` | `bool` | `False` | Set by explicit `/new` or `/reset`. Triggers topic/channel skill re-injection on first message. Distinguished from `was_auto_reset` to avoid misleading "session expired" notices. |
+| `is_fresh_reset` | `bool` | `False` | Set by explicit `/new`. Triggers topic/channel skill re-injection on first message. Distinguished from `was_auto_reset` to avoid misleading "session expired" notices. |
 | `expiry_finalized` | `bool` | `False` | Historical finalization fence retained for recovery; no timer writes it. |
 | `suspended` | `bool` | `False` | Hard force-wipe signal. Set by `/stop` or stuck-loop escalation (3+ consecutive restart failures). On next `get_or_create_session()`, forces a new `session_id` regardless of `resume_pending`. |
 | `resume_pending` | `bool` | `False` | Soft recovery marker. Set by `suspend_recently_active()` (crash recovery) or drain timeout. On next access, preserves the existing `session_id` — the user continues on the same transcript. Cleared after the next successful turn completes. |
@@ -169,7 +169,7 @@ SessionStore(sessions_dir: Path, config: GatewayConfig, has_active_processes_fn=
 |---|---|
 | `get_or_create_session(source, force_new=False)` | Core entry point. Returns existing or creates new `SessionEntry`. Evaluates explicit suspension and restart recovery state. Creates/ends SQLite records. |
 | `update_session(session_key, last_prompt_tokens=None)` | Lightweight metadata update after an interaction. Bumps `updated_at`, optionally records `last_prompt_tokens`. |
-| `reset_session(session_key, display_name=None)` | Explicit reset (from `/new` or `/reset`). Creates new `session_id`, sets `is_fresh_reset=True`. Ends old SQLite session, creates new one. |
+| `reset_session(session_key, display_name=None)` | Explicit reset (from `/new`). Creates new `session_id`, sets `is_fresh_reset=True`. Ends old SQLite session, creates new one. |
 | `switch_session(session_key, target_session_id, *, expected_session_id=None)` | Switch to a different existing session ID (from `/resume`). Ends current SQLite session, reopens target. With `expected_session_id=` the repoint is a compare-and-swap: returns `None` without switching when the key no longer points at that session, so a caller that resolved against a snapshot across an `await` (async-delegation re-pin, Telegram topic-binding heal) cannot overwrite a concurrent `/new` or `/resume`. |
 | `suspend_session(session_key)` | Mark session as `suspended=True` (from `/stop`). Forces auto-reset on next access. |
 | `mark_resume_pending(session_key, reason)` | Mark session as `resume_pending=True` (from drain timeout). Preserves session_id on next access. Will NOT override `suspended=True`. |
@@ -295,7 +295,7 @@ gateway at runtime, preserving prompt caching (the system prompt doesn't change 
 
 ## 6. Explicit Conversation Boundaries
 
-Inactivity and wall-clock time never rotate a conversation. `/new` and `/reset`
+Inactivity and wall-clock time never rotate a conversation. `/new`
 create an explicit boundary; context compression continues to manage long histories.
 Legacy timer configuration is ignored. The existing `SessionResetPolicy` datatype
 is inert compatibility data, not a runtime policy.
@@ -422,6 +422,17 @@ restarts). There is no second restart semantics anywhere in the tree.
 The old gateway_restart confirm-gate (ping the user, wait for the literal word
 "restart") and the CLI's parallel restart orchestration are gone.
 
+Opt-in hub bounce: `--hub` on `/restart`, `restart_hub: true` on the agent
+tool, or `restart_hub` on the control-socket verb persists a
+`.restart_hub_pending.json` marker in the HERMES_HOME *before*
+`request_restart()` is called; the SUCCESSOR gateway process consumes it
+(`gateway/restart_hub.py::consume_restart_hub_bounce`) and bounces
+`hermes-discord-hub.service` before its adapters attach — never the dying
+process. A chained `--hub` request rides the `.restart_chain.json` payload and
+is re-handed to the next successor. Failure to find the unit or run systemctl
+is warning-only and the report (`Hub: …` line) appears in the comeback notice
+and the repaired restart tool result.
+
 Pipeline semantics (unchanged by the unification — the overlap handover is
 canonical):
 
@@ -503,7 +514,7 @@ Called at the drain site after the slot was consumed. If there's an overflow ite
 
 ### Clearing
 
-Queued events for a session are cleared on `/new` and `/reset` (via `_handle_reset_command`).
+Queued events for a session are cleared on `/new` (via `_handle_reset_command`).
 `/stop` drops the single-slot follow-up the user sent during the interrupted turn. An
 **internal** wake parked in either store (an async-delegation completion notice or a cron
 `notify+wake`) survives all three commands: `_interrupt_and_clear_session` leaves it in the slot
@@ -519,7 +530,7 @@ does the same for an idle session whose dispatching turn already ended (replying
 than "No active task to stop"). The turn's own hard interrupt never reaches those units — they are
 detached from `_active_children` at dispatch — so without the fan-out they run to completion and wake
 the chat minutes later. Each stopped unit still finalizes normally and re-enters as its completion
-notice with `status="interrupted"` and the child's partial output. `/new` and `/reset` already did this
+notice with `status="interrupted"` and the child's partial output. `/new` already did this
 in `_handle_reset_command`; the shared helper's earlier call is idempotent there (a hard interrupt
 requested twice is one stop).
 
@@ -551,19 +562,6 @@ def build_session_context(source, config, session_entry=None) -> SessionContext
 2. Collects notification channels for each platform.
 3. Determines `shared_multi_user_session` via `is_shared_multi_user_session()`.
 4. Attaches session metadata (key, id, timestamps) if `session_entry` is provided.
-
-### PII Redaction (`build_session_context_prompt`)
-
-The dynamic system prompt section (`## Current Session Context`) can optionally redact
-personally identifiable information before sending to the LLM:
-
-- User IDs → `user_<12hex>` (SHA-256 prefix)
-- Chat IDs → `<platform>:<12hex>` or just `<12hex>`
-- Platforms excluded from redaction: Discord (needs raw IDs for `@mentions`),
-  and any plugin-registered platform not marked `pii_safe`.
-
-Redaction applies only to the system prompt text. Routing, session keys, and adapter
-operations always use the original values.
 
 ---
 
@@ -684,7 +682,7 @@ mode and the explicit repair procedure.
 
 ### Conversation lifetime
 
-No idle or daily reset settings are supported. Explicit `/new` and `/reset`,
+No idle or daily reset settings are supported. Explicit `/new`,
 compaction, suspension and crash recovery retain their separate lifecycle roles.
 ### Auto-Resume on Next Access
 
@@ -762,7 +760,7 @@ Called at the drain site after the slot was consumed. If there's an overflow ite
 
 ### Clearing
 
-Queued events for a session are cleared on `/new` and `/reset` (via `_handle_reset_command`).
+Queued events for a session are cleared on `/new` (via `_handle_reset_command`).
 `/stop` drops the single-slot follow-up the user sent during the interrupted turn. An
 **internal** wake parked in either store (an async-delegation completion notice or a cron
 `notify+wake`) survives all three commands: `_interrupt_and_clear_session` leaves it in the slot
@@ -778,7 +776,7 @@ does the same for an idle session whose dispatching turn already ended (replying
 than "No active task to stop"). The turn's own hard interrupt never reaches those units — they are
 detached from `_active_children` at dispatch — so without the fan-out they run to completion and wake
 the chat minutes later. Each stopped unit still finalizes normally and re-enters as its completion
-notice with `status="interrupted"` and the child's partial output. `/new` and `/reset` already did this
+notice with `status="interrupted"` and the child's partial output. `/new` already did this
 in `_handle_reset_command`; the shared helper's earlier call is idempotent there (a hard interrupt
 requested twice is one stop).
 
@@ -810,19 +808,6 @@ def build_session_context(source, config, session_entry=None) -> SessionContext
 2. Collects notification channels for each platform.
 3. Determines `shared_multi_user_session` via `is_shared_multi_user_session()`.
 4. Attaches session metadata (key, id, timestamps) if `session_entry` is provided.
-
-### PII Redaction (`build_session_context_prompt`)
-
-The dynamic system prompt section (`## Current Session Context`) can optionally redact
-personally identifiable information before sending to the LLM:
-
-- User IDs → `user_<12hex>` (SHA-256 prefix)
-- Chat IDs → `<platform>:<12hex>` or just `<12hex>`
-- Platforms excluded from redaction: Discord (needs raw IDs for `@mentions`),
-  and any plugin-registered platform not marked `pii_safe`.
-
-Redaction applies only to the system prompt text. Routing, session keys, and adapter
-operations always use the original values.
 
 ---
 
@@ -943,5 +928,5 @@ mode and the explicit repair procedure.
 
 ### Conversation lifetime
 
-No idle or daily reset settings are supported. Explicit `/new` and `/reset`,
+No idle or daily reset settings are supported. Explicit `/new`,
 compaction, suspension and crash recovery retain their separate lifecycle roles.

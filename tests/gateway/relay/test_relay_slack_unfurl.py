@@ -30,7 +30,6 @@ def make_desc(**kw) -> CapabilityDescriptor:
         len_unit="char",
         emoji="\U0001f4bc",
         platform_hint="",
-        pii_safe=False,
     )
     base.update(kw)
     return CapabilityDescriptor(**base)

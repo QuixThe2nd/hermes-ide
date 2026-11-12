@@ -1,4 +1,4 @@
-"""Tests for gateway /reasoning command and hot reload behavior."""
+"""Tests for gateway reasoning-config resolution and hot reload behavior."""
 
 import asyncio
 import inspect
@@ -64,58 +64,6 @@ class _CapturingAgent:
 
 
 class TestReasoningCommand:
-
-
-    def test_parse_reasoning_command_args_accepts_ascii_and_smart_global_flags(self):
-        assert gateway_run.GatewayRunner._parse_reasoning_command_args("high --global") == ("high", True)
-        assert gateway_run.GatewayRunner._parse_reasoning_command_args("—global xhigh") == ("xhigh", True)
-
-    @pytest.mark.asyncio
-    async def test_reasoning_command_reloads_current_state_from_config(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir()
-        config_path = hermes_home / "config.yaml"
-        config_path.write_text(
-            "agent:\n  reasoning_effort: none\ndisplay:\n  show_reasoning: true\n",
-            encoding="utf-8",
-        )
-
-        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
-
-        runner = _make_runner()
-        runner._reasoning_config = {"enabled": True, "effort": "xhigh"}
-        runner._show_reasoning = False
-
-        result = await runner._handle_reasoning_command(_make_event("/reasoning"))
-
-        assert "**Effort:** `none (disabled)`" in result
-        assert "**Display:** on ✓" in result
-        assert runner._reasoning_config == {"enabled": False}
-        assert runner._show_reasoning is True
-
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("effort", ["max", "ultra"])
-    async def test_handle_reasoning_command_accepts_extended_efforts(
-        self, tmp_path, monkeypatch, effort
-    ):
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text(
-            "agent:\n  reasoning_effort: medium\n", encoding="utf-8"
-        )
-        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
-
-        runner = _make_runner()
-        event = _make_event(f"/reasoning {effort}")
-        session_key = runner._session_key_for_source(event.source)
-
-        await runner._handle_reasoning_command(event)
-
-        assert runner._session_reasoning_overrides[session_key] == {
-            "enabled": True,
-            "effort": effort,
-        }
 
 
     def test_resolve_session_reasoning_prefers_session_override(self, tmp_path, monkeypatch):

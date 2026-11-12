@@ -9,7 +9,7 @@ description: "Customize Hermes Agent's personality with a global SOUL.md, built-
 Hermes Agent's personality is fully customizable. `SOUL.md` is the **primary identity** — it's the first thing in the system prompt and defines who the agent is.
 
 - `SOUL.md` — a durable persona file that lives in `HERMES_HOME` and serves as the agent's identity (slot #1 in the system prompt)
-- built-in or custom `/personality` presets — session-level system-prompt overlays
+- built-in or custom personality presets — system-prompt overlays selected via `display.personality`
 
 If you want to change who Hermes is — or replace it with an entirely different agent persona — edit `SOUL.md`.
 
@@ -156,23 +156,23 @@ A useful rule:
 - if it should follow you everywhere, it belongs in `SOUL.md`
 - if it belongs to a project, it belongs in `AGENTS.md`
 
-## SOUL.md vs `/personality`
+## SOUL.md vs personality overlays
 
 `SOUL.md` is your durable default personality.
 
-`/personality` is a session-level overlay that changes or supplements the current system prompt.
+A personality overlay (set via `display.personality`) changes or supplements the current system prompt.
 
 So:
 - `SOUL.md` = baseline voice
-- `/personality` = temporary mode switch
+- `display.personality` = temporary mode switch
 
 Examples:
-- keep a pragmatic default SOUL, then use `/personality teacher` for a tutoring conversation
-- keep a concise SOUL, then use `/personality creative` for brainstorming
+- keep a pragmatic default SOUL, then use `hermes config set display.personality teacher` for a tutoring conversation
+- keep a concise SOUL, then use `hermes config set display.personality creative` for brainstorming
 
 ## Built-in personalities
 
-Hermes ships with built-in personalities you can switch to with `/personality`.
+Hermes ships with built-in personalities you can switch to with `hermes config set display.personality <name>`.
 
 | Name | Description |
 |------|-------------|
@@ -191,20 +191,14 @@ Hermes ships with built-in personalities you can switch to with `/personality`.
 | **philosopher** | Deep contemplation on every query |
 | **hype** | MAXIMUM ENERGY AND ENTHUSIASM!!! |
 
-## Switching personalities with commands
+## Switching personalities
 
-### CLI
+Set `display.personality` in `config.yaml` (or with `hermes config set`):
 
-```text
-/personality
-/personality concise
-/personality technical
-```
-
-### Messaging platforms
-
-```text
-/personality teacher
+```bash
+hermes config set display.personality concise
+hermes config set display.personality technical
+hermes config set display.personality teacher
 ```
 
 These are convenient overlays, but your global `SOUL.md` still gives Hermes its persistent default personality unless the overlay meaningfully changes it.
@@ -223,26 +217,24 @@ agent:
 
 Then switch to it with:
 
-```text
-/personality codereviewer
+```bash
+hermes config set display.personality codereviewer
 ```
 
 Your selection is stored as a name in `display.personality`. Personalities never touch `agent.system_prompt` — that field is reserved for a manual system prompt you write yourself, and it applies only when no personality is selected.
 
 ## Resetting to the default
 
-To cancel the active personality overlay and return to base behavior (your `SOUL.md` persona, plus `agent.system_prompt` if you set one), use any of:
+To cancel the active personality overlay and return to base behavior (your `SOUL.md` persona, plus `agent.system_prompt` if you set one), set the selection to `none`, `default`, or `neutral`:
 
-```text
-/personality none
-/personality default
-/personality neutral
+```bash
+hermes config set display.personality none
 ```
 
-All three clear the selection (`display.personality`) and the change takes effect on your next message. Running `/personality` with no arguments also lists `none` alongside the available presets and marks the active one.
+All three clear the selection (`display.personality`) and the change takes effect on your next message.
 
 :::note One-time reset on upgrade
-Older Hermes versions saved personality state inconsistently across surfaces, which could re-enable a personality you had previously turned off. On your first run after upgrading, any saved personality selection is reset to `none` once (the migration prints which personality was cleared). Re-enable it with `/personality <name>` if you still want it. Manual `agent.system_prompt` text is never touched.
+Older Hermes versions saved personality state inconsistently across surfaces, which could re-enable a personality you had previously turned off. On your first run after upgrading, any saved personality selection is reset to `none` once (the migration prints which personality was cleared). Re-enable it with `hermes config set display.personality <name>` if you still want it. Manual `agent.system_prompt` text is never touched.
 :::
 
 ## Recommended workflow
@@ -251,7 +243,7 @@ A strong default setup is:
 
 1. Keep a thoughtful global `SOUL.md` in `~/.hermes/SOUL.md`
 2. Put project instructions in `AGENTS.md`
-3. Use `/personality` only when you want a temporary mode shift
+3. Use a personality overlay only when you want a temporary mode shift
 
 That gives you:
 - a stable voice
@@ -268,7 +260,7 @@ At a high level, the prompt stack includes:
 5. context files (`AGENTS.md`, `.cursorrules`)
 6. timestamp
 7. platform-specific formatting hints
-8. optional system-prompt overlays such as `/personality`
+8. optional system-prompt overlays such as the personality overlay
 
 `SOUL.md` is the foundation — everything else builds on top of it.
 
@@ -283,7 +275,7 @@ At a high level, the prompt stack includes:
 
 Conversational personality and CLI appearance are separate:
 
-- `SOUL.md`, `agent.system_prompt`, and `/personality` affect how Hermes speaks
+- `SOUL.md`, `agent.system_prompt`, and `display.personality` affect how Hermes speaks
 - `display.skin` and `/skin` affect how Hermes looks in the terminal
 
 For terminal appearance, see [Skins & Themes](./skins.md).

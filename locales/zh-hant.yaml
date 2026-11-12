@@ -8,25 +8,6 @@ gateway:
   config_read_failed: "⚠️ 無法讀取 config.yaml：{error}"
   config_save_failed: "⚠️ 無法儲存設定：{error}"
 
-  model:
-    error_prefix:           "錯誤：{error}"
-    switched:               "已切換模型為 `{model}`"
-    provider_label:         "提供方：{provider}"
-    context_label:          "上下文：{tokens} tokens"
-    max_output_label:       "最大輸出：{tokens} tokens"
-    cost_label:             "費用：{cost}"
-    capabilities_label:     "能力：{capabilities}"
-    prompt_caching_enabled: "提示快取：已啟用"
-    warning_prefix:         "警告：{warning}"
-    saved_global:           "已儲存到 config.yaml（`--global`）"
-    session_only_hint:      "_（僅本次工作階段有效 — 加上 `--global` 可永久儲存）_"
-    current_label:          "目前：`{model}`（{provider}）"
-    current_tag:            "（目前）"
-    more_models_suffix:     "（還有 {count} 個）"
-    usage_switch_model:     "`/model <name>` — 切換模型"
-    usage_switch_provider:  "`/model <name> --provider <slug>` — 切換提供方"
-    usage_persist:          "`/model <name> --global` — 永久儲存"
-
   agents:
     header:                "🤖 **作用中的代理與任務**"
     active_agents:         "**作用中代理：** {count}"
@@ -88,22 +69,6 @@ gateway:
     full_logs_hint:        "如需上傳完整紀錄，請在 CLI 中使用 `hermes debug share`。"
     share_hint:            "請將這些連結分享給 Hermes 團隊以取得支援。"
 
-  fast:
-    not_supported:         "⚡ /fast 僅適用於支援 Priority Processing 的 OpenAI 模型。"
-    status:                "⚡ Priority Processing\n\n目前模式：`{mode}`\n\n_用法：_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ 未知參數：`{arg}`\n\n**有效選項：** normal、fast、status"
-    saved:                 "⚡ ✓ Priority Processing：**{label}**（已儲存到設定）\n_（下一則訊息生效）_"
-    session_only:          "⚡ ✓ Priority Processing：**{label}**（僅本次工作階段）"
-    label_fast:            "FAST"
-    label_normal:          "NORMAL"
-    status_fast:           "fast"
-    status_normal:         "normal"
-    picker_title:          "⚡ **Priority Processing**\\n\\n目前模式：`{mode}`\\n\\n請選擇："
-    choice_fast:           "fast — 開啟 Priority Processing"
-    choice_normal:         "normal — 標準處理"
-    choice_auto:           "auto — 每輪的前幾秒快速"
-    choice_cold:           "cold — 僅會話的第一輪快速"
-
   footer:
     status:                "📎 執行階段頁尾：**{state}**\n欄位：`{fields}`\n平台：`{platform}`"
     usage:                 "用法：`/footer [on|off|status]`"
@@ -130,42 +95,9 @@ gateway:
     invalid_days:          "無效的 --days 值：{value}"
     error:                 "產生洞察時發生錯誤：{error}"
 
-  personality:
-    none_configured:       "`{path}/config.yaml` 中未設定人格"
-    header:                "🎭 **可用人格**\n"
-    none_option:           "• `none` —（不套用人格覆寫）"
-    item:                  "• `{name}` — {preview}"
-    usage:                 "\n用法：`/personality <name>`"
-    save_failed:           "⚠️ 儲存人格變更失敗：{error}"
-    cleared:               "🎭 已清除人格 — 使用基礎代理行為。\n_（下一則訊息生效）_"
-    set_to:                "🎭 人格已設定為 **{name}**\n_（下一則訊息生效）_"
-    unknown:               "未知人格：`{name}`\n\n可用：{available}"
-
   profile:
     header:                "👤 **設定檔：** `{profile}`"
     home:                  "📂 **主目錄：** `{home}`"
-
-  reasoning:
-    level_default:             "medium（預設）"
-    level_disabled:            "none（已停用）"
-    scope_session:             "工作階段覆寫"
-    scope_global:              "全域設定"
-    status:                    "🧠 **推理設定**\n\n**強度：** `{level}`\n**範圍：** {scope}\n**顯示：** {display}\n\n_用法：_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
-    display_on:                "開啟 ✓"
-    display_off:               "關閉"
-    display_set_on:            "🧠 ✓ 推理顯示：**開啟**\n在 **{platform}** 上每次回應前將顯示模型的思考過程。"
-    display_set_off:           "🧠 ✓ **{platform}** 上的推理顯示：**關閉**"
-    reset_global_unsupported:  "⚠️ 不支援 `/reasoning reset --global`。請使用 `/reasoning <level> --global` 變更全域預設值。"
-    reset_done:                "🧠 ✓ 已清除本工作階段的推理覆寫；回退至全域設定。"
-    unknown_arg:               "⚠️ 未知參數：`{arg}`\n\n**有效級別：** none, minimal, low, medium, high, xhigh, max, ultra\n**顯示：** show, hide\n**持久化：** 加上 `--global` 可跨工作階段儲存"
-    picker_title:              "🧠 **推理設定**\\n\\n**強度：** `{level}`\\n**範圍：** {scope}\\n**顯示：** {display}\\n\\n請選擇："
-    choice_none:               "none — 停用推理"
-    choice_reset:              "reset — 清除工作階段覆寫"
-    choice_show:               "在回覆中顯示推理"
-    choice_hide:               "在回覆中隱藏推理"
-    set_global:                "🧠 ✓ 推理強度已設定為 `{effort}`（已儲存到設定）\n_（下一則訊息生效）_"
-    set_global_save_failed:    "🧠 ✓ 推理強度已設定為 `{effort}`（僅本工作階段 — 設定儲存失敗）\n_（下一則訊息生效）_"
-    set_session:               "🧠 ✓ 推理強度已設定為 `{effort}`（僅本工作階段 — 加上 `--global` 可持久化）\n_（下一則訊息生效）_"
 
   reload_mcp:
     cancelled:             "🟡 已取消 /reload-mcp。MCP 工具未變更。"

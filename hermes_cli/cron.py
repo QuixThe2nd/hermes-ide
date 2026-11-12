@@ -32,7 +32,7 @@ def _cron_api(**kwargs):
 
 
 def _active_cron_provider_name() -> str:
-    """Resolved cron scheduler provider name ('builtin', 'chronos', …); 'builtin' on failure."""
+    """Resolved cron scheduler provider name ('builtin' or an external provider); 'builtin' on failure."""
     try:
         from cron.scheduler_provider import resolve_cron_scheduler
         return resolve_cron_scheduler().name or "builtin"

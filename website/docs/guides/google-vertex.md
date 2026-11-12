@@ -104,11 +104,11 @@ The Gemini 3.x preview models are served through the `global` endpoint. Regional
 ## Switching Models Mid-Session
 
 ```text
-/model google/gemini-3-pro-preview
-/model google/gemini-3-flash-preview
+hermes model google/gemini-3-pro-preview
+hermes model google/gemini-3-flash-preview
 ```
 
-`/model` switches among already-configured providers and models; it does not collect new credentials. Configure Vertex with `hermes model` first.
+`hermes model` switches among already-configured providers and models; it does not collect new credentials. Configure Vertex with `hermes model` first.
 
 ## Reasoning / Thinking
 

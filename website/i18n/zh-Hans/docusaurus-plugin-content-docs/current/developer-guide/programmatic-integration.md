@@ -66,7 +66,7 @@ Pi-mono RPC 规范（[issue #360](https://github.com/NousResearch/hermes-agent/i
 | `steer` | `session.steer` |
 | `follow_up` | 在当前轮次结束后排队的 `prompt.submit` |
 | `abort` | `session.interrupt` |
-| `set_model` | 通过 `command.dispatch` 执行 `/model <provider:model>`（会话中途生效，持久化） |
+| `set_model` | `hermes model <provider:model>`（持久化） |
 | `compact` | `session.compress` |
 | `get_state` | `session.status` |
 | `get_messages` | `session.history` |
@@ -110,10 +110,10 @@ GET  /health, /health/detailed
 
 ## 模型热切换
 
-会话中途切换模型在所有接入方式上均可用——底层均为 `/model` slash 命令。
+会话中途切换模型在所有接入方式上均可用——底层均为 `hermes model` 的模型切换流水线。
 
-- **CLI / TUI：** `/model claude-sonnet-4` 或 `/model openrouter:anthropic/claude-sonnet-4.6`
-- **TUI gateway RPC：** 使用 `{"command": "/model claude-sonnet-4"}` 调用 `command.dispatch`
+- **CLI / TUI：** 会话外运行 `hermes model claude-sonnet-4` 或 `hermes model openrouter:anthropic/claude-sonnet-4.6`
+- **TUI gateway RPC：** 会话外使用 `hermes model` 切换默认模型
 - **ACP：** IDE 将 slash 命令作为 prompt 发送，agent 负责分发
 - **API server：** 在请求体中包含 `model` 字段，或设置 `X-Hermes-Model`
 

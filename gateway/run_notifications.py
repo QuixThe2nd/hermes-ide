@@ -768,10 +768,19 @@ class GatewayNotificationsMixin:
                     metadata["user_id"] = str(data["user_id"])
                 if data.get("scope_id"):
                     metadata["scope_id"] = str(data["scope_id"])
+            notice = "♻ Gateway restarted successfully. Your session continues."
+            try:
+                from gateway.restart_hub import load_hub_report_line
+
+                hub_line = load_hub_report_line(_hermes_home)
+                if hub_line:
+                    notice = f"{notice}\nHub: {hub_line}"
+            except Exception:
+                pass
             result = await transport.send(
                 platform,
                 str(chat_id),
-                "♻ Gateway restarted successfully. Your session continues.",
+                notice,
                 metadata=_non_conversational_metadata(metadata, platform=platform),
             )
             # adapter.send() catches provider errors (e.g. "Chat not found")

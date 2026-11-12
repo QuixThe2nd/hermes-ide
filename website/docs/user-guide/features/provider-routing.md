@@ -123,7 +123,7 @@ provider_routing:
 
 Matching is spelling-tolerant like `agent.reasoning_overrides` (`claude-fable-5.1` / `claude-fable-5-1`,
 with or without the `openrouter/` prefix). The override follows the model the agent is *currently* on, so
-`/model` switches, fallback activation, cron jobs, and delegated subagents on another model each get their
+`hermes model` switches, fallback activation, cron jobs, and delegated subagents on another model each get their
 own pins. Edit `config.yaml` directly for these keys: model ids contain dots, which `hermes config set`
 reads as path separators.
 

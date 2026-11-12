@@ -125,7 +125,7 @@ All slash commands in the gateway flow through the same resolution pipeline:
 
 Commands that must NOT execute while the agent is processing are rejected early:
 
-While `_quick_key in self._running_agents`, `_dispatch_busy_slash_command()` in `gateway/run_busy.py` routes each recognized command by its `CommandDef.busy_policy` / `busy_handler`: a mid-run variant (`_busy_<key>_command`) if one exists, otherwise the normal handler when `busy_policy` allows it, otherwise a reject message ("⏳ Agent is running — `/model` can't run mid-turn…").
+While `_quick_key in self._running_agents`, `_dispatch_busy_slash_command()` in `gateway/run_busy.py` routes each recognized command by its `CommandDef.busy_policy` / `busy_handler`: a mid-run variant (`_busy_<key>_command`) if one exists, otherwise the normal handler when `busy_policy` allows it, otherwise a reject message ("⏳ Agent is running — `/skin` can't run mid-turn…").
 
 Bypass commands (`/stop`, `/new`, `/queue`, `/status`) have mid-run handlers and are dispatched inline.
 
@@ -248,7 +248,7 @@ AIAgent._invoke_tool()
 
 ### Memory Flush Lifecycle
 
-Explicit conversation boundaries (such as `/new`, `/reset`, or `/resume`) flush and finalize the outgoing session. Idle time and daily boundaries never finalize it.
+Explicit conversation boundaries (such as `/new`, or `/resume`) flush and finalize the outgoing session. Idle time and daily boundaries never finalize it.
 
 Resource-only TTL, LRU, and memory-pressure eviction commits the cached transcript to configured memory providers before releasing the agent's clients. It does not close the durable conversation: the next turn reloads the same transcript and identity.
 

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import io
 import json
-import os
 import threading
 import time
 
@@ -145,36 +144,10 @@ def test_swr_refresh_runs_as_the_profile_that_spawned_it(homes):
     assert not (a / "provider_models_cache.json").exists()
 
 
-def _write_manifest(home, model_id: str, mtime: float) -> None:
-    path = home / "cache" / "model_catalog.json"
-    path.write_text(json.dumps({"version": 1, "providers": {"openrouter": {"models": [
-        {"id": model_id, "description": "x", "default": True}]}}}), encoding="utf-8")
-    os.utime(path, (mtime, mtime))
-
-
-def test_model_catalog_in_process_copy_is_bound_to_its_cache_file(homes, monkeypatch):
-    a, b = homes
-    import hermes_cli.model_catalog as mc
-
-    for home in (a, b):
-        (home / "config.yaml").write_text("model_catalog:\n  ttl_minutes: 600\n", encoding="utf-8")
-    same_mtime = time.time() - 5  # identical mtimes: only the path can tell the two files apart
-    _write_manifest(a, "vendor/a-model", same_mtime)
-    _write_manifest(b, "vendor/b-model", same_mtime)
-    mc.reset_cache()
-    with _Scoped(a):
-        assert [m["id"] for m in mc.get_catalog()["providers"]["openrouter"]["models"]] == ["vendor/a-model"]
-    with _Scoped(b):
-        assert [m["id"] for m in mc.get_catalog()["providers"]["openrouter"]["models"]] == ["vendor/b-model"]
-        assert mc.get_default_model_from_cache("openrouter") == "vendor/b-model"
-
-
 def test_openrouter_curated_list_is_per_profile(homes, monkeypatch):
     a, b = homes
     import hermes_cli.models as models
 
-    for home in (a, b):
-        (home / "config.yaml").write_text("model_catalog:\n  ttl_minutes: 600\n", encoding="utf-8")
     now = time.time()
     for home, mid in ((a, "vendor/a-model"), (b, "vendor/b-model")):
         (home / "cache" / "openrouter_curated_catalog.json").write_text(

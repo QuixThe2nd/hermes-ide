@@ -42,7 +42,7 @@ The Portal proxies a curated catalog of agentic models from across the ecosystem
 | **Hermes** | Hermes-4-70B, Hermes-4-405B (chat, see [note below](#a-note-on-hermes-4)) |
 | **+ everything else** | 280+ additional models — the full agentic frontier |
 
-Under the hood, the Portal routes each model to the backend best suited for it — some models go through OpenRouter, others through proprietary or secondary providers, and the routing for a given model can change over time. Everything is billed against your Nous subscription either way. Switch between Claude Sonnet 4.6 for code and Gemini 3 Pro for long context with `/model` mid-session — no new credentials, no top-ups, no surprise zero-balance errors.
+Under the hood, the Portal routes each model to the backend best suited for it — some models go through OpenRouter, others through proprietary or secondary providers, and the routing for a given model can change over time. Everything is billed against your Nous subscription either way. Switch between Claude Sonnet 4.6 for code and Gemini 3 Pro for long context with `hermes model` — no new credentials, no top-ups, no surprise zero-balance errors.
 
 :::note
 Because routing is per-model and not always through OpenRouter, OpenRouter-specific request extensions (such as `provider` routing preferences, `session_id` sticky routing, or top-level `cache_control`) are not part of the Portal's API contract and may be ignored depending on which backend serves the model.
@@ -78,10 +78,10 @@ Nous Research's own **Hermes 4** family (Hermes-4-70B, Hermes-4-405B) is availab
 They are **not recommended for use inside Hermes Agent**, however. Hermes 4 is tuned for chat and reasoning, not the rapid-fire tool-calling loop the agent relies on. Use them for research workflows or via the [subscription proxy](../user-guide/features/subscription-proxy.md) from other tooling — but for agent work, pick a frontier agentic model from the catalog instead:
 
 ```bash
-/model anthropic/claude-sonnet-4.6     # best general-purpose agentic model
-/model openai/gpt-5.5-pro              # strong reasoning + tool calling
-/model google/gemini-3-pro-preview     # huge context window
-/model deepseek/deepseek-v4-pro        # cost-effective coder
+hermes model anthropic/claude-sonnet-4.6     # best general-purpose agentic model
+hermes model openai/gpt-5.5-pro              # strong reasoning + tool calling
+hermes model google/gemini-3-pro-preview     # huge context window
+hermes model deepseek/deepseek-v4-pro        # cost-effective coder
 ```
 
 The Portal's own [model info page](https://portal.nousresearch.com/info) carries the same warning, so this isn't a Hermes-side opinion — it's the official guidance from Nous Research.
@@ -115,7 +115,7 @@ hermes model
 # browser opens, sign in, done
 ```
 
-Your existing providers stay configured. You can switch between them with `/model` mid-session or `hermes model` between sessions — the Portal becomes one of your available providers, not your only one.
+Your existing providers stay configured. You can switch between them with `hermes model` between sessions — the Portal becomes one of your available providers, not your only one.
 
 ### Headless / SSH / remote setup
 
@@ -161,18 +161,18 @@ hermes portal open       # open the subscription management page in your browser
 
 ### Switching models
 
-Inside a session:
+From your terminal:
 
 ```bash
-/model anthropic/claude-sonnet-4.6
-/model openai/gpt-5.5-pro
-/model google/gemini-3-pro-preview
+hermes model anthropic/claude-sonnet-4.6
+hermes model openai/gpt-5.5-pro
+hermes model google/gemini-3-pro-preview
 ```
 
 Or open the picker:
 
 ```bash
-/model
+hermes model
 # arrow keys, enter to select
 ```
 
@@ -264,10 +264,10 @@ Your Portal refresh token was invalidated (password change, manual revoke, or se
 
 ### Want to use a specific provider model that the Portal doesn't expose
 
-The Portal routes each model to a suitable backend — some through OpenRouter, others through proprietary or secondary providers — so most models OpenRouter supports are generally available. If a specific model isn't appearing in `/model`, try the OpenRouter-style slug directly:
+The Portal routes each model to a suitable backend — some through OpenRouter, others through proprietary or secondary providers — so most models OpenRouter supports are generally available. If a specific model isn't appearing in the `hermes model` picker, try the OpenRouter-style slug directly:
 
 ```bash
-/model anthropic/claude-opus-4.6
+hermes model anthropic/claude-opus-4.6
 ```
 
 If a model is genuinely missing, [open an issue](https://github.com/NousResearch/hermes-agent/issues) — we surface the Portal's catalog to Hermes and gaps usually mean a routing config we can update.

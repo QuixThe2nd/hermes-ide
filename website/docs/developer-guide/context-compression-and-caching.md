@@ -294,7 +294,7 @@ protected messages, boundary alignment, summaries, and anchors can add tokens.
 
 The lowered trigger is a durable ceiling on the compressor, so window corrections for the
 same model (a provider-reported limit, a grown local window) keep it. Whenever the main
-runtime changes — `/model`, fallback activation, or the restore back to the primary — the
+runtime changes — a model switch, fallback activation, or the restore back to the primary — the
 auxiliary model is re-probed immediately: the trigger is clamped again before the first
 compaction on the new window, or restored to the main model's own value when the
 auxiliary model now fits.
@@ -328,7 +328,7 @@ Resolution rules:
   `"openai-codex:astra"` for the 900K picker; a scoped key beats a bare key
   with the identical substring.
 - When no key matches (or the map is empty), the global `threshold` applies.
-- The override is re-resolved on every `/model` switch; switching to a model
+- The override is re-resolved on every model switch; switching to a model
   with no matching key falls back to the global `threshold`.
 - The **small-context floor still applies on top** of overrides (raise-only):
   models with context windows below 512K are floored at `0.75`, so an
@@ -376,7 +376,7 @@ for ChatGPT-subscription accounts (live-verified Aug 2026). Hermes keeps the
 more tokens per request and much faster subscription-usage burn, so the large
 window is strictly opt-in.
 
-To use the large window, pick the explicit `-900k` variant in `/model` (e.g.
+To use the large window, pick the explicit `-900k` variant in the `hermes model` picker (e.g.
 `gpt-5.6-sol-900k`, `gpt-5.6-terra-900k`, `gpt-5.6-luna-900k`,
 `gpt-5.4-900k`). These are Hermes-side aliases: the suffix is stripped before
 the model id is sent to the backend, and pricing/usage accounting treats them
@@ -689,11 +689,11 @@ The marker is applied differently based on content type:
 
 5. **Model identity is part of the cache key**: Provider-side caches are scoped
    to the model (and account/API key) serving the request. Any mid-conversation
-   model change — an explicit `/model` switch, primary-model fallback, or a
+   model change — an explicit model switch, primary-model fallback, or a
    credential-pool rotation onto a different account — means the next request
    gets zero cache hits and re-reads the full conversation at undiscounted
    input price. This is inherent to how provider caches work, not something
-   Hermes can avoid; user-facing docs for `/model`, fallback providers, and
+   Hermes can avoid; user-facing docs for model switching, fallback providers, and
    credential pools carry cost warnings for this reason. Don't add features
    that silently swap the model or credentials mid-session.
 

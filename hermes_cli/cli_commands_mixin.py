@@ -173,28 +173,13 @@ _BUSY_MODE_LONG = {
     "interrupt": "Enter will redirect the current run while Hermes is busy; /stop still cancels it.",
 }
 
-# /fast argument -> (service_tier value, persisted config value)
-_FAST_TIERS = {
-    "fast": ("priority", "fast"), "on": ("priority", "fast"), "normal": (None, "normal"),
-    "off": (None, "normal"), "auto": ("auto", "auto"), "cold": ("cold", "cold")}
-
-# /reasoning display toggles: arg -> (attr, value, headline, follow-up note)
-_REASONING_TOGGLES = {
-    **dict.fromkeys(("show", "on"), ("show_reasoning", True, "ON",
-                                     "Model thinking will be shown during and after each response.")),
-    **dict.fromkeys(("hide", "off"), ("show_reasoning", False, "OFF", "")),
-    **dict.fromkeys(("full", "all"), ("reasoning_full", True, "FULL",
-                                      "The post-response recap box will print complete thinking.")),
-    **dict.fromkeys(("clamp", "collapse", "short"), ("reasoning_full", False, "CLAMPED to 10 lines", "")),
-}
-
 # /bg AIAgent provider-routing kwargs -> HermesCLI attribute carrying the value.
 _BG_PROVIDER_KWARGS = {
     "providers_allowed": "_providers_only", "providers_ignored": "_providers_ignore",
     "providers_order": "_providers_order", "provider_sort": "_provider_sort",
     "provider_require_parameters": "_provider_require_params",
     "provider_data_collection": "_provider_data_collection",
-    "openrouter_min_coding_score": "_openrouter_min_coding_score", "fallback_model": "_fallback_model"}
+    "fallback_model": "_fallback_model"}
 
 # /worktree subcommand -> CLICommandsMixin method name (all need a repo root).
 _WORKTREE_SUBCOMMANDS = {
@@ -219,22 +204,6 @@ def _persist_display_choice(key: str, value: str, label: str, note: str) -> None
         _cp(_accent_line(f"✓ {label} set to '{value}' (saved to config)"), _dim_line(note))
     else:
         _cp(_accent_line(f"✓ {label} set to '{value}' (session only)"))
-
-
-def _split_scope_flags(raw: str):
-    """``(arg, explicit_global)`` for /reasoning + /fast: session scope by default, ``--global``
-    persists to config.yaml, ``--session`` is an explicit no-op (parity with /model)."""
-    tokens = raw.strip().lower().split()
-    return " ".join(t for t in tokens if t not in ("--global", "--session")), "--global" in tokens
-
-
-def _scope_outcome(explicit_global: bool, saved: bool) -> str:
-    """Parenthetical tail for a scoped setting change."""
-    if saved:
-        return "(saved to config)"
-    if explicit_global:
-        return "(session only; config save failed)"
-    return "(this session — use --global to persist)"
 
 
 def _toggle_target(arg: str, current: bool):
@@ -1320,53 +1289,6 @@ class CLICommandsMixin:
         _pr(f"  ✅ Worktree ready: {wt_info['path']}", f"  Branch: {wt_info['branch']}",
             "  Terminal and file tools now operate in the worktree.")
 
-    # ---- /personality ---------------------------------------------------------
-    def _handle_personality_command(self, cmd: str):
-        """Handle /personality [name] — list or set a predefined personality. All resolution and
-        persistence goes through hermes_cli.personality, the single owner of personality state."""
-        from hermes_cli.personality import (
-            describe_personality, normalize_personality_name, persist_personality, prompt_text,
-            resolve_personality)
-        personality_name = _command_arg(cmd)
-        if not personality_name:
-            try:
-                from hermes_cli.config import read_raw_config
-                current = normalize_personality_name(
-                    (read_raw_config().get("display") or {}).get("personality", ""))
-            except Exception:
-                current = ""
-            _pr("", "+" + "-" * 50 + "+", "|" + " " * 12 + "(^o^)/ Personalities" + " " * 15 + "|",
-                "+" + "-" * 50 + "+", "",
-                f" {' *' if not current else '  '}{'none':<12} - (no personality overlay)")
-            for name, prompt in self.personalities.items():
-                marker = " *" if name == current else "  "
-                print(f" {marker}{name:<12} - {describe_personality(prompt)}")
-            return _pr("", "  Usage: /personality <name>   (* = active)", "")
-        try:
-            name, personality_prompt = resolve_personality(personality_name, getattr(self, "config", None))
-        except ValueError:
-            print(f"(._.) Unknown personality: {personality_name.lower()}")
-            return print(f"  Available: none, {', '.join(self.personalities.keys())}")
-        saved = persist_personality(name)
-        scope = "(saved to config)" if saved else "(session only)"
-        face = "(^_^)b" if saved else "(^_^)"
-        if not name:
-            # Neutral reset — fall back to the user-owned manual prompt.
-            try:
-                from hermes_cli.config import cfg_get, read_raw_config
-                self.system_prompt = prompt_text(
-                    cfg_get(read_raw_config(), "agent", "system_prompt", default=""))
-            except Exception:
-                self.system_prompt = ""
-            _retire_agent(self)  # Force re-init
-            _pr(f"{face} Personality cleared {scope}",
-                "  No personality overlay — using base agent behavior.")
-        else:
-            self.system_prompt = personality_prompt
-            _retire_agent(self)  # Force re-init
-            _pr(f"{face} Personality set to '{name}' {scope}",
-                f"  \"{_ellipsize(personality_prompt, 60)}\"")
-
     # ---- /cron ----------------------------------------------------------------------------
     def _handle_cron_command(self, cmd: str):
         """Handle the /cron command to manage scheduled tasks."""
@@ -2152,55 +2074,7 @@ class CLICommandsMixin:
             arg, current, usage="/timestamps [on|off|status]", status_line="",
             config_key="display.timestamps", label="Message timestamps", failed="timestamps")
 
-    # ---- model-behaviour settings: /reasoning, /busy, /indicator, /fast -------------------
-    def _handle_reasoning_command(self, cmd: str):
-        """Handle /reasoning [<level> [--global]|show|hide|full|clamp] — effort level (session
-        scope unless --global) and thinking display toggles (always saved)."""
-        from cli import CLI_CONFIG, _parse_reasoning_config
-        from agent.reasoning_effort import effort_display_label
-        raw = _command_arg(cmd)
-        _route = (getattr(self, "provider", None), getattr(self, "model", None))
-        if not raw:  # show current state
-            rc = self.reasoning_config
-            level = ("medium (default)" if rc is None else "none (disabled)"
-                     if rc.get("enabled") is False else effort_display_label(rc.get("effort", "medium"), *_route))
-            display_state = "on ✓" if self.show_reasoning else "off"
-            full_state = "full" if getattr(self, "reasoning_full", False) else "clamped to 10 lines"
-            return _cp(_accent_line(f"Reasoning effort:  {level}"),
-                       _accent_line(f"Reasoning display: {display_state} ({full_state})"),
-                       _dim_line("Usage: /reasoning <none|minimal|low|medium|high|xhigh|max|ultra"
-                          "|show|hide|full|clamp> [--global]"))
-        arg, explicit_global = _split_scope_flags(raw)
-        toggle = _REASONING_TOGGLES.get(arg)
-        if toggle is not None:  # display show/hide or full/clamp recap toggle
-            attr, value, headline, note = toggle
-            setattr(self, attr, value)
-            if attr == "show_reasoning" and self.agent:
-                self.agent.reasoning_callback = self._current_reasoning_callback()
-            _save(f"display.{attr}", value)
-            _cp(_accent_line(f"✓ Reasoning display: {headline} (saved)"))
-            if note:
-                _cp(_dim_line(f"  {note}"))
-            if attr == "reasoning_full" and value and not self.show_reasoning:
-                _cp(_dim_line("  Note: reasoning display is OFF — run /reasoning show to see it."))
-            return
-        # Effort level change
-        parsed = _parse_reasoning_config(arg)
-        if parsed is None:
-            return _cp(_dim_line(f'(._.) Unknown argument: {arg}'),
-                       _dim_line('Valid levels: none, minimal, low, medium, high, xhigh, max, ultra'),
-                       _dim_line('Display:      show, hide'),
-                       _dim_line('Scope:        session-scoped by default, --global to persist'))
-        self.reasoning_config = parsed
-        _retire_agent(self)  # Force agent re-init with new reasoning config
-        saved = explicit_global and _save("agent.reasoning_effort", arg)
-        if saved:
-            if not isinstance(CLI_CONFIG.get("agent"), dict):
-                CLI_CONFIG["agent"] = {}
-            CLI_CONFIG["agent"]["reasoning_effort"] = arg
-        _cp(_accent_line(f"✓ Reasoning effort set to '{effort_display_label(arg, *_route)}' "
-                         f"{_scope_outcome(explicit_global, saved)}"))
-
+    # ---- model-behaviour settings: /busy, /indicator -------------------
     def _handle_busy_command(self, cmd: str):
         """Handle /busy [status|queue|steer|interrupt] — what Enter does while Hermes is working."""
         arg = _command_arg(cmd, lower=True)
@@ -2228,32 +2102,6 @@ class CLICommandsMixin:
         self.config.setdefault("display", {})["tui_status_indicator"] = arg
         _persist_display_choice("display.tui_status_indicator", arg, "Busy-indicator style",
                                 "The TUI picks up the new style on its next render.")
-
-    def _handle_fast_command(self, cmd: str):
-        """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode).
-        Session-scoped by default; ``--global`` persists agent.service_tier to config.yaml
-        (parity with /model and /reasoning)."""
-        if not self._fast_command_available():
-            return _cp("  (._.) /fast is only available for models that support fast mode "
-                       "(OpenAI Priority Processing or Anthropic Fast Mode).")
-        # Determine the branding for the current model
-        model = getattr(getattr(self, "agent", None), "model", None) or getattr(self, "model", None)
-        anthropic = _probe("hermes_cli.models", "_is_anthropic_fast_model", None, model)
-        feature_name = ("Fast mode" if anthropic is None
-                        else "Anthropic Fast Mode" if anthropic else "Priority Processing")
-        raw = _command_arg(cmd)
-        usage = _dim_line('Usage: /fast [normal|fast|auto|cold|status] [--global]')
-        if not raw or raw.lower() == "status":
-            status = {"priority": "fast", None: "normal"}.get(self.service_tier, self.service_tier)
-            return _cp(_accent_line(f"{feature_name}: {status}"), usage)
-        arg, explicit_global = _split_scope_flags(raw)
-        if arg not in _FAST_TIERS:
-            return _cp(_dim_line(f'(._.) Unknown argument: {arg}'), usage)
-        self.service_tier, saved_value = _FAST_TIERS[arg]
-        _retire_agent(self)  # Force agent re-init with new service-tier config
-        saved = explicit_global and _save("agent.service_tier", saved_value)
-        outcome = _scope_outcome(explicit_global, saved)
-        _cp(_accent_line(f"✓ {feature_name} set to {saved_value.upper()} {outcome}"))
 
     # ---- /debug, /update, /voice, /wake ---------------------------------------------------
     def _handle_debug_command(self, cmd_original: str = ""):

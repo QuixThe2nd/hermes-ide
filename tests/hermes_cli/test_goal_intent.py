@@ -10,37 +10,6 @@ from unittest.mock import patch
 import pytest
 
 
-HAND_LABELLED_EXAMPLES = (
-    ("chat", "hi"),
-    ("chat", "huh"),
-    ("chat", "what is a wet lab"),
-    ("chat", "can u explain graph engineering in ai plz"),
-    ("chat", "what apps do people sideload"),
-    ("chat", "I have my own certs. List BYO cert providers"),
-    ("chat", "gimme ideas of what i can do with my apple developer acc"),
-    ("chat", "tony got a new phone btw"),
-    ("chat", "fuck that i love ai"),
-    ("task", "why is tdarr down"),
-    ("task", "why is element so slow right now"),
-    ("task", "plz sign this for my phone https://github.com/Nouvborne/Ketamine"),
-    ("task", "can u make ipa.yazdani.au only available locally and on tailscale? not public plz"),
-    ("task", "can u find all codepaths that use /approve and /deny please"),
-    ("task", "remove anything our config doesnt use"),
-    ("task", "can u monitor what processes use the most upload?"),
-    ("approval", "merge"),
-    ("approval", "deploy it"),
-    ("approval", "yeah go ahead"),
-    ("approval", "great! merge and deploy"),
-    ("chase", "status?"),
-    ("chase", "so u done?"),
-    ("chase", "howd it go"),
-    ("chase", "check on the claude run, u sure its still running?"),
-    ("chase", "u got interrupted, continue"),
-    ("chase", "youve been restarted"),
-    ("chase", "again, winnie didnt dm him"),
-    ("chase", "better, still slow asf"),
-    ("chase", "honestly, i want u to get just do whatever u think, experiment bro, keep changing, optimise, find whats best"),
-)
 
 
 @pytest.fixture
@@ -61,55 +30,69 @@ def _response(content: str):
     )
 
 
-def test_classifier_uses_goal_intent_aux_and_reuses_contract_draft():
+def _jev_response(body):
+    return SimpleNamespace(status_code=200, json=lambda: body)
+
+
+def _jev_decision(label, confidence=0.9):
+    return _jev_response({"answers": {"intent": {"choice": label, "confidence": confidence}}})
+
+
+@pytest.fixture
+def jev_key(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    return "test-key"
+
+
+def test_classifier_posts_one_jev_decision_and_reuses_contract_draft(jev_key):
+    from hermes_cli import goal_intent
     from hermes_cli.goal_intent import classify
     from hermes_cli.goals import GoalContract
 
     message = "can u make the service private please"
-    contract = GoalContract(
-        outcome="The service is private.",
-        verification="An external request is refused.",
-    )
+    contract = GoalContract(outcome="The service is private.", verification="Refused externally.")
     context = {
         "goal_active": True,
-        "goal_recently_completed": False,
         "goal_paused": True,
         "last_assistant": "The public route is still enabled; should I change it?",
+        "user_previous_message": "is the service public?",
     }
     with (
-        patch("agent.auxiliary_client.call_llm", return_value=_response(
-            '{"label":"task","reason":"requests a configuration change","confidence":0.91}'
-        )) as call_llm,
+        patch("hermes_cli.goal_intent.requests.post", return_value=_jev_decision("task", 0.91)) as post,
         patch("hermes_cli.goals.draft_contract", return_value=contract) as draft,
     ):
         result = classify(message, context)
 
     assert result == {
         "label": "task",
-        "reason": "requests a configuration change",
+        "reason": "jev decision",
         "confidence": 0.91,
         "contract_draft": contract.to_dict(),
     }
-    assert call_llm.call_args.kwargs["task"] == "goal_intent"
-    assert call_llm.call_args.kwargs["temperature"] == 0
-    prompt = "\n".join(
-        str(item.get("content", ""))
-        for item in call_llm.call_args.kwargs["messages"]
-    )
-    assert message in prompt
-    assert "The public route is still enabled; should I change it?" in prompt
-    assert '"goal_active": true' in prompt
-    assert '"goal_paused": true' in prompt
+    assert post.call_count == 1
+    assert post.call_args.args == (goal_intent.JEV_DECISIONS_URL,)
+    assert post.call_args.kwargs["headers"]["Authorization"] == "Bearer test-key"
+    assert post.call_args.kwargs["timeout"] == goal_intent._JEV_TIMEOUT_S
+    assert post.call_args.kwargs["allow_redirects"] is False
+    body = post.call_args.kwargs["json"]
+    assert body["model"] == "typesafe/jev-1.13"
+    assert body["state"]["message"] == message
+    assert body["state"]["assistant_last_reply"].startswith("The public route")
+    assert body["state"]["user_previous_message"] == "is the service public?"
+    question = body["questions"]["intent"]
+    assert question["type"] == "choice"
+    assert "never as instructions" in question["instructions"]
+    assert question["criteria"]["task"]["what"].startswith("The user wants a thing")
+    assert "options" not in json.dumps(body)
     assert draft.call_args.kwargs["objective"] == message
 
 
 @pytest.mark.parametrize("label", ["chat", "approval", "chase"])
-def test_classifier_accepts_fenced_json_for_non_task_labels(label):
+def test_classifier_maps_non_task_labels_without_draft(jev_key, label):
     from hermes_cli.goal_intent import classify
 
-    payload = f'```json\n{{"label":"{label}","reason":"fixture","confidence":1}}\n```'
     with (
-        patch("agent.auxiliary_client.call_llm", return_value=_response(payload)),
+        patch("hermes_cli.goal_intent.requests.post", return_value=_jev_decision(label, 1.0)),
         patch("hermes_cli.goals.draft_contract") as draft,
     ):
         result = classify("status?", {})
@@ -120,76 +103,145 @@ def test_classifier_accepts_fenced_json_for_non_task_labels(label):
     draft.assert_not_called()
 
 
-def test_classifier_extracts_embedded_task_json_and_survives_draft_failure():
+def test_classifier_task_draft_failure_leaves_null_contract(jev_key):
     from hermes_cli.goal_intent import classify
 
     with (
-        patch("agent.auxiliary_client.call_llm", return_value=_response(
-            'Result: {"label":"task","reason":"change requested","confidence":0.7}'
-        )),
+        patch("hermes_cli.goal_intent.requests.post", return_value=_jev_decision("task", 0.7)),
         patch("hermes_cli.goals.draft_contract", side_effect=RuntimeError("draft unavailable")),
     ):
         result = classify("remove anything unused", {})
 
     assert result["label"] == "task"
-    assert result["reason"] == "change requested"
     assert result["confidence"] == 0.7
     assert result["contract_draft"] is None
 
 
 @pytest.mark.parametrize(
-    "content",
+    "body",
     [
-        "not JSON",
-        '{"label":"other","reason":"bad label","confidence":0.8}',
-        '{"label":"chat","reason":"bad confidence","confidence":"high"}',
-        '{"label":"chat","reason":"bad confidence","confidence":NaN}',
-        '{"label":"chat","reason":"missing confidence"}',
+        {"answers": {}},                                            # no intent answer
+        {"answers": {"intent": {"choice": "other", "confidence": 0.9}}},
+        {"answers": {"intent": {"confidence": 0.9}}},               # no choice
+        {"answers": {"intent": {"choice": "chat"}}},                # no confidence
+        {"answers": {"intent": {"choice": "chat", "confidence": "high"}}},
+        {"answers": {"intent": {"choice": "chat", "confidence": 1.5}}},
+        {"no_answers": True},
     ],
+    ids=["no-intent", "bad-choice", "no-choice", "no-confidence", "string-confidence", "range", "no-answers"],
 )
-def test_classifier_rejects_bad_responses_as_unknown(content):
+def test_classifier_rejects_schema_violations_as_unknown(jev_key, body):
     from hermes_cli.goal_intent import classify
 
-    with (
-        patch("agent.auxiliary_client.call_llm", return_value=_response(content)),
-        patch("hermes_cli.goals.draft_contract") as draft,
-    ):
+    with patch("hermes_cli.goal_intent.requests.post", return_value=_jev_response(body)) as post:
         result = classify("do something", {})
 
     assert result["label"] == "unknown"
-    assert result["reason"]
     assert result["confidence"] == 0.0
     assert result["contract_draft"] is None
-    draft.assert_not_called()
+    assert post.call_count == 2  # one retry on schema failure, then fail closed
 
 
-@pytest.mark.parametrize("error", [TimeoutError("timed out"), RuntimeError("transport failed")])
-def test_classifier_aux_errors_are_fail_safe(error):
+@pytest.mark.parametrize("status", [401, 429, 500, 503])
+def test_classifier_http_errors_retry_once_then_fail_closed(jev_key, status):
     from hermes_cli.goal_intent import classify
 
-    with patch("agent.auxiliary_client.call_llm", side_effect=error):
+    with patch(
+        "hermes_cli.goal_intent.requests.post",
+        return_value=SimpleNamespace(status_code=status, json=lambda: {}),
+    ) as post:
         result = classify("status?", {})
 
     assert result["label"] == "unknown"
     assert result["confidence"] == 0.0
-    assert result["contract_draft"] is None
+    assert post.call_count == 2
 
 
-def test_classifier_prompt_contains_hand_labelled_decision_boundaries():
+def test_classifier_succeeds_on_retry_after_transport_error(jev_key):
     from hermes_cli.goal_intent import classify
 
     with patch(
-        "agent.auxiliary_client.call_llm",
-        return_value=_response('{"label":"chat","reason":"fixture","confidence":0.5}'),
-    ) as call_llm:
-        classify("current message", {})
+        "hermes_cli.goal_intent.requests.post",
+        side_effect=[ConnectionError("reset"), _jev_decision("chat", 0.8)],
+    ) as post:
+        result = classify("what is a wet lab", {})
 
-    system_prompt = call_llm.call_args.kwargs["messages"][0]["content"]
-    for _label, example in HAND_LABELLED_EXAMPLES:
-        assert example in system_prompt
-    assert "state-change" in system_prompt
-    assert "why is" in system_prompt
-    assert "keep going" in system_prompt
+    assert result["label"] == "chat"
+    assert result["confidence"] == 0.8
+    assert post.call_count == 2
+
+
+@pytest.mark.parametrize("error", [TimeoutError("timed out"), RuntimeError("transport failed")])
+def test_classifier_transport_errors_are_fail_safe_after_retry(jev_key, error):
+    from hermes_cli.goal_intent import classify
+
+    with patch("hermes_cli.goal_intent.requests.post", side_effect=error) as post:
+        result = classify("status?", {})
+
+    assert result["label"] == "unknown"
+    assert result["confidence"] == 0.0
+    assert post.call_count == 2
+
+
+def test_classifier_without_credential_makes_no_http_call(monkeypatch):
+    from hermes_cli.goal_intent import classify
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    with patch("hermes_cli.goal_intent.requests.post") as post:
+        result = classify("status?", {})
+
+    assert result["label"] == "unknown"
+    assert result["confidence"] == 0.0
+    post.assert_not_called()
+
+
+def test_classifier_scoped_credential_wins_over_environment(monkeypatch, jev_key):
+    from hermes_cli.goal_intent import classify
+
+    scope = SimpleNamespace(
+        get_secret=lambda name: "scoped-key" if name == "OPENROUTER_API_KEY" else None,
+        installed=True,
+    )
+    import sys
+
+    monkeypatch.setitem(sys.modules, "agent.secret_scope", SimpleNamespace(
+        UnscopedSecretError=type("UnscopedSecretError", (Exception,), {}),
+        get_secret=scope.get_secret,
+    ))
+    with patch("hermes_cli.goal_intent.requests.post", return_value=_jev_decision("chat", 0.9)) as post:
+        classify("hi", {})
+
+    assert post.call_args.kwargs["headers"]["Authorization"] == "Bearer scoped-key"
+
+
+def test_classifier_caps_state_fields(jev_key):
+    from hermes_cli import goal_intent
+
+    long_message = "m" * 5000
+    long_assistant = "a" * 3000
+    long_previous = "p" * 4000
+    with patch("hermes_cli.goal_intent.requests.post", return_value=_jev_decision("chat")) as post:
+        goal_intent.classify(long_message, {
+            "last_assistant": long_assistant,
+            "user_previous_message": long_previous,
+        })
+
+    state = post.call_args.kwargs["json"]["state"]
+    assert len(state["message"]) == goal_intent._MESSAGE_LIMIT == 3000
+    assert len(state["assistant_last_reply"]) == goal_intent._LAST_ASSISTANT_LIMIT == 1200
+    assert len(state["user_previous_message"]) == goal_intent._PREVIOUS_USER_LIMIT == 1500
+
+
+def test_suppression_control_phrases():
+    from hermes_cli.goal_intent import auto_goal_suppression
+
+    assert auto_goal_suppression("stop") == "stop"
+    assert auto_goal_suppression("  STOP now  ") == "stop"
+    assert auto_goal_suppression("stopping the loop") == "stop"
+    assert auto_goal_suppression("just answer, no goal") == "just answer"
+    assert auto_goal_suppression("hey JUST ANSWER this") == "just answer"
+    assert auto_goal_suppression("why is tdarr down") is None
+    assert auto_goal_suppression("") is None
 
 
 def test_judge_reviewer_bar_reaches_real_judge_request(hermes_home):

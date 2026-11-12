@@ -600,21 +600,6 @@ class GatewayBusySessionMixin:
             "source_message_id": source.message_id,
         }
         origin = {key: value for key, value in origin.items() if value not in (None, "")}
-        from gateway.run import _load_gateway_config
-        from gateway.session import _hash_chat_id, _hash_id, _hash_sender_id, _should_redact_pii
-
-        # Adapter busy callbacks can bypass the routed normal-message scope.
-        with self._profile_scope_for_source(source):
-            redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
-        if _should_redact_pii(source.platform, redact_pii):
-            # Only the model-facing copy changes; event/source remain valid routing state.
-            hashers = {
-                "user_id": _hash_sender_id, "user_id_alt": _hash_sender_id,
-                "chat_id": _hash_chat_id, "chat_id_alt": _hash_chat_id,
-                "parent_chat_id": _hash_chat_id,
-            }
-            origin = {key: (value if key in ("platform", "chat_type") else
-                            hashers.get(key, _hash_id)(value)) for key, value in origin.items()}
         # JSON preserves identifiers exactly (including colons/whitespace) instead of
         # normalizing them into another destination. Escape marker delimiters too.
         encoded = json.dumps(origin, ensure_ascii=True).replace("[", "\\u005b").replace("]", "\\u005d")
@@ -1442,10 +1427,10 @@ class GatewayBusySessionMixin:
     )
     # Dispatched only on the idle path (busy dispatch has its own allowlist).
     _IDLE_COMMANDS = (
-        "topic", "whoami", "platform", "stop", "reasoning", "memory", "skills", "fast",
-        "model", "codex-runtime", "personality", "suggestions", "save", "retry",
+        "topic", "whoami", "platform", "stop", "memory", "skills",
+        "codex-runtime", "suggestions", "save", "retry",
         "setnotify", "clearnotify", "compress", "usage", "topup", "insights", "reload-mcp", "reload-skills",
-        "debug", "title", "resume", "sessions", "branch", "rollback", "diff", "goal",
+        "debug", "title", "resume", "sessions", "branch", "rollback", "diff",
         "loop", "refine", "review", "voice",
     )
 
@@ -1478,7 +1463,7 @@ class GatewayBusySessionMixin:
 
     # busy_handler key (hermes_cli/commands.py CommandDef) → mid-run variant ``_busy_<key>_command``.
     _BUSY_SPECIAL_HANDLERS: Dict[str, str] = {
-        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "incognito", "queue", "egress", "goal", "loop")
+        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "incognito", "queue", "egress", "loop")
     }
 
     async def _dispatch_busy_slash_command(self, event: MessageEvent, cmd_def, quick_key: str, source):
@@ -1486,8 +1471,8 @@ class GatewayBusySessionMixin:
 
         Order: ``busy_handler`` (mid-run variant) → ``busy_policy == "dispatch"`` (normal handler)
         → catch-all reject text. Rejecting is required rather than falling through to
-        interrupt + discard: commands like /model, /reasoning, /voice, /insights, /title,
-        /resume, /retry, /undo, /compress, /usage, /reload-mcp, /setnotify, /reset (all
+        interrupt + discard: commands like /voice, /insights, /title,
+        /resume, /retry, /undo, /compress, /usage, /reload-mcp, /setnotify (all
         registered as Discord slash commands) would interrupt the agent AND get silently
         discarded by the slash-command safety net, producing a zero-char response.
         See #5057, #6252, #10370.

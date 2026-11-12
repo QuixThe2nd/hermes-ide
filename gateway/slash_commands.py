@@ -266,7 +266,7 @@ class GatewaySlashCommandsMixin(
             user_config.setdefault(section, {})["write_approval"] = bool(enabled)
             atomic_config_write(config_path, user_config)
             # Evict any cached agent for this session so the next message rebuilds with the correct
-            # session_id end-to-end — mirrors /branch and /reset. Without this, the cached AIAgent (and its
+            # session_id end-to-end — mirrors /branch and /new. Without this, the cached AIAgent (and its
             # memory provider, which cached `_session_id` during initialize()) keeps writing into the wrong
             # session's record. See #6672.
             self._evict_cached_agent(session_key)
@@ -484,7 +484,12 @@ class GatewaySlashCommandsMixin(
         # request_restart drain hand-off (supervisor/container routing included) — live in
         # ONE gateway-owned helper shared with the agent-callable restart tool, so the two
         # user-restart entry points cannot drift apart.
-        status = await queue_user_restart(self, event.source, event.message_id)
+        # ``--hub`` anywhere among the args opts into the successor-side
+        # hermes-discord-hub.service bounce; a bare word ("hub") must not.
+        restart_hub = "--hub" in (event.get_command_args() or "").split()
+        status = await queue_user_restart(
+            self, event.source, event.message_id, restart_hub=restart_hub
+        )
         if status["status"] == "chained":
             return EphemeralReply(t("gateway.restart.chained"))
         active_agents = status["active_agents"]

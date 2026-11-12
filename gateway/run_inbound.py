@@ -1667,8 +1667,9 @@ class GatewayInboundMixin:
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
-        # Phase 1 auto-goal: observation only. This schedules retained, profile-scoped
-        # executor work; no classification/LLM/DB/JSONL work runs inline with the reply.
+        # Auto-goal intent: classify off-path (this schedules retained,
+        # profile-scoped work; no classification/HTTP/DB/JSONL work runs
+        # inline with the reply) so the decision is ready at the turn boundary.
         self._schedule_goal_intent_shadow(event, _quick_key)
         allow_gateway_control = event.allow_gateway_control
         _up_state = self._peek_session_state(_quick_key)
@@ -2421,9 +2422,6 @@ class GatewayInboundMixin:
         if canonical == "stop":
             return await self._handle_stop_command(event)
 
-        if canonical == "reasoning":
-            return await self._handle_reasoning_command(event)
-
         if canonical == "memory":
             return await self._handle_memory_command(event)
 
@@ -2514,17 +2512,8 @@ class GatewayInboundMixin:
             event.text = _init_prompt
             # fall through to agent processing
 
-        if canonical == "fast":
-            return await self._handle_fast_command(event)
-
-        if canonical == "model":
-            return await self._handle_model_command(event)
-
         if canonical == "codex-runtime":
             return await self._handle_codex_runtime_command(event)
-
-        if canonical == "personality":
-            return await self._handle_personality_command(event)
 
         if canonical == "suggestions":
             return await self._handle_suggestions_command(event)
@@ -2622,8 +2611,6 @@ class GatewayInboundMixin:
             except Exception:
                 pass
 
-        if canonical == "goal":
-            return await self._handle_goal_command(event)
 
         if canonical == "loop":
             return await self._handle_loop_command(event)

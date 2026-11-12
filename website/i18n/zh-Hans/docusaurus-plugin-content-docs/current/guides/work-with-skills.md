@@ -106,7 +106,7 @@ hermes skills install https://sharethis.chat/SKILL.md
 3. 成为可用的斜杠命令
 
 :::tip
-已安装的 skills 在新会话中生效。如需在当前会话中立即使用，可用 `/reset` 开启新会话，或添加 `--now` 参数立即使 prompt 缓存失效（下一轮会消耗更多 tokens）。
+已安装的 skills 在新会话中生效。如需在当前会话中立即使用，可用 `/new` 开启新会话，或添加 `--now` 参数立即使 prompt 缓存失效（下一轮会消耗更多 tokens）。
 :::
 
 ### 验证安装

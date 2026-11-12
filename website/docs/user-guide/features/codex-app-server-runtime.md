@@ -78,11 +78,11 @@ These four Hermes tools require the running AIAgent context (mid-loop state) to 
 - **`session_search`** — cross-session search
 - **`todo`** — Hermes' todo store (codex's `update_plan` is the in-runtime equivalent)
 
-## Workflow features (`/goal`, cron)
+## Workflow features (auto-goal, cron)
 
-### `/goal` (the Ralph loop)
+### Standing goals (the Ralph loop)
 
-**Works on this runtime.** Goals persist in `state_meta` keyed by session id, the continuation prompt feeds back as a normal user message through `run_conversation()`, and codex executes the next turn natively. The goal judge runs via the auxiliary client (configured via `auxiliary.goal_judge` in config.yaml), independent of which runtime is active. The judge's "blocked, needs user input" verdict is a clean escape if codex stalls on approvals.
+**Works on this runtime.** Goals persist in `state_meta` keyed by session id, the continuation prompt feeds back as a normal user message through `run_conversation()`, and codex executes the next turn natively. Goals start automatically from task-like messages when `goals.auto.mode: on` (the manual `/goal` command is gone; see [Persistent Goals](./goals.md)). The goal judge runs via the auxiliary client (configured via `auxiliary.goal_judge` in config.yaml), independent of which runtime is active. The judge's "blocked, needs user input" verdict is a clean escape if codex stalls on approvals.
 
 **One thing to be aware of:** each continuation prompt is a fresh codex turn, which means codex re-evaluates command approval policy from scratch. If you're doing a long-running goal with lots of writes, expect more approval prompts than you'd see on a single in-session task. Set `default_permissions = ":workspace"` (which Hermes does automatically when you enable the runtime) so simple workspace writes don't require prompting.
 
@@ -113,7 +113,7 @@ These four Hermes tools require the running AIAgent context (mid-loop state) to 
 | Memory + skill review (background) | yes | yes (via item projection) |
 | System prompt / SOUL.md / channel `system_prompt` overrides | yes | yes (sent once as developer instructions on thread start) |
 | Multi-turn conversations | yes | yes |
-| `/goal` (Ralph loop) | yes | yes |
+| Standing goals (Ralph loop) | yes | yes |
 | All gateway platforms | yes | yes |
 | Non-OpenAI providers | yes | n/a — OpenAI/Codex-scoped |
 
@@ -421,7 +421,7 @@ Known limitations:
 - **`delegate_agent`, `memory`, `session_search`, `todo` are unavailable on this runtime.** They need the running AIAgent context which a stateless MCP callback can't provide. Use `/codex-runtime auto` when you need these.
 - **No inline patch preview in approval prompts when codex doesn't track the changeset.** Codex's `fileChange` approval params don't always carry the changeset. Hermes caches the data from the corresponding `item/started` notification when possible, but if approval arrives before the item has streamed, the prompt falls back to whatever `reason` codex provides.
 - **`fallback_providers` fail over only on quota and rate-limit failures.** When a codex app-server turn fails with a billing / usage-limit / rate-limit error, Hermes switches to the configured [fallback provider](./fallback-providers.md) and retries the same turn on it; auth failures (`codex login` expired), turn timeouts and unknown-model errors do not fail over on this runtime and surface as the turn's error instead.
-- **Conversation history is not projected into the codex thread.** The codex thread receives Hermes' system prompt when it starts plus each new user message; prior Hermes history (e.g. from a resumed session) is not replayed into it. When the composed prompt changes mid-session (for example `/personality` in the TUI or Desktop), the next turn retires the running thread and starts a new one carrying the updated prompt; that new thread does not inherit the retired thread's history.
+- **Conversation history is not projected into the codex thread.** The codex thread receives Hermes' system prompt when it starts plus each new user message; prior Hermes history (e.g. from a resumed session) is not replayed into it. When the composed prompt changes mid-session (for example a `display.personality` change), the next turn retires the running thread and starts a new one carrying the updated prompt; that new thread does not inherit the retired thread's history.
 - **Sub-second cancellation isn't guaranteed.** Mid-stream interrupts (Ctrl+C while codex is responding) are sent via `turn/interrupt`, but if codex has already flushed the final message, you get the response anyway.
 
 If you find a bug, [open an issue](https://github.com/NousResearch/hermes-agent/issues) with the output of `hermes logs --since 5m`. Mention `codex-runtime` in the title so it's easy to triage.

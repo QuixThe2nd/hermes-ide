@@ -294,22 +294,7 @@ _DISCORD_MAX_APP_COMMANDS = 100
 # Placeholders are the arg names; text is `.strip()`ped unless ``strip`` is False.
 _REQUIRED = object()
 _NATIVE_SLASH_COMMANDS: tuple = (
-    ("new", "Start a new conversation", (), "/reset", "New conversation started~"),
-    ("reset", "Reset your Hermes session", (), "/reset", "Session reset~"),
-    ("model", "Show or change the model",
-     (("name", str, "", "Model name (e.g. anthropic/claude-sonnet-4). Leave empty to see current.", None),),
-     "/model {name}", None),
-    ("reasoning", "Show/change reasoning effort, or toggle showing it",
-     (("effort", str, "", "Pick a level, reset the override, or show/hide reasoning. Leave empty to see current.",
-       # One `/reasoning <arg>` handler; Discord has no free-text subcommand, so list every value.
-       (("none — disable reasoning", "none"), ("minimal", "minimal"), ("low", "low"),
-        ("medium", "medium"), ("high", "high"), ("xhigh", "xhigh"), ("max", "max"),
-        ("ultra — maximum reasoning", "ultra"), ("reset — clear this session's override", "reset"),
-        ("show — reveal reasoning in replies", "show"), ("hide — hide reasoning from replies", "hide"))),),
-     "/reasoning {effort}", None),
-    ("personality", "Set a personality",
-     (("name", str, "", "Personality name. Leave empty to list available.", None),),
-     "/personality {name}", None),
+    ("new", "Start a new conversation", (), "/new", "New conversation started~"),
     ("retry", "Retry your last message", (), "/retry", "Retrying~"),
     ("undo", "Remove the last exchange", (), "/undo", None),
     ("status", "Show Hermes session status", (), "/status", "Status sent~"),
@@ -6358,12 +6343,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     async def _dispatch_raw_reaction(self, payload: Any) -> None:
         """One raw reaction event, routed by emoji to its owning feature.
 
-        Two consumers share this dispatcher: resolve-ticket confirmations
-        and prepared-action approvals (✅/❌ on their respective embeds).
-        Each filters to its own messages through its pending-listener
+        Consumer: resolve-ticket confirmations (✅/❌ on their embeds),
+        filtered to their own messages through the pending-listener
         store, so an unrelated reaction costs one cheap emoji check and
-        never reaches either. A failure in one branch can never leak into
-        the other.
+        never reaches the handler.
         """
         try:
             emoji_name = getattr(payload.emoji, "name", None)
@@ -6389,26 +6372,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 logger.exception(
                     "[%s] resolve_ticket reaction handler failed", self.name
                 )
-            try:
-                from tools.discord_approve_action_tool import handle_approve_reaction
-                reactor_id = str(payload.user_id)
-                authorized = reactor_id != "*" and reactor_id in self._allowed_user_ids
-                result = await asyncio.to_thread(
-                    handle_approve_reaction,
-                    str(payload.channel_id),
-                    str(payload.message_id),
-                    emoji_name,
-                    self.config.token,
-                    reactor_id=reactor_id,
-                    authorized=authorized,
-                )
-                if result.get("acted"):
-                    logger.info("[%s] approve_action reaction: %s", self.name, result)
-            except Exception:
-                logger.exception(
-                    "[%s] approve_action reaction handler failed", self.name
-                )
-            return
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Start a persistent typing loop (POST typing every 12s; indicator lasts ~10s).

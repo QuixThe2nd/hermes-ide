@@ -7,7 +7,7 @@ it. New commands land often; `/help` in-session is always authoritative.
 
 ### Session
 ```
-/new (/reset) [name]     Fresh session
+/new [name]             Fresh session
 /clear                   Clear screen + new session (CLI)
 /retry                   Resend last message
 /undo [N]                Back up N user turns and re-prompt
@@ -22,7 +22,6 @@ it. New commands land often; `/help` in-session is always authoritative.
 /btw <question>           Ask a side question about the current conversation without interrupting it
 /queue (/q) <prompt>     Queue prompt for next turn
 /agents (/tasks)         Show active agents and running tasks
-/goal [text|sub]         Standing goal across turns (status|pause|resume|clear)
 /subgoal [text]          Add/manage criteria on the active goal
 /branch (/fork) [name]   Branch the session
 /resume [name]           Resume a named session
@@ -35,10 +34,6 @@ it. New commands land often; `/help` in-session is always authoritative.
 ### Configuration
 ```
 /config                  Show config (CLI)
-/model [name] [--global] Switch model (session-scoped by default)
-/personality [name]      Set a personality
-/reasoning [level|show|hide] Reasoning effort/display (none..xhigh|max|ultra)
-/fast [normal|fast]      Priority/fast processing tier
 /verbose                 Cycle tool progress: off → new → all → verbose → log (CLI)
 /voice [on|off|tts]      Voice mode
 /busy [queue|steer|interrupt] How messages behave while working (CLI + gateway)
@@ -70,9 +65,12 @@ it. New commands land often; `/help` in-session is always authoritative.
 
 ### Gateway
 ```
-/restart                   Restart gateway after draining active runs (GW)
+/restart [--hub]          Restart gateway after draining active runs (GW)
                            (the agent can also call the `restart` tool — same
-                           drain path)
+                           drain path; `restart_hub: true` = `--hub`)
+                           --hub: the successor gateway process bounces
+                           hermes-discord-hub.service after it comes up; a
+                           missing unit warns and never fails the restart
 /topic [off|help]          Telegram DM topic sessions (GW)
 /platform <pause|resume|list> Pause/resume a failing platform (GW)
 /commands [page]           Browse all commands, paginated (GW)

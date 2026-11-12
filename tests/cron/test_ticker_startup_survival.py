@@ -150,9 +150,7 @@ def test_ticker_survives_marker_write_crash(tmp_path):
 
 
 def test_supervisor_leaves_a_returning_external_provider_alone():
-    """An external provider's start() (Chronos) arms remote one-shots and RETURNS by design; the
-    supervisor must not read that as a dead ticker and re-run start() every housekeeping tick
-    (each rerun re-reconciles against NAS and logs a spurious "died without a stop request")."""
+    """A returning external provider is not a dead ticker and must not be restarted."""
     from cron.scheduler_thread import SupervisedTickerThread
 
     starts = []

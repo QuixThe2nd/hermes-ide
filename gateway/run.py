@@ -4003,15 +4003,6 @@ if _config_path.exists():
             file=sys.stderr,
         )
 
-# Apply IPv4 preference if configured (before any HTTP clients are created).
-try:
-    from hermes_constants import apply_ipv4_preference
-    _network_cfg = (_cfg if '_cfg' in dir() else {}).get("network", {})
-    if isinstance(_network_cfg, dict) and _network_cfg.get("force_ipv4"):
-        apply_ipv4_preference(force=True)
-except Exception as _bootstrap_exc:
-    print(f"  Warning: IPv4 preference application failed: {_bootstrap_exc}", file=sys.stderr)
-
 # Validate config structure early — log warnings so gateway operators see problems
 try:
     from hermes_cli.config import print_config_warnings
@@ -4117,6 +4108,7 @@ from gateway.run_notifications import GatewayNotificationsMixin
 from gateway.run_inbound import GatewayInboundMixin
 from gateway.run_goals import GatewayGoalsMixin
 from gateway.run_goal_intent import GatewayGoalIntentMixin
+from gateway.run_goal_auto import GatewayGoalAutoMixin
 from gateway.run_agent_cache import GatewayAgentCacheMixin
 from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
 from gateway.run_hygiene_compression import GatewayHygieneCompressionMixin
@@ -6120,8 +6112,8 @@ class GatewayRunner(
     GatewayVoiceMixin, GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
     GatewayShutdownMixin, GatewayBusySessionMixin, GatewayConfigLoadersMixin, GatewayStartupMixin,
     GatewaySessionWatchersMixin, GatewayNotificationsMixin, GatewayInboundMixin, GatewayGoalsMixin,
-    GatewayGoalIntentMixin, GatewayAgentCacheMixin, GatewayProfileReconcileMixin, GatewayHygieneCompressionMixin,
-    GatewayIncognitoMixin):
+    GatewayGoalIntentMixin, GatewayGoalAutoMixin, GatewayAgentCacheMixin, GatewayProfileReconcileMixin,
+    GatewayHygieneCompressionMixin, GatewayIncognitoMixin):
     """Main gateway controller: manages adapter lifecycles, routes messages to/from the agent."""
 
     # Class-level defaults so partial construction in tests doesn't
@@ -8212,6 +8204,21 @@ class GatewayRunner(
         # _finish_startup_restore awaits it (bounded) before opening the gate.
         self._start_startup_warmup()
 
+        # Opt-in hub bounce (restart_hub / /restart --hub): consume the marker
+        # and bounce hermes-discord-hub.service BEFORE any adapter attaches.
+        # Overlap successors defer attach until they are authoritative; bouncing
+        # here would consume the marker while the predecessor is still attached.
+        # The authoritative hook bounces instead. Off-loop: systemctl can block.
+        if not getattr(self, "_overlap_successor_pending", False):
+            try:
+                from gateway.restart_hub import consume_restart_hub_bounce
+
+                await asyncio.get_running_loop().run_in_executor(
+                    None, consume_restart_hub_bounce, _hermes_home
+                )
+            except Exception:
+                logger.warning("restart-hub: successor hub bounce failed", exc_info=True)
+
         connected_count = 0
         enabled_platform_count = 0
         startup_nonretryable_errors: list[str] = []
@@ -8661,6 +8668,15 @@ class GatewayRunner(
         if connected_count > 0:
             await asyncio.sleep(1.0)
 
+        # Finalize the opt-in hub bounce report (attach-marker verification)
+        # before the restart comeback notice and turn recovery read it.
+        try:
+            from gateway.restart_hub import complete_restart_hub_report
+
+            complete_restart_hub_report(_hermes_home)
+        except Exception:
+            logger.debug("restart-hub: hub attach verification failed", exc_info=True)
+
         # Notify the chat that initiated /restart that the gateway is back.
         chat_restart_notification_pending = _restart_notification_pending()
         planned_restart_notification_pending = _planned_restart_notification_pending()
@@ -8730,13 +8746,6 @@ class GatewayRunner(
 
         # Start background session expiry watcher to finalize expired sessions
         self._spawn_supervised(self._session_expiry_watcher, "session_expiry_watcher")
-
-        # Keep the /model picker's remote catalogs (curated manifest,
-        # OpenRouter live list, Nous Portal recommendations) warm on disk so a
-        # delisted or newly-published model reaches the picker within one TTL
-        # window (model_catalog.ttl_minutes, default 20) without waiting for a
-        # cold /model open to trigger the refresh.
-        self._spawn_supervised(self._model_catalog_refresh_watcher, "model_catalog_refresh_watcher")
 
         # Stall watchdog: pending inbound + stale agent activity → warn user
         # to /new (does not kill the turn; see agent.session_stall_timeout).
@@ -9941,7 +9950,6 @@ class GatewayRunner(
     # busy_handler naming an entry here). All other rejected commands get
     # the generic catch-all text in _dispatch_busy_slash_command.
     _BUSY_REJECT_TEXT: Dict[str, str] = {
-        "model": "Agent is running — wait or /stop first, then switch models.",
         "codex-runtime": ("Agent is running — wait or /stop first, then "
                           "change runtime."),
     }
@@ -11840,6 +11848,8 @@ async def _start_gateway_start_control_socket(runner):
             restart_platforms = params.get("restart_platforms")
             if restart_platforms is None:
                 restart_platforms = _runner_restart_platforms(runner)
+            # Opt-in hub bounce: missing/false (old clients) never bounces.
+            restart_hub = is_truthy_value(params.get("restart_hub"))
             requester = params.get("requester")
             if not isinstance(requester, dict) or not requester:
                 requester = None
@@ -11861,6 +11871,7 @@ async def _start_gateway_start_control_socket(runner):
                             await queue_user_restart(
                                 runner, source, message_id,
                                 restart_platforms=bool(restart_platforms),
+                                restart_hub=bool(restart_hub),
                             )
                         )
                     finally:
@@ -12208,7 +12219,24 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             nonlocal _control_server, cron_stop, cron_provider, cron_thread, housekeeping_thread
             _control_server = await _start_gateway_start_control_socket(runner)
             _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
+            # Opt-in hub bounce (restart_hub): consume the marker and bounce
+            # hermes-discord-hub.service BEFORE adapters attach. Off-loop —
+            # systemctl can block for seconds. Never raises, never fails boot.
+            try:
+                from gateway.restart_hub import consume_restart_hub_bounce
+
+                await asyncio.get_running_loop().run_in_executor(
+                    None, consume_restart_hub_bounce, _hermes_home
+                )
+            except Exception:
+                logger.warning("restart-hub: successor hub bounce failed", exc_info=True)
             await start_deferred_adapters(runner)
+            try:
+                from gateway.restart_hub import complete_restart_hub_report
+
+                complete_restart_hub_report(_hermes_home)
+            except Exception:
+                logger.debug("restart-hub: hub attach verification failed", exc_info=True)
             await runner._send_restart_notification()
             cron_stop, cron_provider, cron_thread, housekeeping_thread = (
                 _start_gateway_start_cron_and_housekeeping(runner))

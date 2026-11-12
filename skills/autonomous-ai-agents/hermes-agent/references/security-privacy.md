@@ -1,6 +1,6 @@
 # Security & Privacy Toggles
 
-Common "why is Hermes doing X to my output / tool calls / commands?" toggles — and the exact commands to change them. Most of these need a fresh session (`/reset` in chat, or start a new `hermes` invocation) because they're read once at startup.
+Common "why is Hermes doing X to my output / tool calls / commands?" toggles — and the exact commands to change them. Most of these need a fresh session (`/new` in chat, or start a new `hermes` invocation) because they're read once at startup.
 
 ### Secret redaction in tool output
 
@@ -17,16 +17,8 @@ Disable only when you deliberately need raw credential-like strings for debuggin
 hermes config set security.redact_secrets false
 ```
 
-### PII redaction in gateway messages
+### Dangerous commands
 
-Separate from secret redaction. When enabled, the gateway hashes user IDs and strips phone numbers from the session context before it reaches the model:
-
-```bash
-hermes config set privacy.redact_pii true    # enable
-hermes config set privacy.redact_pii false   # disable (default)
-```
-
-### Command execution
 
 Terminal and code-execution commands run immediately without command approval prompts. Independent lifecycle and self-repository guards still apply. None of this affects secret redaction; execution and redaction are independent.
 
@@ -42,5 +34,5 @@ Some shell-hook integrations require explicit allowlisting before they fire. Man
 
 ### Disabling the web/browser/image-gen tools
 
-To keep the model away from network or media tools entirely, open `hermes tools` and toggle per-platform. Takes effect on next session (`/reset`). See `references/configuration.md` for the toolset list.
+To keep the model away from network or media tools entirely, open `hermes tools` and toggle per-platform. Takes effect on next session (`/new`). See `references/configuration.md` for the toolset list.
 

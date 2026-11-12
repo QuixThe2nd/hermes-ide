@@ -21,7 +21,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | **Threads** | Hermes supports Matrix threads (MSC3440). If you reply in a thread, Hermes keeps the thread context isolated from the main room timeline. Threads where the bot has already participated do not require a mention. |
 | **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. Set `MATRIX_DM_AUTO_THREAD=true` (default false) to also auto-create threads for DM messages — this is distinct from `MATRIX_DM_MENTION_THREADS`, which only starts a thread when the bot is `@mentioned` in a DM. |
 | **Commands** | Hermes accepts normal `/commands` when your Matrix client sends them. If your client reserves `/` for local commands, use `!commands` instead; Hermes normalizes known `!command` aliases to `/command`. |
-| **Interactive controls** | `/model` selection and other retained pickers can use Matrix reactions. |
+| **Interactive controls** | Retained pickers can use Matrix reactions. |
 | **Thinking and tool activity** | Matrix uses threaded, editable thinking/tool-activity panes when gateway progress is enabled, so updates do not flood the main room timeline. |
 | **Shared rooms with multiple users** | By default, Hermes isolates session history per user inside the room. Two people talking in the same room do not share one transcript unless you explicitly disable that. |
 | **LaTeX math** | `$...$` (inline) and `$$...$$` (display) in replies are sent as Element `data-mx-maths` markup, so clients with **Settings → Labs → Render LaTeX maths in messages** typeset them with KaTeX. Unpaired dollars (`$5 or $10`) stay literal, and the plain-text `body` keeps the raw TeX for other clients. |
@@ -474,9 +474,8 @@ Reaction controls use:
 - ✅ approve once
 - ♾️ approve always
 - ❌ deny
-- number reactions for `/model` choices
 
-Set `MATRIX_APPROVAL_REQUIRE_SENDER=false` if you intentionally want any authorized Matrix user in the room to operate an approval/model picker prompt. The default is requester-bound when Hermes knows who requested the action.
+Set `MATRIX_APPROVAL_REQUIRE_SENDER=false` if you intentionally want any authorized Matrix user in the room to operate an approval prompt. The default is requester-bound when Hermes knows who requested the action.
 
 ### Media Limits
 
@@ -584,8 +583,8 @@ To find a Room ID: in Element, go to the room → **Settings** → **Advanced** 
 ## Commands in Matrix
 
 Hermes supports the same gateway commands in Matrix that it supports on other
-messaging platforms, including `/commands`, `/model`, `/stop`, `/queue`,
-`/goal`, `/subgoal`, `/bg`, `/btw`, and `/tasks`.
+messaging platforms, including `/commands`, `/new`, `/stop`, `/queue`,
+`/subgoal`, `/bg`, `/btw`, and `/tasks`.
 
 Some Matrix clients reserve leading `/` for local client commands and may not
 send unknown slash commands to the room. In that case, use `!` as a Matrix-safe

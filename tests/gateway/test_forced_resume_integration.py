@@ -471,13 +471,19 @@ _EXPECTED_RESTART_RESULT = (
     "Restarted successfully\n"
     f"Old process: {_OLD_PROCESS}\n"
     f"New process: {_NEW_PROCESS}\n"
-    f"This chat is no longer running in {_OLD_PROCESS}. "
-    f"You are now running in {_NEW_PROCESS}. Continue the original task."
+    "This is a tool result for you, not a message to send or quote "
+    f"to the user. This chat is no longer running in {_OLD_PROCESS}; "
+    f"you are now running in {_NEW_PROCESS}. Continue the interrupted "
+    "task with your tools until the original work is verified, then "
+    "reply to the user about that work."
 )
 _EXPECTED_RESTART_RESULT_WITHOUT_OLD = (
     "Restarted successfully\n"
     f"New process: {_NEW_PROCESS}\n"
-    f"You are now running in {_NEW_PROCESS}. Continue the original task."
+    "This is a tool result for you, not a message to send or quote "
+    f"to the user. You are now running in {_NEW_PROCESS}. Continue "
+    "the interrupted task with your tools until the original work is "
+    "verified, then reply to the user about that work."
 )
 
 def _restart_tool_tail_history(*, timestamp=None, process=_OLD_PROCESS):
@@ -585,6 +591,19 @@ def test_restart_result_without_old_process_degrades_gracefully(monkeypatch):
     rewritten, changed = repair
     assert changed is True
     assert rewritten[-1]["content"] == _EXPECTED_RESTART_RESULT_WITHOUT_OLD
+
+
+@pytest.mark.parametrize("old_process", [_OLD_PROCESS, None])
+def test_restart_success_content_round_trips_through_parser(old_process):
+    """Builder output (with and without the old identity) is the only rich
+    shape the trusted-result parser accepts: parser and builder stay in
+    lockstep when the trailing instruction line is reworded."""
+    from gateway.run_turn_recovery import (
+        _parse_restart_success_content, _restart_success_content,
+    )
+
+    content = _restart_success_content(old_process, _NEW_PROCESS)
+    assert _parse_restart_success_content(content) == (old_process, _NEW_PROCESS)
 
 
 def test_idle_restart_requester_keeps_interactive_recovery_note():

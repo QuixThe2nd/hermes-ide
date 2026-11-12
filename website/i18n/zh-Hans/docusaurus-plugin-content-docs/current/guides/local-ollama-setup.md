@@ -74,7 +74,7 @@ ollama pull gemma4:31b
 ```
 
 :::info 多个模型
-你可以拉取多个模型，并在 Hermes 中使用 `/model` 切换。Ollama 按需将活跃模型加载到内存，并自动卸载空闲模型。
+你可以拉取多个模型，并使用 `hermes model` 切换。Ollama 按需将活跃模型加载到内存，并自动卸载空闲模型。
 :::
 
 验证模型是否正常工作：
@@ -146,10 +146,10 @@ Hermes 将使用终端工具、文件操作和你的本地模型——无需任�
 对于完整的 agentic 工作（编辑文件、执行命令、浏览网页），`gemma4:31b` 目前是支持工具调用的最佳本地选项。请关注 [Ollama 的模型库](https://ollama.com/library) 以获取更新模型——工具调用支持正在快速扩展。
 :::
 
-在会话中即时切换模型：
+使用 `hermes model` 切换模型：
 
 ```
-/model gemma2:9b
+hermes model gemma2:9b
 ```
 
 ## 第六步：优化速度
