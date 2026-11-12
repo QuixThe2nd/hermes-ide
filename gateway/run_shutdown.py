@@ -424,9 +424,9 @@ class GatewayShutdownMixin:
           The api_server is a loopback listener force-enabled by the presence
           of API_SERVER_KEY (which the Docker stage2 hook now generates for
           every container, so hosted instances ALWAYS have it enabled) — it
-          holds no outbound socket and Chronos fires through it already reset
-          the idle clock. Counting it made messaging_is_relay_only_or_absent
-          False on every hosted instance, silently disarming the feature.
+          holds no outbound socket. Counting it made
+          messaging_is_relay_only_or_absent False on every hosted instance,
+          silently disarming the feature.
           Mirrors the non-messaging exclusion set used for handoff eligibility
           (see the `messaging_platforms` computation in _connect_platforms).
         """
