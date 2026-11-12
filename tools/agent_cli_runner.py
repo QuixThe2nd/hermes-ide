@@ -159,6 +159,89 @@ def _default_subprocess_env() -> dict:
     return env
 
 
+
+class _ServiceStdout:
+    """Blocking binary tail. An empty read means the service has exited, not that the file is idle."""
+
+    def __init__(self, path: Path, unit: str) -> None:
+        self._fh = open(path, "rb")
+        self._unit = unit
+
+    def read1(self, size: int = -1) -> bytes:
+        import time
+        from tools.harness_persist import active_service_main_pid
+        while True:
+            chunk = self._fh.read(size if size and size > 0 else 4096)
+            if chunk:
+                return chunk
+            if not active_service_main_pid(self._unit):
+                return self._fh.read(size if size and size > 0 else 4096) or b""
+            time.sleep(0.2)
+
+    def close(self) -> None:
+        self._fh.close()
+
+
+class _ServiceProc:
+    """Popen-shaped handle for a harness that lives outside the caller cgroup."""
+
+    def __init__(self, pid: int, unit: str, stdout_path: Path) -> None:
+        self.pid = pid
+        self.unit = unit
+        self.returncode = None
+        self.stdout = _ServiceStdout(stdout_path, unit)
+
+    def terminate(self) -> None:
+        self.kill()
+
+    def _recorded_code(self):
+        path = Path(str(self.stdout._fh.name) + ".code")
+        if not path.exists():
+            return None
+        raw = path.read_text(encoding="utf-8").strip()
+        try:
+            return int(raw)
+        except ValueError:
+            return 1
+
+    def poll(self):
+        recorded = self._recorded_code()
+        if recorded is not None:
+            self.returncode = recorded
+            return recorded
+        from tools.harness_persist import active_service_main_pid
+        if active_service_main_pid(self.unit):
+            return None
+        self.returncode = 1
+        return self.returncode
+
+    def wait(self, timeout=None):
+        from tools.harness_persist import wait_service
+        self.returncode = wait_service(self.unit, timeout_seconds=int(timeout or 0))
+        return self.returncode
+
+    def kill(self):
+        from tools.process_registry import _stop_systemd_unit
+        _stop_systemd_unit(self.unit)
+        self.returncode = -15
+
+
+def _spawn_agent_cli(cmd, *, workdir, env, log_path):
+    """Spawn in-cgroup unless a unit stop would kill the tool call."""
+    from tools.harness_persist import caller_killed_service_cgroup, launch_detached_service
+    if not caller_killed_service_cgroup():
+        return subprocess.Popen(
+            cmd, cwd=workdir, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, start_new_session=True, env=env,
+        )
+    out = Path(log_path) if log_path else Path(workdir) / ".hermes-agent-cli.out"
+    err = out.with_suffix(out.suffix + ".err")
+    launched = launch_detached_service(
+        list(cmd), cwd=str(workdir), env=env, stdout_path=out, stderr_path=err,
+    )
+    return _ServiceProc(launched["pid"], launched["unit"], out)
+
+
 def run_agent_cli(
     cmd: List[str],
     *,
@@ -208,19 +291,11 @@ def run_agent_cli(
     if env is None:
         env = _default_subprocess_env()
 
-    proc = subprocess.Popen(
-        cmd,
-        cwd=workdir,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-        env=dict(env),
-    )
+    proc = _spawn_agent_cli(cmd, workdir=workdir, env=dict(env), log_path=log_path)
 
     try:
-        pgid = os.getpgid(proc.pid)
-    except (OSError, ProcessLookupError):
+        pgid = os.getpgid(proc.pid) if proc.pid else None
+    except (OSError, ProcessLookupError, TypeError):
         pgid = None
 
     if on_proc is not None:

@@ -200,6 +200,12 @@ def _run_omp_process(argv, directory: Path, env: dict, *, timeout_seconds: int):
         command=" ".join(argv[:8]), pid=launched["pid"], unit=launched["unit"], cwd=str(directory),
     )
     code = wait_service(launched["unit"], timeout_seconds=timeout_seconds)
+    code_path = Path(str(stdout_path) + ".code")
+    if code_path.exists():
+        try:
+            code = int(code_path.read_text(encoding="utf-8").strip())
+        except ValueError:
+            code = 1
     return _Completed(
         code,
         stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.exists() else "",

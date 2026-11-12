@@ -9,6 +9,7 @@ pid from the process checkpoint instead of losing the tool call.
 from __future__ import annotations
 
 import os
+import sys
 import re
 import subprocess
 import time
@@ -72,6 +73,18 @@ def launch_detached_service(
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
     stdout_path.write_text("")
     stderr_path.write_text("")
+    code_path = stdout_path.with_name(stdout_path.name + ".code")
+    if code_path.exists():
+        code_path.unlink()
+    runner = stdout_path.with_name(stdout_path.name + ".run.py")
+    runner.write_text(
+        "import subprocess, sys\n"
+        "from pathlib import Path\n"
+        "proc = subprocess.run(sys.argv[2:])\n"
+        "Path(sys.argv[1]).write_text(str(proc.returncode))\n"
+        "raise SystemExit(proc.returncode)\n"
+    )
+    argv = [sys.executable, str(runner), str(code_path), *argv]
     cmd = [
         "systemd-run", "--collect", f"--unit={unit_name}", "--property=Type=exec",
         f"--working-directory={cwd}",
@@ -92,16 +105,27 @@ def launch_detached_service(
         pid = active_service_main_pid(unit_name)
         if pid:
             break
-        time.sleep(0.2)
-    if not pid:
+        state = _systemctl_show(unit_name, "ActiveState")
+        if state in ("inactive", "failed"):
+            raw = _systemctl_show(unit_name, "ExecMainPID") or "0"
+            pid = int(raw) if raw.isdigit() and int(raw) else None
+            break
+        time.sleep(0.1)
+    else:
+        state = ""
+    if pid is None and state not in ("inactive", "failed"):
         raise RuntimeError(f"harness unit {unit_name} did not report a main pid")
-    cgroup = Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8").strip()
+    try:
+        cgroup = Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8").strip()
+    except OSError:
+        cgroup = "exited"
     return {
         "unit": unit_name,
         "pid": pid,
         "cgroup": cgroup,
         "stdout_path": str(stdout_path),
         "stderr_path": str(stderr_path),
+        "code_path": str(code_path),
     }
 
 
