@@ -72,11 +72,10 @@ def test_config_caches_are_keyed_by_profile(two_profiles):
 def test_schema_path_hints_follow_active_profile(two_profiles):
     import tools.cronjob_tools  # noqa: F401  (registers cronjob_manage)
     import tools.skill_manager_tool  # noqa: F401
-    import tools.tts_tool  # noqa: F401
     from tools.registry import registry
 
     prof_a, prof_b = two_profiles
-    names = {"cronjob_manage", "text_to_speech", "skill_manage"}
+    names = {"cronjob_manage", "skill_manage"}
 
     def definitions():
         return json.dumps(registry.get_definitions(names, quiet=True))

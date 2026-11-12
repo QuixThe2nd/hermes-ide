@@ -9,7 +9,7 @@ sidebar_position: 0
 Hermes Agent connects to external systems for AI inference, tool servers, IDE workflows, programmatic access, and more. These integrations extend what Hermes can do and where it can run.
 
 :::tip Start here
-If you only have time to set up one integration, set up [Nous Portal](./nous-portal.md) — a single OAuth login covers 300+ models plus the four Tool Gateway tools (web search, image generation, TTS, and browser automation).
+If you only have time to set up one integration, set up [Nous Portal](./nous-portal.md) — a single OAuth login covers 300+ models plus the Tool Gateway tools (web search, image generation, and browser automation).
 :::
 
 ## AI Providers & Routing
@@ -52,21 +52,6 @@ If `web.backend` is not set, the backend is auto-detected from whichever API key
 Hermes includes Camofox browser automation for navigating websites, filling forms, extracting information, taking screenshots, and evaluating JavaScript. Run Camofox through its npm package or Docker image and configure `CAMOFOX_URL` plus an optional `CAMOFOX_API_KEY`.
 
 See [Browser Automation](../user-guide/features/browser.md) for setup and usage.
-
-## Voice & TTS Providers
-
-Text-to-speech and speech-to-text across all messaging platforms:
-
-| Provider | Quality | Cost | API Key |
-|----------|---------|------|---------|
-| **Edge TTS** (default) | Good | Free | None needed |
-| **ElevenLabs** | Excellent | Paid | `ELEVENLABS_API_KEY` |
-| **OpenAI TTS** | Good | Paid | `VOICE_TOOLS_OPENAI_KEY` |
-| **MiniMax** | Good | Paid | `MINIMAX_API_KEY` |
-| **xAI TTS** | Good | Paid | `XAI_API_KEY` |
-| **NeuTTS** | Good | Free | None needed |
-
-Speech-to-text supports eight providers: local faster-whisper (free, runs on-device), a local command wrapper, Groq, OpenAI Whisper API, Mistral, xAI, ElevenLabs Scribe, and DeepInfra. Voice message transcription works across Telegram, Discord, WhatsApp, and other messaging platforms. See [Voice & TTS](../user-guide/features/tts.md) and [Voice Mode](../user-guide/features/voice-mode.md) for details.
 
 ## IDE & Editor Integration
 

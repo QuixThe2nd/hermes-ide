@@ -6,12 +6,10 @@ description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, 
 
 # Messaging Gateway
 
-Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Matrix, Feishu/Lark, Weixin, BlueBubbles (iMessage), QQ, Yuanbao, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
-
-For the full voice feature set — including CLI microphone mode, spoken replies in messaging, and Discord voice-channel conversations — see [Voice Mode](../features/voice-mode.md) and [Use Voice Mode with Hermes](../../guides/use-voice-mode-with-hermes.md).
+Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Matrix, Feishu/Lark, Weixin, BlueBubbles (iMessage), QQ, Yuanbao, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers audio and file attachments.
 
 :::tip
-Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](../../integrations/nous-portal.md) subscription bundles all of them.
+Bots need both a model provider and tool providers (web search, image generation). A [Nous Portal](../../integrations/nous-portal.md) subscription bundles them.
 :::
 
 ## Messaging status in Desktop and the dashboard
@@ -51,7 +49,7 @@ connected. An enabled platform can correctly show **Messaging gateway stopped**.
 | Yuanbao | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | Raft | — | — | — | — | — | — | — |
 
-**Voice** = TTS audio replies and/or voice message transcription. **Images** = send/receive images. **Files** = send/receive file attachments. **Threads** = threaded conversations. **Reactions** = emoji reactions on messages. **Typing** = typing indicator while processing. **Streaming** = progressive message updates via editing.
+**Voice** = sending/receiving audio as native voice messages (file attachments; no built-in transcription or TTS). **Images** = send/receive images. **Files** = send/receive file attachments. **Threads** = threaded conversations. **Reactions** = emoji reactions on messages. **Typing** = typing indicator while processing. **Streaming** = progressive message updates via editing.
 
 :::note Hermes Relay
 [Hermes Relay](./relay.md) (experimental) is not a chat platform itself — it is a connector system that fronts platforms like Discord, Telegram, Slack, and WhatsApp through an external connector that owns the platform credentials. Capabilities (media, native approval/clarify prompts, reactions, threads, typing, streaming) are negotiated per connector at handshake rather than fixed in the table above.
@@ -226,7 +224,6 @@ platform network disconnect as an event-loop failure.
 | `/sessions [all] [search <query>]` | List previous sessions; `search <query>` filters by title or id |
 | `/usage` | Show token usage for this session (`/usage reset [--force]` redeems a banked Codex limit reset) |
 | `/insights [days]` | Show usage insights and analytics |
-| `/voice [on\|off\|tts\|join\|leave\|status]` | Control messaging voice replies and Discord voice-channel behavior |
 | `/rollback [number]` | List or restore filesystem checkpoints |
 | `/bg <prompt>` | Run a prompt in a separate background session |
 | `/btw <question>` | Ask a side question about the current conversation without interrupting it |
@@ -401,18 +398,10 @@ Send a message while the agent is working to correct the active turn:
 - **Running tools finish safely** — the correction is applied at the next tool-result boundary instead of killing the tool
 - **`/stop` remains a hard stop** — use it to cancel the active turn and foreground work
 
-### Queue vs interrupt vs steer (busy-input mode)
-
-By default, messaging a busy agent redirects its active turn (a running foreground terminal command is moved to the background rather than killed, so your message is read immediately). Two other modes are available:
-
-- `queue` — follow-up messages wait and run as the next turn after the current task finishes. Each follow-up (text, voice note, video, document) gets its own turn in arrival order; only a rapid photo burst is merged into one album turn.
-- `steer` — follow-up messages are injected into the current run (steer mode), arriving at the agent after the next tool call. No interrupt, no new turn. Falls back to `queue` behavior if the agent hasn't started yet.
-
-Gateway steers and active-turn redirects carry the requesting event's available platform, chat, thread, sender, message, profile, and scope identifiers as per-message JSON context. Identifiers are passed exactly and do not change the session's system prompt or choose a fallback reply destination. The context is routing data, not authorization or a guarantee of automatic delivery.
+By default, messaging a busy agent redirects its active turn (a running foreground terminal command is moved to the background rather than killed, so your message is read immediately).
 
 ```yaml
 display:
-  busy_input_mode: steer   # or queue, or interrupt (default)
   busy_ack_enabled: true   # set to false to suppress the ⚡/⏳/⏩ chat reply entirely
 ```
 
@@ -686,7 +675,7 @@ Each platform has its own toolset:
 | BlueBubbles | `hermes-bluebubbles` | Full tools including terminal |
 | QQBot | `hermes-qqbot` | Full tools including terminal |
 | Yuanbao | `hermes-yuanbao` | Full tools including terminal |
-| API Server | `hermes-api-server` | Full tools (drops `clarify`, `text_to_speech` — programmatic access doesn't have an interactive user) |
+| API Server | `hermes-api-server` | Full tools minus `clarify` (programmatic access doesn't have an interactive user) |
 | Webhooks | `hermes-webhook` | Full tools including terminal |
 | Raft | `hermes-raft` | Wake-only channel; agent uses Raft CLI for message I/O |
 

@@ -825,7 +825,7 @@ Set `cleanup_timeout_seconds: 0` only to restore the legacy unbounded cleanup be
 
 ## Media send timeout
 
-When a cron delivery includes media attachments (a generated PDF, TTS audio, an exported report) sent through a live gateway adapter, each attachment upload is bounded by a timeout — 300 seconds by default. Large files on slow uplinks can need more:
+When a cron delivery includes media attachments (a generated PDF, an audio file, an exported report) sent through a live gateway adapter, each attachment upload is bounded by a timeout — 300 seconds by default. Large files on slow uplinks can need more:
 
 ```yaml
 # ~/.hermes/config.yaml

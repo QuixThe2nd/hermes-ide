@@ -474,7 +474,6 @@ def _make_runner(adapter):
 
     runner = object.__new__(GatewayRunner)
     runner.adapters = {adapter.platform: adapter}
-    runner._voice_mode = {}
     runner._prefill_messages = []
     runner._ephemeral_system_prompt = ""
     runner._reasoning_config = None

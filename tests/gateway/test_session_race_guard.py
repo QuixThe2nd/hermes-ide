@@ -48,7 +48,6 @@ def _make_runner():
     runner._running_agents_ts = {}
     runner._session_run_generation = {}
     runner._pending_messages = {}
-    runner._voice_mode = {}
     runner._background_tasks = set()
     runner._draining = False
     runner._restart_requested = False

@@ -54,9 +54,7 @@ Hermes Agent 功能丰富——CLI 助手、Telegram/Discord 机器人、任务�
 3. [消息概览](../user-guide/messaging/index.md)
 4. [Telegram 配置](../user-guide/messaging/telegram.md)
 5. [Discord 配置](../user-guide/messaging/discord.md)
-6. [语音模式](../user-guide/features/voice-mode.md)
-7. [在 Hermes 中使用语音模式](../guides/use-voice-mode-with-hermes.md)
-8. [安全](../user-guide/security.md)
+6. [安全](../user-guide/security.md)
 
 完整项目示例请参阅：
 - [每日简报机器人](../guides/daily-briefing-bot.md)

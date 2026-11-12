@@ -20,7 +20,7 @@ Make it a **Tool** when:
 - It requires end-to-end integration with API keys, auth flows, or multi-component configuration
 - It needs custom processing logic that must execute precisely every time
 - It handles binary data, streaming, or real-time events
-- Examples: browser automation, TTS, vision analysis
+- Examples: browser automation, vision analysis
 
 ## Skill Directory Structure
 

@@ -103,11 +103,7 @@ class TurnContext:
     result_holder: list = field(default_factory=lambda: [None])
     tools_holder: list = field(default_factory=lambda: [None])
     stream_consumer_holder: list = field(default_factory=lambda: [None])
-    streaming_tts_consumer_holder: list = field(default_factory=lambda: [None])
     # voice-ack wiring
-    _voice_ack_fired: list = field(default_factory=lambda: [False])
-    _voice_ack_guild: list = field(default_factory=lambda: [None])
-    _voice_ack_loop: Any = None
     # hook / status bridge wiring
     _loop_for_step: Any = None
     _hooks_ref: Any = None
@@ -117,14 +113,13 @@ class TurnContext:
     _status_thread_metadata: Optional[dict] = None
     # bound TurnRunner callbacks read via ctx
     progress_callback: Optional[Callable] = None
-    voice_ack_callback: Optional[Callable] = None
     _step_callback_sync: Optional[Callable] = None
     _event_callback_sync: Optional[Callable] = None
     _status_callback_sync: Optional[Callable] = None
     # Slack-native task cards (opt-in); ID-bearing callbacks correlate start/complete by call ID
     # --- Slack-native task-card progress (opt-in; #29483) ------------------ True when the Slack adapter's
     # ``native_task_cards_enabled()`` opt-in is set for this turn's platform. The ID-bearing lifecycle
-    # callbacks are published by TurnRunner (like voice_ack_callback above) so tool starts and completions
+    # callbacks are published by TurnRunner so tool starts and completions
     # correlate by real tool-call ID instead of tool name.
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None

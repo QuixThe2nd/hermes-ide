@@ -3,7 +3,7 @@
 History: the Sep-25 repo-restore resurrected the ``gateway/run.py`` monolith on top of the
 Sep-2026 extracted sibling modules. Every method defined in BOTH the facade class body and a
 sibling mixin was shadowed by the facade copy (MRO binds the facade first). Wave-2 lane 3
-resolved the run_shutdown.py / run_agent_cache.py / run_voice.py / run_goals.py pairs — the
+resolved the run_shutdown.py / run_agent_cache.py / run_goals.py pairs — the
 facade copies were removed and the winning body lives on the mixin (for ``stop``, the
 lifecycle exception, the facade body stays in ``run.py`` and the mixin copy was deleted).
 This test fails if any manifest pair is re-introduced as a double definition.
@@ -13,7 +13,6 @@ import gateway.run as run_mod
 from gateway.run_agent_cache import GatewayAgentCacheMixin
 from gateway.run_goals import GatewayGoalsMixin
 from gateway.run_shutdown import GatewayShutdownMixin
-from gateway.run_voice import GatewayVoiceMixin
 
 # (method name, sibling module, mixin class) manifest resolved by lane 3.
 _NAMES_BY_MODULE = {
@@ -47,18 +46,9 @@ _NAMES_BY_MODULE = {
         "_clear_session_boundary_security_state", "_begin_session_run_generation",
         "_invalidate_session_run_generation", "_bind_adapter_run_generation",
         "_interrupt_and_clear_session", "_refresh_agent_cache_message_count",
-        "_consume_pending_turn_sidecar_notes", "_voice_channel_sidecar_note",
+        "_consume_pending_turn_sidecar_notes",
         "_pinned_session_context_prompt", "_ephemeral_change_key",
         "_evict_cached_agent",
-    ],
-    GatewayVoiceMixin: [
-        "_voice_key", "_voice_key_for_source", "_bind_voice_input_callback",
-        "_load_voice_modes", "_save_voice_modes", "_set_adapter_auto_tts_disabled",
-        "_set_adapter_auto_tts_enabled", "_sync_voice_mode_state_to_adapter",
-        "_get_guild_id", "_handle_voice_channel_join", "_handle_voice_channel_leave",
-        "_handle_voice_timeout_cleanup", "_is_duplicate_voice_transcript",
-        "_handle_voice_channel_input", "_should_send_voice_reply",
-        "_should_echo_stt_transcripts", "_send_voice_reply",
     ],
     GatewayGoalsMixin: [
         "_goal_max_turns_from_config", "_warm_goals_session_db",

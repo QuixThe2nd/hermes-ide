@@ -1320,15 +1320,12 @@ def test_hub_client_exposes_the_gateway_discord_adapter_surface():
     async_methods = (
         "send_clarify", "send_tool_stage_embed", "edit_tool_stage_embed",
         "send_slash_confirm", "send_update_prompt", "refresh_skill_group",
-        "cancel_background_tasks", "play_tts", "play_ack_in_voice",
-        "join_voice_channel", "leave_voice_channel", "play_in_voice_channel",
-        "get_user_voice_channel", "send_model_picker", "send_choice_picker",
+        "cancel_background_tasks", "send_model_picker", "send_choice_picker",
     )
     sync_methods = (
         "get_bot_display_name", "resolved_allowlist_user_ids",
         "prefers_fresh_final_streaming", "format_tool_preview",
-        "claim_startup_resume_inbound", "voice_mixer_active",
-        "is_in_voice_channel", "get_voice_channel_info", "get_voice_channel_context",
+        "claim_startup_resume_inbound",
     )
     for name in async_methods:
         assert asyncio.iscoroutinefunction(getattr(DiscordAdapter, name))

@@ -47,7 +47,6 @@ def _make_runner():
     adapter = MagicMock()
     adapter.send = AsyncMock()
     runner.adapters = {Platform.TELEGRAM: adapter}
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner._session_model_overrides = {}
     runner._pending_one_turn_model_restores = {}

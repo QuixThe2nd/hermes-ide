@@ -69,14 +69,6 @@ gateway:
     full_logs_hint:        "Para subir registros completos, usa `hermes debug share` desde la CLI."
     share_hint:            "Comparte estos enlaces con el equipo de Hermes para obtener soporte."
 
-  footer:
-    status:                "📎 Pie de ejecución: **{state}**\nCampos: `{fields}`\nPlataforma: `{platform}`"
-    usage:                 "Uso: `/footer [on|off|status]`"
-    saved:                 "📎 Pie de ejecución: **{state}**{example}\n_(guardado globalmente — se aplica en el próximo mensaje)_"
-    example_line:          "\nEjemplo: `{preview}`"
-    state_on:              "ON"
-    state_off:             "OFF"
-
   goal:
     unavailable:           "Los objetivos no están disponibles en esta sesión."
     no_goal_set:           "No hay objetivo establecido."
@@ -317,23 +309,6 @@ La resincronización se ejecuta automáticamente como máximo una vez por hora."
     mode_log:              "⚙️ Progreso de herramientas: **LOG** — silencioso en el chat; las llamadas a herramientas se escriben en ~/.hermes/logs/tool_calls.log."
     saved_suffix:          "_(guardado para **{platform}** — se aplica en el próximo mensaje)_"
     save_failed:           "_(no se pudo guardar en la configuración: {error})_"
-
-  voice:
-    enabled_voice_only:    "Modo de voz activado.\nResponderé con voz cuando envíes mensajes de voz.\nUsa /voice tts para recibir respuestas de voz en todos los mensajes."
-    disabled_text:         "Modo de voz desactivado. Respuestas solo de texto."
-    tts_enabled:           "Auto-TTS activado.\nTodas las respuestas incluirán un mensaje de voz."
-    status_mode:           "Modo de voz: {label}"
-    status_channel:        "Canal de voz: #{channel}"
-    status_participants:   "Participantes: {count}"
-    status_member:         "  - {name}{status}"
-    speaking:              " (hablando)"
-    enabled_short:         "Modo de voz activado."
-    disabled_short:        "Modo de voz desactivado."
-    label_off:             "Desactivado (solo texto)"
-    label_voice_only:      "Activado (responder con voz a mensajes de voz)"
-    label_all:             "TTS (responder con voz a todos los mensajes)"
-    help:                  "{toggle}\n\n**Cómo funciona /voice**\n• `/voice on` — respuesta de voz cuando envías un mensaje de voz\n• `/voice tts` — respuesta de voz a *cada* mensaje\n• `/voice off` — volver a respuestas solo de texto\n• `/voice status` — mostrar el modo actual\n• `/voice` (sin argumento) — alternar rápido entre activado y desactivado{channels}"
-    help_channels:         "\n\n**Canales de voz en vivo (Discord)**\n• Únete primero a un canal de voz, luego `/voice channel` — me uno, escucho y digo mis respuestas\n• `/voice leave` — desconectar del canal de voz"
 
   shared:
     session_db_unavailable:      "Base de datos de sesiones no disponible."

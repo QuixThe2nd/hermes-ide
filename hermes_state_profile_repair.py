@@ -331,7 +331,7 @@ class SessionProfileRepairMixin:
 
     def key_profiles_for_chat(self, platform: str, chat_id: str) -> Set[str]:
         """Profiles whose keyed sessions hold *(platform, chat_id)* in this store — the evidence for
-        who owns a profile-less ``gateway_voice_mode.json`` entry."""
+        who owns a profile-less JSON-state entry."""
         rows = self._read_all(
             "SELECT DISTINCT session_key FROM sessions WHERE source = ? AND chat_id = ? "
             "AND session_key LIKE 'agent:%'", (platform, str(chat_id)))

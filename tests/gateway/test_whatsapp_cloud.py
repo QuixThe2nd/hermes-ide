@@ -102,7 +102,6 @@ def _make_adapter(**overrides):
     adapter._active_sessions = {}
     adapter._pending_messages = {}
     adapter._background_tasks = set()
-    adapter._auto_tts_disabled_chats = set()
 
     # Apply any leftover overrides directly
     for key, value in overrides.items():

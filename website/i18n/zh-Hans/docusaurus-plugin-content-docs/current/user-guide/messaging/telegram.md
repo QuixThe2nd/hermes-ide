@@ -6,7 +6,7 @@ description: "将 Hermes Agent 设置为 Telegram 机器人"
 
 # Telegram 设置
 
-Hermes Agent 与 Telegram 集成，作为功能完整的对话机器人。连接后，你可以从任何设备与 Agent 聊天、发送自动转录的语音备忘录、接收定时任务结果，并在群聊中使用 Agent。该集成基于 [python-telegram-bot](https://python-telegram-bot.org/) 构建，支持文本、语音、图片和文件附件。
+Hermes Agent 与 Telegram 集成，作为功能完整的对话机器人。连接后，你可以从任何设备与 Agent 聊天、发送语音备忘录（以音频文件形式投递给 Agent）、接收定时任务结果，并在群聊中使用 Agent。该集成基于 [python-telegram-bot](https://python-telegram-bot.org/) 构建，支持文本、音频文件、图片和文件附件。
 
 ## 第一步：通过 BotFather 创建机器人
 
@@ -290,51 +290,13 @@ hermes cron edit <id> --deliver telegram:<chat_id>:<topic_thread_id>
 
 ## 语音消息
 
-### 接收语音（语音转文字）
-
-你在 Telegram 上发送的语音消息会由 Hermes 配置的 STT（语音转文字）提供商自动转录，并作为文本注入对话。
-
-- `local` 在运行 Hermes 的机器上使用 `faster-whisper`——无需 API 密钥
-- `groq` 使用 Groq Whisper，需要 `GROQ_API_KEY`
-- `openai` 使用 OpenAI Whisper，需要 `VOICE_TOOLS_OPENAI_KEY`
-
-#### 跳过 STT：将原始音频文件传递给 Agent
-
-如果你希望由 **Agent 本身**处理音频——用于说话人分离、自定义转录工具或仅存档录音——请在 `~/.hermes/config.yaml` 中设置 `stt.enabled: false`：
-
-```yaml
-stt:
-  enabled: false
-```
-
-禁用 STT 后，gateway 仍会将语音/音频附件下载到 Hermes 的音频缓存中，但**不进行转录**。Agent 收到的消息带有如下标记：
+语音备忘录和音频附件会自动下载到 Hermes 的音频缓存。其内容**不会**被转录或内联——Agent 的入站消息带有指向缓存文件的标记，例如：
 
 ```
 [The user sent a voice message: /home/<user>/.hermes/cache/audio/<hash>.ogg]
 ```
 
-你的工具或技能可以直接读取该路径（例如，将其传递给本地说话人分离管道、更丰富的转录模型，或上传到长期存储）。文件扩展名反映 Telegram 投递的原始格式（语音备忘录为 `.ogg`，音频附件为 `.mp3`/`.m4a` 等）。
-
-这与下方的[本地 Bot API 服务器](#large-files-20mb--via-local-bot-api-server)部分配合使用效果极佳，该功能将 Telegram 的 20MB `getFile` 上限提升至 2GB——当你需要处理超过几分钟的录音时非常有用。
-
-### 发送语音（文字转语音）
-
-当 Agent 通过 TTS 生成音频时，它会作为 Telegram 原生**语音气泡**投递——即圆形、可内联播放的那种。
-
-- **OpenAI 和 ElevenLabs** 原生生成 Opus——无需额外设置
-- **Edge TTS**（默认免费提供商）输出 MP3，需要 **ffmpeg** 转换为 Opus：
-
-```bash
-# Ubuntu/Debian
-sudo apt install ffmpeg
-
-# macOS
-brew install ffmpeg
-```
-
-没有 ffmpeg，Edge TTS 音频会作为普通音频文件发送（仍可播放，但使用矩形播放器而非语音气泡）。
-
-在 `config.yaml` 的 `tts.provider` 键下配置 TTS 提供商。
+你的工具或技能可以直接读取该路径（例如交给本地转录技能或管道，或上传到长期存储）。文件扩展名反映 Telegram 投递的原始格式（语音备忘录为 `.ogg`，音频附件为 `.mp3`/`.m4a` 等）。
 
 ## 通过本地 Bot API 服务器处理大文件（>20MB）
 
@@ -1166,8 +1128,6 @@ telegram:
 | 机器人完全不响应 | 验证 `TELEGRAM_BOT_TOKEN` 是否正确。检查 `hermes gateway` 日志中的错误。 |
 | 机器人回复"unauthorized" | 你的用户 ID 不在 `TELEGRAM_ALLOWED_USERS` 中。用 @userinfobot 再次确认。 |
 | 机器人忽略群组消息 | 隐私模式可能已开启。禁用它（第三步）或将机器人设为群组管理员。**记住更改隐私设置后要移除并重新添加机器人。** |
-| 语音消息未转录 | 验证 STT 是否可用：安装 `faster-whisper` 进行本地转录，或在 `~/.hermes/.env` 中设置 `GROQ_API_KEY` / `VOICE_TOOLS_OPENAI_KEY`。 |
-| 语音回复是文件而非气泡 | 安装 `ffmpeg`（Edge TTS Opus 转换所需）。 |
 | 机器人 token 被撤销/无效 | 通过 BotFather 的 `/revoke` 然后 `/newbot` 或 `/token` 生成新 token。更新你的 `.env` 文件。 |
 | Webhook 未接收更新 | 验证 `TELEGRAM_WEBHOOK_URL` 是否可公开访问（用 `curl` 测试）。确保你的平台/反向代理将来自 URL 端口的入站 HTTPS 流量路由到 `TELEGRAM_WEBHOOK_PORT` 配置的本地监听端口（两者不需要是相同的数字）。确保 SSL/TLS 已激活——Telegram 只向 HTTPS URL 发送。检查防火墙规则。 |
 

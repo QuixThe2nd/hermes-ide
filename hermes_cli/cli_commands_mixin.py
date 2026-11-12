@@ -77,7 +77,7 @@ def _accent_line(text: str) -> str:
 
 def _probe(module: str, name: str, default, *args):
     """``<module>.<name>(*args)`` or ``default`` when the import or the call fails (optional
-    subsystems: browser backends, async delegations, wake word, ...)."""
+    subsystems: browser backends, async delegations, ...)."""
     try:
         return getattr(importlib.import_module(module), name)(*args)
     except Exception:
@@ -163,16 +163,6 @@ _CRON_SUBCOMMANDS = {
 _ON_WORDS = {"on", "enable", "true", "1"}
 _OFF_WORDS = {"off", "disable", "false", "0"}
 
-# /busy mode -> what Enter does while Hermes is working (status line / post-set explanation).
-_BUSY_MODE_SHORT = {
-    "queue": "queues for next turn", "steer": "steers into current run (after next tool call)",
-    "interrupt": "redirects current run immediately"}
-_BUSY_MODE_LONG = {
-    "queue": "Enter will queue follow-up input while Hermes is busy.",
-    "steer": "Enter will steer your message into the current run (after the next tool call).",
-    "interrupt": "Enter will redirect the current run while Hermes is busy; /stop still cancels it.",
-}
-
 # /bg AIAgent provider-routing kwargs -> HermesCLI attribute carrying the value.
 _BG_PROVIDER_KWARGS = {
     "providers_allowed": "_providers_only", "providers_ignored": "_providers_ignore",
@@ -199,7 +189,7 @@ _DIFF_LABELS = {"working": "Unstaged", "staged": "Staged", "all": "All (vs HEAD)
 
 
 def _persist_display_choice(key: str, value: str, label: str, note: str) -> None:
-    """Save a /busy-style choice to config and report saved vs session-only."""
+    """Save a display choice to config and report saved vs session-only."""
     if _save(key, value):
         _cp(_accent_line(f"✓ {label} set to '{value}' (saved to config)"), _dim_line(note))
     else:
@@ -2032,10 +2022,10 @@ class CLICommandsMixin:
             with suppress(Exception):
                 _cp(_dim_line(line))
 
-    # ---- persisted display toggles: /footer, /timestamps ----------------------
+    # ---- persisted display toggles: /timestamps ----------------------
     def _toggle_setting(self, arg: str, current: bool, *, usage: str, status_line: str,
                         config_key: str, label: str, failed: str):
-        """Shared /footer + /timestamps flow: status query, usage error, or save + report.
+        """Shared persisted-toggle flow: status query, usage error, or save + report.
         Returns the new bool state when it was saved (None otherwise)."""
         from hermes_cli.colors import Colors as _Colors
         new_state = _toggle_target(arg, current)
@@ -2051,17 +2041,6 @@ class CLICommandsMixin:
             _cp(f"  Failed to save {failed} setting to config.yaml")
         return new_state
 
-    def _handle_footer_command(self, cmd_original: str) -> None:
-        """Toggle or inspect ``display.runtime_footer.enabled`` (``/footer [on|off|status]``)."""
-        from hermes_cli.config import load_config
-        footer_cfg = (((load_config() or {}).get("display") or {}).get("runtime_footer") or {})
-        fields = footer_cfg.get("fields") or ["model", "context_pct", "cwd"]
-        self._toggle_setting(
-            _command_arg(cmd_original, lower=True), bool(footer_cfg.get("enabled", False)),
-            usage="/footer [on|off|status]", status_line=f"\n  Fields: {', '.join(fields)}",
-            config_key="display.runtime_footer.enabled", label="Runtime footer", failed="runtime_footer",
-        )
-
     def _handle_timestamps_command(self, cmd_original: str) -> None:
         """Toggle or inspect ``display.timestamps`` (``/timestamps [on|off|status]``). When on,
         message labels carry an ``[HH:MM]`` suffix and ``/history`` prefixes stored-timestamp turns."""
@@ -2074,20 +2053,7 @@ class CLICommandsMixin:
             arg, current, usage="/timestamps [on|off|status]", status_line="",
             config_key="display.timestamps", label="Message timestamps", failed="timestamps")
 
-    # ---- model-behaviour settings: /busy, /indicator -------------------
-    def _handle_busy_command(self, cmd: str):
-        """Handle /busy [status|queue|steer|interrupt] — what Enter does while Hermes is working."""
-        arg = _command_arg(cmd, lower=True)
-        usage = _dim_line('Usage: /busy [queue|steer|interrupt|status]')
-        if not arg or arg == "status":
-            behavior = _BUSY_MODE_SHORT.get(self.busy_input_mode, _BUSY_MODE_SHORT["interrupt"])
-            return _cp(_accent_line(f"Busy input mode: {self.busy_input_mode}"),
-                       _dim_line(f'Enter while busy: {behavior}'), usage)
-        if arg not in _BUSY_MODE_LONG:
-            return _cp(_dim_line(f'(._.) Unknown argument: {arg}'), usage)
-        self.busy_input_mode = arg
-        _persist_display_choice("display.busy_input_mode", arg, "Busy input mode", _BUSY_MODE_LONG[arg])
-
+    # ---- model-behaviour settings: /indicator -------------------
     def _handle_indicator_command(self, cmd: str):
         """Handle /indicator [status|kaomoji|emoji|unicode|ascii] — pick the TUI busy-indicator style.
         Persists to ``display.tui_status_indicator`` (the key the TUI reads) for its next render."""
@@ -2103,7 +2069,7 @@ class CLICommandsMixin:
         _persist_display_choice("display.tui_status_indicator", arg, "Busy-indicator style",
                                 "The TUI picks up the new style on its next render.")
 
-    # ---- /debug, /update, /voice, /wake ---------------------------------------------------
+    # ---- /debug, /update ---------------------------------------------------
     def _handle_debug_command(self, cmd_original: str = ""):
         """Handle /debug [nous|local] — upload debug report + logs and print share URLs.
         Default: public paste service; ``nous``: Nous-internal (staff-only); ``local``: render to
@@ -2139,38 +2105,3 @@ class CLICommandsMixin:
         self._pending_relaunch = ["update"]
         return True
 
-    def _handle_voice_command(self, command: str):
-        """Handle /voice [on|off|tts|status] command."""
-        subcommand = _command_arg(command, lower=True) or ("off" if self._voice_mode else "on")
-        actions = {"on": self._enable_voice_mode, "off": self._disable_voice_mode,
-                   "tts": self._toggle_voice_tts, "status": self._show_voice_status}
-        if subcommand in actions:
-            actions[subcommand]()
-        else:
-            _cp(f"Unknown voice subcommand: {subcommand}", "Usage: /voice [on|off|tts|status]")
-
-    def _handle_wake_command(self, command: str):
-        """Handle /wake [on|off|status] — the 'Hey Hermes' hotword listener. The toggle IS the
-        config: on/off also writes ``wake_word.enabled`` so the choice persists; startup
-        auto-arm only reads it."""
-        subcommand = _command_arg(command, lower=True) or (
-            "off" if getattr(self, "_wake_word_active", False) else "on")  # bare /wake toggles
-        if subcommand == "on":
-            if self._start_wake_word_listener(announce=True):
-                self._persist_wake_word_enabled(True)
-        elif subcommand == "off":
-            self._stop_wake_word_listener(announce=True)
-            self._persist_wake_word_enabled(False)
-        elif subcommand == "status":
-            self._show_wake_word_status()
-        else:
-            _cp(f"Unknown wake subcommand: {subcommand}", "Usage: /wake [on|off|status]")
-
-    def _persist_wake_word_enabled(self, enabled: bool):
-        """Save ``wake_word.enabled`` so the /wake toggle sticks for future sessions."""
-        persisted = _probe("tools.wake_word", "load_wake_word_config", None)
-        if isinstance(persisted, dict) and bool(persisted.get("enabled")) == enabled:
-            return  # already persisted — don't rewrite config or re-announce
-        if _save("wake_word.enabled", enabled):
-            _cp(_dim(f"Wake word {'enabled' if enabled else 'disabled'} in config "
-                     f"(wake_word.enabled: {str(enabled).lower()})."))

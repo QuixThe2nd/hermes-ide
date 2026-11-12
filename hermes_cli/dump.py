@@ -155,7 +155,7 @@ _INTERESTING_PATHS = (
     ("agent", "execution_guidance"), ("terminal", "backend"), ("terminal", "docker_image"),
     ("terminal", "persistent_shell"), ("browser", "allow_private_urls"), ("compression", "enabled"),
     ("compression", "threshold"), ("compression", "in_place"), ("display", "streaming"),
-    ("display", "skin"), ("display", "show_reasoning"), ("tts", "provider"),
+    ("display", "skin"), ("display", "show_reasoning"),
 )
 
 

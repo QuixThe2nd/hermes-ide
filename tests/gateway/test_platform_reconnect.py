@@ -95,7 +95,6 @@ class TestStartupPlatformIsolation:
         runner._suspend_stuck_loop_sessions = MagicMock(return_value=0)
         runner._update_runtime_status = MagicMock()
         runner._update_platform_runtime_status = MagicMock()
-        runner._sync_voice_mode_state_to_adapter = MagicMock()
         runner._send_update_notification = AsyncMock(return_value=True)
         runner._send_restart_notification = AsyncMock()
 
@@ -167,7 +166,6 @@ class TestPlatformReconnectWatcher:
         bootstrap start_polling(drop_pending_updates=True) silently dropped every
         message queued while the bot was offline."""
         runner = _make_runner()
-        runner._sync_voice_mode_state_to_adapter = MagicMock()
 
         runner._failed_platforms[Platform.TELEGRAM] = {
             "config": PlatformConfig(enabled=True, token="test"),
@@ -206,7 +204,6 @@ class TestPlatformReconnectWatcher:
         retries. The watcher's status stamp must publish what the adapter
         reports, not an unconditional "connected" (#101391)."""
         runner = _make_runner()
-        runner._sync_voice_mode_state_to_adapter = MagicMock()
         runner._update_platform_runtime_status = MagicMock()
         runner._failed_platforms[Platform.TELEGRAM] = {
             "config": PlatformConfig(enabled=True, token="test"),
@@ -274,7 +271,6 @@ class TestPlatformReconnectWatcher:
         platform-scoped auto-resume on reconnect.
         """
         runner = _make_runner()
-        runner._sync_voice_mode_state_to_adapter = MagicMock()
         runner._redeliver_failed_obligations_for_platform = AsyncMock(return_value=1)
         runner._schedule_resume_pending_sessions = MagicMock(return_value=1)
 
@@ -861,72 +857,6 @@ async def _instant_sleep(delay, *a, **k):
 _REAL_ASYNCIO_SLEEP = asyncio.sleep
 
 # --- Voice input callback wiring ---
-
-
-class TestVoiceInputCallbackWiring:
-    """Startup and reconnect must wire _voice_input_callback on Discord."""
-
-    @staticmethod
-    def _make_discord_voice_adapter():
-        """A minimal Discord adapter stub with voice attributes."""
-        adapter = MagicMock()
-        adapter._voice_input_callback = None
-        adapter._voice_text_channels = {}
-        adapter._voice_sources = {}
-        adapter.connect = AsyncMock(return_value=True)
-        adapter.disconnect = AsyncMock()
-        return adapter
-
-    def _make_runner_with_discord(self):
-        runner = _make_runner()
-        runner.config = GatewayConfig(
-            platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="test")}
-        )
-        runner._update_runtime_status = MagicMock()
-        runner._update_platform_runtime_status = MagicMock()
-        runner._sync_voice_mode_state_to_adapter = MagicMock()
-        runner._send_update_notification = AsyncMock(return_value=True)
-        runner._send_restart_notification = AsyncMock()
-        runner._suspend_stuck_loop_sessions = MagicMock(return_value=0)
-        runner.hooks = MagicMock()
-        runner.hooks.loaded_hooks = []
-        runner.hooks.emit = AsyncMock()
-        return runner
-
-    @pytest.mark.asyncio
-    async def test_startup_wires_voice_input_callback(self, tmp_path):
-        """Cold-start connect must wire _voice_input_callback on Discord adapter."""
-        runner = self._make_runner_with_discord()
-        adapter = self._make_discord_voice_adapter()
-        runner.config.sessions_dir = tmp_path
-
-        def fake_create_task(coro):
-            coro.close()
-            return MagicMock()
-
-        with patch.object(runner, "_create_adapter", return_value=adapter):
-            with patch("gateway.status.write_runtime_status"):
-                with patch("hermes_cli.plugins.discover_plugins"):
-                    with patch("hermes_cli.config.load_config", return_value={}):
-                        with patch("agent.shell_hooks.register_from_config"):
-                            with patch(
-                                "tools.process_registry.process_registry.recover_from_checkpoint",
-                                return_value=0,
-                            ):
-                                with patch(
-                                    "gateway.channel_directory.build_channel_directory",
-                                    new=AsyncMock(return_value={"platforms": {}}),
-                                ):
-                                    with patch(
-                                        "gateway.run.asyncio.create_task",
-                                        side_effect=fake_create_task,
-                                    ):
-                                        assert await runner.start() is True
-
-        assert adapter._voice_input_callback is not None, (
-            "startup must wire _voice_input_callback"
-        )
-
 
 
 class TestRequeueHealsDeadReconnectWatcher:

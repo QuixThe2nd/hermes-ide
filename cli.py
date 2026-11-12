@@ -42,7 +42,6 @@ from hermes_cli.cli_modal_mixin import CLIModalMixin
 from hermes_cli.cli_stream_mixin import CLIStreamMixin
 from hermes_cli.cli_session_mixin import CLISessionMixin
 from hermes_cli.cli_model_switch_mixin import CLIModelSwitchMixin
-from hermes_cli.cli_voice_mixin import CLIVoiceMixin
 from hermes_cli.cli_status_bar_mixin import CLIStatusBarMixin
 from hermes_cli.cli_tui_mixin import CLITuiMixin
 from hermes_cli.cli_process_notifications import CLIProcessNotificationsMixin
@@ -409,7 +408,7 @@ def _cli_config_defaults():
             # /resume recap tuning and show_reasoning: keep in sync with hermes_cli/config.py DEFAULT_CONFIG
             "resume_display": "full", "resume_exchanges": 10, "resume_max_user_chars": 300,
             "resume_max_assistant_chars": 200, "resume_max_assistant_lines": 3, "resume_skip_tool_only": True,
-            "show_reasoning": True, "reasoning_full": False, "streaming": True, "busy_input_mode": "interrupt",
+            "show_reasoning": True, "reasoning_full": False, "streaming": True,
             "persistent_output": True, "persistent_output_max_lines": 200,
             # Also clear scrollback on redraw/resize recovery; off because users prefer history.
             "cli_rebuild_scrollback_on_redraw": False,
@@ -598,7 +597,6 @@ _cleanup_all_browsers = _lazy_shim("tools.browser_tool_lifecycle", "_emergency_c
 
 _cleanup_done = False  # _run_cleanup runs exactly once
 _cleanup_in_progress = False
-_cli_wake_owner = None
 # One-shot finalization runs before process cleanup (plugins see the boundary while the
 # agent is attached); atexit cleanup must not finalize those sessions again.
 _single_query_finalize_attempted_session_ids: set[str | None] = set()
@@ -775,12 +773,6 @@ def _shutdown_agent_memory_provider(agent) -> None:
         agent.shutdown_memory_provider()
 
 
-def _stop_cli_wake_word() -> None:
-    from tools.wake_word import stop_listening
-    if _cli_wake_owner is not None:
-        stop_listening(owner=_cli_wake_owner)
-
-
 def _interrupt_async_delegations() -> None:
     from tools.async_delegation import interrupt_all
     interrupt_all(reason="CLI shutdown")
@@ -800,7 +792,7 @@ def _shutdown_cached_aux_clients() -> None:
 # Ordered teardown steps (attribute names, resolved at call time so tests can patch them)
 # and the exception class each swallows.
 _CLEANUP_STEPS = (
-    ("_stop_cli_wake_word", Exception), ("_cleanup_all_terminals", Exception),
+    ("_cleanup_all_terminals", Exception),
     ("_interrupt_async_delegations", Exception), ("_cleanup_all_browsers", Exception),
     ("_shutdown_mcp_servers", BaseException), ("_shutdown_cached_aux_clients", Exception),
 )
@@ -2436,23 +2428,6 @@ def _normalize_moa_model(model: Optional[str]) -> tuple[Optional[str], Optional[
 _split_model_config_default = _lazy_shim("hermes_cli.config", "split_model_config_default", "_split_model_config_default")
 
 
-class _VoiceInputMessage:
-    """Sentinel for voice-transcribed input so the concise voice prefix never applies to typed text.
-
-    Distinguishes STT output from manually typed text while voice mode is active, so the
-    concise-voice-response prefix is applied only to messages that actually came from the microphone
-    (#65827).
-    """
-
-    __slots__ = ("text",)
-
-    def __init__(self, text: str):
-        self.text = text
-
-    def __str__(self) -> str:
-        return self.text
-
-
 class _SeededQueryMessage:
     """Sentinel for a ``-q`` prompt seeded into an interactive session; treated LITERALLY (no slash/!/file-drop)."""
 
@@ -2506,28 +2481,23 @@ def _append_blank_panel_line(lines, border_style: str, box_width: int) -> None:
 class _ChatTurn:
     """Per-turn state shared by the ``chat()`` phases and the agent worker thread.
 
-    ``result`` is written by the worker and read after the join; ``tts_normal_exit`` is
-    set only when the TTS worker drained on its own so the last sentence is never cut.
+    ``result`` is written by the worker and read after the join.
     """
 
     result: Optional[dict] = None
     mute_notification_reply: bool = False
-    use_streaming_tts: bool = False
     box_opened: bool = False
     thinking_started: bool = False
     text_queue: Optional[queue.Queue] = None
-    tts_thread: Optional[threading.Thread] = None
     stream_callback: Optional[Any] = None
     stop_event: Optional[threading.Event] = None
-    tts_normal_exit: bool = False
-    voice_prefix: str = ""
 from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
 
 
 _PASTE_REF_RE = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
 
 
-class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
+class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
     """Interactive REPL for the Hermes Agent."""
 
     # Seeded -q first message (see _should_seed_interactive); run() re-creates
@@ -2587,9 +2557,8 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             enabled=display.get("persistent_output", True),
             max_lines=display.get("persistent_output_max_lines", 200),
         )
-        # busy_input_mode: "interrupt" (redirect the run) | "queue" (next turn) | "steer" (inject mid-run).
-        _bim = str(display.get("busy_input_mode", "interrupt")).strip().lower()
-        self.busy_input_mode = _bim if _bim in ("queue", "steer") else "interrupt"
+        # Busy-input behavior is fixed: a message while the agent runs redirects the current run.
+        self.busy_input_mode = "interrupt"
 
         # verbose ONLY controls global DEBUG logging; tool_progress="verbose" is independent
         # (coupling them spewed every module's DEBUG logs to the console).
@@ -2815,7 +2784,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._fallback_model = get_fallback_chain(CLI_CONFIG)
 
     def _init_runtime_state(self, resume):
-        """Session store + all per-run mutable state (queues, overlays, voice/status-bar fields)."""
+        """Session store + all per-run mutable state (queues, overlays, status-bar fields)."""
         # A signature change across turns (/model, credential rotation) rebuilds the agent.
         self._active_agent_route_signature = None
         self.agent: Optional[Any] = None  # initialized on first use
@@ -2933,17 +2902,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._preload_skills_requested: list = []
         self._preload_skills_finalized = False
         self._active_session_lease = None
-
-        # Voice mode state (also reinitialized inside run() for interactive TUI).
-        self._voice_lock = threading.Lock()
-        self._voice_mode = self._voice_tts = self._voice_recording = False
-        self._voice_processing = self._voice_continuous = False
-        self._voice_recorder = self._voice_tts_stop = None
-        self._voice_tts_done = threading.Event()
-        self._voice_tts_done.set()
-        self._voice_barge_capture = threading.Event()  # barge monitor is capturing the interruption
-        self._voice_last_tts_text = ""  # echo guard
-        self._voice_barge_phase = None  # "generation" | "playback"
 
         self._status_bar_visible = _status_bar_visible_from_display_config(CLI_CONFIG.get("display"))
         self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))
@@ -3452,7 +3410,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
     def _tui_process_one_input(self, user_input):
         """Route one submitted input: file drop, /resume pick, ! shell, slash command, or a chat turn."""
         from tools.process_registry_notifications import TimelineNotification
-        user_input, is_voice_input, is_seeded_query = self._tui_unwrap_input(user_input)
+        user_input, is_seeded_query = self._tui_unwrap_input(user_input)
         if not user_input:
             return
         notification_preview = user_input if isinstance(user_input, TimelineNotification) else None
@@ -3467,10 +3425,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             user_input, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(user_input)
             if _had_mouse_reports:
                 self._recover_terminal_input_modes(reason="mouse reports leaked into submitted input")
-
-        # A typed bare stop phrase ends an active voice chat (transcripts are checked earlier).
-        if not is_voice_input and self._typed_voice_stop(user_input):
-            return
 
         # File drops are detected before any dispatch; seeded -q prompts are literal text.
         _file_drop = _detect_file_drop(user_input) if isinstance(user_input, str) and not is_seeded_query else None
@@ -3509,7 +3463,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._turn_summary_begin()
         self._app.invalidate()
         try:
-            self.chat(notification_preview or user_input, images=submit_images or None, voice_input=is_voice_input)
+            self.chat(notification_preview or user_input, images=submit_images or None)
         finally:
             self._tui_after_turn()
 
@@ -3558,22 +3512,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                 hook()
             except Exception as _exc:
                 logging.debug("%s hook failed: %s", what, _exc)
-
-        # Continuous voice: restart recording off-thread (beep + recorder start would block process_loop).
-        if self._voice_mode and self._voice_continuous and not self._voice_recording:
-            def _restart_recording():
-                try:
-                    if self._voice_tts:
-                        self._voice_tts_done.wait(timeout=60)
-                        time.sleep(0.3)
-                    # A barge-in capture already owns the mic and submits the interruption itself.
-                    if self._voice_barge_capture.is_set():
-                        return
-                    self._voice_start_recording()
-                    self._app.invalidate()
-                except Exception as e:
-                    _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
-            threading.Thread(target=_restart_recording, daemon=True).start()
 
         with suppress(Exception):
             self._drain_process_notifications("cli-post-turn")
@@ -3866,9 +3804,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
 
         threading.Thread(target=self._tui_spinner_loop, daemon=True).start()
         threading.Thread(target=self._tui_process_loop, daemon=True).start()
-        # Wake word listener off-thread so a first-run engine install never blocks the prompt.
-        threading.Thread(target=self._tui_wake_startup, daemon=True, name="wake-startup").start()
-
         atexit.register(_run_cleanup)
         self._tui_install_signal_handlers()
 
@@ -3930,7 +3865,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             relaunch(self._pending_relaunch, preserve_inherited=False)
 
     def _tui_shutdown(self):
-        """Teardown after the app exits: interrupt agent, stop voice, persist + close session, cleanup, exit summary."""
+        """Teardown after the app exits: interrupt agent, persist + close session, cleanup, exit summary."""
         self._should_exit = True
         # Without this line the terminal sits silent through the whole cleanup window.
         with suppress(Exception):
@@ -3938,13 +3873,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         if self.agent and self._agent_running:
             with suppress(Exception):
                 request_hard_interrupt(self.agent)
-        if self._voice_recorder:
-            with suppress(Exception):
-                self._voice_recorder.shutdown()
-            self._voice_recorder = None
-        with suppress(Exception):
-            from tools.voice_mode import cleanup_temp_recordings
-            cleanup_temp_recordings()
         from agent.vault_backends.unlock import (lock as _vault_lock, set_code_prompt_callback,
                                                  set_save_login_prompt_callback, set_unlock_prompt_callback)
         for _unset in (set_sudo_password_callback, set_write_review_callback, set_secret_capture_callback,

@@ -21,9 +21,8 @@ The Tool Gateway is included with every paid [Nous Portal](https://portal.nousre
 |---|---|---|
 | 🔍 | **Web search & extract** | Agent-grade web search and full-page extraction via Firecrawl. No rate limits to worry about — the gateway handles scaling. |
 | 🎨 | **Image generation** | Nine models under one endpoint: **FLUX 2 Klein 9B**, **FLUX 2 Pro**, **Z-Image Turbo**, **Nano Banana Pro** (Gemini 3 Pro Image), **GPT Image 1.5**, **GPT Image 2**, **Ideogram V3**, **Recraft V4 Pro**, **Qwen Image**. Pick per-generation with a flag, or let Hermes default to FLUX 2 Klein. |
-| 🔊 | **Text-to-speech** | OpenAI TTS voices wired into the `text_to_speech` tool. Drop voice notes into Telegram, generate audio for pipelines, narrate anything. |
 
-The supported categories are pay-as-you-use billed against your Nous subscription. Use any combination — run the gateway for web and images while keeping your own ElevenLabs key for TTS, or route everything through Nous.
+The supported categories are pay-as-you-use billed against your Nous subscription. Use any combination — run the gateway for web and images while keeping your own keys elsewhere, or route everything through Nous.
 
 ## Why it's here
 
@@ -54,7 +53,7 @@ hermes tools              # Enable the gateway per-tool — pick "Nous Subscript
 
 `hermes setup --portal` and `hermes model` are the all-at-once paths: log in once, optionally flip every tool to the gateway. `hermes tools` is the à la carte path — turn on just the tools you want, one at a time.
 
-**You don't have to log in first.** With `hermes tools`, the Nous-managed backends (Web search, Image, Video, TTS, Browser) are always listed, even if you've never signed into Nous Portal. Select one and Hermes runs the Portal login right there if you aren't already authenticated — no need to run `hermes model` beforehand. If your Nous OAuth is already active, selecting the backend enables it immediately with no extra prompt. This path only logs you in and turns on the one tool you picked — it does **not** switch your inference provider, and it does **not** prompt you to enable the gateway for every other tool.
+**You don't have to log in first.** With `hermes tools`, the Nous-managed backends (Web search, Image, Video, Browser) are always listed, even if you've never signed into Nous Portal. Select one and Hermes runs the Portal login right there if you aren't already authenticated — no need to run `hermes model` beforehand. If your Nous OAuth is already active, selecting the backend enables it immediately with no extra prompt. This path only logs you in and turns on the one tool you picked — it does **not** switch your inference provider, and it does **not** prompt you to enable the gateway for every other tool.
 
 Check what's active at any time:
 
@@ -71,7 +70,6 @@ hermes status             # Full system status (Tool Gateway is one section)
   Nous Portal     ✓ managed tools available
   Web tools       ✓ active via Nous subscription
   Image gen       ✓ active via Nous subscription
-  TTS             ✓ active via Nous subscription
 ```
 
 Tools marked "active via Nous subscription" are going through the gateway. Anything else is using your own keys.
@@ -96,8 +94,7 @@ Picking a Nous model (`hermes model`) offers a per-tool checklist of gateway bac
 The gateway is per-tool. Turn it on for just what you want:
 
 - **All tools through Nous** — easiest; one subscription, done.
-- **Gateway for web + images, bring your own TTS** — keep your ElevenLabs voice, let Nous handle the rest.
-- **Gateway only for things you don't have keys for** — "I already pay for ElevenLabs, but I don't want a Firecrawl account" works fine.
+- **Gateway only for things you don't have keys for** — "I don't want a Firecrawl account" works fine.
 
 Switch any tool at any time via:
 
@@ -143,12 +140,6 @@ web:
 
 image_gen:
   provider: nous         # image generation via the Tool Gateway
-
-tts:
-  provider: nous         # TTS via the Tool Gateway
-
-stt:
-  provider: nous         # speech-to-text via the Tool Gateway
 ```
 
 The runtime **always uses the stored selection** — credential presence never selects or reroutes a category. A `FAL_KEY` sitting in `.env` is ignored while `image_gen.provider: nous`; conversely, `image_gen.provider: fal` with no `FAL_KEY` set produces a clear error instead of silently falling back to the gateway:

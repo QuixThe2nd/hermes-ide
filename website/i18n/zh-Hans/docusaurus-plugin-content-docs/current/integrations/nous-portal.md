@@ -52,7 +52,6 @@ Portal 代理了来自整个生态系统的精选 agentic 模型目录——统�
 |------|---------|--------------|
 | **网页搜索与抓取** | Firecrawl | Agent 级搜索与整页内容提取。无需 Firecrawl API 密钥，无需管理速率限制。 |
 | **图像生成** | FAL | 单一端点下的九个模型：FLUX 2 Klein 9B、FLUX 2 Pro、Z-Image Turbo、Nano Banana Pro（Gemini 3 Pro Image）、GPT Image 1.5、GPT Image 2、Ideogram V3、Recraft V4 Pro、Qwen Image。 |
-| **文字转语音** | OpenAI TTS | 无需独立 OpenAI 密钥的高质量 TTS。在各消息平台上启用[语音模式](../user-guide/features/voice-mode.md)。 |
 | **云端终端沙箱** | Modal | 用于代码执行的无服务器终端沙箱（可选附加项）。 |
 
 不使用 gateway 的话，接入上述每项服务意味着：一个 Firecrawl 账号、一个 FAL 账号、一个 OpenAI 密钥、一个 Modal 账号——四次独立注册、四个独立控制台、四套独立充值流程。使用 gateway 后，所有内容通过一个订阅统一路由。
@@ -96,7 +95,7 @@ hermes setup --portal
 2. 将 refresh token 存储至 `~/.hermes/auth.json`
 3. 让你从精选列表中选择一个 Nous 模型（也可跳过以保留当前模型）
 4. 在 `~/.hermes/config.yaml` 中将 Nous 设为推理提供商（当你选择模型时）
-5. 开启 Tool Gateway（网页、图像、TTS、浏览器路由）
+5. 开启 Tool Gateway（网页、图像、浏览器路由）
 6. 返回终端，即可运行 `hermes chat`
 
 如果还没有订阅，请先在 [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription) 注册。
@@ -185,7 +184,6 @@ hermes model
 hermes tools
 # → 网页搜索       → "Nous Subscription"
 # → 图像生成       → "Nous Subscription"
-# → TTS            → "ElevenLabs"（你的现有密钥）
 ```
 
 Tool Gateway 是按工具单独选择启用的，而非全部或全不。完整的每工具配置矩阵请参阅 [Tool Gateway 文档](../user-guide/features/tool-gateway.md)。
@@ -215,9 +213,6 @@ web:
   backend: nous       # 网页搜索/抓取通过 Tool Gateway 路由
 
 image_gen:
-  provider: nous
-
-tts:
   provider: nous
 
 browser:
@@ -266,7 +261,6 @@ hermes model anthropic/claude-opus-4.6
 
 - **[Tool Gateway](../user-guide/features/tool-gateway.md)** —— 每个 gateway 工具的完整详情、每工具配置及定价
 - **[订阅代理](../user-guide/features/subscription-proxy.md)** —— 在非 Hermes 工具（其他 agent、脚本、第三方客户端）中使用你的 Portal 订阅
-- **[语音模式](../user-guide/features/voice-mode.md)** —— 使用 Portal 的 OpenAI TTS 进行语音对话
 - **[AI 提供商](./providers.md)** —— 完整提供商目录，供对比参考
 - **[OAuth over SSH](../guides/oauth-over-ssh.md)** —— 从远程主机或纯浏览器环境登录
 - **[Profiles](../user-guide/profiles.md)** —— 多个 Hermes 配置共享一个 Portal 登录

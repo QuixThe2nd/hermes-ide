@@ -74,7 +74,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_critical": "#FF6B6B", "session_label": "#DAA520",
             "session_border": "#8B8682", "completion_menu_bg": "#1a1a2e",
             "completion_menu_current_bg": "#333355", "selection_bg": "#3a3a55",
-            "shell_dollar": "#4dabf7", "voice_status_bg": "#1a1a2e"},
+            "shell_dollar": "#4dabf7"},
         # Light overlay (merged onto `colors`). Goldenrod ladder: on white the vivid
         # #FFD700/#FFBF00 read as glare and WCAG-darkened mustard (#867000) as mud; the
         # statusbar's goldenrod family (#B8860B/#DAA520) keeps the hue, tames saturation.
@@ -89,7 +89,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_good": "#2E7D32", "status_bar_warn": "#C8961E", "status_bar_bad": "#C2410C",
             "status_bar_critical": "#B91C1C", "shell_dollar": "#1E6FC0",
             "completion_menu_bg": "#F5F5F5", "completion_menu_current_bg": "#E0D1BF",
-            "selection_bg": "#D4E4F7", "status_bar_bg": "#F5F5F5", "voice_status_bg": "#F5F5F5"},
+            "selection_bg": "#D4E4F7", "status_bar_bg": "#F5F5F5"},
         "spinner": {},  # empty = hardcoded defaults in display.py
         "branding": _HERMES_BRANDING,
         "tool_prefix": "┊"},
@@ -106,7 +106,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_critical": "#EF5350", "session_label": "#C7A96B",
             "session_border": "#6E584B", "completion_menu_bg": "#2A1212",
             "completion_menu_current_bg": "#5C221D", "selection_bg": "#692620",
-            "shell_dollar": "#DD4A3A", "voice_status_bg": "#2A1212"},
+            "shell_dollar": "#DD4A3A"},
         "spinner": {
             "waiting_faces": ["(⚔)", "(⛨)", "(▲)", "(<>)", "(/)"],
             "thinking_faces": ["(⚔)", "(⛨)", "(▲)", "(⌁)", "(<>)"],
@@ -150,7 +150,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_critical": "#F0F0F0", "session_label": "#888888",
             "session_border": "#5E5E5E", "completion_menu_bg": "#1F1F1F",
             "completion_menu_current_bg": "#464646", "selection_bg": "#505050",
-            "shell_dollar": "#aaaaaa", "voice_status_bg": "#1F1F1F"},
+            "shell_dollar": "#aaaaaa"},
         "spinner": {},
         "branding": {**_HERMES_BRANDING, "help_header": "[?] Available Commands"},
         "tool_prefix": "┊"},
@@ -167,7 +167,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_critical": "#FF7A7A", "session_label": "#7eb8f6",
             "session_border": "#545E6B", "completion_menu_bg": "#151C2F",
             "completion_menu_current_bg": "#324867", "selection_bg": "#3A5375",
-            "shell_dollar": "#7eb8f6", "voice_status_bg": "#151C2F"},
+            "shell_dollar": "#7eb8f6"},
         "spinner": {}, "branding": _HERMES_BRANDING, "tool_prefix": "┊"},
     "daylight": {
         "name": "daylight",
@@ -184,7 +184,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_border": "#64748B", "completion_menu_bg": "#F8FAFC",
             "completion_menu_current_bg": "#DBEAFE", "completion_menu_meta_bg": "#EEF2FF",
             "completion_menu_meta_current_bg": "#BFDBFE", "selection_bg": "#D3E0FB",
-            "shell_dollar": "#2563EB", "voice_status_bg": "#E5EDF8"},
+            "shell_dollar": "#2563EB"},
         "spinner": {},
         "branding": {**_HERMES_BRANDING, "help_header": "[?] Available Commands"},
         "tool_prefix": "│"},
@@ -203,7 +203,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_border": "#A0845C", "completion_menu_bg": "#F5EFE0",
             "completion_menu_current_bg": "#E8DCC8", "completion_menu_meta_bg": "#F0E8D8",
             "completion_menu_meta_current_bg": "#DFCFB0", "selection_bg": "#E8DAD0",
-            "shell_dollar": "#8B4513", "voice_status_bg": "#F5F0E8"},
+            "shell_dollar": "#8B4513"},
         "spinner": {}, "branding": _HERMES_BRANDING, "tool_prefix": "┊"},
     "poseidon": {
         "name": "poseidon", "description": "Ocean-god theme — deep blue and seafoam",
@@ -218,7 +218,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_critical": "#D94F4F", "session_label": "#A9DFFF",
             "session_border": "#496884", "completion_menu_bg": "#0F2440",
             "completion_menu_current_bg": "#254D73", "selection_bg": "#2A587F",
-            "shell_dollar": "#5DB8F5", "voice_status_bg": "#0F2440"},
+            "shell_dollar": "#5DB8F5"},
         "spinner": {
             "waiting_faces": ["(≈)", "(Ψ)", "(∿)", "(◌)", "(◠)"],
             "thinking_faces": ["(Ψ)", "(∿)", "(≈)", "(⌁)", "(◌)"],
@@ -262,7 +262,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_critical": "#F5F5F5", "session_label": "#919191",
             "session_border": "#656565", "completion_menu_bg": "#202020",
             "completion_menu_current_bg": "#585858", "selection_bg": "#666666",
-            "shell_dollar": "#E7E7E7", "voice_status_bg": "#202020"},
+            "shell_dollar": "#E7E7E7"},
         "spinner": {
             "waiting_faces": ["(◉)", "(◌)", "(◬)", "(⬤)", "(::)"],
             "thinking_faces": ["(◉)", "(◬)", "(◌)", "(○)", "(●)"],
@@ -308,7 +308,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_border": "#7B593A", "completion_menu_bg": "#0B0503",
             "completion_menu_current_bg": "#4A1B07", "completion_menu_meta_bg": "#120806",
             "completion_menu_meta_current_bg": "#5A260D", "selection_bg": "#5A260D",
-            "shell_dollar": "#F29C38", "voice_status_bg": "#2B160E"},
+            "shell_dollar": "#F29C38"},
         "spinner": {
             "waiting_faces": ["(✦)", "(▲)", "(◇)", "(<>)", "(🔥)"],
             "thinking_faces": ["(✦)", "(▲)", "(◇)", "(⌁)", "(🔥)"],
@@ -504,7 +504,7 @@ _STYLE_PALETTE = (
     ("status_dim", "status_bar_dim", "@dim"), ("ok", "ui_ok", "#8FBC8F"),
     ("status_good", "status_bar_good", "@ok"), ("status_warn", "status_bar_warn", "@warn"),
     ("accent", "banner_accent", "@warn"), ("status_bad", "status_bar_bad", "@accent"),
-    ("status_critical", "status_bar_critical", "@error"), ("voice_bg", "voice_status_bg", "@status_bg"),
+    ("status_critical", "status_bar_critical", "@error"),
     ("menu_bg", "completion_menu_bg", "#1a1a2e"), ("menu_current_bg", "completion_menu_current_bg", "#333355"),
     ("menu_meta_bg", "completion_menu_meta_bg", "@menu_bg"),
     ("menu_meta_current_bg", "completion_menu_meta_current_bg", "@menu_current_bg"))
@@ -534,7 +534,7 @@ _STYLE_TEMPLATES = {
     "sudo-text": "{text}",
     "approval-border": "{input_rule}", "approval-title": "{warn} bold", "approval-desc": "{text} bold",
     "approval-cmd": "{dim} italic", "approval-choice": "{dim}", "approval-selected": "{title} bold",
-    "voice-status": "bg:{voice_bg} {label}", "voice-status-recording": "bg:{voice_bg} {error} bold"}
+}
 
 
 def get_prompt_toolkit_style_overrides() -> Dict[str, str]:

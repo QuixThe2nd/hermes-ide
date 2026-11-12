@@ -69,14 +69,6 @@ gateway:
     full_logs_hint:        "完全なログのアップロードには、CLI から `hermes debug share` を使用してください。"
     share_hint:            "サポートを受けるには、このリンクを Hermes チームに共有してください。"
 
-  footer:
-    status:                "📎 ランタイムフッター: **{state}**\nフィールド: `{fields}`\nプラットフォーム: `{platform}`"
-    usage:                 "使い方: `/footer [on|off|status]`"
-    saved:                 "📎 ランタイムフッター: **{state}**{example}\n_(グローバルに保存しました — 次のメッセージから有効)_"
-    example_line:          "\n例: `{preview}`"
-    state_on:              "ON"
-    state_off:             "OFF"
-
   goal:
     unavailable:           "このセッションでは目標機能を利用できません。"
     no_goal_set:           "目標が設定されていません。"
@@ -320,23 +312,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     mode_log:              "⚙️ ツール進捗: **LOG** — チャットには表示せず、ツール呼び出しを ~/.hermes/logs/tool_calls.log に記録します。"
     saved_suffix:          "_(**{platform}** に保存しました — 次のメッセージから有効)_"
     save_failed:           "_(設定に保存できませんでした: {error})_"
-
-  voice:
-    enabled_voice_only:    "音声モードを有効にしました。\n音声メッセージを送ると音声で返信します。\nすべてのメッセージへの音声返信は /voice tts を使ってください。"
-    disabled_text:         "音声モードを無効にしました。テキストのみで返信します。"
-    tts_enabled:           "自動 TTS を有効にしました。\nすべての返信に音声メッセージが含まれます。"
-    status_mode:           "音声モード: {label}"
-    status_channel:        "音声チャンネル: #{channel}"
-    status_participants:   "参加者: {count}"
-    status_member:         "  - {name}{status}"
-    speaking:              " (発話中)"
-    enabled_short:         "音声モードを有効にしました。"
-    disabled_short:        "音声モードを無効にしました。"
-    label_off:             "オフ (テキストのみ)"
-    label_voice_only:      "オン (音声メッセージにのみ音声で返信)"
-    label_all:             "TTS (すべてのメッセージに音声で返信)"
-    help:                  "{toggle}\n\n**/voice の使い方**\n• `/voice on` — 音声メッセージを送ると音声で返信\n• `/voice tts` — *すべての*メッセージに音声で返信\n• `/voice off` — テキストのみの返信に戻す\n• `/voice status` — 現在のモードを表示\n• `/voice`（引数なし）— オンとオフをすばやく切り替え{channels}"
-    help_channels:         "\n\n**ライブ音声チャンネル (Discord)**\n• 先に音声チャンネルに参加してから `/voice channel` — 参加して聞き取り、音声で返信します\n• `/voice leave` — 音声チャンネルから切断"
 
   shared:
     session_db_unavailable:      "セッションデータベースが利用できません。"

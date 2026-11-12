@@ -69,14 +69,6 @@ gateway:
     full_logs_hint:        "Teljes naplók feltöltéséhez használd a `hermes debug share` parancsot a CLI-ből."
     share_hint:            "Oszd meg ezeket a hivatkozásokat a Hermes csapattal támogatásért."
 
-  footer:
-    status:                "📎 Futási idejű lábléc: **{state}**\nMezők: `{fields}`\nPlatform: `{platform}`"
-    usage:                 "Használat: `/footer [on|off|status]`"
-    saved:                 "📎 Futási idejű lábléc: **{state}**{example}\n_(globálisan elmentve — a következő üzenettől lép életbe)_"
-    example_line:          "\nPélda: `{preview}`"
-    state_on:              "ON"
-    state_off:             "OFF"
-
   goal:
     unavailable:           "A célok nem érhetők el ebben a munkamenetben."
     no_goal_set:           "Nincs cél beállítva."
@@ -320,23 +312,6 @@ Az újraszinkronizálás legfeljebb óránként egyszer fut automatikusan."
     mode_log:              "⚙️ Eszközfolyamat: **LOG** — csendes a csevegésben; az eszközhívások a ~/.hermes/logs/tool_calls.log fájlba íródnak."
     saved_suffix:          "_(elmentve ehhez: **{platform}** — a következő üzenettől lép életbe)_"
     save_failed:           "_(nem sikerült menteni a konfigurációba: {error})_"
-
-  voice:
-    enabled_voice_only:    "Hangmód bekapcsolva.\nHanggal válaszolok, ha hangüzenetet küldesz.\nHasználd a /voice tts parancsot, hogy minden üzenetre hangválaszt kapj."
-    disabled_text:         "Hangmód kikapcsolva. Csak szöveges válaszok."
-    tts_enabled:           "Auto-TTS bekapcsolva.\nMinden válasz tartalmaz egy hangüzenetet."
-    status_mode:           "Hangmód: {label}"
-    status_channel:        "Hangcsatorna: #{channel}"
-    status_participants:   "Résztvevők: {count}"
-    status_member:         "  - {name}{status}"
-    speaking:              " (beszél)"
-    enabled_short:         "Hangmód bekapcsolva."
-    disabled_short:        "Hangmód kikapcsolva."
-    label_off:             "Ki (csak szöveg)"
-    label_voice_only:      "Be (hangválasz hangüzenetekre)"
-    label_all:             "TTS (hangválasz minden üzenetre)"
-    help:                  "{toggle}\n\n**Hogyan működik a /voice**\n• `/voice on` — hangválasz, amikor hangüzenetet küldesz\n• `/voice tts` — hangválasz *minden* üzenetre\n• `/voice off` — vissza a csak szöveges válaszokhoz\n• `/voice status` — az aktuális mód megjelenítése\n• `/voice` (argumentum nélkül) — gyors váltás be és ki között{channels}"
-    help_channels:         "\n\n**Élő hangcsatornák (Discord)**\n• Először lépj be egy hangcsatornába, majd `/voice channel` — csatlakozom, hallgatok és hangosan válaszolok\n• `/voice leave` — lecsatlakozás a hangcsatornáról"
 
   shared:
     session_db_unavailable:      "A munkamenet-adatbázis nem érhető el."

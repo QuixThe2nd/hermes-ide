@@ -37,7 +37,6 @@ def _make_runner(hermes_home=None):
     from gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
-    runner._voice_mode = {}
     runner._update_prompt_pending = {}
     runner._running_agents = {}
     runner._running_agents_ts = {}

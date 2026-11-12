@@ -792,9 +792,6 @@ This is resolved by uv alongside core dependencies — no PYTHONPATH patching, n
 | `matrix` | Matrix/Element (mautrix with encryption; Linux only) |
 | `dingtalk` | DingTalk |
 | `feishu` | Feishu/Lark |
-| `voice` | Local speech-to-text (faster-whisper) |
-| `edge-tts` | Edge TTS provider |
-| `tts-premium` | ElevenLabs TTS |
 | `anthropic` | Native Anthropic SDK (not needed via OpenRouter) |
 | `bedrock` | AWS Bedrock (boto3) |
 | `azure-identity` | Azure Entra ID auth |

@@ -195,44 +195,6 @@ class TestCLIStatusBar:
         assert cli_obj._spinner_widget_height(width=64) == 2
 
 
-    def test_voice_status_bar_compacts_on_narrow_terminals(self):
-        cli_obj = _make_cli()
-        cli_obj._voice_mode = True
-        cli_obj._voice_recording = False
-        cli_obj._voice_processing = False
-        cli_obj._voice_tts = True
-        cli_obj._voice_continuous = True
-
-        fragments = cli_obj._get_voice_status_fragments(width=50)
-
-        assert fragments == [("class:voice-status", " 🎤 Ctrl+B ")]
-
-
-    # Round-13 Copilot review regressions on #19835. The label in voice
-    # status bar / recording hint / placeholder must render the
-    # configured ``voice.record_key`` — not hardcoded Ctrl+B. Pinning
-    # the cache (``set_voice_record_key_cache``) keeps display in sync
-    # with the prompt_toolkit binding without re-reading config on
-    # every render.
-    def test_voice_status_bar_renders_configured_ctrl_letter(self):
-        cli_obj = _make_cli()
-        cli_obj._voice_mode = True
-        cli_obj._voice_recording = False
-        cli_obj._voice_processing = False
-        cli_obj._voice_tts = False
-        cli_obj._voice_continuous = False
-        cli_obj.set_voice_record_key_cache("ctrl+o")
-
-        wide = cli_obj._get_voice_status_fragments(width=120)
-        assert any("Ctrl+O to record" in text for _cls, text in wide)
-
-        compact = cli_obj._get_voice_status_fragments(width=50)
-        assert compact == [("class:voice-status", " 🎤 Ctrl+O ")]
-
-
-
-
-
 class TestCLIUsageReport:
     def test_show_usage_omits_cost_reporting(self, capsys):
         cli_obj = _attach_agent(

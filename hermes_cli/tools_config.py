@@ -27,11 +27,11 @@ from hermes_cli.tools_config_post_setup import (  # noqa: F401
     restorable_python_tool_dependency, _POST_SETUP_READY)
 from hermes_cli.tools_config_providers import (  # noqa: F401
     _plugin_image_gen_providers, _plugin_video_gen_providers, _plugin_web_search_providers,
-    _plugin_tts_providers, web_provider_capabilities, _visible_providers, provider_readiness_status,
+    web_provider_capabilities, _visible_providers, provider_readiness_status,
     _toolset_needs_configuration_prompt, _configure_tool_category, _web_tier_matches, _is_provider_active,
     _detect_active_provider_index, IMAGEGEN_BACKENDS, _plugin_image_gen_catalog, _plugin_video_gen_catalog,
     _configure_imagegen_model, _configure_imagegen_model_for_plugin, _configure_videogen_model_for_plugin,
-    _select_plugin_image_gen_provider, _select_plugin_video_gen_provider, STT_MODEL_CATALOG, _configure_stt_model,
+    _select_plugin_image_gen_provider, _select_plugin_video_gen_provider,
     _write_provider_config, apply_provider_selection, _configure_provider, _reconfigure_provider,
     _configure_vision_backend, _configure_vision_provider_model, _configure_simple_requirements)
 from hermes_cli.tools_config_mcp import (  # noqa: F401
@@ -62,8 +62,6 @@ CONFIGURABLE_TOOLSETS = [
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
     ("video_gen",       "🎬 Video Generation",          "video_generate (text/image/reference)"),
     ("x_search",        "🐦 X (Twitter) Search",        "x_search (xAI OAuth/XAI_API_KEY or x_search.proxy_provider)"),
-    ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
-    ("stt",             "🎙️ Speech-to-Text",           "voice transcription (gateway voice messages + voice mode)"),
     ("skills",          "📚 Skills",                    "view, manage"),
     ("skills_list",     "📚 Skills List (model-facing)", "skills_list tool only (default-off; `hermes skills list` CLI needs no opt-in)"),
     ("todo",            "📋 Task Planning",             "todo_list"),
@@ -133,9 +131,6 @@ def gui_toolset_label(label: str) -> str:
 # always available via the `hermes skills list` CLI command.
 _DEFAULT_OFF_TOOLSETS = {"moa", "video", "video_gen", "x_search", "quota_channels", "assistant_handoff", "file_readonly", "skills_list"}
 
-# Config-only capabilities: provider setup in `hermes tools` (TOOL_CATEGORIES) but not model toolsets — zero
-# schemas, own switch (``stt.enabled``), never in ``platform_toolsets`` or the per-platform checklist.
-_CONFIG_ONLY_TOOLSETS = {"stt"}
 
 
 def _xai_credentials_present() -> bool:
@@ -195,7 +190,7 @@ def _checklist_toolset_keys(platform: str) -> Set[str]:
     read-time-resolved toolsets (recovered composites, MCP names) are NOT here."""
     return {
         ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()
-        if _toolset_allowed_for_platform(ts_key, platform) and ts_key not in _CONFIG_ONLY_TOOLSETS}
+        if _toolset_allowed_for_platform(ts_key, platform)}
 
 
 def _platform_default_toolset(platform: str) -> str:
@@ -242,60 +237,10 @@ def _row(name: str, badge: str = "", tag: str = "", env_vars: list = (), **marke
 
 
 _NOUS = {"requires_nous_auth": True}
-_OPENAI_VOICE_KEY = _key("VOICE_TOOLS_OPENAI_KEY", "OpenAI API key", "https://platform.openai.com/api-keys")
-_ELEVENLABS_KEY = _key("ELEVENLABS_API_KEY", "ElevenLabs API key", "https://elevenlabs.io/app/settings/api-keys")
-_DEEPINFRA_KEY = _key("DEEPINFRA_API_KEY", "DeepInfra API key", "https://deepinfra.com/dash/api_keys")
 _LANGFUSE_PUBLIC = ("HERMES_LANGFUSE_PUBLIC_KEY", "Langfuse public key (pk-lf-...)")
 _LANGFUSE_SECRET = ("HERMES_LANGFUSE_SECRET_KEY", "Langfuse secret key (sk-lf-...)")
 
 TOOL_CATEGORIES = {
-    "tts": {
-        "name": "Text-to-Speech", "icon": "🔊",
-        "providers": [
-            _row("Microsoft Edge TTS", "★ recommended · free", "Good quality, no API key needed", tts_provider="edge"),
-            _row("Nous Subscription", "subscription", "Managed OpenAI TTS billed to your subscription", tts_provider="openai",
-                 **_NOUS, managed_nous_feature="tts", override_env_vars=["VOICE_TOOLS_OPENAI_KEY", "OPENAI_API_KEY"]),
-            _row("OpenAI TTS", "paid", "High quality voices", [_OPENAI_VOICE_KEY], tts_provider="openai"),
-            _row("xAI TTS", tag="Grok voices — uses xAI Grok OAuth or XAI_API_KEY", tts_provider="xai", post_setup="xai_grok",
-                 # tts.xai.proxy_provider pins a named ``providers:`` proxy lane (tools/tts_tool.py);
-                 # a resolvable pin makes the row ready without native xAI credentials. Only THIS row
-                 # carries the lane — the shared xai_grok hook also serves STT/video/x_search rows,
-                 # which must keep requiring native credentials. Resolution is the generic
-                 # named-provider machinery (_get_named_custom_provider), same as the runtime lane.
-                 proxy_lane={"section": "tts", "key_path": ("xai", "proxy_provider")}),
-            _row("ElevenLabs", "paid", "Most natural voices", [_ELEVENLABS_KEY], tts_provider="elevenlabs"),
-            # Mistral Voxtral TTS — `mistralai` SDK lazy-installs on first use.
-            _row("Mistral (Voxtral TTS)", "paid", "Multilingual, native Opus",
-                 [_key("MISTRAL_API_KEY", "Mistral API key", "https://console.mistral.ai/")], tts_provider="mistral"),
-            _row("Google Gemini TTS", "preview", "30 prebuilt voices, controllable via prompts",
-                 [_key("GEMINI_API_KEY", "Gemini API key", "https://aistudio.google.com/app/apikey")], tts_provider="gemini"),
-            _row("KittenTTS", "local · free", "Lightweight local ONNX TTS (~25MB), no API key", tts_provider="kittentts",
-                 post_setup="kittentts"),
-            _row("Piper", "local · free", "Local neural TTS, 44 languages (voices ~20-90MB)", tts_provider="piper",
-                 post_setup="piper"),
-            _row("DeepInfra TTS", "paid", "Chatterbox, Qwen3-TTS, … — live catalog from api.deepinfra.com", [_DEEPINFRA_KEY],
-                 tts_provider="deepinfra"),
-        ],
-    },
-    "stt": {
-        "name": "Speech-to-Text", "icon": "🎙️",
-        "providers": [
-            _row("Local Whisper", "★ recommended · free", "faster-whisper on-device, no API key", stt_provider="local",
-                 post_setup="faster_whisper"),
-            _row("Nous Subscription", "subscription", "Managed OpenAI transcription billed to your subscription",
-                 stt_provider="openai", **_NOUS, managed_nous_feature="stt",
-                 override_env_vars=["VOICE_TOOLS_OPENAI_KEY", "OPENAI_API_KEY"]),
-            _row("OpenAI", "paid", "whisper-1, gpt-4o-transcribe, gpt-transcribe", [_OPENAI_VOICE_KEY], stt_provider="openai"),
-            _row("Groq", "free tier", "Whisper large-v3 family — very fast",
-                 [_key("GROQ_API_KEY", "Groq API key", "https://console.groq.com/keys")], stt_provider="groq"),
-            _row("xAI", tag="grok-stt — uses xAI Grok OAuth or XAI_API_KEY", stt_provider="xai", post_setup="xai_grok"),
-            _row("ElevenLabs Scribe", "paid", "scribe_v2 — diarization + audio-event tagging", [_ELEVENLABS_KEY],
-                 stt_provider="elevenlabs"),
-            # Mistral Voxtral STT intentionally omitted — mistralai PyPI package quarantined (malicious 2.4.6
-            # release, 2026-05-12). Restore alongside the dashboard stt.provider option.
-            _row("DeepInfra", "paid", "Live STT catalog from api.deepinfra.com", [_DEEPINFRA_KEY], stt_provider="deepinfra"),
-        ],
-    },
     "web": {
         "name": "Web Search & Extract", "setup_title": "Select Search Provider",
         "setup_note": "A free DuckDuckGo search skill is also included — skip this if you don't need a premium provider.",
@@ -839,13 +784,13 @@ def _toolset_has_keys(
             return resolve_vision_provider_client()[1] is not None
         except Exception:
             return False
-    if ts_key in {"web", "image_gen", "video_gen", "tts", "stt"}:
+    if ts_key in {"web", "image_gen", "video_gen"}:
         if features is None:
             features = get_nous_subscription_features(config, force_fresh=force_fresh)
         feature = features.features.get(ts_key)
         if feature and (feature.available or feature.managed_by_nous):
             return True
-    # Provider-aware categories first: a no-key provider (Camofox, Edge TTS) counts as configured.
+    # Provider-aware categories first: a no-key provider (Camofox) counts as configured.
     cat = TOOL_CATEGORIES.get(ts_key)
     if cat:
         return any(_provider_env_ready(p) for p in _visible_providers(cat, config, force_fresh=force_fresh, features=features))
@@ -900,10 +845,10 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str], platform: 
     from toolsets import resolve_toolset
 
     tool_tokens = _estimate_tool_tokens()
-    # Drop platform-scoped toolsets that don't apply here and config-only capabilities (stt).
+    # Drop platform-scoped toolsets that don't apply here.
     effective = [
         (k, l, d) for (k, l, d) in _get_effective_configurable_toolsets()
-        if _toolset_allowed_for_platform(k, platform) and k not in _CONFIG_ONLY_TOOLSETS]
+        if _toolset_allowed_for_platform(k, platform)]
     labels = [
         f"{ts_label}  ({ts_desc})"
         + ("  [no API key]" if not _toolset_has_keys(ts_key, force_fresh=force_fresh) and _is_configurable(ts_key) else "")
@@ -1069,8 +1014,8 @@ def _first_install_flow(config: dict, enabled_platforms: List[str]) -> None:
         for ts_key in sorted(auto_configured):
             label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts_key), ts_key)
             print(color(f"  ✓ {label}: using your Nous subscription defaults", Colors.GREEN))
-        # Walk through ALL selected tools with provider options or key requirements, so TTS
-        # (Edge vs OpenAI vs ElevenLabs), etc. are shown even when a free provider exists.
+        # Walk through ALL selected tools with provider options or key requirements, so paid
+        # providers are shown even when a free provider exists.
         _configure_list(
             [ts for ts in sorted(new_enabled) if _is_configurable(ts) and ts not in auto_configured],
             config, selected=False)

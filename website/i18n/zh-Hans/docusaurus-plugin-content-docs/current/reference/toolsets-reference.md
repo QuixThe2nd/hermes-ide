@@ -77,7 +77,6 @@ hermes tools                            # curses UI to enable/disable per platfo
 | `spotify` | `spotify_albums`, `spotify_devices`, `spotify_library`, `spotify_playback`, `spotify_playlists`, `spotify_queue`, `spotify_search` | 原生 Spotify 控制（播放、队列、搜索、播放列表、专辑、音乐库）。由内置 `spotify` 插件注册。 |
 | `terminal` | `process`, `terminal` | Shell 命令执行和后台进程管理。 |
 | `todo` | `todo` | 会话内任务列表管理。 |
-| `tts` | `text_to_speech` | 文本转语音音频生成。 |
 | `vision` | `vision_analyze` | 通过视觉能力模型进行图像分析。 |
 | `video` | `video_analyze` | 视频分析与理解工具（需手动启用，不在默认工具集中——通过 `--toolsets` 显式添加）。 |
 | `web` | `web_extract`, `web_search` | 网页搜索和页面内容提取。 |
@@ -90,9 +89,9 @@ hermes tools                            # curses UI to enable/disable per platfo
 
 | 工具集 | 与 `hermes-cli` 的差异 |
 |--------|------------------------|
-| `hermes-cli` | 完整工具集——交互式 CLI 会话的默认配置。包含 file、terminal、web、browser、memory、skills、vision、image_gen、todo、tts、delegation、code_execution、cronjob、session_search、clarify 和 `safe`（只读）套件，以及标准消息工具。 |
-| `hermes-acp` | 移除了 `clarify`、`cronjob`、`image_generate`、`send_message`、`text_to_speech` 以及全部四个 Home Assistant 工具。专注于 IDE 环境中的编码任务。 |
-| `hermes-api-server` | 移除了 `clarify`、`send_message` 和 `text_to_speech`。保留其他所有工具——适用于无法进行用户交互的程序化访问场景。 |
+| `hermes-cli` | 完整工具集——交互式 CLI 会话的默认配置。包含 file、terminal、web、browser、memory、skills、vision、image_gen、todo、delegation、code_execution、cronjob、session_search、clarify 和 `safe`（只读）套件，以及标准消息工具。 |
+| `hermes-acp` | 移除了 `clarify`、`cronjob`、`image_generate`、`send_message` 以及全部四个 Home Assistant 工具。专注于 IDE 环境中的编码任务。 |
+| `hermes-api-server` | 移除了 `clarify` 和 `send_message`。保留其他所有工具——适用于无法进行用户交互的程序化访问场景。 |
 | `hermes-cron` | 与 `hermes-cli` 相同。 |
 | `hermes-telegram` | 与 `hermes-cli` 相同。 |
 | `hermes-discord` | 在 `hermes-cli` 基础上添加了 `discord` 和 `discord_admin`。 |

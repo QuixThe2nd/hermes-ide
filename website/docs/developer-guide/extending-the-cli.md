@@ -141,9 +141,9 @@ Override this only when you need full control over widget ordering. Most extensi
 
 ```python
 def _build_tui_layout_children(self, *, sudo_widget, secret_widget,
-    approval_widget, clarify_widget, model_picker_widget=None,
-    spinner_widget=None, spacer, status_bar, input_rule_top,
-    image_bar, input_area, input_rule_bot, voice_status_bar,
+    slash_confirm_widget=None, clarify_widget, model_picker_widget=None,
+    command_palette_widget=None, spinner_widget=None, spacer, status_bar,
+    input_rule_top, image_bar, input_area, input_rule_bot,
     completions_menu) -> list:
 ```
 
@@ -154,8 +154,10 @@ The default implementation returns (any `None` widgets are filtered out):
     Window(height=0),       # anchor
     sudo_widget,            # sudo password prompt (conditional)
     secret_widget,          # secret input prompt (conditional)
+    slash_confirm_widget,   # slash-command confirmation prompt (conditional)
     clarify_widget,         # clarify question UI (conditional)
     model_picker_widget,    # model picker overlay (conditional)
+    command_palette_widget, # command palette overlay (conditional)
     spinner_widget,         # thinking spinner (conditional)
     spacer,                 # fills remaining vertical space
     *self._get_extra_tui_widgets(),  # YOUR WIDGETS GO HERE
@@ -164,7 +166,6 @@ The default implementation returns (any `None` widgets are filtered out):
     image_bar,              # attached images indicator
     input_area,             # user text input
     input_rule_bot,         # ─── border below input
-    voice_status_bar,       # voice mode status (conditional)
     completions_menu,       # autocomplete dropdown
 ]
 ```
@@ -179,8 +180,7 @@ The default layout from top to bottom:
 4. **Status bar** — model, context %, elapsed time
 5. **Image bar** — attached image count
 6. **Input area** — user prompt
-7. **Voice status** — recording indicator
-8. **Completions menu** — autocomplete suggestions
+7. **Completions menu** — autocomplete suggestions
 
 ## Tips
 

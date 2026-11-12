@@ -16,7 +16,7 @@ Run `hermes setup --portal` — one OAuth gets you a model provider and all four
 
 ```text
 ~/.hermes/
-├── config.yaml     # Settings (model, terminal, TTS, compression, etc.)
+├── config.yaml     # Settings (model, terminal, compression, etc.)
 ├── .env            # API keys and secrets
 ├── auth.json       # OAuth provider credentials (Nous Portal, etc.)
 ├── SOUL.md         # Primary agent identity (slot #1 in system prompt)
@@ -1385,7 +1385,6 @@ $ hermes model
 
 [ ] vision               currently: auto / main model
 [ ] title_generation     currently: openrouter / google/gemini-3-flash-preview
-[ ] tts_audio_tags       currently: auto / main model
 [ ] compression          currently: auto / main model
 [ ] approval             currently: auto / main model
 [ ] profile_describer    currently: auto / main model
@@ -1479,7 +1478,7 @@ Local OpenAI-compatible servers work under their own names too: `provider: ollam
 :::
 
 :::tip xAI Grok OAuth
-`xai-oauth` logs in via browser OAuth for SuperGrok and X Premium+ subscribers (no API key needed). Run `hermes model` and select **xAI Grok OAuth (SuperGrok / Premium+)** to authenticate. The same OAuth token is reused for every direct-to-xAI surface (chat, auxiliary tasks, TTS, image gen, video gen, transcription). See the [xAI Grok OAuth guide](../guides/xai-grok-oauth.md), and if Hermes is on a remote host see [OAuth over SSH / Remote Hosts](../guides/oauth-over-ssh.md).
+`xai-oauth` logs in via browser OAuth for SuperGrok and X Premium+ subscribers (no API key needed). Run `hermes model` and select **xAI Grok OAuth (SuperGrok / Premium+)** to authenticate. The same OAuth token is reused for every direct-to-xAI surface (chat, auxiliary tasks, image gen, video gen). See the [xAI Grok OAuth guide](../guides/xai-grok-oauth.md), and if Hermes is on a remote host see [OAuth over SSH / Remote Hosts](../guides/oauth-over-ssh.md).
 :::
 
 :::warning `"main"` is for auxiliary tasks only
@@ -1503,14 +1502,6 @@ auxiliary:
                                # CPU-bound encode step so a video-frame fan-out can't saturate
                                # every core and starve the event loop; LLM calls stay fully
                                # concurrent. Minimum 1; values < 1 are ignored.
-
-  # Gemini 3.1 TTS hidden audio-tag insertion
-  tts_audio_tags:
-    provider: "auto"
-    model: ""                  # empty = main chat model
-    base_url: ""
-    api_key: ""
-    timeout: 30
 
   # Context compression timeout (separate from compression.* config)
   compression:
@@ -1674,7 +1665,7 @@ These options apply to **auxiliary task configs** (`auxiliary:`, `compression:`)
 | `"nous"` | Force Nous Portal | `hermes auth` |
 | `"codex"` | Force Codex OAuth (ChatGPT account). Set `model` explicitly (e.g. `gpt-5.4`). | `hermes model` → ChatGPT or Codex Subscription |
 | `"minimax-oauth"` | Force MiniMax OAuth (browser login, no API key). Uses MiniMax-M2.7-highspeed for auxiliary tasks. | `hermes model` → MiniMax (OAuth) |
-| `"xai-oauth"` | Force xAI Grok OAuth (browser login for SuperGrok or X Premium+ subscribers, no API key). Same OAuth token covers chat, TTS, image, video, and transcription. | `hermes model` → xAI Grok OAuth (SuperGrok / Premium+) |
+| `"xai-oauth"` | Force xAI Grok OAuth (browser login for SuperGrok or X Premium+ subscribers, no API key). Same OAuth token covers chat, image, and video. | `hermes model` → xAI Grok OAuth (SuperGrok / Premium+) |
 | `"main"` | Use your active custom/main endpoint. This can come from `OPENAI_BASE_URL` + `OPENAI_API_KEY` or from a custom endpoint saved via `hermes model` / `config.yaml`. Works with OpenAI, local models, or any OpenAI-compatible API. **Auxiliary tasks only — not valid for `model.provider`.** | Custom endpoint credentials + base URL |
 
 Direct API-key providers from the main provider catalog also work here when you want side tasks to bypass your default router. For example, `gmi` is valid once `GMI_API_KEY` is configured, and `fireworks` is valid once `FIREWORKS_API_KEY` is configured:
@@ -2055,52 +2046,6 @@ agent:
 
 Legitimately slow work is not penalized: streaming responses, tool heartbeats (every 30s while a tool runs), and approval waits all keep touching the clock, so only a turn making *zero* progress for the full bound fires the watchdog. Invalid values (a typo, `NaN`, `Inf`, non-positive `poll_s`) log a warning and fall back to the defaults — they never crash startup or silently disable the watchdog. A fired abort reports the stall as it begins recovery, and publishes the definitive aborted/lease-stopped outcome only once the interrupt has actually committed.
 
-## TTS Configuration
-
-```yaml
-tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper" | "deepinfra"
-  speed: 1.0                    # Global speed multiplier (fallback for all providers)
-  edge:
-    voice: "en-US-AriaNeural"   # 322 voices, 74 languages
-    speed: 1.0                  # Speed multiplier (converted to rate percentage, e.g. 1.5 → +50%)
-  elevenlabs:
-    voice_id: "pNInz6obpgDQGcFmaJgB"
-    model_id: "eleven_multilingual_v2"
-  openai:
-    model: "gpt-4o-mini-tts"
-    voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
-    speed: 1.0                  # Speed multiplier (clamped to 0.25–4.0 by the API)
-    base_url: "https://api.openai.com/v1"  # Override for OpenAI-compatible TTS endpoints
-    pcm_sample_rate: 24000      # Streaming PCM rate; overridden by the endpoint's X-Audio-Sample-Rate header
-  minimax:
-    speed: 1.0                  # Speech speed multiplier
-    # base_url: ""              # Optional: override for OpenAI-compatible TTS endpoints
-  mistral:
-    model: "voxtral-mini-tts-2603"
-    voice_id: "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral (default)
-  gemini:
-    model: "gemini-2.5-flash-preview-tts"   # or gemini-3.1-flash-tts-preview
-    voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, etc.
-    audio_tags: false           # Hidden Gemini 3.1 TTS audio-tag insertion
-    persona_prompt_file: ""      # Optional Markdown/text file with Gemini voice direction
-  xai:
-    voice_id: "eve"             # xAI TTS voice
-    language: "en"              # ISO 639-1
-    sample_rate: 24000
-    bit_rate: 128000            # MP3 bitrate
-    # base_url: "https://api.x.ai/v1"
-  neutts:
-    ref_audio: ''
-    ref_text: ''
-    model: neuphonic/neutts-air-q4-gguf
-    device: cpu
-```
-
-This controls both the `text_to_speech` tool and spoken replies in voice mode (`/voice tts` in the CLI or messaging gateway).
-
-**Speed fallback hierarchy:** provider-specific speed (e.g. `tts.edge.speed`) → global `tts.speed` → `1.0` default. Set the global `tts.speed` to apply a uniform speed across all providers, or override per-provider for fine-grained control.
-
 ## Display Settings
 
 ```yaml
@@ -2135,9 +2080,6 @@ display:
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
   turn_summary: true      # CLI only: print a one-line post-turn accounting footer after each interactive turn
   spinner_token_flow: true # CLI only: append live cumulative turn tokens to the spinner timer
-  runtime_footer:         # Gateway: append a runtime-context footer to final replies
-    enabled: false
-    fields: ["model", "context_pct", "cwd", "turn_time", "api_time", "tool_time", "overhead_time", "api_calls"]
   status_bar:             # CLI/TUI: choose which status-bar fields are visible
     fields: []            # empty = show the default set; see below
   file_mutation_verifier: true    # Append an advisory footer when write_file/patch calls failed this turn
@@ -2171,7 +2113,7 @@ The tally is observed from the tool-progress feed the CLI already receives, so i
 
 The count is per-turn (session totals are baselined at turn start) and updates as each API call in the turn reports usage. Nothing renders before the first usage report lands, so you never see a misleading `↓ 0 tok`.
 
-Both keys are display-only and CLI-only: they are suppressed in quiet mode, when `display.tool_progress` is `off`, in single-query/`-Q` batch runs, and in gateway/messaging surfaces (those use `display.runtime_footer` instead). Set either key to `false` to turn it off.
+Both keys are display-only and CLI-only: they are suppressed in quiet mode, when `display.tool_progress` is `off`, in single-query/`-Q` batch runs, and in gateway/messaging surfaces (the gateway instead appends its own runtime footer). Set either key to `false` to turn it off.
 
 ### File-mutation verifier
 
@@ -2265,40 +2207,6 @@ Notes:
 - The same key also filters the **Ink TUI** status rule (`hermes tui`), where `cache_hit`, `latency`, and `tps` render as width-budgeted tail segments (◎ / ◷ / ↑) on terminals ≥96/104/110 columns respectively.
 - Display-only: no effect on prompt caching or request payloads. Changes take effect on the next session start.
 
-### Runtime-metadata footer (gateway only)
-
-When `display.runtime_footer.enabled: true` (the default), Hermes appends a small runtime-context footer to the **final** message of each gateway turn. It can show the model, context-window percentage, working directory, total wall time, time spent in LLM API calls, time spent running tools, remaining agent/gateway overhead, and API-call count, and the effective reasoning effort. Opt out per-gateway (or per-platform via `display.platforms.<platform>.runtime_footer`) if you don't want every reply to include this provenance.
-
-```yaml
-display:
-  runtime_footer:
-    enabled: true
-    fields: ["model", "context_pct", "cwd"]   # order shown; drop any to hide
-```
-
-Supported fields:
-
-| Field | Renders | Example |
-| --- | --- | --- |
-| `model` | Bare model id, vendor prefix dropped; behind a routing proxy that reports a served model, the short served model name instead | `grok-4.6` |
-| `context_pct` | Last-call context occupancy as a percent | `5%` |
-| `latency` | Wall-clock duration of the turn | `22s`, `1m05s` |
-| `served_model` | The model that actually answered, when it differs from the one you configured: the deployment a routing proxy reported in its `x-litellm-model-name` (or `x-litellm-model-id` / `x-litellm-model-api-base`) response header, or the fallback model Hermes switched to for the turn | `hermes-router → gpt-4o-2024-11-20` |
-| `cwd` | Home-relative working directory | `~` |
-| `reasoning` | Effective thinking depth for the turn; off when reasoning is disabled | `medium` |
-
-The default field set also includes the per-turn timing breakdown and call counts (`turn_time`, `api_time`, `tool_time`, `overhead_time`, `api_calls`, `tool_calls`, `reasoning`); the compact three-field example above is an opt-in trim. `latency`, `served_model`, and `cwd` are opt-in — add them to `fields` to use them. `served_model` renders nothing when the served model is the configured one (or when the proxy sends no such header), so behind a routing proxy or an active fallback it is the field that makes the switch visible. Fields whose data is unavailable are skipped silently rather than rendering an empty slot.
-
-The `/footer` slash command toggles this at runtime in any session.
-
-Example footer appended to a Telegram/Discord/Slack reply:
-
-```
-MiniMax-M3 · 10% · 1m10s · api 42s · tools 15s · other 13s · 3 calls · medium
-```
-
-Only the **final** message of a turn gets the footer; interim updates stay clean.
-
 ### Per-platform progress overrides
 
 Different platforms have different verbosity needs. Use `display.platforms` to set per-platform modes:
@@ -2333,110 +2241,6 @@ send `originator: hermes-agent` and `User-Agent: HermesAgent/<version>`.
 The existing ChatGPT account header is preserved. No additional prompt content
 or telemetry request is sent.
 Direct OpenAI API requests and custom proxy endpoints are unchanged.
-
-## Speech-to-Text (STT)
-
-```yaml
-stt:
-  enabled: true                # Auto-transcribe inbound voice messages (default: true)
-  echo_transcripts: true       # Post raw transcripts back to the chat as 🎙️ "..." (default: true)
-  provider: "local"            # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra" | ...
-  language: "en"               # GLOBAL language hint for every provider (per-provider language wins); set "" for auto-detect
-  cloud_trim_silence: true     # trim long pauses with ffmpeg before uploading to a cloud provider (default: true)
-  cloud_trim_threshold_db: -40 # audio quieter than this counts as silence
-  cloud_trim_keep_ms: 300      # how much of each pause survives the trim (keeps natural pacing)
-  # prompt: "Hermes, Teknium, Nous Research, Ollama"   # Static vocabulary hint (see below)
-  local:
-    model: "base"              # tiny, base, small, medium, large-v3
-    language: ""               # per-provider override of stt.language
-    initial_prompt: ""         # optional whisper prompt to bias vocabulary/script (e.g. Simplified Chinese)
-    vad: true                  # Silero VAD filter (default on) — silence never reaches whisper; false = raw behavior (music/ambient)
-    vad_min_silence_ms: 500    # min silence (ms) that splits speech chunks when vad is on
-    no_speech_prob_threshold: 0.6  # drop a segment only when no_speech_prob > this...
-    logprob_threshold: -1.0        # ...AND avg_logprob < this (both must hit — quiet real speech survives)
-    unload_after_idle_seconds: 0   # 0=never unload (default); e.g. 300 = release the model after 5min idle
-  groq:
-    language: ""               # per-provider override of stt.language
-  openai:
-    model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe | gpt-transcribe
-    language: ""               # per-provider override of stt.language
-    timeout: 60                # seconds per transcription request; raise for self-hosted model cold starts
-    max_retries: 1             # SDK transport retries (connection errors, 408/409/429/5xx); 0 = single attempt
-  # model: "whisper-1"         # Legacy fallback key still respected
-```
-
-Language resolution is the same for **every** STT provider (local, groq, openai, mistral, xai, elevenlabs, deepinfra, command providers, and plugins): `stt.<provider>.language` → `stt.language` → `HERMES_LOCAL_STT_LANGUAGE` env var → provider auto-detect. **The default is `stt.language: "en"`** — Whisper auto-detection frequently misidentifies short or accented clips, which shows up as voice notes transcribed in the wrong language. Non-English speakers should set `stt.language` to their language code once (e.g. `"es"`, `"zh"`, `"uk"`); set it to `""` to restore auto-detection for multilingual use.
-
-`stt.openai.timeout` and `stt.openai.max_retries` shape the OpenAI-SDK transcription client that the `openai`, `groq` and `deepinfra` providers share (there are no per-provider siblings yet, and the SDK reads no environment variables for these). The defaults are `60` / `1` rather than the previous fixed 30 s / no retries because a self-hosted OpenAI-compatible endpoint can take longer than 30 s to load its model on the first request, which used to lose that voice message outright. The trade-off: an unreachable backend now holds a voice message for up to two attempts × the timeout before Hermes gives up; set `timeout: 30` and `max_retries: 0` for the old shape.
-
-Set `stt.echo_transcripts: false` when the gateway should transcribe voice notes for the agent but must not post the raw transcript back to the chat (for example, customer-facing WhatsApp bots).
-
-Provider behavior:
-
-- `local` uses `faster-whisper` running on your machine. Install it separately with `pip install faster-whisper`. Silence-hallucination hardening is on by default: a Silero VAD filter keeps silence/noise from ever reaching Whisper, cross-window conditioning is disabled, and segments the model itself flags as probably-not-speech *and* low-confidence are dropped. Set `stt.local.vad: false` to transcribe non-speech audio (music, ambient) with the raw behavior. The model stays loaded in memory between voice messages for low-latency transcription; set `stt.local.unload_after_idle_seconds` (e.g. `300` for 5 minutes) to automatically release the model when idle. This frees GPU memory on CUDA hosts (the main win when a local LLM shares the GPU); on CPU the memory becomes reusable by the process, though the OS-visible footprint may not shrink until the process needs the space for something else. The next voice message reloads the model transparently.
-- `groq` uses Groq's Whisper-compatible endpoint and reads `GROQ_API_KEY`. Pass `stt.groq.language` (or the global `HERMES_LOCAL_STT_LANGUAGE` env var) to skip auto-detection and reduce latency.
-- `openai` uses the OpenAI speech API and reads `VOICE_TOOLS_OPENAI_KEY`.
-
-Cloud providers (groq, openai, mistral, xai, elevenlabs, deepinfra) get a **pre-upload silence trim** by default when `ffmpeg` is installed: long pauses in a voice note are collapsed client-side before the file uploads, keeping `cloud_trim_keep_ms` of each pause so natural pacing survives. Shorter audio means faster uploads, lower per-audio-minute billing, and fewer silence hallucinations from the remote model. Clips shorter than 12 seconds skip the trim entirely (savings can't matter there, and several providers bill a per-request minimum anyway). The trim is best-effort — if ffmpeg is missing, the trim fails, the clip is mostly silence, or trimming would save less than ~10%, the original file is uploaded untouched. Set `stt.cloud_trim_silence: false` to always upload the original (e.g. when transcribing music or ambient audio through a cloud provider). Command-type and plugin providers never get trimmed audio.
-
-An explicitly selected `stt.provider` is honored strictly — if it's unavailable, transcription errors with guidance to run `hermes tools` rather than switching providers. Only when no provider has ever been selected does Hermes auto-detect in this order: `local` → `groq` → `openai`.
-
-Groq and OpenAI model overrides are environment-driven:
-
-```bash
-STT_GROQ_MODEL=whisper-large-v3-turbo
-STT_OPENAI_MODEL=whisper-1
-GROQ_BASE_URL=https://api.groq.com/openai/v1
-STT_OPENAI_BASE_URL=https://api.openai.com/v1
-```
-
-### Transcription prompt (vocabulary hints)
-
-`stt.prompt` is an optional static hint passed to prompt-capable STT backends. Use it for proper nouns, product names, and jargon that Whisper-family models otherwise mis-hear:
-
-```yaml
-stt:
-  provider: "local"
-  prompt: "Hermes, Teknium, Nous Research, Ollama"
-```
-
-**Composition.** The config value is the base. Plugins that register the [`pre_transcription`](./features/hooks.md#pre_transcription) hook mutate on top of it, last-writer-wins per field. Multiple plugins' hints compose deterministically: plugin discovery loads plugins in sorted order by plugin id, and each plugin's callbacks run in its own registration order, so the same set of plugins always produces the same final prompt. A hook returning an empty string for `prompt` clears the config prompt for that request. Hooks may also override `language` and `model`; `file_path` is read-only and any attempt to change it is logged and dropped. With no hook registered and no `stt.prompt` set, the outgoing request is identical to previous releases.
-
-**Provider support.**
-
-| Provider | Prompt parameter | Behavior |
-|----------|-----------------|----------|
-| `local` (faster-whisper) | `initial_prompt` | Forwarded unchanged to the local model |
-| `openai` | `prompt` | Forwarded unchanged in the transcription request |
-| `groq` | `prompt` | Forwarded unchanged in the transcription request |
-| `mistral` | `prompt` | Forwarded unchanged in the transcription request |
-| `deepinfra` | `prompt` | OpenAI-compatible path, forwarded unchanged |
-| `xai` | not supported | Logged at DEBUG, the request proceeds without the prompt |
-| `elevenlabs` | not supported | Logged at DEBUG, the request proceeds without the prompt |
-| `local_command` | not supported | Logged at DEBUG, the request proceeds without the prompt |
-| `stt.providers.<name>` with `type: command` | not supported | Logged at DEBUG, the request proceeds without the prompt |
-| Plugin-registered providers | `prompt` in the `transcribe(**extra)` kwargs | Only sent when a prompt is set, so providers that predate this key see unchanged calls |
-
-**Length.** Whisper-family models only condition on the final ~224 prompt tokens. For the whisper-family backends (`local`, `openai`, `groq`, `deepinfra`) Hermes enforces that cap client-side: an over-long final prompt is truncated to its tail with a logged warning — the request never errors because of prompt length. Other backends (`mistral`, plugin providers) receive the prompt unchanged and own their own validation. Keep hints short and specific either way.
-
-:::warning Prompts are uploaded with your audio
-The final prompt is sent to the configured STT provider alongside the audio file. Keep secrets and session-derived context out of `stt.prompt` and out of anything a `pre_transcription` hook returns, especially when the provider is a hosted API rather than local `faster-whisper`.
-:::
-
-## Voice Mode (CLI)
-
-```yaml
-voice:
-  record_key: "ctrl+b"         # Push-to-talk key inside the CLI
-  max_recording_seconds: 120    # Hard stop for long recordings
-  auto_tts: false               # Enable spoken replies automatically when /voice on
-  beep_enabled: true            # Play record start/stop beeps in CLI voice mode
-  beep_volume: 0.3              # Beep amplitude (0.0-1.0); raise it on quiet systems / headphones
-  silence_threshold: 200        # RMS threshold for speech detection
-  silence_duration: 3.0         # Seconds of silence before auto-stop
-```
-
-Use `/voice on` in the CLI to enable microphone mode, `record_key` to start/stop recording, and `/voice tts` to toggle spoken replies. See [Voice Mode](./features/voice-mode.md) for end-to-end setup and platform-specific behavior.
 
 ## Streaming
 

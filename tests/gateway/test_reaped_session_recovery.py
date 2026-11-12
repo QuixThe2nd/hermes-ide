@@ -62,7 +62,6 @@ def _make_runner(store) -> GatewayRunner:
     )
     runner.adapters = {Platform.TELEGRAM: _FakeAdapter()}
     runner._pending_messages = {}
-    runner._voice_mode = {}
     runner._background_tasks = set()
     runner._draining = False
     runner._restart_requested = False

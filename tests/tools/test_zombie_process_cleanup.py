@@ -319,7 +319,6 @@ class TestGatewayCleanupWiring:
         runner._restart_detached = False
         runner._restart_via_service = False
         runner._restart_drain_timeout = 0.1
-        runner._voice_mode = {}
         runner._session_model_overrides = {}
         runner._update_prompt_pending = {}
         runner._busy_input_mode = "interrupt"

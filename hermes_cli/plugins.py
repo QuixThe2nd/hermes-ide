@@ -145,10 +145,6 @@ VALID_HOOKS: Set[str] = {
     # path (agent.plugin_stream_hooks); never written to the durable room log. Kwargs: those
     # coordinates + kind, seq, payload (the client-safe session event payload, approvals redacted).
     "on_room_member_activity",
-    # pre_transcription: after provider resolution, BEFORE any backend runs. Kwargs: file_path,
-    # provider, model, language, prompt, source. Return None or a dict mutating prompt/language/
-    # model (registration order, last-writer-wins; file_path is read-only).
-    "pre_transcription",
     # gateway_platform_event: normalized envelopes only, never raw SDK objects or adapter handles.
     # Kwargs: platform, event_type, payload (event_type-local; see hooks.md). New event types land
     # only together with real fire-sites.
@@ -1151,17 +1147,6 @@ _SCOPED_PROVIDER_REGISTRARS: Tuple[Tuple[str, str, str, str, str, str, Dict[str,
      "orchestrator owns ordering/precedence/provenance; the source only fetches. Since dotenv usually "
      "loads before discovery, the manager re-pulls enabled plugin sources afterwards.",
      {"normalize": None, "register": "register_source", "param": "source"}),
-    ("register_tts_provider", "tts_provider", "agent.tts_registry",
-     "agent.tts_provider:TTSProvider", "TTS provider",
-     "Register an :class:`agent.tts_provider.TTSProvider`; ``provider.name`` is matched by "
-     "``tts.provider`` unless it is a built-in name (rejected with a warning) or a "
-     "``tts.providers.<name>: type: command`` entry shares it (command-providers win).",
-     {"normalize": "lower"}),
-    ("register_transcription_provider", "transcription_provider", "agent.transcription_registry",
-     "agent.transcription_provider:TranscriptionProvider", "transcription provider",
-     "Register an :class:`agent.transcription_provider.TranscriptionProvider`; ``provider.name`` is "
-     "matched by ``stt.provider`` unless it is a built-in name (rejected) or a ``stt.providers.<name>: "
-     "type: command`` entry shares it (command-providers win).", {"normalize": "lower"}),
 )
 
 _NAME_NORMALIZERS: Dict[Optional[str], Optional[Callable[[str], str]]] = {

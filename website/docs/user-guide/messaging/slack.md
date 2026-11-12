@@ -93,7 +93,7 @@ Navigate to **Features → OAuth & Permissions** in the sidebar. Scroll to **Sco
 | `mpim:history` | Read group direct message (multi-person DM) history |
 | `mpim:read` | View basic group DM info |
 | `users:read` | Look up user information |
-| `files:read` | Read and download attached files, including voice notes/audio |
+| `files:read` | Read and download attached files, including audio files |
 | `files:write` | Upload files (images, audio, documents) |
 
 :::caution Missing scopes = missing features
@@ -866,22 +866,12 @@ unauthorized_dm_behavior: "pair"
 
 The platform-specific setting under `slack:` takes precedence over the global setting.
 
-### Voice Transcription
-
-```yaml
-# Global setting — enable/disable automatic transcription of incoming voice messages
-stt_enabled: true
-```
-
-When `true` (the default), incoming audio messages are automatically transcribed using the configured STT provider before being processed by the agent.
-
 ### Full Example
 
 ```yaml
 # Global gateway settings
 group_sessions_per_user: true
 unauthorized_dm_behavior: "pair"
-stt_enabled: true
 
 # Slack-specific settings
 slack:
@@ -982,15 +972,6 @@ Tokens from this file are merged with any tokens specified via `SLACK_BOT_TOKEN`
 - Each token is authenticated via `auth.test` on startup. The gateway maps each `team_id` to its own `WebClient` and `bot_user_id`.
 - When a message arrives, Hermes uses the correct workspace-specific client to respond.
 - The primary `bot_user_id` (from the first token) is used for backward compatibility with features that expect a single bot identity.
-
----
-
-## Voice Messages
-
-Hermes supports voice on Slack:
-
-- **Incoming:** Voice/audio messages are automatically transcribed using the configured STT provider: local `faster-whisper`, Groq Whisper (`GROQ_API_KEY`), or OpenAI Whisper (`VOICE_TOOLS_OPENAI_KEY`)
-- **Outgoing:** TTS responses are sent as audio file attachments
 
 ---
 

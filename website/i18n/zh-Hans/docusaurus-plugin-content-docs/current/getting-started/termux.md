@@ -32,7 +32,6 @@ python -m pip install -e '.[termux]' -c constraints-termux.txt
 部分功能仍依赖桌面/服务器风格的依赖项，这些依赖项尚未为 Android 发布，或尚未在手机上验证：
 
 - `.[all]` 目前不支持 Android
-- `voice` 扩展被 `faster-whisper -> ctranslate2` 阻塞，`ctranslate2` 未发布 Android wheel 包
 - 自动浏览器 / Playwright 引导在 Termux 安装程序中被跳过
 - 基于 Docker 的终端隔离在 Termux 内不可用
 - Android 可能仍会挂起 Termux 后台任务，因此 gateway 持久化是尽力而为，而非正常的托管服务
@@ -75,7 +74,7 @@ pkg install -y git python clang rust make pkg-config libffi openssl nodejs ripgr
 - `clang`、`rust`、`make`、`pkg-config`、`libffi`、`openssl` — 在 Android 上构建部分 Python 依赖所需
 - `nodejs` — 可选的 Node 运行时，用于已验证核心路径之外的实验
 - `ripgrep` — 快速文件搜索
-- `ffmpeg` — 媒体 / TTS 转换
+- `ffmpeg` — 媒体转换
 
 ### 2. 克隆 Hermes
 
@@ -171,10 +170,6 @@ npm install --workspaces=false
 python -m pip install -e '.[termux]' -c constraints-termux.txt
 ```
 
-当前阻塞原因是 `voice` 扩展：
-- `voice` 依赖 `faster-whisper`
-- `faster-whisper` 依赖 `ctranslate2`
-- `ctranslate2` 未发布 Android wheel 包
 
 ### `uv pip install` 在 Android 上失败
 

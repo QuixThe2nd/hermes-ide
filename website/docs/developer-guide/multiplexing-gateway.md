@@ -270,7 +270,7 @@ Process-global state that is not yet profile-scoped:
 | MCP discovery and tool registration | Process-global; the first profile to build an agent wins the discovery slot. Full per-profile MCP registries are tracked in `#67605`. |
 | Terminal / sandbox env (`TERMINAL_*`) | Global by allowlist; tools read it from the process environment. |
 | Built-in tool registry | Built-ins are process-global; plugin-registered tools are overlaid per profile via `hermes_home_key()`. |
-| Provider/capability registries | Same hybrid overlay pattern (browser, image-gen, TTS, transcription, video-gen, web-search, secret sources). |
+| Provider/capability registries | Same hybrid overlay pattern (browser, image-gen, video-gen, web-search, secret sources). |
 | HTTP listener, relay ingress, process lock | One per process, owned by the default/active profile. Per-profile `runtime_status.json` is still written. |
 
 ## Non-goals

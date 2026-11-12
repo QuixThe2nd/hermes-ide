@@ -191,7 +191,7 @@ The adapter receives media attachments from users, downloads them from the WeCha
 | **Images** | Downloaded, AES-decrypted, and cached as JPEG. |
 | **Video** | Downloaded, AES-decrypted, and cached as MP4. |
 | **Files** | Downloaded, AES-decrypted, and cached. Original filename is preserved. |
-| **Voice** | If a text transcription is available, it's extracted as text. Otherwise the audio (SILK format) is downloaded and cached. |
+| **Voice** | If WeChat provides its own transcription of the message, that text is used. Otherwise the audio (SILK format) is downloaded and cached as a file for the agent to process. |
 
 **Quoted messages:** Media from quoted (replied-to) messages is also extracted, so the agent has context about what the user is replying to.
 

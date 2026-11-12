@@ -193,25 +193,6 @@ def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bo
     return is_voice or normalized_ext in _TELEGRAM_AUDIO_ATTACHMENT_EXTS
 
 
-def build_auto_tts_output_path(platform) -> str:
-    """Unique temp output path for gateway auto-TTS: ``.ogg`` for ``OPUS_VOICE_PLATFORMS``
-    (the tool's ``_repair_ogg_container`` then guarantees real Opus bytes), else ``.mp3``.
-    Platform-awareness lives HERE because ``_clear_session_env`` wipes the TTS tool's
-    ``HERMES_SESSION_PLATFORM`` contextvar before the post-handler auto-TTS block runs.
-
-    Platforms whose native voice bubbles require Ogg/Opus (``tools.tts_tool.OPUS_VOICE_PLATFORMS`` — the
-    single source of truth) get an explicit ``.ogg`` path; the tool's central container repair
-    (``_repair_ogg_container``) then guarantees real Ogg/Opus bytes for every provider, including MP3-only
-    backends like Edge TTS. Everything else keeps the MP3 default. See #36685, #57049.
-    """
-    from tools.tts_tool import OPUS_VOICE_PLATFORMS
-    ext = "ogg" if _platform_name(platform) in OPUS_VOICE_PLATFORMS else "mp3"
-    audio_path = os.path.join(
-        tempfile.gettempdir(), "hermes_voice", f"tts_reply_{uuid.uuid4().hex[:12]}.{ext}")
-    os.makedirs(os.path.dirname(audio_path), exist_ok=True)
-    return audio_path
-
-
 def utf16_len(s: str) -> int:
     """UTF-16 code units in *s* — Telegram's 4 096 limit counts those, so astral chars
     (emoji, CJK Ext B) cost **two** units although Python's ``len()`` counts one.
@@ -392,47 +373,6 @@ from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes
 
 if TYPE_CHECKING:
     from agent.display import ToolPreview
-
-@dataclass
-# --------------------------------------------------------------------------- Streaming TTS format
-# descriptor and handle (#60671) ---------------------------------------------------------------------------
-class AudioFormat:
-    """Declared PCM format for a streaming-TTS session: every ``write_streaming_tts``
-    chunk must be raw little-endian PCM at this rate / channels / sample width."""
-    sample_rate: int = 24000
-    channels: int = 1
-    sample_width: int = 2  # bytes per sample (int16 = 2)
-
-
-@dataclass
-class StreamingTTSHandle:
-    """Opaque handle returned by ``begin_streaming_tts``; adapters may extend it with
-    platform state. The base fields are consumer bookkeeping / cancellation."""
-    chat_id: str = ""
-    audio_format: AudioFormat = field(default_factory=AudioFormat)
-    # True once the first PCM chunk is written: a later failure then ends cleanly instead of
-    # falling back to whole-file TTS (don't replay already-audible output).
-    audible: bool = False
-    aborted: bool = False  # set by abort_streaming_tts; late chunks are dropped
-
-
-def streaming_tts_turn_key(session_key: str | None, turn_marker: Any = None, *, event: Any = None) -> str | None:
-    """Per-turn streaming-TTS suppression key — turn-scoped (not chat-scoped) so
-    overlapping turns in one chat can't suppress each other's fallback paths.
-    ``turn_marker`` is normally the run generation, else the event's message/update id."""
-    if not session_key:
-        return None
-    if turn_marker is None and event is not None:
-        turn_marker = getattr(event, "message_id", None) or getattr(event, "platform_update_id", None)
-    return None if turn_marker is None else f"{session_key}:{turn_marker}"
-
-
-def streaming_tts_should_skip_whole_file(completed_turns: set[str], session_key: str | None,
-                                         turn_marker: Any = None, *, event: Any = None) -> bool:
-    """Pure, turn-scoped auto-TTS suppression decision (testable without the adapter stack)."""
-    turn_key = streaming_tts_turn_key(session_key, turn_marker, event=event)
-    return bool(turn_key and turn_key in completed_turns)
-
 
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
     "Secure secret entry is not supported over messaging. "
@@ -1883,14 +1823,6 @@ class BasePlatformAdapter(ABC):
         self._shared_listener_profile: Optional[str] = None
         # Registered by GatewayRunner (see set_authorization_check).
         self._authorization_check: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None
-        # Auto-TTS on voice input: ``voice.auto_tts`` default plus per-chat /voice on|tts / off.
-        self._auto_tts_default: bool = False
-        self._auto_tts_enabled_chats, self._auto_tts_disabled_chats = set(), set()
-        # Turn keys where streaming TTS already delivered audio; whole-file auto-TTS skips them.
-        # When the gateway streaming-TTS consumer successfully delivers audio, it adds the turn key here so
-        # the base adapter's whole-file auto-TTS path skips the duplicate. Cleared after the turn completes.
-        # See #60671.
-        self._streaming_tts_completed_turns: set[str] = set()
         # Chats whose typing indicator is paused (interactive waits); _keep_typing skips them.
         self._typing_paused: set = set()
         # Per-chat status phrase; the regular _keep_typing refresh renders it (no extra API calls).
@@ -2007,16 +1939,6 @@ class BasePlatformAdapter(ABC):
     fatal_error_message = property(lambda self: self._fatal_error_message)
     fatal_error_code = property(lambda self: self._fatal_error_code)
     fatal_error_retryable = property(lambda self: self._fatal_error_retryable)
-
-    def _should_auto_tts_for_chat(self, chat_id: str) -> bool:
-        """Whether auto-TTS fires for ``chat_id``: explicit ``/voice on|tts`` wins,
-        then explicit ``/voice off``, then the global ``voice.auto_tts`` default.
-
-        Decision layers (Issue #16007): 1. Explicit ``/voice on`` or ``/voice tts`` → always fire (even if
-        ``voice.auto_tts`` is False). 2. 3.
-        """
-        return chat_id in self._auto_tts_enabled_chats or (
-            chat_id not in self._auto_tts_disabled_chats and bool(self._auto_tts_default))
 
     def set_fatal_error_handler(self, handler: Callable[["BasePlatformAdapter"], Awaitable[None] | None]) -> None:
         self._fatal_error_handler = handler
@@ -2823,63 +2745,6 @@ class BasePlatformAdapter(ABC):
         """Presentation policy under the caller's owning profile; old plugins inherit it."""
         from gateway.warning_notifications import warning_notifications_enabled
         return warning_notifications_enabled(logical_platform or self.platform)
-
-    def prepare_tts_text(self, text: str) -> str:
-        """Chat Markdown -> transcript-like spoken script (reasoning blocks removed,
-        headings/bullets flattened, units expanded). Chunking and delivery limits are the TTS tool's
-        job."""
-        try:
-            from tools.tts_text_normalize import prepare_spoken_text
-            return prepare_spoken_text(text, max_chars=None)
-        except Exception:
-            # Keep auto-TTS best-effort if the normalizer ever fails.
-            text = re.sub(r'<think[\s>].*?</think>', ' ', text, flags=re.DOTALL)
-            return re.sub(r'[*_`#\[\]()]', '', text).strip()
-
-    async def play_tts(self, chat_id: str, audio_path: str, **kwargs) -> SendResult:
-        """Play auto-TTS audio; override for invisible playback (Web UI). Default: send_voice."""
-        return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
-
-    # ── Streaming TTS contract: voice adapters accept PCM chunks while the LLM generates.
-    # Defaults report "unsupported" (whole-file fallback).
-
-    # ------------------------------------------------------------------ Streaming TTS adapter contract
-    # (#60671) ------------------------------------------------------------------ Voice-capable adapters
-    # (LiveKit, Discord voice, …) override these to accept PCM audio chunks while the LLM is still
-    # generating. The default implementations report "unsupported" so existing adapters are
-    # source-compatible and keep the whole-file auto-TTS fallback.
-    def supports_streaming_tts(self, chat_id: str, audio_format: AudioFormat) -> bool:
-        """Return True when this adapter can accept streaming PCM for *chat_id*."""
-        return False
-
-    async def begin_streaming_tts(
-        self, chat_id: str, audio_format: AudioFormat, metadata: Optional[Dict[str, Any]] = None,
-    ) -> Optional[StreamingTTSHandle]:
-        """Open a streaming-audio session; returns an opaque handle for the
-        write/finish/abort calls, or ``None`` to decline (whole-file fallback)."""
-        return None
-
-    async def write_streaming_tts(self, handle: StreamingTTSHandle, chunk: bytes) -> None:
-        """Write one PCM chunk to the adapter's outbound audio track."""
-
-    async def finish_streaming_tts(self, handle: StreamingTTSHandle, *, interrupted: bool = False) -> None:
-        """Signal normal end of the audio stream."""
-
-    async def abort_streaming_tts(self, handle: StreamingTTSHandle, error: Optional[str] = None) -> None:
-        """Abort the stream due to an error or cancellation. Must be idempotent: late producer
-        chunks after abort are silently dropped, not raised. Restores state to "not streaming"."""
-
-    def _streaming_tts_turn_key(self, session_key: str | None, turn_marker: Any = None, *, event: Any = None) -> str | None:
-        return streaming_tts_turn_key(session_key, turn_marker, event=event)
-
-    def _mark_streaming_tts_completed_turn(self, session_key: str | None, turn_marker: Any = None, *, event: Any = None) -> None:
-        turn_key = self._streaming_tts_turn_key(session_key, turn_marker, event=event)
-        if turn_key is not None:
-            _lazy_attr(self, "_streaming_tts_completed_turns", set).add(turn_key)
-
-    def _streaming_tts_turn_completed(self, session_key: str | None, turn_marker: Any = None, *, event: Any = None) -> bool:
-        return streaming_tts_should_skip_whole_file(
-            getattr(self, "_streaming_tts_completed_turns", set()), session_key, turn_marker, event=event)
 
     async def send_video(
         self, chat_id: str, video_path: str, caption: Optional[str] = None,
@@ -3975,52 +3840,6 @@ class BasePlatformAdapter(ABC):
             event._gateway_processing_deferred = True
             event._gateway_accepted = True
 
-    async def _synthesize_auto_tts(self, text_content: str) -> Tuple[List[str], Optional[str]]:
-        """Synthesize auto-TTS audio -> ``(existing_paths, requested_path)``; empty/None on failure
-        (logged, never raised). Path built platform-aware HERE: HERMES_SESSION_PLATFORM is cleared
-        post-handler."""
-        paths: List[str] = []
-        requested_path = None
-        try:
-            from tools.tts_tool import text_to_speech_tool, check_tts_requirements
-            if check_tts_requirements():
-                import json as _json
-                speech_text = self.prepare_tts_text(text_content)
-                if not speech_text:
-                    raise ValueError("Empty text after markdown cleanup")
-                requested_path = build_auto_tts_output_path(self.platform)
-                tts_data = _json.loads(await asyncio.to_thread(
-                    text_to_speech_tool, text=speech_text, output_path=requested_path))
-                if tts_data.get("success", True):
-                    raw_tts_paths = tts_data.get("file_paths") or [tts_data.get("file_path")]
-                    paths = [str(path) for path in raw_tts_paths if path and Path(path).exists()]
-        except Exception as tts_err:
-            logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
-        return paths, requested_path
-
-    def _wants_auto_tts(self, event: MessageEvent, session_key: str, interrupt_event: asyncio.Event,
-                        text_content: str, media_files: list) -> bool:
-        """Auto-TTS on voice input (voice-first), gated by /voice or voice.auto_tts;
-        skipped when streaming TTS already delivered audio this turn."""
-        generation = getattr(interrupt_event, "_hermes_run_generation", None)
-        return bool(
-            self._should_auto_tts_for_chat(event.source.chat_id)
-            and event.message_type == MessageType.VOICE and text_content and not media_files
-            and not self._streaming_tts_turn_completed(session_key, generation, event=event))
-
-    async def _play_tts_file(
-        self, event: MessageEvent, text_content: str, tts_path: str, first: bool,
-        metadata: Dict[str, Any], record_delivery: Callable) -> bool:
-        """Play one synthesized TTS file. Returns True when the ORIGINAL reply text rode
-        along as a Telegram caption (first file, ≤1024 chars) so the text send is skipped."""
-        caption = None
-        if first and self.platform == Platform.TELEGRAM and text_content and text_content[:1024] == text_content:
-            caption = text_content
-        tts_result = await self.play_tts(
-            chat_id=event.source.chat_id, audio_path=tts_path, caption=caption, metadata=metadata)
-        record_delivery(tts_result)
-        return bool(caption and getattr(tts_result, "success", False))
-
     async def _record_delivery_obligation(
         self, event: MessageEvent, session_key: str, text_content: str,
         delivery_adapter: "BasePlatformAdapter", is_ephemeral_response: bool) -> Optional[str]:
@@ -4387,30 +4206,13 @@ class BasePlatformAdapter(ABC):
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
                 if is_deferred_response:
                     _final_thread_metadata["_interim_send"] = True
-                _tts_paths, _tts_requested_path = [], None
-                if self._wants_auto_tts(
-                        event, session_key, interrupt_event, text_content, media_files):
-                    _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
-                # TTS plays before text; generated files are removed afterwards.
-                _tts_caption_delivered = False
-                for _tts_index, _tts_path in enumerate(_tts_paths):
-                    try:
-                        _tts_caption_delivered |= await self._play_tts_file(
-                            event, text_content, _tts_path, _tts_index == 0, _final_thread_metadata,
-                            _record_delivery)
-                    finally:
-                        with contextlib.suppress(OSError):
-                            os.remove(_tts_path)
-                if not _tts_paths and _tts_requested_path is not None:
-                    with contextlib.suppress(OSError):
-                        os.remove(_tts_requested_path)
-                if text_content and not _tts_caption_delivered:
+                if text_content:
                     await self._send_final_text(
                         event, session_key, text_content, _final_thread_metadata,
                         is_ephemeral_response, _ephemeral_ttl, _record_delivery)
                 await self._deliver_attachments(
                     event, extracted, _final_thread_metadata,
-                    anything_sent=delivery_attempted or _tts_caption_delivered,
+                    anything_sent=delivery_attempted,
                     record_delivery=_record_delivery)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             outcome = (
@@ -4418,10 +4220,6 @@ class BasePlatformAdapter(ABC):
                 else ProcessingOutcome.SUCCESS if processing_ok
                 else ProcessingOutcome.FAILURE
             )
-            # Clean up the per-turn streaming-TTS flag.
-            self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
-                session_key, getattr(interrupt_event, "_hermes_run_generation", None),
-                event=event) or "")
             await self._run_processing_hook("on_processing_complete", event, outcome)
             _complete_replay(outcome)
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.

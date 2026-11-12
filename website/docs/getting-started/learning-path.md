@@ -13,7 +13,7 @@ If you haven't installed Hermes Agent yet, begin with the [Installation guide](.
 :::
 
 :::tip First-time provider setup
-First-time users almost always want `hermes setup --portal` — one OAuth covers a model plus the four Tool Gateway tools (search/image/TTS/browser). See [Nous Portal](../integrations/nous-portal.md).
+First-time users almost always want `hermes setup --portal` — one OAuth covers a model plus the Tool Gateway tools (search/image/browser). See [Nous Portal](../integrations/nous-portal.md).
 :::
 
 ## How to Use This Page
@@ -58,9 +58,7 @@ Deploy Hermes Agent as a bot on your favorite messaging platform.
 3. [Messaging Overview](../user-guide/messaging/index.md)
 4. [Telegram Setup](../user-guide/messaging/telegram.md)
 5. [Discord Setup](../user-guide/messaging/discord.md)
-6. [Voice Mode](../user-guide/features/voice-mode.md)
-7. [Use Voice Mode with Hermes](../guides/use-voice-mode-with-hermes.md)
-8. [Security](../user-guide/security.md)
+6. [Security](../user-guide/security.md)
 
 For full project examples, see:
 - [Daily Briefing Bot](../guides/daily-briefing-bot.md)

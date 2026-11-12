@@ -3576,7 +3576,6 @@ _AGENT_ENV_BRIDGE = {
 # config-authoritative knobs for the session-search index (env stays the cross-process carrier).
 _SESSIONS_ENV_BRIDGE = {"cjk_fts": "HERMES_CJK_FTS", "search_slow_ms": "HERMES_SEARCH_SLOW_MS"}
 _DISPLAY_ENV_BRIDGE = {
-    "busy_input_mode": "HERMES_GATEWAY_BUSY_INPUT_MODE",
     "busy_text_mode": "HERMES_GATEWAY_BUSY_TEXT_MODE",
     "busy_ack_enabled": "HERMES_GATEWAY_BUSY_ACK_ENABLED"}
 
@@ -3925,8 +3924,6 @@ if _config_path.exists():
                 )
         _display_cfg = _cfg.get("display", {})
         if _display_cfg and isinstance(_display_cfg, dict):
-            if "busy_input_mode" in _display_cfg:
-                os.environ["HERMES_GATEWAY_BUSY_INPUT_MODE"] = str(_display_cfg["busy_input_mode"])
             if "busy_text_mode" in _display_cfg:
                 os.environ["HERMES_GATEWAY_BUSY_TEXT_MODE"] = str(_display_cfg["busy_text_mode"])
             if "busy_ack_enabled" in _display_cfg:
@@ -4089,7 +4086,6 @@ from gateway.session_state import (
 )
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
-from gateway.run_voice import GatewayVoiceMixin
 from gateway.run_claude_progress import (
     ClaudeDelegationDelivery,
     claude_delegation_single_status,
@@ -4124,7 +4120,6 @@ from gateway.platforms.base import (
     _custom_unit_to_cp,
     _prefix_within_utf16_limit,
     _reply_anchor_for_event,
-    build_auto_tts_output_path,
     merge_pending_message_event,
     utf16_len,
 )
@@ -6109,7 +6104,7 @@ def _instantiate_builtin_adapter(platform: Platform, config: Any) -> Optional[Ba
 
 class GatewayRunner(
     GatewayAuthorizationMixin, GatewaySlashCommandsMixin,
-    GatewayVoiceMixin, GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
+    GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
     GatewayShutdownMixin, GatewayBusySessionMixin, GatewayConfigLoadersMixin, GatewayStartupMixin,
     GatewaySessionWatchersMixin, GatewayNotificationsMixin, GatewayInboundMixin, GatewayGoalsMixin,
     GatewayGoalIntentMixin, GatewayGoalAutoMixin, GatewayAgentCacheMixin, GatewayProfileReconcileMixin,
@@ -6182,7 +6177,6 @@ class GatewayRunner(
         "_pending_native_image_paths_by_session"
     )
     _session_ephemeral_pin = legacy_dict_property("_session_ephemeral_pin")
-    _session_vc_last = legacy_dict_property("_session_vc_last")
     _update_prompt_pending = legacy_dict_property("_update_prompt_pending")
 
     # -- SessionState accessors -----------------------------------------
@@ -6278,7 +6272,6 @@ class GatewayRunner(
         self._reasoning_config = self._load_reasoning_config()
         self._service_tier = self._load_service_tier()
         self._show_reasoning = self._load_show_reasoning()
-        self._busy_input_mode = self._load_busy_input_mode()
         self._busy_text_mode = self._load_busy_text_mode()
         # Secondary-profile busy modes are snapshotted during multiplex
         # startup. Busy-message handlers consult these maps by routed source
@@ -6461,7 +6454,7 @@ class GatewayRunner(
 
         # Conversation-scoped per-session state (/model, /model --once,
         # /reasoning, /fast overrides; per-turn sidecar notes; ephemeral
-        # context pin; last-delivered voice-channel context) lives on
+        # context pin) lives on
         # SessionState.conversation — see gateway/session_state.py.
         self._primary_profile_name = self._active_profile_name()
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
@@ -6576,12 +6569,6 @@ class GatewayRunner(
         self.pairing_stores: Dict[str, "PairingStore"] = {}
         # One HookRegistry per served profile home, resolved from the active scope at emit time.
         self.hooks = ProfileHookRegistries()
-        # Per-chat voice reply mode: "off" | "voice_only" | "all"
-        self._voice_mode: Dict[str, str] = self._load_voice_modes()
-        # Recent voice transcripts per (guild,user) for duplicate suppression.
-        # Protects against the same utterance being emitted twice by the voice
-        # capture / STT pipeline, which otherwise produces a second delayed reply.
-        self._recent_voice_transcripts: Dict[tuple[int, int], List[tuple[float, str]]] = {}
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
@@ -6790,9 +6777,6 @@ class GatewayRunner(
         except Exception:
             return False
 
-    # -- Voice mode persistence ------------------------------------------
-
-    _VOICE_MODE_PATH = _hermes_home / "gateway_voice_mode.json"
 
 
 
@@ -8407,10 +8391,6 @@ class GatewayRunner(
                 continue
             if outcome == "ok":
                 self.adapters[platform] = adapter
-                self._sync_voice_mode_state_to_adapter(adapter)
-                # Wire voice input callback at connect time so voice
-                # transcription is forwarded without requiring /voice join.
-                self._bind_voice_input_callback(adapter)
                 connected_count += 1
                 _degraded = adapter.send_path_degraded
                 self._update_platform_runtime_status(

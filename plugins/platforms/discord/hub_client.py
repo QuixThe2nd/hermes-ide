@@ -13,7 +13,6 @@ import subprocess
 import sys
 import time
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -27,15 +26,6 @@ logger = logging.getLogger(__name__)
 
 _OVERLAP_SUCCESSOR_ATTACH_TIMEOUT_SECONDS = 300.0
 _OVERLAP_SUCCESSOR_ATTACH_POLL_SECONDS = 0.5
-
-
-@dataclass(frozen=True)
-class DiscordHubVoiceChannel:
-    """JSON-safe voice channel handle returned by the hub."""
-
-    id: int
-    name: str
-    guild_id: int
 
 
 class DiscordHubClientAdapter(BasePlatformAdapter):
@@ -580,18 +570,6 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
         source_data = source.to_dict() if hasattr(source, "to_dict") else source
         self._sync_rpc("claim_startup_resume_inbound", str(message_id), source_data)
 
-    def voice_mixer_active(self, guild_id: int) -> bool:
-        return bool(self._value(self._sync_rpc("voice_mixer_active", guild_id)))
-
-    def is_in_voice_channel(self, guild_id: int) -> bool:
-        return bool(self._value(self._sync_rpc("is_in_voice_channel", guild_id)))
-
-    def get_voice_channel_info(self, guild_id: int) -> Optional[Dict[str, Any]]:
-        return self._value(self._sync_rpc("get_voice_channel_info", guild_id))
-
-    def get_voice_channel_context(self, guild_id: int) -> str:
-        return self._value(self._sync_rpc("get_voice_channel_context", guild_id)) or ""
-
     @staticmethod
     def _send_result(data: Dict[str, Any]) -> SendResult:
         values = dict(data)
@@ -696,34 +674,6 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
         return await self._send_picker(
             "send_choice_picker", "on_choice_selected", on_choice_selected,
             chat_id, title, choices, session_key, metadata=metadata)
-
-    async def play_tts(self, chat_id: str, audio_path: str, **kwargs) -> SendResult:
-        return self._send_result(await self._rpc("play_tts", chat_id, audio_path, **kwargs))
-
-    async def play_ack_in_voice(self, guild_id: int, phrase: Optional[str] = None) -> bool:
-        return bool(self._value(await self._rpc("play_ack_in_voice", guild_id, phrase=phrase)))
-
-    async def get_user_voice_channel(self, guild_id: int, user_id: str) -> Optional[DiscordHubVoiceChannel]:
-        value = self._value(await self._rpc("get_user_voice_channel", guild_id, user_id))
-        return DiscordHubVoiceChannel(**value) if value else None
-
-    async def join_voice_channel(self, channel, *, text_channel_id: int = None,
-                                 source: dict = None) -> bool:
-        if isinstance(channel, dict):
-            channel_data = channel
-        else:
-            guild_id = getattr(channel, "guild_id", None)
-            if guild_id is None:
-                guild_id = channel.guild.id
-            channel_data = {"id": channel.id, "name": channel.name, "guild_id": guild_id}
-        return bool(self._value(await self._rpc(
-            "join_voice_channel", channel_data, text_channel_id=text_channel_id, source=source)))
-
-    async def leave_voice_channel(self, guild_id: int) -> None:
-        await self._rpc("leave_voice_channel", guild_id)
-
-    async def play_in_voice_channel(self, guild_id: int, audio_path: str) -> bool:
-        return bool(self._value(await self._rpc("play_in_voice_channel", guild_id, audio_path)))
 
     async def send_multiple_images(self, chat_id: str, images: list, metadata: Optional[dict] = None,
                                    reply_to: Optional[str] = None) -> SendResult:

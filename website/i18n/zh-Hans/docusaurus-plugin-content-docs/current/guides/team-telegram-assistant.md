@@ -421,7 +421,7 @@ hermes gateway stop && hermes gateway start
 
 - **[安全指南](../user-guide/security.md)**——深入了解授权、容器隔离和危险命令硬性拦截
 - **[消息 Gateway](../user-guide/messaging/index.md)**——gateway 架构、会话管理和聊天命令的完整参考
-- **[Telegram 设置](../user-guide/messaging/telegram.md)**——平台专属详情，包括语音消息和 TTS
+- **[Telegram 设置](../user-guide/messaging/telegram.md)**——平台专属详情，包括语音消息处理
 - **[定时任务](../user-guide/features/cron.md)**——高级 cron 调度，含投递选项和 cron 表达式
 - **[上下文文件](../user-guide/features/context-files.md)**——用于项目知识的 AGENTS.md、SOUL.md 和 .cursorrules
 - **[个性设置](../user-guide/features/personality.md)**——内置个性预设和自定义角色定义

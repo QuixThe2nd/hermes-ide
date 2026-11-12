@@ -277,7 +277,6 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
     )
     runner.adapters = {Platform.TELEGRAM: adapter}
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = SessionEntry(
@@ -442,7 +441,6 @@ async def test_session_hygiene_preserves_transcript_when_in_place_configured_but
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
     )
     runner.adapters = {Platform.TELEGRAM: adapter}
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = SessionEntry(
@@ -579,7 +577,6 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
     )
     runner.adapters = {Platform.TELEGRAM: adapter}
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = SessionEntry(
@@ -745,7 +742,6 @@ async def test_session_hygiene_turn_hold_budget_abandons_streaming_wait(
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
     )
     runner.adapters = {Platform.TELEGRAM: adapter}
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = SessionEntry(
@@ -922,7 +918,6 @@ async def test_session_hygiene_idle_timeout_still_takes_failure_path(
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
     )
     runner.adapters = {Platform.TELEGRAM: adapter}
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = SessionEntry(
@@ -1076,7 +1071,6 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
     )
     runner.adapters = {Platform.TELEGRAM: adapter}
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = SessionEntry(
@@ -1209,7 +1203,6 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
     )
     runner.adapters = {Platform.TELEGRAM: adapter}
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = SessionEntry(
@@ -1301,7 +1294,6 @@ def _make_progress_runner(monkeypatch, tmp_path, agent_cls, cfg_text):
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
     )
     runner.adapters = {Platform.TELEGRAM: adapter}
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = SessionEntry(
@@ -1388,7 +1380,6 @@ def _make_cooldown_runner(monkeypatch, tmp_path, agent_cls, session_db, session_
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
     )
     runner.adapters = {Platform.TELEGRAM: adapter}
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = SessionEntry(

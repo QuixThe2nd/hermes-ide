@@ -37,7 +37,6 @@ python -m pip install -e '.[termux]' -c constraints-termux.txt
 A few features still need desktop/server-style dependencies that are not published for Android, or have not been validated on phones yet:
 
 - `.[all]` is not supported on Android today
-- the `voice` extra is blocked by `faster-whisper -> ctranslate2`, and `ctranslate2` does not publish Android wheels
 - automatic browser / Playwright bootstrap is skipped in the Termux installer
 - Docker-based terminal isolation is not available inside Termux
 - Android may still suspend Termux background jobs, so gateway persistence is best-effort rather than a normal managed service
@@ -130,7 +129,7 @@ Then use `python3.13` in place of `python` in the commands below
 - `clang`, `rust`, `make`, `pkg-config`, `libffi`, `openssl` — needed to build a few Python dependencies on Android
 - `nodejs` — optional Node runtime for experiments beyond the tested core path
 - `ripgrep` — fast file search
-- `ffmpeg` — media / TTS conversions
+- `ffmpeg` — media conversions
 
 ### 2. Clone Hermes
 
@@ -226,11 +225,6 @@ Use the tested Termux bundle instead:
 python -m pip install -e '.[termux]' -c constraints-termux.txt
 ```
 
-The blocker is currently the `voice` extra:
-
-- `voice` pulls `faster-whisper`
-- `faster-whisper` depends on `ctranslate2`
-- `ctranslate2` does not publish Android wheels
 
 ### `uv pip install` fails on Android
 
@@ -280,7 +274,6 @@ python -m pip install -e '.[termux]' -c constraints-termux.txt
 ## Known limitations on phones
 
 - Docker backend is unavailable
-- local voice transcription via `faster-whisper` is unavailable in the tested path
 - browser automation setup is intentionally skipped by the installer
 - some optional extras may work, but only `.[termux]` and `.[termux-all]` are currently documented as the tested Android bundles
 

@@ -194,23 +194,7 @@ with reconnection logic.
 
 ## Voice Messages
 
-Hermes supports voice on WhatsApp:
-
-- **Incoming:** Voice messages (`.ogg` opus) are automatically transcribed using the configured STT provider: local `faster-whisper`, Groq Whisper (`GROQ_API_KEY`), or OpenAI Whisper (`VOICE_TOOLS_OPENAI_KEY`)
-- **Outgoing:** TTS responses are sent as MP3 audio file attachments
-- Agent responses are prefixed with "☤ **Hermes Agent**" by default. You can customize or disable this in `config.yaml`:
-
-```yaml
-# ~/.hermes/config.yaml
-whatsapp:
-  reply_prefix: ""                          # Empty string disables the header
-  # reply_prefix: "🤖 *My Bot*\n──────\n"  # Custom prefix (supports \n for newlines)
-  send_read_receipts: false                 # Mark accepted inbound messages as read (blue ticks)
-```
-
-When `send_read_receipts` is `true`, the adapter marks policy-accepted inbound messages as read after DM/group/mention filtering passes. Rejected messages (e.g., from non-allowlisted senders) are not marked read. Disabled by default for privacy. Changing this setting automatically restarts the bridge subprocess on the next connection.
-
----
+Voice notes arrive as downloaded audio files (`.ogg` opus). Their content is not transcribed or inlined — the agent's inbound message carries a note with the cached file path, and the agent can process the audio itself (e.g. with a transcription skill or `execute_code`) when the request depends on what was said.
 
 ## Message Formatting & Delivery
 

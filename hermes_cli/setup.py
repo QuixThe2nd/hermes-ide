@@ -438,7 +438,7 @@ def _print_banner(*lines: str) -> None:
 def setup_model_provider(config: dict, *, quick: bool = False):
     """Configure the inference provider and default model via the ``hermes model`` flow (one code
     path — any provider added there is available here). *quick* is accepted for the first-time
-    quick setup caller; rotation, vision and TTS keep safe defaults either way."""
+    quick setup caller; rotation and vision keep safe defaults either way."""
     from hermes_cli.config import load_config, save_config
     print_header("Inference Provider")
     _info("Choose how to connect to your main chat model.",
@@ -650,7 +650,6 @@ def _record_send_consent_change(*, enabled: bool) -> None:
 # Extracted sections, re-exported so callers and test patches keep resolving through
 # hermes_cli.setup. They import this module lazily inside bodies, so this is cycle-free.
 
-from hermes_cli.setup_tts import setup_tts  # noqa: E402
 from hermes_cli.setup_terminal import setup_terminal_backend  # noqa: E402
 from hermes_cli.setup_platforms import setup_gateway  # noqa: E402
 from hermes_cli.setup_summary import _print_setup_summary  # noqa: E402,F401
@@ -662,7 +661,6 @@ from hermes_cli.setup_quick import _run_portal_one_shot, _run_quick_setup  # noq
 
 SETUP_SECTIONS = [
     ("model", "Model & Provider", setup_model_provider),
-    ("tts", "Text-to-Speech", setup_tts),
     ("terminal", "Terminal Backend", setup_terminal_backend),
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),

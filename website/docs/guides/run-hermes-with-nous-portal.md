@@ -34,7 +34,7 @@ This single command does five things:
 2. Stores the refresh token at `~/.hermes/auth.json`
 3. Sets `model.provider: nous` in `~/.hermes/config.yaml`
 4. Picks a default agentic model (`anthropic/claude-sonnet-4.6` or similar)
-5. Turns on the Tool Gateway for web search, image generation, TTS, and browser automation
+5. Turns on the Tool Gateway for web search, image generation, and browser automation
 
 When it finishes, you're back at your terminal ready to chat.
 
@@ -126,13 +126,12 @@ The Portal's own [info page](https://portal.nousresearch.com/info) carries this 
 
 ## 6. (Optional) Customize Tool Gateway routing
 
-The gateway is opt-in per tool, not all-or-nothing. For example, route web search and image generation through Nous while keeping your own ElevenLabs key for TTS:
+The gateway is opt-in per tool, not all-or-nothing. For example, route web search and image generation through Nous:
 
 ```bash
 hermes tools
 # → Web search       → "Nous Subscription"     (recommended)
 # → Image generation → "Nous Subscription"     (recommended)
-# → TTS              → "ElevenLabs"            (your existing key)
 ```
 
 These rows appear in `hermes tools` even before you've logged into Nous Portal — if you pick "Nous Subscription" without an active session, Hermes runs the Portal login inline (without changing your inference provider or your other tools).
@@ -143,19 +142,7 @@ Verify your mix with:
 hermes portal tools
 ```
 
-You'll see per-tool routing — `via Nous Portal` for the ones routed through the subscription, and the partner name (`elevenlabs`, `firecrawl`, etc.) for the ones using your own keys.
-
-## 7. (Optional) Enable voice mode
-
-Because the Tool Gateway includes OpenAI TTS, [voice mode](../user-guide/features/voice-mode.md) works without a separate OpenAI key:
-
-```bash
-hermes setup tts
-# → pick "Nous Subscription" for TTS
-# → pick a speech-to-text backend (local faster-whisper is free, no setup)
-```
-
-Then in any messaging-platform session (Telegram, Discord, Signal, etc.), send a voice message and Hermes will transcribe it, respond, and reply with synthesized voice — all on your Portal subscription.
+You'll see per-tool routing — `via Nous Portal` for the ones routed through the subscription, and the partner name (`fal`, `firecrawl`, etc.) for the ones using your own keys.
 
 ## 8. (Optional) Cron + always-on workflows
 
@@ -213,7 +200,7 @@ hermes tools
 # pick "Nous Subscription" for any tool you want gateway-routed
 ```
 
-Some users intentionally mix — for example, routing web through Nous but using their own ElevenLabs key for TTS. If that's intentional, leave it alone. If not, this command fixes it.
+Some users intentionally mix — for example, routing web through Nous while keeping their own FAL key for image gen. If that's intentional, leave it alone. If not, this command fixes it.
 
 ### "Re-authentication required" mid-session
 
@@ -258,9 +245,8 @@ hermes auth logout nous       # wipes the local refresh token
 | 1× OpenRouter / Anthropic / OpenAI key in `.env` | 1× OAuth refresh token, no `.env` keys |
 | 1× Firecrawl key for web | Web routed through gateway |
 | 1× FAL key for image gen | Image gen routed through gateway |
-| 1× OpenAI key for TTS / voice mode | TTS routed through gateway |
-| 4 separate dashboards, top-ups, invoices | 1 subscription, 1 invoice |
-| Cross-machine: replicate all 4 keys | Cross-machine: re-OAuth once |
+| 3 separate dashboards, top-ups, invoices | 1 subscription, 1 invoice |
+| Cross-machine: replicate all 3 keys | Cross-machine: re-OAuth once |
 
 That's the deal. If you're using more than two of those backends anyway, the subscription pays for itself.
 
@@ -269,6 +255,5 @@ That's the deal. If you're using more than two of those backends anyway, the sub
 - **[Nous Portal integration page](../integrations/nous-portal.md)** — Overview of what's in the subscription
 - **[Tool Gateway](../user-guide/features/tool-gateway.md)** — Full details on every gateway-routed tool
 - **[Subscription proxy](../user-guide/features/subscription-proxy.md)** — Use your Portal subscription from non-Hermes tools
-- **[Voice mode](../user-guide/features/voice-mode.md)** — Set up voice conversations on the Portal subscription
 - **[OAuth over SSH](./oauth-over-ssh.md)** — Remote / headless login patterns
 - **[Profiles](../user-guide/profiles.md)** — Share one Portal login across multiple Hermes configurations

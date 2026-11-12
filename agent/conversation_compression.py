@@ -4054,7 +4054,7 @@ def _is_real_user_message(message: Any) -> bool:
 def _message_contains_busy_steer(message: Any) -> bool:
     """Return whether *message* carries a busy-steer marker.
 
-    With ``display.busy_input_mode: steer`` the follow-up is embedded as an
+    With busy-steer the follow-up is embedded as an
     out-of-band marker inside a ``role=tool`` result (see
     ``agent_runtime_helpers.apply_pending_steer_to_tool_results``). That marker
     carries real user intent but lives outside ``role=user``, so the

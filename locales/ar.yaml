@@ -92,14 +92,6 @@ gateway:
     full_logs_hint:        "لرفع السجلات الكاملة، استخدم `hermes debug share` من واجهة الأوامر."
     share_hint:            "شارك هذه الروابط مع فريق Hermes للحصول على الدعم."
 
-  footer:
-    status:                "📎 تذييل التشغيل: **{state}**\nالحقول: `{fields}`\nالمنصّة: `{platform}`"
-    usage:                 "الاستخدام: `/footer [on|off|status]`"
-    saved:                 "📎 تذييل التشغيل: **{state}**{example}\n_(حُفظ عالميًا — يسري على الرسالة التالية)_"
-    example_line:          "\nمثال: `{preview}`"
-    state_on:              "مُفعّل"
-    state_off:             "مُعطّل"
-
   goal:
     unavailable:           "الأهداف غير متاحة في هذه الجلسة."
     no_goal_set:           "لم يُحدَّد هدف."
@@ -322,23 +314,6 @@ gateway:
     mode_log:              "⚙️ تقدّم الأدوات: **LOG** — صامت في المحادثة؛ تُكتب استدعاءات الأدوات إلى ~/.hermes/logs/tool_calls.log."
     saved_suffix:          "_(حُفظ لـ **{platform}** — يسري على الرسالة التالية)_"
     save_failed:           "_(تعذّر الحفظ في الإعدادات: {error})_"
-
-  voice:
-    enabled_voice_only:    "وضع الصوت مُفعّل.\nسأردّ بالصوت عندما ترسل رسائل صوتية.\nاستخدم /voice tts للحصول على ردود صوتية لكل الرسائل."
-    disabled_text:         "وضع الصوت مُعطّل. ردود نصّية فقط."
-    tts_enabled:           "TTS التلقائي مُفعّل.\nستتضمّن كل الردود رسالة صوتية."
-    status_mode:           "وضع الصوت: {label}"
-    status_channel:        "قناة الصوت: #{channel}"
-    status_participants:   "المشاركون: {count}"
-    status_member:         "  - {name}{status}"
-    speaking:              " (يتحدّث)"
-    enabled_short:         "وضع الصوت مُفعّل."
-    disabled_short:        "وضع الصوت مُعطّل."
-    label_off:             "مُعطّل (نص فقط)"
-    label_voice_only:      "مُفعّل (رد صوتي على الرسائل الصوتية)"
-    label_all:             "TTS (رد صوتي على كل الرسائل)"
-    help:                  "{toggle}\n\n**كيف يعمل /voice**\n• `/voice on` — رد صوتي عند إرسال رسالة صوتية\n• `/voice tts` — رد صوتي على *كل* رسالة\n• `/voice off` — العودة إلى ردود نصّية فقط\n• `/voice status` — عرض الوضع الحالي\n• `/voice` (بدون وسيط) — تبديل سريع بين التفعيل والتعطيل{channels}"
-    help_channels:         "\n\n**قنوات الصوت الحيّة (Discord)**\n• انضمّ إلى قناة صوتية أولًا، ثم `/voice channel` — سأنضمّ وأستمع وأنطق ردودي\n• `/voice leave` — قطع الاتصال بالقناة الصوتية"
 
   shared:
     session_db_unavailable:      "قاعدة بيانات الجلسات غير متاحة."

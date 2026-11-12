@@ -2077,7 +2077,7 @@ class _CronRunScope:
     statement, ``exit()`` in the finally — every setter here has a matching reset there.
 
     HERMES_SESSION_* are deliberately NOT seeded from job["origin"]: it is delivery metadata, not
-    a sender, and terminal/tts/skills/send_message tools would act as if the origin user were
+    a sender, and terminal/skills/send_message tools would act as if the origin user were
     driving the agent. Delivery reads job["origin"] / HERMES_CRON_AUTO_DELIVER_* directly.
     """
 

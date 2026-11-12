@@ -656,7 +656,7 @@ services.hermes-agent = {
 };
 ```
 
-这由 uv 与核心依赖在单次解析中完成——不需要 PYTHONPATH 补丁，没有冲突风险。可用的组与 `pyproject.toml` 中 `[project.optional-dependencies]` 的键对应（例如 `"hindsight"`、`"honcho"`、`"voice"`、`"matrix"`、`"mistral"`、`"bedrock"`）。
+这由 uv 与核心依赖在单次解析中完成——不需要 PYTHONPATH 补丁，没有冲突风险。可用的组与 `pyproject.toml` 中 `[project.optional-dependencies]` 的键对应（例如 `"hindsight"`、`"honcho"`、`"matrix"`、`"mistral"`、`"bedrock"`）。
 
 **何时使用哪个：**
 

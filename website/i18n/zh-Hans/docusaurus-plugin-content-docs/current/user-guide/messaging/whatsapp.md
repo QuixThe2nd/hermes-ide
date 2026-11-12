@@ -156,20 +156,7 @@ hermes whatsapp
 
 ## 语音消息
 
-Hermes 支持 WhatsApp 上的语音功能：
-
-- **接收：** 语音消息（`.ogg` opus 格式）会使用已配置的 STT 提供商自动转录：本地 `faster-whisper`、Groq Whisper（`GROQ_API_KEY`）或 OpenAI Whisper（`VOICE_TOOLS_OPENAI_KEY`）
-- **发送：** TTS 响应以 MP3 音频文件附件形式发送
-- Agent 响应默认以"☤ **Hermes Agent**"为前缀。可在 `config.yaml` 中自定义或禁用：
-
-```yaml
-# ~/.hermes/config.yaml
-whatsapp:
-  reply_prefix: ""                          # 空字符串禁用标题
-  # reply_prefix: "🤖 *My Bot*\n──────\n"  # 自定义前缀（支持 \n 换行）
-```
-
----
+语音备忘录以已下载的音频文件（`.ogg` opus）形式到达。其内容不会被转录或内联——Agent 的入站消息会附带缓存文件路径的说明，当请求依赖所说内容时，Agent 可以自行处理音频（例如通过转录技能或 `execute_code`）。
 
 ## 消息格式与投递
 

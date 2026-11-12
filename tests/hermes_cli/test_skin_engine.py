@@ -218,8 +218,6 @@ class TestCliBrandingHelpers:
             "status-bar-warn",
             "status-bar-bad",
             "status-bar-critical",
-            "voice-status",
-            "voice-status-recording",
             "clarify-border",
             "clarify-title",
             "clarify-question",
@@ -272,4 +270,3 @@ class TestCliBrandingHelpers:
         skin = get_active_skin()
         overrides = get_prompt_toolkit_style_overrides()
         assert overrides["status-bar"] == f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('banner_text')}"
-        assert overrides["voice-status"] == f"bg:{skin.get_color('voice_status_bg')} {skin.get_color('ui_label')}"

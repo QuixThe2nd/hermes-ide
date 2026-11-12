@@ -51,7 +51,6 @@ On first launch (and on demand when a missing tool is detected), Hermes runs a s
 |---|---|
 | **PortableGit** | Provides `bash.exe` for the terminal tool and `git` for in-session clones. Provisioned at install time, not by `dep_ensure`. |
 | **Node.js 26** | Required for the browser tool (`agent-browser`), the TUI's web bridge, and the WhatsApp bridge. |
-| **ffmpeg** | Audio format conversion for TTS / voice messages. |
 | **ripgrep** | Fast file search — falls back to `grep` if unavailable. |
 | **npm packages** | `agent-browser`, Playwright Chromium, and any per-toolset Node deps are installed once at first browser-tool use. |
 
@@ -73,7 +72,7 @@ Top-to-bottom, in order:
 10. **Runs `hermes setup`** — the normal first-run wizard (model, provider, toolsets). Skip with `-SkipSetup`.
 
 :::tip Skip provider hunting on Windows
-On Windows, per-tool API key setup (Firecrawl, FAL, Browser Use, OpenAI TTS) is the highest-friction part of getting a useful agent. A [Nous Portal](./features/tool-gateway.md) subscription covers the model **and** all of those tools through one OAuth login. After the installer finishes, run `hermes setup --portal` to wire everything up.
+On Windows, per-tool API key setup (Firecrawl, FAL, Browser Use) is the highest-friction part of getting a useful agent. A [Nous Portal](./features/tool-gateway.md) subscription covers the model **and** all of those tools through one OAuth login. After the installer finishes, run `hermes setup --portal` to wire everything up.
 :::
 
 ## Feature matrix

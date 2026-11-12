@@ -14,7 +14,7 @@ description: Agent 如何将生成的图表、PDF、电子表格及其他文件�
 
 三个部分协同配合：
 
-1. **Agent 拥有可生成文件的工具。** `execute_code` 用于通过 matplotlib 生成图表，`latex-pdf-report` skill 用于生成 PDF，`powerpoint` skill 用于生成演示文稿，`image_generate` 用于生成图片，`text_to_speech` 用于生成音频，等等。
+1. **Agent 拥有可生成文件的工具。** `execute_code` 用于通过 matplotlib 生成图表，`latex-pdf-report` skill 用于生成 PDF，`powerpoint` skill 用于生成演示文稿，`image_generate` 用于生成图片，等等。
 
 2. **Gateway 扫描 agent 回复中的文件路径。** 任何以支持扩展名结尾的绝对路径（`/tmp/...`）或相对主目录路径（`~/...`）都会被提取。代码块和内联代码中的路径会被忽略，以避免代码示例被破坏。
 

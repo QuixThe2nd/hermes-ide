@@ -103,9 +103,6 @@ def _make_adapter() -> BasePlatformAdapter:
     adapter._busy_text_debounce_seconds = 0.1
     adapter._busy_text_hard_cap_seconds = 1.0
     adapter._text_debounce = {}
-    adapter._auto_tts_default = False
-    adapter._auto_tts_enabled_chats = set()
-    adapter._auto_tts_disabled_chats = set()
     adapter._typing_paused = set()
     return adapter
 

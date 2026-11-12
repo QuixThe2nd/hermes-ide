@@ -73,13 +73,9 @@ def _seed_crossings(homes):
     # 4. routing rows: beta's index row copied into beta's store (#66887) + a ghost row in the root
     beta.save_gateway_routing_entry(BETA_KEY, json.dumps({"session_key": BETA_KEY, "session_id": "beta-parent"}), scope=scope)
     root.save_gateway_routing_entry(GHOST_KEY, json.dumps({"session_key": GHOST_KEY, "session_id": "ghost"}), scope=scope)
-    # 5. profile-less topic binding + voice-mode entry for a chat only acme's bot holds
+    # 5. profile-less topic binding for a chat only acme's bot holds
     acme.bind_telegram_topic(chat_id="200", thread_id="7", user_id="200", session_key=ACME_KEY,
                              session_id="ok-acme", profile_name="default")
-    (homes["default"] / "gateway_voice_mode.json").write_text(json.dumps({
-        "telegram:200": "all",        # acme's chat, unprefixed
-        "telegram:100": "voice_only",  # the default bot's chat — legitimately unprefixed
-    }))
     # 6. sessions.json mirror entry for the ghost namespace
     (homes["default"] / "sessions").mkdir(exist_ok=True)
     (homes["default"] / "sessions" / "sessions.json").write_text(json.dumps({
@@ -122,8 +118,7 @@ def _report() -> dict:
 def test_dry_run_names_every_crossing_and_changes_nothing(homes, capsys):
     _seed_crossings(homes)
     before = {name: _dump(home / "state.db") for name, home in homes.items()}
-    files_before = {p.name: p.read_text() for p in (homes["default"] / "gateway_voice_mode.json",
-                                                    homes["default"] / "sessions" / "sessions.json")}
+    files_before = {p.name: p.read_text() for p in (homes["default"] / "sessions" / "sessions.json",)}
 
     report = _report()
 
@@ -136,7 +131,6 @@ def test_dry_run_names_every_crossing_and_changes_nothing(homes, capsys):
         ("wrong_store", "acme-in-beta"), ("crossed_parent", "beta-child"),
         ("routing_unclaimed", f"{GHOST_KEY} (scope {str((homes['default'] / 'sessions').resolve())!r})"),
         ("topic_profile_less", "chat 200 thread 7"),
-        ("voice_profile_less", "telegram:200"),
         ("sessions_json_unclaimed", GHOST_KEY),
     } <= kinds
     # beta's own routing row: a standalone gateway's index lives in its own store; nothing recorded a
@@ -150,8 +144,7 @@ def test_dry_run_names_every_crossing_and_changes_nothing(homes, capsys):
     assert by_kind["unclaimed_namespace"]["action"] is None and "ghost" in by_kind["unclaimed_namespace"]["reason"]
 
     assert {name: _dump(home / "state.db") for name, home in homes.items()} == before
-    assert {p.name: p.read_text() for p in (homes["default"] / "gateway_voice_mode.json",
-                                            homes["default"] / "sessions" / "sessions.json")} == files_before
+    assert {p.name: p.read_text() for p in (homes["default"] / "sessions" / "sessions.json",)} == files_before
 
 
 def test_apply_settles_every_repairable_crossing_and_is_idempotent(homes, monkeypatch, capsys):
@@ -186,11 +179,9 @@ def test_apply_settles_every_repairable_crossing_and_is_idempotent(homes, monkey
         scope = str((homes["default"] / "sessions").resolve())
         assert set(root.load_gateway_routing_entries(scope=scope)) == {ACME_KEY}
         assert set(beta.load_gateway_routing_entries(scope=scope)) == {BETA_KEY}
-        # 5. topic binding carries acme; voice key prefixed only for acme's chat
+        # 5. topic binding carries acme
         assert acme.get_telegram_topic_binding(chat_id="200", thread_id="7", profile_name="acme") is not None
         assert acme.get_telegram_topic_binding(chat_id="200", thread_id="7", profile_name="default") is None
-        voice = json.loads((homes["default"] / "gateway_voice_mode.json").read_text())
-        assert voice == {"acme:telegram:200": "all", "telegram:100": "voice_only"}
         # 6. ghost mirror entry dropped, the default's kept
         mirror = json.loads((homes["default"] / "sessions" / "sessions.json").read_text())
         assert set(mirror) == {"_README", ROOT_KEY}

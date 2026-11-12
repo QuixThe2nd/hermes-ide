@@ -110,23 +110,6 @@ Idle and daily reset timers are not imported: Hermes conversations persist until
 | `mcp.servers.*.tools.include` | `mcp_servers.*.tools.include` | Tool filtering |
 | `mcp.servers.*.tools.exclude` | `mcp_servers.*.tools.exclude` | |
 
-### TTS (text-to-speech)
-
-TTS settings are read from **two** OpenClaw config locations with this priority:
-
-1. `messages.tts.providers.{provider}.*` (canonical location)
-2. Top-level `talk.providers.{provider}.*` (fallback)
-3. Legacy flat keys `messages.tts.{provider}.*` (oldest format)
-
-| What | Hermes destination |
-|------|-------------------|
-| Provider name | `config.yaml` → `tts.provider` |
-| ElevenLabs voice ID | `config.yaml` → `tts.elevenlabs.voice_id` |
-| ElevenLabs model ID | `config.yaml` → `tts.elevenlabs.model_id` |
-| OpenAI model | `config.yaml` → `tts.openai.model` |
-| OpenAI voice | `config.yaml` → `tts.openai.voice` |
-| Edge TTS voice | `config.yaml` → `tts.edge.voice` (OpenClaw renamed "edge" to "microsoft" — both are recognized) |
-| TTS assets | `~/.hermes/tts/` (file copy) |
 
 ### Messaging platforms
 
@@ -181,7 +164,7 @@ These are saved to `~/.hermes/migration/openclaw/<timestamp>/archive/` for manua
 
 When `--migrate-secrets` is enabled, API keys are collected from **four sources** in priority order:
 
-1. **Config values** — `models.providers.*.apiKey` and TTS provider keys in `openclaw.json`
+1. **Config values** — `models.providers.*.apiKey` in `openclaw.json`
 2. **Environment file** — `~/.openclaw/.env` (keys like `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, etc.)
 3. **Config env sub-object** — `openclaw.json` → `"env"` or `"env"."vars"` (some setups store keys here instead of a separate `.env` file)
 4. **Auth profiles** — `~/.openclaw/agents/main/agent/auth-profiles.json` (per-agent credentials)
@@ -190,7 +173,7 @@ Config values take priority. Each subsequent source fills any remaining gaps.
 
 ### Supported key targets
 
-`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `ZAI_API_KEY`, `MINIMAX_API_KEY`, `ELEVENLABS_API_KEY`, `TELEGRAM_BOT_TOKEN`, `VOICE_TOOLS_OPENAI_KEY`
+`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `ZAI_API_KEY`, `MINIMAX_API_KEY`, `TELEGRAM_BOT_TOKEN`
 
 Keys not in this allowlist are never copied.
 
@@ -243,6 +226,3 @@ Keys might be stored in several places depending on your OpenClaw version: inlin
 
 Imported skills land in `~/.hermes/skills/openclaw-imports/`. Start a new session for them to take effect, or run `/skills` to verify they're loaded.
 
-### TTS voice not migrated
-
-OpenClaw stores TTS settings in two places: `messages.tts.providers.*` and the top-level `talk` config. The migration checks both. If your voice ID was set via the OpenClaw UI (stored in a different path), you may need to set it manually: `hermes config set tts.elevenlabs.voice_id YOUR_VOICE_ID`.

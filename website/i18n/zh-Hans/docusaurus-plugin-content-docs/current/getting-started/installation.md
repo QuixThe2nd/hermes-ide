@@ -110,7 +110,7 @@ hermes setup          # 或运行完整的设置向导一次性配置所有内�
 ```
 
 :::tip 最快路径：Nous Portal
-一个订阅涵盖 300+ 个模型以及 [Tool Gateway](../user-guide/features/tool-gateway.md)（网络搜索、图像生成、TTS、云端浏览器）。无需逐一管理各工具的密钥：
+一个订阅涵盖 300+ 个模型以及 [Tool Gateway](../user-guide/features/tool-gateway.md)（网络搜索、图像生成、云端浏览器）。无需逐一管理各工具的密钥：
 
 ```bash
 hermes setup --portal
@@ -129,7 +129,6 @@ hermes setup --portal
 - **Python 3.11**（通过 uv，无需 sudo）
 - **Node.js v22**（用于浏览器自动化和 WhatsApp 桥接）
 - **ripgrep**（快速文件搜索）
-- **ffmpeg**（TTS 的音频格式转换）
 
 :::info
 你**无需**手动安装 Python、Node.js、ripgrep 或 ffmpeg。安装程序会检测缺失的依赖并自动安装。只需确保 `git` 可用（`git --version`）。

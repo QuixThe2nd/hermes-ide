@@ -13,7 +13,7 @@ from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 from utils import is_truthy_value
 from tools.tool_backend_helpers import (
     fal_key_is_configured, has_direct_modal_credentials, normalize_modal_mode,
-    resolve_modal_backend_state, resolve_openai_audio_api_key
+    resolve_modal_backend_state
 )
 
 
@@ -27,7 +27,7 @@ class _FeatureSpec:
     label: str
     included_by_default: bool
     # Tool-pool coverage category (nous_account.TOOL_COVERAGE_CATEGORIES) gating per backend:
-    # the free pool funds image but NOT video; STT shares TTS's "openai-audio" category.
+    # the free pool funds image but NOT video.
     coverage: str
     gateway: str  # managed gateway probed for readiness (video rides image's fal-queue)
     # Config (section, selection field) written by apply_gateway_defaults; None = not offered (modal).
@@ -35,7 +35,7 @@ class _FeatureSpec:
     offer_label: str = ""
     direct_label: str = ""
     # Direct-credential env vars that stop apply_nous_managed_defaults switching the category to
-    # managed (tts/stt also honour resolve_openai_audio_api_key()).
+    # managed.
     default_direct_env: tuple[str, ...] = ()
 
 
@@ -51,14 +51,6 @@ _FEATURES: Dict[str, _FeatureSpec] = {
     "video_gen": _FeatureSpec(
         "Video generation", False, "fal-video", "fal-queue", ("video_gen", "provider"), "Video generation (FAL)", "FAL key",
     ),
-    "tts": _FeatureSpec(
-        "OpenAI TTS", True, "openai-audio", "openai-audio", ("tts", "provider"),
-        "Text-to-speech (OpenAI TTS)", "OpenAI/ElevenLabs key", ("ELEVENLABS_API_KEY",),
-    ),
-    "stt": _FeatureSpec(
-        "Speech-to-text", True, "openai-audio", "openai-audio", ("stt", "provider"),
-        "Speech-to-text (OpenAI Whisper)", "OpenAI/Groq/Mistral key", ("GROQ_API_KEY", "MISTRAL_API_KEY"),
-    ),
     "modal": _FeatureSpec("Modal execution", False, "modal", "modal"),
 }
 
@@ -69,7 +61,7 @@ _GATEWAY_SECTION_FIELDS = {k: s.section_field for k, s in _FEATURES.items() if s
 _ALL_GATEWAY_KEYS = tuple(_GATEWAY_SECTION_FIELDS)
 _GATEWAY_TOOL_LABELS = {k: _FEATURES[k].offer_label for k in _ALL_GATEWAY_KEYS}
 # Sections apply_*_defaults always materialise before writing selections.
-_DEFAULT_SECTIONS = ("web", "tts", "stt")
+_DEFAULT_SECTIONS = ("web",)
 
 
 def _uses_gateway(section: object) -> bool:
@@ -177,36 +169,6 @@ def _toolset_enabled(config: Dict[str, object], toolset_key: str) -> bool:
 
 
 
-# kind -> (default provider, provider -> display label)
-_PROVIDER_LABELS = {
-    "tts": ("edge", {
-        "openai": "OpenAI TTS", "elevenlabs": "ElevenLabs", "edge": "Edge TTS", "xai": "xAI TTS",
-        "mistral": "Mistral Voxtral TTS", "neutts": "NeuTTS",
-    }),
-    "stt": ("local", {
-        "openai": "OpenAI Whisper", "groq": "Groq Whisper", "mistral": "Mistral Voxtral Transcribe",
-        "local": "Local faster-whisper",
-    }),
-}
-
-
-def _provider_label(kind: str, current_provider: str) -> str:
-    default, mapping = _PROVIDER_LABELS[kind]
-    return mapping.get(current_provider or default, current_provider or mapping[default])
-
-
-def _local_stt_backend_available() -> bool:
-    """True when faster-whisper imports or a custom local STT command is configured."""
-    if get_env_value("HERMES_LOCAL_STT_COMMAND"):
-        return True
-    try:
-        from tools.transcription_tools import _HAS_FASTER_WHISPER
-
-        return bool(_HAS_FASTER_WHISPER)
-    except Exception:
-        return False
-
-
 def _any_env(*names: str) -> bool:
     """True when any of the named env vars (via get_env_value) is set."""
     return any(get_env_value(name) for name in names)
@@ -266,52 +228,6 @@ def _fal_feature(key: str, tool_enabled: bool, direct: bool, managed: bool, sele
     )
 
 
-def _audio_provider(cfg: Dict[str, object], default: str, gw: bool) -> str:
-    provider = _norm(cfg.get("provider"), default)
-    return "openai" if (provider == "nous" or gw) else (provider or default)
-
-
-def _audio_features(
-    tts_cfg: Dict[str, object], stt_cfg: Dict[str, object], tts_tool_enabled: bool,
-    managed: Dict[str, bool], selected: Dict[str, Optional[str]], use_gateway: Dict[str, bool],
-) -> tuple[NousFeatureState, NousFeatureState]:
-    tts_gw, stt_gw = use_gateway["tts"], use_gateway["stt"]
-    # STT default is "local" (faster-whisper, needs a pip install); Nous subscribers are routed to the
-    # managed audio gateway by apply_nous_managed_defaults. The "nous" selection is serviced by OpenAI
-    # — normalize so downstream vendor checks hold.
-    tts_current = _audio_provider(tts_cfg, "edge", tts_gw)
-    stt_current = _audio_provider(stt_cfg, "local", stt_gw)
-    # Whisper reuses the TTS audio key (VOICE_TOOLS_OPENAI_KEY, falling back to OPENAI_API_KEY).
-    audio_key = bool(resolve_openai_audio_api_key())
-    direct_openai_tts, direct_openai_stt = audio_key and not tts_gw, audio_key and not stt_gw
-    tts_available = bool({
-        "edge": True, "neutts": True, "openai": managed["tts"] or direct_openai_tts,
-        "elevenlabs": _any_env("ELEVENLABS_API_KEY") and not tts_gw, "mistral": _any_env("MISTRAL_API_KEY"),
-    }.get(tts_current, False))
-    tts = _state(
-        "tts", available=tts_available, active=bool(tts_tool_enabled and tts_available),
-        managed_by_nous=tts_tool_enabled and tts_current == "openai" and managed["tts"] and not direct_openai_tts,
-        toolset_enabled=tts_tool_enabled, current_provider=_provider_label("tts", tts_current),
-        # Mirrors the stored selection so status/picker markers stay in lockstep with dispatch.
-        explicit_configured=selected["tts"] is not None and selected["tts"] != "edge",
-    )
-    # STT isn't a model-callable tool (the gateway voice middleware calls it on every inbound voice
-    # message): "enabled" whenever a usable provider is configured, toolset_enabled reported True so
-    # status never flags it "tool disabled".
-    stt_available = bool({
-        "local": _local_stt_backend_available() and not stt_gw, "openai": managed["stt"] or direct_openai_stt,
-        "groq": _any_env("GROQ_API_KEY") and not stt_gw, "mistral": _any_env("MISTRAL_API_KEY") and not stt_gw,
-    }.get(stt_current, False))
-    stt = _state(
-        "stt", available=stt_available, active=stt_available, toolset_enabled=True,
-        managed_by_nous=stt_current == "openai" and managed["stt"] and not direct_openai_stt,
-        current_provider=_provider_label("stt", stt_current), explicit_configured=selected["stt"] is not None,
-    )
-    return tts, stt
-
-
-
-
 def _modal_feature(terminal_cfg: Dict[str, object], tool_enabled: bool, managed: bool, managed_tools_flag: bool) -> NousFeatureState:
     terminal_backend = _norm(terminal_cfg.get("backend"), "local")
     modal_mode = normalize_modal_mode(terminal_cfg.get("modal_mode"))
@@ -344,10 +260,9 @@ def get_nous_subscription_features(config: Optional[Dict[str, object]] = None, *
     # availability is then narrowed by coverage (the pool funds image but not video, etc.).
     nous_auth_present = bool(account_info and account_info.logged_in)
     managed_tools_flag = nous_auth_present and account_info.tool_gateway_entitled
-    enabled = {key: _toolset_enabled(config, key) for key in ("web", "image_gen", "video_gen", "tts", "terminal")}
+    enabled = {key: _toolset_enabled(config, key) for key in ("web", "image_gen", "video_gen", "terminal")}
     # Stored selections (strict model): "nous" = managed gateway; vendor name = that vendor direct;
-    # None = never configured (autodetect). Lockstep with tool_backend_helpers.read_selection: a
-    # merged ``stt.provider: local`` here means the raw file holds it — a genuine selection.
+    # None = never configured (autodetect). Lockstep with tool_backend_helpers.read_selection.
     selected = {
         key: _selected_provider(_section(config, section_key), field)
         for key, (section_key, field) in _GATEWAY_SECTION_FIELDS.items()
@@ -366,7 +281,6 @@ def get_nous_subscription_features(config: Optional[Dict[str, object]] = None, *
     }
     direct_firecrawl = _any_env("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL") and not use_gateway["web"]
     fal_configured = fal_key_is_configured()
-    tts, stt = _audio_features(_section(config, "tts"), _section(config, "stt"), enabled["tts"], managed, selected, use_gateway)
 
     def _fal(key: str) -> NousFeatureState:
         return _fal_feature(key, enabled[key], fal_configured and not use_gateway[key], managed[key], selected[key])
@@ -375,8 +289,6 @@ def get_nous_subscription_features(config: Optional[Dict[str, object]] = None, *
         "web": _web_feature(_section(config, "web"), enabled["web"], managed["web"], use_gateway["web"], direct_firecrawl),
         "image_gen": _fal("image_gen"),
         "video_gen": _fal("video_gen"),
-        "tts": tts,
-        "stt": stt,
         "modal": _modal_feature(_section(config, "terminal"), enabled["terminal"], managed["modal"], managed_tools_flag),
     }
     return NousSubscriptionFeatures(
@@ -386,7 +298,7 @@ def get_nous_subscription_features(config: Optional[Dict[str, object]] = None, *
 
 
 def _has_managed_default_direct(key: str) -> bool:
-    return bool(key in ("tts", "stt") and resolve_openai_audio_api_key()) or _any_env(*_FEATURES[key].default_direct_env)
+    return _any_env(*_FEATURES[key].default_direct_env)
 
 
 def apply_nous_managed_defaults(config: Dict[str, object], *, enabled_toolsets: Optional[Iterable[str]] = None, force_fresh: bool = False) -> set[str]:
@@ -402,13 +314,7 @@ def apply_nous_managed_defaults(config: Dict[str, object], *, enabled_toolsets: 
     for key in _DEFAULT_SECTIONS:
         if features.features[key].explicit_configured or _has_managed_default_direct(key):
             continue
-        if key == "stt":
-            # STT is not toolset-gated. Skip when the user has a working local backend (strong signal
-            # "local" was a choice, not the DEFAULT_CONFIG seed) or isn't entitled to the managed
-            # "openai-audio" category (flipping would silently break transcription).
-            if _local_stt_backend_available() or not account_info.tool_gateway_entitled_for("openai-audio"):
-                continue
-        elif key not in selected_toolsets:
+        if key not in selected_toolsets:
             continue
         _select_nous(config, key)
         changed.add(key)
@@ -425,10 +331,8 @@ def apply_nous_managed_defaults(config: Dict[str, object], *, enabled_toolsets: 
 
 def _get_gateway_direct_credentials() -> Dict[str, bool]:
     """tool_key -> has_direct_credentials. Env-configured keyless local backends (SearXNG)
-    count as configured so they are never classified "unconfigured" and pre-checked; Whisper shares
-    the audio key with TTS."""
+    count as configured so they are never classified "unconfigured" and pre-checked."""
     fal_direct = fal_key_is_configured()
-    audio_direct = bool(resolve_openai_audio_api_key())
     return {
         "web": _any_env("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY", "EXA_API_KEY", "SEARXNG_URL"),
         # Env-configured keyless local backend: a reachable self-hosted SearXNG is a working web setup even
@@ -436,8 +340,6 @@ def _get_gateway_direct_credentials() -> Dict[str, bool]:
         # not be classified "unconfigured" and pre-checked (#92647).
         "image_gen": fal_direct,
         "video_gen": fal_direct,
-        "tts": audio_direct or _any_env("ELEVENLABS_API_KEY"),
-        "stt": audio_direct or _any_env("GROQ_API_KEY", "MISTRAL_API_KEY"),
     }
 
 

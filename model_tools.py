@@ -189,7 +189,6 @@ _LEGACY_TOOLSET_MAP = {
                       "browser_back", "browser_press", "browser_get_images", "browser_vision", "browser_console"],
     "cronjob_tools": ["cronjob_manage"],
     "file_tools": ["read_file", "write_file", "patch", "search_files"],
-    "tts_tools": ["text_to_speech"],
 }
 
 

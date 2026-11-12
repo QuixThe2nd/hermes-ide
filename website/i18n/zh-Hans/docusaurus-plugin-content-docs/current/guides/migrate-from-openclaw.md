@@ -102,23 +102,6 @@ Skill 冲突由 `--skill-conflict` 处理：`skip` 保留现有 Hermes skill，`
 | `mcp.servers.*.tools.include` | `mcp_servers.*.tools.include` | 工具过滤 |
 | `mcp.servers.*.tools.exclude` | `mcp_servers.*.tools.exclude` | |
 
-### TTS（文字转语音）
-
-TTS 设置从 OpenClaw 配置的**两个**位置读取，优先级如下：
-
-1. `messages.tts.providers.{provider}.*`（规范位置）
-2. 顶层 `talk.providers.{provider}.*`（备用）
-3. 旧版扁平键 `messages.tts.{provider}.*`（最旧格式）
-
-| 内容 | Hermes 目标 |
-|------|-------------------|
-| Provider 名称 | `config.yaml` → `tts.provider` |
-| ElevenLabs voice ID | `config.yaml` → `tts.elevenlabs.voice_id` |
-| ElevenLabs model ID | `config.yaml` → `tts.elevenlabs.model_id` |
-| OpenAI 模型 | `config.yaml` → `tts.openai.model` |
-| OpenAI 语音 | `config.yaml` → `tts.openai.voice` |
-| Edge TTS 语音 | `config.yaml` → `tts.edge.voice`（OpenClaw 将 "edge" 重命名为 "microsoft"——两者均可识别） |
-| TTS 资源文件 | `~/.hermes/tts/`（文件复制） |
 
 ### 消息平台
 
@@ -175,7 +158,7 @@ TTS 设置从 OpenClaw 配置的**两个**位置读取，优先级如下：
 
 启用 `--migrate-secrets` 时，API 密钥按以下优先级从**四个来源**收集：
 
-1. **配置值** — `openclaw.json` 中的 `models.providers.*.apiKey` 及 TTS provider 密钥
+1. **配置值** — `openclaw.json` 中的 `models.providers.*.apiKey`
 2. **环境文件** — `~/.openclaw/.env`（如 `OPENROUTER_API_KEY`、`ANTHROPIC_API_KEY` 等）
 3. **配置 env 子对象** — `openclaw.json` → `"env"` 或 `"env"."vars"`（部分配置将密钥存于此处而非单独的 `.env` 文件）
 4. **认证档案** — `~/.openclaw/agents/main/agent/auth-profiles.json`（每个 Agent 的凭据）
@@ -236,7 +219,3 @@ OpenClaw 配置中 token 和 API 密钥的值支持三种格式：
 ### 迁移后 skills 未出现
 
 导入的 skills 位于 `~/.hermes/skills/openclaw-imports/`。开启新会话后生效，或运行 `/skills` 验证是否已加载。
-
-### TTS 语音未迁移
-
-OpenClaw 在两处存储 TTS 设置：`messages.tts.providers.*` 和顶层 `talk` 配置。迁移会检查两处。若你的 voice ID 是通过 OpenClaw UI 设置的（存储路径不同），可能需要手动设置：`hermes config set tts.elevenlabs.voice_id YOUR_VOICE_ID`。

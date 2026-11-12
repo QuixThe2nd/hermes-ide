@@ -1443,7 +1443,7 @@ install_system_packages() {
         need_ripgrep=true
     fi
 
-    log_info "Checking ffmpeg (TTS voice messages)..."
+    log_info "Checking ffmpeg (media conversions)..."
     if command -v ffmpeg &> /dev/null; then
         local ffmpeg_ver=$(ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}')
         log_success "ffmpeg $ffmpeg_ver found"
@@ -1489,7 +1489,7 @@ install_system_packages() {
         pkgs+=("ripgrep")
     fi
     if [ "$need_ffmpeg" = true ]; then
-        desc_parts+=("ffmpeg for TTS voice messages")
+        desc_parts+=("ffmpeg for media conversions")
         pkgs+=("ffmpeg")
     fi
     local description
@@ -1595,7 +1595,7 @@ install_system_packages() {
         show_manual_install_hint "ripgrep"
     fi
     if [ "$HAS_FFMPEG" = false ] && [ "$need_ffmpeg" = true ]; then
-        log_warn "ffmpeg not installed (TTS voice messages will be limited)"
+        log_warn "ffmpeg not installed (media conversions will be limited)"
         show_manual_install_hint "ffmpeg"
     fi
 }
@@ -2020,7 +2020,7 @@ install_deps() {
         fi
 
         log_success "Main package installed"
-        log_info "Termux note: matrix e2ee and local faster-whisper extras are excluded from .[termux-all] due to upstream Android wheel/toolchain blockers."
+        log_info "Termux note: matrix e2ee extra is excluded from .[termux-all] due to upstream Android wheel/toolchain blockers."
         log_info "Termux note: browser/WhatsApp tooling is not installed by default; see the Termux guide for optional follow-up steps."
 
         log_success "All dependencies installed"

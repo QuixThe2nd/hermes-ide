@@ -57,50 +57,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "opentelemetry-exporter-otlp-proto-http==1.39.1",
     ),
 
-    # ─── TTS providers ─────────────────────────────────────────────────────
-    # mistralai: 2.4.6 was a malicious quarantined release — never pin below 2.4.7.
-    # Voxtral STT + TTS share the SDK.
-    "tts.mistral": ("mistralai==2.4.8",),
-    "tts.edge": ("edge-tts==7.2.7",),
-    "tts.elevenlabs": ("elevenlabs==1.59.0",),
-
-    # ─── Speech-to-text providers ──────────────────────────────────────────
-    "stt.mistral": ("mistralai==2.4.8",),
-    "stt.faster_whisper": (
-        "faster-whisper==1.2.1",
-        "sounddevice==0.5.5",
-        "numpy==2.4.3",
-    ),
-    # SILK voice-note decoding (WeChat/QQ); silk-v3 codec binding.
-    "stt.silk": ("pilk==0.2.4",),
-
-    # ─── Wake word ("Hey Hermes") engines (sync with the `wake` extra) ──────
-    # openWakeWord's ONNX model scores ~0 on macOS ARM64, so macOS uses the tflite backend
-    # (ai-edge-litert, bridged in tools/wake_word.py). Separate feature because specs cannot
-    # carry PEP 508 markers (";" is rejected) — the caller applies the platform gate.
-    "wake.openwakeword.tflite": (
-        "ai-edge-litert==2.1.6",
-    ),
-    "wake.openwakeword": (
-        "openwakeword==0.6.0",
-        "onnxruntime==1.27.0",
-        "sounddevice==0.5.5",
-        "numpy==2.4.3",
-    ),
-    # Open-vocabulary keyword spotting. sentencepiece is needed by
-    # sherpa_onnx.text2token but undeclared by sherpa-onnx.
-    "wake.sherpa": (
-        "sherpa-onnx==1.13.4",
-        "sentencepiece==0.2.2",
-        "sounddevice==0.5.5",
-        "numpy==2.4.3",
-    ),
-    "wake.porcupine": (
-        "pvporcupine==4.0.3",
-        "sounddevice==0.5.5",
-        "numpy==2.4.3",
-    ),
-
     # ─── Image generation backends ─────────────────────────────────────────
     "image.fal": ("fal-client==0.13.1",),
 
@@ -120,7 +76,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # uploaded to the Discord gateway fails to decode at att.read() with "Can not decode content-encoding:
     # br" — see #12511 / #15744.
     "platform.discord": (
-        "discord.py[voice]==2.7.1",
+        "discord.py==2.7.1",
         "brotlicffi==1.2.0.2",
         "aiohttp==3.14.3",
     ),
@@ -174,7 +130,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # inside transformers' window and match uv.lock (tests/test_project_metadata.py enforces).
     # HF Agent Trace Viewer upload (hermes trace upload / /upload-trace). huggingface-hub is a SHARED
     # dependency: transformers (pulled by sentence-transformers for local Hindsight embeddings) requires
-    # >=1.5.0,<2, and faster-whisper/tokenizers depend on it transitively. Because active_features() marks a
+    # >=1.5.0,<2. Because active_features() marks a
     # feature active from mere package presence, the `hermes update` lazy-refresh pass re-asserts THIS pin
     # on every install where hub is present — so an exact pin below 1.5.0 force-downgrades the shared
     # package and breaks Hindsight startup (#60783). Policy: keep the exact pin (no ranges — security

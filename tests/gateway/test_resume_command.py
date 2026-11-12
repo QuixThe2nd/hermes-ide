@@ -39,7 +39,6 @@ def _make_runner(session_db=None, current_session_id="current_session_001",
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner.config = SimpleNamespace(platforms={})
-    runner._voice_mode = {}
     # Gateway holds the async facade; the slash handlers await it.
     if session_db is not None:
         from hermes_state import AsyncSessionDB
