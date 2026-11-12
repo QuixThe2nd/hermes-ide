@@ -1,8 +1,8 @@
 """Curator — background skill maintenance orchestrator.
 
 Inactivity-triggered (no cron daemon): when the agent is idle and the last run is older than ``interval_hours``,
-``maybe_run_curator()`` auto-transitions lifecycle states from activity timestamps, optionally forks an AIAgent that
-may pin/archive/consolidate/patch skills via skill_manage, and persists scheduler state in ``.curator_state``.
+``maybe_run_curator()`` auto-transitions lifecycle states from activity timestamps, then always runs an LLM
+consolidation pass that may pin/archive/consolidate/patch skills via skill_manage, and persists scheduler state in ``.curator_state``.
 Invariants: only curator-managed skills are touched; never delete, only archive (recoverable); pinned skills bypass
 all auto-transitions; the fork uses the auxiliary client and never touches the main session's prompt cache."""
 
@@ -29,9 +29,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_INTERVAL_HOURS, DEFAULT_MIN_IDLE_HOURS = 24 * 7, 2  # 7 days
 DEFAULT_STALE_AFTER_DAYS, DEFAULT_ARCHIVE_AFTER_DAYS = 14, 30
-# The LLM consolidation fork is opt-in; the deterministic inactivity prune
-# (apply_automatic_transitions) always runs when the curator is enabled.
-DEFAULT_CONSOLIDATE = False
 
 
 # --- .curator_state — persistent scheduler + status ---
@@ -122,9 +119,6 @@ def get_archive_after_days() -> int:
     return _config_number("archive_after_days", DEFAULT_ARCHIVE_AFTER_DAYS, int)
 
 
-def get_consolidate() -> bool:
-    """LLM consolidation pass — OFF by default (prune only, no aux-model fork); ``hermes curator run --consolidate`` overrides per invocation."""
-    return bool(_load_config().get("consolidate", DEFAULT_CONSOLIDATE))
 
 
 # --- Idle / interval check ---
@@ -890,34 +884,26 @@ def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_na
 
 def run_curator_review(
     on_summary: Optional[Callable[[str], None]] = None, synchronous: bool = False,
-    dry_run: bool = False, consolidate: Optional[bool] = None,
+    dry_run: bool = False,
 ) -> Dict[str, Any]:
-    """Execute a single curator review pass: (1) automatic state transitions (no LLM); (2) if *consolidate* and there are
-    candidates, fork an AIAgent on the review prompt; (3) update .curator_state; (4) call *on_summary*.
-    *synchronous* runs the LLM review in the calling thread (default: daemon thread). *consolidate* ``None`` reads
-    ``curator.consolidate`` (OFF by default); when off only the deterministic prune runs — no fork, no aux cost.
+    """Execute a single curator review pass: (1) automatic state transitions (no LLM); (2) always run the
+    consolidation pass when candidates exist; (3) update .curator_state; (4) call *on_summary*.
+    *synchronous* runs the LLM review in the calling thread (default: daemon thread).
     *dry_run* SKIPS the stale/archive transitions and instructs the fork to report only; REPORT.md is still written and
     recorded in ``state.last_report_path`` so users can read what WOULD have happened."""
-    consolidate = get_consolidate() if consolidate is None else consolidate
     start = datetime.now(timezone.utc)
     if dry_run:  # count candidates without mutating state
         counts = {"checked": len(_safe_curated_report()), "marked_stale": 0, "archived": 0, "reactivated": 0}
     else:
         from agent import curator_backup
-        # The prune-only pass just renames directories into .archive/ (its own undo) and every edit is
-        # ledgered; only the LLM consolidation pass rewrites content in place, so only it earns a
-        # whole-tree snapshot. Retention still runs so old snapshots age out either way.
-        if consolidate:
-            # Best-effort, never blocks the run: a transient disk issue must not silently disable the curator forever.
-            try:
-                snap = curator_backup.snapshot_skills(reason="pre-curator-run")
-                if snap is not None:
-                    _notify(on_summary, f"curator: snapshot created ({snap.name})")
-            except Exception as e:
-                logger.debug("Curator pre-run snapshot failed: %s", e, exc_info=True)
-        else:
-            with contextlib.suppress(Exception):
-                curator_backup.prune_old_snapshots()
+        # Every real run can rewrite skill content in place during consolidation, so snapshot before
+        # automatic transitions. Retention runs inside snapshot_skills; backup failures never block a run.
+        try:
+            snap = curator_backup.snapshot_skills(reason="pre-curator-run")
+            if snap is not None:
+                _notify(on_summary, f"curator: snapshot created ({snap.name})")
+        except Exception as e:
+            logger.debug("Curator pre-run snapshot failed: %s", e, exc_info=True)
         counts = apply_automatic_transitions(now=start)
     auto_summary = ", ".join(
         f"{counts[key]} {label}" for key, label in (("marked_stale", "marked stale"), ("archived", "archived"), ("reactivated", "reactivated")) if counts[key]
@@ -936,12 +922,7 @@ def run_curator_review(
         # Snapshot skill state BEFORE the LLM pass so the report can diff.
         before_report = _safe_curated_report()
         before_names = set(_by_name(before_report))
-        if consolidate:
-            final_summary, llm_meta = _consolidation_pass(prefix, auto_summary, dry_run, before_names)
-        else:
-            # Prune-only run: record it and write a report, but never fork.
-            final_summary = f"{prefix}{auto_summary}; llm: skipped (consolidation off)"
-            llm_meta = _llm_meta("skipped (consolidation off)")
+        final_summary, llm_meta = _consolidation_pass(prefix, auto_summary, dry_run, before_names)
         elapsed = (datetime.now(timezone.utc) - start).total_seconds()
         state2 = {**load_state(), "last_run_duration_seconds": elapsed, "last_run_summary": final_summary}
         # Per-run report, best-effort; path recorded for `hermes curator status`.

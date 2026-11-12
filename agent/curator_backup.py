@@ -191,9 +191,6 @@ def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[Set[str]] =
     return dest
 
 
-def prune_old_snapshots() -> List[str]:
-    """Apply ``curator.backup.keep`` without taking a new snapshot (the prune-only curator pass)."""
-    return _prune_old(keep=get_keep())
 
 
 def _prune_old(keep: int, protect: Optional[Set[str]] = None) -> List[str]:
