@@ -9,8 +9,6 @@ Covers:
   "too long" + "empty after cleanup" pair.
 """
 
-from unittest.mock import patch
-
 from tests.hermes_cli.test_cli_init import _make_cli
 
 
@@ -26,22 +24,19 @@ def test_undo_non_numeric_count_keeps_repl_alive():
     assert result is True
 
 
-def test_undo_empty_session_no_confirmation_dialog():
-    """`/undo` with no history must short-circuit before the destructive prompt (SC-06)."""
+def test_undo_empty_session_no_confirmation_dialog(capsys):
+    """`/undo` with no history runs immediately and does not confirm (SC-06)."""
     cli = _make_cli()
     cli.conversation_history = []
+    undo_calls = []
+    cli.undo_last = lambda *a, **k: undo_calls.append((a, k))
 
-    called = {"confirm": False}
-
-    def _spy_confirm(*a, **k):
-        called["confirm"] = True
-        return "approved"
-
-    with patch.object(cli, "_confirm_destructive_slash", _spy_confirm):
-        result = cli.process_command("/undo")
+    result = cli.process_command("/undo")
 
     assert result is True
-    assert called["confirm"] is False  # no confirmation for a guaranteed no-op
+    assert undo_calls == []
+    assert "No messages to undo" in capsys.readouterr().out
+    assert not hasattr(type(cli), "_confirm_destructive_slash")
 
 
 def test_title_too_long_prints_single_error(capsys):
