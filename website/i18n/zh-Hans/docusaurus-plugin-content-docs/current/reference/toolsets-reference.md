@@ -52,7 +52,7 @@ hermes tools                            # curses UI to enable/disable per platfo
 
 | 工具集 | 工具 | 用途 |
 |--------|------|------|
-| `browser` | `browser_back`, `browser_cdp`, `browser_click`, `browser_console`, `browser_dialog`, `browser_get_images`, `browser_navigate`, `browser_press`, `browser_scroll`, `browser_snapshot`, `browser_type`, `browser_vision`, `web_search` | 核心浏览器自动化。包含 `web_search` 作为快速查询的备用方案。`browser_cdp` 和 `browser_dialog` 在运行时受限——仅在会话启动时 CDP 端点可达（通过 `/browser connect`、`browser.cdp_url` 配置、Browserbase 或 Camofox）时才注册。`browser_dialog` 与 `browser_snapshot` 在附加 CDP supervisor 时添加的 `pending_dialogs` 和 `frame_tree` 字段配合使用。 |
+| `browser` | `browser_back`, `browser_click`, `browser_console`, `browser_get_images`, `browser_navigate`, `browser_press`, `browser_scroll`, `browser_snapshot`, `browser_type`, `browser_vision`, `web_search` | Camofox 浏览器自动化，并提供 `web_search` 用于查找 URL。浏览器工具始终注册；调用需要已配置且可达的 Camofox 服务。 |
 | `clarify` | `clarify` | 当 agent 需要澄清时向用户提问。 |
 | `code_execution` | `execute_code` | 运行以编程方式调用 Hermes 工具的 Python 脚本。 |
 | `cronjob` | `cronjob` | 调度和管理周期性任务。 |

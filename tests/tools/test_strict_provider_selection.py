@@ -81,11 +81,6 @@ class TestReadSelection:
         with self._with_raw({"stt": {"provider": "local", "use_gateway": False}}):
             assert tbh.read_selection("stt") == "local"
 
-    def test_browser_backend_key_is_not_the_cloud_selection(self):
-        """browser.backend is the driver choice (browser-use CLI vs built-in
-        tools), not the cloud provider selection."""
-        with self._with_raw({"browser": {"backend": "browser-use"}}):
-            assert tbh.read_selection("browser") is None
 
     def test_web_per_capability_keys_mark_configured(self):
         with self._with_raw({"web": {"search_backend": "searxng"}}):
@@ -240,79 +235,6 @@ class TestSttStrictSelection:
         assert api_key == "sk-env"
 
 
-# ---------------------------------------------------------------------------
-# Browser Use provider
-# ---------------------------------------------------------------------------
-
-
-class TestBrowserUseStrictSelection:
-    def _provider(self):
-        from plugins.browser.browser_use.provider import BrowserUseBrowserProvider
-
-        return BrowserUseBrowserProvider()
-
-    def test_nous_selection_routes_managed_even_with_direct_key(self):
-        provider = self._provider()
-        with patch("plugins.browser.browser_use.provider.get_secret", return_value="bu-key"), \
-             patch("tools.tool_backend_helpers.read_selection", return_value="nous"), \
-             patch("tools.managed_tool_gateway.resolve_managed_tool_gateway", return_value=MANAGED):
-            config = provider._get_config_or_none()
-        assert config["managed_mode"] is True
-        assert config["api_key"] == "managed-token"
-
-    def test_vendor_selection_missing_key_errors_without_managed_call(self):
-        provider = self._provider()
-        with patch("plugins.browser.browser_use.provider.get_secret", return_value=""), \
-             patch("tools.tool_backend_helpers.read_selection", return_value="browser-use"), \
-             patch("tools.managed_tool_gateway.resolve_managed_tool_gateway") as gw:
-            with pytest.raises(ValueError) as exc:
-                provider._get_config()
-        gw.assert_not_called()
-        assert "browser is configured to use browser-use" in str(exc.value)
-        assert "BROWSER_USE_API_KEY" in str(exc.value)
-
-    def test_never_configured_key_still_routes_direct(self):
-        provider = self._provider()
-        with patch("plugins.browser.browser_use.provider.get_secret", return_value="bu-key"), \
-             patch("tools.tool_backend_helpers.read_selection", return_value=None):
-            config = provider._get_config_or_none()
-        assert config["managed_mode"] is False
-        assert config["api_key"] == "bu-key"
-
-
-# ---------------------------------------------------------------------------
-# Camofox: selection over env var
-# ---------------------------------------------------------------------------
-
-
-class TestCamofoxSelection:
-    def test_camofox_selection_activates_mode(self, monkeypatch):
-        from tools import browser_camofox as bc
-
-        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-        with patch.object(bc, "_config_cdp_url", return_value=""), \
-             patch("tools.tool_backend_helpers.read_selection", return_value="camofox"):
-            assert bc.is_camofox_mode() is True
-
-    def test_other_selection_beats_camofox_url_env(self, monkeypatch):
-        """CAMOFOX_URL is the ADDRESS, not the choice: an explicit different
-        browser selection wins."""
-        from tools import browser_camofox as bc
-
-        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-        with patch.object(bc, "_config_cdp_url", return_value=""), \
-             patch.object(bc, "get_camofox_url", return_value="http://localhost:9377"), \
-             patch("tools.tool_backend_helpers.read_selection", return_value="local"):
-            assert bc.is_camofox_mode() is False
-
-    def test_never_configured_env_url_still_activates(self, monkeypatch):
-        from tools import browser_camofox as bc
-
-        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-        with patch.object(bc, "_config_cdp_url", return_value=""), \
-             patch.object(bc, "get_camofox_url", return_value="http://localhost:9377"), \
-             patch("tools.tool_backend_helpers.read_selection", return_value=None):
-            assert bc.is_camofox_mode() is True
 
 
 # ---------------------------------------------------------------------------

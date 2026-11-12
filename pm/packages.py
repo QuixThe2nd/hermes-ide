@@ -14,7 +14,6 @@ from pm.package import (
     InstallError,
     Package,
     StatePackage,
-    _entry_listing,
     _missing_reason,
     _probe_reason,
 )
@@ -709,123 +708,6 @@ class CuaDriver(BinaryPackage):
         except Exception:
             return dict(os.environ, CUA_DRIVER_RS_TELEMETRY_ENABLED="0")
 
-
-@register
-class AgentBrowser(BinaryPackage):
-    name = "agent-browser"
-    optional = True
-    deps = ("chromium", "chromium-headless-shell")
-    flatten = True
-    probe_version = False
-    url = "https://registry.npmjs.org/agent-browser/-/agent-browser-{version}.tgz"
-    # No win32-arm64 gap: agent-browser ships only win32-x64, and Windows
-    # ARM64 runs it via built-in emulation (its own postinstall falls back
-    # to x64 on arm64). chromium is likewise the x64 build on win32-arm64.
-    emulated_arch_targets = frozenset({"win32-arm64"})
-
-    def latest_versions(self, target: str, locked=None) -> list[str]:
-        latest = npm_dist_tags("agent-browser").get("latest")
-        return [latest] if latest else []
-
-    def _rel(self, target: str) -> Optional[str]:
-        ext = ".exe" if target.startswith("win32") else ""
-        # Windows ARM64 runs the x64 binary under built-in emulation:
-        # agent-browser ships no native arm64 build (its own postinstall
-        # falls back to x64 on arm64), so the staged name is win32-x64.
-        if target == "win32-arm64":
-            target = "win32-x64"
-        return f"bin/agent-browser-{target}{ext}"
-
-    def binary(self, entry: Path, target: str) -> Optional[Path]:
-        # The win32-arm64 payload carries the x64 binary (emulated), so
-        # resolve it under the win32-x64 name.
-        return super().binary(entry, "win32-x64" if target == "win32-arm64" else target)
-
-    def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
-        flatten_single_dir(staged)
-        bin_dir = staged / "bin"
-        if not bin_dir.is_dir():
-            raise InstallError(self.name, "staged without a bin/ directory")
-        keep = Path(self._rel(target)).name
-        if not (bin_dir / keep).is_file():
-            raise InstallError(self.name, f"{keep} missing from the staged tarball")
-        for item in bin_dir.iterdir():
-            if item.is_file() and item.name.startswith("agent-browser-") and item.name != keep:
-                item.unlink()
-
-
-class PlaywrightBrowser(Package):
-    """Playwright resolves browsers by DIRECTORY NAME under one root:
-    `<name with '-'→'_'>-<revision>`, no target suffix. The env points
-    PLAYWRIGHT_BROWSERS_PATH at the store root itself. The entry carries
-    the INSTALLATION_COMPLETE marker playwright checks.
-
-    The version is `<playwright revision>+<chrome version>` — most targets
-    download from the Chrome-for-Testing CDN by chrome version, and the
-    targets CfT doesn't build (linux-arm64) come from playwright's own
-    mirror by revision. The store entry is named by revision only, which
-    is all playwright's resolver reads."""
-
-    optional = True
-    on_path = False
-    _CDN = "https://cdn.playwright.dev"
-
-    # Chrome-for-Testing platform names; targets absent here fall back to
-    # playwright's dbazure mirror with its own platform names.
-    # win32-arm64 uses the win64 (x64) build: CfT publishes no native
-    # win-arm64 chromium, and Windows ARM64 runs x64 binaries via built-in
-    # emulation — the same choice agent-browser's own postinstall makes.
-    _CFT = {
-        "linux-x64": "linux64",
-        "darwin-x64": "mac-x64",
-        "darwin-arm64": "mac-arm64",
-        "win32-x64": "win64",
-        "win32-arm64": "win64",
-    }
-    _MIRROR = {"linux-arm64": "linux-arm64"}
-    _FILE = ""  # "chrome" / "chrome-headless-shell"
-    _MIRROR_FILE = ""  # "chromium" / "chromium-headless-shell"
-
-    def store_entry(self, version: str, target: str) -> str:
-        revision = version.partition("+")[0]
-        return f"{self.name.replace('-', '_')}-{revision}"
-
-    def fetch_url(self, version: str, target: str) -> str:
-        revision, _, chrome = version.partition("+")
-        plat = self._CFT.get(target)
-        if plat and chrome:
-            return f"{self._CDN}/builds/cft/{chrome}/{plat}/{self._FILE}-{plat}.zip"
-        mirror_plat = self._MIRROR[target]
-        return (
-            f"{self._CDN}/dbazure/download/playwright/builds/chromium/"
-            f"{revision}/{self._MIRROR_FILE}-{mirror_plat}.zip"
-        )
-
-    def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
-        (staged / "INSTALLATION_COMPLETE").write_text("", encoding="utf-8")
-
-    def verify(self, entry: Path, target: str) -> str:
-        marker = entry / "INSTALLATION_COMPLETE"
-        if marker.is_file():
-            return ""
-        return f"INSTALLATION_COMPLETE missing under {entry}; {_entry_listing(entry)}"
-
-    def env(self, entry: Path, target: str) -> dict:
-        return {"PLAYWRIGHT_BROWSERS_PATH": str(entry.parent)}
-
-
-@register
-class Chromium(PlaywrightBrowser):
-    name = "chromium"
-    _FILE = "chrome"
-    _MIRROR_FILE = "chromium"
-
-
-@register
-class ChromiumHeadlessShell(PlaywrightBrowser):
-    name = "chromium-headless-shell"
-    _FILE = "chrome-headless-shell"
-    _MIRROR_FILE = "chromium-headless-shell"
 
 
 class LlamaCpp(BinaryPackage):

@@ -52,7 +52,7 @@ Or in-session:
 
 | Toolset | Tools | Purpose |
 |---------|-------|---------|
-| `browser` | `browser_back`, `browser_cdp`, `browser_click`, `browser_console`, `browser_dialog`, `browser_get_images`, `browser_navigate`, `browser_press`, `browser_scroll`, `browser_snapshot`, `browser_type`, `browser_vision`, `web_search` | Core browser automation. Includes `web_search` as a fallback for quick lookups. `browser_cdp` and `browser_dialog` are gated at runtime — registered only when a CDP endpoint is reachable at session start (via `/browser connect`, `browser.cdp_url` config, Browserbase, or Camofox). `browser_dialog` works together with the `pending_dialogs` and `frame_tree` fields that `browser_snapshot` adds when a CDP supervisor is attached. |
+| `browser` | `browser_back`, `browser_click`, `browser_console`, `browser_get_images`, `browser_navigate`, `browser_press`, `browser_scroll`, `browser_snapshot`, `browser_type`, `browser_vision`, `web_search` | Camofox browser automation, with `web_search` available for finding URLs. Browser tools are always registered; calls require a configured, reachable Camofox server. |
 | `clarify` | `clarify` | Ask the user a question when the agent needs clarification. |
 | `code_execution` | `execute_code` | Run Python scripts that call Hermes tools programmatically. |
 | `connections` | `manage_connections` | Connect the user to apps: managed connector accounts through the Nous gateway, and local MCP servers from the catalog. On the desktop every action is a card that blocks until the user settles it; off the desktop managed actions return a connect link per app. |

@@ -148,22 +148,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `Optional` | import | `typing` |
 | `read_error_body_or_default` | restored-def | `(deleted; BASE body restored)` |
 
-### `agent.browser_provider`
-
-| name | kind | new location |
-|---|---|---|
-| `Any` | import | `typing` |
-| `Optional` | import | `typing` |
-
-### `agent.browser_registry`
-
-| name | kind | new location |
-|---|---|---|
-| `Dict` | import | `typing` |
-| `List` | import | `typing` |
-| `hermes_home_key` | moved-lazy | `hermes_constants` |
-| `threading` | import | `threading` |
-
 ### `agent.codex_runtime`
 
 | name | kind | new location |
@@ -592,7 +576,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `Condition` | import | `prompt_toolkit.filters` |
 | `ConditionalContainer` | import | `prompt_toolkit.layout` |
 | `ConditionalProcessor` | import | `prompt_toolkit.layout.processors` |
-| `DEFAULT_BROWSER_CDP_URL` | moved-lazy | `hermes_cli.browser_connect` |
 | `Dimension` | import | `prompt_toolkit.layout.dimension` |
 | `FileHistory` | import | `prompt_toolkit.history` |
 | `FormattedTextControl` | import | `prompt_toolkit.layout` |
@@ -622,10 +605,8 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `get_toolset_for_tool` | moved-lazy | `model_tools` |
 | `get_toolset_info` | moved-lazy | `toolsets` |
 | `init_skin_from_config` | moved-lazy | `hermes_cli.skin_engine` |
-| `is_browser_debug_ready` | moved-lazy | `hermes_cli.browser_connect` |
 | `is_table_divider` | moved-lazy | `agent.markdown_tables` |
 | `looks_like_table_row` | moved-lazy | `agent.markdown_tables` |
-| `manual_chrome_debug_command` | moved-lazy | `hermes_cli.browser_connect` |
 | `print_config_warnings` | moved-lazy | `hermes_cli.config` |
 | `prompt_for_secret` | moved-lazy | `hermes_cli.callbacks` |
 | `rich_box` | import | `rich` |
@@ -658,18 +639,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | name | kind | new location |
 |---|---|---|
 | `provider_supports_fire_cancel` | restored-def | `(deleted; BASE body restored)` |
-
-### `gateway.browser_control_artifacts`
-
-| name | kind | new location |
-|---|---|---|
-| `ArtifactOverwrite` | restored-def | `(deleted; BASE body restored)` |
-
-### `gateway.browser_control_broker`
-
-| name | kind | new location |
-|---|---|---|
-| `BROWSER_CONTROL_ALL_CAPABILITIES` | restored-def | `(deleted; BASE body restored)` |
 
 ### `gateway.config`
 
@@ -1056,12 +1025,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `copy_db_and_verify` | restored-def | `(deleted; BASE body restored)` |
 
-### `hermes_cli.browser_connect`
-
-| name | kind | new location |
-|---|---|---|
-| `try_launch_chrome_debug` | restored-def | `(deleted; BASE body restored)` |
-
 ### `hermes_cli.callbacks`
 
 | name | kind | new location |
@@ -1158,7 +1121,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `OPENROUTER_MODELS_URL` | moved-lazy | `hermes_constants` |
 | `Path` | import | `pathlib` |
 | `STATE_DB_SIZE_WARN_BYTES` | moved-lazy | `hermes_cli.doctor_state` |
-| `agent_browser_runnable` | moved-lazy | `hermes_constants` |
 | `base_url_host_matches` | moved-lazy | `utils` |
 | `check_certificates` | moved-lazy | `hermes_cli.doctor_platform` |
 | `check_fail` | restored-def | `(deleted; BASE body restored)` |
@@ -2111,29 +2073,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `json` | import | `json` |
 | `os` | import | `os` |
 
-### `plugins.browser.browser_use.provider`
-
-| name | kind | new location |
-|---|---|---|
-| `BrowserProvider` | moved-lazy | `agent.browser_provider` |
-| `os` | import | `os` |
-
-### `plugins.browser.browserbase.provider`
-
-| name | kind | new location |
-|---|---|---|
-| `BrowserProvider` | moved-lazy | `agent.browser_provider` |
-| `requests` | import | `requests` |
-| `uuid` | import | `uuid` |
-
-### `plugins.browser.firecrawl.provider`
-
-| name | kind | new location |
-|---|---|---|
-| `BrowserProvider` | moved-lazy | `agent.browser_provider` |
-| `requests` | import | `requests` |
-| `uuid` | import | `uuid` |
-
 ### `plugins.context_engine`
 
 | name | kind | new location |
@@ -2643,41 +2582,13 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `CAMOFOX_STATE_DIR_NAME` | restored-def | `(deleted; BASE body restored)` |
 | `CAMOFOX_STATE_SUBDIR` | restored-def | `(deleted; BASE body restored)` |
 
-### `tools.browser_dialog_tool`
-
-| name | kind | new location |
-|---|---|---|
-| `logger` | moved-lazy | `tools.approval` |
-| `logging` | import | `logging` |
-
-### `tools.browser_supervisor`
-
-| name | kind | new location |
-|---|---|---|
-| `CONSOLE_HISTORY_MAX` | restored-def | `(deleted; BASE body restored)` |
-| `ConsoleEvent` | restored-def | `(deleted; BASE body restored)` |
-| `DIALOG_BRIDGE_HOST` | moved-lazy | `tools.browser_supervisor_dialogs` |
-| `DIALOG_BRIDGE_URL_PATTERN` | moved-lazy | `tools.browser_supervisor_dialogs` |
-| `DIALOG_POLICY_AUTO_ACCEPT` | moved-lazy | `tools.browser_supervisor_dialogs` |
-| `DIALOG_POLICY_AUTO_DISMISS` | moved-lazy | `tools.browser_supervisor_dialogs` |
-| `DIALOG_POLICY_MUST_RESPOND` | moved-lazy | `tools.browser_supervisor_dialogs` |
-| `FRAME_TREE_MAX_ENTRIES` | moved-lazy | `tools.browser_supervisor_frames` |
-| `FRAME_TREE_MAX_OOPIF_DEPTH` | moved-lazy | `tools.browser_supervisor_frames` |
-
 ### `tools.browser_tool`
 
 | name | kind | new location |
 |---|---|---|
-| `BrowserUseProvider` | moved-lazy | `plugins.browser.browser_use.provider.BrowserUseBrowserProvider` |
-| `BrowserbaseProvider` | moved-lazy | `plugins.browser.browserbase.provider.BrowserbaseBrowserProvider` |
-| `CloudBrowserProvider` | moved-lazy | `agent.browser_provider.BrowserProvider` |
-| `FirecrawlProvider` | moved-lazy | `plugins.browser.firecrawl.provider.FirecrawlBrowserProvider` |
 | `List` | import | `typing` |
 | `SNAPSHOT_SUMMARIZE_THRESHOLD` | restored-def | `(deleted; BASE body restored)` |
 | `Tuple` | import | `typing` |
-| `agent_browser_runnable` | moved-lazy | `hermes_constants` |
-| `check_browser_requirements` | moved-lazy | `tools.browser_tool_install` |
-| `check_browser_vision_requirements` | moved-lazy | `tools.browser_tool_install` |
 | `cleanup_all_browsers` | moved-lazy | `tools.browser_tool_lifecycle` |
 | `cleanup_browser` | moved-lazy | `tools.browser_tool_lifecycle` |
 | `contextlib` | import | `contextlib` |
@@ -2686,16 +2597,13 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `get_hermes_home_override` | moved-lazy | `hermes_constants` |
 | `hermes_home_key` | moved-lazy | `hermes_constants` |
 | `is_truthy_value` | moved-lazy | `utils` |
-| `lightpanda_engine_status` | moved-lazy | `tools.browser_tool_lightpanda_fallback` |
 | `node_tool_runnable` | moved-lazy | `hermes_constants` |
-| `normalize_browser_cloud_provider` | moved-lazy | `tools.tool_backend_helpers` |
 | `re` | import | `re` |
 | `reset_hermes_home_override` | moved-lazy | `hermes_constants` |
 | `set_hermes_home_override` | moved-lazy | `hermes_constants` |
 | `shutil` | import | `shutil` |
 | `signal` | import | `signal` |
 | `timezone` | import | `datetime` |
-| `warm_agent_browser_npx_cache` | moved-lazy | `tools.browser_tool_install` |
 | `windows_hide_flags` | moved-lazy | `hermes_cli._subprocess_compat` |
 
 ### `tools.clarify_gateway`
@@ -3572,14 +3480,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `Optional` | import | `typing` |
 | `Tuple` | import | `typing` |
 | `resolve_profile` | restored-def | `(deleted; BASE body restored)` |
-
-### `tui_gateway.methods_browser_control`
-
-| name | kind | new location |
-|---|---|---|
-| `BROWSER_CONTROL_PROTOCOL_VERSION` | moved-lazy | `gateway.browser_control_broker` |
-| `browser_control_protocol_supported` | moved-lazy | `gateway.browser_control_broker` |
-| `filter_browser_control_capabilities` | moved-lazy | `gateway.browser_control_broker` |
 
 ### `tui_gateway.methods_prompt`
 

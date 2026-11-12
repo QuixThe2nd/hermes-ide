@@ -14,7 +14,7 @@ tools):
   resolved locally, the page origin must EXACTLY match the item's bound
   origin (pre-checked AND re-asserted synchronously inside the fill script),
   the field is chosen by the ported login-control classifier, injection runs
-  exclusively over the supervisor CDP WebSocket (never argv), and the tool
+  exclusively over Camofox's authenticated REST evaluate endpoint (never argv), and the tool
   result reports only ``{filled_fields, kind, origin, success}`` — the
   password never appears in tool results, logs, or the session DB, and its
   exact bytes are registered with the browser-result redaction boundary so
@@ -45,11 +45,8 @@ def _check_vault_available() -> bool:
     from hermes_cli.config import cfg_get, load_config
     if not bool(cfg_get(load_config(), "vault", "local", "enabled", default=True)):
         return False
-    from tools.browser_tool_install import check_browser_requirements
-    from tools.browser_use_cli import is_browser_use_cli_mode
-    # check_browser_requirements() is False by design in Browser Use mode (browser_exec replaces the
-    # built-in surface); the vault serves both stacks.
-    return bool(is_browser_use_cli_mode() or check_browser_requirements())
+    from tools.browser_tool import check_browser_requirements
+    return bool(check_browser_requirements())
 
 
 # ---------------------------------------------------------------------------
@@ -62,9 +59,8 @@ def _eval_js_camofox(task_id: str, expression: str, *, secret: bool = False) -> 
     Same session machinery browser_console's camofox path uses (``_get_session`` tab +
     user id), never a subprocess — the expression rides an authenticated HTTP body, which
     is the accepted secret transport on this install. Fails closed for secret-bearing
-    expressions when the camofox key or session tab is missing; in camofox mode there is
-    deliberately no fallback to the supervisor/CLI paths (camofox has no local CDP
-    endpoint, and the CLI would place the expression in subprocess argv).
+    expressions when the Camofox key or session tab is missing. There is no
+    subprocess fallback that could expose the expression in process argv.
     """
     from agent.secret_scope import get_secret
     from tools import browser_camofox as cf
@@ -90,125 +86,18 @@ def _eval_js_camofox(task_id: str, expression: str, *, secret: bool = False) -> 
 
 
 def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
-    """Evaluate NON-SECRET JS on the current page (inspection, origin reads).
-
-    Camofox mode routes through its REST API; otherwise prefers the supervisor's
-    persistent CDP WebSocket, falling back to the agent-browser CLI ``eval``
-    command. Never use the non-camofox path for expressions that embed secret
-    values — the fallback places the expression in subprocess argv. Use
-    :func:`_eval_js_secret` for secret-bearing expressions.
-    """
-    try:
-        from tools.browser_camofox import is_camofox_mode
-
-        if is_camofox_mode():
-            return _eval_js_camofox(task_id, expression)
-    except ImportError:
-        pass
-
-    try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY
-
-        supervisor = SUPERVISOR_REGISTRY.get(task_id)
-        if supervisor is not None:
-            sup = supervisor.evaluate_runtime(expression)
-            if sup.get("ok"):
-                return {"success": True, "result": sup.get("result")}
-            err = str(sup.get("error") or "")
-            if "supervisor" not in err.lower():
-                return {"success": False, "error": err}
-    except ImportError:
-        pass
-    except Exception as exc:  # pragma: no cover — defensive
-        logger.debug("vault fill: supervisor eval unavailable (%s)", exc)
-
-    from tools.browser_tool import _last_session_key
-    from tools.browser_tool_session import _run_browser_command
-
-    effective = _last_session_key(task_id)
-    result = _run_browser_command(effective, "eval", [expression])
-    if not result.get("success"):
-        return {"success": False, "error": result.get("error", "eval failed")}
-    return {"success": True, "result": result.get("data", {}).get("result")}
-
-
-def _ensure_supervisor(task_id: str):
-    """The supervisor for ``task_id``, attaching one on demand for a LOCAL built-in browser session.
-
-    Cloud/CDP-override sessions and browser_exec attach their supervisor when the session is created;
-    a local agent-browser ``--session`` has no ``cdp_url`` of its own, so nothing did. Ask the daemon
-    for the packaged Chromium's endpoint (``get cdp-url``: same daemon, same reaper) and attach.
-    Returns None when no endpoint is reachable; the fill then refuses rather than touching argv."""
-    from tools.browser_supervisor import SUPERVISOR_REGISTRY
-
-    supervisor = SUPERVISOR_REGISTRY.get(task_id)
-    if supervisor is not None:
-        return supervisor
-    from tools.browser_tool import _last_session_key
-    from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
-    from tools.browser_tool_session import _run_browser_command
-
-    res = _run_browser_command(_last_session_key(task_id), "get", ["cdp-url"])
-    cdp_url = str(((res or {}).get("data") or {}).get("cdpUrl") or "") if (res or {}).get("success") else ""
-    if not cdp_url:
-        return None
-    policy, timeout_s = _get_dialog_policy_config()
-    try:
-        return SUPERVISOR_REGISTRY.get_or_start(task_id=task_id, cdp_url=_resolve_cdp_override(cdp_url),
-                                                dialog_policy=policy, dialog_timeout_s=timeout_s)
-    except Exception as exc:
-        logger.debug("vault fill: supervisor attach to local session failed (%s)", exc)
-        return None
+    """Evaluate non-secret page JS through the current Camofox session."""
+    return _eval_js_camofox(task_id, expression)
 
 
 def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
-    """Evaluate a SECRET-BEARING JS expression. Supervisor CDP-WS only.
+    """Evaluate secret-bearing JS only over bearer-authenticated Camofox REST.
 
-    Fails closed: there is deliberately NO fallback to the agent-browser CLI
-    ``eval`` path, because that places the expression — and therefore the
-    credential bytes — in subprocess argv, visible to any process listing.
-    Camofox mode uses the bearer-authenticated REST evaluate endpoint instead
-    (see :func:`_eval_js_camofox`). When no acceptable transport is available
-    the caller gets a typed refusal (``error_type='supervisor_required'`` /
-    ``'camofox_session_required'``) and nothing is written.
+    There is no subprocess or unauthenticated fallback: ``_eval_js_camofox``
+    returns a typed refusal before the expression is transmitted when the API
+    key, server URL, or current tab is missing.
     """
-    try:
-        from tools.browser_camofox import is_camofox_mode
-
-        if is_camofox_mode():
-            return _eval_js_camofox(task_id, expression, secret=True)
-    except ImportError:
-        pass
-
-    try:
-        supervisor = _ensure_supervisor(task_id)
-    except Exception as exc:
-        logger.debug("vault fill: supervisor unavailable (%s)", exc)
-        supervisor = None
-
-    if supervisor is None:
-        return {
-            "success": False,
-            "error_type": "supervisor_required",
-            "error": (
-                "Vault fill requires the supervised browser session (direct "
-                "CDP WebSocket). The fallback eval path would place the "
-                "credential in subprocess argv, so it is never used for "
-                "secrets. Start the browser through the Hermes-managed "
-                "session and retry."
-            ),
-        }
-
-    sup = supervisor.evaluate_runtime(expression)
-    if sup.get("ok"):
-        return {"success": True, "result": sup.get("result")}
-    return {
-        "success": False,
-        "error_type": "supervisor_required"
-        if "supervisor" in str(sup.get("error") or "").lower()
-        else "eval_failed",
-        "error": str(sup.get("error") or "eval failed"),
-    }
+    return _eval_js_camofox(task_id, expression, secret=True)
 
 
 def _parse_json_result(raw: Any) -> Any:
@@ -235,26 +124,6 @@ def _current_page_origin(task_id: str) -> Optional[str]:
         return None
 
 
-# Per kind: a JS probe that is truthy on a tab holding the form this kind fills.
-_TAB_PROBES = {
-    "login": "!!document.querySelector('input[type=password]')",
-    "payment": "!!document.querySelector('input[autocomplete^=cc-], [name*=card i], [placeholder*=card i], [name*=cvc i], [name*=cvv i]')",
-    "address": "!!document.querySelector('input[autocomplete^=address-], [autocomplete=postal-code], [name*=address i], [name*=zip i], [name*=postal i]')",
-}
-
-
-def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
-    """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
-    (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
-    login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
-    try:
-        supervisor = _ensure_supervisor(task_id)
-    except Exception:
-        supervisor = None
-    if supervisor is None:
-        return None
-    focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
-    return (origin or focused.get("url")) if focused.get("ok") else None
 
 
 # ---------------------------------------------------------------------------
@@ -345,9 +214,6 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     from agent.vault_store import get_vault_store
 
     effective_task_id = task_id or "default"
-    # The supervisor's default page session is whatever tab it attached to first (on Browser Use that is
-    # the daemon's blank tab); the login form lives in the tab with a password field, so focus that one.
-    _focus_bound_origin(effective_task_id, "", "login")
     origin = _current_page_origin(effective_task_id)
     if not origin:
         return json.dumps({"success": False, "error": "Open the site's login page first; the login is saved for that page's origin."})
@@ -378,22 +244,19 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
                       ensure_ascii=False)
 
 
-_TAB_PROBES["otp"] = ("!!document.querySelector('input[autocomplete=one-time-code], input[name*=otp i], input[name*=code i], "
-                      "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]')")
 
 
 def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) -> str:
     """Second factor: fill the one-time code the CURRENT page asks for. If the saved login (``handle``) has an
     authenticator seed, the code is minted server-side and nobody is asked; otherwise the user is prompted on
-    their surface for the code their phone/email/app shows. The code goes into the page over the supervisor
-    socket and never enters the conversation."""
+    their surface for the code their phone/email/app shows. The code goes into the page over Camofox
+    REST and never enters the conversation."""
     from agent.redact import register_vault_redaction_value
     from agent.vault_backends import backend_for_handle
     from agent.vault_backends.unlock import can_prompt_here, get_code_prompt_callback
     from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
 
     effective_task_id = task_id or "default"
-    _focus_bound_origin(effective_task_id, "", "otp")
     origin = _current_page_origin(effective_task_id)
     if not origin:
         return json.dumps({"success": False, "error": "No page with a code field is open."})
@@ -453,7 +316,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     Password-only: the identifier is agent-visible metadata (see
     browser_vault_list) and is typed by the agent via normal input tools.
     The password is resolved server-side and injected via in-page JS over
-    the supervisor CDP WebSocket; the result reports only counts/metadata.
+    Camofox REST; the result reports only counts/metadata.
     """
     from agent.redact import register_vault_redaction_value
     from agent.vault_login_classifier import (
@@ -505,12 +368,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     # every saved origin is a valid fill target. Matching stays exact-origin —
     # nothing wildcard/parent-domain is ever inferred.
     allowed = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
-    page_origin = None
-    for candidate in allowed:
-        page_origin = _focus_bound_origin(effective_task_id, candidate, meta.kind)
-        if page_origin:
-            break
-    page_origin = page_origin or _current_page_origin(effective_task_id)
+    page_origin = _current_page_origin(effective_task_id)
     if not page_origin:
         return json.dumps(
             {"success": False, "error": "Could not determine the current page origin. Navigate to the login page first."}
@@ -570,7 +428,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
 
     # Register the secret bytes with the model-egress redaction boundary
     # BEFORE they touch the page: any later browser_* result (including
-    # browser_cdp Runtime.evaluate reads) that echoes them is scrubbed.
+    # browser_console JavaScript reads) that echoes them is scrubbed.
     # Address values are not secrets but the card fields are: register every payment value.
     for value in (secret.values() if meta.kind == "payment" else [secret.get("password", "")]):
         register_vault_redaction_value(value)
@@ -744,15 +602,11 @@ BROWSER_VAULT_ENTER_CODE_SCHEMA = {
 
 
 def _fenced_page_op(task_id: Optional[str], fn) -> str:
-    """Vault operations focus, inspect and fill the page over the supervisor socket, bypassing
-    ``_run_browser_command``; they must honour the Bot Desktop lease like every other page access,
-    or a human typing a credential on the taken-over screen could be read or written to."""
-    from tools.browser_tool import _active_sessions, _last_session_key
-    from tools.browser_tool_session import run_fenced
+    """Run a Camofox vault operation and keep its session lifecycle active."""
+    from tools.browser_tool import _track_activity
 
-    session = _active_sessions.get(_last_session_key(task_id or "default")) or {}
-    res = run_fenced(session, lambda: {"raw": fn()})
-    return res["raw"] if "raw" in res else json.dumps(res)
+    _track_activity(task_id)
+    return fn()
 
 
 def _handle_vault_enter_code(args: Dict[str, Any], **kwargs) -> str:

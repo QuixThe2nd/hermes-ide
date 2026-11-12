@@ -118,23 +118,18 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | 变量 | 描述 |
 |----------|-------------|
 | `PARALLEL_API_KEY` | AI 原生网络搜索（[parallel.ai](https://parallel.ai/)） |
-| `FIRECRAWL_API_KEY` | 网页抓取和云浏览器（[firecrawl.dev](https://firecrawl.dev/)） |
+| `FIRECRAWL_API_KEY` | 网页搜索和提取（[firecrawl.dev](https://firecrawl.dev/)） |
 | `FIRECRAWL_API_URL` | 自托管实例的自定义 Firecrawl API 端点（可选） |
 | `TAVILY_API_KEY` | Tavily API 密钥，用于 AI 原生网络搜索、提取和爬取（[app.tavily.com](https://app.tavily.com/home)） |
 | `SEARXNG_URL` | 免费自托管网络搜索的 SearXNG 实例 URL——无需 API 密钥（[searxng.github.io](https://searxng.github.io/searxng/)） |
 | `TAVILY_BASE_URL` | 覆盖 Tavily API 端点。适用于企业代理和自托管 Tavily 兼容搜索后端。与 `GROQ_BASE_URL` 模式相同。 |
 | `EXA_API_KEY` | Exa API 密钥，用于 AI 原生网络搜索和内容获取（[exa.ai](https://exa.ai/)） |
-| `BROWSERBASE_API_KEY` | 浏览器自动化（[browserbase.com](https://browserbase.com/)） |
-| `BROWSERBASE_PROJECT_ID` | Browserbase 项目 ID |
-| `BROWSER_USE_API_KEY` | Browser Use 云浏览器 API 密钥（[browser-use.com](https://browser-use.com/)） |
-| `FIRECRAWL_BROWSER_TTL` | Firecrawl 浏览器会话 TTL（秒，默认：300） |
-| `BROWSER_CDP_URL` | 本地浏览器的 Chrome DevTools Protocol（CDP）URL（通过 `/browser connect` 设置，例如 `ws://localhost:9222`） |
-| `CAMOFOX_URL` | Camofox 本地反检测浏览器服务器地址（默认：`http://localhost:9377`）。仅为地址——不会选择后端；请在 `hermes tools` 中选择 Camofox（`browser.cloud_provider: camofox`） |
+| `CAMOFOX_URL` | Camofox 服务控制 API 地址，例如 `http://localhost:9377` |
+| `CAMOFOX_API_KEY` | 发送到远程/需认证 Camofox 服务的可选 Bearer 令牌 |
 | `CAMOFOX_USER_ID` | 可选的外部管理 Camofox 用户 ID，用于共享可见会话 |
 | `CAMOFOX_SESSION_KEY` | 为 `CAMOFOX_USER_ID` 创建标签页时使用的可选 Camofox 会话密钥 |
 | `CAMOFOX_ADOPT_EXISTING_TAB` | 设为 `true` 可在创建新标签页前复用现有 Camofox 标签页 |
 | `BROWSER_INACTIVITY_TIMEOUT` | 浏览器会话不活动超时（秒） |
-| `AGENT_BROWSER_ARGS` | 额外的 Chromium 启动标志（逗号或换行分隔）。以 root 身份运行或在 AppArmor 限制的非特权用户命名空间（Ubuntu 23.10+、DGX Spark、许多容器镜像）中运行时，Hermes 自动注入 `--no-sandbox,--disable-dev-shm-usage`；仅在需要覆盖或添加其他标志时手动设置。 |
 | `FAL_KEY` | 图像生成（[fal.ai](https://fal.ai/)） |
 | `GROQ_API_KEY` | Groq Whisper STT API 密钥（[groq.com](https://groq.com/)） |
 | `ELEVENLABS_API_KEY` | ElevenLabs 高级 TTS 语音（[elevenlabs.io](https://elevenlabs.io/)） |

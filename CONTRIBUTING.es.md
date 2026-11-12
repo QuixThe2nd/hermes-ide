@@ -34,7 +34,7 @@ Esta es la pregunta más común para los nuevos colaboradores. La respuesta casi
 - Requiere integración de extremo a extremo con claves API, flujos de autenticación o configuración de múltiples componentes gestionada por el harness del agente
 - Necesita lógica de procesamiento personalizada que debe ejecutarse con precisión en cada ocasión (no "mejor esfuerzo" de la interpretación del LLM)
 - Maneja datos binarios, streaming o eventos en tiempo real que no pueden pasar por el terminal
-- Ejemplos: automatización de navegador (gestión de sesiones Browserbase), TTS (codificación de audio + entrega en plataforma), análisis de visión (manejo de imágenes base64)
+- Ejemplos: automatización de navegador (gestión de sesiones Camofox), TTS (codificación de audio + entrega en plataforma), análisis de visión (manejo de imágenes base64)
 
 ### ¿Debería la Habilidad estar incluida?
 

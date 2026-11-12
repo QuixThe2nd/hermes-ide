@@ -543,17 +543,12 @@ terminal:
 #   protected_instruction_extra_patterns: []
 
 # =============================================================================
-# Browser Tool Configuration
+# Camofox Browser Tool Configuration (server set by CAMOFOX_URL)
 # =============================================================================
 browser:
   # Inactivity timeout in seconds - browser sessions are automatically closed
   # after this period of no activity between agent loops (default: 120 = 2 minutes)
   inactivity_timeout: 120
-  # Let an authenticated browser extension register as the controller for an
-  # existing Hermes session. Disabled by default. Local API registration also
-  # requires the API server bearer key to be configured.
-  extension_control:
-    enabled: false
 
   # Maximum characters of snapshot content before truncate-and-store.
   # Increase for long pages (for example, documentation or financial reports),
@@ -1450,7 +1445,7 @@ platform_toolsets:
 #   file         - read_file, write_file, patch, search
 #   browser      - browser_navigate, browser_snapshot, browser_click, browser_type,
 #                  browser_scroll, browser_back, browser_press,
-#                  browser_get_images, browser_vision  (requires BROWSERBASE_API_KEY)
+#                  browser_get_images, browser_console, browser_vision  (requires CAMOFOX_URL)
 #   vision       - vision_analyze  (requires OPENROUTER_API_KEY)
 #   image_gen    - image_generate  (requires FAL_KEY)
 #   skills       - skills_list, skill_view

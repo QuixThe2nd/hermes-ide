@@ -65,12 +65,10 @@ NODE_VERSION="26"
 #   data still at /root/.hermes (HERMES_HOME).  Matches Claude Code / Codex CLI
 #   and keeps Docker bind-mounted /root/ volumes lean.
 ROOT_FHS_LAYOUT=false
-DETECTED_BROWSER_EXECUTABLE=""
 
 # Options
 USE_VENV=true
 RUN_SETUP=true
-SKIP_BROWSER=false
 SKIP_COMPUTER_USE=false
 NO_SKILLS=false
 BRANCH="main"
@@ -101,10 +99,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-setup)
             RUN_SETUP=false
-            shift
-            ;;
-        --skip-browser|--no-playwright)
-            SKIP_BROWSER=true
             shift
             ;;
         --skip-computer-use)
@@ -165,7 +159,6 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --no-venv      Don't create virtual environment"
             echo "  --skip-setup   Skip interactive setup wizard"
-            echo "  --skip-browser Skip Playwright/Chromium install (browser tools won't work)"
             echo "  --skip-computer-use  Skip the cua-driver (Computer Use) install"
             echo "  --no-skills    Start with a blank slate — seed no bundled skills, and"
             echo "                   write \$HERMES_HOME/.no-bundled-skills so future"
@@ -2463,7 +2456,6 @@ copy_config_templates() {
     # 0600 ensures only the file owner can read/write, matching standard
     # practice for credential files (.netrc, .aws/credentials, .ssh/config).
     chmod 600 "$HERMES_HOME/.env"
-    configure_browser_env_from_system_browser
 
     # Create config.yaml at ~/.hermes/config.yaml (top level, easy to find)
     if [ ! -f "$HERMES_HOME/config.yaml" ]; then
@@ -2514,70 +2506,7 @@ SOUL_EOF
     fi
 }
 
-find_system_browser() {
-    # Honor ONLY an explicit, user-set AGENT_BROWSER_EXECUTABLE_PATH override.
-    #
-    # We deliberately do NOT scan PATH or well-known app locations any more.
-    # Auto-detection silently bound the install to whatever `command -v chromium`
-    # resolved to — most damagingly a Snap Chromium (/snap/bin/chromium), whose
-    # sandbox blocks agent-browser's control socket under /tmp, so every
-    # browser_navigate hung until the 60s timeout fired ("opening web page
-    # failed"). Every install now uses the bundled Playwright Chromium unless the
-    # user explicitly points elsewhere.
-    local override="${AGENT_BROWSER_EXECUTABLE_PATH:-}"
 
-    if [ -z "$override" ]; then
-        return 1
-    fi
-
-    # A Snap binary is never a valid target — its confinement is the very bug we
-    # are fixing — so reject it even when set explicitly.
-    case "$override" in
-        /snap/*) return 1 ;;
-    esac
-
-    if [ -x "$override" ]; then
-        echo "$override"
-        return 0
-    fi
-    if command -v "$override" >/dev/null 2>&1; then
-        command -v "$override"
-        return 0
-    fi
-
-    return 1
-}
-
-strip_snap_browser_override() {
-    # Existing installs created before the system-browser fallback was dropped
-    # may carry an auto-written AGENT_BROWSER_EXECUTABLE_PATH pointing at a Snap
-    # Chromium (/snap/bin/chromium). That path is the root cause of the "opening
-    # web page failed" hang, and the runtime reads it straight from .env — so
-    # removing the fallback in the installer is not enough on its own. Strip any
-    # snap-pointing override here (and its auto-written comment) so the bundled
-    # Chromium download runs and the agent stops using the broken binary. A
-    # deliberately-set non-snap override is left untouched.
-    local env_file="$HERMES_HOME/.env"
-
-    [ -f "$env_file" ] || return 0
-    grep -Eq '^AGENT_BROWSER_EXECUTABLE_PATH=/snap/' "$env_file" 2>/dev/null || return 0
-
-    local tmp
-    tmp="$(mktemp)" || return 0
-    if grep -Ev '^AGENT_BROWSER_EXECUTABLE_PATH=/snap/|^# Hermes Agent browser tools' "$env_file" > "$tmp"; then
-        mv "$tmp" "$env_file"
-        log_warn "Removed stale Snap browser override (AGENT_BROWSER_EXECUTABLE_PATH=/snap/...) from $env_file"
-        log_info "Hermes will use the bundled Chromium instead."
-        # Drop it from this process too so the rest of the run doesn't re-detect it.
-        unset AGENT_BROWSER_EXECUTABLE_PATH
-    else
-        rm -f "$tmp"
-    fi
-}
-
-run_browser_install_with_timeout() {
-    run_with_timeout "$@"
-}
 
 # Run a command with a hard wall-clock timeout, returning non-zero if it is
 # killed. Prefers GNU coreutils `timeout` (Linux) or `gtimeout` (macOS via
@@ -2669,129 +2598,6 @@ run_with_timeout() {
     return 124
 }
 
-# Return success only when the host is an apt release NEWER than the newest one
-# Playwright's platform resolver recognizes — the exact condition that makes
-# `playwright install` hang uninterruptibly (#35166). We scope the override
-# retry to this case rather than retrying on *any* failure, so a genuine
-# network/disk/permission failure doesn't get a mismatched-glibc build forced
-# onto it. Newest Playwright-known apt releases as of this writing: Ubuntu
-# 24.04, Debian 13. Anything above triggers the fallback; everything Playwright
-# already handles (and every non-apt distro) does not.
-playwright_host_unrecognized() {
-    # Compare dotted versions: returns 0 if $1 > $2.
-    _ver_gt() {
-        [ "$1" = "$2" ] && return 1
-        [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ]
-    }
-    case "$DISTRO" in
-        ubuntu) _ver_gt "${DISTRO_VERSION:-0}" "24.04" ;;
-        debian) _ver_gt "${DISTRO_VERSION:-0}" "13" ;;
-        *) return 1 ;;  # Non-apt or unknown — not the #35166 hang condition.
-    esac
-}
-
-# Compute the PLAYWRIGHT_HOST_PLATFORM_OVERRIDE value to retry an install with
-# when Playwright's platform resolver rejects the host. ubuntu24.04 is the
-# newest Linux build Playwright has shipped across recent releases and runs on
-# newer apt releases (its binaries are dynamically linked); we point too-new /
-# unrecognized hosts at it. Only x64/arm64 Linux have Playwright builds — emit
-# nothing for anything else so the caller skips the retry. Echoes the value
-# (e.g. "ubuntu24.04-x64") or nothing.
-playwright_fallback_platform() {
-    case "$(uname -m)" in
-        x86_64|amd64) echo "ubuntu24.04-x64" ;;
-        aarch64|arm64) echo "ubuntu24.04-arm64" ;;
-        *) : ;;  # No Playwright Linux build for this arch.
-    esac
-}
-
-# Run a `playwright install ...` command, and if it fails or hangs (the
-# uninterruptible "Installing Playwright Chromium with system dependencies"
-# stall on apt releases Playwright doesn't recognize yet — Ubuntu 26.04,
-# Debian 14, future distros — see #35166), retry it ONCE with
-# PLAYWRIGHT_HOST_PLATFORM_OVERRIDE pinned to the newest known build.
-#
-# The override retry is scoped to the actual hang condition: it fires only when
-# the host is an apt release NEWER than Playwright recognizes
-# (playwright_host_unrecognized). On every release Playwright already supports
-# (Ubuntu <=24.04, Debian <=13) and every non-apt distro, the first attempt is
-# authoritative and a failure is reported as-is — we never force a
-# mismatched-glibc build (microsoft/playwright#35114) onto a host Playwright
-# handles correctly. This is deliberately narrower than a retry-on-any-failure:
-# a network/disk/permission error on a supported host should surface, not get
-# papered over with a platform override. Playwright's maintainers bless this
-# env var as the supported escape hatch for unrecognized platforms
-# (microsoft/playwright#33434); a hardcoded full distro/version table was
-# rejected upstream (microsoft/playwright#33432), so we only need the
-# newest-known floor here.
-#
-# An operator-provided PLAYWRIGHT_HOST_PLATFORM_OVERRIDE is always respected:
-# it is inherited by the first attempt, and the retry is skipped.
-#
-# Usage: run_playwright_install <timeout_seconds> npx playwright install [args...]
-run_playwright_install() {
-    local timeout_seconds="$1"
-    shift
-
-    # First attempt: native platform resolution (inherits any operator override).
-    if run_browser_install_with_timeout "$timeout_seconds" "$@" 2>/dev/null; then
-        return 0
-    fi
-
-    # Operator already pinned the platform — their choice already applied to the
-    # attempt above; a second identical run won't help.
-    if [ -n "${PLAYWRIGHT_HOST_PLATFORM_OVERRIDE:-}" ]; then
-        return 1
-    fi
-
-    # Only retry with an override on the apt releases too new for Playwright to
-    # recognize (the #35166 hang). Any other failure is a real failure and is
-    # surfaced unchanged.
-    if ! playwright_host_unrecognized; then
-        return 1
-    fi
-
-    local fallback
-    fallback="$(playwright_fallback_platform)"
-    if [ -z "$fallback" ]; then
-        return 1  # No usable fallback build for this arch.
-    fi
-
-    log_warn "Playwright doesn't recognize ${DISTRO} ${DISTRO_VERSION} yet — retrying with PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=$fallback"
-    log_info "(apt releases newer than Playwright knows hang at this step; see #35166)"
-    PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="$fallback" \
-        run_browser_install_with_timeout "$timeout_seconds" "$@"
-}
-
-configure_browser_env_from_system_browser() {
-    local env_file="$HERMES_HOME/.env"
-    local browser_path="${DETECTED_BROWSER_EXECUTABLE:-}"
-
-    if [ -z "$browser_path" ]; then
-        browser_path="$(find_system_browser 2>/dev/null || true)"
-    fi
-
-    if [ -z "$browser_path" ]; then
-        return 0
-    fi
-
-    mkdir -p "$HERMES_HOME"
-    if [ ! -f "$env_file" ]; then
-        touch "$env_file"
-    fi
-
-    if grep -q '^AGENT_BROWSER_EXECUTABLE_PATH=' "$env_file" 2>/dev/null; then
-        log_info "AGENT_BROWSER_EXECUTABLE_PATH already configured"
-        return 0
-    fi
-
-    {
-        echo ""
-        echo "# Hermes Agent browser tools — explicit browser override."
-        echo "AGENT_BROWSER_EXECUTABLE_PATH=$browser_path"
-    } >> "$env_file"
-    log_success "Configured browser tools to use $browser_path"
-}
 
 # Select the npm workspaces a CLI install actually needs, into the
 # NODE_DEPS_WORKSPACE_ARGS array.
@@ -2822,14 +2628,13 @@ install_node_deps() {
     fi
 
     if [ "$DISTRO" = "termux" ]; then
-        log_info "Skipping automatic Node/browser dependency setup on Termux"
-        log_info "Browser automation is not part of the tested Termux install path yet."
-        log_info "If you want to experiment manually later, run: cd $INSTALL_DIR && npm install"
+        log_info "Skipping automatic Node dependency setup on Termux"
+        log_info "Install manually later with: cd $INSTALL_DIR && npm install"
         return 0
     fi
 
     if [ -f "$INSTALL_DIR/package.json" ]; then
-        log_info "Installing Node.js dependencies (browser tools)..."
+        log_info "Installing Node.js dependencies..."
         cd "$INSTALL_DIR"
         # Time-boxed: a stalled registry fetch would otherwise hang here with no
         # progress (#39219).
@@ -2856,96 +2661,6 @@ install_node_deps() {
         rm -f "$npm_log"
         log_success "Node.js dependencies installed"
 
-        # Install Playwright browser + system dependencies.
-        # Playwright's --with-deps only supports apt-based systems natively.
-        # For Arch/Manjaro we install the system libs via pacman first.
-        # Other systems must install Chromium dependencies manually.
-        if [ "$SKIP_BROWSER" = true ]; then
-            log_info "Skipping Playwright/Chromium install (--skip-browser)"
-            log_info "Browser tools will be unavailable until you run manually:"
-            log_info "  cd $INSTALL_DIR && npx playwright install chromium"
-            log_info "On apt-based systems, an admin also needs to run:"
-            log_info "  sudo npx playwright install-deps chromium"
-        else
-        log_info "Installing browser engine (Playwright Chromium)..."
-        strip_snap_browser_override
-        DETECTED_BROWSER_EXECUTABLE="$(find_system_browser 2>/dev/null || true)"
-        if [ -n "$DETECTED_BROWSER_EXECUTABLE" ]; then
-            log_success "Using explicit browser override: $DETECTED_BROWSER_EXECUTABLE"
-            log_info "Skipping bundled Chromium download (AGENT_BROWSER_EXECUTABLE_PATH is set)."
-        else
-            case "$DISTRO" in
-                ubuntu|debian|raspbian|pop|linuxmint|elementary|zorin|kali|parrot)
-                    # Use --with-deps only when sudo is available non-interactively
-                    # (root, or a user with passwordless sudo). Non-sudo users
-                    # — typical for systemd service accounts and unprivileged
-                    # operator users — would otherwise get blocked on an
-                    # interactive sudo prompt that they can't satisfy. Fall back
-                    # to the browser-only install in that case, and print the
-                    # exact command the admin needs to run separately.
-                    if [ "$(id -u)" -eq 0 ] || (command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null); then
-                        log_info "Installing Playwright Chromium with system dependencies..."
-                        cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install --with-deps chromium || {
-                            log_warn "Playwright browser installation failed — browser tools will not work."
-                            log_warn "Try running manually: cd $INSTALL_DIR && npx playwright install --with-deps chromium"
-                        }
-                    else
-                        log_warn "No sudo available — skipping system-library install (--with-deps)."
-                        log_info "Ask an administrator to run, one time, as root:"
-                        log_info "  sudo npx playwright install-deps chromium"
-                        log_info "  (from $INSTALL_DIR, after Node.js deps are installed)"
-                        log_info "Installing Chromium binary into this user's Playwright cache..."
-                        cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install chromium || {
-                            log_warn "Playwright browser installation failed — browser tools will not work."
-                            log_warn "Try running manually: cd $INSTALL_DIR && npx playwright install chromium"
-                        }
-                    fi
-                    ;;
-                arch|manjaro|cachyos|endeavouros|garuda)
-                    if command -v pacman &> /dev/null; then
-                        log_info "Arch-family distro detected — installing Chromium system dependencies via pacman..."
-                        if command -v sudo &> /dev/null && sudo -n true 2>/dev/null; then
-                            sudo NEEDRESTART_MODE=a pacman -S --noconfirm --needed \
-                                nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib >/dev/null 2>&1 || true
-                        elif [ "$(id -u)" -eq 0 ]; then
-                            pacman -S --noconfirm --needed \
-                                nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib >/dev/null 2>&1 || true
-                        else
-                            log_warn "Cannot install browser deps without sudo. Run manually:"
-                            log_warn "  sudo pacman -S nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib"
-                        fi
-                    fi
-                    cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install chromium || {
-                        log_warn "Playwright browser installation failed — browser tools will not work."
-                    }
-                    ;;
-                fedora|rhel|centos|rocky|alma)
-                    log_warn "Playwright does not support automatic dependency installation on RPM-based systems."
-                    log_info "Install Chromium system dependencies manually before using browser tools:"
-                    log_info "  sudo dnf install nss atk at-spi2-core cups-libs libdrm libxkbcommon mesa-libgbm pango cairo alsa-lib"
-                    cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install chromium || {
-                        log_warn "Playwright browser installation failed — install dependencies above and retry."
-                    }
-                    ;;
-                opensuse*|sles)
-                    log_warn "Playwright does not support automatic dependency installation on zypper-based systems."
-                    log_info "Install Chromium system dependencies manually before using browser tools:"
-                    log_info "  sudo zypper install mozilla-nss libatk-1_0-0 at-spi2-core cups-libs libdrm2 libxkbcommon0 Mesa-libgbm1 pango cairo libasound2"
-                    cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install chromium || {
-                        log_warn "Playwright browser installation failed — install dependencies above and retry."
-                    }
-                    ;;
-                *)
-                    log_warn "Playwright does not support automatic dependency installation on $DISTRO."
-                    log_info "Install Chromium/browser system dependencies for your distribution, then run:"
-                    log_info "  cd $INSTALL_DIR && npx playwright install chromium"
-                    log_info "Browser tools will not work until dependencies are installed."
-                    cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install chromium || true
-                    ;;
-            esac
-        fi
-        fi
-        log_success "Browser engine setup complete"
     fi
 
 
@@ -2953,42 +2668,6 @@ install_node_deps() {
     restore_dirty_lockfiles "$INSTALL_DIR"
 }
 
-install_browser_use_cli() {
-    # The Browser Use CLI is the default browser backend when it is runnable
-    # (tools/browser_use_cli.py). Provision it here so fresh installs don't
-    # silently fall back to the built-in browser tools. Best-effort: any
-    # failure is non-fatal because browser_exec can still run via uvx and
-    # `hermes tools` can install it later.
-    if [ "$SKIP_BROWSER" = true ]; then
-        log_info "Skipping Browser Use CLI install (--skip-browser)"
-        return 0
-    fi
-    if [ "$DISTRO" = "termux" ]; then
-        return 0
-    fi
-    if [ -z "$UV_CMD" ]; then
-        log_info "Skipping Browser Use CLI install (uv unavailable)"
-        return 0
-    fi
-    # MANAGED-FIRST: only Hermes' managed copy short-circuits. A browser-use
-    # on the user's PATH is a side install — resolution prefers the managed
-    # copy, so it must be provisioned regardless.
-    if [ -x "$HERMES_HOME/bin/browser-use" ]; then
-        log_success "Browser Use CLI already installed"
-        return 0
-    fi
-
-    log_info "Installing Browser Use CLI (default browser backend)..."
-    # UV_TOOL_BIN_DIR keeps the binary inside Hermes' managed bin dir, where
-    # the browser tool resolves it — no reliance on the user's PATH.
-    if run_with_timeout 600 env UV_NO_CONFIG=1 UV_TOOL_BIN_DIR="$HERMES_HOME/bin" \
-        "$UV_CMD" tool install browser-use >/dev/null 2>&1; then
-        log_success "Browser Use CLI installed"
-    else
-        log_warn "Browser Use CLI install failed — browser automation falls back to built-in tools."
-        log_info "Install later with: $UV_CMD tool install browser-use  (or via 'hermes tools')"
-    fi
-}
 
 cua_driver_runtime_compatible() {
     local driver_path version_output manifest_output
@@ -3302,14 +2981,6 @@ ensure_browser() {
         return 1
     fi
 
-    # agent-browser itself is intentionally NOT installed here (#43564 /
-    # PR #44772 review): it resolves lazily via `npx agent-browser` instead,
-    # which every consumer (tools/browser_tool.py, `hermes update`'s npx
-    # cache warm) already goes through. Eagerly npm-installing a second,
-    # separately version-pinned copy here -- only reachable via this
-    # explicit --ensure browser fallback in the first place -- was redundant
-    # complexity and an extra credential/supply-chain surface for a path
-    # npx already covers.
     log_info "Installing camofox browser server..."
     local log_file
     log_file="$(mktemp)"
@@ -3326,13 +2997,6 @@ ensure_browser() {
     rm -f "$log_file"
     export PATH="$HERMES_HOME/node/bin:$PATH"
 
-    strip_snap_browser_override
-    local sys_browser
-    sys_browser="$(find_system_browser 2>/dev/null || true)"
-    if [ -n "$sys_browser" ]; then
-        configure_browser_env_from_system_browser "$sys_browser"
-        log_info "Explicit browser override set -- Chromium download will be skipped when agent-browser installs on demand"
-    fi
 
     return 0
 }
@@ -3375,7 +3039,7 @@ ensure_mode() {
 }
 
 
-# Wall-clock cap for registry npm installs (browser-tools + TUI deps). A
+# Wall-clock cap for registry npm installs (CLI + TUI deps). A
 # stalled registry fetch must not hang the installer forever (#39219).
 NODE_DEPS_TIMEOUT="${NODE_DEPS_TIMEOUT:-600}"
 
@@ -3438,7 +3102,6 @@ run_stage_body() {
             check_node
             install_node_deps || return
             install_uv
-            install_browser_use_cli
             install_computer_use_driver
             ;;
         path)

@@ -56,14 +56,6 @@ FROM debian:13.4
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# The pm-pinned Chromium pair lives in the managed tool store at
-# /opt/hermes/tools — outside the /opt/data volume mount, so the
-# build-time install survives the volume overlay at runtime. pm's
-# chromium package fact exports the same value (PLAYWRIGHT_BROWSERS_PATH
-# at the store root); the image ENV names the same directory so
-# Playwright and the browser tool resolve the pinned build even before pm
-# composes tool env.
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/tools
 
 # Install system dependencies in one layer, clear APT cache.
 # tini was previously PID 1 to reap orphaned zombie processes (MCP stdio
@@ -72,12 +64,8 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/tools
 # replaces tini with s6-overlay's /init (PID 1 = s6-svscan), which reaps
 # zombies non-blockingly on SIGCHLD and additionally supervises the main
 # hermes process, the dashboard, and per-profile gateways.
-# The second package list is the shared libraries the pinned Chromium links
-# against. `npx playwright install --with-deps` used to apt-install them as
-# a side effect; pm stages the pinned browser instead (below), so the libs
-# must be declared here. The list is the `ldd ... | grep "not found"` set of
-# the pinned chrome binary in this base image, mapped to trixie package
-# names (see .hermes/plans/termux-removal-commit-spec.md).
+# The second package list provides shared GUI/media libraries used by optional
+# visual tools in this batteries-included image.
 RUN apt-get -o Acquire::Retries=3 update && \
     apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
     ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps git openssh-client docker-cli xz-utils \
@@ -178,25 +166,12 @@ RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && 
 WORKDIR /opt/hermes
 
 # ---------- Pinned toolchain from pm/lock.json (single authority) ----------
-# The image used to assemble uv from a second authority — an astral image
-# tag (ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie) that had already
-# drifted to 0.11.6 while pm/lock.json pinned uv 0.12.3. That is exactly
-# the two-authorities failure the pm design exists to end. The image is now
-# a pin consumer: the stdlib-only pm provisioner reads pm/lock.json and
-# stages the pinned uv + the pinned Chromium pair (sha256-verified at
-# download — the same code path pm.sh/pm.ps1 and the desktop payload use)
-# into the image's own runtime dir, a self-contained store baked under
-# /opt/hermes, outside the /opt/data volume so it survives the overlay.
-# The pinned uv is linked onto PATH so the `uv sync` / `uv pip install`
-# build steps below run the lockfile's uv, not a second download.
-#
-# The Chromium pair is staged here rather than by `npx playwright install`,
-# which fetched whatever revision the npm-resolved playwright wanted,
-# unverified, and recorded no fact. The resolved browser binary path is
-# baked to /etc/hermes/agent-browser-executable-path for stage2-hook.sh:
-# the layout differs per arch (chrome-linux64/chrome on amd64,
-# chromium-linux-arm64/chromium on arm64), so it is resolved at build time
-# and never hunted at boot.
+# The image is a pin consumer: the stdlib-only pm provisioner reads
+# pm/lock.json and stages the pinned uv (sha256-verified at download — the same
+# code path pm.sh/pm.ps1 and the desktop payload use) into the image's own
+# runtime dir under /opt/hermes, outside the /opt/data volume so it survives
+# the overlay. The pinned uv is linked onto PATH so the `uv sync` / `uv pip
+# install` build steps below run the lockfile's uv, not a second download.
 ENV HERMES_RUNTIME_DIR=/opt/hermes/tools
 COPY pm/ pm/
 # pm's lazy imports resolve get_default_hermes_root()/project_venv_dir()
@@ -207,14 +182,9 @@ COPY hermes_constants.py hermes_constants.py
 # PM imports the shared stdlib runtime path and locking owners before deps exist.
 COPY hermes_cli/__init__.py hermes_cli/runtime_paths.py hermes_cli/runtime_state.py hermes_cli/
 RUN set -eu; \
-    python3 -m pm.cli install uv chromium chromium-headless-shell; \
+    python3 -m pm.cli install uv; \
     ln -sf /opt/hermes/tools/uv-*/uv /usr/local/bin/uv; \
-    uv --version; \
-    browser_bin="$(find /opt/hermes/tools/chromium-* -type f \( -name chrome -o -name chromium \) -print -quit)"; \
-    test -n "$browser_bin"; \
-    "$browser_bin" --version; \
-    mkdir -p /etc/hermes; \
-    printf '%s' "$browser_bin" > /etc/hermes/agent-browser-executable-path
+    uv --version
 
 # ---------- Layer-cached dependency install ----------
 # Copy only package manifests first so npm install is cached unless the

@@ -536,18 +536,16 @@ class TestBrowserRetrievalHints:
         from model_tools import _apply_dynamic_schemas
 
         out = {d["function"]["name"]: d["function"]["description"]
-               for d in _apply_dynamic_schemas(self._defs("browser_navigate", "browser_cdp", "web_search", "web_extract"))}
+               for d in _apply_dynamic_schemas(self._defs("browser_navigate", "web_search", "web_extract"))}
         assert "web_search and web_extract" in out["browser_navigate"]
-        assert "web_extract" in out["browser_cdp"]
 
     def test_silent_without_web_tools(self):
         # Real static schemas + rewriters: the rewritten browser descriptions must not mention absent web tools.
         from model_tools import _apply_dynamic_schemas
-        from tools.browser_cdp_tool import BROWSER_CDP_SCHEMA
         from tools.browser_tool import BROWSER_TOOL_SCHEMAS
 
         navigate = next(s for s in BROWSER_TOOL_SCHEMAS if s["name"] == "browser_navigate")
-        defs = [{"type": "function", "function": navigate}, {"type": "function", "function": BROWSER_CDP_SCHEMA}]
+        defs = [{"type": "function", "function": navigate}]
         rendered = " ".join(d["function"]["description"] for d in _apply_dynamic_schemas(defs + self._defs("terminal")))
         assert "web_search" not in rendered
         assert "web_extract" not in rendered

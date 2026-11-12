@@ -209,7 +209,7 @@ class TestProviderEnvBlocklist:
             "EMAIL_PASSWORD": "email-secret",
             "FIRECRAWL_API_KEY": "fc-secret",
             "HERMES_DASHBOARD_SESSION_TOKEN": "dashboard-session-secret",
-            "BROWSERBASE_PROJECT_ID": "bb-project",
+            "CAMOFOX_API_KEY": "camofox-secret",
             "ELEVENLABS_API_KEY": "el-secret",
             "GITHUB_TOKEN": "ghp_secret",
             "GH_TOKEN": "gh_alias_secret",

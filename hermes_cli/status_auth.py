@@ -52,8 +52,6 @@ _API_KEYS: dict[str, str | tuple[str, ...]] = {
     "Kimi": "KIMI_API_KEY", "StepFun Step Plan": "STEPFUN_API_KEY", "MiniMax": "MINIMAX_API_KEY",
     "MiniMax-CN": "MINIMAX_CN_API_KEY", "DeepInfra": "DEEPINFRA_API_KEY", "Firecrawl": "FIRECRAWL_API_KEY",
     "Tavily": "TAVILY_API_KEY", "Perplexity": "PERPLEXITY_API_KEY", "Keenable": "KEENABLE_API_KEY",
-    "Browser Use": "BROWSER_USE_API_KEY",  # Optional — local browser works without this
-    "Browserbase": "BROWSERBASE_API_KEY",  # Optional — direct credentials only
     "FAL": "FAL_KEY", "ElevenLabs": "ELEVENLABS_API_KEY", "GitHub": "GITHUB_TOKEN"}
 
 # OAuth detail rows: (label, status key, formatter, gate) — see _oauth_block.
@@ -172,7 +170,7 @@ def _render_nous_gateway(ctx):
         # information, cannot enable the Tool Gateway.
         _status._section("Nous Tool Gateway")
         message = format_nous_portal_entitlement_message(
-            ctx.nous_account_info, capability="managed web, image, TTS, STT, browser, and Modal tools"
+            ctx.nous_account_info, capability="managed web, image, TTS, STT, and Modal tools"
         )
         for line in (message or "").splitlines():
             print(f"  {line}")

@@ -9,8 +9,8 @@ check-windows-footguns.py had no equivalent: only a narrow rule-level test
 (tests/scripts/test_footgun_subprocess_encoding.py, scoped to the
 text=True/encoding= rule) existed, so a bare ``os.killpg``/``signal.SIGKILL``
 regression (caught by CI running the real script with --all, not by any
-local pytest run) shipped in the T1-T3 npx-agent-browser hardening commit
-before anyone ran the script directly. This closes that gap the same way
+local pytest run) shipped in a subprocess-hardening commit before anyone
+ran the script directly. This closes that gap the same way
 the stdin guard already closes its equivalent one.
 """
 

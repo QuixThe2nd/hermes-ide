@@ -8,19 +8,11 @@ import re
 from typing import Optional
 from utils import is_truthy_value
 from tools.browser_tool_origin import origin_module as _origin
-from tools import browser_tool_cloud as _cloud
-from tools import browser_tool_session as _session
 
 
 def _eval_ssrf_guard_active(effective_task_id: str) -> bool:
-    """Return True when eval-driven private-network access must be guarded.
-
-    Same gating as ``browser_navigate`` / ``browser_snapshot`` / ``browser_vision``: the SSRF guard
-    only matters for non-local backends (cloud browser, or a containerized terminal whose
-    browser-on-host reaches networks the terminal can't); skipped for local sidecars / ``allow_private_urls``.
-    """
-    _bt = _origin()
-    return not _cloud._is_local_backend() and not _bt._is_local_sidecar_key(effective_task_id) and not _cloud._allow_private_urls()
+    """Guard private-network page reads unless explicitly allowed for this profile."""
+    return not _origin()._allow_private_urls()
 
 
 def _url_blocked(_bt, url: str) -> bool:
@@ -42,15 +34,16 @@ def _expression_targets_private_url(expression: str) -> Optional[str]:
 
 
 def _current_page_private_url(effective_task_id: str) -> Optional[str]:
-    """Return the current page URL when it targets a private/internal address (e.g. after a prior
-    ``location.href = '...'`` eval). Fail-open on probe failure, matching the snapshot/vision guards."""
+    """Return the current Camofox page URL when it targets a private address."""
     _bt = _origin()
     try:
-        url_result = _session._run_browser_command(effective_task_id, "eval", ["window.location.href"], timeout=5, _engine_override="auto")
-        if url_result.get("success"):
-            current_url = url_result.get("data", {}).get("result", "").strip().strip('"').strip("'")
-            if current_url and _url_blocked(_bt, current_url):
-                return current_url
+        from tools import browser_camofox
+
+        with browser_camofox._sessions_lock:
+            session = browser_camofox._sessions.get(effective_task_id or "default")
+        if not session or not session.get("tab_id"):
+            return None
+        return _camofox_current_page_private_url(session["tab_id"], session["user_id"])
     except Exception as exc:
         _bt.logger.debug("_current_page_private_url: probe failed (%s)", exc)
     return None
@@ -158,8 +151,8 @@ def _camofox_current_page_private_url(tab_id: str, user_id: str) -> Optional[str
     try:
         from tools.browser_camofox import _post
         data = _post(f"/tabs/{tab_id}/evaluate", body={"expression": "window.location.href", "userId": user_id})
-        current_url = str(data.get("result") if isinstance(data, dict) else data or "")
-        current_url = current_url.strip().strip('"').strip("'")
+        raw_url = data.get("result") if isinstance(data, dict) else data
+        current_url = str(raw_url or "").strip().strip('"').strip("'")
         if current_url and _url_blocked(_bt, current_url):
             return current_url
     except Exception as exc:

@@ -77,37 +77,9 @@ def get_camofox_url() -> str:
     return (get_secret("CAMOFOX_URL", "") or "").rstrip("/")
 
 
-def _config_cdp_url() -> str:
-    """Persistent ``browser.cdp_url`` from config.yaml, or "" (read here, not via
-    ``browser_tool_cdp._get_cdp_override`` — circular import)."""
-    try:
-        from hermes_cli.config import read_raw_config  # late-bound: tests patch the source module
-        browser_cfg = read_raw_config().get("browser", {})
-        if isinstance(browser_cfg, dict):
-            return str(browser_cfg.get("cdp_url", "") or "").strip()
-    except Exception:
-        pass
-    return ""
-
-
 def is_camofox_mode() -> bool:
-    """True when the Camofox backend is selected and no CDP override is active.
-
-    Selection is ``browser.cloud_provider: camofox``; ``CAMOFOX_URL`` is only the address
-    and never overrides a different stored selection (legacy: with no selection ever
-    written, a set ``CAMOFOX_URL`` still activates Camofox). A CDP override (``BROWSER_CDP_URL``
-    env or ``browser.cdp_url``, same precedence as ``browser_tool_cdp._get_cdp_override()``) wins.
-    """
-    if os.getenv("BROWSER_CDP_URL", "").strip() or _config_cdp_url():
-        return False
-    try:
-        from tools.tool_backend_helpers import read_selection
-        selected = read_selection("browser")
-    except Exception:  # pragma: no cover — helpers are in-repo
-        selected = None
-    if selected is not None:
-        return selected == "camofox"
-    return bool(get_camofox_url())
+    """Camofox is the only browser backend; legacy selectors are ignored."""
+    return True
 
 
 def _vnc_url_from_health(url: str, resp: Any) -> Optional[str]:

@@ -73,14 +73,12 @@ URLs.
 2. If the page is JS-rendered or returns nothing useful, `browser_navigate` + `browser_snapshot`
    (and `browser_type`/`browser_click` to run the site's search box).
 3. If blocked by stealth/Cloudflare, use the `scrapling` skill via `terminal`. **If the broker record
-   has `search.antibot` set (e.g. `datadome`), results are behind a device-check CAPTCHA**: a
-   cloud/stealth browser (Browserbase) or `scrapling` may get through; if none is available, do **not**
-   burn attempts - `pdd.py record <subject> <broker> blocked` and move on (a re-scan with a stealth
-   backend can pick it up later).
+   has `search.antibot` set (e.g. `datadome`), results are behind a device-check CAPTCHA**: do **not**
+   burn attempts or try to bypass it - `pdd.py record <subject> <broker> blocked` and use the
+   operator-in-the-loop path below.
 3b. **Operator-browser path (the reliable unblock for anti-bot sites).** Cloudflare/DataDome key on
-   datacenter IPs + headless fingerprints, so `web_extract`, the proxyless agent browser, and even a
-   cloud browser often fail - but the **operator's own everyday browser (residential IP, real
-   fingerprint) sails straight through**. For any `blocked` site, hand the operator a paste-ready
+   datacenter IPs + automation fingerprints, so `web_extract` and Camofox can fail - but the
+   **operator's own everyday browser (residential IP, real fingerprint) may work**. For any
    search URL (built from `search.url_patterns`), give them the identity anchors to judge by (current
    + prior addresses, age, a distinguishing detail) and the namesake/relative watch-list, and ask for
    the verdict or a screenshot (the agent can read screenshots). This is a **first-class scan path, not
@@ -236,17 +234,9 @@ confirmation reference back into the ledger when the operator completes it.
 
 ## captcha
 
-**Default: soft/managed CAPTCHAs clear automatically.** The recommended baseline backend is the
-Browserbase cloud browser (`setup --auto` selects it when `BROWSERBASE_API_KEY` is set). Being a
-real browser on a residential IP, it passes managed challenges - Cloudflare Turnstile, hCaptcha /
-reCAPTCHA checkbox - as normal operation, so those brokers stay T1 and you just proceed. This is
-**not** CAPTCHA solving: no solver service, no fingerprint spoofing.
-
-Only a **hard** challenge the browser genuinely can't pass (interactive image grids, behavioral
-scoring that flags the session) becomes a fallback: `record ... blocked` and requeue it for the
-stealth/operator-browser pass (`methods.md` → scan ladder 3b - the operator's own residential
-browser is the reliable unblock). Without a cloud browser configured, soft-CAPTCHA brokers drop to
-T2 and become human tasks. **Never use a third-party CAPTCHA-defeating service.**
+**CAPTCHAs remain human tasks.** Camofox is an anti-detect browser, not a CAPTCHA solver. Record
+blocked sites and requeue them for the operator-in-the-loop pass (`methods.md` → scan ladder 3b).
+**Never use a third-party CAPTCHA-defeating service.**
 
 ### CAPTCHA policy, clarified (on a consenting first-party opt-out)
 
@@ -261,47 +251,19 @@ T2 and become human tasks. **Never use a third-party CAPTCHA-defeating service.*
   -> **stop, do not loop** (e.g. PrivateRecords' distorted-text-THEN-arithmetic double gate). If no cited
   rights-email exists, that is a genuine `blocked`.
 
-## Browser backends: scan vs execute
+## Browser workflow
 
-Two different jobs need two different browsers. Getting this wrong is the single biggest cause of a
-run stalling in Phase 2.
+All Hermes `browser_*` tools use Camofox. Set `CAMOFOX_URL`; use `CAMOFOX_API_KEY` when the server
+requires authentication.
 
-- **Phase 1 (scan, read-only):** a cloud stealth browser (Browserbase) or the `scrapling` skill is
-  ideal. On a residential IP with a real fingerprint it passes managed challenges (Cloudflare
-  Turnstile, hCaptcha checkbox) and reads anti-bot people-search pages that `web_extract` and the
-  proxyless agent browser cannot. This is what the skill's `browser_backend` setting governs
-  (`auto` picks Browserbase when `BROWSERBASE_API_KEY` is present - now also read from
-  `$HERMES_HOME/.env`, not just the shell env, so `doctor`/`setup --auto` detect the key Hermes
-  already loads for its own tools).
-- **Phase 2 (execute: opt-out forms, webmail sends, session-bound multi-step gates):** the work must
-  run in the **operator's own everyday browser** - real fingerprint, residential IP, AND the
-  operator's logged-in sessions. A headless cloud browser is the WRONG default here for two reasons:
-  (1) it is not signed into the operator's webmail, so browser-mode email sends and confirmation-link
-  opens have no inbox to act in; and (2) it is itself Cloudflare/DataDome-gated on exactly the
-  multi-step flows that matter (e.g. PeopleConnect guided-mode, whose verify link is session- and
-  device-bound to the browser that opens it - a cloud browser both fails the challenge and breaks the
-  binding).
-- **How to drive the operator's browser (CDP).** Point Hermes's browser tools at the operator's real
-  Chrome over the DevTools protocol: launch
-  `chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.hermes/chrome-debug"` and connect the
-  browser backend to `127.0.0.1:9222`. Use a **dedicated debug profile** (`chrome-debug`), NOT the
-  operator's Default Chrome profile, and have the operator sign into their webmail (and any needed
-  broker accounts) in that profile once. That single browser then carries residential IP + real
-  fingerprint + logged-in sessions, which is precisely what Phase-2 flows need. (This is a Hermes-side
-  browser setup, not a `pdd` config value; `browser_backend` above only selects the Phase-1 scan
-  browser.) **The skill launches this for you: `pdd.py cdp`** finds a Chrome/Chromium/Brave/Edge
-  binary, starts it detached on the dedicated profile, waits for the debug port, and prints the CDP
-  endpoint (`webSocketDebuggerUrl`). `pdd.py cdp --check` reports whether a debug browser is already
-  live (and never launches a second one); `pdd.py cdp --print` just emits the exact command for the
-  operator to run themselves. Point the browser tools at the `endpoint` it returns.
-- **Always-available fallback:** if no CDP browser is wired up, use the operator-in-the-loop path
-  (scan ladder 3b) - hand over paste-ready URLs and field-by-field least-disclosure guidance, pausing
-  before submit. It never fails; it just needs a human present.
-
-Backend precedence, most to least autonomous: **operator Chrome over CDP** (Phase 2, hands-off once
-the profile is signed in) > **Browserbase cloud stealth** (Phase 1 scanning, plus managed-captcha
-forms that need no login) > **proxyless agent browser** (only already-unblocked sites) >
-**operator-in-the-loop** (paste-ready URLs; the last-resort unblock that always works).
+- **Phase 1 (scan, read-only):** start with `web_extract`, then Camofox for JavaScript-rendered
+  pages. Anti-bot and CAPTCHA gates go to the operator-in-the-loop path rather than another backend.
+- **Phase 2 (execute: opt-out forms, webmail sends, session-bound gates):** use an externally managed
+  Camofox profile signed into webmail by configuring `CAMOFOX_USER_ID` and `CAMOFOX_SESSION_KEY`.
+  Set `CAMOFOX_ADOPT_EXISTING_TAB=true` only when reusing that profile's existing tab is intended.
+- **Always-available fallback:** if Camofox cannot reach the page or has no required login session,
+  hand the operator paste-ready URLs and field-by-field least-disclosure guidance, pausing before
+  submit (scan ladder 3b).
 
 ## Ownership clusters - DO PARENTS FIRST (playbooks live in the broker records)
 

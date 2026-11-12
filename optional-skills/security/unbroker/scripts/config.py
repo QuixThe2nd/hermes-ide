@@ -23,8 +23,6 @@ import storage
 DEFAULT_CONFIG = {
     "autonomy": "full",                # hands-off after intake+consent
     "email_mode": "draft_only",        # zero credentials
-    "browser_backend": "auto",         # auto = Browserbase when BROWSERBASE_API_KEY is set
-                                       # (recommended default; clears soft CAPTCHAs), else plain browser
     "tracker_backend": "local-json",   # no external dependency
     "encryption": "none",              # files still written 0600
     "default_rescan_interval_days": 120,
@@ -41,7 +39,6 @@ VALID = {
     #   programmatic - CLI sends via SMTP + reads verify links via IMAP (needs EMAIL_* creds)
     #   alias        - AgentMail agent-owned inboxes / per-broker aliases
     "email_mode": {"draft_only", "browser", "programmatic", "alias"},
-    "browser_backend": {"auto", "browserbase", "agent-browser", "camofox"},
     "tracker_backend": {"local-json", "google-sheets"},
     "encryption": {"none", "age"},
 }
@@ -64,7 +61,7 @@ def save_config(cfg: dict) -> Path:
 
 def dotenv_env() -> dict:
     """Shell env overlaid on `$HERMES_HOME/.env`, so capability detection sees the creds Hermes
-    loads for its own tools (BROWSERBASE_API_KEY, EMAIL_*, AGENTMAIL_API_KEY, ...) even though the
+    loads for its own tools (CAMOFOX_URL, EMAIL_*, AGENTMAIL_API_KEY, ...) even though the
     terminal-tool shell doesn't export them. Shell env wins; the .env only fills gaps."""
     merged: dict = {}
     p = paths.hermes_home() / ".env"
@@ -93,7 +90,7 @@ def detect_capabilities(env: dict | None = None) -> dict:
     )
     mail = emailer.available(env)
     return {
-        "browserbase": bool(env.get("BROWSERBASE_API_KEY")),
+        "camofox": bool(env.get("CAMOFOX_URL")),
         "agentmail": bool(env.get("AGENTMAIL_API_KEY")),
         "email_imap_smtp": bool(env.get("EMAIL_ADDRESS") and env.get("EMAIL_PASSWORD")),
         "smtp_send": mail["smtp"],      # CLI can SEND opt-out emails itself
@@ -108,7 +105,6 @@ def auto_configure(env: dict | None = None) -> dict:
 
     - email: programmatic when SMTP creds exist (CLI sends + IMAP-verifies itself);
       alias mode when only AgentMail exists; draft_only as the capability floor.
-    - browser: browserbase when the key exists (clears soft CAPTCHAs -> more T1).
     - encryption: age when the binary is installed (free privacy, zero human cost).
     - tracker: stays local-json (google-sheets needs a sheet id -> a human choice).
     """
@@ -121,24 +117,8 @@ def auto_configure(env: dict | None = None) -> dict:
         cfg["email_mode"] = "alias"
     else:
         cfg["email_mode"] = "draft_only"
-    cfg["browser_backend"] = "browserbase" if caps["browserbase"] else "auto"
     if caps["age"]:
         cfg["encryption"] = "age"
     return cfg
 
 
-def browser_clears_captcha(cfg: dict, env: dict | None = None) -> bool:
-    """True if the chosen browser backend can clear soft CAPTCHAs (shifts T2 -> T1).
-
-    Browserbase is the recommended default: a real residential-IP cloud browser passes
-    soft/managed challenges (Turnstile, hCaptcha/reCAPTCHA checkbox) as normal operation.
-    This is NOT solving/spoofing - hard interactive challenges still escalate to a human.
-    `auto` inherits this whenever BROWSERBASE_API_KEY is present.
-    """
-    backend = cfg.get("browser_backend", "auto")
-    if backend == "browserbase":
-        return True
-    if backend == "auto":
-        env = os.environ if env is None else env
-        return bool(env.get("BROWSERBASE_API_KEY"))
-    return False

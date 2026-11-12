@@ -1,11 +1,9 @@
 """Regression tests for the Camofox private-page read guards.
 
-Companion to ``tests/tools/test_browser_private_page_action_guard.py`` (which
-covers the agent-browser path) and ``test_browser_eval_ssrf.py`` (which covers
-the Camofox *eval* path added in #56874).  These cover the remaining Camofox
+``test_browser_console.py`` covers the evaluate path. These cover the
 content-read tools — snapshot / vision / image-extraction — which read current
-page state and, on a non-local backend, could otherwise leak the content of a
-private/internal page the terminal itself can't reach.
+page state and could otherwise leak the content of a private/internal page the
+terminal itself can't reach.
 """
 
 import json
@@ -153,9 +151,7 @@ def test_camofox_click_still_runs_when_page_is_public(monkeypatch, _session):
 def test_guard_inactive_does_not_probe(monkeypatch, _session):
     """When the SSRF guard is inactive the read proceeds WITHOUT probing the URL.
 
-    This is the branch most likely to silently regress if the guard condition is
-    ever inverted, so it is exercised explicitly (mirrors the agent-browser
-    guard test).
+    The inverted-guard branch is exercised explicitly.
     """
     _block_inactive_guard(monkeypatch)
 

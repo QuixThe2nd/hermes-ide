@@ -22,7 +22,6 @@ import uuid
 from contextlib import redirect_stdout, suppress
 from io import StringIO
 from datetime import datetime
-from urllib.parse import urlparse
 
 from rich import box as rich_box
 from rich.markup import escape as _escape
@@ -32,9 +31,6 @@ from hermes_constants import display_hermes_home, is_termux as _is_termux_enviro
 from hermes_state_ids import new_session_id as mint_session_id
 from agent.turn_context import extract_api_content_sidecar
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
-from hermes_cli.browser_connect import (
-    DEFAULT_BROWSER_CDP_URL, discover_local_cdp_url, find_free_debug_port, is_browser_debug_ready,
-    launch_chrome_debug, local_port_in_use, manual_chrome_debug_command)
 
 
 # Output helpers. Slash-command text is user-visible: every literal below is load-bearing.
@@ -399,209 +395,16 @@ def _refresh_tui_before_print(cli) -> None:
     print()
 
 
-# /browser sub-handlers.
-def _print_lightpanda_engine_status() -> None:
-    """``/browser status`` line(s) about ``browser.engine: lightpanda`` — silent unless set;
-    says whether it is in use or which higher-precedence setting shadows it."""
-    if not _probe("tools.browser_tool_lightpanda_fallback", "_using_lightpanda_engine", False):
-        return
-    used, reason = _probe("tools.browser_tool_lightpanda_fallback", "lightpanda_engine_status", (None, None))
-    if reason is None:
-        return
-    if not used:
-        return print(f"   ⚠ browser.engine is 'lightpanda' but it is NOT in use: {reason}")
-    print(f"   Engine: Lightpanda — {reason} (no screenshots)")
-    try:
-        from tools.browser_lightpanda import LIGHTPANDA_INSTALL_HINT, find_lightpanda_binary
-        lightpanda_bin = find_lightpanda_binary()
-    except Exception:
-        return
-    print(f"   Binary: {lightpanda_bin}" if lightpanda_bin
-          else f"   ⚠ lightpanda binary not found — {LIGHTPANDA_INSTALL_HINT}")
-
-
-def _browser_use(cli, arg: str) -> None:
-    """/browser use [off] — toggle Browser Use mode (browser.backend); resets the session."""
-    from hermes_cli.config import load_config, save_config
-    from tools.registry import invalidate_check_fn_cache
-    if arg not in {"on", "off"}:
-        return _say_block(
-            "Usage: /browser use [off]",
-            "   /browser use       — switch to Browser Use mode (browser_exec via CLI 3.0)",
-            "   /browser use off   — revert to the built-in browser tools")
-    config = load_config()
-    if arg == "on":
-        config.setdefault("browser", {})["backend"] = "browser-use"
-        headline = "🌐 Browser Use mode enabled — browser_exec via the Browser Use CLI 3.0"
-    else:
-        from tools.browser_use_cli import BACKEND_DISABLED
-        config.setdefault("browser", {})["backend"] = BACKEND_DISABLED
-        headline = "🌐 Browser Use mode disabled — built-in browser tools restored"
-    save_config(config)
-    invalidate_check_fn_cache()
-    cli.new_session()
-    _say_block(headline, "   Session reset. New tool configuration is active.")
-
-
-def _normalize_cdp_url(cdp_url: str):
-    """Validate a /browser connect URL: ``(cdp_url, port)`` or None after printing the error.
-    A ``/devtools/browser/<id>`` path is kept verbatim; anything else is reduced to the origin."""
-    parsed = urlparse(cdp_url if "://" in cdp_url else f"http://{cdp_url}")
-    if parsed.scheme not in {"http", "https", "ws", "wss"}:
-        _say_block(
-            f"   ⚠ Unsupported browser url scheme: {parsed.scheme or '(missing)'} "
-            "(expected one of: http, https, ws, wss)")
-        return None
-    try:
-        port = parsed.port or (443 if parsed.scheme in {"https", "wss"} else 80)
-    except ValueError:
-        _say_block(f"   ⚠ Invalid port in browser url: {cdp_url}")
-        return None
-    if not parsed.hostname:
-        _say_block(f"   ⚠ Missing host in browser url: {cdp_url}")
-        return None
-    if parsed.path.startswith("/devtools/browser/"):
-        return parsed.geturl(), port
-    return parsed._replace(path="", params="", query="", fragment="").geturl(), port
-
-
-def _launch_default_cdp_browser(port: int):
-    """Launch a local debug browser for the default CDP URL; returns the discovered CDP url or
-    None (after printing what went wrong / how to launch manually)."""
-    import platform as _plat
-    launch_port = port
-    if local_port_in_use(port):
-        launch_port = find_free_debug_port(port)
-        _pr(f"   ⚠ Port {port} is occupied by another application that isn't a CDP browser",
-            f"     (an IDE debugger or dev server may be using it) — launching on port {launch_port} instead...")
-    else:
-        print("   Chromium-family browser isn't running with remote debugging — attempting to launch...")
-    launch = launch_chrome_debug(launch_port, _plat.system())
-    if not launch.launched:
-        print("   ⚠ Could not auto-launch a Chromium-family browser")
-        if launch.hint:
-            print(f"     {launch.hint}")
-        chrome_cmd = manual_chrome_debug_command(launch_port, _plat.system())
-        if chrome_cmd:
-            _pr("     Launch a Chromium-family browser manually:", f"     {chrome_cmd}")
-        else:
-            print("     No supported Chromium-family browser executable found in this environment")
-        return None
-    for _wait in range(10):  # wait for the DevTools discovery endpoint to come up
-        found = discover_local_cdp_url(launch_port, timeout=1.0)
-        if found:
-            print(f"   ✓ Chromium-family browser launched and listening on port {launch_port}")
-            return found
-        time.sleep(0.5)
-    _pr(f"   ⚠ Browser launched but port {launch_port} isn't responding yet",
-        "     Try again in a few seconds — the debug instance may still be starting")
-    return None
-
-
-def _browser_connect(cli, cdp_url: str) -> None:
-    """/browser connect [url] — validate the CDP URL, find or launch a debug browser, then
-    point the browser tools at it (BROWSER_CDP_URL) and tell the model."""
-    normalized = _normalize_cdp_url(cdp_url)
-    if normalized is None:
-        return
-    cdp_url, port = normalized
-    # Clear any existing browser sessions so the next tool call uses the new backend
-    _probe("tools.browser_tool_lifecycle", "cleanup_all_browsers", None)
-    print()
-    # Already serving CDP? For the default-local URL probe both loopbacks: a squatter
-    # on 127.0.0.1:<port> (e.g. an IDE debugger) can push the browser to bind [::1] only.
-    is_default = cdp_url == DEFAULT_BROWSER_CDP_URL
-    if is_default:
-        found = discover_local_cdp_url(port, timeout=1.0)
-    else:
-        found = cdp_url if is_browser_debug_ready(cdp_url, timeout=1.0) else None
-    if found:
-        print(f"   ✓ Chromium-family browser is already listening at {found}")
-    elif is_default:
-        found = _launch_default_cdp_browser(port)
-    else:
-        print(f"   ⚠ Port {port} is not reachable at {cdp_url}")
-    if not found:
-        return _say_block("Browser not connected — start a Chromium-family browser with remote "
-                          "debugging and retry /browser connect")
-    os.environ["BROWSER_CDP_URL"] = found
-    # Eagerly start the CDP supervisor so pending_dialogs + frame_tree show up in the next snapshot.
-    _probe("tools.browser_tool_cdp", "_ensure_cdp_supervisor", None, "default")
-    _say_block("🌐 Browser connected to live Chromium-family browser via CDP", f"   Endpoint: {found}")
-    # Tell the model the CDP browser was made available on purpose.
-    if hasattr(cli, '_pending_input'):
-        cli._pending_input.put(
-            "[System note: The user invoked /browser connect and connected your browser tools to "
-            "a Chromium-family dev/debug browser via Chrome DevTools Protocol. "
-            "Your browser_navigate, browser_snapshot, browser_click, and other browser tools now "
-            "control that CDP browser. The command itself is a signal that using browser tools for "
-            "their current browser-related request is expected; do not wait for separate permission "
-            "just because CDP is connected. This is typically a Hermes-managed isolated debug "
-            "profile, not the user's main everyday browser. It is still user-visible and may contain "
-            "pages, logged-in sessions, or cookies in that debug profile, so avoid destructive actions, "
-            "closing tabs, or navigating away unless the user's task calls for it.]")
-
-
-def _browser_disconnect(cli) -> None:
-    if not os.environ.get("BROWSER_CDP_URL", "").strip():
-        return _say_block("Browser is not connected to a live Chromium-family browser "
-                          "(already using default mode)")
-    os.environ.pop("BROWSER_CDP_URL", None)
-    with suppress(Exception):
-        from tools.browser_tool_lifecycle import cleanup_all_browsers
-        from tools.browser_tool_cdp import _stop_cdp_supervisor
-        _stop_cdp_supervisor("default")
-        cleanup_all_browsers()
-    _say_block("🌐 Browser disconnected from live Chromium-family browser",
-               "   Browser tools reverted to default mode (local headless or cloud provider)")
-    if hasattr(cli, '_pending_input'):
-        cli._pending_input.put(
-            "[System note: The user has disconnected the browser tools from their live Chromium-family browser. "
-            "Browser tools are back to default mode (headless local browser or cloud provider).]")
-
-
-# /browser status headline per local browser.engine value.
-_LOCAL_ENGINE_LINES = {
-    "lightpanda": ("🌐 Browser: local Lightpanda (agent-browser --engine lightpanda)",
-                   "   ⚡ Lightpanda: faster navigation, no screenshot support",
-                   "   Automatic Chromium fallback for screenshots and failed commands"),
-    "chrome": ("🌐 Browser: local headless Chromium (agent-browser --engine chrome)",),
-    "auto": ("🌐 Browser: local headless Chromium (agent-browser)",)}
-
-
+# /browser status.
 def _browser_status() -> None:
-    current = os.environ.get("BROWSER_CDP_URL", "").strip()
     print()
-    if _probe("tools.browser_use_cli", "is_browser_use_cli_mode", False):
-        _pr("🌐 Browser: Browser Use mode (browser_exec via the Browser Use CLI 3.0)",
-            "   Local Chrome via CDP, or Browser Use cloud browsers")
-        _print_lightpanda_engine_status()
-        return _say_block("   /browser use off      — revert to the built-in browser tools")
-    if current:
-        _pr("🌐 Browser: connected to live Chromium-family browser via CDP",
-            f"   Endpoint: {current}")
-        _print_lightpanda_engine_status()
-        _port = 9222
-        with suppress(ValueError, IndexError):
-            _port = int(current.rsplit(":", 1)[-1].split("/")[0])
-        try:
-            import socket
-            socket.create_connection(("127.0.0.1", _port), timeout=1).close()
-            print("   Status: ✓ reachable")
-        except Exception:
-            print("   Status: ⚠ not reachable (browser may not be running)")
-    else:
-        provider = _probe("tools.browser_tool_cloud", "_get_cloud_provider", None)
-        if provider is not None:
-            print(f"🌐 Browser: {provider.display_name} (cloud)")
-            _print_lightpanda_engine_status()
-        else:
-            engine = _probe("tools.browser_tool_cloud", "_get_browser_engine", "auto")
-            _pr(*_LOCAL_ENGINE_LINES.get(engine, _LOCAL_ENGINE_LINES["auto"]))
-            if engine == "lightpanda":
-                _print_lightpanda_engine_status()
-    _say_block("   /browser connect      — connect to your live Chromium-family browser",
-               "   /browser disconnect   — revert to default")
+    url = _probe("tools.browser_camofox", "get_camofox_url", "")
+    _pr("🌐 Browser: Camofox", f"   Endpoint: {url or 'not configured'}")
+    if not url:
+        return _say_block("   Set CAMOFOX_URL to the Camofox server URL.")
+    vnc_url = _probe("tools.browser_camofox", "get_vnc_url", None)
+    if vnc_url:
+        print(f"   VNC: {vnc_url}")
 
 
 class CLICommandsMixin:
@@ -2018,25 +1821,12 @@ class CLICommandsMixin:
 
     # ---- /browser ---------------------------------------------------------------
     def _handle_browser_command(self, cmd: str):
-        """Handle /browser connect|disconnect|status|use — manage the live Chromium-family CDP connection."""
+        """Handle /browser [status] — show the configured Camofox server."""
         sub = _command_arg(cmd).lower() or "status"
-        if sub == "use" or sub.startswith("use "):
-            _browser_use(self, sub.split(None, 1)[1].strip() if " " in sub else "on")
-        elif sub.startswith("connect"):
-            connect_parts = cmd.strip().split(None, 2)  # ["/browser", "connect", "ws://..."]
-            url = connect_parts[2].strip() if len(connect_parts) > 2 else DEFAULT_BROWSER_CDP_URL
-            _browser_connect(self, url)
-        elif sub == "disconnect":
-            _browser_disconnect(self)
-        elif sub == "status":
+        if sub == "status":
             _browser_status()
         else:
-            _say_block(
-                "Usage: /browser connect|disconnect|status|use", "",
-                "   connect      Connect browser tools to your live Chromium-family browser session",
-                "   disconnect   Revert to default browser backend",
-                "   status       Show current browser mode",
-                "   use [off]    Switch to Browser Use mode (CLI 3.0) / back to built-in tools")
+            _say_block("Usage: /browser [status]")
 
     # ---- /refine, /review -----------------------------------------------------
     def _session_manager(self, getter, label: str):

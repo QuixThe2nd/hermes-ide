@@ -1035,10 +1035,10 @@ def _commit_tool_result(
 
 def _persist_multimodal_text_parts(result: dict, tool_name: str, tool_call_id: str, env, budget: BudgetConfig) -> dict:
     """Spill oversized TEXT parts of a multimodal envelope through the same persistence policy as
-    string results (#95429). A ``browser_exec`` call that captured a screenshot bakes its full
-    stdout into the envelope's text part, which used to bypass ``maybe_persist_tool_result``
-    entirely and ride every later request inline. Image parts are left untouched (their size is
-    governed by the vision embed budget); a fresh dict is returned so history is never mutated."""
+    string results (#95429). A ``browser_vision`` envelope's text used to bypass
+    ``maybe_persist_tool_result`` entirely and ride every later request inline. Image parts are left
+    untouched (their size is governed by the vision embed budget); a fresh dict is returned so history
+    is never mutated."""
     parts = result.get("content") or []
     bounded_parts, first_replacement = [], None
     for part in parts:

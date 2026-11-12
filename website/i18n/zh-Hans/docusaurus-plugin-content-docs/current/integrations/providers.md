@@ -1325,7 +1325,7 @@ model:
 | 功能 | 提供商 | 环境变量 |
 |---------|----------|--------------|
 | 网页抓取 | [Firecrawl](https://firecrawl.dev/) | `FIRECRAWL_API_KEY`、`FIRECRAWL_API_URL` |
-| 浏览器自动化 | [Browserbase](https://browserbase.com/) | `BROWSERBASE_API_KEY`、`BROWSERBASE_PROJECT_ID` |
+| 浏览器自动化 | [Camofox](https://github.com/jo-inc/camofox-browser) | `CAMOFOX_URL`、`CAMOFOX_API_KEY`（可选） |
 | 图像生成 | [FAL](https://fal.ai/) | `FAL_KEY` |
 | 高级 TTS 语音 | [ElevenLabs](https://elevenlabs.io/) | `ELEVENLABS_API_KEY` |
 | OpenAI TTS + 语音转录 | [OpenAI](https://platform.openai.com/api-keys) | `VOICE_TOOLS_OPENAI_KEY` |

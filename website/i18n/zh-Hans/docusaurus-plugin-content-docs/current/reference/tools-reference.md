@@ -8,7 +8,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 本页记录 Hermes 的内置工具，按工具集分组。可用性因平台、凭据和已启用的工具集而异。
 
-**当前注册表快速统计：** 10 个浏览器工具（核心）+ 2 个 CDP 门控浏览器工具、4 个文件工具、4 个 Home Assistant 工具、2 个终端工具、2 个 Web 工具、5 个 Feishu 工具、7 个 Spotify 工具（由内置 `spotify` 插件注册）、5 个 Yuanbao 工具、2 个 Discord 工具，以及若干独立工具（`memory`、`clarify`、`delegate_task`、`execute_code`、`cronjob`、`session_search`、`skill_view`/`skill_manage`/`skills_list`、`text_to_speech`、`image_generate`、`video_generate`、`vision_analyze`、`video_analyze`、`send_message`、`todo`、`computer_use`、`process`）。
+**当前注册表快速统计：** 10 个浏览器工具、4 个文件工具、4 个 Home Assistant 工具、2 个终端工具、2 个 Web 工具、5 个 Feishu 工具、7 个 Spotify 工具（由内置 `spotify` 插件注册）、5 个 Yuanbao 工具、2 个 Discord 工具，以及若干独立工具（`memory`、`clarify`、`delegate_task`、`execute_code`、`cronjob`、`session_search`、`skill_view`/`skill_manage`/`skills_list`、`text_to_speech`、`image_generate`、`video_generate`、`vision_analyze`、`video_analyze`、`send_message`、`todo`、`computer_use`、`process`）。
 
 :::tip MCP 工具
 除内置工具外，Hermes 还可从 MCP 服务器动态加载工具。MCP 工具以 `mcp_<server>_` 为前缀（例如，`github` MCP 服务器的 `mcp_github_create_issue`）。配置方法见 [MCP 集成](../user-guide/features/mcp.md)。
@@ -20,7 +20,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 |------|------|----------|
 | `browser_back` | 在浏览器历史记录中导航回上一页。需先调用 `browser_navigate`。 | — |
 | `browser_click` | 点击快照中由 ref ID 标识的元素（如 `@e5`）。ref ID 显示在快照输出的方括号中。需先调用 `browser_navigate` 和 `browser_snapshot`。 | — |
-| `browser_console` | 获取当前页面的浏览器控制台输出和 JavaScript 错误。返回 `console.log`/`warn`/`error`/`info` 消息及未捕获的 JS 异常。用于检测静默 JavaScript 错误、失败的 API 调用和应用警告。需先调用… | — |
+| `browser_console` | 通过 Camofox 执行提供的 JavaScript 表达式。不提供表达式时返回带说明的空结果，因为不支持控制台日志捕获。 | — |
 | `browser_get_images` | 获取当前页面所有图片的列表，包含 URL 和 alt 文本。可用于查找供 vision 工具分析的图片。需先调用 `browser_navigate`。 | — |
 | `browser_navigate` | 在浏览器中导航到某个 URL，初始化会话并加载页面。必须在其他浏览器工具之前调用。对于简单信息检索，优先使用 `web_search` 或 `web_extract`（更快、更省）。当需要… 时使用浏览器工具。 | — |
 | `browser_press` | 按下键盘按键。适用于提交表单（Enter）、导航（Tab）或键盘快捷键。需先调用 `browser_navigate`。 | — |
@@ -29,14 +29,6 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 | `browser_type` | 向由 ref ID 标识的输入框中输入文本。先清空字段，再输入新文本。需先调用 `browser_navigate` 和 `browser_snapshot`。 | — |
 | `browser_vision` | 对当前页面截图并用视觉 AI 分析。当需要直观理解页面内容时使用——尤其适用于 CAPTCHA、视觉验证挑战、复杂布局，或文本快照… 时。 | — |
 
-## `browser` 工具集（CDP 门控工具）
-
-这两个工具属于 `browser` 工具集，但仅在会话启动时可访问 Chrome DevTools Protocol（CDP）端点时才注册——通过 `/browser connect`、`browser.cdp_url` 配置、Browserbase 会话或 Camofox。
-
-| 工具 | 描述 | 所需环境 |
-|------|------|----------|
-| `browser_cdp` | 发送原始 Chrome DevTools Protocol 命令。用于高层 `browser_*` 工具未覆盖的浏览器操作的逃生舱口。参见 https://chromedevtools.github.io/devtools-protocol/ | CDP 端点 |
-| `browser_dialog` | 响应原生 JavaScript 对话框（alert / confirm / prompt / beforeunload）。先调用 `browser_snapshot`——待处理的对话框会出现在其 `pending_dialogs` 字段中。然后调用 `browser_dialog(action='accept'\|'dismiss')`。 | CDP 端点 |
 
 ## `clarify` 工具集
 

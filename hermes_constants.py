@@ -797,24 +797,6 @@ def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
     return merged
 
 
-def agent_browser_runnable(path: str | None) -> bool:
-    """True when *path* is an agent-browser CLI that runs (``--version`` exits 0) or the npx fallback.
-
-    Dead/wrong-arch/hung binaries are rejected so callers try the next candidate.
-
-    A bare presence check (``shutil.which`` / ``Path.exists``) is not enough: agent-browser's npm
-    ``postinstall`` re-points a *global* install symlink (e.g. ``/opt/homebrew/bin/agent-browser``) at our
-    local ``node_modules/agent-browser/bin/...`` binary, which then disappears on the next ``hermes update``
-    — leaving a **dangling symlink** that ``which`` still reports but exec fails on with exit 127 (issue
-    #48521). Callers that trust such a path silently break every browser tool.
-    """
-    if not path:
-        return False
-    # The npx fallback is a two-token command string, not a path; npx validates at run time.
-    if " " in path and path.split()[0].endswith("npx"):
-        return True
-    return _is_executable_file(path) and _version_probe_ok(path)
-
 
 def _legacy_path_has_content(path: Path) -> bool:
     """True iff *path* is a non-directory file or a populated directory.

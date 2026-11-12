@@ -343,13 +343,6 @@ def _delegate_task_goals(tasks: Any, *, per_goal_len: int) -> list[str]:
     return [_tail_trunc(("?" if g is None else _oneline(str(g))) or "?", per_goal_len) for g in raw_goals]
 
 
-def _browser_exec_step_label(args: dict, max_chars: int = 80) -> str | None:
-    """User-friendly step label from browser_exec code's leading comment."""
-    first = str(args.get("code", "") or "").strip().split("\n", 1)[0].strip()
-    label = first.lstrip("#").strip() if first.startswith("#") else ""
-    if not label:
-        return None
-    return label[: max_chars - 1] + "…" if len(label) > max_chars else label
 
 
 _PRIMARY_ARGS = {
@@ -357,7 +350,7 @@ _PRIMARY_ARGS = {
     "write_file": "path", "patch": "path", "search_files": "pattern", "browser_navigate": "url",
     "browser_click": "ref", "browser_type": "text", "image_generate": "prompt", "text_to_speech": "text",
     "vision_analyze": "question", "skill_view": "name", "skills_list": "category", "cronjob_manage": "action",
-    "execute_code": "code", "browser_exec": "code", "delegate_task": "goal", "clarify": "question",
+    "execute_code": "code", "delegate_task": "goal", "clarify": "question",
     "skill_manage": "name",
     # Legacy spellings kept for replayed transcripts: ``delegate_agent`` renders like
     # ``delegate_task``; plain ``cronjob`` like ``cronjob_manage``.
@@ -374,11 +367,6 @@ def _delegate_action_preview(args: dict) -> str | None:
     return None
 
 
-def _preview_browser_exec(args: dict, max_len: int) -> str | None:
-    label = _browser_exec_step_label(args)
-    if label is not None:
-        return _tail_trunc(label, max_len)
-    return _tail_trunc(_oneline(str(args.get("code", "") or "")), max_len) or None
 
 
 def _preview_delegate_task(args: dict, max_len: int) -> str | None:
@@ -444,7 +432,7 @@ def _preview_skill_view(args: dict, max_len: int) -> str | None:
 # Tool-specific preview builders: f(args, max_len) -> preview. Tools not listed
 # fall through to the primary-argument lookup in build_tool_preview.
 _PREVIEW_BUILDERS = {
-    "browser_exec": _preview_browser_exec, "delegate_task": _preview_delegate_task,
+    "delegate_task": _preview_delegate_task,
     "delegate_agent": _preview_delegate_task,  # legacy spelling (replayed transcripts)
     "process_manage": _preview_process_manage, "todo_list": _preview_todo_list,
     "terminal": _preview_shell("command"), "execute_code": _preview_shell("code"),
@@ -1879,10 +1867,6 @@ def _cute_execute_code(a: dict, _r) -> str:
     return f"┊ 🐍 exec      {_cute_trunc(code.split(chr(10))[0] if code else '')}"
 
 
-def _cute_browser_exec(a: dict, _r) -> str:
-    # Leading `# …` comment becomes the step label; code stays collapsed behind the preview cap.
-    label = _browser_exec_step_label(a)
-    return f"┊ 🌐 browser   {_cute_trunc(_oneline(str(a.get('code', '') or ''))) if label is None else label}"
 
 
 def _cute_delegate(a: dict, _r) -> str:
@@ -1933,7 +1917,6 @@ _CUTE_LINES = {
     "send_message": lambda a, r: f"┊ 📨 send      {a.get('target', '?')}: \"{_cute_trunc(a.get('message', ''))}\"",
     "cronjob_manage": _cute_cronjob, "cronjob": _cute_cronjob,  # cronjob: legacy spelling
     "execute_code": _cute_execute_code,
-    "browser_exec": _cute_browser_exec,
     "delegate_task": _cute_delegate, "delegate_agent": _cute_delegate,  # legacy spelling
 }
 

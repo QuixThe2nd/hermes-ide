@@ -14,7 +14,7 @@ This guide walks you through running Hermes Agent on a [Nous Portal](https://por
 - A web browser on the machine you're setting up (or SSH port forwarding — see [OAuth over SSH](./oauth-over-ssh.md))
 - About 5 minutes
 
-You do **not** need: an OpenAI key, an Anthropic key, a Firecrawl account, a FAL account, a Browser Use account, or any other per-vendor credential. That's the whole point.
+You do **not** need: an OpenAI key, an Anthropic key, a Firecrawl account, a FAL account, or any other per-vendor credential for the managed tools. That's the whole point.
 
 ## 1. Get a subscription
 
@@ -126,14 +126,13 @@ The Portal's own [info page](https://portal.nousresearch.com/info) carries this 
 
 ## 6. (Optional) Customize Tool Gateway routing
 
-The gateway is opt-in per tool, not all-or-nothing. If you already have a Browserbase account and want to keep using it while routing web search and image generation through Nous, that's supported:
+The gateway is opt-in per tool, not all-or-nothing. For example, route web search and image generation through Nous while keeping your own ElevenLabs key for TTS:
 
 ```bash
 hermes tools
 # → Web search       → "Nous Subscription"     (recommended)
 # → Image generation → "Nous Subscription"     (recommended)
-# → Browser          → "Browserbase"           (your existing key)
-# → TTS              → "Nous Subscription"     (recommended)
+# → TTS              → "ElevenLabs"            (your existing key)
 ```
 
 These rows appear in `hermes tools` even before you've logged into Nous Portal — if you pick "Nous Subscription" without an active session, Hermes runs the Portal login inline (without changing your inference provider or your other tools).
@@ -144,7 +143,7 @@ Verify your mix with:
 hermes portal tools
 ```
 
-You'll see per-tool routing — `via Nous Portal` for the ones routed through the subscription, and the partner name (`browserbase`, `firecrawl`, etc.) for the ones using your own keys.
+You'll see per-tool routing — `via Nous Portal` for the ones routed through the subscription, and the partner name (`elevenlabs`, `firecrawl`, etc.) for the ones using your own keys.
 
 ## 7. (Optional) Enable voice mode
 
@@ -214,7 +213,7 @@ hermes tools
 # pick "Nous Subscription" for any tool you want gateway-routed
 ```
 
-Some users intentionally mix — e.g. routing web through Nous but using their own Browserbase key for browser. If that's intentional, leave it alone. If not, this command fixes it.
+Some users intentionally mix — for example, routing web through Nous but using their own ElevenLabs key for TTS. If that's intentional, leave it alone. If not, this command fixes it.
 
 ### "Re-authentication required" mid-session
 
@@ -259,10 +258,9 @@ hermes auth logout nous       # wipes the local refresh token
 | 1× OpenRouter / Anthropic / OpenAI key in `.env` | 1× OAuth refresh token, no `.env` keys |
 | 1× Firecrawl key for web | Web routed through gateway |
 | 1× FAL key for image gen | Image gen routed through gateway |
-| 1× Browser Use / Browserbase key for browser | Browser routed through gateway |
 | 1× OpenAI key for TTS / voice mode | TTS routed through gateway |
-| 5 separate dashboards, top-ups, invoices | 1 subscription, 1 invoice |
-| Cross-machine: replicate all 5 keys | Cross-machine: re-OAuth once |
+| 4 separate dashboards, top-ups, invoices | 1 subscription, 1 invoice |
+| Cross-machine: replicate all 4 keys | Cross-machine: re-OAuth once |
 
 That's the deal. If you're using more than two of those backends anyway, the subscription pays for itself.
 

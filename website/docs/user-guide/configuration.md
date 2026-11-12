@@ -2688,37 +2688,28 @@ Set from the CLI: `hermes config set web.search_fallbacks "exa, tavily"`. See th
 
 ## Browser
 
-Configure browser automation behavior:
+Configure Camofox browser automation:
 
 ```yaml
 browser:
   inactivity_timeout: 120        # Seconds before auto-closing idle sessions
-  command_timeout: 30             # Timeout in seconds for browser commands (screenshot, navigate, etc.)
-  record_sessions: false         # Auto-record browser sessions as WebM videos to ~/.hermes/browser_recordings/
-  # Optional CDP override — when set, Hermes attaches directly to your own
-  # Chromium-family browser (via /browser connect) rather than starting a headless browser.
-  cdp_url: ""
-  # Dialog supervisor — controls how native JS dialogs (alert / confirm / prompt)
-  # are handled when a CDP backend is attached (Browserbase, local Chromium-family
-  # browser via /browser connect). Ignored on Camofox and default local agent-browser mode.
-  dialog_policy: must_respond    # must_respond | auto_dismiss | auto_accept
-  dialog_timeout_s: 300          # Safety auto-dismiss under must_respond (seconds)
+  command_timeout: 30            # Timeout in seconds for Camofox commands
+  snapshot_threshold: 15000      # Truncate-and-store threshold for snapshots
+  allow_private_urls: false      # Cloud metadata endpoints remain blocked when true
+  restrict_evaluate: false       # Opt in to the sensitive-JavaScript denylist
+  allow_unsafe_evaluate: false   # Explicitly bypass only that denylist
   camofox:
-    managed_persistence: false   # When true, Camofox sessions persist cookies/logins across restarts
+    managed_persistence: false   # Reuse a profile-scoped identity across restarts
     user_id: ""                  # Optional externally managed Camofox userId
-    session_key: ""              # Optional session key sent when Hermes creates a tab
-    adopt_existing_tab: false    # Reuse an existing tab for this identity before creating one
+    session_key: ""              # Optional listItemId used when creating/adopting tabs
+    adopt_existing_tab: false    # Reuse an existing tab before creating one
+    rewrite_loopback_urls: false # Rewrite page loopback hosts for Docker-hosted Camofox
+    loopback_host_alias: host.docker.internal
 ```
 
-**Dialog policies:**
+Set `CAMOFOX_URL` and, for an authenticated server, `CAMOFOX_API_KEY`. Camofox is the only browser backend; legacy engine/provider keys are ignored when an existing configuration is loaded.
 
-- `must_respond` (default) — capture the dialog, surface it in `browser_snapshot.pending_dialogs`, and wait for the agent to call `browser_dialog(action=...)`. After `dialog_timeout_s` seconds with no response, the dialog is auto-dismissed to prevent the page's JS thread from stalling forever.
-- `auto_dismiss` — capture, dismiss immediately. The agent still sees the dialog record in `browser_snapshot.recent_dialogs` with `closed_by="auto_policy"` after the fact.
-- `auto_accept` — capture, accept immediately. Useful for pages with aggressive `beforeunload` prompts.
-
-See the [browser feature page](./features/browser.md#browser_dialog) for the full dialog workflow.
-
-The browser toolset supports multiple providers. See the [Browser feature page](./features/browser.md) for details on Browserbase, Browser Use, and local Chromium-family CDP setup.
+See [Browser Automation](./features/browser.md) for server setup, persistent sessions, external tab adoption, VNC, and URL/evaluate policy.
 
 ## Timezone
 

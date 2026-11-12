@@ -40,9 +40,8 @@ hermes skills install official/security/unbroker
 Then start a new Hermes session and drive it (below). The skill works zero-config; a few optional
 env vars unlock more automation (all documented in `SKILL.md` under Prerequisites):
 
-- `BROWSERBASE_API_KEY`: the recommended default browser. A real residential-IP cloud browser that
-  clears soft/managed CAPTCHAs (Turnstile, hCaptcha/reCAPTCHA checkbox) as normal operation, so
-  those brokers stay automated. It is not a solver and does not defeat hard challenges.
+- `CAMOFOX_URL`: the Camofox server used by all browser workflows. Camofox does not solve CAPTCHAs;
+  interactive or behavioral challenges remain human tasks.
 - Hands-off email, two ways: **browser mode** (`pdd.py setup --email-mode browser`, no stored
   password; the agent sends opt-outs and opens verification links through your logged-in webmail),
   or **`EMAIL_ADDRESS` + `EMAIL_PASSWORD`** for SMTP send + IMAP verification. Without either, it

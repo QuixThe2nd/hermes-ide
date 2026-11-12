@@ -1165,11 +1165,6 @@ _SCOPED_PROVIDER_REGISTRARS: Tuple[Tuple[str, str, str, str, str, str, Dict[str,
      "Register an :class:`agent.web_search_provider.WebSearchProvider`; "
      "``provider.name`` is matched by ``web.search_backend`` / ``web.extract_backend`` / ``web.backend``.",
      {}),
-    ("register_browser_provider", "browser_provider", "agent.browser_registry",
-     "agent.browser_provider:BrowserProvider", "browser provider",
-     "Register an :class:`agent.browser_provider.BrowserProvider`; "
-     "``provider.name`` is matched by ``browser.cloud_provider`` (consulted by "
-     "``tools.browser_tool_cloud._get_cloud_provider``).", {}),
     ("register_terminal_environment_provider", "terminal_environment_provider",
      "agent.terminal_env_registry", "agent.terminal_env_provider:TerminalEnvironmentProvider",
      "terminal environment provider",

@@ -14,7 +14,7 @@ description: "完整操作指南：订阅、配置、切换模型、启用 gatew
 - 在你正在配置的机器上有可用的浏览器（或 SSH 端口转发——参见 [OAuth over SSH](./oauth-over-ssh.md)）
 - 约 5 分钟时间
 
-你**不需要**：OpenAI 密钥、Anthropic 密钥、Firecrawl 账号、FAL 账号、Browser Use 账号，或任何其他按供应商分配的凭证。这正是 Portal 的意义所在。
+对于托管工具，你**不需要**：OpenAI 密钥、Anthropic 密钥、Firecrawl 账号、FAL 账号，或任何其他按供应商分配的凭证。这正是 Portal 的意义所在。
 
 ## 1. 获取订阅
 
@@ -126,14 +126,13 @@ Portal 的[信息页面](https://portal.nousresearch.com/info)也有此说明—
 
 ## 6. （可选）自定义 Tool Gateway 路由
 
-gateway 是按工具选择启用的，而非全部开启或全部关闭。如果你已有 Browserbase 账号并希望继续使用，同时将网页搜索和图像生成路由至 Nous，这是支持的：
+gateway 是按工具选择启用的，而非全部开启或全部关闭。例如，将网页搜索和图像生成路由至 Nous，同时保留自己的 ElevenLabs TTS 密钥：
 
 ```bash
 hermes tools
 # → Web search       → "Nous Subscription"     （推荐）
 # → Image generation → "Nous Subscription"     （推荐）
-# → Browser          → "Browserbase"           （你自己的密钥）
-# → TTS              → "Nous Subscription"     （推荐）
+# → TTS              → "ElevenLabs"            （你自己的密钥）
 ```
 
 使用以下命令验证你的混合配置：
@@ -142,7 +141,7 @@ hermes tools
 hermes portal tools
 ```
 
-你将看到每个工具的路由情况——通过订阅路由的工具显示 `via Nous Portal`，使用你自己密钥的工具显示合作方名称（`browserbase`、`firecrawl` 等）。
+你将看到每个工具的路由情况——通过订阅路由的工具显示 `via Nous Portal`，使用你自己密钥的工具显示合作方名称（`elevenlabs`、`firecrawl` 等）。
 
 ## 7. （可选）启用语音模式
 
@@ -211,7 +210,7 @@ hermes tools
 # 对需要通过 gateway 路由的工具选择 "Nous Subscription"
 ```
 
-部分用户会有意混合使用——例如网页搜索通过 Nous 路由，但浏览器使用自己的 Browserbase 密钥。如果这是有意为之，保持不变即可。如果不是，此命令可修复。
+部分用户会有意混合使用——例如网页搜索通过 Nous 路由，但 TTS 使用自己的 ElevenLabs 密钥。如果这是有意为之，保持不变即可。如果不是，此命令可修复。
 
 ### 会话中途出现"Re-authentication required"
 
@@ -256,10 +255,9 @@ hermes auth logout nous       # 清除本地 refresh token
 | 1 个 OpenRouter / Anthropic / OpenAI 密钥写入 `.env` | 1 个 OAuth refresh token，无需 `.env` 密钥 |
 | 1 个 Firecrawl 密钥用于网页搜索 | 网页搜索通过 gateway 路由 |
 | 1 个 FAL 密钥用于图像生成 | 图像生成通过 gateway 路由 |
-| 1 个 Browser Use / Browserbase 密钥用于浏览器 | 浏览器通过 gateway 路由 |
 | 1 个 OpenAI 密钥用于 TTS / 语音模式 | TTS 通过 gateway 路由 |
-| 5 个独立的控制台、充值、发票 | 1 个订阅，1 张发票 |
-| 跨机器：复制全部 5 个密钥 | 跨机器：重新 OAuth 一次 |
+| 4 个独立的控制台、充值、发票 | 1 个订阅，1 张发票 |
+| 跨机器：复制全部 4 个密钥 | 跨机器：重新 OAuth 一次 |
 
 这就是 Portal 的价值。如果你本来就在使用其中两个以上的后端，订阅费用自然就回来了。
 

@@ -52,7 +52,7 @@ Not for polishing a UI someone else built, and not for backend-only work.
 - **Node 18+** — every QA gate is a `.mjs` script run with `node` via the `terminal` tool.
 - **Playwright (for the QA gates)** — in the project directory: `npm install playwright` then `npx playwright install chromium`. Required by `scripts/shoot.mjs`, `motionqa.mjs`, `systemscan.mjs`, `refscout.mjs`, `chromadiff.mjs`, `moodboard.mjs` (the scripts import `playwright` at runtime; `slopscan.mjs` and `source.mjs` are dependency-light).
 - **ffmpeg** — optional; only for the video/score paths in `references/assets.md` and `references/scroll-flight.md`.
-- **Hermes tools** — use `image_generate` for image generation/editing, `terminal` for node/ffmpeg/npm, `write_file`/`read_file` for project files, `vision_analyze` to actually look at screenshots, and `browser_exec` for live-page inspection when a script isn't the right fit.
+- **Hermes tools** — use `image_generate` for image generation/editing, `terminal` for node/ffmpeg/npm, `write_file`/`read_file` for project files, `vision_analyze` to inspect screenshots, and Camofox `browser_navigate`/`browser_vision` for live-page inspection when a script isn't the right fit.
 
 ## How to Run
 

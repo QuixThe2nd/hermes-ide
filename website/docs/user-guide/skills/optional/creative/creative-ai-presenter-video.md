@@ -21,7 +21,7 @@ Make a verified AI presenter video from script + image.
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `video`, `presenter`, `avatar`, `lipsync`, `tts`, `captions`, `creative` |
-| Related skills | [`hyperframes`](./creative-hyperframes.md), [`comfyui`](./creative-comfyui.md) |
+| Related skills | [`hyperframes`](../../optional/creative/creative-hyperframes.md), [`comfyui`](../../optional/creative/creative-comfyui.md) |
 
 ## Reference: full SKILL.md
 

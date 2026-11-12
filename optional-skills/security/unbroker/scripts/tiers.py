@@ -2,7 +2,7 @@
 
 Tiers:
   T0  fully automated, no verification loop
-  T1  automated submit + automated verification (email mode B/C, or backend-cleared captcha)
+  T1  automated submit + automated verification (programmatic/alias email)
   T2  automated submit, verification needs a human (hard captcha / phone callback / account)
   T3  human-required end-to-end (gov ID, fax, mail, voice-only phone)
 """
@@ -14,8 +14,7 @@ import vectors as vectors_mod
 HARD_HUMAN = ("gov_id", "fax", "mail", "phone_voice")
 
 
-def select_tier(broker: dict, email_mode: str = "draft_only",
-                browser_clears_captcha: bool = False) -> str:
+def select_tier(broker: dict, email_mode: str = "draft_only") -> str:
     req = ((broker.get("optout") or {}).get("requires")) or {}
     if not isinstance(req, dict):
         req = {}  # defensive: a malformed record (e.g. requires as a list) must not crash planning
@@ -26,19 +25,16 @@ def select_tier(broker: dict, email_mode: str = "draft_only",
         return "T2"
 
     captcha = bool(req.get("captcha"))
-    if (captcha and not browser_clears_captcha) or req.get("phone_callback"):
+    if captcha or req.get("phone_callback"):
         return "T2"
 
     if req.get("email_verification"):
         return "T1" if email_mode in ("programmatic", "alias") else "T2"
 
-    if captcha and browser_clears_captcha:
-        return "T1"
     return "T0"
 
 
-def plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
-         browser_clears_captcha: bool = False) -> list[dict]:
+def plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict) -> list[dict]:
     email_mode = (subject_dossier.get("preferences") or {}).get("email_mode") \
         or cfg.get("email_mode", "draft_only")
     actions: list[dict] = []
@@ -50,7 +46,7 @@ def plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
         req = opt.get("requires") if isinstance(opt.get("requires"), dict) else {}
         q = opt.get("quirks")
         quirks = q if isinstance(q, list) else ([q] if isinstance(q, str) and q else [])
-        tier = select_tier(b, email_mode, browser_clears_captcha)
+        tier = select_tier(b, email_mode)
         disclosure = dossier_mod.select_disclosure(subject_dossier, opt.get("inputs", []))
         svectors = vectors_mod.search_vectors(subject_dossier, b)
         # Pre-warn (don't discover mid-flow): a broker whose identity gate hard-requires DOB will
@@ -114,7 +110,7 @@ _ACTIONABLE_STATES = {"found", "indirect_exposure", "reappeared", "action_select
 
 
 def batch_plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
-               ledger: dict | None = None, browser_clears_captcha: bool = False) -> dict:
+               ledger: dict | None = None) -> dict:
     """Reduce the per-broker plan into a phase-oriented batch view.
 
     Overlays the current ledger state on each broker, groups by what the operator
@@ -122,7 +118,7 @@ def batch_plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
     children is ONE action, not N. Read-only: computes, never mutates the ledger.
     """
     ledger = ledger or {}
-    actions = plan(subject_dossier, brokers_list, cfg, browser_clears_captcha)
+    actions = plan(subject_dossier, brokers_list, cfg)
 
     # child id -> parent id (only for parents present in this plan set)
     child_to_parent: dict[str, str] = {}

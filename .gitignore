@@ -148,9 +148,7 @@ MagicMock/
 # symlink node_modules to the main checkout; the dir-only pattern let one
 # slip into a commit and break `npm ci` on CI with ENOTDIR).
 node_modules
-browser-use/
 act/
-agent-browser/
 
 # Build/debug artifacts that must never be committed
 *.tar.gz

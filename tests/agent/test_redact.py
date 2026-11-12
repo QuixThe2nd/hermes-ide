@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from agent.redact import mask_secret, redact_cdp_url, redact_sensitive_text, RedactingFormatter
+from agent.redact import mask_secret, redact_sensitive_text, RedactingFormatter
 
 
 @pytest.fixture(autouse=True)
@@ -1409,28 +1409,6 @@ class TestFireworksToken:
 
 
 
-class TestRedactCdpUrl:
-    """redact_cdp_url() is the single chokepoint for CDP endpoint log redaction.
-
-    Unlike the global pass (which deliberately lets web-URL query params and
-    userinfo through for OAuth/magic-link workflows), CDP endpoint credentials
-    are pure secrets and must always be masked. Both the browser tool's
-    session/discovery logs and the supervisor's attach-timeout error route
-    through this helper.
-    """
-
-
-    def test_masks_multiple_query_credentials(self):
-        url = "wss://provider.example/session?token=aaa-secret&apikey=bbb-secret"
-        out = redact_cdp_url(url)
-        assert "aaa-secret" not in out
-        assert "bbb-secret" not in out
-
-
-
-
-    def test_none_returns_empty(self):
-        assert redact_cdp_url(None) == ""
 
 
 class TestKeywordWordBoundary:

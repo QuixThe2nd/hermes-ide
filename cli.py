@@ -398,7 +398,7 @@ def _cli_config_defaults():
             "docker_shared_container_key": "",
         },
         "browser": {
-            "inactivity_timeout": 120, "record_sessions": False, "engine": "auto",  # auto (Chrome) | lightpanda | chrome
+            "inactivity_timeout": 120,
             "camofox": {"rewrite_loopback_urls": False, "loopback_host_alias": "host.docker.internal"},
         },
         # threshold: fraction of the model's context limit; min_tail: real user messages kept in the tail
@@ -3062,17 +3062,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         except Exception:
             pass  # never block startup
 
-    def _show_browser_backend_notice(self):
-        """Once-per-24h hint when the default Browser Use backend silently fell back to built-in tools."""
-        try:
-            from tools.browser_use_cli import default_downgrade_notice
-
-            notice = default_downgrade_notice()
-            if notice:
-                from gateway.warning_notifications import render_notification
-                render_notification(lambda: self._console_print(f"[yellow]⚠ {notice}[/yellow]"), platform="cli")
-        except Exception:
-            logger.debug("browser backend notice failed", exc_info=True)
 
     def finalize_preloaded_skills(self) -> None:
         """Join the background --skills preload and fold it into the prompt (idempotent).
@@ -3661,7 +3650,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
 
         self.show_banner()
         self._show_security_advisories()
-        self._show_browser_backend_notice()
 
         # First-run: an unconfigured install routes into provider onboarding instead of
         # a chat that spins ~30s and fails with a provider-specific error. TTY only. A
@@ -4595,7 +4583,6 @@ def CanonicalUsage(*args, **kwargs):
 
 
 _PLUGIN_COMPAT_LAZY = {
-    'DEFAULT_BROWSER_CDP_URL': ('hermes_cli.browser_connect', 'DEFAULT_BROWSER_CDP_URL'),
     'HERMES_AGENT_LOGO': ('hermes_cli.banner', 'HERMES_AGENT_LOGO'),
     'HERMES_CADUCEUS': ('hermes_cli.banner', 'HERMES_CADUCEUS'),
     'SlashCommandAutoSuggest': ('hermes_cli.commands_completion', 'SlashCommandAutoSuggest'),
@@ -4608,10 +4595,8 @@ _PLUGIN_COMPAT_LAZY = {
     'get_toolset_for_tool': ('model_tools', 'get_toolset_for_tool'),
     'get_toolset_info': ('toolsets', 'get_toolset_info'),
     'init_skin_from_config': ('hermes_cli.skin_engine', 'init_skin_from_config'),
-    'is_browser_debug_ready': ('hermes_cli.browser_connect', 'is_browser_debug_ready'),
     'is_table_divider': ('agent.markdown_tables', 'is_table_divider'),
     'looks_like_table_row': ('agent.markdown_tables', 'looks_like_table_row'),
-    'manual_chrome_debug_command': ('hermes_cli.browser_connect', 'manual_chrome_debug_command'),
     'print_config_warnings': ('hermes_cli.config', 'print_config_warnings'),
     'prompt_for_secret': ('hermes_cli.callbacks', 'prompt_for_secret'),
     'set_friendly_tool_labels': ('agent.display', 'set_friendly_tool_labels'),

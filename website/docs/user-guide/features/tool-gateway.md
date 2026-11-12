@@ -1,6 +1,6 @@
 ---
 title: "Nous Tool Gateway"
-description: "One subscription, every tool. Web search, image generation, TTS, and cloud browsers — all routed through Nous Portal with no extra API keys."
+description: "One subscription for managed web search, image generation, and speech tools through Nous Portal."
 sidebar_label: "Tool Gateway"
 sidebar_position: 2
 ---
@@ -9,7 +9,7 @@ sidebar_position: 2
 
 **One subscription. Every tool built in.**
 
-The Tool Gateway is included with every paid [Nous Portal](https://portal.nousresearch.com) subscription. It routes Hermes' tool calls — web search, image generation, text-to-speech, and cloud browser automation — through infrastructure Nous already runs, so you don't have to sign up with Firecrawl, FAL, OpenAI, Browser Use, or anyone else just to make your agent useful.
+The Tool Gateway is included with every paid [Nous Portal](https://portal.nousresearch.com) subscription. It routes Hermes' supported tool calls — web search, image generation, text-to-speech, and speech-to-text — through infrastructure Nous already runs, so you don't have to sign up with Firecrawl, FAL, or OpenAI just to make your agent useful.
 
 <div style={{display: 'flex', gap: '1rem', flexWrap: 'wrap', margin: '1.5rem 0'}}>
   <a href="https://portal.nousresearch.com/manage-subscription" style={{background: 'var(--ifm-color-primary)', color: 'white', padding: '0.75rem 1.5rem', borderRadius: '6px', textDecoration: 'none', fontWeight: 'bold'}}>Start or manage subscription →</a>
@@ -22,16 +22,15 @@ The Tool Gateway is included with every paid [Nous Portal](https://portal.nousre
 | 🔍 | **Web search & extract** | Agent-grade web search and full-page extraction via Firecrawl. No rate limits to worry about — the gateway handles scaling. |
 | 🎨 | **Image generation** | Nine models under one endpoint: **FLUX 2 Klein 9B**, **FLUX 2 Pro**, **Z-Image Turbo**, **Nano Banana Pro** (Gemini 3 Pro Image), **GPT Image 1.5**, **GPT Image 2**, **Ideogram V3**, **Recraft V4 Pro**, **Qwen Image**. Pick per-generation with a flag, or let Hermes default to FLUX 2 Klein. |
 | 🔊 | **Text-to-speech** | OpenAI TTS voices wired into the `text_to_speech` tool. Drop voice notes into Telegram, generate audio for pipelines, narrate anything. |
-| 🌐 | **Cloud browser automation** | Headless Chromium sessions via Browser Use. `browser_navigate`, `browser_click`, `browser_type`, `browser_vision` — all the agent-driving primitives, no Browserbase account required. |
 
-All four are pay-as-you-use billed against your Nous subscription. Use any combination — run the gateway for web and images while keeping your own ElevenLabs key for TTS, or route everything through Nous.
+The supported categories are pay-as-you-use billed against your Nous subscription. Use any combination — run the gateway for web and images while keeping your own ElevenLabs key for TTS, or route everything through Nous.
 
 ## Why it's here
 
-Building an agent that can actually *do things* means stitching together 5+ API subscriptions — each with their own signup, rate limits, billing, and quirks. The gateway collapses that into one account:
+Building an agent that can actually *do things* means stitching together several API subscriptions — each with their own signup, rate limits, billing, and quirks. The gateway collapses that into one account:
 
 - **One bill.** Pay Nous; we handle the rest.
-- **One signup.** No Firecrawl, FAL, Browser Use, or OpenAI audio accounts to manage.
+- **One signup.** No Firecrawl, FAL, or OpenAI audio accounts to manage.
 - **One key.** Your Nous Portal OAuth covers every tool.
 - **Same quality.** Same backends the direct-key route uses — just fronted by us.
 
@@ -73,7 +72,6 @@ hermes status             # Full system status (Tool Gateway is one section)
   Web tools       ✓ active via Nous subscription
   Image gen       ✓ active via Nous subscription
   TTS             ✓ active via Nous subscription
-  Browser         ○ active via Browser Use key
 ```
 
 Tools marked "active via Nous subscription" are going through the gateway. Anything else is using your own keys.
@@ -88,8 +86,8 @@ Some accounts are also entitled to a **free tool pool** — a small managed-tool
 
 Picking a Nous model (`hermes model`) offers a per-tool checklist of gateway backends. Its behavior respects your existing setup:
 
-- Tools you've explicitly pointed at another backend (e.g. `web.backend: searxng`, `browser.cloud_provider: camofox`) are **never offered** — your selection can't be accidentally overwritten.
-- Tools configured via environment variables alone (e.g. `SEARXNG_URL`, `CAMOFOX_URL`) are offered **unchecked**, labeled to keep your own backend.
+- Tools you've explicitly pointed at another backend (e.g. `web.backend: searxng`) are **never offered** — your selection can't be accidentally overwritten.
+- Tools configured via environment variables alone (e.g. `SEARXNG_URL`) are offered **unchecked**, labeled to keep your own backend.
 - Only genuinely unconfigured tools come pre-checked.
 - Declines stick: if you submit the checklist with a tool unchecked, it won't be pre-checked on future Nous model swaps (stored in `tool_gateway_declined_tools` in `config.yaml`; checking it later clears the decline).
 
@@ -99,7 +97,7 @@ The gateway is per-tool. Turn it on for just what you want:
 
 - **All tools through Nous** — easiest; one subscription, done.
 - **Gateway for web + images, bring your own TTS** — keep your ElevenLabs voice, let Nous handle the rest.
-- **Gateway only for things you don't have keys for** — "I already pay for Browserbase, but I don't want a Firecrawl account" works fine.
+- **Gateway only for things you don't have keys for** — "I already pay for ElevenLabs, but I don't want a Firecrawl account" works fine.
 
 Switch any tool at any time via:
 
@@ -137,7 +135,7 @@ Most users never need to touch this — `hermes model` and `hermes tools` cover 
 
 ### One selection key per tool category
 
-Each tool category has a single provider-selection key, written by the `hermes tools` picker (or the desktop GUI). Picking the **Nous Subscription** row stores the value `nous`, which routes that category through the managed Tool Gateway. Picking a BYOK row stores the vendor name (`fal`, `openai`, `firecrawl`, `browser-use`, ...), which goes direct with your own credentials:
+Each tool category has a single provider-selection key, written by the `hermes tools` picker (or the desktop GUI). Picking the **Nous Subscription** row stores the value `nous`, which routes that category through the managed Tool Gateway. Picking a BYOK row stores the vendor name (`fal`, `openai`, `firecrawl`, ...), which goes direct with your own credentials:
 
 ```yaml
 web:
@@ -151,9 +149,6 @@ tts:
 
 stt:
   provider: nous         # speech-to-text via the Tool Gateway
-
-browser:
-  cloud_provider: nous   # cloud browser via the Tool Gateway
 ```
 
 The runtime **always uses the stored selection** — credential presence never selects or reroutes a category. A `FAL_KEY` sitting in `.env` is ignored while `image_gen.provider: nous`; conversely, `image_gen.provider: fal` with no `FAL_KEY` set produces a clear error instead of silently falling back to the gateway:
