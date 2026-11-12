@@ -1115,13 +1115,13 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
 
 def _build_curated_lists(current_provider: str, current_base_url: str, current_model: str,
                         non_blocking: bool = False) -> dict[str, list[str]]:
-    """Curated model lists keyed by hermes provider id, plus the dynamic ones (nous manifest,
-    Ollama Cloud, LM Studio live probe). ``non_blocking`` (GUI read path) takes cached Ollama Cloud
-    ids and warms them in the background rather than waiting on an 8s probe (#114215)."""
+    """Curated model lists keyed by hermes provider id, plus the dynamic ones (Nous, Ollama Cloud,
+    LM Studio live probe). ``non_blocking`` (GUI read path) takes cached Ollama Cloud ids and warms
+    them in the background rather than waiting on an 8s probe (#114215)."""
     from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS, get_curated_nous_model_ids
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
     curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
-    # Remote manifest so new Portal models surface without a release; in-repo snapshot fallback.
+    # Use the in-repo curated Nous list.
     curated["nous"] = get_curated_nous_model_ids()
     if "ollama-cloud" not in curated:
         from hermes_cli.models import fetch_ollama_cloud_models

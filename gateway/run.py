@@ -8721,13 +8721,6 @@ class GatewayRunner(
         # Start background session expiry watcher to finalize expired sessions
         self._spawn_supervised(self._session_expiry_watcher, "session_expiry_watcher")
 
-        # Keep the /model picker's remote catalogs (curated manifest,
-        # OpenRouter live list, Nous Portal recommendations) warm on disk so a
-        # delisted or newly-published model reaches the picker within one TTL
-        # window (model_catalog.ttl_minutes, default 20) without waiting for a
-        # cold /model open to trigger the refresh.
-        self._spawn_supervised(self._model_catalog_refresh_watcher, "model_catalog_refresh_watcher")
-
         # Stall watchdog: pending inbound + stale agent activity → warn user
         # to /new (does not kill the turn; see agent.session_stall_timeout).
         self._spawn_supervised(self._session_stall_watcher, "session_stall_watcher")
