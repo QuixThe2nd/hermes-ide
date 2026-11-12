@@ -15,6 +15,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from prompts.load import load
 from hermes_cli.timeouts import get_provider_request_timeout
 from agent.message_sanitization import (
     _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, coerce_tool_name, tool_call_id_variants, tool_result_id_variants
@@ -84,19 +85,7 @@ AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
     {"todo", "todo_list", "session_search", "memory", "clarify", "read_terminal", "desktop_preview", "drive_preview", "annotate_preview", "read_window_below", "manage_connections", "setup_mcp", "tour", "gui_tour", "delegate_agent", "delegate_task"}
 )
 
-_TRAJECTORY_SYSTEM_PROMPT = (
-    "You are a function calling AI model. You are provided with function signatures within <tools> </tools> XML tags. "
-    "You may call one or more functions to assist with the user query. If available tools are not relevant in assisting "
-    "with user query, just respond in natural conversational language. Don't make assumptions about what values to plug "
-    "into functions. After calling & executing the functions, you will be provided with function results within "
-    "<tool_response> </tool_response> XML tags. Here are the available tools:\n"
-    "<tools>\n{tools}\n</tools>\n"
-    "For each function call return a JSON object, with the following pydantic model json schema for each:\n"
-    "{{'title': 'FunctionCall', 'type': 'object', 'properties': {{'name': {{'title': 'Name', 'type': 'string'}}, "
-    "'arguments': {{'title': 'Arguments', 'type': 'object'}}}}, 'required': ['name', 'arguments']}}\n"
-    "Each function call should be enclosed within <tool_call> </tool_call> XML tags.\n"
-    "Example:\n<tool_call>\n{{'name': <function-name>,'arguments': <args-dict>}}\n</tool_call>"
-)
+_TRAJECTORY_SYSTEM_PROMPT = load("trajectory_system")
 
 
 def _trajectory_gpt_prefix(msg: Dict[str, Any]) -> str:

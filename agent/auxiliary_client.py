@@ -40,6 +40,11 @@ from agent.codex_headers import (
     is_official_codex_base_url as _is_official_codex_base_url,
 )
 from agent.codex_runtime import _codex_event_has_content
+from prompts.load import load
+
+# Default Responses-API ``instructions`` when the caller's messages carry no system
+# role (the replay loop below overwrites it with the real system prompt).
+_RESPONSES_FALLBACK_INSTRUCTIONS = load("auxiliary_fallback_instructions")
 
 # `openai.OpenAI` is imported lazily (~240 ms cold); `OpenAI` below is a proxy
 # so in-module calls, `auxiliary_client.OpenAI` reads and
@@ -1432,7 +1437,7 @@ class _CodexCompletionsAdapter:
         # System → ``instructions``; the rest goes through the SINGLE shared chat→Responses
         # converter (a private loop here once let role="tool" leak into input[]; the shared one
         # encodes tool history as function_call/function_call_output).
-        instructions = "You are a helpful assistant."
+        instructions = _RESPONSES_FALLBACK_INSTRUCTIONS
         replay_messages: List[Dict[str, Any]] = []
         for msg in kwargs.get("messages", []):
             content = msg.get("content") or ""
