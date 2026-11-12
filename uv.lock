@@ -1721,7 +1721,7 @@ requires-dist = [
     { name = "hermes-agent", extras = ["termux"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["web"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["youtube"], marker = "extra == 'all'" },
-    { name = "hindsight-client", marker = "extra == 'hindsight'", specifier = "==0.9.2" },
+    { name = "hindsight-client", marker = "extra == 'hindsight'", specifier = ">=0.10.1,<1" },
     { name = "honcho-ai", marker = "extra == 'honcho'", specifier = "==2.2.0" },
     { name = "httplib2", marker = "extra == 'google'", specifier = "==0.32.0" },
     { name = "httpx", extras = ["socks"], specifier = "==0.28.1" },
@@ -1814,7 +1814,7 @@ wheels = [
 
 [[package]]
 name = "hindsight-client"
-version = "0.9.2"
+version = "0.10.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -1823,10 +1823,11 @@ dependencies = [
     { name = "python-dateutil" },
     { name = "typing-extensions" },
     { name = "urllib3" },
+    { name = "yarl" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5b/21/18dd524c25d440466fa9377e4754b336cde0cc94bb566619913880198aa3/hindsight_client-0.9.2.tar.gz", hash = "sha256:bf6877da5d423395a4b0ac8ac8fc1836f5f5da271613a76e38903437af136ea1", size = 152096, upload-time = "2026-08-25T10:20:30.731Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/68/0c/d62e8c076b35d3e6f21352a13b34c47d79203864409511a433ef023555fd/hindsight_client-0.10.3.tar.gz", hash = "sha256:dfd8b9a912cc09d36675f6ab4ab02aa8dc7aa10ae09183794ec5bd083be19540", size = 207178, upload-time = "2026-10-08T15:26:00.779Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ad/5a/88ef406d96902a8ae6b6ba09afe8ac06bb4d3460eac1a7b741735ba41475/hindsight_client-0.9.2-py3-none-any.whl", hash = "sha256:31d26d116a07da5203bc913c5ed017de95d875edd5e295afad3c05373665ff6b", size = 358546, upload-time = "2026-08-25T10:20:29.257Z" },
+    { url = "https://files.pythonhosted.org/packages/54/31/5157bd9f73dca7ef2516470ff85818e03d6167f031cfcc96ff1c263ebc12/hindsight_client-0.10.3-py3-none-any.whl", hash = "sha256:b4d0d1bbc29dcd4ef25a4a23a08a48046d5337b704bdafabb02d0010d299a068", size = 450135, upload-time = "2026-10-08T15:25:59.349Z" },
 ]
 
 [[package]]
