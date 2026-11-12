@@ -585,20 +585,17 @@ def test_stale_hub_result_is_ignored(tmp_path):
 
 
 def test_restart_success_content_default_shapes_unchanged():
-    from gateway.run_turn_recovery import _restart_success_content
+    from gateway.run_turn_recovery import (
+        RESTART_NOTICE_FIRST_LINE,
+        _parse_restart_success_content,
+        _restart_success_content,
+    )
 
-    assert _restart_success_content("pid 1", "pid 9") == (
-        "Restarted successfully\n"
-        "Old process: pid 1\n"
-        "New process: pid 9\n"
-        "This chat is no longer running in pid 1. "
-        "You are now running in pid 9. Continue the original task."
-    )
-    assert _restart_success_content(None, "pid 9") == (
-        "Restarted successfully\n"
-        "New process: pid 9\n"
-        "You are now running in pid 9. Continue the original task."
-    )
+    for old in ("pid 1", None):
+        text = _restart_success_content(old, "pid 9")
+        assert text.startswith(RESTART_NOTICE_FIRST_LINE + "\n")
+        assert "\nHub:" not in text
+        assert _parse_restart_success_content(text) == (old, "pid 9")
 
 
 @pytest.mark.parametrize("old", ["pid 1", None])
