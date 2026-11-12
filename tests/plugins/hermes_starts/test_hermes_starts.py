@@ -1179,6 +1179,48 @@ class TestPublicInboxThreads:
             "archived": False,
         }
 
+    def test_open_mentions_owner_and_joins_thread(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(_isolate_env)
+        _write_plugin_settings(_isolate_env, {"mention_user_id": _MENTION_UID})
+
+        opened = hermes_starts_module.open_inbox_thread("Example", "Papercut body")
+
+        assert opened["thread_id"] == "thread-1"
+        contents = _posted_contents(discord_router)
+        assert contents[0].startswith(f"<@{_MENTION_UID}>\n")
+        assert contents[0].endswith("Papercut body")
+        assert _endpoints(discord_router)[-1] == (
+            "PUT", f"/channels/thread-1/thread-members/{_MENTION_UID}"
+        )
+
+    def test_open_without_configured_mention_leaves_body_unprefixed(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(_isolate_env)
+
+        hermes_starts_module.open_inbox_thread("Example", "Papercut body")
+
+        assert _posted_contents(discord_router) == ["Papercut body"]
+        assert not any("/thread-members/" in call["url"] for call in discord_router.calls)
+
+    def test_open_long_body_splits_without_losing_content(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(_isolate_env)
+        body = "The same configuration problem interrupted another session. " * 60
+
+        opened = hermes_starts_module.open_inbox_thread("Example", body)
+
+        assert opened["thread_id"] == "thread-1"
+        contents = _posted_contents(discord_router)
+        assert len(body) > hermes_starts_module._MAX_MESSAGE_LEN
+        assert len(contents) > 1
+        assert all(len(part) <= hermes_starts_module._MAX_MESSAGE_LEN for part in contents)
+        assert "".join(contents) == body
+        assert _endpoints(discord_router)[-1][1].startswith("/channels/thread-1/")
+
     def test_open_requires_a_provisioned_inbox_and_token(
         self, hermes_starts_module, _isolate_env
     ):

@@ -389,13 +389,16 @@ def handle_advance(args: Dict[str, Any], kwargs: Dict[str, Any]) -> str:
     warning = None
     thread_id = str(item.get("thread_id") or "")
     if thread_id and threads_enabled():
-        posted = pc_threads.post(thread_id, f"→ {to_stage}: {note}" + (f"\nPR: {pr_url}" if pr_url else ""))
+        pr_detail = f"\nPR: {pr_url}" if pr_url else ""
         if to_stage == "closed":
-            if not pc_threads.archive(thread_id, f"✅ closed: {note}"):
-                posted = False
-        elif to_stage == "needs_human":
-            if not pc_threads.flag_needs_human(thread_id, item):
-                posted = False
+            # Archive owns the one closing post as well as the state change;
+            # posting an arrow update here as well duplicated every close.
+            posted = pc_threads.archive(thread_id, f"✅ closed: {note}{pr_detail}")
+        else:
+            posted = pc_threads.post(thread_id, f"→ {to_stage}: {note}{pr_detail}")
+            if to_stage == "needs_human":
+                if not pc_threads.flag_needs_human(thread_id, item):
+                    posted = False
         if not posted:
             warning = "stage recorded, but the Discord thread post failed"
     payload = {"success": True, "action": "advance", "changed": True, "item": item}

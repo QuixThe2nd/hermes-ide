@@ -62,6 +62,7 @@ class ThreadsTestCase(unittest.TestCase):
         self.discord = FakeDiscord()
         import plugins.hermes_starts.threads as hs_threads
 
+        self.real_post_to_thread = hs_threads.post_to_thread
         patcher = mock.patch.multiple(
             hs_threads,
             open_inbox_thread=self.discord.open_inbox_thread,
@@ -174,6 +175,18 @@ class TickTests(ThreadsTestCase):
         for item in threaded:
             self.assertEqual(item["stage"], "triage")
             self.assertEqual(item["attempts"], 1)
+
+    def test_opening_leads_with_a_plain_language_hook(self):
+        self.log(summary="Config lookup keeps taking unnecessary detours", turn="t0")
+
+        lifecycle.tick()
+
+        body = self.discord.opened()[0][3]
+        first_line = body.splitlines()[0]
+        self.assertIn("Config lookup keeps taking unnecessary detours", first_line)
+        self.assertIn(". ", first_line, "the hook should explain why the owner should care")
+        self.assertFalse(first_line.startswith("Observed:"))
+        self.assertLess(first_line.find("Config lookup"), body.find("Component:"))
 
     def test_tick_idempotent_while_runs_live(self):
         self.seed(5)
@@ -296,6 +309,42 @@ class AdvanceSteerTests(ThreadsTestCase):
         )
         self.assertEqual(closed["item"]["stage"], "closed")
         self.assertTrue(any(c[3] is True for c in self.discord.updates()), "closed must archive")
+
+    def test_close_posts_exactly_one_transition_message(self):
+        item_id, thread_id = self.threaded_item()
+        before = len(self.discord.posted())
+
+        closed = self.call(
+            {"action": "advance", "id": item_id, "to_stage": "closed", "note": "Users can sign in again."},
+            turn="t3",
+        )
+
+        self.assertTrue(closed["success"])
+        new_posts = [c for c in self.discord.posted()[before:] if c[1] == thread_id]
+        self.assertEqual(len(new_posts), 1)
+        self.assertIn("Users can sign in again.", new_posts[0][2])
+
+    def test_long_advance_note_is_split_with_full_content_preserved(self):
+        item_id, thread_id = self.threaded_item()
+        note = ("The sign-in flow works again after the small routing fix. " * 60).strip()
+        before = len(self.discord.posted())
+        import plugins.hermes_starts.threads as hs_threads
+
+        with mock.patch.object(hs_threads, "post_to_thread", self.real_post_to_thread), \
+                mock.patch("plugins.hermes_starts._read_discord_token", return_value="token"), \
+                mock.patch("plugins.hermes_starts._post_channel_message", side_effect=lambda _token, target, content: self.discord.post_to_thread(target, content)):
+            result = self.call(
+                {"action": "advance", "id": item_id, "to_stage": "fixing", "note": note},
+                turn="t3",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(papercuts._read_events_unlocked()[-1]["note"], note)
+        new_posts = [c[2] for c in self.discord.posted()[before:] if c[1] == thread_id]
+        self.assertGreater(len(new_posts), 1)
+        self.assertTrue(all(len(part) <= 2000 for part in new_posts))
+        self.assertEqual("".join(new_posts), f"→ fixing: {note}")
+        self.assertNotIn("…", "".join(new_posts))
 
     def test_advance_to_verifying_carries_pr_url(self):
         item_id, _ = self.threaded_item()
