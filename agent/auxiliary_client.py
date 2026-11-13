@@ -1523,7 +1523,7 @@ class _CodexCompletionsAdapter:
                 if cache_key:
                     resp_kwargs["prompt_cache_key"] = cache_key
             if "prompt_cache_retention" not in resp_kwargs:
-                cache_retention = _default_prompt_cache_retention_for_request(model, host)
+                cache_retention = _default_prompt_cache_retention_for_request(host)
                 if cache_retention:
                     resp_kwargs["prompt_cache_retention"] = cache_retention
         except Exception:

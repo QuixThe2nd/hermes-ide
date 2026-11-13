@@ -331,13 +331,13 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert "extra_body" not in kwargs
 
 
-def test_build_api_kwargs_mantle_sets_extended_prompt_cache_retention(monkeypatch):
+def test_build_api_kwargs_meta_model_api_sets_prompt_cache_retention(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
     agent = run_agent.AIAgent(
         model="openai.gpt-5.5",
         provider="custom",
         api_mode="codex_responses",
-        base_url="https://bedrock-mantle.us-west-2.api.aws/v1",
+        base_url="https://api.meta.ai/v1",
         api_key="test-token",
         quiet_mode=True,
         max_iterations=1,

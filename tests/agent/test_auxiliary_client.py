@@ -3389,26 +3389,6 @@ class TestCodexAdapterPromptCacheKey:
         return adapter, captured_kwargs
 
 
-
-
-
-
-    @pytest.mark.parametrize("model", [
-        "gpt-4.1",
-        "gpt-5.1-codex-max",
-        "openai.gpt-5.5-pro",
-    ])
-    def test_extended_cache_models_set_prompt_cache_retention(self, model):
-        adapter, captured = self._build_adapter(
-            base_url="https://bedrock-mantle.us-west-2.api.aws/v1",
-            model=model,
-        )
-        adapter.create(messages=[
-            {"role": "system", "content": "SYS"},
-            {"role": "user", "content": "hi"},
-        ])
-        assert captured["prompt_cache_retention"] == "24h"
-
     def test_meta_endpoint_includes_prompt_cache_retention(self):
         adapter, captured = self._build_adapter(base_url="https://api.meta.ai/v1", model="muse-spark-1.2")
         adapter.create(messages=[

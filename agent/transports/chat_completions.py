@@ -26,9 +26,12 @@ _XAI_TOOL_SEARCH_ALIAS = "hermes_tool_search"
 
 # Persistence-only / cross-transport message keys that strict OpenAI-compatible
 # providers reject with HTTP 400 ("Extra inputs are not permitted").
+# ``bedrock_content_blocks`` survives only in sessions recorded while the Bedrock
+# provider existed; scrub it at the wire boundary so replaying legacy history
+# through another provider cannot 400.
 _STRIP_MSG_KEYS = (
     "codex_reasoning_items", "codex_message_items", "tool_name", "effect_disposition", "timestamp",
-    "platform_message_id", "api_content", "anthropic_content_blocks",
+    "platform_message_id", "api_content", "anthropic_content_blocks", "bedrock_content_blocks",
 )
 _STRIP_TC_KEYS = ("call_id", "response_item_id")
 _HIGH_EFFORTS = {"high", "xhigh", "max", "ultra"}
