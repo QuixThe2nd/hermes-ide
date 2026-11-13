@@ -1175,7 +1175,7 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
     if kwargs["platform"] == "cli":
         kwargs["warning_callback"] = agent._emit_warning
         kwargs["status_callback"] = agent._emit_status
-    # Session title (e.g. honcho derives chat-scoped session keys from it).
+    # Session title (memory providers derive chat-scoped session keys from it).
     if agent._session_db:
         with suppress(Exception):
             _st = agent._session_db.get_session_title(agent.session_id)
@@ -1185,7 +1185,7 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
                 if _source:
                     kwargs["session_title_source"] = _source
     # Gateway user/chat identity for per-user scoping (gateway_session_key: stable per-chat
-    # Honcho session isolation).
+    # provider session isolation).
     for _ident in _GATEWAY_IDENTITY_PARAMS:
         _val = getattr(agent, f"_{_ident}")
         if _val:

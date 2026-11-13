@@ -341,7 +341,6 @@ TOOLSETS = {
         "includes": [],
     },
 
-    # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 
     "discord": {

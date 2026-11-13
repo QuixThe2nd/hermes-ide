@@ -44,8 +44,8 @@ jobs:
           # Instead: find tracked raster images whose path contains an
           # infographic-ish segment, in any spelling, at any depth.
           #
-          # `docs/assets` and `website/` legitimately hold product imagery
-          # and are excluded; those are referenced from shipped docs pages.
+          # `docs/assets` legitimately holds product imagery referenced from
+          # shipped docs pages.
           OFFENDERS=$(git ls-files -z \
             | tr '\0' '\n' \
             | grep -iE '(^|/)(infograph|infograf)[^/]*/' \

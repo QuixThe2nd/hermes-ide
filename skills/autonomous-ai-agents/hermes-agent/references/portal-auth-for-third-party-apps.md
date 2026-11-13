@@ -1,6 +1,6 @@
 # Nous Portal — authenticating third-party apps against the subscription
 
-Recurring user question: "Can app X (Karakeep, OpenWebUI, LibreChat, OpenViking,
+Recurring user question: "Can app X (Karakeep, OpenWebUI, LibreChat,
 LangChain pipeline, n8n flow, etc.) use my Nous Portal subscription without me
 copy-pasting an API key — ideally via the Portal login I already have?"
 
@@ -11,20 +11,18 @@ them in order before proposing solutions.
 
 ## Layer 1 — Is this thing a Hermes plugin, or a separate app?
 
-This is the question to answer FIRST. The "OpenViking" case in particular
-trips agents up.
+This is the question to answer FIRST. A memory-provider plugin already runs
+inside the Hermes process and trips agents up the same way.
 
 | Surface | What it actually is | Auth path |
 |---|---|---|
-| **OpenViking memory plugin** (`plugins/memory/openviking/`) | Code that runs **inside the Hermes process**. Its LLM calls go through Hermes's already-configured provider. | Already uses Portal if user's Hermes is configured for Portal. Nothing extra needed. `OPENVIKING_API_KEY` is the OpenViking *server's* own auth, not LLM auth. |
-| **OpenViking the standalone server** (separate container) | A separate context-DB service. If it ever calls an LLM on its own, that's a separate HTTP client. | Same as any external app — Layer 2/3 below. |
+| **Memory-provider plugin** (`plugins/memory/<name>/`) | Code that runs **inside the Hermes process**. Its LLM calls go through Hermes's already-configured provider. | Already uses Portal if user's Hermes is configured for Portal. Nothing extra needed. The provider's own server auth env var is not LLM auth. |
 | **Karakeep, n8n, LibreChat, OpenWebUI, any self-hosted app** | Different process, often different machine. Makes its own HTTPS calls to `inference-api.nousresearch.com`. | Layer 2/3 below. |
 
 **Pitfall to avoid**: do not pitch "OAuth into Portal" as the solution for a
 plugin that already runs inside Hermes. That LLM call is already authenticated
-via Hermes's provider config. The plugin's own server auth (e.g.
-`OPENVIKING_API_KEY` for talking to the OpenViking REST API) is unrelated to
-Portal.
+via Hermes's provider config. The plugin's own server auth for talking to its
+backend API is unrelated to Portal.
 
 ---
 

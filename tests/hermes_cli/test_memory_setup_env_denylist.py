@@ -136,10 +136,10 @@ def test_malformed_key_name_is_skipped(capsys):
 
 def test_legitimate_value_writes_round_trip():
     """Negative control — the gate must not regress on a normal write."""
-    _write_env_vars({"MEM0_API_KEY": "m0-test-key-abc"})
+    _write_env_vars({"HINDSIGHT_API_KEY": "hs-test-key-abc"})
 
     env = load_env()
-    assert env["MEM0_API_KEY"] == "m0-test-key-abc"
+    assert env["HINDSIGHT_API_KEY"] == "hs-test-key-abc"
 
 
 def test_explicit_hermes_home_writes_to_that_env_file(tmp_path):
@@ -148,9 +148,9 @@ def test_explicit_hermes_home_writes_to_that_env_file(tmp_path):
     ``save_env_value`` validation instead of writing directly."""
     home = tmp_path / "plugin-home"
 
-    _write_env_vars({"MEM0_API_KEY": "m0-test-key-abc"}, hermes_home=home)
+    _write_env_vars({"HINDSIGHT_API_KEY": "hs-test-key-abc"}, hermes_home=home)
 
-    assert "MEM0_API_KEY=m0-test-key-abc\n" in (home / ".env").read_text(
+    assert "HINDSIGHT_API_KEY=hs-test-key-abc\n" in (home / ".env").read_text(
         encoding="utf-8"
     )
 
@@ -161,11 +161,11 @@ def test_value_with_embedded_newline_is_stripped():
     otherwise split the line and inject an arbitrary follow-on key).
     Routing through it gives the memory-setup wizard the same
     protection."""
-    _write_env_vars({"MEM0_API_KEY": "key1\nEVIL=injected\n"})
+    _write_env_vars({"HINDSIGHT_API_KEY": "key1\nEVIL=injected\n"})
 
     env = load_env()
     # CR/LF stripped, value still lands intact (minus the newlines)
-    assert env["MEM0_API_KEY"] == "key1EVIL=injected"
+    assert env["HINDSIGHT_API_KEY"] == "key1EVIL=injected"
     # And no smuggled key landed — assert against the file too so the test
     # holds even if ``load_env()`` ever starts merging ``os.environ``.
     assert "EVIL" not in _env_file_keys()
@@ -180,7 +180,7 @@ def test_env_file_created_with_secure_permissions(tmp_path):
     at the process umask."""
     import stat
 
-    _write_env_vars({"MEM0_API_KEY": "m0-test-key-abc"})
+    _write_env_vars({"HINDSIGHT_API_KEY": "hs-test-key-abc"})
 
     env_path = get_env_path()
     mode = stat.S_IMODE(env_path.stat().st_mode)

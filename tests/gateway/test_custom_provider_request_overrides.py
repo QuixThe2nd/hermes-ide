@@ -65,7 +65,6 @@ def _make_runner():
     runner._pending_model_notes = {}
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
-    runner._get_or_create_gateway_honcho = lambda session_key: (None, None)
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()
     runner.hooks.loaded_hooks = []

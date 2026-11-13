@@ -529,7 +529,7 @@ function Discard-LockfileChurn {
         # "workspaces" globs), so a dirty workspace manifest such as
         # web/package.json protects it; reverting it there desyncs spec and
         # lock and every later npm ci fails (#112378). A manifest outside the graph
-        # (website/) has its own lockfile and does not protect the root one.
+        # (sub-manifests like scripts/whatsapp-bridge/) have their own lockfiles and do not protect the root one.
         $rootLockProtected = $dirtyPackageDirs.Contains("")
         if (-not $rootLockProtected -and $dirtyPackageDirs.Count -gt 0) {
             $workspaceGlobs = @()

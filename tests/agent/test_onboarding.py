@@ -6,14 +6,11 @@ import yaml
 
 from agent.onboarding import (
     BUSY_INPUT_FLAG,
-    OPENCLAW_RESIDUE_FLAG,
     TOOL_PROGRESS_FLAG,
     busy_input_hint_cli,
     busy_input_hint_gateway,
-    detect_openclaw_residue,
     is_seen,
     mark_seen,
-    openclaw_residue_hint_cli,
     tool_progress_hint_cli,
     tool_progress_hint_gateway,
 )
@@ -119,48 +116,6 @@ class TestRoundTrip:
 
 
 # ---------------------------------------------------------------------------
-# OpenClaw residue banner
-# ---------------------------------------------------------------------------
-
-
-class TestDetectOpenclawResidue:
-    def test_returns_true_when_openclaw_dir_present(self, tmp_path):
-        (tmp_path / ".openclaw").mkdir()
-        assert detect_openclaw_residue(home=tmp_path) is True
-
-
-    def test_returns_false_when_path_is_a_file(self, tmp_path):
-        # A stray file named ``.openclaw`` is NOT a workspace — skip the banner.
-        (tmp_path / ".openclaw").write_text("oops")
-        assert detect_openclaw_residue(home=tmp_path) is False
-
-
-
-class TestOpenclawResidueHint:
-
-
-    def test_hint_warns_cleanup_breaks_openclaw(self):
-        # Archiving the directory breaks OpenClaw for users still running it —
-        # the banner must flag that side effect.
-        msg = openclaw_residue_hint_cli().lower()
-        assert "openclaw will stop working" in msg or "stop working" in msg
-
-    def test_hint_not_empty(self):
-        assert openclaw_residue_hint_cli().strip()
-
-
-class TestOpenclawResidueSeenFlag:
-    def test_flag_independent_of_other_flags(self, tmp_path):
-        cfg_path = tmp_path / "config.yaml"
-        mark_seen(cfg_path, BUSY_INPUT_FLAG)
-        loaded = yaml.safe_load(cfg_path.read_text())
-        assert is_seen(loaded, OPENCLAW_RESIDUE_FLAG) is False
-
-    def test_flag_round_trips(self, tmp_path):
-        cfg_path = tmp_path / "config.yaml"
-        assert mark_seen(cfg_path, OPENCLAW_RESIDUE_FLAG) is True
-        loaded = yaml.safe_load(cfg_path.read_text())
-        assert is_seen(loaded, OPENCLAW_RESIDUE_FLAG) is True
 
 
 class TestProfileBuildMode:

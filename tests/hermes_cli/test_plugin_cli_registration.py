@@ -5,7 +5,6 @@ Covers:
   - PluginManager._cli_commands storage
   - get_plugin_cli_commands() convenience function
   - Memory plugin CLI discovery (discover_plugin_cli_commands)
-  - Honcho register_cli() builds correct argparse tree
 """
 
 import sys
@@ -123,9 +122,6 @@ class TestMemoryPluginCliDiscovery:
             monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", original_dir)
 
         assert len(cmds) == 0
-
-
-# ── Honcho register_cli ──────────────────────────────────────────────────
 
 
 # ── ProviderCollector no-op ──────────────────────────────────────────────

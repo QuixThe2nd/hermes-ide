@@ -191,7 +191,6 @@ _CREDENTIAL_NAMES = frozenset({
     "ZAI_API_KEY",
     "MINIMAX_API_KEY",
     "OLLAMA_API_KEY",
-    "OPENVIKING_API_KEY",
     "COPILOT_API_KEY",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "FIRECRAWL_API_KEY",
@@ -201,8 +200,6 @@ _CREDENTIAL_NAMES = frozenset({
     "PERPLEXITY_API_KEY",
     "WANDB_API_KEY",
     "ELEVENLABS_API_KEY",
-    "HONCHO_API_KEY",
-    "MEM0_API_KEY",
     "SUPERMEMORY_API_KEY",
     "RETAINDB_API_KEY",
     "HINDSIGHT_API_KEY",
@@ -311,10 +308,6 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     # children; tests that exercise child behavior set it explicitly.
     "HERMES_DELEGATED_CHILD_CONTEXT",
     "HERMES_TENANT",
-    # Honcho host selection changes which nested config block wins. A local
-    # shell override leaked "myhost" into the full suite and flipped 20
-    # otherwise-unrelated config tests away from the default "hermes" host.
-    "HERMES_HONCHO_HOST",
     # Dashboard OAuth auth gate (PR #30156). When set, the bundled
     # dashboard-auth `nous` plugin auto-registers itself on plugin discovery,
     # CI never sets these, so production tests must not see them either.
@@ -410,13 +403,6 @@ def _hermetic_environment(tmp_path, monkeypatch):
     # 2. Blank behavioral HERMES_* vars that could change test semantics.
     for name in _HERMES_BEHAVIORAL_VARS:
         monkeypatch.delenv(name, raising=False)
-
-    # Honcho's fallback host/config resolution legitimately reads the user's
-    # global ~/.honcho/config.json. Keep HOME stable (subprocess tests depend
-    # on it), but pin the host so ordinary tests cannot inherit a developer's
-    # defaultHost and silently select the wrong nested config block. Tests of
-    # custom host resolution override/delete this explicitly.
-    monkeypatch.setenv("HERMES_HONCHO_HOST", "hermes")
 
     # 3. Redirect HERMES_HOME to a per-test tempdir. Code that reads
     #    ``~/.hermes/*`` via ``get_hermes_home()`` now gets the tempdir.

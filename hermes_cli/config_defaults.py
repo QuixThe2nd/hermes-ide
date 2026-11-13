@@ -550,7 +550,7 @@ DEFAULT_CONFIG = {
         # micro_compact: opt-in — after each turn fold the oldest un-absorbed exchange into a
         # rolling summary, amortizing compression cost. Off by default because every pass rewrites
         # sent history and breaks the prompt-cache prefix EVERY turn; enable only if the amortized
-        # stall beats the cached-prefix discount. See website/docs/developer-guide/micro-compaction.md.
+        # stall beats the cached-prefix discount. See the micro-compaction developer guide.
         "micro_compact": False,
         # Cadence: run a pass every Nth completed turn (1 = one cache break per turn, 5 = a fifth of
         # the breaks). Clamped >= 1; ignored unless micro_compact is true.
@@ -921,8 +921,8 @@ DEFAULT_CONFIG = {
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # Periodic built-in memory review; 0 when an external provider auto-extracts.
         "nudge_interval": 10,
-        # External memory provider plugin (empty = built-in only); only ONE at a time: "openviking",
-        # "mem0", "hindsight", "holographic", "retaindb", "byterover".
+        # External memory provider plugin (empty = built-in only); only ONE at a time: "hindsight",
+        # "holographic", "retaindb", "byterover", "supermemory".
         "provider": "",
     },
 
@@ -1166,9 +1166,6 @@ DEFAULT_CONFIG = {
             "keep": 2,  # retain last N regular snapshots
         },
     },
-    # Honcho AI-native memory — ~/.honcho/config.json is the source of truth (apiKey, workspace,
-    # peerName, sessions, enabled); hermes-specific overrides only here.
-    "honcho": {},
     # IANA timezone (e.g. "Asia/Kolkata", "America/New_York"). Empty = server-local time.
     "timezone": "",
 
@@ -1276,7 +1273,7 @@ DEFAULT_CONFIG = {
     # Shell-script hooks: event name (pre_tool_call, post_tool_call, pre_llm_call, subagent_stop,
     # ...) -> list of {matcher, command, timeout}. First run of a new command prompts for consent;
     # approvals persist in ~/.hermes/shell-hooks-allowlist.json. Schema + examples:
-    # website/docs/user-guide/features/hooks.md.
+    # the hosted hooks user guide.
     "hooks": {},
     # Auto-accept shell-hook registrations without a TTY prompt (also --accept-hooks or
     # HERMES_ACCEPT_HOOKS=1). Gateway/cron/non-interactive runs need one of these to pick up
@@ -1720,7 +1717,7 @@ DEFAULT_CONFIG = {
     },
     # Privacy-safe aggregate metrics in this profile's local telemetry dir. Collection (`enabled`)
     # and transmission to Nous (`send`) are SEPARATE opt-ins; see
-    # website/docs/developer-guide/relay-shared-metrics.md Appendix A for consent/retention.
+    # the relay shared-metrics developer guide, Appendix A for consent/retention.
     "telemetry": {
         "shared_metrics": {
             "enabled": False,
@@ -2242,11 +2239,6 @@ OPTIONAL_ENV_VARS = {
         "Airtable API key", "https://airtable.com/create/tokens"),
     "TENOR_API_KEY": _skill("Tenor API key for GIF search (used by the `gif-search` skill)",
         "Tenor API key", "https://developers.google.com/tenor/guides/quickstart"),
-    # ── Honcho ──
-    "HONCHO_API_KEY": _tool("Honcho API key for AI-native persistent memory", "Honcho API key",
-        "https://app.honcho.dev", tools=["honcho_context"]),
-    "HONCHO_BASE_URL": _tool("Base URL for self-hosted Honcho instances (no API key needed)",
-        "Honcho base URL (e.g. http://localhost:8000)", password=None),
     # ── Hindsight ──
     "HINDSIGHT_API_KEY": _tool("Hindsight API key for graph-aware persistent memory",
         "Hindsight API key", "https://hindsight.vectorize.io", tools=["hindsight_recall"]),
@@ -2256,9 +2248,6 @@ OPTIONAL_ENV_VARS = {
     # ── Supermemory ──
     "SUPERMEMORY_API_KEY": _tool("Supermemory API key for conversation-scoped persistent memory",
         "Supermemory API key", "https://supermemory.ai", tools=["supermemory_search"]),
-    # ── Mem0 ──
-    "MEM0_API_KEY": _tool("Mem0 Platform API key for semantic persistent memory", "Mem0 API key",
-        "https://app.mem0.ai", tools=["mem0_search"]),
     # ── RetainDB ──
     "RETAINDB_API_KEY": _tool("RetainDB API key for persistent memory", "RetainDB API key",
         "https://retaindb.com", tools=["retaindb_search"]),
@@ -2268,11 +2257,6 @@ OPTIONAL_ENV_VARS = {
     # ── ByteRover ──
     "BRV_API_KEY": _tool("ByteRover API key (optional, for cloud sync — local-first by default)",
         "ByteRover API key", "https://app.byterover.dev", tools=["brv_query"]),
-    # ── OpenViking ──
-    "OPENVIKING_API_KEY": _tool("OpenViking API key (leave blank for local dev mode)",
-        "OpenViking API key", tools=["viking_search"]),
-    "OPENVIKING_ENDPOINT": _tool("OpenViking server URL (default: http://127.0.0.1:1933)",
-        "OpenViking endpoint", password=None, advanced=True),
     # ── Langfuse observability ──
     "HERMES_LANGFUSE_PUBLIC_KEY": _tool("Langfuse project public key (pk-lf-...)",
         "Langfuse public key", "https://cloud.langfuse.com", password=False),

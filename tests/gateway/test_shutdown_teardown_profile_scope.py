@@ -3,7 +3,7 @@ OWNING profile's scope (#110622).
 
 ``on_session_end`` / ``shutdown`` / ``close`` read credentials and home at call time. Shutdown
 runs on the main loop outside any adapter handler, so its executor hop carried an EMPTY scope and
-a secondary profile's ``get_secret("OPENVIKING_API_KEY")`` failed closed — the end-of-session
+a secondary profile's ``get_secret("RETAINDB_API_KEY")`` failed closed — the end-of-session
 commit was skipped and logged as a WARNING + traceback on every gateway-hosted session close.
 """
 from __future__ import annotations
@@ -58,7 +58,7 @@ async def test_shutdown_teardown_commits_memory_under_the_owning_profile(tmp_pat
     default_home = tmp_path / ".hermes"
     prof_b = default_home / "profiles" / "b"
     prof_b.mkdir(parents=True)
-    (prof_b / ".env").write_text("OPENVIKING_API_KEY=key-of-b\n")
+    (prof_b / ".env").write_text("RETAINDB_API_KEY=key-of-b\n")
     monkeypatch.setenv("HERMES_HOME", str(default_home))
     seen: dict = {}
     secret_scope.set_multiplex_active(True)
@@ -71,7 +71,7 @@ async def test_shutdown_teardown_commits_memory_under_the_owning_profile(tmp_pat
     finally:
         secret_scope.set_multiplex_active(False)
     assert seen["home"] == prof_b
-    assert seen["scope"] and seen["scope"].get("OPENVIKING_API_KEY") == "key-of-b"
+    assert seen["scope"] and seen["scope"].get("RETAINDB_API_KEY") == "key-of-b"
 
 
 @pytest.mark.asyncio

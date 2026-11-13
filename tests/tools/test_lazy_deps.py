@@ -27,7 +27,7 @@ class TestSpecSafety:
     @pytest.mark.parametrize("spec", [
         "mistralai>=2.3.0,<3",
         "elevenlabs>=1.0,<2",
-        "honcho-ai>=2.2.0,<3",
+        "hindsight-client>=0.9,<1",
         "boto3>=1.35.0,<2",
         "mautrix[encryption]>=0.20,<1",
         "google-api-python-client>=2.100,<3",
@@ -106,7 +106,7 @@ class TestAllowlist:
 
 class TestSecurityGating:
     def test_disabled_via_config_raises(self, monkeypatch):
-        # Pretend honcho is missing AND lazy installs are disabled.
+        # Pretend the dep is missing AND lazy installs are disabled.
         monkeypatch.setitem(ld.LAZY_DEPS, "test.feat", ("packageX>=1.0,<2",))
         monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
         monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: False)
@@ -199,8 +199,8 @@ class TestIsSatisfiedVersionAware:
         monkeypatch.setattr(_md, "version", _version)
 
     def test_exact_pin_match_returns_true(self, monkeypatch):
-        self._fake_version(monkeypatch, {"honcho-ai": "2.2.0"})
-        assert ld._is_satisfied("honcho-ai==2.2.0") is True
+        self._fake_version(monkeypatch, {"hindsight-client": "0.9.2"})
+        assert ld._is_satisfied("hindsight-client==0.9.2") is True
 
 
     def test_range_within_returns_true(self, monkeypatch):
@@ -465,7 +465,7 @@ class TestInstallSpecs:
             ld, "_venv_pip_install",
             lambda *a, **kw: pytest.fail("pip should not be called"),
         )
-        result = ld.install_specs(["honcho-ai==2.2.0", "pkg; rm -rf /"])
+        result = ld.install_specs(["hindsight-client==0.9.2", "pkg; rm -rf /"])
         assert result.blocked is True
 
 
@@ -480,7 +480,7 @@ class TestInstallSpecs:
         def boom(specs, **kw):
             raise RuntimeError("disk on fire")
         monkeypatch.setattr(ld, "_venv_pip_install", boom)
-        result = ld.install_specs(["honcho-ai==2.2.0"])
+        result = ld.install_specs(["hindsight-client==0.9.2"])
         assert result.ok is False
         assert "disk on fire" in result.stderr
 

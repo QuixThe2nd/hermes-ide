@@ -1,7 +1,6 @@
 # cron/ — scheduled jobs
 
-Applies on top of the root `AGENTS.md`. Long-form: `website/docs/developer-guide/cron-internals.md`;
-user docs `website/docs/user-guide/features/cron.md`.
+Applies on top of the root `AGENTS.md`.
 
 ## Cron
 

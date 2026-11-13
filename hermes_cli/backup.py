@@ -137,7 +137,7 @@ _IMPORT_SKIP_NAMES = {"gateway_state.json", "gateway.pid", "cron.pid", "gateway.
 # excluded browser-profile/ snapshot) but must come back owner-only.
 _SECRET_FILE_NAMES = {".env", "auth.json", "state.db", "vault.key", "vault.json.enc"}
 
-# Reserved archive subtree for memory-provider state OUTSIDE HERMES_HOME (e.g. ~/.honcho, via
+# Reserved archive subtree for memory-provider state OUTSIDE HERMES_HOME (e.g. ~/.hindsight, via
 # MemoryProvider.backup_paths()), stored and restored relative to the user's home; paths not
 # under home are skipped.
 _EXTERNAL_PREFIX = "_external/"
@@ -684,7 +684,7 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
         _iter_backup_files(hermes_root, out_path, skipped_dirs)
     )
 
-    # External memory-provider state (e.g. ~/.honcho, ~/.hindsight) lives
+    # External memory-provider state (e.g. ~/.hindsight) lives
     # outside HERMES_HOME, so the walk above never sees it. Ask the active
     # provider for its declared paths and stage them under the reserved
     # ``_external/`` arc prefix, encoded relative to the user's home dir.
@@ -910,7 +910,7 @@ def run_import(args) -> None:
         for member in members:
             # External memory-provider state captured under the reserved
             # ``_external/`` arc prefix restores to its original home-relative
-            # location (e.g. ~/.honcho/config.json), NOT under HERMES_HOME.
+            # location (e.g. ~/.hindsight/), NOT under HERMES_HOME.
             if member.startswith(_EXTERNAL_PREFIX):
                 ext_rel = member[len(_EXTERNAL_PREFIX):]
                 if not ext_rel:

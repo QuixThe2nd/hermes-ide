@@ -284,29 +284,6 @@ class TestDoctorEnvFileEncoding:
             doctor_mod.run_doctor(Namespace(fix=False))
 
 
-class TestHonchoDoctorConfigDetection:
-    def test_reports_configured_when_enabled_with_api_key(self, monkeypatch):
-        fake_config = SimpleNamespace(enabled=True, api_key="***")
-
-        monkeypatch.setattr(
-            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
-            lambda: fake_config,
-        )
-
-        assert doctor_state._honcho_is_configured_for_doctor()
-
-
-
-
-
-
-
-
-
-
-# ── Memory provider section (doctor should only check the *active* provider) ──
-
-
 class TestDoctorMemoryProviderSection:
     """The ◆ Memory Provider section should respect memory.provider config."""
 
@@ -383,17 +360,15 @@ class TestDoctorMemoryProviderSection:
         out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
         assert "Memory Provider" in out
         assert "Built-in memory active" in out
-        # Should NOT mention Honcho or Mem0 errors
-        assert "Honcho API key" not in out
-        assert "Mem0" not in out
 
-
-    def test_mem0_provider_not_installed_shows_fail(self, monkeypatch, tmp_path):
-        # Make mem0 import fail
-        monkeypatch.setitem(sys.modules, "plugins.memory.mem0", None)
-        out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="mem0")
+    def test_unknown_provider_shows_clear_warning(self, monkeypatch, tmp_path):
+        # A configured-but-unresolvable provider must fail closed with a clear
+        # pointer, never silently fall back to the built-in store.
+        monkeypatch.setattr("plugins.memory.load_memory_provider", lambda *a, **k: None)
+        out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="hindsight")
         assert "Memory Provider" in out
         assert "Built-in memory active" not in out
+        assert "not found" in out
 
     @pytest.mark.parametrize("memory_enabled", [False, True])
     def test_stale_builtin_files_reported_only_when_store_enabled(

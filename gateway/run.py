@@ -5809,7 +5809,7 @@ def _format_context_injection_progress(
     display copy is force-redacted and mention-neutralised before it leaves the
     gateway; the model still receives the untouched API content. Long blocks
     are split below the adapter's message cap so Discord/Telegram edits cannot
-    fail merely because Honcho returned a healthy amount of autobiography.
+    fail merely because a provider returned a healthy amount of autobiography.
 
     When ``include_content`` is False, return only the heading line with
     no char count, fences, body, or continuation chunks — unless a leading
@@ -6387,10 +6387,6 @@ class GatewayRunner(
         # some platforms).
         import itertools as _itertools
         self._slash_confirm_counter = _itertools.count(1)
-
-        # Persistent Honcho managers keyed by gateway session key.
-        # This preserves write_frequency="session" semantics across short-lived
-        # per-message AIAgent instances.
 
 
 
@@ -10489,48 +10485,6 @@ class GatewayRunner(
         ("checkpoints", "max_file_size_mb"),
     )
 
-    _HONCHO_CACHE_BUSTING_KEYS = (
-        "honcho.peer_name",
-        "honcho.ai_peer",
-        "honcho.pin_peer_name",
-        "honcho.runtime_peer_prefix",
-        "honcho.user_peer_aliases",
-    )
-    _HONCHO_CACHE_BUSTING_MEMO: dict[tuple[str, int | None], dict[str, Any]] = {}
-
-    @classmethod
-    def _empty_honcho_cache_busting_config(cls) -> dict[str, Any]:
-        return {key: None for key in cls._HONCHO_CACHE_BUSTING_KEYS}
-
-    @classmethod
-    def _extract_honcho_cache_busting_config(cls) -> dict[str, Any]:
-        """Extract Honcho identity keys, memoized by honcho.json mtime."""
-        try:
-            from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
-
-            path = resolve_config_path()
-            try:
-                mtime_ns = path.stat().st_mtime_ns
-            except OSError:
-                mtime_ns = None
-            memo_key = (str(path), mtime_ns)
-            cached = cls._HONCHO_CACHE_BUSTING_MEMO.get(memo_key)
-            if cached is not None:
-                return dict(cached)
-
-            hcfg = HonchoClientConfig.from_global_config(config_path=path)
-            aliases = hcfg.user_peer_aliases or {}
-            values = {
-                "honcho.peer_name": hcfg.peer_name,
-                "honcho.ai_peer": hcfg.ai_peer,
-                "honcho.pin_peer_name": bool(hcfg.pin_peer_name),
-                "honcho.runtime_peer_prefix": hcfg.runtime_peer_prefix or "",
-                "honcho.user_peer_aliases": sorted(aliases.items()) if isinstance(aliases, dict) else [],
-            }
-            cls._HONCHO_CACHE_BUSTING_MEMO = {memo_key: values}
-            return dict(values)
-        except Exception:
-            return cls._empty_honcho_cache_busting_config()
 
 
 
