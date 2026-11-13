@@ -803,18 +803,28 @@ async def vision_analyze_tool(
         call_kwargs = _aux_call_kwargs(messages, model, 120.0)
         _load_auxiliary_client()
         try:
-            response = await async_call_llm(**call_kwargs)
+            try:
+                response = await async_call_llm(**call_kwargs)
+            except Exception as _api_err:
+                if not (_is_image_size_error(_api_err) and len(image_data_url) > _RESIZE_TARGET_BYTES):
+                    raise
+                logger.info(
+                    "API rejected image (%.1f MB, likely too large); auto-resizing to ~%.0f MB and retrying...",
+                    len(image_data_url) / (1024 * 1024), _RESIZE_TARGET_BYTES / (1024 * 1024))
+                image_data_url = await _resize_prepared(prepared, _scale_info)
+                messages[0]["content"][1]["image_url"]["url"] = image_data_url
+                response = await async_call_llm(**call_kwargs)
+            analysis = await _call_vision_llm(
+                call_kwargs, "Vision LLM returned empty content, retrying once", response)
         except Exception as _api_err:
-            if not (_is_image_size_error(_api_err) and len(image_data_url) > _RESIZE_TARGET_BYTES):
-                raise
-            logger.info(
-                "API rejected image (%.1f MB, likely too large); auto-resizing to ~%.0f MB and retrying...",
-                len(image_data_url) / (1024 * 1024), _RESIZE_TARGET_BYTES / (1024 * 1024))
-            image_data_url = await _resize_prepared(prepared, _scale_info)
-            messages[0]["content"][1]["image_url"]["url"] = image_data_url
-            response = await async_call_llm(**call_kwargs)
-        analysis = await _call_vision_llm(
-            call_kwargs, "Vision LLM returned empty content, retrying once", response)
+            # Billing failure: the image is on disk, local OCR still answers. Any other
+            # error (rate limit, content policy, image problem) keeps its error text.
+            from tools.vision_ocr import billing_ocr_fallback
+            ocr_text = billing_ocr_fallback(_api_err, prepared.path)
+            if ocr_text is not None:
+                logger.warning("Vision API billing failure (%s); returning local OCR text instead.", _api_err)
+                return ocr_text, None
+            raise
         return analysis, _build_scale_note(_scale_info or None, prepared.crop_offset or None)
     return await _run_analysis("image", image_url, user_prompt, model, stage)
 

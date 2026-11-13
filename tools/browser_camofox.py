@@ -230,6 +230,63 @@ def _adopt_existing_tab(session: Dict[str, Any]) -> Dict[str, Any]:
     return session
 
 
+def _normalize_for_tab_match(url: str) -> Optional[str]:
+    """Comparison form of a URL: lowercase scheme/host, fragment dropped, one trailing
+    slash removed from the path, query kept — so a listed tab's URL matches the URL
+    that was posted."""
+    try:
+        parts = urlsplit(str(url).strip())
+        hostname = (parts.hostname or "").lower()
+        netloc = hostname if parts.port is None else f"{hostname}:{parts.port}"
+    except ValueError:
+        return None
+    path = parts.path[:-1] if parts.path.endswith("/") else parts.path
+    return urlunsplit((parts.scheme.lower(), netloc, path, parts.query, ""))
+
+
+def _tab_match_url(tab: Dict[str, Any]) -> Optional[str]:
+    """The tab's page URL: first present of ``url`` / ``currentUrl`` / ``pageUrl``."""
+    for key in ("url", "currentUrl", "pageUrl"):
+        if tab.get(key):
+            return tab[key]
+    return None
+
+
+def _is_lost_control_response(exc: Exception) -> bool:
+    """True when a tab POST may have been processed although its response died: read
+    timeouts and HTTP 500s. Connection errors and 4xx mean the action never happened."""
+    if isinstance(exc, requests.Timeout):
+        return True
+    if isinstance(exc, requests.HTTPError):
+        return getattr(exc.response, "status_code", None) == 500
+    return False
+
+
+def _adopt_tab_for_lost_control_response(session: Dict[str, Any], posted_url: str) -> Optional[str]:
+    """Re-register the tab the server created before a control response died: list the
+    user's tabs and match the posted URL. ``None`` when the lookup fails, lists no
+    tabs, or nothing matches — the caller re-raises the original error. Applies to
+    ephemeral sessions too: only ``tab_id`` is filled, ``adopt_existing_tab`` stays off."""
+    try:
+        payload = _get("/tabs", params=_user_params(session), timeout=5)
+    except Exception as exc:
+        logger.debug("Camofox tab recovery lookup failed for %s: %s", session.get("user_id"), exc)
+        return None
+    tabs = payload.get("tabs", []) if isinstance(payload, dict) else None
+    if not isinstance(tabs, list):
+        return None
+    wanted = _normalize_for_tab_match(posted_url)
+    if wanted is None:
+        return None
+    for tab in tabs:
+        if not isinstance(tab, dict) or not isinstance(tab.get("tabId"), str) or not tab.get("tabId"):
+            continue
+        tab_url = _tab_match_url(tab)
+        if tab_url is not None and _normalize_for_tab_match(tab_url) == wanted:
+            return tab["tabId"]
+    return None
+
+
 def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
     """Get or create the task's session. Identity precedence: external override
     (CAMOFOX_USER_ID / config) → profile-scoped identity when managed persistence
@@ -257,8 +314,20 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
     """Ensure a tab exists for the session, creating one if needed."""
     session = _get_session(task_id)
     if not session["tab_id"]:
-        data = _post("/tabs", {"userId": session["user_id"], "listItemId": session["session_key"], "url": url})
-        session["tab_id"] = data.get("tabId")
+        try:
+            data = _post("/tabs", {"userId": session["user_id"], "listItemId": session["session_key"], "url": url})
+        except (requests.Timeout, requests.HTTPError) as exc:
+            # The server may have created the tab before the response died — re-register
+            # it instead of leaving the session tab-less ("No browser session" forever).
+            tab_id = (_adopt_tab_for_lost_control_response(session, url)
+                      if _is_lost_control_response(exc) else None)
+            if not tab_id:
+                raise
+            logger.warning("Camofox tab creation response was lost (%s); re-registered tab %s for %s",
+                           exc, tab_id, session.get("user_id"))
+            session["tab_id"] = tab_id
+        else:
+            session["tab_id"] = data.get("tabId")
     return session
 
 
@@ -352,18 +421,29 @@ def _fetch_snapshot(session: Dict[str, Any]) -> tuple[str, int]:
 def _navigate_tab(task_id: Optional[str], browser_url: str) -> tuple[Dict[str, Any], dict]:
     """Open ``browser_url`` in the task's tab (creating it if missing) and return
     ``(session, navigate_response)``. A 404 on the existing tab means the server
-    garbage-collected it — recreate instead of failing."""
+    garbage-collected it — recreate instead of failing. A lost control response
+    (timeout / HTTP 500) may still have navigated — recover the tabId via /tabs."""
     session = _get_session(task_id)
     if session["tab_id"]:
         try:
             data = _post(_tab_path(session, "navigate"), {"userId": session["user_id"], "url": browser_url}, timeout=60)
             return session, data
-        except requests.HTTPError as e:
-            if e.response is None or e.response.status_code != 404:
+        except (requests.Timeout, requests.HTTPError) as e:
+            if (isinstance(e, requests.HTTPError) and e.response is not None
+                    and e.response.status_code == 404):
+                logger.warning("Camofox tab %s returned 404 — tab was garbage collected. Creating a fresh tab.",
+                               session["tab_id"])
+                session["tab_id"] = None
+            elif _is_lost_control_response(e):
+                tab_id = _adopt_tab_for_lost_control_response(session, browser_url)
+                if not tab_id:
+                    raise
+                logger.warning("Camofox navigate response was lost (%s); re-registered tab %s for %s",
+                               e, tab_id, session.get("user_id"))
+                session["tab_id"] = tab_id
+                return session, {"ok": True, "url": browser_url}
+            else:
                 raise
-            logger.warning("Camofox tab %s returned 404 — tab was garbage collected. Creating a fresh tab.",
-                           session["tab_id"])
-            session["tab_id"] = None
     return _ensure_tab(task_id, browser_url), {"ok": True, "url": browser_url}
 
 
@@ -554,11 +634,21 @@ def camofox_vision(question: str, annotate: bool = False, task_id: Optional[str]
         from agent.auxiliary_client import call_llm
         vision_prompt = f"Analyze this browser screenshot and answer: {question}{redact_sensitive_text(annotation_context)}"
         timeout, temperature = _vision_llm_settings()
-        response = call_llm(
-            messages=[{"role": "user", "content": [
-                {"type": "text", "text": vision_prompt},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}}]}],
-            task="vision", temperature=temperature, timeout=timeout)
+        try:
+            response = call_llm(
+                messages=[{"role": "user", "content": [
+                    {"type": "text", "text": vision_prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}}]}],
+                task="vision", temperature=temperature, timeout=timeout)
+        except Exception as exc:
+            # Billing failure: OCR the screenshot we already saved instead of failing.
+            from tools.vision_ocr import billing_ocr_fallback
+            ocr_text = billing_ocr_fallback(exc, screenshot_path)
+            if ocr_text is None:
+                raise
+            logger.warning("Vision API billing failure (%s); returning local OCR text instead.", exc)
+            return json.dumps({"success": True, "analysis": redact_sensitive_text(ocr_text),
+                               "screenshot_path": screenshot_path})
         analysis = (response.choices[0].message.content or "").strip() if response.choices else ""
         # Redact secrets the vision LLM may have read from the screenshot.
         return json.dumps({"success": True, "analysis": redact_sensitive_text(analysis), "screenshot_path": screenshot_path})
