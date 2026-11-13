@@ -9,7 +9,9 @@ one-shot keyless rescue. Logs under the origin (tools.web_tools) logger.
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from tools.tool_backend_helpers import selection_error, selection_exists
 from tools.url_safety import normalize_url_for_request
@@ -225,3 +227,117 @@ async def _extract_safe_urls(provider, safe_urls: List[str], format: Optional[st
     if not cached_results:
         return results
     return _merge_in_order(len(safe_urls), cached_results, fetch_positions, fetch_urls, results)
+
+# --- Per-URL fallback retry for returned transient errors ----------------------
+
+# A provider timeout ("Scrape timed out after 60s", "request timeout") or an HTTP
+# 5xx ("500 Server Error") is a transient page-level failure: the backend is
+# alive, this one fetch blew up. Word boundaries keep "5000" or a "/p500/" URL
+# fragment from masquerading as a status code.
+_RETRY_TIMEOUT_RE = re.compile(r"\b(?:time[-\s]?out|timed[-\s]?out)\b", re.IGNORECASE)
+_RETRY_HTTP_5XX_RE = re.compile(r"\b(?:5\d{2}|5xx)\b", re.IGNORECASE)
+
+
+def _url_host(url: str) -> str:
+    """Hostname of *url* for per-domain diagnostics; the raw string when unparsable."""
+    try:
+        return urlparse(url).hostname or url
+    except ValueError:
+        return url
+
+
+def _policy_or_ssrf_refusal(entry: dict) -> bool:
+    """True for website-policy / SSRF refusals — intentional outcomes a fallback
+    provider must never re-fetch (that would route blocked content through
+    another vendor)."""
+    if entry.get("blocked_by_policy"):
+        return True
+    error = str(entry.get("error") or "").lower()
+    return error.startswith("blocked:") or "blocked by website policy" in error
+
+
+def _retryable_extract_error(entry: dict) -> bool:
+    """Transient per-URL failures worth one retry on the fallback chain.
+
+    Provider timeouts and HTTP 5xx only. Ordinary page errors (404, not-found,
+    auth) and policy/SSRF refusals are final — retrying them burns a second
+    vendor call to fail the same way."""
+    error = str(entry.get("error") or "")
+    if not error or _policy_or_ssrf_refusal(entry):
+        return False
+    return bool(_RETRY_TIMEOUT_RE.search(error) or _RETRY_HTTP_5XX_RE.search(error))
+
+
+async def _retry_extract_errors_on_fallbacks(
+    results: List[dict], fetch_urls: List[str], format: Optional[str], primary, _wsp_get_provider
+) -> Tuple[List[dict], bool]:
+    """Retry only the transient (timeout / HTTP 5xx) entries of a RETURNED primary
+    extract on the configured ``web.extract_fallbacks`` chain.
+
+    A returned error is not a dead backend (that path raises and falls back
+    whole-batch in ``web_extract_tool``), so only the failing URLs are re-sent,
+    through the same availability walk as ``_run_extract_fallbacks``. Successful
+    fallback entries are merged back BY URL (providers may reorder or answer
+    with the redirect target — ``metadata.sourceURL`` counts too); every other
+    entry, including the original error when the retry also fails, is returned
+    untouched.
+
+    Returns ``(results, fallback_served)`` — ``fallback_served`` is True only
+    when a fallback actually served a body, so the caller can keep fallback
+    text out of the primary provider's cache.
+    """
+    retry: List[Tuple[int, str]] = []  # (position into results/fetch_urls, requested url)
+    for position, entry in enumerate(results):
+        if position >= len(fetch_urls) or not isinstance(entry, dict):
+            continue
+        if not entry.get("error") or not _retryable_extract_error(entry):
+            continue
+        url = entry.get("url")
+        if url not in fetch_urls:
+            url = fetch_urls[position]
+        retry.append((position, url))
+
+    if not retry:
+        return results, False
+
+    primary_name = getattr(primary, "name", "primary")
+    for _position, url in retry:
+        logger.warning(
+            "web_extract: %s hit a timeout/5xx on %s — retrying that URL on the extract fallback chain",
+            primary_name, _url_host(url),
+        )
+
+    from tools.web_tools import _run_extract_fallbacks  # late facade import — no cycle
+
+    retry_urls = [url for _position, url in retry]
+    try:
+        retried = await _run_extract_fallbacks(
+            retry_urls, format, primary,
+            RuntimeError(f"{primary_name} returned a transient per-URL error for {len(retry_urls)} URL(s)"),
+            _wsp_get_provider=_wsp_get_provider,
+        )
+    except Exception:  # noqa: BLE001 — a failed retry keeps the primary's original error
+        logger.warning(
+            "web_extract: fallback retry failed for %d timed-out/5xx URL(s); keeping original errors",
+            len(retry_urls),
+        )
+        return results, False
+
+    served: Dict[str, dict] = {}
+    for entry in retried:
+        if not isinstance(entry, dict) or entry.get("error"):
+            continue
+        meta = entry.get("metadata")
+        source = meta.get("sourceURL") if isinstance(meta, dict) else None
+        for url in (entry.get("url"), source):
+            if url in retry_urls:
+                served[url] = entry
+                break
+    if not served:
+        return results, False
+
+    merged = list(results)
+    for position, url in retry:
+        if url in served and merged[position].get("error"):
+            merged[position] = served[url]
+    return merged, True
