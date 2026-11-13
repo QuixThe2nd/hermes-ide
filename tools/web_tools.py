@@ -98,6 +98,7 @@ from tools.tool_backend_helpers import (  # noqa: F401
     prefers_gateway,
 )
 from tools.url_safety import async_is_safe_url, normalize_url_for_request, sensitive_query_param_name
+from tools.web_tools_extract import _retry_extract_errors_on_fallbacks
 import sys
 
 logger = logging.getLogger(__name__)
@@ -1001,9 +1002,10 @@ async def _run_extract_fallbacks(safe_urls, format, primary, primary_exc, _wsp_g
     """Walk ``web.extract_fallbacks`` after the primary extract provider raised.
 
     Extract providers signal a hard failure by *raising* (unreachable backend,
-    missing SDK, auth error); per-URL ``error`` entries in a returned list are
-    normal and do NOT trigger a fallback. So this helper is only invoked when
-    the primary raised ``primary_exc``.
+    missing SDK, auth error). Per-URL ``error`` entries in a returned list are
+    normal and only trigger a fallback for TRANSIENT entries (timeout / HTTP
+    5xx): ``_retry_extract_errors_on_fallbacks`` (tools/web_tools_extract.py)
+    re-dispatches just those URLs through this same walk.
 
     Each candidate must be registered, support extract, and report
     ``is_available()``. The first candidate whose ``extract()`` returns without
@@ -1584,6 +1586,18 @@ async def web_extract_tool(
                     else:
                         raise
                 else:
+                    # Fork addition: a RETURNED per-URL timeout / HTTP 5xx is a
+                    # transient page failure, not a dead backend — retry just
+                    # those URLs on the configured fallback chain (decision
+                    # logic in tools/web_tools_extract.py) BEFORE the
+                    # whole-batch keyless rescue. Merged bodies are
+                    # fallback-served and must never be cached under the
+                    # primary's name.
+                    results, _fallback_served = await _retry_extract_errors_on_fallbacks(
+                        results, fetch_urls, format, provider, _wsp_get_provider
+                    )
+                    if _fallback_served:
+                        _extract_from_fallback = True
                     # One-shot keyless rescue when the WHOLE batch failed
                     # (backend-level outage, not per-page problems). Stateless:
                     # the next web_extract call uses the chosen backend again.
