@@ -36,7 +36,10 @@ first line. Callers stay free to pass one long ``task`` string: an
 over-limit ``/goal`` task is rewritten before spawn, writing the original
 task to ``<workdir>/.hermes-claude-goal-brief.md`` and replacing the ``-p``
 argument with a short ``/goal`` condition (first line plus a pointer to
-that file). Non-goal tasks are never rewritten.
+that file). Non-goal tasks are never rewritten. If that brief path already
+exists AND is tracked by the workdir's git repo, the run refuses to start
+instead of silently dirtying the caller's tree; untracked leftovers from
+earlier spill runs are overwritten as before.
 
 Log format
 ----------
@@ -478,6 +481,29 @@ def _shorten_goal_condition(condition: str) -> str:
     return first_line + _GOAL_BRIEF_SUFFIX
 
 
+def _brief_file_is_git_tracked(workdir: Path, name: str) -> bool:
+    """True when ``name`` at the root of ``workdir`` is tracked by git.
+
+    Untracked leftovers from earlier spill runs are the normal case and must
+    not block a rewrite; only a path the repo actually tracks makes the
+    overwrite destructive (it silently dirties the caller's worktree). Any
+    probe failure — not a git repo, git missing, timeout — counts as
+    untracked so the guard can never block on its own error.
+    """
+    try:
+        return (
+            subprocess.run(
+                ["git", "-C", str(workdir), "ls-files", "--error-unmatch", "--", name],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            ).returncode
+            == 0
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Tool implementation
 # ---------------------------------------------------------------------------
@@ -584,6 +610,18 @@ def delegate_claude_agent(
     goal_condition = _extract_goal_condition(prompt)
     if goal_condition is not None and len(goal_condition) > GOAL_CONDITION_MAX_CHARS:
         brief_path = workdir_path / GOAL_BRIEF_FILENAME
+        if brief_path.exists() and _brief_file_is_git_tracked(
+            workdir_path, GOAL_BRIEF_FILENAME
+        ):
+            return _make_result(
+                success=False,
+                error=(
+                    f"refusing to overwrite git-tracked file {brief_path}: "
+                    f"spilling the /goal brief there would silently modify a "
+                    f"tracked repo file. Untrack/remove it or use another "
+                    f"workdir."
+                ),
+            )
         try:
             brief_path.write_text(str(task), encoding="utf-8")
             os.chmod(brief_path, 0o644)

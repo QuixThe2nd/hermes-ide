@@ -1397,3 +1397,53 @@ def test_goal_spill_write_failure_aborts_before_spawn(monkeypatch, repo, fake_bi
     assert "read-only filesystem" in result["error"]
     # The write failure must abort before anything is spawned.
     assert captured == {}
+
+
+def test_goal_spill_refuses_git_tracked_brief_file(monkeypatch, repo, fake_binary):
+    """A brief path tracked by the workdir's repo must never be overwritten:
+    the spill would silently dirty the caller's tree (pc_88c7028680fe)."""
+    import subprocess
+
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    brief = repo / GOAL_BRIEF_NAME
+    original = "tracked content — do not touch\n"
+    brief.write_text(original, encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", GOAL_BRIEF_NAME], check=True)
+
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(
+            task="/goal " + "x" * 4001, workdir=str(repo)
+        )
+    )
+    assert result["success"] is False
+    assert "git-tracked" in result["error"]
+    assert GOAL_BRIEF_NAME in result["error"]
+    # The tracked file is untouched and nothing was spawned.
+    assert brief.read_text(encoding="utf-8") == original
+    assert captured == {}
+
+
+def test_goal_spill_overwrites_untracked_leftover(monkeypatch, repo, fake_binary):
+    """An untracked leftover brief from an earlier spill stays overwriteable."""
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    brief = repo / GOAL_BRIEF_NAME
+    brief.write_text("stale leftover\n", encoding="utf-8")
+
+    task = "/goal " + "x" * 4001
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task=task, workdir=str(repo))
+    )
+    assert result["success"] is True
+    assert brief.read_text(encoding="utf-8") == task
+    assert result["goal_brief_path"] == str(brief)
