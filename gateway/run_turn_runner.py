@@ -639,6 +639,9 @@ class TurnRunner(_TurnRunnerCore):
                 if self._is_flush_marker(raw):
                     self._signal_flush_marker(raw)
                     continue
+                if self._is_hold_marker(raw):
+                    self._release_hold_marker(raw)
+                    continue
                 if not self._agent_interrupted() and st.apply_event(raw):
                     await self._task_card_publish(st)
         except asyncio.CancelledError:
@@ -802,6 +805,47 @@ class TurnRunner(_TurnRunnerCore):
         return isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__"
 
     @staticmethod
+    def _is_hold_marker(raw) -> bool:
+        """Narration-send gate marker (GatewayStreamConsumer::_begin_progress_gate):
+        ('__hold__', asyncio.Event) or ('__gate__', threading.Event) — a commentary /
+        first-stream send is in flight."""
+        return isinstance(raw, tuple) and len(raw) == 2 and raw[0] in ("__hold__", "__gate__")
+
+    @staticmethod
+    def _release_hold_marker(raw) -> None:
+        """Free a gate marker's waiter without delivering anything (non-editable
+        lanes, cancel drains, interrupted turns — there is no bubble to hold)."""
+        with suppress(Exception):
+            raw[1].set()
+
+    async def _handle_hold_marker(self, st, raw) -> None:
+        """A narration send is in flight (see GatewayStreamConsumer._progress_box_hold).
+
+        Close the current bubble NOW so the narration lands below it, then HOLD the
+        next box's first send until the send completes (or fails). Without the hold,
+        the pump can open the new box ABOVE the still-in-flight narration, and the
+        late ('__reset__',) from its completion closes the box this same step's
+        tools just opened — tool rows split across boxes out of order.
+        """
+        if not self._agent_interrupted():
+            with suppress(Exception):
+                await self._roll_progress_overflow_if_needed(st)
+                await self._flush_progress_edit(st)
+            self._reset_progress_bubble(st)
+        # The event may be asyncio.Event (in-loop gate) or threading.Event
+        # (agent-worker-thread gate); poll — both expose is_set().
+        evt = raw[1]
+
+        async def _released():
+            while not evt.is_set():
+                await asyncio.sleep(0.02)
+
+        try:
+            await asyncio.wait_for(_released(), timeout=60.0)
+        except Exception:
+            logger.warning("progress hold marker never released; continuing")
+
+    @staticmethod
     def _is_flush_marker(raw) -> bool:
         """Context-card ordering gate marker (gateway.run._CONTEXT_FLUSH_QUEUE_MARKER):
         ('__flush__', asyncio.Event) — deliver what was absorbed ahead of it, then set."""
@@ -945,6 +989,11 @@ class TurnRunner(_TurnRunnerCore):
                     # Cancelled drain: release the ordering gate's waiter.
                     self._signal_flush_marker(raw)
                     continue
+                if self._is_hold_marker(raw):
+                    # Cancelled drain: the narration send releases its own hold
+                    # in its finally; release here too so the pump never waits.
+                    self._release_hold_marker(raw)
+                    continue
                 if is_claude_delegation_start_marker(raw):
                     if not self._agent_interrupted():
                         await claude_delivery.deliver_start(raw)
@@ -1031,6 +1080,8 @@ class TurnRunner(_TurnRunnerCore):
                     await self._deliver_agent_status_marker(raw)
                 elif self._is_flush_marker(raw):
                     self._signal_flush_marker(raw)
+                elif self._is_hold_marker(raw):
+                    self._release_hold_marker(raw)
             return
         st = self._progress_edit_state(adapter)
         claude_delivery = self._claude_progress_delivery(st)
@@ -1053,6 +1104,9 @@ class TurnRunner(_TurnRunnerCore):
                     continue
                 if self._is_flush_marker(raw):
                     await self._handle_flush_marker(st, raw)
+                    continue
+                if self._is_hold_marker(raw):
+                    await self._handle_hold_marker(st, raw)
                     continue
                 # Late rows are suppressed after stop. Viewer markers survive:
                 # the spawned agent keeps running and its link remains useful.
@@ -1285,6 +1339,8 @@ class TurnRunner(_TurnRunnerCore):
             scfg.enabled and scfg.transport != "off" if plat_streaming is None else bool(plat_streaming)
         )
         want_interim_messages = bool(ctx.interim_assistant_messages_enabled) and not ctx.scheduled_heartbeat
+        # Streaming-TTS delta sink wired by the turn setup (None when TTS is off).
+        stts = ctx.streaming_tts_consumer_holder[0]
         if want_stream_deltas or want_interim_messages:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
@@ -1293,6 +1349,20 @@ class TurnRunner(_TurnRunnerCore):
                     consumer_cfg, pause_typing_before_finalize = self._runner._build_stream_consumer_config(
                         ctx.source, scfg, adapter, on_missing_cursor="raise",
                     )
+                    progress_queue = ctx.progress_queue
+
+                    def _progress_narration_gate(evt):
+                        """Narration gate: queue ('__gate__', evt) on the progress queue
+                        BEFORE any tool rows the in-flight send's step can enqueue, so
+                        the pump closes the old bubble and holds the next box's first
+                        send until the narration lands (GatewayStreamConsumer::
+                        _begin_progress_gate). The consumer releases the event (from
+                        the agent worker thread — hence a threading.Event) whether the
+                        send succeeded or failed."""
+                        if progress_queue is None:
+                            return
+                        progress_queue.put(("__gate__", evt))
+
                     stream_consumer = GatewayStreamConsumer(
                         adapter=adapter, chat_id=ctx.source.chat_id, config=consumer_cfg,
                         metadata=ctx._status_thread_metadata,
@@ -1301,6 +1371,9 @@ class TurnRunner(_TurnRunnerCore):
                         ),
                         on_new_message=(
                             (lambda: ctx.progress_queue.put(("__reset__",))) if ctx.progress_queue is not None else None
+                        ),
+                        on_progress_gate=(
+                            _progress_narration_gate if ctx.progress_queue is not None else None
                         ),
                         on_before_finalize=pause_typing_before_finalize,
                         initial_reply_to_id=ctx.event_message_id, run_still_current=ctx._run_still_current,

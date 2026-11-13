@@ -362,10 +362,21 @@ class StreamFallbackMixin:
             if getattr(result, "success", False):
                 self._last_sent_text = prefix
 
-    async def _send_commentary(self, text: str) -> bool:
-        """Send a completed interim assistant commentary message."""
+    async def _send_commentary(self, text: str, release=None) -> bool:
+        """Send a completed interim assistant commentary message.
+
+        ``release`` is the narration-gate release armed in ``on_commentary`` (see
+        ``_begin_progress_gate``): fired on EVERY exit — success, failure or
+        exception — so the progress pump never waits on a dead narration. The
+        hold also owns the bubble reset at the pump, so a gated send skips the
+        redundant on_new_message reset (never reset again here — it would close
+        the box the same step's tools just opened below this narration).
+        """
         text = self._clean_for_display(text)
         if not text.strip():
+            if release is not None:
+                with contextlib.suppress(Exception):
+                    release()
             return False
         try:
             # Interim: a stream-is-the-message adapter's seal-interception must not
@@ -386,7 +397,7 @@ class StreamFallbackMixin:
                 # Do NOT set _already_sent: commentary is interim, and the flag would
                 # suppress the real final after multiple tool calls.
                 if result.success:
-                    self._notify_new_message()
+                    self._notify_new_message_unless_gated()
                     # Lets run.py confirm whether an interim send carried the final.
                     # Record the exact delivered text so run.py can confirm whether an interim "preview"
                     # actually carried the final response, vs. unrelated commentary delivered during a session
@@ -405,6 +416,11 @@ class StreamFallbackMixin:
         except Exception as e:
             logger.error("Commentary send error: %s", e)
             return False
+        finally:
+            self._progress_hold_active = False
+            if release is not None:
+                with contextlib.suppress(Exception):
+                    release()
 
     def _raw_message_limit(self) -> int:
         """Per-chat length budget (``message_len_fn`` units) before overflow splits; rich
