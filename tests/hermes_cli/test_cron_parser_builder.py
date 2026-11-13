@@ -48,3 +48,11 @@ def test_cron_accept_hooks_flag_on_run_and_tick():
     assert ns.accept_hooks is True
     ns2 = parser.parse_args(["cron", "tick", "--accept-hooks"])
     assert ns2.accept_hooks is True
+
+
+def test_cron_list_json_flag():
+    parser = _build()
+    ns = parser.parse_args(["cron", "list", "--json", "--all"])
+    assert ns.json is True
+    assert ns.all is True
+    assert parser.parse_args(["cron", "list"]).json is False
