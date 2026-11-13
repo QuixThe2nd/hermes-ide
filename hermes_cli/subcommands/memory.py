@@ -12,8 +12,7 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
     memory_parser = subparsers.add_parser(
         "memory", help="Configure external memory provider",
         description="Set up and manage external memory provider plugins.\n\n"
-            "Available providers: hindsight, holographic, retaindb,\n"
-            "byterover, supermemory.\n\n"
+            "Available providers: hindsight.\n\n"
             "Only one external provider can be active at a time.\n"
             "Built-in memory (MEMORY.md/USER.md) is always active.")
     memory_sub = memory_parser.add_subparsers(dest="memory_command")

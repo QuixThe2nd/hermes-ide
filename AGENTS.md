@@ -797,7 +797,7 @@ source-reading tests, or assertions that a global version literal changed.
 ### Memory-provider plugins (`plugins/memory/<name>/`)
 
 Separate discovery system for pluggable memory backends. Current built-in
-providers include **supermemory, byterover, hindsight, holographic, retaindb**.
+provider is **hindsight**. Other names fail closed and are not shipped.
 
 Discovery covers the same four sources as the general `PluginManager` —
 bundled, `$HERMES_HOME/plugins/`, `./.hermes/plugins/` (opt-in via

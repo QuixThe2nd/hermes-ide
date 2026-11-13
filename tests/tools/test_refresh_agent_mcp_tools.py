@@ -52,7 +52,7 @@ def test_refresh_preserves_memory_provider_and_context_engine_tools(monkeypatch)
     """B1 regression: a rebuild must NOT drop post-build-injected tools.
 
     get_tool_definitions() returns only the registry-derived tools. agent_init
-    appends memory-provider tools (hindsight/supermemory/…) and context-engine tools
+    appends memory-provider tools (hindsight/…) and context-engine tools
     (lcm_*) directly onto agent.tools AFTER that. A naive
     `agent.tools = get_tool_definitions()` would silently delete them on every
     refresh. The helper must re-inject them.

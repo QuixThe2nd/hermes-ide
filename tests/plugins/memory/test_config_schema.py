@@ -9,7 +9,7 @@ def test_unknown_provider_is_none():
 
 
 def test_plugin_without_schema_is_none():
-    # byterover is a real plugin dir that declares no config_schema.py.
+    # A retired name resolves nowhere, so it has no schema.
     assert get_provider_config_schema("byterover") is None
 
 

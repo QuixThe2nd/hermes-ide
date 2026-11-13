@@ -28,6 +28,24 @@ logger = logging.getLogger(__name__)
 
 _MEMORY_PLUGINS_DIR = Path(__file__).parent
 ENTRY_POINTS_GROUP = "hermes_agent.memory_providers"
+
+# Removed from this distribution. A dropped-in directory, entry point, or
+# catalog plugin must not resurrect one of these names.
+RETIRED_MEMORY_PROVIDERS = frozenset({
+    "byterover",
+    "holographic",
+    "honcho",
+    "mem0",
+    "openviking",
+    "retaindb",
+    "supermemory",
+})
+
+
+def _is_retired(name: str | None) -> bool:
+    return bool(name) and name in RETIRED_MEMORY_PROVIDERS
+
+
 # Per Hermes home (plugin managers are per home too): pruning under one multiplexed profile must
 # only retract that profile's provider skills, never a sibling profile's.
 _REGISTERED_MEMORY_PROVIDER_SKILLS: dict[str, dict[str, Path]] = {}
@@ -94,7 +112,11 @@ def _external_source_dirs() -> List[Path]:
 
 def _iter_provider_dirs() -> List[Tuple[str, Path]]:
     """``(name, path)`` for bundled, then user-installed, then project-local; first-seen wins."""
-    dirs = [(child.name, child) for child in _loader.iter_plugin_dirs(_MEMORY_PLUGINS_DIR)]
+    dirs = [
+        (child.name, child)
+        for child in _loader.iter_plugin_dirs(_MEMORY_PLUGINS_DIR)
+        if not _is_retired(child.name)
+    ]
     seen = {name for name, _ in dirs}
     for source_dir in _external_source_dirs():
         for child in sorted(source_dir.iterdir()):
@@ -102,6 +124,7 @@ def _iter_provider_dirs() -> List[Tuple[str, Path]]:
                 child.is_dir()
                 and not child.name.startswith(("_", "."))
                 and child.name not in seen
+                and not _is_retired(child.name)
                 and _is_memory_provider_dir(child)
             ):
                 seen.add(child.name)
@@ -125,7 +148,13 @@ def find_provider_dir(name: str) -> Optional[Path]:
     """Provider name -> directory: bundled, user, project, then a pip entry point's
     package dir. The entry-point case matters because ``config_schema.py`` and
     ``cli.py`` are read from disk, not imported; without a directory a pip-installed
-    provider silently loses its dashboard panel and ``hermes <provider>`` commands."""
+    provider silently loses its dashboard panel and ``hermes <provider>`` commands.
+
+    Retired names fail closed: they resolve nowhere, even if a directory was
+    dropped back into the tree.
+    """
+    if _is_retired(name):
+        return None
     bundled = _MEMORY_PLUGINS_DIR / name
     if bundled.is_dir() and (bundled / "__init__.py").exists():
         return bundled
@@ -160,6 +189,8 @@ def _entry_point_package_dir(entry_point) -> Optional[Path]:
 
 def find_provider_entry_point(name: str):
     """Resolve a provider name to a pip entry point, if installed."""
+    if _is_retired(name):
+        return None
     return next((ep for ep in _iter_entry_points() if ep.name == name), None)
 
 
@@ -167,7 +198,7 @@ def list_memory_provider_names() -> List[str]:
     """Cheap name-only listing (directory scan + entry-point enumeration, no import or
     availability check) — safe at module-import time (dashboard dropdown)."""
     names = {name for name, _ in _iter_provider_dirs()}
-    names.update(ep.name for ep in _iter_entry_points())
+    names.update(ep.name for ep in _iter_entry_points() if not _is_retired(ep.name))
     return sorted(names)
 
 
@@ -181,7 +212,7 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
     ]
     seen = {name for name, _, _ in results}
     for entry_point in _iter_entry_points():
-        if entry_point.name not in seen:
+        if entry_point.name not in seen and not _is_retired(entry_point.name):
             seen.add(entry_point.name)
             results.append((entry_point.name, "", _loader.probe_availability(
                 lambda ep=entry_point: _load_provider_from_entry_point(ep, register_skills=False)
@@ -194,6 +225,9 @@ def load_memory_provider(name: str, *, register_skills: Optional[bool] = None) -
     None if not found or failing to load. Skills register only for the configured
     active provider unless ``register_skills`` is explicit, so inspecting inactive
     providers leaves no registry side effects."""
+    if _is_retired(name):
+        logger.debug("Memory provider '%s' was removed; refusing to load", name)
+        return None
     if register_skills is None:
         register_skills = name == _get_active_memory_provider()
 

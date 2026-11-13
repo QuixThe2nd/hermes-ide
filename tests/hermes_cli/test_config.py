@@ -748,9 +748,6 @@ class TestMemoryProviderEnvVarsRegistry:
     # provider primary-credential env key -> the tool-call name it powers.
     MEMORY_PROVIDER_KEYS = {
         "HINDSIGHT_API_KEY": "hindsight_recall",
-        "SUPERMEMORY_API_KEY": "supermemory_search",
-        "RETAINDB_API_KEY": "retaindb_search",
-        "BRV_API_KEY": "brv_query",
     }
 
     def test_memory_provider_keys_are_catalogued(self):

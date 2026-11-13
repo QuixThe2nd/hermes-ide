@@ -16,8 +16,9 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
 
 ## What may live in this tree (policy)
 
-- **In-tree memory providers.** `plugins/memory/` ships supermemory, byterover, hindsight,
-  holographic, retaindb; bug fixes welcome. New
+- **In-tree memory providers.** `plugins/memory/` ships hindsight; bug fixes welcome.
+  Retired names (byterover, holographic, supermemory, retaindb, and the earlier
+  honcho/mem0/openviking cuts) fail closed and are not rediscovered. New
   backends ship as standalone repos implementing the same `MemoryProvider` ABC, discovered through
   the same path, integrated via `hermes memory setup` / `post_setup()`.
 - **No new third-party-product plugins (June 2026).** Observability/metrics backends, vendor SaaS

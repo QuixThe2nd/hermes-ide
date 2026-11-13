@@ -61,9 +61,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Memory providers ──────────────────────────────────────────────────
     "memory.hindsight": ("hindsight-client==0.9.2",),
-    # Cloud memory SDKs MUST be allowlisted + ensure()'d at the import site, or they never
-    # install on the sealed Docker image (durable-target only).
-    "memory.supermemory": ("supermemory==3.50.0",),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
     # brotlicffi: aiohttp needs its 2-arg Decompressor for Discord CDN Brotli attachments
