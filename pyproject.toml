@@ -541,7 +541,7 @@ youtube-transcript-api = false
 # and the drift broke installed wheels. Do not add the list back.
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "cron", "cron.*", "plugins", "plugins.*", "providers", "providers.*", "pm", "pm.*"]
+include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "cron", "cron.*", "plugins", "plugins.*", "providers", "providers.*", "pm", "pm.*", "prompts", "prompts.*"]
 
 [tool.setuptools.package-data]
 hermes_cli = ["observability/schemas/*.json", "data/*.json", "local_runtime/*.json"]
@@ -551,6 +551,10 @@ hermes_cli = ["observability/schemas/*.json", "data/*.json", "local_runtime/*.js
 # topic-setup image disappears. Loaded via Path(__file__).parent / "assets"
 # in gateway/status_phrases.py and gateway/run.py.
 gateway = ["assets/**/*"]
+# prompts/*.txt are loaded verbatim by prompts.load via Path(__file__).parent;
+# without this declaration sealed wheels (uv2nix) ship the loader with zero
+# prompt files and every load() call dies at import of its consumer module.
+prompts = ["*.txt"]
 # Bundled plugin discovery reads these manifests at runtime. Keep them in
 # sealed wheels with the plugin Python modules; without this declaration the
 # wheel contains adapters but discovery finds zero bundled plugins.

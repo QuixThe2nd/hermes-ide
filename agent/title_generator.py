@@ -15,6 +15,8 @@ import weakref
 from contextlib import suppress
 from typing import Any, Callable, Optional
 
+from prompts.load import load
+
 from agent.auxiliary_client import call_llm
 from agent.context_compressor import LEGACY_SUMMARY_PREFIX
 from agent.message_content import flatten_message_text
@@ -66,8 +68,8 @@ TITLE_MAX_TOKENS = 512
 # sometimes takes the cheapest schema-valid answer and parrots one of these
 # back verbatim — most visibly "Fix login button on mobile" naming sessions
 # that have nothing to do with a login button. The prompt's example lines are
-# rendered from these constants so the guard set and the prompt cannot drift
-# apart. Port of QwenLM/qwen-code#9709.
+# baked into prompts/title_generator_system.txt and must stay in sync with
+# these constants. Port of QwenLM/qwen-code#9709.
 _PROMPT_GOOD_EXAMPLES = (
     "Fix login button on mobile",
     "Postgres connection pool exhaustion",
@@ -92,24 +94,7 @@ _EXAMPLE_ECHO_REJECT = frozenset(
 _PROVISIONAL_GREETING_TITLE = "friendly greeting"
 
 
-_TITLE_PROMPT_TEMPLATE = (
-    "You name chat sessions. Given the user's opening message, write a title "
-    "that lets them find this conversation again in a list.\n\n"
-    "Rules:\n"
-    "- 3 to 7 words, sentence case (capitalize only the first word and proper nouns).\n"
-    "- Name what the user wants DONE, not that they asked a question.\n"
-    "- Keep technical terms, filenames, numbers, and error codes exact.\n"
-    "- Drop filler words: the, this, my, a, an.\n"
-    "- No trailing punctuation, no quotes, no tool names, no 'Title:' prefix.\n"
-    "- Never answer the message. Name it.\n"
-    "- Always produce something, even for a bare greeting.\n"
-    "__LANGUAGE_RULE__\n"
-    + "".join(f'Good: {{"title": "{t}"}}\n' for t in _PROMPT_GOOD_EXAMPLES)
-    + f'Too vague: {{"title": "{_PROMPT_VAGUE_EXAMPLE}"}}\n'
-    'Too long: {"title": "Investigate and fix the issue where the login button '
-    'does not respond on mobile devices"}\n\n'
-    'Reply with JSON only: {"title": "..."}'
-)
+_TITLE_PROMPT_TEMPLATE = load("title_generator_system")
 
 _LANGUAGE_RULE_MATCH_USER = "- Write the title in the same language as the user's message."
 _LANGUAGE_RULE_PINNED = "- Write the title in {language}."

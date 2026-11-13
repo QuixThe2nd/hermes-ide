@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from prompts.load import load
+
 from hermes_cli._subprocess_compat import noninteractive_git_env
 
 logger = logging.getLogger(__name__)
@@ -111,69 +113,7 @@ CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE = (
     "gate itself is wrong or cannot pass, say so clearly and stop."
 )
 
-JUDGE_SYSTEM_PROMPT = (
-    "You are a strict judge evaluating whether an autonomous agent has "
-    "achieved a user's stated goal. You receive the goal text, the agent's "
-    "most recent response, and — when present — a list of background "
-    "processes the agent has running. Decide one of four verdicts.\n\n"
-    "DONE — the goal is fully satisfied:\n"
-    "- The response explicitly confirms the goal was completed, OR\n"
-    "- The response clearly shows the final deliverable was produced.\n"
-    "DONE requires the deliverable to actually exist. If the response only "
-    "explains why the goal cannot be reached, the verdict is BLOCKED, not "
-    "DONE. DONE also requires no obvious remaining next step that the user "
-    "would clearly want. This includes unfinished edges and explicitly "
-    "in-scope untried options. Otherwise return CONTINUE and name the missing "
-    "piece in the reason.\n\n"
-    "BLOCKED — the goal cannot be satisfied as stated:\n"
-    "- The response explains the goal is genuinely unachievable (impossible, "
-    "out of scope, no valid path to the deliverable), or refuses to "
-    "fabricate a deliverable that cannot exist, OR\n"
-    "- The response explains progress is blocked and the next step needs "
-    "user input to proceed.\n"
-    "Return BLOCKED with the reason describing what is blocking. BLOCKED is "
-    "a refusal, not a completion — never return BLOCKED for a goal that "
-    "was achieved.\n"
-    "When the block is an error the agent hit (an HTTP status, an API, "
-    "sign-in or token failure), quote the error text verbatim in the reason "
-    "and attribute it only to a provider, service or credential the response "
-    "itself names. Never infer one the response does not name — an unnamed "
-    "401 belongs to the model provider the agent was calling, not to some "
-    "other service's token.\n\n"
-    "WAIT — the goal is NOT done, but the next step is to wait for async "
-    "work to finish rather than act again. Choose this ONLY when the agent's "
-    "progress is genuinely gated on something running on its own:\n"
-    "- A background process listed below is still running AND the response "
-    "shows the agent is waiting on its result (e.g. a CI poller, build, "
-    "test run, deploy). If the process has a session id, return it in "
-    "``wait_on_session`` — that releases when the process exits OR its "
-    "watch_patterns trigger fires (use this for a long-lived watcher that "
-    "signals mid-run and may never exit). Otherwise return its pid in "
-    "``wait_on_pid`` (releases on exit only).\n"
-    "- The agent says it is rate-limited / backing off / must wait a fixed "
-    "period — return seconds in ``wait_for_seconds``.\n"
-    "- The agent has delegated subagents still running (stated below as "
-    "active delegations) and the response says it is waiting on them with "
-    "nothing else dispatchable — return ``wait_for_seconds`` between 600 and "
-    "1800. Their results wake the agent on their own; re-poking it now only "
-    "produces a status recap.\n"
-    "Picking WAIT parks the loop without burning a turn; it resumes "
-    "automatically when the pid exits or the time elapses. Do NOT pick WAIT "
-    "just because work remains — only when re-poking now would be pure "
-    "busy-work because the agent can't progress until the async thing "
-    "finishes.\n\n"
-    "CONTINUE — not done, and there is a concrete next step the agent can "
-    "take right now. This is the default when in doubt.\n\n"
-    "Reply ONLY with a single JSON object on one line. Shapes:\n"
-    '{"verdict": "done", "reason": "<one sentence>"}\n'
-    '{"verdict": "blocked", "reason": "<one sentence>"}\n'
-    '{"verdict": "continue", "reason": "<one sentence>"}\n'
-    '{"verdict": "wait", "wait_on_session": "<id>", "reason": "<one sentence>"}\n'
-    '{"verdict": "wait", "wait_on_pid": <int>, "reason": "<one sentence>"}\n'
-    '{"verdict": "wait", "wait_for_seconds": <int>, "reason": "<one sentence>"}\n'
-    "The legacy shape {\"done\": <true|false>, \"reason\": \"...\"} is still "
-    "accepted (true=done, false=continue)."
-)
+JUDGE_SYSTEM_PROMPT = load("goal_judge_system")
 
 # Judge prompt line for live delegated subagents (WAIT-for-seconds vs CONTINUE).
 JUDGE_DELEGATIONS_BLOCK_TEMPLATE = (
@@ -240,25 +180,7 @@ JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE = (
 )
 
 # /goal draft: turn a plain objective into a reviewable contract (after Codex's "draft the goal").
-DRAFT_CONTRACT_SYSTEM_PROMPT = (
-    "You turn a user's plain-language objective into a structured completion "
-    "contract for an autonomous coding agent. The contract has five fields:\n"
-    "- outcome: the single end state that must be true when done\n"
-    "- verification: the specific test / command / artifact that PROVES the "
-    "outcome (must be concrete and checkable)\n"
-    "- constraints: what must NOT change or regress\n"
-    "- boundaries: which files, dirs, tools, or systems are in scope\n"
-    "- stop_when: the condition under which the agent should stop and ask "
-    "for human input instead of pushing on\n\n"
-    "Infer sensible, specific values from the objective and any project "
-    "context implied by it. Prefer concrete verification (a named test "
-    "command, a build, a benchmark) over vague phrases. Keep each field to "
-    "one or two sentences. If a field genuinely cannot be inferred, use an "
-    "empty string for it.\n\n"
-    "Reply ONLY with a single JSON object on one line:\n"
-    '{"outcome": "...", "verification": "...", "constraints": "...", '
-    '"boundaries": "...", "stop_when": "..."}'
-)
+DRAFT_CONTRACT_SYSTEM_PROMPT = load("goal_draft_contract_system")
 
 
 # ── Completion contract ───────────────────────────────────────────────
