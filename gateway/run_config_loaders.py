@@ -254,7 +254,7 @@ class GatewayConfigLoadersMixin:
     @staticmethod
     def _load_busy_text_mode() -> str:
         """Normal busy TEXT follow-up behavior (legacy ``busy_text_mode``; default ``interrupt``)."""
-        legacy = GatewayRunner._env_or_cfg_str("HERMES_GATEWAY_BUSY_TEXT_MODE", "display", "busy_text_mode").lower()
+        legacy = self._env_or_cfg_str("HERMES_GATEWAY_BUSY_TEXT_MODE", "display", "busy_text_mode").lower()
         return legacy if legacy in {"interrupt", "queue"} else "interrupt"
 
     @staticmethod
