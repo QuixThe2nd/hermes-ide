@@ -65,7 +65,7 @@ def _prune(worktree_gc, repo_root: str, args) -> int:
         tree_records = worktree_gc.audit_worktrees(repo_root, with_sizes=False, older_than_days=older_than)
         actions += worktree_gc.reclaim_worktrees(repo_root, dry_run=dry_run, records=tree_records)
         kept = [r for r in tree_records if r.verdict == "keep"
-                and "kanban" not in r.reason and "in use" not in r.reason]
+                and "in use" not in r.reason]
         if kept and not as_json:
             print(f"Preserved {len(kept)} tree(s) with real work:")
             for r in kept:
