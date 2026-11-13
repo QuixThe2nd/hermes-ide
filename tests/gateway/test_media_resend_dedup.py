@@ -467,7 +467,6 @@ def _stream_adapter():
         name="test",
         extract_media=BasePlatformAdapter.extract_media,
         extract_images=BasePlatformAdapter.extract_images,
-        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="v")),
         send_document=AsyncMock(return_value=SendResult(success=True, message_id="d")),
         send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="i")),
         send_video=AsyncMock(return_value=SendResult(success=True, message_id="vid")),
@@ -533,7 +532,7 @@ def test_auto_append_lane_still_dedups_stale_media():
     paths = _collect_history_media_paths(history)
     assert "/tmp/gen/dog.png" in paths
 
-    tags, _voice = _collect_auto_append_media_tags(
+    tags = _collect_auto_append_media_tags(
         history, history_offset=0, history_media_paths=paths
     )
     assert tags == [], f"stale auto-append tags re-emitted: {tags}"

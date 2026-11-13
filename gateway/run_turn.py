@@ -5328,25 +5328,14 @@ class GatewayTurnMixin:
                     except Exception:
                         pass
 
-                # Send media files, routing each by type so a TTS clip
-                # arrives as a voice bubble / a clip as a video rather than
-                # a generic document. Mirrors the streaming path.
-                from gateway.platforms.base import (
-                    should_send_media_as_audio as _should_send_media_as_audio,
-                )
+                # Send media files, routing each by type so a clip arrives as
+                # a video rather than a generic document. Mirrors the streaming path.
                 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
                 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
-                for media_path, _is_voice in (media_files or []):
+                for media_path in (media_files or []):
                     _ext = os.path.splitext(media_path)[1].lower()
                     try:
-                        if _should_send_media_as_audio(source.platform, _ext, _is_voice):
-                            await adapter.send_voice(
-                                chat_id=source.chat_id,
-                                audio_path=media_path,
-                                metadata=_thread_metadata,
-                                is_voice=_is_voice,
-                            )
-                        elif _ext in _VIDEO_EXTS:
+                        if _ext in _VIDEO_EXTS:
                             await adapter.send_video(
                                 chat_id=source.chat_id,
                                 video_path=media_path,
@@ -6196,11 +6185,6 @@ class GatewayTurnMixin:
             )
             return
         self._session_state(session_key).turn.agent = agent_holder[0]
-        # A steer-mode follow-up that arrived during the agent-pending window is
-        # parked in the steer-on-live slot — this promotion is the exact moment
-        # the run becomes steerable, so inject it now instead of letting it wait
-        # out the turn as a queued second user turn.
-        await self._consume_parked_steer_on_agent_live(session_key, agent_holder[0])
         if self._draining:
             self._update_runtime_status("draining")
 
@@ -6531,12 +6515,6 @@ class GatewayTurnMixin:
         from gateway.run import (
             _build_media_placeholder, _dequeue_pending_event, _is_control_interrupt_message
         )
-
-        # A steer-on-live event still parked at drain time means the run finished
-        # without the agent ever promoting (fast failure) — recover it into the
-        # FIFO before the dequeue so it rides the normal queued-follow-up chain.
-        if session_key:
-            self._flush_parked_steer(session_key)
 
         pending_event = None
         pending = None

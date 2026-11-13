@@ -190,11 +190,6 @@ class TestFallbackChainInit:
 
 
 class TestBusyInputMode:
-    def test_default_busy_input_mode_is_interrupt(self):
-        cli = _make_cli()
-        assert cli.busy_input_mode == "interrupt"
-
-
     def test_queue_command_works_while_busy(self):
         """When agent is running, /queue should still put the prompt in _pending_input."""
         cli = _make_cli()
@@ -242,15 +237,11 @@ class TestBusyInputMode:
 
 
 
-    def test_interrupt_mode_routes_busy_enter_to_interrupt(self):
-        """In interrupt mode (default), Enter while busy goes to _interrupt_queue."""
+    def test_busy_enter_routes_to_interrupt_queue(self):
+        """Enter while busy goes to _interrupt_queue (busy mode is hardcoded to interrupt)."""
         cli = _make_cli()
         cli._agent_running = True
-        text = "redirect"
-        if cli.busy_input_mode == "queue":
-            cli._pending_input.put(text)
-        else:
-            cli._interrupt_queue.put(text)
+        cli._interrupt_queue.put("redirect")
         assert cli._interrupt_queue.get_nowait() == "redirect"
         assert cli._pending_input.empty()
 

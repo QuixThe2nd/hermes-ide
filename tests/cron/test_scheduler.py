@@ -394,7 +394,7 @@ class TestDeliverResultWrapping:
         relay = MagicMock()
         relay.fronts_platform.side_effect = lambda platform: platform == Platform.SLACK
         relay.send_for_platform = AsyncMock(return_value=MagicMock(success=True))
-        relay.send_voice = AsyncMock(return_value=MagicMock(success=True))
+        relay.send_document = AsyncMock(return_value=MagicMock(success=True))
         relay.supports_inchannel_continuable = False
         # Not a real RelayAdapter: keep the auto-created accessor from
         # shadowing the scalar False (MagicMock fabricates truthy callables).
@@ -452,8 +452,8 @@ class TestDeliverResultWrapping:
         args = relay.send_for_platform.await_args.args
         assert args[:3] == (Platform.SLACK, "D123", "scheduled result")
         assert relay.send_for_platform.await_args.kwargs["metadata"]["user_id"] == "U123"
-        relay.send_voice.assert_awaited_once()
-        media_metadata = relay.send_voice.await_args.kwargs["metadata"]
+        relay.send_document.assert_awaited_once()
+        media_metadata = relay.send_document.await_args.kwargs["metadata"]
         assert media_metadata["_relay_logical_platform"] == "slack"
         assert media_metadata["user_id"] == "U123"
         standalone_send.assert_not_awaited()
@@ -469,7 +469,7 @@ class TestDeliverResultWrapping:
 
         adapter = AsyncMock()
         adapter.send.return_value = MagicMock(success=True)
-        adapter.send_voice.return_value = MagicMock(success=True)
+        adapter.send_document.return_value = MagicMock(success=True)
 
         pconfig = MagicMock()
         pconfig.enabled = True
@@ -514,10 +514,10 @@ class TestDeliverResultWrapping:
         assert "MEDIA:" not in text_sent
         assert "Here is TTS" in text_sent
 
-        # Audio file should be sent as a voice attachment
-        adapter.send_voice.assert_called_once()
-        voice_call = adapter.send_voice.call_args
-        assert voice_call[1]["audio_path"] == str(media_path)
+        # Audio file should be sent as a document attachment
+        adapter.send_document.assert_called_once()
+        document_call = adapter.send_document.call_args
+        assert document_call[1]["file_path"] == str(media_path)
 
 
 class TestDeliverResultErrorReturns:
@@ -1897,13 +1897,13 @@ class TestSendMediaViaAdapter:
 
     def test_multiple_media_files_all_delivered(self, tmp_path, monkeypatch):
         adapter = MagicMock()
-        adapter.send_voice = AsyncMock()
+        adapter.send_document = AsyncMock()
         adapter.send_image_file = AsyncMock()
-        voice_path = self._safe_media_path(tmp_path, monkeypatch, "voice.mp3")
+        audio_path = self._safe_media_path(tmp_path, monkeypatch, "voice.mp3")
         photo_path = self._safe_media_path(tmp_path, monkeypatch, "photo.jpg")
-        media_files = [(str(voice_path), False), (str(photo_path), False)]
+        media_files = [str(audio_path), str(photo_path)]
         self._run_with_loop(adapter, "123", media_files, None, {"id": "j3"})
-        adapter.send_voice.assert_called_once()
+        adapter.send_document.assert_called_once()
         adapter.send_image_file.assert_called_once()
 
 
@@ -2244,8 +2244,8 @@ class TestSendMediaTimeoutCancelsFuture:
             (root,),
         )
         media_files = [
-            (str(slow), False),   # times out
-            (str(fast), False),   # succeeds
+            str(slow),   # times out
+            str(fast),   # succeeds
         ]
 
         loop = MagicMock()

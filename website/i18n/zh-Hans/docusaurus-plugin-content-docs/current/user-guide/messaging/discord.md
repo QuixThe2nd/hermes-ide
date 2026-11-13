@@ -643,7 +643,7 @@ Discord 适配器通过 `send_message` 工具和 agent 发出的内联 `MEDIA:/p
 | 图片（PNG/JPG/WebP） | 原生 Discord 图片附件，带内联预览 |
 | 动态 GIF | `send_animation` 以 `animation.gif` 上传，使 Discord 内联播放（而非静态缩略图） |
 | 视频（MP4/MOV） | `send_video` — 原生视频播放器 |
-| 音频 / 语音 | `send_voice` — 尽可能使用原生语音消息，否则使用文件附件 |
+| 音频 | `send_document` — 原生文件附件 |
 | 文档（PDF/ZIP/docx 等） | `send_document` — 带下载按钮的原生附件 |
 
 Discord 的每次上传大小限制取决于服务器的加成等级（免费 25 MB，最高 500 MB）。如果 Hermes 收到 HTTP 413，适配器会回退到指向本地缓存路径的链接，而不是静默失败。

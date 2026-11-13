@@ -15,45 +15,9 @@ logger = logging.getLogger(__name__)
 
 
 # Flag names (stable — used as config.yaml keys under onboarding.seen)
-BUSY_INPUT_FLAG = "busy_input_prompt"
 TOOL_PROGRESS_FLAG = "tool_progress_prompt"
 OPENCLAW_RESIDUE_FLAG = "openclaw_residue_cleanup"
 PROFILE_BUILD_FLAG = "profile_build_offered"
-
-
-# Busy-input hints are keyed by the effective busy-input behavior that was just
-# applied so the message matches reality; the interrupt/redirect branch is the default.
-_BUSY_INPUT_HINTS_GATEWAY = {
-    "redirect": (
-        "💡 First-time tip — I redirected the current run using your message. Completed work stays in "
-        "context, and `/stop` still cancels the task. This notice won't appear again."
-    ),
-}
-_BUSY_INPUT_HINT_GATEWAY_DEFAULT = (
-    "💡 First-time tip — I just interrupted my current task to answer you. `/stop` cancels the task "
-    "outright. This notice won't appear again."
-)
-
-_BUSY_INPUT_HINTS_CLI = {
-    "redirect": (
-        "(tip) Your correction redirected the current run without discarding completed work. Use /stop to "
-        "cancel. This tip only shows once."
-    ),
-}
-_BUSY_INPUT_HINT_CLI_DEFAULT = (
-    "(tip) Your message interrupted the current run. Use /stop to cancel the task outright. "
-    "This tip only shows once."
-)
-
-
-def busy_input_hint_gateway(mode: str) -> str:
-    """Hint shown the first time a user messages while the agent is busy (markdown)."""
-    return _BUSY_INPUT_HINTS_GATEWAY.get(mode, _BUSY_INPUT_HINT_GATEWAY_DEFAULT)
-
-
-def busy_input_hint_cli(mode: str) -> str:
-    """CLI version of the busy-input hint (plain text, no markdown)."""
-    return _BUSY_INPUT_HINTS_CLI.get(mode, _BUSY_INPUT_HINT_CLI_DEFAULT)
 
 
 def tool_progress_hint_gateway() -> str:
@@ -155,8 +119,8 @@ def mark_seen(config_path: Path, flag: str) -> bool:
 
 
 __all__ = [
-    "BUSY_INPUT_FLAG", "TOOL_PROGRESS_FLAG", "OPENCLAW_RESIDUE_FLAG", "PROFILE_BUILD_FLAG",
-    "busy_input_hint_gateway", "busy_input_hint_cli", "tool_progress_hint_gateway", "tool_progress_hint_cli",
+    "TOOL_PROGRESS_FLAG", "OPENCLAW_RESIDUE_FLAG", "PROFILE_BUILD_FLAG",
+    "tool_progress_hint_gateway", "tool_progress_hint_cli",
     "openclaw_residue_hint_cli", "detect_openclaw_residue", "profile_build_mode", "profile_build_directive",
     "is_seen", "mark_seen",
 ]

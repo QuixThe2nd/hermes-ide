@@ -159,7 +159,7 @@ The adapter supports sending and receiving media in both directions.
 The agent can send media files via `MEDIA:` tags in responses. The following delivery methods are supported:
 
 - **Images** — `send_multiple_images` and `send_image_file` send PNG, JPEG, GIF, WebP as native Signal attachments
-- **Voice** — `send_voice` sends audio files (OGG, MP3, WAV, M4A, AAC) as attachments
+- **Audio** — audio files are sent as attachments via `send_document`
 - **Video** — `send_video` sends MP4 video files
 - **Documents** — `send_document` sends any file type (PDF, ZIP, etc.)
 

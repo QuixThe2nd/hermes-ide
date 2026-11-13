@@ -158,15 +158,14 @@ async def test_drain_window_plain_text_runs_with_overlap_successor_pending():
 @pytest.mark.asyncio
 async def test_drain_window_busy_follow_up_joins_the_running_turn():
     """A follow-up on a session whose turn is still running keeps the normal
-    busy semantics (queue mode → the FIFO) instead of the drain refusal."""
+    busy semantics (interrupt the running turn) instead of the drain refusal."""
     runner, adapter = _make_drain_runner()
     key = _mark_busy(runner)
-    runner._busy_input_mode = "queue"
 
     result = await runner._handle_message(_make_event("and one more thing"))
 
     assert result is None
-    assert key in adapter._pending_messages
+    runner._running_agents[key].interrupt.assert_called_once()
     runner._handle_message_with_agent.assert_not_awaited()
 
 

@@ -1784,7 +1784,6 @@ _TOOL_RESULT_SUMMARIZERS = {
     "memory": _sum_template("[memory] {action} on {target}", action="?", target="?"),
     "todo_list": lambda *a: "[todo] updated task list",
     "clarify": _sum_clarify,
-    "text_to_speech": _sum_template("[text_to_speech] generated audio ({content_len:,} chars)"),
     "cronjob_manage": _sum_template("[cronjob] {action}", action="?"),
     "process_manage": _sum_template("[process] {action} session={session_id}", action="?", session_id="?"),
 }

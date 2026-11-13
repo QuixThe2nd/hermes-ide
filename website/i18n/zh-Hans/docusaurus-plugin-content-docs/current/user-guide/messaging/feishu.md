@@ -344,7 +344,6 @@ python -m gateway.platforms.feishu_comment_rules pairing remove <user_open_id>
 | `send` | 文本或富文本 post 消息（根据 markdown 内容自动检测） |
 | `send_image` / `send_image_file` | 上传图片到飞书，然后以原生图片气泡发送（可附带说明文字） |
 | `send_document` | 上传文件到飞书 API，然后以文件附件发送 |
-| `send_voice` | 以飞书文件附件形式上传音频文件 |
 | `send_video` | 上传视频并以原生媒体消息发送 |
 | `send_animation` | GIF 降级为文件附件（飞书不支持原生 GIF 气泡） |
 

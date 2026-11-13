@@ -19,8 +19,6 @@ These tests pin down the gateway-side guard introduced for #30170:
   queue semantics (no ``interrupt()`` call, message merged into the
   pending queue, ack reflects the demotion) when the parent has active
   subagents.
-* The ``queue`` and ``steer`` configured modes still behave exactly as
-  before — the guard is interrupt-only.
 """
 
 from __future__ import annotations
@@ -178,7 +176,6 @@ class TestBusyHandlerDemotesInterruptForSubagents:
         demotion must NOT trigger and behaviour must be byte-identical
         to the pre-#30170 interrupt path."""
         runner = _make_runner()
-        runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
         event = _make_event(text="please stop")
         sk = build_session_key(event.source)
@@ -193,54 +190,3 @@ class TestBusyHandlerDemotesInterruptForSubagents:
         content = adapter._send_with_retry.call_args.kwargs.get("content", "")
         assert "Interrupting" in content
         assert "Subagent" not in content
-
-    @pytest.mark.asyncio
-    async def test_queue_mode_unchanged_with_subagents(self) -> None:
-        """Configured ``queue`` mode is already subagent-safe; the new
-        guard must not change its behaviour or its ack text."""
-        runner = _make_runner()
-        runner._busy_input_mode = "queue"
-        adapter = _make_adapter()
-        event = _make_event(text="queued during delegate")
-        sk = build_session_key(event.source)
-        parent = _make_parent_with_subagents()
-        runner._running_agents[sk] = parent
-        runner.adapters[event.source.platform] = adapter
-
-        with patch("gateway.platforms.base.merge_pending_message_event"):
-            await runner._handle_active_session_busy_message(event, sk)
-
-        parent.interrupt.assert_not_called()
-        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
-        # The vanilla queue copy — NOT the #30170 "Subagent working" copy,
-        # because the user explicitly asked for queue mode.
-        assert "Queued for the next turn" in content
-        assert "respond once the current task finishes" in content
-        assert "Subagent working" not in content
-
-    @pytest.mark.asyncio
-    async def test_steer_mode_still_routes_through_running_agent_steer(
-        self,
-    ) -> None:
-        """Configured ``steer`` mode must reach ``running_agent.steer()``
-        even when subagents are active — the #30170 demotion is
-        interrupt-specific so it doesn't accidentally disable steer."""
-        runner = _make_runner()
-        runner._busy_input_mode = "steer"
-        adapter = _make_adapter()
-        event = _make_event(text="course-correct")
-        sk = build_session_key(event.source)
-        parent = _make_parent_with_subagents()
-        parent.steer = MagicMock(return_value=True)
-        runner._running_agents[sk] = parent
-        runner.adapters[event.source.platform] = adapter
-
-        with patch("gateway.platforms.base.merge_pending_message_event"):
-            await runner._handle_active_session_busy_message(event, sk)
-
-        parent.steer.assert_called_once()
-        injected = parent.steer.call_args.args[0]
-        assert injected.endswith("course-correct")
-        assert '"chat_id": "123"' in injected
-        parent.interrupt.assert_not_called()
-

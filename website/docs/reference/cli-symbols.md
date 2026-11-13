@@ -45,7 +45,6 @@ The single line at the bottom of the TUI. Segments appear only when relevant and
 | `▶ N` | N `/bg` tasks currently running. |
 | `⛓ N` | N subagents currently active. |
 | `↩ resumes when subagent finishes` | Reassurance shown while you are idle but delegated work is still in flight — the result returns on its own. |
-| `◉ STT` | Voice recording stopped; speech-to-text is transcribing. |
 | `◉ focus` | Focus view is on (reduced output). Pinned so it never drops off a narrow terminal. |
 | `♥` | Affection flash — Hermes noticed you being nice to it. |
 | `⚡` / `🔋` | Battery indicator (opt-in): plugged in / on battery, with percentage. |

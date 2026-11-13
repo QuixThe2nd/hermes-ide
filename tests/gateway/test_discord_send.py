@@ -645,107 +645,11 @@ class TestProvenInvalidReferenceFallbacks:
             [call.get("reference") for call in sent_calls]
         )
 
-    @pytest.mark.asyncio
-    async def test_voice_native_50035_file_fallback_drops_reference(
-        self, tmp_path, monkeypatch
-    ):
-        audio = tmp_path / "voice.ogg"
-        audio.write_bytes(_VOICE_OGG_BYTES)
-        monkeypatch.setattr(discord, "File", _LifecycleFile)
-
-        channel = _FileLifecycleChannel()
-        request = AsyncMock(side_effect=RuntimeError(_DIFFERENT_CHANNEL_50035))
-        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
-        adapter._client = SimpleNamespace(
-            get_channel=lambda _chat_id: channel,
-            fetch_channel=AsyncMock(),
-            http=SimpleNamespace(request=request),
-        )
-
-        result = await adapter.send_voice(
-            str(_SEND_CHANNEL_ID),
-            str(audio),
-            reply_to=str(_SEND_REPLY_MESSAGE_ID),
-            metadata={"notify": True},
-        )
-
-        assert result.success is True
-        # The native voice POST carried the reference...
-        native_payload = _native_voice_payload(request)
-        assert (
-            native_payload["message_reference"]["message_id"]
-            == str(_SEND_REPLY_MESSAGE_ID)
-        )
-        # ...Discord rejected it, and the file fallback delivered the
-        # audio standalone without ever replaying it — a FRESH file
-        # carrying the complete original bytes.
-        assert len(channel.attempts) == 1
-        assert channel.attempts[0]["reference"] is None
-        assert channel.attempts[0]["payload"] == _VOICE_OGG_BYTES
-        _assert_no_replay_after_rejection(
-            [_DIFFERENT_CHANNEL_50035]  # marker: the rejected native POST
-            + [attempt["reference"] for attempt in channel.attempts]
-        )
-
-    @pytest.mark.asyncio
-    async def test_voice_file_50035_retries_with_fresh_file_standalone(
-        self, tmp_path, monkeypatch
-    ):
-        """A rejected reference is dropped AND the retry re-uploads the bytes.
-
-        ``discord.File`` is single-use: the first (rejected) file send
-        consumed the buffer — its read position sits at EOF.  The
-        standalone retry must therefore carry a freshly built File with
-        the complete original bytes; reusing the consumed object uploads
-        zero bytes while still reporting success (the round-2 blocker).
-        """
-        audio = tmp_path / "voice.ogg"
-        audio.write_bytes(_VOICE_OGG_BYTES)
-        monkeypatch.setattr(discord, "File", _LifecycleFile)
-
-        channel = _FileLifecycleChannel(reject_references=True)
-        # The native POST fails for an unrelated reason (voice flags), so
-        # the reference survives into the file fallback — where Discord
-        # rejects it and the retry must go standalone.
-        request = AsyncMock(side_effect=RuntimeError("500 voice flags unsupported"))
-        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
-        adapter._client = SimpleNamespace(
-            get_channel=lambda _chat_id: channel,
-            fetch_channel=AsyncMock(),
-            http=SimpleNamespace(request=request),
-        )
-
-        result = await adapter.send_voice(
-            str(_SEND_CHANNEL_ID),
-            str(audio),
-            reply_to=str(_SEND_REPLY_MESSAGE_ID),
-            metadata={"notify": True},
-        )
-
-        assert result.success is True
-        assert result.message_id == str(_SEND_MESSAGE_ID_BASE + 2)
-        assert len(channel.attempts) == 2
-        assert channel.attempts[0]["reference"] is not None
-        assert channel.attempts[1]["reference"] is None
-        # The rejection happened on the FIRST file attempt — from there on
-        # the reference is gone.  (The native POST failed for an unrelated
-        # reason, so it is not part of the rejection sequence.)
-        _assert_no_replay_after_rejection(
-            [attempt["reference"] for attempt in channel.attempts]
-        )
-        # Single-use File lifecycle: the standalone retry carries a
-        # DISTINCT fresh file whose buffer still holds the full payload.
-        assert channel.attempts[0]["payload"] == _VOICE_OGG_BYTES
-        assert channel.attempts[1]["payload"] == _VOICE_OGG_BYTES
-        assert channel.attempts[1]["file"] is not channel.attempts[0]["file"]
-
-
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method, path_kw, name", [
     ("send_video", "video_path", "clip.mp4"),
     ("send_document", "file_path", "report.pdf"),
-    ("send_voice", "audio_path", "note.ogg"),
 ])
 async def test_oversized_upload_rejected_before_send(tmp_path, monkeypatch, method, path_kw, name):
     """Oversized local files never reach channel.send(file(s)=...) (#50846): the caller gets an

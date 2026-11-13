@@ -457,8 +457,8 @@ def setup_model_provider(config: dict, *, quick: bool = False):
             print_info(line)
 
     # Re-sync from disk in place: cmd_model saved via its own load/save cycle and the wizard's
-    # final save_config(config) must not clobber it with stale values. Rotation, vision and TTS
-    # keep safe defaults (configure via `hermes auth add` / `hermes setup tts`).
+    # final save_config(config) must not clobber it with stale values. Rotation and vision
+    # keep safe defaults (configure via `hermes auth add`).
     config.clear()
     config.update(load_config())
     save_config(config)

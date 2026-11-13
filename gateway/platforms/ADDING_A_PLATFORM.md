@@ -114,7 +114,6 @@ The adapter is a subclass of `BasePlatformAdapter` from `gateway/platforms/base.
 | Method | Purpose |
 |--------|---------|
 | `send_document(chat_id, path, caption)` | Send a file attachment |
-| `send_voice(chat_id, path)` | Send a voice message |
 | `send_video(chat_id, path, caption)` | Send a video |
 | `send_animation(chat_id, path, caption)` | Send a GIF/animation |
 | `send_image_file(chat_id, path, caption)` | Send image from local file |
