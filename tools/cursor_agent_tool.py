@@ -1854,16 +1854,6 @@ def _execute_cloud_delegation(
             return result_json
         if is_wall_clock_poll_timeout(run_obj):
             return _poll_timeout_fallback("timeout")
-            result_json = _make_result(success=False, error=str(exc))
-            finalize_receipt(
-                receipt_path,
-                outcome="failed",
-                terminal_result={"result_json": result_json},
-                log_path=str(log_path),
-                cloud_agent_id=cloud_agent_id,
-                cloud_run_id=cloud_run_id,
-            )
-            return result_json
 
     result_json, _success, outcome, _cloud_status = _build_cloud_tool_result_from_run(
         agent=agent_obj,

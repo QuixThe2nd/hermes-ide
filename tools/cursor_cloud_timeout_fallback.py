@@ -38,6 +38,7 @@ CLOUD_TIMEOUT_NOTE = (
 )
 DO_NOT_RETRY_CLOUD_NOTE = "Do not retry Cloud for this task."
 FALLBACK_TOOL_CALL_SUFFIX = ":cloud-timeout-fallback"
+Status = Tuple[bool, str]
 
 # Exactly the message _http_request builds for a GET /runs poll timeout;
 # HTTP errors ("Cursor Cloud Agent API error (GET …): HTTP 500") and every
