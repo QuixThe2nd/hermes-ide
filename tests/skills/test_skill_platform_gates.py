@@ -18,7 +18,7 @@ REPO = Path(__file__).resolve().parents[2]
     ("skill", "platform", "why"),
     [
         ("optional-skills/creative/heartmula", "windows", ". .venv/bin/activate"),
-        ("optional-skills/mlops/tensorrt-llm", "macos", "Requires CUDA"),
+        ("optional-skills/devops/hermes-s6-container-supervision", "macos", "/run/s6/basedir/bin/halt"),
     ],
 )
 def test_os_bound_skill_is_not_offered_on_the_wrong_platform(skill, platform, why):
