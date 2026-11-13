@@ -531,8 +531,8 @@ class TestSchemaValidation:
         assert f"Did you mean: {suggestion}" in err
 
     @pytest.mark.parametrize("key,value,expected,suggestion", [
-        # ``stt.provider`` is read at runtime (tools/transcription_tools.py) but has no seeded
-        # default: a stored value is an explicit user pick, so the schema walk must not refuse it.
+        # ``stt.provider`` is a retired key with no seeded default. A stored value must
+        # still be written so old configs keep loading; the schema walk must not refuse it.
         ("stt.provider", "whisper", "whisper", None),
         # TRADE-OFF made explicit: a same-section typo (``agent.max_turnz``) is indistinguishable
         # from an unseeded key, so it is written too — the user gets the sibling suggestion

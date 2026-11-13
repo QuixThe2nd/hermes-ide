@@ -234,10 +234,6 @@ class TestRecovery:
         runner, adapter, event, sk = _setup(monkeypatch)
         result = {"final_response": "done"}
 
-        async def _noop_transcribe(*a, **k):
-            return "", []
-
-        monkeypatch.setattr(GatewayRunner, "_transcribe_and_echo_pending_voice", _noop_transcribe)
         # _dequeue_pending_event consumes through the adapter's pop method.
         adapter.get_pending_message = lambda key=None: adapter._pending_messages.pop(key, None)
         await runner._handle_active_session_busy_message(event, sk)

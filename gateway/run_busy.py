@@ -744,15 +744,7 @@ class GatewayBusySessionMixin:
             try:
                 _interrupt_text = event.text
                 _media_urls = getattr(event, "media_urls", None) or []
-                if self._pending_event_audio_paths(event):
-                    _interrupt_text, _ = await self._transcribe_and_echo_pending_voice(
-                        event,
-                        adapter,
-                        event.source,
-                        event.text or "",
-                        log_context="Voice-busy-interrupt",
-                    )
-                elif not _interrupt_text and _media_urls:
+                if not _interrupt_text and _media_urls:
                     _interrupt_text = _build_media_placeholder(event)
                 running_agent.interrupt(_interrupt_text)
             except Exception:

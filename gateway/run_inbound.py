@@ -386,8 +386,8 @@ class GatewayInboundMixin:
             return None
         if _pending_clarify is None:
             return None
-        _clarify_has_audio = bool(self._pending_event_audio_paths(event))
-        _raw_clarify_reply = await self._prepare_clarify_reply_text(event)
+        _clarify_has_audio = self._event_has_audio_attachment(event)
+        _raw_clarify_reply = (event.text or "").strip()
 
         def _retain(why: str) -> str:
             logger.info(
@@ -397,7 +397,7 @@ class GatewayInboundMixin:
             return ""
 
         if _clarify_has_audio and not _raw_clarify_reply:
-            return _retain("voice transcription produced no usable text")
+            return _retain("voice note is not a typed clarify answer")
         # Slash commands: the user wanted a command, not to answer the clarify. Leave it pending so
         # they can retry; on timeout the agent unblocks with an empty response.
         if not _raw_clarify_reply or _raw_clarify_reply.startswith("/"):
@@ -662,12 +662,7 @@ class GatewayInboundMixin:
                 logger.warning("PRIORITY redirect failed for session %s: %s", _quick_key, exc)
         logger.debug("PRIORITY interrupt for session %s", _quick_key)
         _interrupt_text = event.text
-        if self._pending_event_audio_paths(event):
-            _interrupt_text, _ = await self._transcribe_and_echo_pending_voice(
-                event, self._adapter_for_source(source), source, event.text or "",
-                log_context="Voice-priority-interrupt",
-            )
-        elif not _interrupt_text and getattr(event, "media_urls", None):
+        if not _interrupt_text and getattr(event, "media_urls", None):
             _interrupt_text = _build_media_placeholder(event)
         # Delivered via adapter._pending_messages (read by _run_agent); never also buffered on self
         # — that copy was never consumed and grew unbounded.
@@ -1700,12 +1695,12 @@ class GatewayInboundMixin:
             and _pending_clarify is not None
             and _clarify_mod is not None
         ):
-            _clarify_has_audio = bool(self._pending_event_audio_paths(event))
-            _raw_clarify_reply = await self._prepare_clarify_reply_text(event)
+            _clarify_has_audio = self._event_has_audio_attachment(event)
+            _raw_clarify_reply = (event.text or "").strip()
             if _clarify_has_audio and not _raw_clarify_reply:
                 logger.info(
-                    "Gateway retained pending clarify after voice transcription "
-                    "produced no usable text (session=%s, id=%s)",
+                    "Gateway retained pending clarify after a voice note "
+                    "with no typed answer (session=%s, id=%s)",
                     _quick_key,
                     _pending_clarify.clarify_id,
                 )
@@ -2132,15 +2127,7 @@ class GatewayInboundMixin:
             logger.debug("PRIORITY interrupt for session %s", _quick_key)
             _interrupt_text = event.text
             _media_urls = getattr(event, "media_urls", None) or []
-            if self._pending_event_audio_paths(event):
-                _interrupt_text, _ = await self._transcribe_and_echo_pending_voice(
-                    event,
-                    self._adapter_for_source(source),
-                    source,
-                    event.text or "",
-                    log_context="Voice-priority-interrupt",
-                )
-            elif not _interrupt_text and _media_urls:
+            if not _interrupt_text and _media_urls:
                 _interrupt_text = _build_media_placeholder(event)
             running_agent.interrupt(_interrupt_text)
             # NOTE: self._pending_messages was write-only (never consumed).
@@ -2964,73 +2951,6 @@ class GatewayInboundMixin:
         return message_text
 
     @staticmethod
-    def _classify_inbound_media(
-        event: MessageEvent, pending_stt_prepared: bool
-    ) -> Tuple[list, list, list, list]:
-        """Split ``event.media_urls`` into (image, STT-voice, audio-file, video) paths. Per-attachment
-        MIME wins over the message-level type (a document sent alongside an image must not be routed
-        as an image). MessageType.AUDIO / mixed DOCUMENT audio is a file attachment, never STT."""
-        from gateway.run import _event_media_is_audio, _event_media_is_image, _event_media_is_stt_input
-        image_paths, audio_paths, audio_file_paths, video_paths = [], [], [], []
-        for i, path in enumerate(event.media_urls or []):
-            mtype = event.media_types[i] if i < len(event.media_types) else ""
-            if _event_media_is_image(event, i):
-                image_paths.append(path)
-            if _event_media_is_audio(event, i):
-                if event.message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
-                    audio_file_paths.append(path)
-                elif not pending_stt_prepared and _event_media_is_stt_input(event, i):
-                    audio_paths.append(path)
-            if mtype.startswith("video/") or (not mtype and event.message_type == MessageType.VIDEO):
-                video_paths.append(path)
-        return image_paths, audio_paths, audio_file_paths, video_paths
-
-    async def _enrich_inbound_images(
-        self, source: SessionSource, session_key: str, message_text: str, image_paths: list[str]
-    ) -> str:
-        """Route images natively (attach pixels at run_conversation) or pre-analyze them into text."""
-        from gateway.run import logger
-
-        # See agent/image_routing.py. Offloaded to a thread: the decision does blocking network I/O
-        # (models.dev fetch on cache miss, Ollama /api/show probe) that would stall the event loop.
-        _img_mode = await asyncio.to_thread(
-            self._decide_image_input_mode, source=source, session_key=session_key,
-        )
-        if _img_mode == "native":
-            self._session_state(session_key).persistent.native_image_paths = list(image_paths)
-            logger.info(
-                "Image routing: native (model supports vision). %d image(s) will be attached inline.",
-                len(image_paths),
-            )
-            return message_text
-        logger.info(
-            "Image routing: text (mode=%s). Pre-analyzing %d image(s) via vision_analyze.",
-            _img_mode, len(image_paths),
-        )
-        # Vision enrichment runs before AIAgent.run_conversation(), so bind this session's resolved
-        # runtime explicitly rather than consulting process-global compatibility mirrors.
-        vision_runtime = None
-        try:
-            turn_model, runtime_kwargs = self._resolve_session_agent_runtime(
-                source=source, session_key=session_key,
-            )
-            vision_runtime = {**(runtime_kwargs or {}), "model": turn_model}
-        except Exception:
-            logger.debug("vision enrichment: session runtime resolution failed", exc_info=True)
-
-        from agent.auxiliary_client import scoped_runtime_main
-
-        with scoped_runtime_main(vision_runtime):
-            return await self._enrich_message_with_vision(message_text, image_paths)
-
-    async def _enrich_inbound_voice(
-        self, event: MessageEvent, source: SessionSource, message_text: str, audio_paths: list[str]
-    ) -> str:
-        message_text, _successful_transcripts = await self._enrich_message_with_transcription(
-            message_text, audio_paths,
-        )
-        return message_text
-
     @staticmethod
     def _inbound_attachment_display_name(path: str) -> Tuple[str, str]:
         """``(display_name, agent_visible_path)``: cache filename is ``<id>_<id>_<original>``; the
@@ -3044,7 +2964,7 @@ class GatewayInboundMixin:
     def _prepend_inbound_media_file_notes(cls, message_text: str, audio_file_paths: list[str], video_paths: list[str]) -> str:
         """Prepend a path-pointing note per audio-file / video attachment (content is not inlined)."""
         for kind, noun, verb, tool, paths in (
-            ("an audio file attachment", "audio", "transcribe or process", "a transcription or media tool", audio_file_paths),
+            ("an audio file attachment", "audio", "inspect", "your own tools", audio_file_paths),
             ("a video attachment", "video", "inspect or process", "a video analysis or media tool", video_paths),
         ):
             for _path in paths:
@@ -3222,7 +3142,7 @@ class GatewayInboundMixin:
         """Prepare inbound event text for the agent.
 
         Keep the normal inbound path and the queued follow-up path on the same
-        preprocessing pipeline so sender attribution, image enrichment, STT,
+        preprocessing pipeline so sender attribution, image enrichment,
         document notes, reply context, and @ references all behave the same.
 
         Side effect: buffers per-session native image paths when the active
@@ -3236,19 +3156,13 @@ class GatewayInboundMixin:
             _build_document_context_note,
             _event_media_is_audio,
             _event_media_is_image,
-            _event_media_is_stt_input,
             _event_media_is_video,
             _load_gateway_config,
         )
         from gateway.run import logger
 
         history = history or []
-        _pending_stt_prepared = hasattr(event, "_gateway_pending_stt_text")
-        message_text = (
-            getattr(event, "_gateway_pending_stt_text", None)
-            if _pending_stt_prepared
-            else event.text
-        ) or ""
+        message_text = event.text or ""
         _group_sessions_per_user = getattr(self.config, "group_sessions_per_user", True)
         _thread_sessions_per_user = getattr(self.config, "thread_sessions_per_user", False)
         # Prefer the already resolved session key from the caller so this write
@@ -3303,7 +3217,6 @@ class GatewayInboundMixin:
 
         if event.media_urls:
             image_paths = []
-            audio_paths = []
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 # Classify images per-attachment: trust this attachment's own
@@ -3313,14 +3226,9 @@ class GatewayInboundMixin:
                 # mis-routed here as an image and the provider 400s.
                 if _event_media_is_image(event, i):
                     image_paths.append(path)
-                # MessageType.AUDIO = audio file attachment (e.g. .mp3, .m4a) — never STT.
-                # Mixed DOCUMENT events also preserve audio as a file path instead of
-                # dropping it or treating it as a voice note.
+                # Audio, including voice notes, is a file attachment. Content is not transcribed.
                 if _event_media_is_audio(event, i):
-                    if event.message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
-                        audio_file_paths.append(path)
-                    elif not _pending_stt_prepared and _event_media_is_stt_input(event, i):
-                        audio_paths.append(path)
+                    audio_file_paths.append(path)
                 if mtype.startswith("video/") or (not mtype and event.message_type == MessageType.VIDEO):
                     video_paths.append(path)
 
@@ -3376,21 +3284,6 @@ class GatewayInboundMixin:
                             image_paths,
                         )
 
-            if audio_paths:
-                message_text, _successful_transcripts = await self._enrich_message_with_transcription(
-                    message_text,
-                    audio_paths,
-                )
-                # NOTE: Previously, when transcription failed (e.g. no STT
-                # provider configured), the gateway also emitted a hardcoded
-                # English notice via `_stt_adapter.send()`. That bypassed the
-                # LLM and produced two replies — one pre-canned English clip
-                # (which TTS then spoke aloud, in the wrong language) and one
-                # correct, localized LLM reply from the enriched message text.
-                # The enrichment step now leaves a single neutral marker in the
-                # prompt, so the LLM produces one coherent reply in the user's
-                # language. The hardcoded send has therefore been removed.
-
         if audio_file_paths:
             from tools.credential_files import to_agent_visible_cache_path as _to_agent_path
             for _apath in audio_file_paths:
@@ -3403,8 +3296,7 @@ class GatewayInboundMixin:
                     f"[The user sent an audio file attachment: '{_display}'. "
                     f"It is saved at: {_agent_path}. "
                     f"Its content is not inlined here. If the user's request involves "
-                    f"what the audio contains, transcribe or process it yourself — for "
-                    f"example by passing the path to a transcription or media tool — "
+                    f"what the audio contains, inspect the file yourself — "
                     f"instead of asking the user to describe it. Only ask what to do "
                     f"with it if their intent is genuinely unclear.]"
                 )
@@ -3682,19 +3574,12 @@ class GatewayInboundMixin:
             session_key=session_key,
         )
 
-    async def _prepare_clarify_reply_text(self, event) -> str:
-        """Return raw text or successful voice transcripts for a clarify reply."""
-        if not self._pending_event_audio_paths(event):
-            return (event.text or "").strip()
-
-        _, successful_transcripts = await self._transcribe_pending_audio_event_once(
-            event, "",
-        )
-        return "\n\n".join(
-            transcript.strip()
-            for transcript in successful_transcripts
-            if transcript.strip()
-        )
+    @staticmethod
+    def _event_has_audio_attachment(event) -> bool:
+        """True when the event carries an audio attachment. Voice notes are files, not transcripts."""
+        from gateway.run import _event_media_is_audio
+        urls = getattr(event, "media_urls", None) or []
+        return any(_event_media_is_audio(event, i) for i in range(len(urls)))
 
     def _consume_pending_native_image_paths(self, session_key: str) -> List[str]:
         state = self._peek_session_state(session_key)
@@ -4086,162 +3971,3 @@ class GatewayInboundMixin:
         if user_text and user_text.strip() != cls._EMPTY_TEXT_PLACEHOLDER:
             return f"{prefix}\n\n{user_text}"
         return prefix
-
-    async def _enrich_message_with_transcription(
-        self,
-        user_text: str,
-        audio_paths: List[str],
-    ) -> tuple[str, List[str]]:
-        """Describe inbound voice/audio attachments as plain file notes.
-
-        The automatic STT pipeline is gone; audio arrives as an attachment the
-        agent can open with its own tools. Returns ``(enriched_text, [])`` —
-        the transcript list stays (empty) so callers' echo paths no-op.
-        """
-        from gateway.run import _probe_audio_duration
-
-        seen = set()
-        audio_paths = [p for p in audio_paths if p not in seen and not seen.add(p)]
-        notes = []
-        for path in audio_paths:
-            abs_path = os.path.abspath(path)
-            duration_str = await _probe_audio_duration(abs_path)
-            if duration_str:
-                notes.append(f"[The user sent a voice message: {abs_path} (duration: {duration_str})]")
-            else:
-                notes.append(f"[The user sent a voice message: {abs_path}]")
-        if not notes:
-            return user_text, []
-        prefix = "\n\n".join(notes)
-        _placeholder = "(The user sent a message with no text content)"
-        if user_text and user_text.strip() == _placeholder:
-            return prefix, []
-        if user_text:
-            return f"{prefix}\n\n{user_text}", []
-        return prefix, []
-
-    def _pending_event_audio_paths(self, event) -> List[str]:
-        """Return STT-eligible paths from a pending voice message."""
-        from gateway.run import _event_media_is_stt_input
-        audio_paths: List[str] = []
-        media_urls = getattr(event, "media_urls", None) or []
-        for i, path in enumerate(media_urls):
-            if _event_media_is_stt_input(event, i):
-                audio_paths.append(path)
-        return audio_paths
-
-    async def _transcribe_pending_audio_event_once(
-        self,
-        event,
-        user_text: Optional[str] = None,
-    ) -> tuple[str | None, List[str]]:
-        """Transcribe a pending audio event once and cache the result on the event.
-
-        Voice follow-ups can be inspected first by the interrupt monitor and
-        later consumed by the pending-drain path.  Both need the same transcript,
-        but only one STT call and one transcript echo should happen for the
-        platform message.
-        """
-        if hasattr(event, "_gateway_pending_stt_text"):
-            cached_text = getattr(event, "_gateway_pending_stt_text")
-            cached_transcripts = getattr(event, "_gateway_pending_stt_transcripts", []) or []
-            return cached_text, list(cached_transcripts)
-
-        audio_paths = self._pending_event_audio_paths(event)
-        if not audio_paths:
-            return user_text if user_text is not None else (getattr(event, "text", None) or None), []
-
-        text = user_text if user_text is not None else (getattr(event, "text", "") or "")
-        enriched_text, successful_transcripts = await self._enrich_message_with_transcription(
-            text,
-            audio_paths,
-        )
-        setattr(event, "_gateway_pending_stt_text", enriched_text)
-        setattr(event, "_gateway_pending_stt_transcripts", list(successful_transcripts))
-        return enriched_text, successful_transcripts
-
-    async def _echo_pending_stt_transcripts_once(
-        self,
-        event,
-        adapter,
-        source,
-        transcripts: List[str],
-        *,
-        metadata=None,
-        log_context: str = "Transcript",
-    ) -> None:
-        """Echo pending-event STT transcripts to the chat at most once.
-
-        The already-echoed transcripts are tracked as a COUNT rather than a
-        single boolean.  ``merge_pending_message_event`` can append a second
-        voice note to an event whose first transcript was already echoed and
-        invalidates the transcription cache; the re-run transcription then
-        returns the earlier transcripts as a prefix of the new list, so
-        echoing only the unsent tail suppresses the repeat while still
-        surfacing the newly merged note.  A count rather than a set of seen
-        values because two separate notes that transcribe identically are two
-        distinct deliveries and both must be echoed.
-        """
-        from gateway.run import logger
-
-        if not transcripts or adapter is None:
-            return
-        already_echoed = int(getattr(event, "_gateway_pending_stt_echoed", 0) or 0)
-        unsent = transcripts[already_echoed:]
-        setattr(event, "_gateway_pending_stt_echoed", already_echoed + len(unsent))
-        for tx in unsent:
-            try:
-                await adapter.send(
-                    source.chat_id,
-                    f'🎙️ "{tx}"',
-                    metadata=metadata,
-                )
-            except Exception as echo_exc:
-                logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
-
-    async def _transcribe_and_echo_pending_voice(
-        self,
-        event,
-        adapter,
-        source,
-        text: str,
-        *,
-        log_context: str,
-        metadata=_UNSET,
-    ) -> tuple[str, List[str]]:
-        """Transcribe a pending voice event and echo transcripts once.
-
-        Unified helper for all interrupt/monitor/backup/drain paths that need
-        to transcribe a pending voice event and echo the transcript to chat.
-        Returns ``(enriched_text, transcripts)`` so the caller can feed the
-        enriched text into ``agent.interrupt()`` or the pending-drain flow.
-
-        If the event has no STT-eligible media, returns ``(text, [])`` unchanged.
-        The caller is responsible for the ``_build_media_placeholder`` fallback
-        when ``text`` is empty and the event has non-audio media.
-        """
-        from gateway.run import _UNSET, logger
-
-        if not self._pending_event_audio_paths(event):
-            return text, []
-        try:
-            enriched_text, transcripts = await self._transcribe_pending_audio_event_once(
-                event,
-                text,
-            )
-            echo_meta = self._thread_metadata_for_source(
-                source,
-                self._reply_anchor_for_event(event),
-            ) if metadata is _UNSET else metadata
-            await self._echo_pending_stt_transcripts_once(
-                event,
-                adapter,
-                source,
-                transcripts,
-                metadata=echo_meta,
-                log_context=log_context,
-            )
-            return enriched_text or text, transcripts
-        except Exception as trans_exc:
-            logger.warning("%s transcription failed: %s", log_context, trans_exc)
-            return text, []

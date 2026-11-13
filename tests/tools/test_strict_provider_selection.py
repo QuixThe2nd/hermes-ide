@@ -197,47 +197,6 @@ class TestVideoFalStrictSelection:
 
 
 # ---------------------------------------------------------------------------
-# STT (OpenAI audio resolver — previously ignored the stored intent entirely)
-# ---------------------------------------------------------------------------
-
-
-class TestSttStrictSelection:
-    def test_nous_selection_beats_direct_openai_key(self):
-        from tools import transcription_tools as tt
-
-        with patch.object(tt, "_load_stt_config", return_value={"openai": {"api_key": "sk-direct"}}), \
-             patch("tools.tool_backend_helpers.read_selection", return_value="nous"), \
-             patch("tools.managed_tool_gateway.resolve_managed_tool_gateway", return_value=MANAGED):
-            api_key, base_url = tt._resolve_openai_audio_client_config()
-        assert api_key == "managed-token"
-        assert base_url.startswith("https://gateway.nousresearch.com")
-
-    def test_vendor_selection_missing_key_errors_without_managed_call(self):
-        from tools import transcription_tools as tt
-
-        with patch.object(tt, "_load_stt_config", return_value={}), \
-             patch("tools.tool_backend_helpers.read_selection", return_value="openai"), \
-             patch("tools.tool_backend_helpers.resolve_openai_audio_api_key", return_value=""), \
-             patch("tools.managed_tool_gateway.resolve_managed_tool_gateway") as gw:
-            with pytest.raises(ValueError) as exc:
-                tt._resolve_openai_audio_client_config()
-        gw.assert_not_called()
-        assert "stt is configured to use openai" in str(exc.value)
-        assert "hermes tools" in str(exc.value)
-
-    def test_never_configured_keeps_legacy_ladder(self):
-        from tools import transcription_tools as tt
-
-        with patch.object(tt, "_load_stt_config", return_value={}), \
-             patch("tools.tool_backend_helpers.read_selection", return_value=None), \
-             patch("tools.tool_backend_helpers.resolve_openai_audio_api_key", return_value="sk-env"):
-            api_key, base_url = tt._resolve_openai_audio_client_config()
-        assert api_key == "sk-env"
-
-
-
-
-# ---------------------------------------------------------------------------
 # tools_config writers: one provider string per row, no use_gateway writes
 # ---------------------------------------------------------------------------
 

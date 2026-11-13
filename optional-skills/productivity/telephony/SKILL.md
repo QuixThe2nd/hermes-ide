@@ -98,7 +98,7 @@ Use **Twilio direct call** with a public audio URL.
 
 Why:
 - easiest way to play a custom MP3
-- pairs well with Hermes `text_to_speech` plus a public file host or tunnel
+- pairs well with a generated audio file plus a public file host or tunnel
 
 ## Files and persistent state
 
@@ -288,7 +288,7 @@ python "$SCRIPT" twilio-call "+15551230000" --message "Hello! This is Hermes cal
 
 ### E. Call with a prerecorded / custom voice message
 
-This is the main path for reusing Hermes's existing `text_to_speech` support.
+This path plays an audio file you already have. Hermes has no in-tree text-to-speech tool.
 
 Use this when:
 - you want the call to use Hermes's configured TTS voice rather than Twilio `<Say>`
@@ -303,12 +303,12 @@ python "$SCRIPT" twilio-call "+155****0000" --audio-url "https://example.com/bri
 
 Recommended Hermes TTS -> Twilio Play workflow:
 
-1. Generate the audio with Hermes `text_to_speech`.
+1. Supply an audio file. Hermes has no in-tree text-to-speech tool.
 2. Make the resulting MP3 publicly reachable.
 3. Place the Twilio call with `--audio-url`.
 
 Example agent flow:
-- Ask Hermes to create the message audio with `text_to_speech`
+- Provide the message audio file yourself
 - If needed, expose the file with a temporary static host / tunnel / object storage URL
 - Use `twilio-call --audio-url ...` to deliver it by phone
 
