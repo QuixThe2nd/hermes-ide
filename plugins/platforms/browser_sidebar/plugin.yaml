@@ -1,0 +1,14 @@
+name: browser-sidebar-platform
+label: Browser Sidebar
+kind: platform
+version: 1.0.0
+description: >
+  Brave browser extension sidebar gateway. One authenticated WebSocket
+  is the user; page content is untrusted.
+author: Hermes
+requires_env:
+  - name: BROWSER_SIDEBAR_TOKEN
+    description: "Shared secret the Brave sidebar presents as the WebSocket subprotocol"
+    prompt: "Browser sidebar token"
+    password: true
+    secret: true
