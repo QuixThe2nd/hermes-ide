@@ -888,10 +888,6 @@ class GatewayInboundMixin:
         logger.info("Ignoring /start platform ping for session %s", _quick_key)
         return True, ""
 
-    async def _hm_cmd_egress(self, event, source, _quick_key):
-        from hermes_cli.proxy_cli import format_status_text
-        return True, format_status_text()
-
     async def _hm_rewrite_turn_to_prompt(self, event, source, name: str, ack: str, build) -> Tuple[bool, Optional[str]]:
         """Ack, then rewrite the turn to ``build()`` and fall through to the agent (keeps role
         alternation; works on any backend). A failing builder replies with a retry hint."""
@@ -970,7 +966,7 @@ class GatewayInboundMixin:
     # Idle-path built-ins with bespoke flow (confirmations, prompt rewrites), each
     # handled by ``_hm_cmd_<name>`` → ``(handled, result)``; ``(False, None)`` falls through to the agent.
     _HM_CANONICAL_COMMANDS = frozenset({
-        "new", "incognito", "start", "egress", "learn", "plan", "init", "blueprint", "undo", "queue",
+        "new", "incognito", "start", "learn", "plan", "init", "blueprint", "undo", "queue",
     })
 
     async def _hm_dispatch_canonical_command(
@@ -2325,11 +2321,6 @@ class GatewayInboundMixin:
         if canonical == "whoami":
             return await self._handle_whoami_command(event)
 
-        if canonical == "egress":
-            from hermes_cli.proxy_cli import format_status_text
-
-            return format_status_text()
-
         if canonical == "platform":
             return await self._handle_platform_command(event)
 
@@ -3477,9 +3468,8 @@ class GatewayInboundMixin:
                 display_name = parts[2] if len(parts) >= 3 else basename
                 display_name = re.sub(r'[^\w.\- ]', '_', display_name)
 
-                # Translate host cache path to in-container path if running under Docker backend.
-                # This ensures the agent receives a path it can open inside its sandbox, as the
-                # cache directories are auto-mounted at /root/.hermes/cache/* by get_cache_directory_mounts().
+                # Translate the host cache path to where the active terminal backend sees it
+                # (e.g. ~/.hermes under ssh), so the agent can open it.
                 agent_path = to_agent_visible_cache_path(path)
 
                 inline_flags = getattr(event, "media_text_inlined", None) or []

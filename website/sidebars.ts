@@ -41,16 +41,6 @@ const sidebars: SidebarsConfig = {
             'user-guide/secrets/onepassword',
           ],
         },
-        {
-          type: 'category',
-          label: 'Egress proxy',
-          collapsed: true,
-          items: [
-            'user-guide/egress/index',
-            'user-guide/egress/iron-proxy',
-            'user-guide/egress/network-isolation',
-          ],
-        },
         'user-guide/sessions',
         'user-guide/profiles',
         'user-guide/profile-distributions',
@@ -796,7 +786,6 @@ const sidebars: SidebarsConfig = {
           items: [
             'developer-guide/tools-runtime',
             'developer-guide/cron-internals',
-            'developer-guide/egress-internals',
             'developer-guide/gateway-monitoring',
             'developer-guide/relay-connector-contract',
             'developer-guide/relay-shared-metrics',

@@ -403,11 +403,10 @@ def _resolve_active_profile_name() -> str:
 
 
 # --- Sandbox-mirror write guard ---
-# Non-local terminal backends bind a sandbox-local dir to the container's $HOME:
+# Non-local terminal backends bind a sandbox-local dir to the remote/container $HOME:
 #   <HERMES_HOME>/profiles/<name>/sandboxes/<backend>/<task>/home/.hermes/...
 # A host-side write there lands on a mirror the host never reads: silent success,
-# divergent copies. Path-shape-only detection, independent of the active profile;
-# the inner-container case (bind mount strips the prefix) is classify_container_mirror_target.
+# divergent copies. Path-shape-only detection, independent of the active profile.
 
 _SANDBOX_MIRROR_WARNING = (
     "Sandbox-mirror write blocked by soft guard: {target_path} "
@@ -453,33 +452,12 @@ def get_sandbox_mirror_warning(path: str) -> Optional[str]:
     the caller surfaces it as a tool-result error and ``cross_profile=True`` bypasses."""
     return _mirror_warning(
         classify_sandbox_mirror_target(path),
-        "a per-task mirror created by a non-local terminal backend (docker/daytona/etc.). "
+        "a per-task mirror created by a non-local terminal backend (ssh or a plugin). "
         "Writes here land on a copy that the host Hermes process never reads — the "
         "authoritative file is likely {inner_path!r} under the real HERMES_HOME.",
         "this guard after explicit user direction, retry the call",
     )
 
-
-def classify_container_mirror_target(path: str, mirror_prefix: str | None = None) -> Optional[dict]:
-    """Classify a write target as a container-side sandbox mirror. Inside the container
-    the bind mount strips the ``sandboxes/`` prefix (the agent sees plain ``/root/.hermes/…``),
-    so the caller supplies ``mirror_prefix`` once it knows file tools run in a docker sandbox.
-    ``None`` without a prefix or outside it, else ``target_path``/``mirror_root``/``inner_path``."""
-    target, mirror = _resolve_target(path), _resolve_target(mirror_prefix) if mirror_prefix else None
-    if target is None or mirror is None or not _is_under(target, mirror):
-        return None
-    return _mirror_info(target, mirror, target.relative_to(mirror).as_posix())
-
-
-def get_container_mirror_warning(path: str, mirror_prefix: str | None = None) -> Optional[str]:
-    """Model-facing soft-guard warning when ``path`` lands in the container's mirror, else ``None``."""
-    return _mirror_warning(
-        classify_container_mirror_target(path, mirror_prefix),
-        "the container's bind-mounted home — a per-task mirror that the host Hermes "
-        "process never reads. The authoritative file is {inner_path!r} under "
-        "the real HERMES_HOME.",
-        "after explicit user direction, retry",
-    )
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

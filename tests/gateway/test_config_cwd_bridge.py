@@ -39,12 +39,8 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
             "cwd": "TERMINAL_CWD",
             "timeout": "TERMINAL_TIMEOUT",
             "home_mode": "TERMINAL_HOME_MODE",
-            "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
-            "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
-            "container_cpu": "TERMINAL_CONTAINER_CPU",
-            "container_memory": "TERMINAL_CONTAINER_MEMORY",
-            "container_disk": "TERMINAL_CONTAINER_DISK",
-            "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
+            "ssh_host": "TERMINAL_SSH_HOST",
+            "ssh_port": "TERMINAL_SSH_PORT",
         }
         for cfg_key, env_var in terminal_env_map.items():
             if cfg_key in terminal_cfg:
@@ -85,10 +81,6 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
             configured_cwd=configured_cwd,
             terminal_backend=env.get("TERMINAL_ENV", ""),
             messaging_cwd=env.get("MESSAGING_CWD"),
-            docker_mount_cwd_to_workspace=env.get(
-                "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false"
-            ).lower()
-            in {"true", "1", "yes"},
             home_fallback="/root",
         )
         if resolved is None:
@@ -164,27 +156,11 @@ class TestNestedTerminalCwdPlaceholderSkip:
 
     def test_non_cwd_terminal_keys_still_bridge(self):
         """Other terminal config keys (backend, timeout) should still bridge normally."""
-        cfg = {"terminal": {"cwd": ".", "backend": "docker", "timeout": "300"}}
+        cfg = {"terminal": {"cwd": ".", "backend": "ssh", "timeout": "300"}}
         result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/from/env"})
-        assert result["TERMINAL_ENV"] == "docker"
+        assert result["TERMINAL_ENV"] == "ssh"
         assert result["TERMINAL_TIMEOUT"] == "300"
         assert result.get("TERMINAL_CWD") is None
-
-
-    def test_docker_placeholder_mount_on_preserves_messaging_cwd(self):
-        """Mount-enabled docker still needs the host cwd signal for /workspace."""
-        cfg = {
-            "terminal": {
-                "cwd": ".",
-                "backend": "docker",
-                "docker_mount_cwd_to_workspace": True,
-            },
-        }
-        result = _simulate_config_bridge(
-            cfg, {"MESSAGING_CWD": "/host/project"}
-        )
-        assert result["TERMINAL_CWD"] == "/host/project"
-        assert result["TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE"] == "True"
 
     def test_ssh_placeholder_does_not_inherit_host_home(self):
         cfg = {"terminal": {"cwd": "auto", "backend": "ssh"}}
@@ -213,24 +189,3 @@ class TestTildeExpansion:
         result = _simulate_config_bridge(cfg)
         assert result["TERMINAL_ENV"] == "ssh"
         assert result["TERMINAL_CWD"] == "~"
-
-
-class TestVercelTerminalBridge:
-    def test_vercel_terminal_settings_bridge(self):
-        cfg = {
-            "terminal": {
-                "backend": "vercel_sandbox",
-                "vercel_runtime": "python3.13",
-                "container_persistent": True,
-                "container_cpu": 2,
-                "container_memory": 4096,
-                "container_disk": 51200,
-            }
-        }
-        result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/from/env"})
-        assert result["TERMINAL_ENV"] == "vercel_sandbox"
-        assert result["TERMINAL_VERCEL_RUNTIME"] == "python3.13"
-        assert result["TERMINAL_CONTAINER_PERSISTENT"] == "True"
-        assert result["TERMINAL_CONTAINER_CPU"] == "2"
-        assert result["TERMINAL_CONTAINER_MEMORY"] == "4096"
-        assert result["TERMINAL_CONTAINER_DISK"] == "51200"

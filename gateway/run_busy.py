@@ -915,7 +915,7 @@ class GatewayBusySessionMixin:
 
     # busy_handler key (hermes_cli/commands.py CommandDef) → mid-run variant ``_busy_<key>_command``.
     _BUSY_SPECIAL_HANDLERS: Dict[str, str] = {
-        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "incognito", "queue", "egress", "loop")
+        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "incognito", "queue", "loop")
     }
 
     async def _dispatch_busy_slash_command(self, event: MessageEvent, cmd_def, quick_key: str, source):
@@ -980,10 +980,6 @@ class GatewayBusySessionMixin:
         # Telegram's /start is a platform ping (bot launch/deep-link), not a user command.
         logger.info("Ignoring /start platform ping for active session %s", quick_key)
         return ""
-
-    async def _busy_egress_command(self, event: MessageEvent, quick_key: str, source):
-        from hermes_cli.proxy_cli import format_status_text
-        return format_status_text()
 
     async def _busy_stop_command(self, event: MessageEvent, quick_key: str, source):
         # Hard-kill: a soft interrupt can't reach a truly hung executor thread.

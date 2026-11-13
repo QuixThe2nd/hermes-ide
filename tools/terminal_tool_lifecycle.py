@@ -7,76 +7,29 @@ Split out of ``tools/terminal_tool.py``; every public/patched name is re-importe
 so ``tools.terminal_tool.<name>`` keeps resolving (and monkeypatching) as before.
 """
 
-import glob
-import logging
 import inspect
-import shutil
+import logging
 import threading
 import time
-from pathlib import Path
 from typing import Any, Dict, Optional
-from tools.environments.singularity import _get_scratch_dir
-from tools.terminal_tool_backends import (
-    _container_config_from_config,
-    _ssh_config_from_config,
-)
+from tools.terminal_tool_backends import _ssh_config_from_config
 from tools.terminal_tool_config import _quiet
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.terminal_tool")
 
 
-# Advisory disk-usage check; cached so the recursive scan doesn't run on
-# every command (a result up to 5 minutes stale is harmless).
-_disk_usage_cache: dict = {"timestamp": 0.0, "result": False}
-
-_DISK_USAGE_CACHE_TTL = 300.0  # seconds
-
-
-def _scratch_paths():
-    return glob.glob(str(_get_scratch_dir() / "hermes-*"))
-
-
-def _check_disk_usage_warning():
-    """True when hermes scratch dirs exceed the warning threshold (cached, advisory)."""
-    from tools.terminal_tool import DISK_USAGE_WARNING_THRESHOLD_GB
-    if time.monotonic() - _disk_usage_cache["timestamp"] < _DISK_USAGE_CACHE_TTL:
-        return _disk_usage_cache["result"]
-    try:
-        total_bytes = 0
-        for path in _scratch_paths():
-            for f in Path(path).rglob('*'):
-                if f.is_file():
-                    with _quiet("Could not stat file %s", f, exc=OSError):
-                        total_bytes += f.stat().st_size
-        total_gb = total_bytes / (1024 ** 3)
-        exceeded = total_gb > DISK_USAGE_WARNING_THRESHOLD_GB
-        if exceeded:
-            logger.warning("Disk usage (%.1fGB) exceeds threshold (%.0fGB). Consider running cleanup_all_environments().",
-                           total_gb, DISK_USAGE_WARNING_THRESHOLD_GB)
-        _disk_usage_cache["timestamp"] = time.monotonic()
-        _disk_usage_cache["result"] = exceeded
-        return exceeded
-    except Exception:
-        # Don't update cache on error so the next call retries.
-        logger.debug("Disk usage warning check failed", exc_info=True)
-        return False
-
 
 def _create_configured_env(
     config: Dict[str, Any], env_type: str, *, image: str, cwd: str, timeout: int,
     task_id: str, host_cwd: Optional[str], local_config: Optional[dict] = None,
 ):
-    """``_create_environment`` with the ssh/container kwargs shaped from *config*
+    """``_create_environment`` with the ssh kwargs shaped from *config*
     (shared by the terminal tool and the lazy :func:`ensure_task_env` bring-up)."""
     from tools.terminal_tool_backends import _create_environment
-    from tools.terminal_tool_config import _is_container_backend
     return _create_environment(
         env_type=env_type, image=image, cwd=cwd, timeout=timeout,
         ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
-        container_config=(
-            _container_config_from_config(config) if _is_container_backend(env_type) else None
-        ),
         local_config=local_config, task_id=task_id, host_cwd=host_cwd,
     )
 
@@ -85,7 +38,7 @@ def _cleanup_env(env: Any, *, force_remove: Optional[bool] = None) -> None:
     """Tear down one environment via cleanup()/stop()/terminate(), whichever it has.
 
     ``force_remove`` is forwarded to ``cleanup()`` only when given and the backend's
-    signature accepts it (``DockerEnvironment``, issue #20561; other backends don't).
+    signature accepts it (issue #20561; most backends don't).
     Shared by ``cleanup_vm``, the idle reaper and the prompt-time backend probe so
     the signature check lives in one place.
     """
@@ -198,7 +151,7 @@ def ensure_task_env(task_id: Optional[str] = None):
     from tools.terminal_tool import (
         _active_environments, _creation_locks, _creation_locks_lock, _env_lock,
         _get_env_config, _last_activity, _resolve_container_task_id,
-        _resolve_task_host_cwd, _select_image, _start_cleanup_thread, resolve_task_overrides,
+        _select_image, _start_cleanup_thread, resolve_task_overrides,
     )
     config = _get_env_config()
     env_type = config["env_type"]
@@ -228,7 +181,7 @@ def ensure_task_env(task_id: Optional[str] = None):
             new_env = _create_configured_env(
                 config, env_type, image=image, cwd=config["cwd"],
                 timeout=config["timeout"], task_id=effective_task_id,
-                host_cwd=_resolve_task_host_cwd(config, task_id),
+                host_cwd=None,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort bring-up
             logger.warning(
@@ -273,11 +226,6 @@ def cleanup_all_environments():
         except Exception as e:
             logger.error("Error cleaning %s: %s", task_id, e, exc_info=True)
 
-    # Also clean any orphaned directories
-    for path in _scratch_paths():
-        with _quiet("Failed to remove orphaned path %s", path, exc=OSError):
-            shutil.rmtree(path, ignore_errors=True)
-            logger.info("Removed orphaned: %s", path)
 
     if cleaned > 0:
         logger.info("Cleaned %d environments", cleaned)
@@ -287,12 +235,11 @@ def cleanup_all_environments():
 def cleanup_vm(task_id: str, *, force_remove: bool = False):
     """Manually clean up a specific environment by task_id.
 
-    *force_remove* is forwarded to backends that accept it (currently only
-    ``DockerEnvironment``). Default False matches session-lifecycle semantics:
-    callers (``AIAgent.close()`` on TUI/gateway session teardown, the per-turn
-    cleanup of non-persistent envs) must honor the user's persist-mode
-    preference — stopping the container here would break the "ONE long-lived
-    container shared across sessions" contract. Pass ``force_remove=True``
+    *force_remove* is forwarded to backends that accept it. Default False matches
+    session-lifecycle semantics: callers (``AIAgent.close()`` on TUI/gateway session
+    teardown, the per-turn cleanup of non-persistent envs) must honor the user's
+    persist-mode preference — stopping the environment here would break the "ONE
+    long-lived session shared across sessions" contract. Pass ``force_remove=True``
     only for user-initiated teardown. The idle reaper calls ``env.cleanup()``
     directly, so persist-mode idle envs are likewise no-op'd; only the orphan
     reaper at next startup reclaims them.
