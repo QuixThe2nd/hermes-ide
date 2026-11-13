@@ -3,8 +3,10 @@
 Every eligible human gateway message is classified as CHAT, TASK, APPROVAL, or
 CHASE by one Jev Decisions POST (model ``typesafe/jev-1.13``) and appended to a
 private JSONL log. There is no LLM fallback: transport/HTTP/schema failures are
-retried once and then fail closed as ``unknown``. CHASE additionally records one
-deduplicated papercut so operator-visible friction has a durable home.
+retried once and then fail closed as ``unknown``. Only a CHASE at or above the
+action confidence floor (the same ``AUTO_GOAL_CONFIDENCE_MIN`` auto-goal
+actions require) records one deduplicated papercut so operator-visible
+friction has a durable home.
 """
 
 from __future__ import annotations
@@ -574,7 +576,7 @@ def evaluate_goal_intent(
         _append_shadow_record(record)
     except Exception as exc:
         logger.debug("goal intent shadow write failed: %s", exc)
-    if record["label"] == "chase":
+    if record["label"] == "chase" and record["confidence"] >= AUTO_GOAL_CONFIDENCE_MIN:
         try:
             _log_chase_papercut(record["session_id"], record, context)
         except Exception as exc:

@@ -225,6 +225,42 @@ def test_chase_papercut_contains_goal_context_and_dedupes_for_thirty_minutes(her
     assert handle.call_args.kwargs["session_id"] == SESSION_KEY
     assert len(_rows(hermes_home)) == 3
 
+@pytest.mark.parametrize("confidence", [0.23, 0.599, 0.6, 0.95])
+def test_chase_papercut_requires_action_confidence(hermes_home, confidence):
+    from hermes_cli.goal_intent import (
+        AUTO_GOAL_CONFIDENCE_MIN,
+        record_goal_intent_shadow,
+    )
+    from hermes_cli import goal_intent
+
+    # The chase dedupe cache is process-global; clear it so a prior test's
+    # entry cannot hide a papercut call this case expects to observe.
+    goal_intent._CHASE_LAST_LOGGED.clear()
+
+    classification = {
+        "label": "chase", "reason": "status ping", "confidence": confidence,
+        "contract_draft": None,
+    }
+    # Unique session per confidence so the per-session dedupe window cannot
+    # suppress a papercut this case expects.
+    session_id = f"{SESSION_KEY}:floor-{confidence}"
+    with (
+        patch("hermes_cli.goal_intent.classify", return_value=classification),
+        patch(
+            "hermes_cli.goal_intent.build_goal_context",
+            return_value={"goal_active": True},
+        ),
+        patch("plugins.papercuts.handle_papercuts", return_value='{"success":true}') as handle,
+    ):
+        record_goal_intent_shadow("what's left?", session_id, "telegram")
+
+    expected = 1 if confidence >= AUTO_GOAL_CONFIDENCE_MIN else 0
+    assert handle.call_count == expected
+    rows = _rows(hermes_home)
+    assert len(rows) == 1
+    assert rows[0]["label"] == "chase"
+    assert rows[0]["confidence"] == confidence
+
 
 def test_unavailable_papercuts_never_blocks_shadow_logging(hermes_home):
     from hermes_cli.goal_intent import record_goal_intent_shadow
