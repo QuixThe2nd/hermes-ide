@@ -1126,7 +1126,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._response_gate: Optional[Dict[str, Any]] = None
         self._response_gate_credential: Optional[str] = None
         # Set by the Discord hub before connect() when this adapter is hub-attached:
-        # the owning gateway resolved that profile's OPENROUTER_API_KEY under its own
+        # the owning gateway resolved that profile's LITELLM_API_KEY under its own
         # secret scope and passed it in the attach payload. None ⇒ in-process adapter
         # (capture from the live profile scope in connect()); "" ⇒ hub attach with no
         # key — fail closed instead of trusting the hub process's env.
@@ -1557,7 +1557,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if self._hub_gate_credential is not None:
             self._response_gate_credential = self._hub_gate_credential or None
         else:
-            self._response_gate_credential = _scoped_gate_env("OPENROUTER_API_KEY") or None
+            self._response_gate_credential = _scoped_gate_env("LITELLM_API_KEY") or None
 
     def _response_gate_init(self) -> None:
         """Build the gate from validated config plus the credential captured at startup."""
@@ -1573,7 +1573,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # Enforce mode with no credential denies every ambient message; say so once,
             # loudly, instead of looking like a quiet disable.
             logger.error(
-                "[%s] response_gate is enabled for %d channel(s) in %s mode but no OPENROUTER_API_KEY "
+                "[%s] response_gate is enabled for %d channel(s) in %s mode but no LITELLM_API_KEY "
                 "was found in this profile's secrets: ambient messages in those channels will be denied",
                 self.name, len(gate_cfg.channels), gate_cfg.mode,
             )
@@ -1932,7 +1932,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # Enabled with no credential fails closed (no reactions); say so once,
             # loudly, instead of looking like a quiet disable.
             logger.error(
-                "[%s] reaction_gate is enabled for %d channel(s) but no OPENROUTER_API_KEY "
+                "[%s] reaction_gate is enabled for %d channel(s) but no LITELLM_API_KEY "
                 "was found in this profile's secrets: no automatic reactions will be added",
                 self.name, len(reaction_cfg.channels),
             )
@@ -2031,7 +2031,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # Same rule as startup, for the same reason: enabled with no captured
             # credential fails closed (no reactions) and must not look like a disable.
             logger.error(
-                "[%s] reaction_gate reload has no OPENROUTER_API_KEY captured at connect: "
+                "[%s] reaction_gate reload has no LITELLM_API_KEY captured at connect: "
                 "no automatic reactions will be added",
                 self.name,
             )

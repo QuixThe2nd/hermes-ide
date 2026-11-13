@@ -413,7 +413,7 @@ async def test_session_owner_in_group_thread_can_start_goal(runner):
 
 @pytest.mark.asyncio
 async def test_jev_http_error_fails_closed_no_goal(runner, monkeypatch):
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("LITELLM_API_KEY", "test-key")
     from hermes_cli.goal_intent import evaluate_goal_intent
 
     with patch(

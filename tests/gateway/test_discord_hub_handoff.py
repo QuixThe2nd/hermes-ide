@@ -1518,7 +1518,7 @@ class TestHubGateCredentialHandoff:
 
     def test_client_resolves_and_sends_the_scoped_credential(self, monkeypatch):
 
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-profile-key")
+        monkeypatch.setenv("LITELLM_API_KEY", "sk-profile-key")
         captured = {}
 
         async def fake_call(method, params=None):
@@ -1535,6 +1535,7 @@ class TestHubGateCredentialHandoff:
 
     def test_client_sends_none_without_a_key(self, monkeypatch):
 
+        monkeypatch.delenv("LITELLM_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         captured = {}
 
@@ -1582,7 +1583,7 @@ def test_unix_attach_round_trips_the_gate_credential(tmp_path, monkeypatch):
     """End to end over the socket: scoped key → attach payload → hub-side adapter."""
     import plugins.platforms.discord.adapter as adapter_module
 
-    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-roundtrip-key")
+    monkeypatch.setenv("LITELLM_API_KEY", "sk-roundtrip-key")
 
     class StubAdapter:
         def __init__(self, config):
@@ -1623,6 +1624,7 @@ class TestHubAdapterCredentialCapture:
         self.adapter = DiscordAdapter(config)
 
     def test_hub_pin_is_used_verbatim(self, monkeypatch):
+        monkeypatch.delenv("LITELLM_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         self.adapter._hub_gate_credential = "sk-hub-key"
         self.adapter._capture_response_gate_credential()
@@ -1631,13 +1633,13 @@ class TestHubAdapterCredentialCapture:
     def test_hub_pin_empty_fails_closed_even_with_env_key(self, monkeypatch):
         # The hub process env may hold the default profile's first-writer-wins key;
         # a profile with no key must stay credential-less, not borrow it.
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-default-profile-leak")
+        monkeypatch.setenv("LITELLM_API_KEY", "sk-default-profile-leak")
         self.adapter._hub_gate_credential = ""
         self.adapter._capture_response_gate_credential()
         assert self.adapter._response_gate_credential is None
 
     def test_in_process_adapter_reads_the_scope(self, monkeypatch):
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-scoped-key")
+        monkeypatch.setenv("LITELLM_API_KEY", "sk-scoped-key")
         self.adapter._capture_response_gate_credential()
         assert self.adapter._response_gate_credential == "sk-scoped-key"
 
@@ -1661,6 +1663,6 @@ class TestHubAdapterCredentialCapture:
         assert self.adapter._response_gate is not None
         assert self.adapter._response_gate.client is None
         assert any(
-            "no OPENROUTER_API_KEY" in record.message and record.levelno == logging.ERROR
+            "no LITELLM_API_KEY" in record.message and record.levelno == logging.ERROR
             for record in caplog.records
         )

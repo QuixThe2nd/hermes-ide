@@ -435,7 +435,7 @@ class ResponseGateConfig:
     no wildcard and no global expansion.
     """
 
-    #: Judge backend; ``jev`` (OpenRouter Decisions endpoint) is the only one.
+    #: Judge backend; ``jev`` (Jev Decisions via the litellm proxy) is the only one.
     provider: str = "jev"
     #: Channel IDs (or exact channel names / ``#names``) opted in. Empty ⇒ gate off
     #: unless ``echo_channels`` is set.
@@ -458,7 +458,7 @@ class ResponseGateConfig:
     #: Total character budget for the buffered context block.
     context_chars: int = 8000
     #: Judge model; fixed default, no fallback chain.
-    model: str = "typesafe/jev-1.13"
+    model: str = "jev-1.13.0"
     #: Optional loopback-only override for the Decisions endpoint, so judge calls can
     #: traverse a local metering proxy. ``None`` (default) keeps the fixed endpoint
     #: and its exact request shape. Anything non-loopback is refused at load: the
@@ -557,7 +557,7 @@ class ResponseGateConfig:
         context_chars = _response_gate_int(
             data, "context_chars", 8000, 1, cls.MAX_CONTEXT_CHARS, "response_gate.context_chars",
         )
-        model = str(data.get("model", "typesafe/jev-1.13")).strip()
+        model = str(data.get("model", "jev-1.13.0")).strip()
         if not model:
             raise ValueError("response_gate: model must be a non-empty model slug")
         decisions_url = data.get("decisions_url")
@@ -775,7 +775,7 @@ class ReactionGateConfig:
     differently, and neither ever changes the other's verdicts.
     """
 
-    #: Judge backend; ``jev`` (OpenRouter Decisions endpoint) is the only one.
+    #: Judge backend; ``jev`` (Jev Decisions via the litellm proxy) is the only one.
     provider: str = "jev"
     #: Master switch. The gate is off unless this is explicitly ``true`` AND
     #: ``channels`` names at least one channel — an omitted block never reacts.
@@ -805,7 +805,7 @@ class ReactionGateConfig:
     #: Total character budget for the buffered context block.
     context_chars: int = 8000
     #: Judge model; fixed default, no fallback chain.
-    model: str = "typesafe/jev-1.13"
+    model: str = "jev-1.13.0"
     #: Optional loopback-only override for the Decisions endpoint (see ResponseGateConfig).
     decisions_url: Optional[str] = None
     #: The decision rule: one Boolean expression over ``abstain``/``none``/``other``/
@@ -911,7 +911,7 @@ class ReactionGateConfig:
         context_chars = _response_gate_int(
             data, "context_chars", 8000, 1, cls.MAX_CONTEXT_CHARS, "reaction_gate.context_chars",
         )
-        model = str(data.get("model", "typesafe/jev-1.13")).strip()
+        model = str(data.get("model", "jev-1.13.0")).strip()
         if not model:
             raise ValueError("reaction_gate: model must be a non-empty model slug")
         decisions_url = data.get("decisions_url")

@@ -137,7 +137,7 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
             # adapter has no profile scope (and must not trust the hub process's
             # env), so the resolved value travels in the attach payload — over the
             # same-user socket only, never logged or persisted.
-            gate_credential = platform_gate_env("OPENROUTER_API_KEY") or None
+            gate_credential = platform_gate_env("LITELLM_API_KEY") or None
             result = await self._call("attach", {
                 "generation_id": self._generation_id,
                 "profile": self._owner_profile or "default",
