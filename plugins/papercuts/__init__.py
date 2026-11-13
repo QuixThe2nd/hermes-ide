@@ -391,11 +391,13 @@ def _error(code: str, message: str) -> str:
     return _json({"success": False, "error": {"code": code, "message": message}})
 
 
-def _note_repeat_sighting(item: Dict[str, Any], observed: str, reopened: bool) -> Optional[str]:
-    """Thread side of a deduped re-log: post the sighting, and on a reopened
-    papercut unarchive its SAME thread and announce the reopen. The journal
-    events (occurrence/reopen + the triage stage re-entry in ``_handle_log``)
-    already happened, so failures degrade to a warning string only."""
+def _note_repeat_sighting(item: Dict[str, Any], reopened: bool) -> Optional[str]:
+    """Thread side of a deduped re-log. A repeat of an OPEN papercut stays
+    journal-only — the owner asked to stop the "seen again" thread spam —
+    while a repeat of a CLOSED papercut unarchives its SAME thread and
+    posts one short line. The journal events (occurrence/reopen + the
+    triage stage re-entry in ``_handle_log``) already happened, so
+    failures degrade to a warning string only."""
     from plugins.papercuts.lifecycle import threads_enabled
     from plugins.papercuts import threads as pc_threads
 
@@ -404,13 +406,13 @@ def _note_repeat_sighting(item: Dict[str, Any], observed: str, reopened: bool) -
     thread_id = str(item.get("thread_id") or "")
     if not thread_id:
         return None  # never threaded; the journal counts the occurrence
+    if not reopened:
+        return None  # routine repeat: the journal already counted it, no post
     warning = None
-    if reopened and not pc_threads.reopen(thread_id):
+    if not pc_threads.reopen(thread_id):
         warning = "could not unarchive the thread"
-    if reopened and not pc_threads.post(thread_id, "reopened — the friction came back"):
+    if not pc_threads.post(thread_id, "reopened — the friction came back"):
         warning = warning or "could not post the reopen note"
-    if not pc_threads.post(thread_id, pc_threads.format_sighting(item, observed)):
-        warning = warning or "could not post the repeat sighting to the thread"
     return warning
 
 
@@ -478,7 +480,7 @@ def _handle_log(args: Dict[str, Any], kwargs: Dict[str, Any]) -> str:
 
                 _append_stage_event(item_id, "triage", attempts=0, note="reopened by a new sighting", locked=True)
             folded = _fold(_read_events_unlocked())[item_id]
-            warning = _note_repeat_sighting(folded, observed, kind == "reopen")
+            warning = _note_repeat_sighting(folded, kind == "reopen")
             payload = {
                 "success": True,
                 "action": "log",
