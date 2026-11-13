@@ -1397,3 +1397,93 @@ def test_goal_spill_write_failure_aborts_before_spawn(monkeypatch, repo, fake_bi
     assert "read-only filesystem" in result["error"]
     # The write failure must abort before anything is spawned.
     assert captured == {}
+
+
+def _git(repo: Path, *args: str) -> None:
+    import subprocess
+
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+
+def test_goal_spill_refuses_to_overwrite_tracked_brief(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    # A repo that committed an earlier brief: the spill target is tracked.
+    brief = repo / GOAL_BRIEF_NAME
+    committed = "/goal committed earlier brief\n" + "c" * 5000
+    brief.write_text(committed, encoding="utf-8")
+    _git(repo, "init", "-q")
+    _git(repo, "add", GOAL_BRIEF_NAME)
+    _git(
+        repo,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-m",
+        "x",
+    )
+
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(
+            task="/goal " + "x" * 4001, workdir=str(repo)
+        )
+    )
+    assert result["success"] is False
+    assert "tracked" in result["error"]
+    assert str(brief) in result["error"]
+    # The committed file is untouched and nothing was spawned.
+    assert brief.read_text(encoding="utf-8") == committed
+    assert captured == {}
+
+
+def test_goal_spill_overwrites_untracked_stale_brief(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    # An untracked leftover from a previous dispatch is refreshed, so repeat
+    # delegations into the same workdir keep working (non-git workdir).
+    brief = repo / GOAL_BRIEF_NAME
+    brief.write_text("/goal stale leftover\n" + "s" * 5000, encoding="utf-8")
+
+    task = "/goal " + "x" * 4001
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task=task, workdir=str(repo))
+    )
+    assert result["success"] is True
+    assert brief.read_text(encoding="utf-8") == task
+    assert result["goal_brief_path"] == str(brief)
+
+
+def test_goal_spill_same_content_brief_is_not_rewritten(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    task = "/goal " + "x" * 4001
+    brief = repo / GOAL_BRIEF_NAME
+    brief.write_text(task, encoding="utf-8")
+    os.chmod(brief, 0o600)  # a skipped rewrite must not touch content or mode
+    before = brief.stat()
+
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task=task, workdir=str(repo))
+    )
+    assert result["success"] is True
+    after = brief.stat()
+    assert brief.read_text(encoding="utf-8") == task
+    assert (after.st_mode & 0o777) == 0o600
+    assert after.st_mtime_ns == before.st_mtime_ns
+    assert result["goal_brief_path"] == str(brief)
