@@ -36,7 +36,6 @@ async def test_diagnostic_wake_executes_without_final_or_error_echo(tmp_path, mo
     adapter._stop_typing_refresh = AsyncMock()
     adapter._run_processing_hook = AsyncMock()
     adapter._fire_post_delivery_callback = AsyncMock()
-    adapter._flush_text_debounce_now = AsyncMock()
     adapter._finish_session_task = lambda *a: None
     adapter.send_final_ledgered = AsyncMock(return_value=(SendResult(success=True), adapter))
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat")

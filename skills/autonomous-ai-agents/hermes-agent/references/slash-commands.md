@@ -35,10 +35,7 @@ it. New commands land often; `/help` in-session is always authoritative.
 ```
 /config                  Show config (CLI)
 /verbose                 Cycle tool progress: off → new → all → verbose → log (CLI)
-/voice [on|off|tts]      Voice mode
-/busy [queue|steer|interrupt] How messages behave while working (CLI + gateway)
 /indicator [style]       TUI busy indicator: kaomoji|emoji|unicode|ascii (CLI)
-/footer [on|off]         Gateway runtime-metadata footer on replies
 /skin [name]             Change theme (CLI)
 /statusbar (/sb)         Toggle status bar (CLI)
 /battery [on|off]        Battery indicator in status bar (CLI)

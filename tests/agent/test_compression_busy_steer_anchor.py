@@ -1,6 +1,6 @@
 """Regression coverage for busy-steer preservation across compaction (#100053).
 
-With ``display.busy_input_mode: steer`` the follow-up rides inside the latest
+A mid-run steered/redirected follow-up rides inside the latest
 ``role=tool`` result (``apply_pending_steer_to_tool_results``), never as a
 ``role=user`` row. ``_ensure_compressed_has_user_turn`` must treat that marker
 as live user intent — and must pick whichever intent-bearing row is LAST in

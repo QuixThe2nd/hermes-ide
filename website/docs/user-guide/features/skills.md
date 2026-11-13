@@ -231,7 +231,6 @@ When set, the skill is automatically hidden from the system prompt, `skills_list
 
 When a skill response (or any agent response) includes a bare absolute path to a media file — for example `/home/user/screenshots/diagram.png` — the gateway auto-detects it, strips it from the visible text, and delivers the file natively to the user's chat (Telegram photo, Discord attachment, etc.) instead of leaving the raw path in the message.
 
-For audio specifically, the `[[audio_as_voice]]` directive promotes audio files to native voice-message bubbles on platforms that support them (Telegram, WhatsApp).
 
 ### Forcing document-style delivery: `[[as_document]]`
 
@@ -247,7 +246,7 @@ Here is your rendered chart:
 [[as_document]]
 ```
 
-The directive is stripped before delivery, so users never see it. Granularity is intentionally all-or-nothing per response: emit `[[as_document]]` once and every image path in the same response is delivered as a document. This mirrors the scope of `[[audio_as_voice]]`.
+The directive is stripped before delivery, so users never see it. Granularity is intentionally all-or-nothing per response: emit `[[as_document]]` once and every image path in the same response is delivered as a document.
 
 Use it from a skill when:
 

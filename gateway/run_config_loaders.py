@@ -1,4 +1,4 @@
-"""Config/env loaders (busy modes, reasoning, service tier, timeouts, fallback) for GatewayRunner.
+"""Config/env loaders (reasoning, service tier, timeouts, fallback) for GatewayRunner.
 
 Split out of ``gateway/run.py``; bound onto ``GatewayRunner`` via the MRO.
 ``gateway.run`` internals are imported lazily inside method bodies (import cycle),
@@ -39,7 +39,7 @@ logger = logging.getLogger("gateway.run")
 
 
 class GatewayConfigLoadersMixin:
-    """Config/env loaders (busy modes, reasoning, service tier, timeouts, fallback) for GatewayRunner."""
+    """Config/env loaders (reasoning, service tier, timeouts, fallback) for GatewayRunner."""
 
     @staticmethod
     def _cfg_str(section: str, key: str) -> str:
@@ -250,58 +250,6 @@ class GatewayConfigLoadersMixin:
         """``display.show_reasoning`` toggle."""
         from gateway.run import _load_gateway_config
         return is_truthy_value(cfg_get(_load_gateway_config(), "display", "show_reasoning"), default=False)
-
-    @staticmethod
-    def _load_busy_text_mode() -> str:
-        """Normal busy TEXT follow-up behavior (legacy ``busy_text_mode``; default ``interrupt``)."""
-        legacy = GatewayConfigLoadersMixin._env_or_cfg_str("HERMES_GATEWAY_BUSY_TEXT_MODE", "display", "busy_text_mode").lower()
-        return legacy if legacy in {"interrupt", "queue"} else "interrupt"
-
-    @staticmethod
-    def _busy_modes_from_config(config: dict, *, fallback_input: str, fallback_text: str) -> tuple[str, str]:
-        """Resolve one profile's busy modes without consulting process env."""
-        input_mode = fallback_input
-        raw_text = str(cfg_get(config, "display", "busy_text_mode", default="") or "").strip().lower()
-        text_mode = raw_text if raw_text in {"interrupt", "queue"} else fallback_text
-        return input_mode, text_mode
-
-    def _snapshot_profile_busy_modes(self, profile_name: str, config: dict) -> None:
-        """Cache a routed profile's busy policy for this gateway lifetime."""
-        input_mode, text_mode = self._busy_modes_from_config(
-            config, fallback_input=getattr(self, "_busy_input_mode", "interrupt"),
-            fallback_text=getattr(self, "_busy_text_mode", "interrupt"),
-        )
-        self.__dict__.setdefault("_busy_input_modes_by_profile", {})[profile_name] = input_mode
-        self.__dict__.setdefault("_busy_text_modes_by_profile", {})[profile_name] = text_mode
-
-    def _busy_profile_name_for_source(self, source: SessionSource) -> Optional[str]:
-        """Return the routed profile whose busy policy applies, if any."""
-        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
-            return None
-        name = str(getattr(source, "profile", "") or "").strip()
-        if not name:
-            try:
-                name = str(self._profile_name_for_source(source) or "").strip()
-            except Exception:
-                name = ""
-        return name or None
-
-    def _effective_busy_mode(self, source: SessionSource, attr: str) -> str:
-        """Busy mode from the routed profile snapshot (``attr``: ``_busy_input_mode`` / ``_busy_text_mode``)."""
-        fallback = getattr(self, attr, "interrupt")
-        profile_name = self._busy_profile_name_for_source(source)
-        if not profile_name:
-            return fallback
-        modes = getattr(self, attr + "s_by_profile", None)
-        return modes.get(profile_name, fallback) if isinstance(modes, dict) else fallback
-
-    def _effective_busy_input_mode(self, source: SessionSource) -> str:
-        """Resolve busy input mode from the routed profile startup snapshot."""
-        return self._effective_busy_mode(source, "_busy_input_mode")
-
-    def _effective_busy_text_mode(self, source: SessionSource) -> str:
-        """Resolve legacy busy text mode from the routed profile snapshot."""
-        return self._effective_busy_mode(source, "_busy_text_mode")
 
     @staticmethod
     def _warn_unparsable_timeout(cfg_key: str, raw: object, default: float) -> None:

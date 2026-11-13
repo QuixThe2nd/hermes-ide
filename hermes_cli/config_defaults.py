@@ -780,14 +780,6 @@ DEFAULT_CONFIG = {
         # Skip tool-call-only assistant entries in the recap so it isn't dominated by `[2 tool
         # calls: ...]` lines; False shows them inline.
         "resume_skip_tool_only": True,
-        # steer mode: false hides only the "Steered into current run" bubble; steering itself still
-        # happens.
-        "busy_steer_ack_enabled": True,
-        # Follow-up "✅ Steer delivered" bubble sent the moment the steered
-        # text is actually injected into the model's context (the initial
-        # ack only promises that it will arrive). Set false to keep only
-        # the initial acknowledgment.
-        "busy_steer_delivered_ack_enabled": True,
         # Classic CLI multiline fallbacks beyond Alt+Enter.
         # Default true matches Claude Code / Codex / OpenCode: Ctrl+J inserts
         # a newline, a trailing backslash followed by Enter continues the draft,

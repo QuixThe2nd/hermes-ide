@@ -14,8 +14,6 @@ logger = logging.getLogger("tools.send_message_tool")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".m2a", ".wav", ".m4a", ".flac"}
-_VOICE_EXTS = {".ogg", ".opus"}
-_SEND_AUDIO_EXTS = {".mp3", ".m4a"}
 # Captionable on the media bubble; voice/audio notes excluded (a caption there reads as a separate label).
 _CAPTIONABLE_EXTS = _IMAGE_EXTS | _VIDEO_EXTS | {".pdf", ".doc", ".docx", ".txt", ".md", ".csv", ".xlsx", ".zip"}
 _CAPTION_LIMIT_NATIVE = 1024
@@ -31,8 +29,8 @@ def _media_caption_split(text, media_files, *, max_caption_len):
     the *formatted* caption since escaping inflates it."""
     stripped = (text or "").strip()
     media = media_files or []
-    if (not stripped or len(media) != 1 or len(stripped) > max_caption_len or media[0][1]
-            or os.path.splitext(media[0][0])[1].lower() not in _CAPTIONABLE_EXTS):
+    if (not stripped or len(media) != 1 or len(stripped) > max_caption_len
+            or os.path.splitext(media[0])[1].lower() not in _CAPTIONABLE_EXTS):
         return None, text
     return stripped, ""
 
@@ -66,16 +64,16 @@ _HTTP_TRANSIENT_MARKERS = ("bad gateway", "502", "too many requests", "429", "se
                            "gateway timeout", "504")
 
 
-def _adapter_media_method(ext, voice, force_document=False):
-    """``(adapter method, kind)``: document when forced, else image / video / voice by
-    extension (``voice`` already folds in the caller's audio rule)."""
+def _adapter_media_method(ext, force_document=False):
+    """``(adapter method, kind)``: document when forced or for any non-image/video
+    (audio included) file, else image / video by extension."""
     if force_document:
         return "send_document", "document"
     if ext in _IMAGE_EXTS:
         return "send_image_file", "image"
     if ext in _VIDEO_EXTS:
         return "send_video", "video"
-    return ("send_voice", "audio") if voice else ("send_document", "document")
+    return "send_document", "document"
 
 
 def _live_adapter(platform, *, lookup_failed_warning=None):
@@ -165,11 +163,11 @@ async def _matrix_send_core(adapter, chat_id, message, media_files, metadata):
         last_result = await adapter.send(chat_id, message, metadata=metadata)
         if not last_result.success:
             return _error(f"Matrix send failed: {last_result.error}")
-    for media_path, is_voice in media_files:
+    for media_path in media_files:
         if not os.path.exists(media_path):
             return _error(f"Media file not found: {media_path}")
         ext = os.path.splitext(media_path)[1].lower()
-        method, _ = _adapter_media_method(ext, (ext in _VOICE_EXTS and is_voice) or ext in _AUDIO_EXTS)
+        method, _ = _adapter_media_method(ext)
         last_result = await getattr(adapter, method)(chat_id, media_path, metadata=metadata)
         if not last_result.success:
             return _error(f"Matrix media send failed: {last_result.error}")

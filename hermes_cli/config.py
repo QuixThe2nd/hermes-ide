@@ -1093,7 +1093,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "tool_gateway_declined_tools",  # per-tool Tool Gateway offer declines
     # Top-level forms read/bridged by gateway/config.py:
     "group_sessions_per_user", "thread_sessions_per_user",
-    "stt_echo_transcripts", "reset_triggers", "always_log_local", "filter_silence_narration",
+    "reset_triggers", "always_log_local", "filter_silence_narration",
     "multiplex_profiles", "profile_routes", "platforms", "require_mention",
     "unauthorized_dm_behavior", "signal", "allow_all_users",
     "timeouts",          # unified timeout resolution section (agent/deadline.py)
@@ -3636,7 +3636,7 @@ def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:
         "but Hermes may not read it.", Colors.YELLOW))
     if suggestion:
         print(color(f"  Did you mean: {suggestion}", Colors.YELLOW))
-    # The env bridge covers custom TOP-LEVEL keys only; an unseeded nested path (``stt.provider``)
+    # The env bridge covers custom TOP-LEVEL keys only; an unseeded nested path
     # is written but not bridged, so the footer would be a false promise there.
     if len(_split_key_path(key)) == 1:
         print(color(
@@ -3835,8 +3835,8 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
     # Phantom-key notice (#112348): a nested path under a KNOWN section that the schema does not
     # define (``compression.compressor.enabled``) is echoed straight from the user's file and is
     # usually read by nothing, so it must not look like a live setting. The check is a
-    # DEFAULT_CONFIG walk and some live keys are deliberately unseeded (``stt.provider``,
-    # ``gateway.proxy_url``: a stored value counts as an explicit user pick), so
+    # DEFAULT_CONFIG walk and some live keys are deliberately unseeded
+    # (``gateway.proxy_url``: a stored value counts as an explicit user pick), so
     # the wording hedges exactly like the set-path notice. Custom top-level keys stay exempt (they
     # are bridged into os.environ for skills) and ``_validate_config_key`` already accepts
     # open-subkey sections. stderr keeps stdout/--json parseable; the exit code stays 0.

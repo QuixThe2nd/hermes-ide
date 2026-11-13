@@ -1,4 +1,4 @@
-# Configuration, Toolsets & Voice
+# Configuration & Toolsets
 
 Edit with `hermes config edit` or `hermes config set section.key value`.
 Full reference: https://hermes-agent.nousresearch.com/docs/user-guide/configuration
@@ -13,8 +13,6 @@ Full reference: https://hermes-agent.nousresearch.com/docs/user-guide/configurat
 | `compression` | `enabled`, `threshold` (0.50), `target_ratio` (0.20) |
 | `display` | `skin`, `interface` (cli/tui), `language`, `show_reasoning`, `show_cost` |
 | `approvals` | `mode` (smart/manual/off), `timeout`, `cron_mode` |
-| `stt` | `enabled`, `provider` (local/groq/openai/mistral/elevenlabs/deepinfra) |
-| `tts` | `provider` (edge/elevenlabs/openai/minimax/mistral/neutts/gemini/piper/kittentts/deepinfra/xai) |
 | `memory` | `memory_enabled`, `user_profile_enabled`, `provider`, `write_approval` |
 | `security` | `redact_secrets`, `tirith_enabled`, `website_blocklist` |
 | `delegation` | `model`, `provider`, `max_concurrent_children`, `max_iterations` (50), `max_spawn_depth` |
@@ -41,7 +39,6 @@ Full enumeration: `TOOLSETS` dict in `toolsets.py` (`_HERMES_CORE_TOOLS` is the 
 | `image_gen` | Image generation and image-to-image editing |
 | `video` / `video_gen` | Video analysis / video generation |
 | `x_search` | X (Twitter) search (X OAuth or API key) |
-| `tts` | Text-to-speech |
 | `skills` | Skill browsing and management |
 | `memory` | Persistent cross-session memory |
 | `session_search` | Search past conversations |
@@ -56,33 +53,3 @@ Full enumeration: `TOOLSETS` dict in `toolsets.py` (`_HERMES_CORE_TOOLS` is the 
 | `spotify`, `homeassistant`, `discord`, `discord_admin`, `feishu_doc`, `feishu_drive`, `yuanbao` | Service integrations (gated on their credentials) |
 
 Tool changes take effect on `/new` (new session) — never mid-conversation, to preserve prompt caching.
-
-## Voice
-
-### STT (Voice → Text)
-
-Voice messages from messaging platforms are auto-transcribed.
-
-```yaml
-stt:
-  enabled: true
-  provider: local   # local (faster-whisper, free) | groq | openai | mistral | elevenlabs | deepinfra
-  local:
-    model: base     # tiny, base, small, medium, large-v3
-```
-
-Auto-detect priority: local faster-whisper (`pip install faster-whisper`) → Groq (`GROQ_API_KEY`, free tier) → OpenAI (`VOICE_TOOLS_OPENAI_KEY`) → Mistral Voxtral (`MISTRAL_API_KEY`).
-
-### TTS (Text → Voice)
-
-| Provider | Env var | Free? |
-|----------|---------|-------|
-| Edge TTS (default) | None | Yes |
-| ElevenLabs | `ELEVENLABS_API_KEY` | Free tier |
-| OpenAI | `VOICE_TOOLS_OPENAI_KEY` | Paid |
-| MiniMax | `MINIMAX_API_KEY` | Paid |
-| Mistral | `MISTRAL_API_KEY` | Paid |
-| Gemini | `GOOGLE_API_KEY` | Free tier |
-| NeuTTS / Piper / KittenTTS (local) | None | Free |
-
-Voice commands: `/voice on` (voice-to-voice), `/voice tts` (always voice), `/voice off`.

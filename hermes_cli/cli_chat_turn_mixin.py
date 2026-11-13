@@ -435,8 +435,7 @@ class CLIChatTurnMixin:
                     platform="cli", user_config=getattr(self.agent, "_notification_config", None))
 
         # Re-queue the interrupt message (plus any that arrived meanwhile) as the next
-        # prompt. Only reached in busy_input_mode == "interrupt"; "queue" mode routes
-        # Enter straight to _pending_input.
+        # prompt.
         if pending_message:
             all_parts = [pending_message]
             while not self._interrupt_queue.empty():

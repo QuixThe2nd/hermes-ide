@@ -2115,12 +2115,12 @@ class TurnRunner(_TurnRunnerCore):
         # before run_conversation) is retained as a secondary guard. It is also the sole guard on the
         # fallback branch taken when mid-run context compression shrinks the message list below the original
         # history length, preserving the compression-safe behaviour of #160.
-        media_tags, has_voice_directive = _collect_auto_append_media_tags(
+        media_tags = _collect_auto_append_media_tags(
             result.get("messages", []), history_offset=len(agent_history), history_media_paths=history_media_paths,
         )
         if not media_tags:
             return final_response
-        unique_tags = (["[[audio_as_voice]]"] if has_voice_directive else []) + list(dict.fromkeys(media_tags))
+        unique_tags = list(dict.fromkeys(media_tags))
         return final_response + "\n" + "\n".join(unique_tags)
 
     def run_sync(self):

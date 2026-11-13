@@ -23,7 +23,6 @@ from gateway.config import PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
     _api_request_profile,
-    _approval_event_choices,
     cors_middleware,
     security_headers_middleware,
 )
@@ -34,30 +33,6 @@ from tools.clarify_tool import TIMEOUT_RESPONSE
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("smart_denied", "allow_session", "allow_permanent", "expected"),
-    [
-        (False, True, True, ["once", "session", "always", "deny"]),
-        (False, True, False, ["once", "session", "deny"]),
-        (False, False, True, ["once", "deny"]),
-        (False, False, False, ["once", "deny"]),
-        (True, True, True, ["once", "deny"]),
-        (True, False, False, ["once", "deny"]),
-    ],
-)
-def test_approval_event_choices_follow_backend_capabilities(
-    smart_denied, allow_session, allow_permanent, expected
-):
-    assert (
-        _approval_event_choices(
-            smart_denied=smart_denied,
-            allow_session=allow_session,
-            allow_permanent=allow_permanent,
-        )
-        == expected
-    )
 
 
 def _make_adapter(api_key: str = "") -> APIServerAdapter:
@@ -101,7 +76,6 @@ def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     )
     app.router.add_get("/v1/runs/{run_id}", adapter._handle_get_run)
     app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
-    app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
     app.router.add_post("/v1/runs/{run_id}/steer", adapter._handle_steer_run)
     app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
     # Session clarify surface the run workers park behind.
@@ -803,7 +777,6 @@ class TestRunLifecycleSweep:
                 assert adapter._active_run_agents[run_id] is mock_agent
                 assert run_id not in adapter._run_streams
                 assert run_id not in adapter._run_streams_created
-                assert adapter._run_approval_sessions[run_id] == run_id
 
                 limited = adapter._concurrency_limited_response()
                 assert limited is not None

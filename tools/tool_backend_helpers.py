@@ -107,14 +107,14 @@ def _dotenv_value(env_var: str) -> str:
 
 def resolve_provider_secret(env_var: str, provider_id: str, config_value: str = "",
                             env_getter=None) -> str:
-    """Resolve a voice-provider API key (single owner for STT/TTS lookup). Order: explicit
+    """Resolve a provider API key (single owner for tool-backend lookup). Order: explicit
     ``config_value`` -> profile secret scope / env -> ``.env`` via ``env_getter`` (or
     ``hermes_cli.config.get_env_value``) -> credential pool for ``provider_id``. Under an
     active multiplex turn the profile scope is authoritative: a miss returns ``""`` rather
     than borrowing another profile's env or pool. Never raises.
 
     Resolution order (fixes #68003 — keys added via ``hermes auth add <provider>`` were invisible to the
-    voice tools, which only consulted env/.env):
+    tool backends, which only consulted env/.env):
     """
     key = str(config_value or "").strip() or _scoped_credential(env_var)
     if key:
@@ -141,19 +141,6 @@ def resolve_provider_secret(env_var: str, provider_id: str, config_value: str = 
     except Exception as exc:
         logger.debug("Could not read %s credential pool for %s: %s", provider_id, env_var, exc)
     return ""
-
-
-def resolve_openai_audio_api_key() -> str:
-    """Prefer VOICE_TOOLS_OPENAI_KEY, else OPENAI_API_KEY (scope-aware, pool fallback for the
-    latter). Must go through the secret scope: a raw ``os.environ`` read could bill another
-    profile's account under multiplex.
-
-    Outside a multiplexed turn, ``OPENAI_API_KEY`` additionally falls back to the credential pool (``hermes
-    auth add openai-api``) via ``resolve_provider_secret`` — same #68003 fix as the other voice providers.
-    The dedicated voice-tools override remains env/scope-only.
-    """
-    return (resolve_provider_secret("VOICE_TOOLS_OPENAI_KEY", "")
-            or resolve_provider_secret("OPENAI_API_KEY", "openai-api"))
 
 
 def prefers_gateway(config_section: str) -> bool:

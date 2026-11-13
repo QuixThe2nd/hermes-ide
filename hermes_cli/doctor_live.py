@@ -20,7 +20,6 @@ _KEYED_PROBES = {
     "Firecrawl": ("https://api.firecrawl.dev/v2/team/credit-usage", "FIRECRAWL_API_KEY", "Bearer"),
     "FAL": ("https://fal.ai/api/models?page=1", "FAL_KEY", "Key"),
 }
-# TTS/STT providers that never touch the network (nothing to probe).
 
 
 @dataclass

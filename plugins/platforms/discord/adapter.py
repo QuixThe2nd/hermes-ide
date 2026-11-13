@@ -4805,139 +4805,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             success=True, message_id=last_id, continuation_message_ids=tuple(continuation_ids),
         )
 
-    async def send_voice(
-        self,
-        chat_id: str,
-        audio_path: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        **kwargs,
-    ) -> SendResult:
-        """Send audio as a Discord file attachment."""
-        try:
-            import io
-
-            channel = self._client.get_channel(int(chat_id))
-            if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
-            if not channel:
-                return SendResult(success=False, error=f"Channel {chat_id} not found")
-
-            if not os.path.exists(audio_path):
-                return SendResult(success=False, error=f"Audio file not found: {audio_path}")
-
-            filename = os.path.basename(audio_path)
-
-            # Upload-size preflight (#50846): reject oversized audio before
-            # any upload path (native voice POST or file fallback) and let
-            # the caller get the actionable SendResult from the shared gate.
-            gate = await self._reject_oversized_upload(channel, audio_path, filename)
-            if gate is not None:
-                return gate
-
-            # ids-only reference — same no-fetch rationale as the text path.
-            reference = await self._reply_reference_for_send(reply_to, channel, metadata)
-
-            with open(audio_path, "rb") as f:
-                file_data = f.read()
-
-            # Forum channels (type 15) reject direct POST /messages — the
-            # native voice flag path also targets /messages so it would fail
-            # too.  Create a thread post with the audio as the starter
-            # attachment instead.
-            if self._is_forum_parent(channel):
-                forum_file = discord.File(io.BytesIO(file_data), filename=filename)
-                return await self._forum_post_file(
-                    channel,
-                    content=(caption or "").strip(),
-                    file=forum_file,
-                )
-
-            # Try sending as a native voice message via raw API (flags=8192).
-            try:
-                import base64
-
-                duration_secs = 5.0
-                try:
-                    from mutagen.oggopus import OggOpus
-                    info = OggOpus(audio_path)
-                    duration_secs = info.info.length
-                except Exception:
-                    duration_secs = max(1.0, len(file_data) / 2000.0)
-
-                waveform_bytes = bytes([128] * 256)
-                waveform_b64 = base64.b64encode(waveform_bytes).decode()
-
-                import json as _json
-                payload_data = {
-                    "flags": 8192,
-                    "attachments": [{
-                        "id": "0",
-                        "filename": "voice-message.ogg",
-                        "duration_secs": round(duration_secs, 2),
-                        "waveform": waveform_b64,
-                    }],
-                }
-                if reference is not None:
-                    payload_data["message_reference"] = {
-                        "message_id": str(reply_to),
-                        "fail_if_not_exists": False,
-                    }
-                payload = _json.dumps(payload_data)
-                form = [
-                    {"name": "payload_json", "value": payload},
-                    {
-                        "name": "files[0]",
-                        "value": file_data,
-                        "filename": "voice-message.ogg",
-                        "content_type": "audio/ogg",
-                    },
-                ]
-                msg_data = await self._client.http.request(
-                    discord.http.Route("POST", "/channels/{channel_id}/messages", channel_id=channel.id),
-                    form=form,
-                )
-                return SendResult(success=True, message_id=str(msg_data["id"]))
-            except Exception as voice_err:
-                logger.debug("Voice message flag failed, falling back to file: %s", voice_err)
-                if reference is not None and self._reference_proven_invalid(str(voice_err)):
-                    # Discord already rejected this reference on the native
-                    # voice POST — the file fallback must not replay a
-                    # rejection Discord has already proven permanent.
-                    logger.warning(
-                        "[%s] Reply target %s rejected the reply reference; dropping it before the file fallback",
-                        self.name,
-                        reply_to,
-                    )
-                    reference = None
-                file = discord.File(io.BytesIO(file_data), filename=filename)
-                try:
-                    msg = await channel.send(file=file, reference=reference)
-                except Exception as send_err:
-                    if (
-                        reference is not None
-                        and self._reference_proven_invalid(str(send_err))
-                    ):
-                        # Proven-invalid reference (never retried): deliver
-                        # the file standalone instead of losing the send.
-                        # The first send CONSUMED ``file`` — discord.File
-                        # is single-use through its read position (the
-                        # uploader read the buffer to EOF) — so the retry
-                        # must build a fresh File over the original bytes;
-                        # reusing the spent object uploads zero bytes while
-                        # still reporting success.
-                        retry_file = discord.File(
-                            io.BytesIO(file_data), filename=filename
-                        )
-                        msg = await channel.send(file=retry_file, reference=None)
-                    else:
-                        raise
-                return SendResult(success=True, message_id=str(msg.id))
-        except Exception as e:  # pragma: no cover - defensive logging
-            logger.error("[%s] Failed to send audio, falling back to base adapter: %s", self.name, e, exc_info=True)
-            return await super().send_voice(chat_id, audio_path, caption, reply_to, metadata=metadata)
-
     def _discord_channel_ids_allowed(self, channel_ids: set[str]) -> bool:
         """True when *channel_ids* intersect ``DISCORD_ALLOWED_CHANNELS``."""
         if not channel_ids:
@@ -8514,7 +8381,7 @@ async def _standalone_send(
                 thread_url = f"https://discord.com/api/v10/channels/{chat_id}/threads"
                 # Filter readable media first to pick JSON vs multipart before opening a session.
                 valid_media = []
-                for media_path, _is_voice in media_files:
+                for media_path in media_files:
                     if not os.path.exists(media_path):
                         warnings.append(_standalone_warn_missing_media(media_path))
                         continue
@@ -8571,7 +8438,7 @@ async def _standalone_send(
             # One multipart upload per file; a MEDIA:<path> caption rides as the attachment message's
             # content, and caption_pending makes a missing file fall back to a plain message.
             caption_pending = bool(caption)
-            for media_path, _is_voice in media_files:
+            for media_path in media_files:
                 if not os.path.exists(media_path):
                     warnings.append(_standalone_warn_missing_media(media_path))
                     if caption_pending:

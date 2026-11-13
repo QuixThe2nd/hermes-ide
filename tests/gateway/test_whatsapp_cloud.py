@@ -81,9 +81,6 @@ def _make_adapter(**overrides):
     adapter._accepted_count = 0
     adapter._rejected_signature_count = 0
 
-    # Phase 4 state — one-shot warnings.
-    adapter._warned_no_ffmpeg = False
-
     # Phase 10 state — per-chat latest inbound wamid (for typing/read).
     adapter._last_inbound_wamid_by_chat = {}
 
@@ -720,37 +717,6 @@ class TestSendDocument:
             assert send_payload["document"]["filename"] == "report.pdf"
         finally:
             _os.unlink(path)
-
-
-class TestSendVoice:
-    """MP3 voice with ffmpeg present -> opus; without ffmpeg -> MP3 fallback."""
-
-
-    @pytest.mark.asyncio
-    async def test_send_voice_ffmpeg_present_uses_opus(self):
-        adapter = _make_adapter()
-        adapter._http_client = MagicMock()
-        adapter._http_client.post = AsyncMock(side_effect=[
-            _mock_upload_response("voice_id"),
-            _mock_message_response(),
-        ])
-        # Pretend ffmpeg conversion succeeded by returning a fake opus path.
-        opus_path = _tmpfile(".ogg", content=b"OggS")
-        adapter._convert_to_opus = AsyncMock(return_value=opus_path)
-
-        mp3_path = _tmpfile(".mp3", content=b"ID3")
-        try:
-            result = await adapter.send_voice("15551234567", mp3_path)
-            assert result.success is True
-            # Conversion was invoked with the original MP3
-            uploaded_path = adapter._convert_to_opus.call_args.args[0]
-            assert uploaded_path == mp3_path
-            send_payload = adapter._http_client.post.call_args_list[1].kwargs["json"]
-            assert send_payload["type"] == "audio"
-        finally:
-            _os.unlink(mp3_path)
-            if _os.path.exists(opus_path):
-                _os.unlink(opus_path)
 
 
 # ---------------------------------------------------------------------------
