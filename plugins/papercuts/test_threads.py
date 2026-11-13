@@ -186,6 +186,16 @@ class ThreadBodyTests(unittest.TestCase):
         self.assertEqual(kwargs["task"], "hermes_starts_dedup")
         self.assertEqual(kwargs["timeout"], 45.0)
 
+    def test_system_prompt_requires_second_person(self):
+        self.call_llm.return_value = self.response("Fine.")
+
+        pc_threads.thread_body(self.item)
+
+        prompt = self.call_llm.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("you", prompt.lower())
+        for banned in ("the owner", "the user"):
+            self.assertNotIn(banned, prompt.lower())
+
     def test_model_output_echoing_observed_data_is_rejected(self):
         self.call_llm.return_value = self.response(
             f"Status checks keep breaking your flow. {self.item['observed']}"
