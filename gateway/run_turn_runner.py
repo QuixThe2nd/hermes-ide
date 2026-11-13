@@ -682,6 +682,9 @@ class TurnRunner(_TurnRunnerCore):
         _row_slices: int = 0
         # Prefix of separate-mode rows whose sends succeeded; flush owns the tail.
         _delivered_rows: int = 0
+        # Narration hold opened this box: show the row text, not a (×N) rewrite.
+        # A content-bubble ``__reset__`` still uses the counted retry form.
+        plain_repeats: bool = False
 
     def _progress_edit_state(self, adapter) -> "TurnRunner._ProgressEditState":
         ctx = self._ctx
@@ -830,8 +833,16 @@ class TurnRunner(_TurnRunnerCore):
         if not self._agent_interrupted():
             with suppress(Exception):
                 await self._roll_progress_overflow_if_needed(st)
-                await self._flush_progress_edit(st)
+                # Unsent rows belong to the box ABOVE the narration. Flush only
+                # edits an existing bubble, so a never-sent buffer has to go out
+                # before the reset or those rows vanish.
+                if st.can_edit and st.progress_lines and st.progress_msg_id is None:
+                    await self._progress_send_or_edit(st, st.progress_lines[-1])
+                else:
+                    await self._flush_progress_edit(st)
             self._reset_progress_bubble(st)
+        # The new box is the narration's tool rows, not a post-reset retry.
+        st.plain_repeats = True
         # The event may be asyncio.Event (in-loop gate) or threading.Event
         # (agent-worker-thread gate); poll — both expose is_set().
         evt = raw[1]
@@ -924,6 +935,14 @@ class TurnRunner(_TurnRunnerCore):
 
         if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
             _, base_msg, count = raw
+            if st.plain_repeats:
+                # Rows queued under a narration hold were never shown. Collapse
+                # repeats to the plain row — a (×N) seed here is the row the
+                # hold reset dropped, not a retry the user already saw.
+                if base_msg not in st.progress_lines:
+                    st.progress_lines.append(base_msg)
+                    st._row_tail, st._row_slices = False, 0
+                return base_msg
             if not st.progress_lines:
                 # Bubble was just reset (interim content landed) but the producer's
                 # dedup memory says this row repeats: seed the fresh bubble with the
@@ -1087,6 +1106,23 @@ class TurnRunner(_TurnRunnerCore):
         claude_delivery = self._claude_progress_delivery(st)
         last_edit_ts = 0.0
         EDIT_INTERVAL = 1.5  # Minimum seconds between edits (Telegram flood control)
+        pending = None
+        dirty = False
+
+        async def _publish(msg) -> bool:
+            """Deliver the current buffer. False = transient edit failure, retry."""
+            nonlocal dirty, last_edit_ts
+            if not st.progress_lines:
+                dirty = False
+                return True
+            if not await self._roll_progress_overflow_if_needed(st):
+                if not await self._progress_send_or_edit(st, msg):
+                    return False
+            dirty = False
+            last_edit_ts = time.monotonic()
+            await self._progress_restore_typing(st)
+            return True
+
         while True:
             # Mid-turn platform reconnect swaps the registry adapter; re-resolve
             # per iteration so remaining sends/edits/typing ride the current transport.
@@ -1095,18 +1131,40 @@ class TurnRunner(_TurnRunnerCore):
                 if not ctx._run_still_current():
                     self._drain_progress_queue()
                     return
-                try:
-                    raw = ctx.progress_queue.get_nowait()
-                except queue.Empty:
-                    # Keep this await inside the cancellation-drain try: normal
-                    # turn cleanup also cancels the consumer while it is parked.
-                    await asyncio.sleep(0.3)
-                    continue
+                if pending is not None:
+                    raw = pending
+                    pending = None
+                else:
+                    try:
+                        raw = ctx.progress_queue.get_nowait()
+                    except queue.Empty:
+                        # Keep this await inside the cancellation-drain try: normal
+                        # turn cleanup also cancels the consumer while it is parked.
+                        # Idle flush: a throttled absorb must still land when no
+                        # further row arrives. The old continue-after-sleep dropped
+                        # the last row until cancel.
+                        # Separate mode must not idle-flush: a dedup only rewrites
+                        # the buffer, and a buffered row is sent by flush_before_status.
+                        if dirty and st.can_edit and st.progress_lines:
+                            remaining = EDIT_INTERVAL - (time.monotonic() - last_edit_ts)
+                            if st.progress_msg_id is None or remaining <= 0:
+                                if not ctx._run_still_current():
+                                    return
+                                if not await _publish(st.progress_lines[-1]):
+                                    await asyncio.sleep(0.3)
+                                continue
+                            await asyncio.sleep(min(0.3, max(0.02, remaining)))
+                            continue
+                        await asyncio.sleep(0.3)
+                        continue
                 if self._is_flush_marker(raw):
+                    if dirty and st.progress_lines:
+                        await _publish(st.progress_lines[-1])
                     await self._handle_flush_marker(st, raw)
                     continue
                 if self._is_hold_marker(raw):
                     await self._handle_hold_marker(st, raw)
+                    dirty = False
                     continue
                 # Late rows are suppressed after stop. Viewer markers survive:
                 # the spawned agent keeps running and its link remains useful.
@@ -1114,7 +1172,13 @@ class TurnRunner(_TurnRunnerCore):
                     await asyncio.sleep(0)
                     continue
                 if self._is_reset_marker(raw):
+                    if st.progress_lines and not self._agent_interrupted():
+                        if st.progress_msg_id is None:
+                            await _publish(st.progress_lines[-1])
+                        else:
+                            await self._flush_progress_edit(st)
                     self._reset_progress_bubble(st)
+                    dirty = False
                     continue
                 if is_claude_delegation_start_marker(raw):
                     await claude_delivery.deliver_start(raw)
@@ -1123,19 +1187,61 @@ class TurnRunner(_TurnRunnerCore):
                     await claude_delivery.deliver_viewer_marker(raw)
                     continue
                 msg = self._progress_absorb(st, raw)
+                dirty = True
+                # Accumulate: fold every row already queued into this box before
+                # its first send, stopping at a marker so a reset/hold still
+                # splits in queue order. Separate mode sends one row per message.
+                if st.can_edit:
+                    while pending is None:
+                        try:
+                            nxt = ctx.progress_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                        if (
+                            self._is_reset_marker(nxt)
+                            or self._is_hold_marker(nxt)
+                            or self._is_flush_marker(nxt)
+                            or is_claude_delegation_start_marker(nxt)
+                            or _is_agent_status_queue_marker(nxt)
+                        ):
+                            pending = nxt
+                            break
+                        msg = self._progress_absorb(st, nxt)
                 if not await self._roll_progress_overflow_if_needed(st):
-                    # Throttle edits: batch rapid tool updates into fewer API calls.
                     remaining = EDIT_INTERVAL - (time.monotonic() - last_edit_ts)
-                    if remaining > 0:
+                    if st.can_edit:
+                        # First send of a box is immediate so a narration-held
+                        # burst is ONE send. Later edits wait; the idle path
+                        # flushes them. Never sleep-and-drop the last row.
+                        if st.progress_msg_id is not None and remaining > 0:
+                            continue
+                    elif remaining > 0:
+                        # Separate: buffer inside the throttle window. The row
+                        # lands via flush_before_status (before a viewer notice)
+                        # or the next tick — never as a second copy of a dedup.
                         await asyncio.sleep(remaining)
                         continue
                     if not ctx._run_still_current():
                         return
                     if not await self._progress_send_or_edit(st, msg):
                         continue
+                dirty = False
                 last_edit_ts = time.monotonic()
                 await self._progress_restore_typing(st)
             except asyncio.CancelledError:
+                # A marker pulled ahead of the batch is not on the queue. Put
+                # it back in front so the cancel drain still delivers it.
+                if pending is not None:
+                    rest = []
+                    while True:
+                        try:
+                            rest.append(ctx.progress_queue.get_nowait())
+                        except queue.Empty:
+                            break
+                    ctx.progress_queue.put(pending)
+                    for item in rest:
+                        ctx.progress_queue.put(item)
+                    pending = None
                 await self._drain_progress_on_cancel(st)
                 return
             except Exception as e:
