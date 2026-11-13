@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -161,7 +162,10 @@ def test_omp_run_loads_secret_and_stages_only_declared_mcp(monkeypatch, tmp_path
     monkeypatch.setattr(omp, "caller_killed_service_cgroup", lambda: None)
     config = {"binary": "omp", "secrets_file": str(secrets)}
     re_spec = resolve_lane_spec("reverse_engineer", {"reverse_engineer": {
+        # The bundled reverse_engineer default is goal mode; pin the one-shot
+        # arm explicitly so this test keeps covering the print path.
         "soul": str(soul), "mcp": str(mcp_source), "tools_allowlist": ["read"],
+        "goal": False,
     }})
     ui_spec = resolve_lane_spec("ui_dev", {"ui_dev": {"soul": "", "mcp": None}})
     with_mcp = omp.run_omp_lane(
@@ -191,6 +195,219 @@ def test_omp_jsonl_extracts_turn_end_text_and_quota_status():
     assert parsed["final_report"] == "first report"
     assert parsed["errorStatus"] == 403
     assert parsed["quota"] is True
+
+
+# --- OMP RPC goal mode --------------------------------------------------------
+
+
+def _write_fake_omp(tmp_path: Path) -> Path:
+    """Write a fake omp RPC stand-in driven by markers in the objective.
+
+    Objective markers pick the transcript: ``REFUSE`` answers the create with
+    a failed response, ``BUDGET`` ends the goal ``budget-limited`` after the
+    turns, ``EXIT`` quits right after an accepted create; anything else plays
+    ready + accepted create + two assistant turns + goal ``complete`` and then
+    idles until terminated (as the real RPC server does).
+    """
+    script = tmp_path / "omp-fake"
+    script.write_text(
+        """#!__PYTHON__
+import json
+import os
+import sys
+import time
+
+
+def emit(frame):
+    print(json.dumps(frame), flush=True)
+
+
+argv_out = os.environ.get("FAKE_OMP_ARGV_OUT")
+if argv_out:
+    with open(argv_out, "w", encoding="utf-8") as fh:
+        json.dump(sys.argv, fh)
+
+emit({"type": "ready", "protocolVersion": 1})
+for line in sys.stdin:
+    try:
+        command = json.loads(line)
+    except ValueError:
+        continue
+    if command.get("type") != "goal":
+        continue
+    objective = str(command.get("objective") or "")
+    if "REFUSE" in objective:
+        emit({"id": command["id"], "type": "response", "command": "goal",
+              "success": False, "message": "goal mode disabled"})
+        break
+    emit({"type": "goal_updated", "goal": {"id": "g1", "objective": objective,
+                                           "status": "active"}})
+    emit({"id": command["id"], "type": "response", "command": "goal",
+          "success": True,
+          "data": {"goal": {"id": "g1", "objective": objective,
+                            "status": "active"}}})
+    emit({"type": "turn_end",
+          "message": {"role": "assistant", "content": [{"text": "partial findings"}]}})
+    emit({"type": "turn_end",
+          "message": {"role": "assistant", "content": [{"text": "final analysis complete"}]}})
+    if "EXIT" in objective:
+        sys.exit(0)
+    if "BUDGET" in objective:
+        emit({"type": "goal_updated",
+              "goal": {"id": "g1", "objective": objective, "status": "budget-limited"}})
+        break
+    emit({"type": "goal_updated",
+          "goal": {"id": "g1", "objective": objective, "status": "complete"}})
+    emit({"type": "session_settled"})
+    while True:
+        time.sleep(1)
+""".replace("__PYTHON__", sys.executable),
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return script
+
+
+def _goal_lane_config(monkeypatch, tmp_path, workdir, *, lanes=None):
+    secrets = tmp_path / "omp.env"
+    secrets.write_text("LITELLM_API_KEY=test-key\n", encoding="utf-8")
+    soul = tmp_path / "soul.md"
+    soul.write_text("RE soul rules", encoding="utf-8")
+    mcp_source = tmp_path / "analysis.json"
+    mcp_source.write_text('{"servers": {}}', encoding="utf-8")
+    overlay = {"soul": str(soul), "mcp": str(mcp_source), "tools_allowlist": ["read"]}
+    config = {"binary": "", "secrets_file": str(secrets)}
+    _configure(monkeypatch, lanes or {"reverse_engineer": overlay})
+    return config, mcp_source
+
+
+def test_reverse_engineer_default_drives_rpc_goal_mode(monkeypatch, tmp_path, workdir):
+    fake = _write_fake_omp(tmp_path)
+    argv_out = tmp_path / "argv.json"
+    config, mcp_source = _goal_lane_config(monkeypatch, tmp_path, workdir)
+    config["binary"] = str(fake)
+    monkeypatch.setenv("FAKE_OMP_ARGV_OUT", str(argv_out))
+    spec = resolve_lane_spec("reverse_engineer", {
+        "reverse_engineer": {"mcp": str(mcp_source), "tools_allowlist": ["read"]},
+    })
+    result = omp.run_omp_lane(
+        spec, "Map the binary's string table", str(workdir),
+        "provider/model", omp_config=config,
+    )
+    assert result["success"] is True, result
+    argv = json.loads(argv_out.read_text(encoding="utf-8"))
+    assert "--mode" in argv and argv[argv.index("--mode") + 1] == "rpc"
+    assert "--no-ui" in argv and "--auto-approve" in argv
+    for forbidden in ("-p", "--print", "--goal", "--no-session", "--profile"):
+        assert forbidden not in argv
+    overlay_path = Path(argv[argv.index("--config") + 1])
+    assert overlay_path.is_file()
+    assert "continuationModes" in overlay_path.read_text(encoding="utf-8")
+    assert "- rpc" in overlay_path.read_text(encoding="utf-8")
+    session_dir = Path(argv[argv.index("--session-dir") + 1])
+    assert workdir in session_dir.parents
+    assert "test-key" not in json.dumps(argv)
+    # Declared MCP is still staged before the spawn.
+    assert (workdir / ".omp" / "mcp.json").read_text(encoding="utf-8") == \
+        mcp_source.read_text(encoding="utf-8")
+    assert result["final_report"] == "final analysis complete"
+
+
+def test_goal_lane_success_requires_completed_goal(monkeypatch, tmp_path, workdir):
+    fake = _write_fake_omp(tmp_path)
+    config, mcp_source = _goal_lane_config(monkeypatch, tmp_path, workdir)
+    config["binary"] = str(fake)
+    spec = resolve_lane_spec("reverse_engineer", {
+        "reverse_engineer": {"mcp": str(mcp_source)},
+    })
+    result = omp.run_omp_lane(
+        spec, "Analyze the firmware", str(workdir), "provider/model", omp_config=config,
+    )
+    # The fake played two assistant turns before completing the goal; success
+    # carries the LAST turn's text, and only after goal completion.
+    assert result["success"] is True
+    assert result["final_report"] == "final analysis complete"
+
+
+@pytest.mark.parametrize("marker,reason", [
+    ("BUDGET", "budget-limited"),
+    ("REFUSE", "refused"),
+])
+def test_goal_lane_budget_limited_and_refusal_are_not_success(
+    monkeypatch, tmp_path, workdir, marker, reason
+):
+    fake = _write_fake_omp(tmp_path)
+    config, mcp_source = _goal_lane_config(monkeypatch, tmp_path, workdir)
+    config["binary"] = str(fake)
+    spec = resolve_lane_spec("reverse_engineer", {
+        "reverse_engineer": {"mcp": str(mcp_source)},
+    })
+    result = omp.run_omp_lane(
+        spec, f"Analyze the firmware and report {marker}", str(workdir),
+        "provider/model", omp_config=config,
+    )
+    assert result["success"] is False
+    assert result["error"]
+    if marker == "BUDGET":
+        # The wrap-up text from the last completed turn is kept.
+        assert result["final_report"] == "final analysis complete"
+        assert "budget-limited" in result["error"]
+
+
+def test_goal_lane_process_exit_before_completion_is_not_success(
+    monkeypatch, tmp_path, workdir
+):
+    fake = _write_fake_omp(tmp_path)
+    config, mcp_source = _goal_lane_config(monkeypatch, tmp_path, workdir)
+    config["binary"] = str(fake)
+    spec = resolve_lane_spec("reverse_engineer", {
+        "reverse_engineer": {"mcp": str(mcp_source)},
+    })
+    result = omp.run_omp_lane(
+        spec, "Analyze and then EXIT", str(workdir), "provider/model", omp_config=config,
+    )
+    assert result["success"] is False
+    assert "before the goal completed" in result["error"]
+
+
+def test_explicit_goal_false_and_one_shot_lanes_stay_print_mode(monkeypatch, tmp_path, workdir):
+    secrets = tmp_path / "omp.env"
+    secrets.write_text("LITELLM_API_KEY=test-key\n", encoding="utf-8")
+    config = {"binary": "omp", "secrets_file": str(secrets)}
+    invocations = []
+
+    def _completed(argv, **kwargs):
+        invocations.append(argv)
+        event = {"type": "turn_end", "message": {"content": [{"text": "done"}]}}
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(event) + "\n", stderr="")
+
+    monkeypatch.setattr(omp.subprocess, "run", _completed)
+    re_one_shot = resolve_lane_spec("reverse_engineer", {
+        "reverse_engineer": {"soul": "", "goal": False},
+    })
+    for spec in (re_one_shot, resolve_lane_spec("ui_dev", {"ui_dev": {"soul": ""}}),
+                 resolve_lane_spec("backend_dev", {"backend_dev": {"soul": ""}})):
+        result = omp.run_omp_lane(
+            spec, "Do the thing", str(workdir), "provider/model", omp_config=config,
+        )
+        assert result["success"] is True
+    for argv in invocations:
+        assert argv[1:5] == ["-p", "--mode", "json", "--no-session"]
+
+
+def test_operator_overlay_omitting_goal_keeps_goal_default():
+    default_spec = resolve_lane_spec("reverse_engineer", {})
+    partial = resolve_lane_spec("reverse_engineer", {
+        "reverse_engineer": {"tools_allowlist": ["read"]},
+    })
+    explicit_off = resolve_lane_spec("reverse_engineer", {
+        "reverse_engineer": {"goal": False},
+    })
+    assert default_spec["goal"] is True
+    assert partial["goal"] is True
+    assert explicit_off["goal"] is False
+    assert resolve_lane_spec("client_dev", {})["goal"] is False
+    assert resolve_lane_spec("backend_dev", {})["goal"] is False
 
 
 def test_conditional_registration_uses_real_profile_config():

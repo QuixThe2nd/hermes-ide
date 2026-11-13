@@ -1,10 +1,5 @@
 # Troubleshooting
 
-### Voice not working
-1. Check `stt.enabled: true` in config.yaml
-2. Verify provider: `pip install faster-whisper` or set API key
-3. In gateway: `/restart`, or the agent can call the `restart` tool itself (same drain path). In CLI: exit and relaunch.
-
 ### Tool not available
 1. `hermes tools` — check if toolset is enabled for your platform
 2. Some tools need env vars (check `.env`)

@@ -1,19 +1,16 @@
-"""Tests for the /credits command — shared view core + gateway handler.
+"""Tests for the credits view core.
+
 
 `/credits` is the focused money surface (balance in, top-up out). These tests
-exercise the surface-agnostic `build_credits_view()` core and assert the gateway
-handler renders the block + tappable top-up URL + no-wait copy. The CLI panel is
-a thin wrapper over the same view (interactive prompt_toolkit modal — covered by
-the view-core tests plus manual verification).
+exercise the surface-agnostic `build_credits_view()` core. The CLI panel is a thin
+wrapper over the same view (interactive prompt_toolkit modal — covered by the
+view-core tests plus manual verification).
 """
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
-import agent.account_usage as account_usage
 from agent.account_usage import CreditsView, build_credits_view
 from hermes_cli.nous_account import NousPortalAccountInfo, NousPaidServiceAccessInfo
 
@@ -82,43 +79,12 @@ def test_view_built_with_org_pinned_url_and_identity(_logged_in_account):
 
 
 
-# ── gateway _handle_topup_command (the messaging billing surface) ────────────
-
-
-class _FakeEvent:
-    pass
-
-
-def _make_gateway_stub():
-    """Minimal object exposing the mixin's _handle_topup_command."""
-    from gateway.slash_commands import GatewaySlashCommandsMixin
-
-    class _Stub(GatewaySlashCommandsMixin):
-        def __init__(self):
-            pass
-
-    return _Stub()
-
-
-
-
-def test_gateway_topup_not_logged_in(monkeypatch):
-    monkeypatch.setattr(
-        account_usage, "build_credits_view", lambda *a, **kw: CreditsView(logged_in=False)
-    )
-    stub = _make_gateway_stub()
-    out = asyncio.run(stub._handle_topup_command(_FakeEvent()))
-    assert "Not logged into Nous Portal" in out
-
-
-
-
 # ── command registry ────────────────────────────────────────────────────────
 
 
 def test_credits_command_fully_removed():
     """`/credits` and the old `/billing` are gone entirely — not commands, not
-    aliases. Billing lives only on /topup, with NO aliases, on every platform."""
+    aliases."""
     from hermes_cli.commands import resolve_command, COMMAND_REGISTRY
 
     # Both old names resolve to nothing.
@@ -130,8 +96,3 @@ def test_credits_command_fully_removed():
     for c in COMMAND_REGISTRY:
         assert "credits" not in (c.aliases or ())
         assert "billing" not in (c.aliases or ())
-    # /topup is the billing surface, on every surface, and carries no aliases.
-    entry = next(c for c in COMMAND_REGISTRY if c.name == "topup")
-    assert entry.cli_only is False
-    assert entry.gateway_only is False
-    assert not entry.aliases

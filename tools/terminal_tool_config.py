@@ -61,8 +61,9 @@ _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 def _is_host_cwd(path: str) -> bool:
     return path.startswith(_HOST_CWD_PREFIXES) or bool(_WINDOWS_DRIVE_RE.match(path))
 
-_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
-_BUILTIN_BACKENDS = _CONTAINER_BACKENDS | {"local", "ssh", "managed_modal"}
+# Built-in terminal backends. No built-in container backends remain — a plugin
+# may still declare one via its provider flags (``is_container``, ``is_remote``).
+_BUILTIN_BACKENDS = frozenset({"local", "ssh"})
 
 
 def _plugin_registry_lookup(env_type: str, fn_name: str, default, *args):
@@ -86,8 +87,8 @@ def _plugin_env_flag(env_type: str, attr: str, default=False):
 
 
 def _is_container_backend(env_type: str) -> bool:
-    """True for built-in container backends and plugins declaring ``is_container``."""
-    return env_type in _CONTAINER_BACKENDS or _plugin_env_flag(env_type, "is_container")
+    """True for plugin-registered backends declaring ``is_container``."""
+    return _plugin_env_flag(env_type, "is_container")
 
 
 def _get_plugin_env_provider(env_type: str):

@@ -190,8 +190,7 @@ class TestProfileUserTreesNeverCleaned:
 
 class TestProtectedDirsNeverRmtreed:
     """A tracked DIRECTORY under a protected top level (``cache/`` holds terminal snapshots)
-    must never be rmtree'd by the tracked-item path, only by-file aging; ``kanban/`` is never
-    tracked at all (its attachments/workspaces have their own lifecycle)."""
+    must never be rmtree'd by the tracked-item path, only by-file aging."""
 
     def test_stale_cache_dir_entry_is_skipped_but_its_old_files_still_age_out(self, _isolate_env):
         dg = _load_lib()
@@ -215,28 +214,32 @@ class TestProtectedDirsNeverRmtreed:
         assert dg.load_tracked() == [], "the stale dir entry is dropped, not retried every session"
         assert "SKIPPED" in (_isolate_env / "disk-cleanup" / "cleanup.log").read_text()
 
-    def test_kanban_test_files_are_never_tracked_or_deleted(self, _isolate_env):
+    def test_kanban_test_files_age_out_like_any_other_dir(self, _isolate_env):
+        """The Kanban dir exemptions went with the feature: ``kanban/`` is no longer a
+        protected top level, so test_* staging files there track and sweep exactly like
+        root-level scratch, and its empty dirs are swept."""
         pi = _load_plugin_init()
         dg = _load_lib()
         att = _isolate_env / "kanban" / "attachments" / "t1" / "test_evidence.sh"
         att.parent.mkdir(parents=True)
         att.write_text("x")
-        assert dg.guess_category(att) is None
-        # A stale pre-fix entry must be dropped by re-validation instead of deleted.
-        dg.save_tracked([{"path": str(att), "category": "test",
-                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        assert dg.guess_category(att) == "test"
         pi._on_post_tool_call(tool_name="write_file", args={"path": str(att), "content": "x"},
                               result="OK", task_id="t1", session_id="s_kb")
         scratch = _isolate_env / "test_scratch.py"
         scratch.write_text("x")
         pi._on_post_tool_call(tool_name="write_file", args={"path": str(scratch), "content": "x"},
                               result="OK", task_id="t1", session_id="s_kb")
+        empty = _isolate_env / "kanban" / "workspaces" / "t2"
+        empty.mkdir(parents=True)
 
         pi._on_session_end(session_id="s_kb", completed=True, interrupted=False)
 
-        assert att.exists(), "kanban attachments are task-managed, never auto-deleted"
+        assert not att.exists(), "kanban/ is no longer exempt: test_* files age out"
         assert not scratch.exists(), "root-level scratch files are still cleaned up (control)"
         assert dg.load_tracked() == []
+        dg._sweep_empty_dirs(_isolate_env)
+        assert not empty.exists(), "empty dirs under kanban/ are swept like any other tree"
 
 
 class TestStaleCronEntryMigration:

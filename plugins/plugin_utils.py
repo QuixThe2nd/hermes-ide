@@ -19,7 +19,7 @@ T = TypeVar("T")
 class SingletonSlot(Generic[T]):
     """Thread-safe lazy slot: caches the first successfully-built instance ("first config wins").
     The factory runs at most once under concurrent first calls; if it raises, nothing is cached
-    and the next call retries. ``_slot.get(lambda: Honcho(**resolve(config)))``."""
+    and the next call retries. ``_slot.get(lambda: Provider(**resolve(config)))``."""
 
     __slots__ = ("_lock", "_value", "_set")
 

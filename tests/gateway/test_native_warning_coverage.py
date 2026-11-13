@@ -55,7 +55,7 @@ async def test_matrix_download_diagnostic_not_caption_is_suppressed(policy, capt
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["send_document", "send_voice", "send_multiple_images"])
+@pytest.mark.parametrize("method", ["send_document", "send_multiple_images"])
 @pytest.mark.parametrize("forum", [False, True])
 async def test_discord_rejected_media_preserves_caption_without_fake_receipt(policy, method, forum, tmp_path, caplog):
     adapter = DiscordAdapter(PlatformConfig())

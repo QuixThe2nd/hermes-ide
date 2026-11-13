@@ -2,7 +2,7 @@
 
 These groups either imported their handler from a sibling module inside the
 parser block (moa, fallback, migrate, bundles, checkpoints, curator,
-journey, secrets, egress) or carried a closure handler that only closed over
+journey, secrets) or carried a closure handler that only closed over
 its own parser (worktree, browser, computer-use, sessions, completion). The
 closures moved verbatim into the builder; sessions/completion take the handler
 by injection.
@@ -20,7 +20,6 @@ from hermes_cli.subcommands.checkpoints import build_checkpoints_parser
 from hermes_cli.subcommands.completion import build_completion_parser
 from hermes_cli.subcommands.computer_use import build_computer_use_parser
 from hermes_cli.subcommands.curator import build_curator_parser
-from hermes_cli.subcommands.egress import build_egress_parser
 from hermes_cli.subcommands.fallback import build_fallback_parser
 from hermes_cli.subcommands.journey import build_journey_parser
 from hermes_cli.subcommands.migrate import build_migrate_parser
@@ -42,7 +41,6 @@ SELF_CONTAINED = [
     ("worktree", build_worktree_parser, ["worktree", "prune", "--dry-run"]),
     ("browser", build_browser_parser, ["browser", "close-profile"]),
     ("secrets", build_secrets_parser, ["secrets"]),
-    ("egress", build_egress_parser, ["egress"]),
     ("migrate", build_migrate_parser, ["migrate", "xai", "--apply"]),
     ("checkpoints", build_checkpoints_parser, ["checkpoints"]),
     ("bundles", build_bundles_parser, ["bundles"]),

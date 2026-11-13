@@ -17,7 +17,7 @@ from tools.send_message_senders import _TELEGRAM_CAPTION_LIMIT
 
 def test_single_image_short_text_becomes_caption():
     caption, body = _media_caption_split(
-        "This Caption", [("/tmp/F22.png", False)], max_caption_len=_DEFAULT_CAPTION_LIMIT
+        "This Caption", ["/tmp/F22.png"], max_caption_len=_DEFAULT_CAPTION_LIMIT
     )
     assert caption == "This Caption"
     assert body == ""
@@ -27,7 +27,7 @@ def test_multi_file_keeps_separate_body():
     text = "two photos"
     caption, body = _media_caption_split(
         text,
-        [("/tmp/a.png", False), ("/tmp/b.png", False)],
+        ["/tmp/a.png", "/tmp/b.png"],
         max_caption_len=_DEFAULT_CAPTION_LIMIT,
     )
     assert caption is None
@@ -35,10 +35,10 @@ def test_multi_file_keeps_separate_body():
 
 
 def test_unknown_extension_keeps_separate_body():
-    # A non-captionable kind (e.g. an audio note that isn't flagged voice)
+    # A non-captionable kind (audio rides as a document, not a captionable bubble)
     text = "some audio"
     caption, body = _media_caption_split(
-        text, [("/tmp/song.mp3", False)], max_caption_len=_DEFAULT_CAPTION_LIMIT
+        text, ["/tmp/song.mp3"], max_caption_len=_DEFAULT_CAPTION_LIMIT
     )
     assert caption is None
     assert body == text

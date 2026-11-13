@@ -137,7 +137,7 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
             # adapter has no profile scope (and must not trust the hub process's
             # env), so the resolved value travels in the attach payload — over the
             # same-user socket only, never logged or persisted.
-            gate_credential = platform_gate_env("OPENROUTER_API_KEY") or None
+            gate_credential = platform_gate_env("LITELLM_API_KEY") or None
             result = await self._call("attach", {
                 "generation_id": self._generation_id,
                 "profile": self._owner_profile or "default",
@@ -680,12 +680,6 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
         return self._send_result(await self._rpc(
             "send_multiple_images", chat_id, images,
             metadata=metadata, reply_to=reply_to))
-
-    async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None,
-                         reply_to: Optional[str] = None, metadata: Optional[dict] = None, **kwargs) -> SendResult:
-        return self._send_result(await self._rpc(
-            "send_voice", chat_id, audio_path, caption=caption,
-            reply_to=reply_to, metadata=metadata, **kwargs))
 
     async def send_image_file(self, chat_id: str, image_path: str, caption: Optional[str] = None,
                               reply_to: Optional[str] = None, metadata: Optional[dict] = None) -> SendResult:

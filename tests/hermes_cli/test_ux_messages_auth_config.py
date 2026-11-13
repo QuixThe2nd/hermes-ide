@@ -92,8 +92,6 @@ def test_no_provider_configured_points_at_model_login_and_auth_add(monkeypatch, 
     from hermes_constants import display_hermes_home
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda env=None: False)
-
     with pytest.raises(AuthError) as excinfo:
         resolve_provider("auto")
 

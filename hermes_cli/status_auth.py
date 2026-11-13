@@ -82,7 +82,7 @@ _FEATURE_STATES = (
     (lambda f, _: f.managed_by_nous, lambda f: "active via Nous subscription"),
     (lambda f, _: f.active, lambda f: f"active via {f.current_provider or 'configured provider'}"),
     (lambda f, auth: f.included_by_default and auth, lambda f: "included by subscription, not currently selected"),
-    (lambda f, auth: f.key == "modal" and auth, lambda f: "available via subscription (optional)"))
+)
 
 
 def _render_api_keys(ctx):

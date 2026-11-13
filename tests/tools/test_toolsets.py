@@ -261,9 +261,11 @@ class TestDiscordApproveActionRemoved:
 
     def test_discord_siblings_remain(self):
         discover_builtin_tools()
-        for tool in ("discord", "resolve_ticket"):
+        for tool in ("discord", "discord_admin"):
             assert registry.get_entry(tool) is not None
-            assert tool in TOOLSETS["discord"]["tools"]
+        assert "discord" in TOOLSETS["discord"]["tools"]
+        assert "discord_admin" in TOOLSETS["discord_admin"]["tools"]
+        for tool in ("discord", "discord_admin"):
             assert tool in TOOLSETS["hermes-discord"]["tools"]
 
 

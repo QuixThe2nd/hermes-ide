@@ -56,7 +56,7 @@ pairs, live facade-win for diverged pairs with post-restore merge history to `ga
 
 # Wave-2 lane 3 — unresolved / follow-ups
 
-Scope: `run_shutdown.py` (41 pairs), `run_agent_cache.py` (22), `run_voice.py` (17),
+Scope: `run_shutdown.py` (41 pairs), `run_agent_cache.py` (22),
 `run_goals.py` (14). All 94 manifest pairs resolved; none left untouched as genuinely
 ambiguous. Archaeology: NONE of the 94 facade defs existed in `gateway/run.py` at
 `6b5950dc71a5^` — the Oct-02 upstream merge (6b5950dc) authored them into the facade
@@ -103,7 +103,3 @@ from commit e06ee64784ae):
    `_api_server_hook` (`_active_api_run_count`, `_interrupt_api_server_runs`,
    `_scale_to_zero_is_idle`), `_running_cron_job_count` (`_active_cron_job_count`,
    `_scale_to_zero_is_idle`).
-10. Voice family helper-based rewrites left unadopted: `_apply_voice_mode`,
-    `_toggle_adapter_auto_tts_set`, `_delivery_adapter_for`, `_VOICE_MODES`,
-    `_voice_input_source`, `_is_user_authorized_for_source`, `_deliver_voice_reply`
-    multi-file TTS handling (`_send_voice_reply` placed facade sends only the first file).

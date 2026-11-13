@@ -186,7 +186,7 @@ class TestUnrecoverableDropIsLoud:
         adapter._keep_typing = _hold_typing
 
         async def handler(_event):
-            return "[[audio_as_voice]]\nMEDIA: /tmp/missing.ogg"  # only directives
+            return "[[as_document]]\nMEDIA: /tmp/missing.ogg"  # only directives
 
         adapter.set_message_handler(handler)
         # Extraction strips to empty AND the media path filtered out (no file).

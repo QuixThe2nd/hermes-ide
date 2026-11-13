@@ -1,7 +1,7 @@
 """Auto-goal intent classification via Jev Decisions, JSONL audit trail, and report.
 
 Every eligible human gateway message is classified as CHAT, TASK, APPROVAL, or
-CHASE by one Jev Decisions POST (model ``typesafe/jev-1.13``) and appended to a
+CHASE by one Jev Decisions POST (model ``jev-1.13.0``) and appended to a
 private JSONL log. There is no LLM fallback: transport/HTTP/schema failures are
 retried once and then fail closed as ``unknown``. Only a CHASE at or above the
 action confidence floor (the same ``AUTO_GOAL_CONFIDENCE_MIN`` auto-goal
@@ -44,9 +44,10 @@ _CHASE_SNIPPET_LIMIT = 200
 
 # Jev Decisions endpoint (same fixed URL the Discord response gate posts to; the
 # string is duplicated rather than imported so hermes_cli never depends on a
-# platform plugin module).
-JEV_DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions"
-JEV_MODEL = "typesafe/jev-1.13"
+# platform plugin module). Direct to the litellm proxy fronting TypeSafe's Jev;
+# the credential is a litellm virtual key (LITELLM_API_KEY).
+JEV_DECISIONS_URL = "http://192.168.30.21:4000/jev/decisions"
+JEV_MODEL = "jev-1.13.0"
 _JEV_TIMEOUT_S = 8.0
 _JEV_ATTEMPTS = 2  # one retry on transport/HTTP/schema failure, then fail closed
 
@@ -183,8 +184,9 @@ def _unknown(reason: str) -> Dict[str, Any]:
     }
 
 
-def _openrouter_credential() -> str:
-    """OPENROUTER_API_KEY through the agent secret scope; unscoped paths read os.environ.
+def _litellm_credential() -> str:
+    """LITELLM_API_KEY (litellm virtual key) through the agent secret scope; unscoped
+    paths read os.environ.
 
     Mirrors ``agent.auxiliary_client._scoped_key_env``: with a profile scope
     installed its verdict is authoritative (a scoped miss never borrows another
@@ -194,8 +196,8 @@ def _openrouter_credential() -> str:
         from agent.secret_scope import UnscopedSecretError, get_secret
 
         with contextlib.suppress(UnscopedSecretError):
-            return (get_secret("OPENROUTER_API_KEY") or "").strip()
-    return (os.getenv("OPENROUTER_API_KEY") or "").strip()
+            return (get_secret("LITELLM_API_KEY") or "").strip()
+    return (os.getenv("LITELLM_API_KEY") or "").strip()
 
 
 def build_intent_question() -> Dict[str, Any]:
@@ -285,10 +287,10 @@ def classify(message_text: str, context: Optional[Dict[str, Any]] = None) -> Dic
         ).strip()[:_LAST_ASSISTANT_LIMIT],
         "message": message[:_MESSAGE_LIMIT],
     }
-    credential = _openrouter_credential()
+    credential = _litellm_credential()
     if not credential:
-        logger.debug("goal intent classification unavailable: no OPENROUTER_API_KEY")
-        return _unknown("classification unavailable: no openrouter credential")
+        logger.debug("goal intent classification unavailable: no LITELLM_API_KEY")
+        return _unknown("classification unavailable: no litellm virtual key")
 
     payload = {
         "model": JEV_MODEL,

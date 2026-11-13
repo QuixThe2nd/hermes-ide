@@ -3,7 +3,6 @@ Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_c
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import shutil
 import subprocess
@@ -11,9 +10,7 @@ import sys
 from pathlib import Path
 from hermes_cli.doctor_platform import _system_package_install_cmd
 from hermes_cli.doctor_report import Finding, _fail_and_issue, check_bool, check_info, check_ok, check_warn, doctor_check
-from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import is_termux as _is_termux
-from tools.environments.docker import docker_runtime_name, docker_runtime_start_hint, find_docker
 
 
 def _safe_which(cmd: str) -> str | None:
@@ -137,17 +134,7 @@ def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
 
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
-    from hermes_cli.doctor_state import _honcho_is_configured_for_doctor
-    updated_available, updated_unavailable = list(available), []
-    for item in unavailable:
-        if item.get("name") == "honcho" and _honcho_is_configured_for_doctor():
-            gated = "honcho"
-        else:
-            updated_unavailable.append(item)
-            continue
-        if gated not in updated_available:
-            updated_available.append(gated)
-    return updated_available, updated_unavailable
+    return list(available), list(unavailable)
 
 
 def _enabled_cli_toolsets_for_doctor() -> set[str] | None:
@@ -189,33 +176,7 @@ def _check_git_and_rg(should_fix: bool, f: Finding) -> None:
         check_info(f"Install for faster search: {_system_package_install_cmd('ripgrep')}")
 
 
-_BUILTIN_TERMINAL_BACKENDS = {"local", "docker", "singularity", "modal", "managed_modal", "daytona", "vercel_sandbox", "ssh"}
-
-
-def _check_docker_backend(terminal_env: str, running_in_container: bool, issues: list[str]) -> None:
-    docker_exe = find_docker()
-    if terminal_env == "docker":
-        if not docker_exe:
-            _fail_and_issue("Docker or Podman not installed", "(needed for the 'docker' terminal backend)",
-                            "Install Docker or Podman, or run `hermes setup terminal` to switch backend.", issues)
-        else:
-            runtime = docker_runtime_name(docker_exe)
-            hint = docker_runtime_start_hint(docker_exe)
-            unreachable = (
-                f"{runtime} daemon not running" if runtime == "Docker" else f"{runtime} not reachable")
-            # `<cli> version` hits /version, which socket proxies (tecnativa) allow by default; `docker info`
-            # needs /info and is commonly blocked, giving a false "daemon not running". The backend itself
-            # probes with `<cli> version` too (environments/docker.py).
-            _require(_run_ok([docker_exe, "version"], timeout=10),
-                     (runtime, "(daemon running)" if runtime == "Docker" else "(reachable)"),
-                     (unreachable, "(needed for the 'docker' terminal backend)"),
-                     f"{hint[0].upper()}{hint[1:]}, or run `hermes setup terminal` to switch backend.", issues)
-    elif docker_exe:
-        check_ok(docker_runtime_name(docker_exe), "(optional)")
-    elif _is_termux():
-        check_info("Docker backend is not available inside Termux (expected on Android)")
-    elif not running_in_container:  # in-container case already explained by the caller
-        check_warn("Docker/Podman not found", "(optional)")
+_BUILTIN_TERMINAL_BACKENDS = {"local", "ssh"}
 
 
 def _check_ssh_backend(issues: list[str]) -> None:
@@ -240,42 +201,6 @@ def _require(cond, ok, bad, issue: str, issues: list[str]) -> None:
         issues.append(issue)
 
 
-def _check_daytona_backend(issues: list[str]) -> None:
-    _require(os.getenv("DAYTONA_API_KEY"), ("Daytona API key", "(configured)"),
-             ("Daytona API key missing", "(needed for the 'daytona' terminal backend)"),
-             "run `hermes setup terminal` (Daytona) to enter it.", issues)
-    try:
-        from daytona import Daytona  # noqa: F401 — SDK presence check
-        check_ok("daytona SDK", "(installed)")
-    except ImportError:
-        _fail_and_issue("daytona SDK not installed", "(pip install daytona)", "Install daytona SDK: pip install daytona", issues)
-
-
-def _check_vercel_backend(issues: list[str]) -> None:
-    from tools.terminal_tool_backends import _SUPPORTED_VERCEL_RUNTIMES
-    runtime = os.getenv("TERMINAL_VERCEL_RUNTIME", "node24").strip() or "node24"
-    supported = ", ".join(_SUPPORTED_VERCEL_RUNTIMES)
-    _require(runtime in _SUPPORTED_VERCEL_RUNTIMES, ("Vercel runtime", f"({runtime})"),
-             ("Vercel runtime unsupported", f"({runtime}; use {supported})"), f"Set TERMINAL_VERCEL_RUNTIME to one of: {supported}", issues)
-    _require(os.getenv("TERMINAL_CONTAINER_DISK", "51200").strip() in {"", "0", "51200"},
-             ("Vercel disk setting", "(uses platform default)"), ("Vercel custom disk unsupported", "(reset terminal.container_disk to 51200)"),
-             "Vercel Sandbox does not support custom container_disk; use the shared default 51200", issues)
-    _require(importlib.util.find_spec("vercel") is not None, ("vercel SDK", "(installed)"),
-             ("vercel SDK not installed", "(pip install 'hermes-agent[vercel]')"),
-             "Install the Vercel optional dependency: pip install 'hermes-agent[vercel]'", issues)
-    auth_status = describe_vercel_auth()
-    if auth_status.ok:
-        check_ok("Vercel auth", f"({auth_status.label})")
-    elif auth_status.label.startswith("partial"):
-        _fail_and_issue("Vercel auth incomplete", f"({auth_status.label})", "Set VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID together", issues)
-    else:
-        _fail_and_issue("Vercel auth not configured", f"({auth_status.label})", "Configure Vercel Sandbox auth with VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID", issues)
-    for line in auth_status.detail_lines:
-        check_info(f"Vercel auth {line}")
-    persistent = os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"1", "true", "yes", "on"}
-    check_info("Vercel persistence: snapshot filesystem only; live processes do not survive sandbox recreation"
-               if persistent else "Vercel persistence: ephemeral filesystem")
-
 
 def _check_plugin_backend(terminal_env: str, issues: list[str]) -> None:
     try:
@@ -292,24 +217,13 @@ def _check_plugin_backend(terminal_env: str, issues: list[str]) -> None:
         _require(ok, (label, detail), (label, detail), detail.strip("()"), issues)
 
 
-_BACKEND_CHECKS = {"ssh": _check_ssh_backend, "daytona": _check_daytona_backend, "vercel_sandbox": _check_vercel_backend}
+_BACKEND_CHECKS = {"ssh": _check_ssh_backend}
 
 
 @doctor_check()
 def _check_terminal_backend(should_fix: bool, f: Finding) -> None:
-    """Docker/SSH/Daytona/Vercel/plugin terminal backends, gated on TERMINAL_ENV."""
+    """SSH/plugin terminal backends, gated on TERMINAL_ENV."""
     terminal_env = os.getenv("TERMINAL_ENV", "local")
-    try:
-        from hermes_constants import is_container as _is_container
-        running_in_container = _is_container()
-    except Exception:
-        running_in_container = False
-    # In our container docker-in-docker isn't set up, so local is intended: skip the noisy "Docker/Podman not found"
-    # warning. An explicit TERMINAL_ENV=docker (mounted docker.sock) still gets checked.
-    if running_in_container and terminal_env != "docker":
-        check_info("Running inside a container — using local terminal backend (docker-in-docker is not configured by default)")
-        terminal_env = "local"
-    _check_docker_backend(terminal_env, running_in_container, f.issues)
     if terminal_env in _BACKEND_CHECKS:
         _BACKEND_CHECKS[terminal_env](f.issues)
     elif terminal_env not in _BUILTIN_TERMINAL_BACKENDS:

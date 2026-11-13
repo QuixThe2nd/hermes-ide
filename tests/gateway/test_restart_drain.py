@@ -71,39 +71,6 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
     )
 
 
-def test_load_busy_text_mode_follows_input_mode_and_honors_legacy(tmp_path, monkeypatch):
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.delenv("HERMES_GATEWAY_BUSY_TEXT_MODE", raising=False)
-    monkeypatch.delenv("HERMES_GATEWAY_BUSY_INPUT_MODE", raising=False)
-
-    # No knobs set → follows busy_input_mode, which defaults to interrupt.
-    assert gateway_run.GatewayRunner._load_busy_text_mode() == "interrupt"
-
-    # busy_input_mode=queue propagates to text handling (single source of truth).
-    (tmp_path / "config.yaml").write_text(
-        "display:\n  busy_input_mode: queue\n", encoding="utf-8"
-    )
-    assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
-
-    # Legacy explicit busy_text_mode still wins for backward compat.
-    (tmp_path / "config.yaml").write_text(
-        "display:\n  busy_input_mode: interrupt\n  busy_text_mode: queue\n",
-        encoding="utf-8",
-    )
-    assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
-
-    # Legacy env override wins too.
-    (tmp_path / "config.yaml").write_text(
-        "display:\n  busy_input_mode: interrupt\n", encoding="utf-8"
-    )
-    monkeypatch.setenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "queue")
-    assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
-
-    # Bogus legacy value is ignored → falls through to busy_input_mode (interrupt).
-    monkeypatch.setenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "bogus")
-    assert gateway_run.GatewayRunner._load_busy_text_mode() == "interrupt"
-
-
 def test_load_signal_interrupt_grace_timeout_from_typed_config(
     tmp_path, monkeypatch, caplog
 ):
@@ -1019,7 +986,7 @@ async def test_drain_suppress_skips_notification_channel_keeps_session_ping(tmp_
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    runner, adapter = make_restart_runner()
+    runner, adapter = make_restart_runner(platform=Platform.TELEGRAM)
     # A notification channel distinct from the active session's chat.
     runner.config.platforms[Platform.TELEGRAM].notification_channel = DeliveryTarget(
         platform=Platform.TELEGRAM,

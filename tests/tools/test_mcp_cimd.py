@@ -41,7 +41,7 @@ from tools.mcp_oauth import (  # noqa: E402 — after the SDK availability gate
 
 _DOCUMENT_PATH = (
     Path(__file__).resolve().parents[2]
-    / "website" / "static" / "oauth" / "client-metadata.json"
+    / "assets" / "oauth" / "client-metadata.json"
 )
 
 

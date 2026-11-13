@@ -322,9 +322,8 @@ caption
             {"role": "assistant", "content": "Use a standalone media message."},
         ]
 
-        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        tags = _collect_auto_append_media_tags(messages, history_offset=0)
         assert tags == []
-        assert voice is False
 
 
     def test_collect_history_media_paths_includes_image_generate_json(self):
@@ -452,7 +451,7 @@ caption
         # (larger than the shrunken message list), so the collector rescans
         # the full list. With the dedup set populated, the already-delivered
         # image must NOT be re-emitted.
-        tags, _ = _collect_auto_append_media_tags(
+        tags = _collect_auto_append_media_tags(
             history, history_offset=9999, history_media_paths=history_paths
         )
         assert tags == [], f"generated image re-emitted after compression: {tags}"

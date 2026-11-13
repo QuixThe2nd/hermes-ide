@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 from tools.send_message_targets import resolve_send_target
 from tools.send_message_senders import (
-    _AUDIO_EXTS, _DEFAULT_CAPTION_LIMIT, _IMAGE_EXTS, _NO_DELIVERABLE, _VIDEO_EXTS, _VOICE_EXTS,
+    _AUDIO_EXTS, _DEFAULT_CAPTION_LIMIT, _IMAGE_EXTS, _NO_DELIVERABLE, _VIDEO_EXTS,
     _adapter_media_method, _error, _live_adapter, _media_caption_split, _plugin_standalone_sender,
     _registry_standalone_send, _sanitize_error_text,
     _send_matrix_via_adapter)
@@ -381,10 +381,8 @@ def _describe_media_for_mirror(media_files):
         return ""
     if len(media_files) != 1:
         return f"[Sent {len(media_files)} media attachments]"
-    media_path, is_voice = media_files[0]
+    media_path = media_files[0]
     ext = os.path.splitext(media_path)[1].lower()
-    if is_voice and ext in _VOICE_EXTS:
-        return "[Sent voice message]"
     kind = next((k for exts, k in ((_IMAGE_EXTS, "image"), (_VIDEO_EXTS, "video"), (_AUDIO_EXTS, "audio"))
                  if ext in exts), "document")
     return f"[Sent {kind} attachment]"
@@ -423,15 +421,11 @@ async def _send_live_adapter_media(adapter, chat_id, message, media_files, *, th
             return {"error": f"Adapter send failed: {_bounded_send_error(last_result.error)}"}
     from gateway.platforms.base import BasePlatformAdapter
     total = len(media_files)
-    for index, descriptor in enumerate(media_files):
-        media_path = descriptor[0] if isinstance(descriptor, (list, tuple)) and descriptor else None
-        if not isinstance(media_path, str) or not media_path:
-            return {"error": f"Adapter media send failed: invalid media descriptor {index + 1}/{total}"}
-        is_voice = len(descriptor) > 1 and bool(descriptor[1])
+    for index, media_path in enumerate(media_files):
         if not os.path.exists(media_path):
             return {"error": f"Adapter media send failed: media file {index + 1}/{total} was not found"}
         ext = os.path.splitext(media_path)[1].lower()
-        method_name, media_kind = _adapter_media_method(ext, is_voice or ext in _AUDIO_EXTS, force_document)
+        method_name, media_kind = _adapter_media_method(ext, force_document)
         adapter_method = getattr(type(adapter), method_name, None)
         if adapter_method is None or adapter_method is getattr(BasePlatformAdapter, method_name):
             return {"error": (f"Live adapter does not implement native {media_kind} delivery; "

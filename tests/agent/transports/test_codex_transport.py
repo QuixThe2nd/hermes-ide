@@ -278,41 +278,17 @@ class TestCodexBuildKwargs:
         kw = transport.preflight_kwargs(kw, sanitize_harmony_tokens=is_codex_backend)
         assert [item["content"] for item in kw["input"]] == [expected_user, expected_assistant, expected_user]
 
-    @pytest.mark.parametrize("model", [
-        "gpt-5.5",
-        "gpt-5.5-pro",
-        "gpt-5.4",
-        "gpt-5.2",
-        "gpt-5.1-codex-max",
-        "gpt-5.1",
-        "gpt-5.1-codex",
-        "gpt-5.1-codex-mini",
-        "gpt-5.1-chat-latest",
-        "gpt-5",
-        "gpt-5-codex",
-        "gpt-4.1",
-        "openai.gpt-5.5-pro",
-        "openai/gpt-5.1-codex-2026-01-01",
-    ])
-    def test_extended_cache_models_set_24h_prompt_cache_retention(self, transport, model):
+    @pytest.mark.parametrize("model", ["gpt-5.5", "gpt-4o", "openai.gpt-5.5-pro"])
+    def test_meta_model_api_sets_24h_prompt_cache_retention(self, transport, model):
+        # Meta Model API (api.meta.ai): caching is opt-in via prompt_cache_retention
+        # (0% hits without; #32243). The rule is host-exact and model-agnostic.
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model=model, messages=messages, tools=[],
             session_id="test-session",
-            base_url="https://bedrock-mantle.us-west-2.api.aws/v1",
+            base_url="https://api.meta.ai/v1",
         )
         assert kw["prompt_cache_retention"] == "24h"
-
-    @pytest.mark.parametrize("model", ["gpt-5.6", "gpt-4o", "o3"])
-    def test_prompt_cache_retention_omitted_for_other_model_families(self, transport, model):
-        kw = transport.build_kwargs(
-            model=model,
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=[],
-            session_id="test-session",
-            base_url="https://bedrock-mantle.us-west-2.api.aws/v1",
-        )
-        assert "prompt_cache_retention" not in kw
 
     @pytest.mark.parametrize("base_url", [
         "https://api.openai.com/v1",
@@ -322,10 +298,10 @@ class TestCodexBuildKwargs:
         "https://api.githubcopilot.com",
         "https://chatgpt.com/backend-api/codex",
         "https://responses.example.com/v1",
-        "https://bedrock-mantle.us-west-2.api.aws.example/v1",
-        "https://example.com/bedrock-mantle.us-west-2.api.aws/v1",
+        "https://api.meta.ai.example/v1",
+        "https://example.com/api.meta.ai/v1",
     ])
-    def test_prompt_cache_retention_omitted_for_non_mantle_endpoints(self, transport, base_url):
+    def test_prompt_cache_retention_omitted_for_non_meta_endpoints(self, transport, base_url):
         kw = transport.build_kwargs(
             model="gpt-5.4",
             messages=[{"role": "user", "content": "Hi"}],

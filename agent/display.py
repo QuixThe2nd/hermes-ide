@@ -348,7 +348,7 @@ def _delegate_task_goals(tasks: Any, *, per_goal_len: int) -> list[str]:
 _PRIMARY_ARGS = {
     "terminal": "command", "web_search": "query", "web_extract": "urls", "read_file": "path",
     "write_file": "path", "patch": "path", "search_files": "pattern", "browser_navigate": "url",
-    "browser_click": "ref", "browser_type": "text", "image_generate": "prompt", "text_to_speech": "text",
+    "browser_click": "ref", "browser_type": "text", "image_generate": "prompt",
     "vision_analyze": "question", "skill_view": "name", "skills_list": "category", "cronjob_manage": "action",
     "execute_code": "code", "delegate_task": "goal", "clarify": "question",
     "skill_manage": "name",
@@ -483,7 +483,7 @@ _TOOL_VERBS: dict[str, str] = {
     "read_file": "Reading", "write_file": "Writing", "patch": "Editing", "search_files": "Searching files",
     "terminal": "Running", "execute_code": "Running code",
     "image_generate": "Generating image", "video_generate": "Generating video",
-    "text_to_speech": "Generating speech", "vision_analyze": "Looking at the image",
+    "vision_analyze": "Looking at the image",
     "session_search": "Searching past sessions",
     "skill_view": "Reading skill", "skills_list": "Listing skills", "skill_manage": "Updating skill",
     "delegate_task": "Delegating", "delegate_agent": "Delegating",
@@ -940,20 +940,6 @@ def _describe_papercuts_phrase(_tool_name: str, args: dict) -> str | None:
     return f"{label} {papercut_id}" if papercut_id and _describe_action_key(args) in ("resolve", "ignore") else label
 
 
-_RESOLVE_TICKET_DESCRIBE_ACTIONS = {
-    "propose": "Proposing to close a Discord ticket", "close": "Closing a Discord ticket",
-}
-
-
-def _describe_resolve_ticket_phrase(_tool_name: str, args: dict) -> str | None:
-    action = args.get("action") or "propose"  # function/schema default
-    label = _describe_enum_label(_RESOLVE_TICKET_DESCRIBE_ACTIONS, action)
-    if label is None:
-        return "Managing Discord ticket resolution"
-    channel_id = _describe_arg(args, "channel_id")
-    return f"{label} in channel {channel_id}" if channel_id else label
-
-
 _START_CONVERSATION_DESCRIBE_ACTIONS = {
     "start": "Starting a conversation", "setup": "Provisioning a conversation channel",
 }
@@ -1194,7 +1180,6 @@ _DESCRIBE_SUBJECT_BUILDERS.update({
     "moa_ask": _describe_fixed("Asking advisor models"),
     "moa_debate": _describe_fixed("Running an advisor debate"),
     "restart": _describe_fixed("Restarting the agent"),
-    "resolve_ticket": _describe_resolve_ticket_phrase,
     "papercuts": _describe_papercuts_phrase,
     "start_conversation": _describe_start_conversation_phrase,
     "x_search": _describe_x_search_phrase,
@@ -1204,7 +1189,6 @@ _DESCRIBE_SUBJECT_BUILDERS.update({
     "hindsight_recall": _describe_fixed("Searching long-term memory"),
     "hindsight_reflect": _describe_fixed("Reflecting on long-term memory"),
     "image_generate": _describe_fixed("Generating an image"),
-    "text_to_speech": _describe_fixed("Synthesizing speech"),
     "vision_analyze": _describe_fixed("Analyzing an image"),
     "multi_tool_use.parallel": _describe_fixed("Running tools in parallel"),  # orchestration wrapper
     "browser_navigate": _describe_browser_navigate_phrase,
@@ -1908,7 +1892,6 @@ _CUTE_LINES = {
     "skills_list": lambda a, r: f"┊ 📚 skills    list {a.get('category', 'all')}",
     "skill_view": _cute_skill_view,
     "image_generate": lambda a, r: f"┊ 🎨 create    {_cute_trunc(a.get('prompt', ''))}",
-    "text_to_speech": lambda a, r: f"┊ 🔊 speak     {_cute_trunc(a.get('text', ''))}",
     "vision_analyze": lambda a, r: f"┊ 👁️  vision    {_cute_trunc(a.get('question', ''))}",
     "send_message": lambda a, r: f"┊ 📨 send      {a.get('target', '?')}: \"{_cute_trunc(a.get('message', ''))}\"",
     "cronjob_manage": _cute_cronjob, "cronjob": _cute_cronjob,  # cronjob: legacy spelling

@@ -1,7 +1,7 @@
-"""Regression tests: supermemory + mem0 memory providers must lazy-install
-their SDKs like honcho/hindsight.
+"""Regression tests: the supermemory memory provider must lazy-install
+its SDK like hindsight.
 
-Both providers ship a third-party SDK (``supermemory`` / ``mem0ai``) that is
+The provider ships a third-party SDK (``supermemory``) that is
 NOT a core dependency. Before this fix they imported the SDK directly with no
 ``pm.ensure_import()`` preflight and had no extras mapping, so on hosted
 instances the SDK was never installed and the provider silently reported
@@ -9,7 +9,7 @@ itself unavailable.
 
 These tests pin the contract:
 
-1. Both features are pyproject extras with an anchor in ``pm.extras.ANCHORS``
+1. The feature is a pyproject extra with an anchor in ``pm.extras.ANCHORS``
    (without a mapping, ``ensure_import()`` can't resolve the anchor import
    that proves the extra is installed — the original silent-dark bug).
 2. Each provider's SDK-import chokepoint actually calls
@@ -27,7 +27,7 @@ import pm
 from pm.extras import ANCHORS
 
 
-MEMORY_EXTRAS = {"supermemory": "supermemory", "mem0": "mem0"}
+MEMORY_EXTRAS = {"supermemory": "supermemory"}
 
 
 # ---------------------------------------------------------------------------
@@ -77,42 +77,6 @@ class TestSupermemoryEnsureCalled:
 
         assert "supermemory" in calls, (
             "supermemory client did not call ensure_import('supermemory'); "
-            f"calls={calls}"
-        )
-
-
-class TestMem0EnsureCalled:
-    def test_create_backend_calls_ensure(self, monkeypatch):
-        """The mem0 provider must call ensure_import('mem0') in
-        _create_backend before importing the SDK."""
-        from plugins.memory.mem0 import Mem0MemoryProvider
-
-        calls = []
-        monkeypatch.setattr(
-            pm, "ensure_import",
-            lambda extra: calls.append(extra),
-        )
-
-        prov = Mem0MemoryProvider()
-        # Platform mode is the default; force a known mode and stub the backend
-        # import so we isolate the ensure_import() call.
-        prov._mode = "platform"
-        prov._api_key = "k"
-
-        import sys
-        import types
-
-        fake = types.ModuleType("mem0")
-        fake.MemoryClient = lambda **kw: object()
-        fake.Memory = object
-        monkeypatch.setitem(sys.modules, "mem0", fake)
-        # _backend imports ``from mem0 import MemoryClient`` lazily inside
-        # PlatformBackend.__init__, so the fake module satisfies it.
-
-        prov._create_backend()
-
-        assert "mem0" in calls, (
-            f"mem0 _create_backend did not call ensure_import('mem0'); "
             f"calls={calls}"
         )
 

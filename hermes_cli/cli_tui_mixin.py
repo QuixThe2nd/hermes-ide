@@ -1059,9 +1059,9 @@ class CLITuiMixin:
         """Enter: submit input.
 
         Modal overlays (sudo/secret/approval/slash-confirm/picker/clarify) are answered first via
-        ``_tui_enter_overlay``. Otherwise: agent running → busy_input_mode routing (steer /
-        redirect / interrupt queue / next-turn queue); idle → ``_pending_input``. Slash and bang
-        commands always take the local-dispatch path (never steer/interrupt text to the model).
+        ``_tui_enter_overlay``. Otherwise: agent running → interrupt routing (redirect /
+        interrupt queue); idle → ``_pending_input``. Slash and bang commands always take the
+        local-dispatch path (never interrupt text to the model).
         """
         from cli import (
             _apply_backslash_line_continuation,
@@ -1137,70 +1137,33 @@ class CLITuiMixin:
         return True
 
     def _tui_enter_while_busy(self, text: str, images: list, payload) -> None:
-        """Route a submission typed while the agent runs, per ``busy_input_mode``.
-
-        steer → agent.steer(text) mid-run (images can't ride along and a missing/rejecting
-        steer() falls back to queue so nothing is lost). interrupt → agent.redirect() when the
-        agent supports active-turn redirect, else the legacy interrupt queue (older agents,
-        multimodal follow-ups, or a turn that finished in the race). queue → next turn.
+        """Route a submission typed while the agent runs: agent.redirect() when the agent
+        supports active-turn redirect, else the legacy interrupt queue (older agents,
+        multimodal follow-ups, or a turn that finished in the race).
         """
-        from cli import CLI_CONFIG, _ACCENT, _DIM, _RST, _cprint, _hermes_home
-        _effective_mode = self.busy_input_mode
+        from cli import _ACCENT, _cprint, _hermes_home
         redirected = False
-        if _effective_mode == "steer":
-            if images or not text:
-                _effective_mode = "queue"
-            else:
-                accepted = False
-                try:
-                    if self.agent is not None and hasattr(self.agent, "steer"):
-                        accepted = bool(self.agent.steer(text))
-                except Exception as exc:
-                    _cprint(f"  {_DIM}Steer failed ({exc}) — queued for next turn.{_RST}")
-                    accepted = False
-                if accepted:
-                    preview = text[:80] + ("..." if len(text) > 80 else "")
-                    _cprint(f"  {_ACCENT}⏩ Steered: '{preview}'{_RST}")
-                else:
-                    _effective_mode = "queue"
-        if _effective_mode == "queue":
-            self._pending_input.put(payload)
-            preview = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
-            _cprint(f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}")
-        elif _effective_mode == "interrupt":
-            if not images and text:
-                try:
-                    if (
-                        self.agent is not None
-                        and getattr(self.agent, "_supports_active_turn_redirect", False) is True
-                        and hasattr(self.agent, "redirect")):
-                        redirected = bool(self.agent.redirect(text))
-                except Exception:
-                    redirected = False
-            if redirected:
-                preview = text[:80] + ("..." if len(text) > 80 else "")
-                _cprint(f"  {_ACCENT}↪ Redirected current turn: '{preview}'{_RST}")
-            else:
-                self._interrupt_queue.put(payload)
-                try:
-                    with open(_hermes_home / "interrupt_debug.log", "a", encoding="utf-8") as _f:
-                        _f.write(
-                            f"{time.strftime('%H:%M:%S')} ENTER: queued interrupt msg={str(payload)[:60]!r}, "
-                            f"agent_running={self._agent_running}\n")
-                except Exception:
-                    pass
-        # First-touch onboarding: one-line tip about the /busy knob on the first busy-while-
-        # running event for this install; the flag persists to config.yaml. Guarded so
-        # onboarding can never break the input loop.
-        try:
-            from agent.onboarding import BUSY_INPUT_FLAG, busy_input_hint_cli, is_seen, mark_seen
-            if not is_seen(CLI_CONFIG, BUSY_INPUT_FLAG):
-                _hint_mode = "redirect" if redirected else _effective_mode
-                _cprint(f"  {_DIM}{busy_input_hint_cli(_hint_mode)}{_RST}")
-                mark_seen(_hermes_home / "config.yaml", BUSY_INPUT_FLAG)
-                CLI_CONFIG.setdefault("onboarding", {}).setdefault("seen", {})[BUSY_INPUT_FLAG] = True
-        except Exception:
-            pass
+        if not images and text:
+            try:
+                if (
+                    self.agent is not None
+                    and getattr(self.agent, "_supports_active_turn_redirect", False) is True
+                    and hasattr(self.agent, "redirect")):
+                    redirected = bool(self.agent.redirect(text))
+            except Exception:
+                redirected = False
+        if redirected:
+            preview = text[:80] + ("..." if len(text) > 80 else "")
+            _cprint(f"  {_ACCENT}↪ Redirected current turn: '{preview}'{_RST}")
+        else:
+            self._interrupt_queue.put(payload)
+            try:
+                with open(_hermes_home / "interrupt_debug.log", "a", encoding="utf-8") as _f:
+                    _f.write(
+                        f"{time.strftime('%H:%M:%S')} ENTER: queued interrupt msg={str(payload)[:60]!r}, "
+                        f"agent_running={self._agent_running}\n")
+            except Exception:
+                pass
 
     def _tui_enter_overlay(self, event) -> bool:
         """Enter while a modal overlay is up: submit it. True when handled."""

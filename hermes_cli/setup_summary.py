@@ -2,7 +2,6 @@
 resolved through the module object so test patches on ``hermes_cli.setup.<name>`` take effect."""
 
 import logging
-from tools import tool_backend_helpers
 from hermes_cli import nous_subscription
 
 logger = logging.getLogger("hermes_cli.setup")
@@ -102,18 +101,6 @@ def _video_gen_row(config, feats):
     return (f"Video Generation ({backend})", True, None) if backend else None
 
 
-def _modal_row(config, feats):
-    if feats.modal.managed_by_nous:
-        return ("Modal Execution (Nous subscription)", True, None)
-    if _setup.cfg_get(config, "terminal", "backend") == "modal":
-        if feats.modal.direct_override:
-            return ("Modal Execution (direct Modal)", True, None)
-        return ("Modal Execution", False, "run 'hermes setup terminal'")
-    if tool_backend_helpers.managed_nous_tools_enabled() and feats.nous_auth_present:
-        return ("Modal Execution (optional via Nous subscription)", True, None)
-    return None
-
-
 def _home_assistant_row(config, feats):
     return ("Smart Home (Home Assistant)", True, None) if _setup.get_env_value("HASS_TOKEN") else None
 
@@ -131,7 +118,7 @@ def _always_on_rows(config, feats):
 
 _TOOL_ROW_BUILDERS = (
     _vision_row, _web_row, _browser_row, _image_gen_row, _video_gen_row,
-    _modal_row, _home_assistant_row, _skills_hub_row, _always_on_rows)
+    _home_assistant_row, _skills_hub_row, _always_on_rows)
 
 
 def _print_cmd_rows(rows):

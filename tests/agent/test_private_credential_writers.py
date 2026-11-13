@@ -45,7 +45,6 @@ def _writers(home: Path, monkeypatch):
     """``(label, callable, target_path)`` for every private-credential writer."""
     from agent import anthropic_credentials
     from agent.secret_sources._cache import CachedFetch, DiskCache
-    from agent.proxy_sources import iron_proxy
     from agent.vault_store import VaultStore
     from gateway import pairing
     from hermes_cli import auth as auth_mod, copilot_auth
@@ -65,7 +64,6 @@ def _writers(home: Path, monkeypatch):
          home / "mcp" / "probe.tokens.json"),
         ("secret-source cache", lambda: cache.write("k", CachedFetch(secrets={"A": "b"}, fetched_at=1.0), 60, home),
          cache.path(home)),
-        ("iron-proxy mappings", lambda: iron_proxy.write_mappings([]), home / "proxy" / "mappings.json"),
         ("exchanged JWT store", lambda: copilot_auth._save_jwt_to_disk("fp", "jwt", 9e12, None),
          copilot_auth._jwt_disk_path()),
         ("pairing", lambda: pairing._save_json_file(home / "pairing" / "p.json", {"a": 1}), home / "pairing" / "p.json"),

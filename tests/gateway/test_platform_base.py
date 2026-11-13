@@ -192,33 +192,7 @@ class TestExtractMedia:
     def test_single_media_tag(self):
         content = "MEDIA:/path/to/audio.ogg"
         media, cleaned = BasePlatformAdapter.extract_media(content)
-        assert len(media) == 1
-        assert media[0][0] == "/path/to/audio.ogg"
-        assert media[0][1] is False  # no voice tag
-
-
-    def test_voice_directive_only_taints_audio_files(self):
-        """[[audio_as_voice]] is message-global but must only flag audio files.
-
-        A non-audio file marked is_voice is excluded from the embedded-photo
-        batch and falls through to send_document, so an image sharing a
-        message with a voice note used to arrive as a file attachment
-        (#44826).
-        """
-        content = "[[audio_as_voice]]\nMEDIA:/tmp/pic.png\nMEDIA:/tmp/voice.ogg"
-        media, cleaned = BasePlatformAdapter.extract_media(content)
-        flags = dict(media)
-        assert flags["/tmp/pic.png"] is False
-        assert flags["/tmp/voice.ogg"] is True
-        assert "[[audio_as_voice]]" not in cleaned
-
-    def test_voice_directive_skips_video_and_documents(self):
-        content = "[[audio_as_voice]]\nMEDIA:/tmp/clip.mp4\nMEDIA:/tmp/report.pdf\nMEDIA:/tmp/note.opus"
-        media, _ = BasePlatformAdapter.extract_media(content)
-        flags = dict(media)
-        assert flags["/tmp/clip.mp4"] is False
-        assert flags["/tmp/report.pdf"] is False
-        assert flags["/tmp/note.opus"] is True
+        assert media == ["/path/to/audio.ogg"]
 
     def test_multiple_media_tags(self):
         content = "MEDIA:/a.ogg\nMEDIA:/b.ogg"
@@ -236,8 +210,8 @@ class TestExtractMedia:
         content = "MEDIA:/tmp/test.png\nMEDIA:/tmp/test.png\nMEDIA:/tmp/other.png"
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert media == [
-            ("/tmp/test.png", False),
-            ("/tmp/other.png", False),
+            "/tmp/test.png",
+            "/tmp/other.png",
         ]
         assert cleaned == ""
 
@@ -247,31 +221,18 @@ class TestExtractMedia:
         home = os.path.expanduser("~")
         content = f"MEDIA:~/foo.png\nMEDIA:{home}/foo.png"
         media, _ = BasePlatformAdapter.extract_media(content)
-        assert media == [(f"{home}/foo.png", False)]
+        assert media == [f"{home}/foo.png"]
 
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
-        user-visible text just like [[audio_as_voice]]. Callers detect the
+        user-visible text. Callers detect the
         directive on the original content (before extract_media)."""
         content = "Here is your infographic:\n[[as_document]]\nMEDIA:/tmp/x.jpg"
         media, cleaned = BasePlatformAdapter.extract_media(content)
-        assert media == [("/tmp/x.jpg", False)]
+        assert media == ["/tmp/x.jpg"]
         assert "[[as_document]]" not in cleaned
         assert "Here is your infographic" in cleaned
 
-
-    def test_both_directives_can_coexist(self):
-        """A response could (rarely) contain both [[audio_as_voice]] for an
-        ogg file AND [[as_document]] for an attached image. The voice flag
-        propagates per-tuple; [[as_document]] is detected at dispatch."""
-        content = "[[audio_as_voice]]\n[[as_document]]\nMEDIA:/tmp/x.ogg"
-        media, cleaned = BasePlatformAdapter.extract_media(content)
-        # Voice flag is propagated to every media tuple (this matches the
-        # existing extract_media contract)
-        assert media == [("/tmp/x.ogg", True)]
-        # Both directives stripped from cleaned text
-        assert "[[audio_as_voice]]" not in cleaned
-        assert "[[as_document]]" not in cleaned
 
     # Windows path support — regression coverage for #34632
 
@@ -297,8 +258,7 @@ class TestExtractMedia:
             "Done."
         )
         media, cleaned = BasePlatformAdapter.extract_media(content)
-        assert len(media) == 1
-        assert media[0][0] == "/output/report.pdf"
+        assert media == ["/output/report.pdf"]
         assert "Done." in cleaned
         # The real tag is stripped from the delivered text...
         assert "MEDIA:/output/report.pdf" not in cleaned
@@ -311,7 +271,7 @@ class TestExtractMedia:
         same reply must not be blanked to whitespace."""
         content = "See MEDIA:/r/a.png and `MEDIA:/ex/b.png` inline"
         media, cleaned = BasePlatformAdapter.extract_media(content)
-        assert [p for p, _ in media] == ["/r/a.png"]
+        assert media == ["/r/a.png"]
         assert "`MEDIA:/ex/b.png`" in cleaned
 
     # --- Markdown emphasis wrapping tolerance ---
@@ -346,14 +306,7 @@ class TestMediaInsideSerializedJson:
         media, _ = BasePlatformAdapter.extract_media(
             'MEDIA:"/path/with space/file.png"'
         )
-        assert len(media) == 1 and media[0][0] == "/path/with space/file.png"
-
-    def test_tts_two_line_still_extracted(self):
-        media, _ = BasePlatformAdapter.extract_media(
-            "[[audio_as_voice]]\nMEDIA:/tmp/v.ogg"
-        )
-        assert len(media) == 1 and media[0][0] == "/tmp/v.ogg"
-        assert media[0][1] is True  # voice flag
+        assert media == ["/path/with space/file.png"]
 
     # --- cleaned-text invariants: real tags stripped, JSON data kept verbatim ---
 
@@ -362,7 +315,7 @@ class TestMediaInsideSerializedJson:
         literal text (stored data must read back unchanged)."""
         content = 'MEDIA:/real/r.png\nlog: {"old":"MEDIA:/stale/s.png"}'
         media, cleaned = BasePlatformAdapter.extract_media(content)
-        assert [p for p, _ in media] == ["/real/r.png"]
+        assert media == ["/real/r.png"]
         # The JSON-embedded path must survive verbatim — not blanked to spaces.
         assert '{"old":"MEDIA:/stale/s.png"}' in cleaned
 
@@ -417,8 +370,7 @@ class TestExtensionlessMediaDelivery:
 
         content = f"Here is your config:\nMEDIA:{caddy}\nDone."
         media, cleaned = BasePlatformAdapter.extract_media(content)
-        assert len(media) == 1
-        assert media[0][0] == str(caddy.resolve())
+        assert media == [str(caddy.resolve())]
         assert "MEDIA:" not in cleaned
         assert "Done." in cleaned
 
@@ -454,8 +406,7 @@ class TestUniversalMediaEgress:
 
         content = f"Here you go:\nMEDIA:{f}\nDone."
         media, cleaned = BasePlatformAdapter.extract_media(content)
-        assert len(media) == 1
-        assert media[0][0] == str(f.resolve())
+        assert media == [str(f.resolve())]
         assert "MEDIA:" not in cleaned
         assert "Done." in cleaned
 
@@ -466,7 +417,7 @@ class TestUniversalMediaEgress:
         # delivery surfaces the failure.
         content = "MEDIA:/nonexistent/report.pdf"
         media, cleaned = BasePlatformAdapter.extract_media(content)
-        assert media == [("/nonexistent/report.pdf", False)]
+        assert media == ["/nonexistent/report.pdf"]
         assert "MEDIA:" not in cleaned
 
 
@@ -511,35 +462,11 @@ class TestMediaDeliveryPathValidation:
         self._patch_roots(monkeypatch, root)
 
         filtered = BasePlatformAdapter.filter_media_delivery_paths([
-            (str(unsafe), False),
-            (str(safe), True),
+            str(unsafe),
+            str(safe),
         ])
 
-        assert filtered == [(str(safe.resolve()), True)]
-
-
-    def test_allows_stale_kanban_attachment_but_not_neighboring_workspace(
-        self, tmp_path, monkeypatch,
-    ):
-        """Strict mode trusts durable attachments without trusting scratch."""
-        self._patch_roots(monkeypatch)
-        monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path / "hermes"))
-        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
-        board_root = tmp_path / "hermes" / "kanban" / "boards" / "research"
-        board_root.mkdir(parents=True)
-        (board_root / "kanban.db").touch()
-        attachment = board_root / "attachments" / "t_12345678" / "report.pdf"
-        scratch = board_root / "workspaces" / "t_12345678" / "notes.txt"
-        attachment.parent.mkdir(parents=True)
-        scratch.parent.mkdir(parents=True)
-        attachment.write_bytes(b"%PDF")
-        scratch.write_text("private", encoding="utf-8")
-
-        assert BasePlatformAdapter.validate_media_delivery_path(str(attachment)) == str(
-            attachment.resolve()
-        )
-        assert BasePlatformAdapter.validate_media_delivery_path(str(scratch)) is None
-
+        assert filtered == [str(safe.resolve())]
 
     def test_recency_trust_denies_system_paths_even_when_fresh(self, tmp_path, monkeypatch):
         """A freshly-touched file under /etc must NOT be uploaded.
@@ -681,11 +608,9 @@ class TestMediaDeliveryDefaultMode:
         assert BasePlatformAdapter.validate_media_delivery_path(str(artifact)) == str(artifact.resolve())
 
     def test_denylist_blocks_session_stores_but_not_neighbouring_artifacts(self, tmp_path, monkeypatch):
-        """The SQLite session/kanban stores (and WAL/SHM sidecars, whose mtime is always fresh),
+        """The SQLite session stores (and WAL/SHM sidecars, whose mtime is always fresh),
         legacy ``sessions/`` transcripts and the copied browser cookie store hold every secret ever
-        pasted into a chat; ``MEDIA:~/.hermes/state.db`` must not exfiltrate them (#41071). Named
-        boards keep their DB beside the ATTACHMENTS the gateway already allowlists, so the board
-        attachment stays deliverable while ``kanban.db`` next to it does not."""
+        pasted into a chat; ``MEDIA:~/.hermes/state.db`` must not exfiltrate them (#41071)."""
         self._patch_roots(monkeypatch)
 
         fake_home = tmp_path / "home"
@@ -694,13 +619,10 @@ class TestMediaDeliveryDefaultMode:
         monkeypatch.setenv("HOME", str(fake_home))
         monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
         monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
-        board = hermes_dir / "kanban" / "boards" / "team-a"
-        (board / "attachments").mkdir(parents=True)
 
-        denied = ["state.db", "state.db-wal", "state.db-shm", "kanban.db", "kanban.db-wal",
-                  "sessions/20260101_abc.json", "browser-profile/Default/Cookies",
-                  "kanban/boards/team-a/kanban.db", "kanban/boards/team-a/kanban.db-wal"]
-        allowed = ["kanban/boards/team-a/attachments/report.pdf", "adhoc_report.pdf", "logs/agent.log"]
+        denied = ["state.db", "state.db-wal", "state.db-shm",
+                  "sessions/20260101_abc.json", "browser-profile/Default/Cookies"]
+        allowed = ["adhoc_report.pdf", "logs/agent.log"]
         for rel in denied + allowed:
             path = hermes_dir / rel
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -845,162 +767,6 @@ class TestMediaDeliveryDefaultMode:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(link)) is None
 
-
-@pytest.mark.platforms("linux")
-class TestDockerContainerMediaPathTranslation:
-    """MEDIA:/workspace (and configured mounts) must resolve to host paths."""
-
-    def test_configured_workspace_mount_translates(self, tmp_path, monkeypatch):
-        import json
-
-        host_ws = tmp_path / "host-ws"
-        host_ws.mkdir()
-        media = host_ws / "shot.png"
-        media.write_bytes(b"\x89PNG\r\n\x1a\n")
-        monkeypatch.setenv(
-            "TERMINAL_DOCKER_VOLUMES",
-            json.dumps([f"{host_ws}:/workspace"]),
-        )
-        monkeypatch.delenv("TERMINAL_ENV", raising=False)
-
-        assert BasePlatformAdapter.validate_media_delivery_path(
-            "/workspace/shot.png"
-        ) == str(media.resolve())
-
-    def test_configured_output_mount_translates(self, tmp_path, monkeypatch):
-        import json
-
-        host_out = tmp_path / "documents"
-        host_out.mkdir()
-        media = host_out / "report.pdf"
-        media.write_bytes(b"%PDF-1.4")
-        monkeypatch.setenv(
-            "TERMINAL_DOCKER_VOLUMES",
-            json.dumps([f"{host_out}:/output"]),
-        )
-
-        assert BasePlatformAdapter.validate_media_delivery_path(
-            "/output/report.pdf"
-        ) == str(media.resolve())
-
-    def test_longest_prefix_wins(self, tmp_path, monkeypatch):
-        import json
-
-        host_a = tmp_path / "a"
-        host_b = tmp_path / "b"
-        host_a.mkdir()
-        host_b.mkdir()
-        nested = host_b / "file.png"
-        nested.write_bytes(b"png")
-        monkeypatch.setenv(
-            "TERMINAL_DOCKER_VOLUMES",
-            json.dumps([
-                f"{host_a}:/data",
-                f"{host_b}:/data/nested",
-            ]),
-        )
-
-        assert BasePlatformAdapter.validate_media_delivery_path(
-            "/data/nested/file.png"
-        ) == str(nested.resolve())
-
-    def test_default_persistent_workspace_fallback(self, tmp_path, monkeypatch):
-        sandbox = tmp_path / "sandboxes"
-        ws = sandbox / "docker" / "default" / "workspace"
-        ws.mkdir(parents=True)
-        media = ws / "out.png"
-        media.write_bytes(b"png")
-        monkeypatch.setenv("TERMINAL_ENV", "docker")
-        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
-        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(sandbox))
-        monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
-        monkeypatch.delenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", raising=False)
-
-        assert BasePlatformAdapter.validate_media_delivery_path(
-            "/workspace/out.png"
-        ) == str(media.resolve())
-
-    def test_unmapped_container_path_fails(self, monkeypatch):
-        monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
-        monkeypatch.delenv("TERMINAL_ENV", raising=False)
-        assert BasePlatformAdapter.validate_media_delivery_path("/workspace/nope.png") is None
-
-    def test_persistent_home_root_write_translates(self, tmp_path, monkeypatch):
-        """An agent writing /root/out.png in a persistent container produced a
-        real host file under <sandbox>/docker/default/home — deliver it."""
-        sandbox = tmp_path / "sandboxes"
-        home = sandbox / "docker" / "default" / "home"
-        home.mkdir(parents=True)
-        media = home / "out.png"
-        media.write_bytes(b"\x89PNG\r\n\x1a\n")
-        monkeypatch.setenv("TERMINAL_ENV", "docker")
-        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
-        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(sandbox))
-        monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
-
-        assert BasePlatformAdapter.validate_media_delivery_path(
-            "/root/out.png"
-        ) == str(media.resolve())
-
-    def test_cache_dir_container_path_translates_to_host_cache(self, tmp_path, monkeypatch):
-        """MEDIA:/root/.hermes/cache/images/... (the agent_visible_image path
-        under docker) must translate to the HOST cache file, not the sandbox
-        home copy."""
-        hermes_home = tmp_path / ".hermes"
-        cache = hermes_home / "cache" / "images"
-        cache.mkdir(parents=True)
-        media = cache / "generated.png"
-        media.write_bytes(b"\x89PNG\r\n\x1a\n")
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.setenv("TERMINAL_ENV", "docker")
-        monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
-
-        assert BasePlatformAdapter.validate_media_delivery_path(
-            "/root/.hermes/cache/images/generated.png"
-        ) == str(media.resolve())
-
-    def test_container_credential_path_never_translates_through_home(self, tmp_path, monkeypatch):
-        """/root/.hermes/* outside a cache mount (the sandbox's credential
-        surface: .env, auth.json) must NOT resolve through the persistent
-        home mount — those host-side copies sit outside the credential
-        denylist prefixes and would otherwise deliver."""
-        sandbox = tmp_path / "sandboxes"
-        home = sandbox / "docker" / "default" / "home"
-        secret = home / ".hermes"
-        secret.mkdir(parents=True)
-        (secret / "auth.json").write_text('{"token": "SECRET"}')
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.setenv("TERMINAL_ENV", "docker")
-        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
-        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(sandbox))
-        monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
-
-        assert BasePlatformAdapter.validate_media_delivery_path(
-            "/root/.hermes/auth.json"
-        ) is None
-
-
-# ---------------------------------------------------------------------------
-# should_send_media_as_audio
-# ---------------------------------------------------------------------------
-
-class TestShouldSendMediaAsAudio:
-    """Audio-routing policy shared by gateway + scheduler + send_message."""
-
-    def test_unknown_extension_returns_false(self):
-        from gateway.platforms.base import should_send_media_as_audio
-        assert should_send_media_as_audio(None, ".png") is False
-        assert should_send_media_as_audio("telegram", ".pdf") is False
-
-
-    def test_telegram_ogg_opus_only_when_voice_flagged(self):
-        from gateway.platforms.base import should_send_media_as_audio
-        assert should_send_media_as_audio("telegram", ".ogg", is_voice=True) is True
-        assert should_send_media_as_audio("telegram", ".opus", is_voice=True) is True
-        assert should_send_media_as_audio("telegram", ".ogg") is False
-        assert should_send_media_as_audio("telegram", ".opus") is False
 
 
 # ---------------------------------------------------------------------------
@@ -1254,7 +1020,7 @@ class TestMediaDeliveryDiagnosability:
                                      "HERMES_MEDIA_TRUST_RECENT_FILES": "0"}), \
                 patch("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", ()):
             with caplog.at_level("WARNING"):
-                out = BasePlatformAdapter.filter_media_delivery_paths([(str(outside), False)])
+                out = BasePlatformAdapter.filter_media_delivery_paths([str(outside)])
         assert out == []
         # The dropped path must be in the log so operators can diagnose it, with the REASON: a policy
         # rejection reads differently from a path that simply does not exist (#100074).
@@ -1263,7 +1029,7 @@ class TestMediaDeliveryDiagnosability:
     def test_missing_file_is_logged_as_not_found_not_unsafe(self, tmp_path, caplog):
         ghost = tmp_path / "never-written.pdf"
         with caplog.at_level("WARNING"):
-            assert BasePlatformAdapter.filter_media_delivery_paths([(str(ghost), False)]) == []
+            assert BasePlatformAdapter.filter_media_delivery_paths([str(ghost)]) == []
         assert "not found on this host" in caplog.text and "unsafe" not in caplog.text
 
     def test_crafted_null_path_does_not_abort_batch(self, tmp_path, monkeypatch):
@@ -1272,10 +1038,10 @@ class TestMediaDeliveryDiagnosability:
         good.write_bytes(b"\x89PNG")
         monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "0")
         out = BasePlatformAdapter.filter_media_delivery_paths([
-            ("~\x00evil.png", False),
-            (str(good), False),
+            "~\x00evil.png",
+            str(good),
         ])
-        assert out == [(str(good.resolve()), False)]
+        assert out == [str(good.resolve())]
 
 
 # ---------------------------------------------------------------------------
@@ -1360,142 +1126,6 @@ class TestMediaFallbackDoesNotLeakHostPath:
         sent_text = adapter.sent[0]["content"]
         assert "Here's the daily summary." in sent_text
         assert self.SENSITIVE_PATH not in sent_text
-
-
-@pytest.mark.platforms("linux")
-class TestDockerProfileSandboxMediaTranslation:
-    """MEDIA from persistent Docker sandboxes must resolve to the host
-    directory the profile's container actually bind-mounts (#93950).
-
-    Contract: persistent Docker is PROFILE-scoped — the default profile (and
-    CLI) uses the literal ``default`` sandbox, other profiles use
-    ``sanitize_task_id_for_path("profile:<name>")``. Legacy per-session
-    sandboxes (``session:<key>``) created during the a270c4ade bug window
-    remain resolvable as a fallback so their files still deliver.
-    """
-
-    SESSION_KEY = "agent:main:telegram:dm:123456"
-
-    @staticmethod
-    def _sandbox_dir(task_id: str = "default"):
-        from tools.environments.base import get_sandbox_dir
-        from tools.environments.path_utils import sanitize_task_id_for_path
-
-        name = task_id if task_id == "default" else sanitize_task_id_for_path(task_id)
-        return get_sandbox_dir() / "docker" / name
-
-    def _enable_docker(self, monkeypatch):
-        monkeypatch.setenv("TERMINAL_ENV", "docker")
-        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
-
-    def test_default_profile_workspace_media_translates(self, monkeypatch):
-        """A MEDIA tag pointing at the container's /workspace resolves to the
-        default profile's shared host sandbox — with or without a session
-        key, since every session of the profile shares one container."""
-        self._enable_docker(monkeypatch)
-        workspace = self._sandbox_dir() / "workspace"
-        workspace.mkdir(parents=True, exist_ok=True)
-        produced = workspace / "chart.png"
-        produced.write_bytes(b"png")
-
-        with_key = BasePlatformAdapter.validate_media_delivery_path(
-            "/workspace/chart.png", session_key=self.SESSION_KEY
-        )
-        without_key = BasePlatformAdapter.validate_media_delivery_path(
-            "/workspace/chart.png"
-        )
-
-        assert with_key == without_key == str(produced.resolve())
-
-    def test_legacy_session_sandbox_still_resolves(self, monkeypatch):
-        """Self-heal for the a270c4ade bug window: files produced in a legacy
-        per-session sandbox still deliver via the fallback candidate."""
-        self._enable_docker(monkeypatch)
-        workspace = self._sandbox_dir(f"session:{self.SESSION_KEY}") / "workspace"
-        workspace.mkdir(parents=True, exist_ok=True)
-        produced = workspace / "out.png"
-        produced.write_bytes(b"png")
-
-        assert BasePlatformAdapter.validate_media_delivery_path(
-            "/workspace/out.png", session_key=self.SESSION_KEY
-        ) == str(produced.resolve())
-
-    def test_profile_and_legacy_sandboxes_both_searched(self, monkeypatch):
-        """When the profile sandbox exists but the file was produced in a
-        legacy per-session container, translation still finds it — the dir
-        existing must not mask the fallback (#93950 follow-up)."""
-        self._enable_docker(monkeypatch)
-        (self._sandbox_dir() / "workspace").mkdir(parents=True, exist_ok=True)
-        legacy_ws = self._sandbox_dir(f"session:{self.SESSION_KEY}") / "workspace"
-        legacy_ws.mkdir(parents=True, exist_ok=True)
-        produced = legacy_ws / "old.png"
-        produced.write_bytes(b"png")
-
-        assert BasePlatformAdapter.validate_media_delivery_path(
-            "/workspace/old.png", session_key=self.SESSION_KEY
-        ) == str(produced.resolve())
-
-    def test_home_mount_translates_stray_root_writes(self, monkeypatch):
-        """/root/<file> lands in the profile sandbox's home mount."""
-        self._enable_docker(monkeypatch)
-        home = self._sandbox_dir() / "home"
-        home.mkdir(parents=True, exist_ok=True)
-        produced = home / "note.txt"
-        produced.write_text("hi")
-
-        assert BasePlatformAdapter.validate_media_delivery_path(
-            "/root/note.txt", session_key=self.SESSION_KEY
-        ) == str(produced.resolve())
-
-    def test_home_credential_surface_still_refused(self, monkeypatch):
-        """The /root/.hermes exclusion survives profile scoping: translating
-        the home mount must never expose the container's secret surface —
-        in the profile layout AND the legacy session layout."""
-        self._enable_docker(monkeypatch)
-        for task in ("default", f"session:{self.SESSION_KEY}"):
-            secrets = self._sandbox_dir(task) / "home" / ".hermes"
-            secrets.mkdir(parents=True, exist_ok=True)
-            (secrets / "auth.json").write_text("{}")
-
-        assert (
-            BasePlatformAdapter.validate_media_delivery_path(
-                "/root/.hermes/auth.json", session_key=self.SESSION_KEY
-            )
-            is None
-        )
-
-    def test_filter_passes_session_key_through(self, monkeypatch):
-        """The adapter filter used by _process_message_background forwards the
-        key, so legacy-sandbox MEDIA tags survive filtering in one hop."""
-        self._enable_docker(monkeypatch)
-        workspace = self._sandbox_dir(f"session:{self.SESSION_KEY}") / "workspace"
-        workspace.mkdir(parents=True, exist_ok=True)
-        produced = workspace / "clip.mp4"
-        produced.write_bytes(b"mp4")
-
-        kept = BasePlatformAdapter.filter_media_delivery_paths(
-            [("/workspace/clip.mp4", False)], session_key=self.SESSION_KEY
-        )
-
-        assert kept == [(str(produced.resolve()), False)]
-
-    def test_unresolved_docker_media_names_the_cause(self, monkeypatch, caplog):
-        """A container path that resolves in no candidate sandbox must log
-        WHY it was dropped (sandbox mismatch), not just the generic unsafe-
-        path line — the silent-drop mode reported in #93950."""
-        import logging
-
-        self._enable_docker(monkeypatch)
-        with caplog.at_level(logging.WARNING, logger="gateway.platforms.base"):
-            resolved = BasePlatformAdapter.validate_media_delivery_path(
-                "/workspace/ghost.png", session_key=self.SESSION_KEY
-            )
-
-        assert resolved is None
-        assert any(
-            "did not resolve" in r.message and f"session_key={self.SESSION_KEY}" in r.message
-            for r in caplog.records
-        )
 
 
 class _LockGovernanceProbeAdapter(BasePlatformAdapter):

@@ -236,8 +236,6 @@ _REGISTRY_ROWS: Tuple[Any, ...] = (
     ("tencent-tokenplan", "Tencent TokenPlan", "https://api.lkeap.cloud.tencent.com/plan/anthropic",
      ("TOKENPLAN_API_KEY",), "TOKENPLAN_BASE_URL"),
     ("ollama-cloud", "Ollama Cloud", DEFAULT_OLLAMA_CLOUD_BASE_URL, ("OLLAMA_API_KEY",), "OLLAMA_BASE_URL"),
-    ("bedrock", "AWS Bedrock", "https://bedrock-runtime.us-east-1.amazonaws.com", (), "BEDROCK_BASE_URL",
-     "aws_sdk"),
     # No static inference_base_url: Vertex's endpoint is computed per request from project_id +
     # region (agent/vertex_adapter.py build_vertex_base_url), not a fixed host.
     ("vertex", "Google Vertex AI", "", (), "", "vertex"),
@@ -1006,8 +1004,7 @@ def _explicit_env_credentials_present(normalized: str) -> bool:
     """True when the user has pasted an explicit credential env var for *normalized*.
 
     Falls back to the models.dev ``ProviderDef`` (same shape) for non-registry providers such as
-    openrouter. AWS SDK providers are checked via explicit env vars only — NOT boto3's chain, so
-    ambient EC2 IMDS / SSO profiles never auto-surface."""
+    openrouter."""
     pconfig = PROVIDER_REGISTRY.get(normalized)
     if pconfig is None:
         from hermes_cli.providers import get_provider
@@ -1016,9 +1013,6 @@ def _explicit_env_credentials_present(normalized: str) -> bool:
             return False
     if pconfig.auth_type == "api_key":
         return any(_env_secret(v) for v in pconfig.api_key_env_vars if v not in _IMPLICIT_ENV_VARS)
-    if pconfig.auth_type == "aws_sdk":
-        return _env_secret("AWS_BEARER_TOKEN_BEDROCK") or (
-            _env_secret("AWS_ACCESS_KEY_ID") and _env_secret("AWS_SECRET_ACCESS_KEY"))
     return False
 
 
@@ -1037,7 +1031,7 @@ def _pool_entry_is_explicit(entry: Any) -> bool:
 
 
 def _keyless_provider_has_explicit_config(normalized: str) -> bool:
-    """Vertex / Bedrock count as explicit when Hermes-scoped routing config is present.
+    """Vertex counts as explicit when Hermes-scoped routing config is present.
 
     Uses has_explicit_vertex_config(), NOT has_vertex_credentials(): the latter also counts an
     ambient GOOGLE_APPLICATION_CREDENTIALS path (commonly set for unrelated GCP work). Only
@@ -1046,10 +1040,6 @@ def _keyless_provider_has_explicit_config(normalized: str) -> bool:
     if normalized in _VERTEX_PROVIDER_IDS:
         from agent.vertex_adapter import has_explicit_vertex_config
         return bool(has_explicit_vertex_config())
-    if normalized == "bedrock":
-        from hermes_cli.config import load_config
-        bedrock_cfg = load_config().get("bedrock")
-        return isinstance(bedrock_cfg, dict) and bool(str(bedrock_cfg.get("region") or "").strip())
     return False
 
 
@@ -1188,7 +1178,6 @@ _PROVIDER_ALIASES: Dict[str, str] = {
     "tencent": "tencent-tokenhub", "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub", "tencentmaas": "tencent-tokenhub",
     "tokenplan": "tencent-tokenplan", "tencent-lkeap": "tencent-tokenplan",
-    "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock", "amazon": "bedrock",
     "go": "opencode-go", "opencode-go-sub": "opencode-go",
     "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
     "lmstudio": "lmstudio", "lm-studio": "lmstudio", "lm_studio": "lmstudio",
@@ -1342,7 +1331,7 @@ def resolve_provider(
     "openrouter"; 2. config.yaml ``model.provider``; 3. OPENAI_API_KEY / OPENROUTER_API_KEY ->
     "openrouter"; 4. OpenRouter pool; 5. provider env keys; 6. auth.json ``active_provider``;
     7. Nous free tier when it is on and its identity exists (never created here);
-    8. AWS Bedrock chain; 9. AuthError(no_provider_configured).
+    8. AuthError(no_provider_configured).
 
     ``skip_free_tier`` hides rungs 6-for-a-free-tier-identity and 7: the boot bootstrap asks
     "what would carry inference if the free tier did not exist?" to decide whether a fresh identity
@@ -1394,12 +1383,10 @@ def resolve_provider(
                 _oauth_active)
         return _oauth_active
 
-    # Nous free tier, when it is on and its identity already exists. This rung sits ABOVE the Bedrock
-    # chain on purpose: every rung above this line is explicit user intent (CLI creds, config, env
-    # keys, a sign-in); the boto chain below is implicit host state, and a leftover ~/.aws profile
-    # used to win the first turn of a fresh install (NS-829). The rung never CREATES the identity:
-    # that is the boot bootstrap's job (free_tier_bootstrap), so provider resolution stays free of
-    # network and a fresh install without the bootstrap resolves exactly as upstream does.
+    # Nous free tier, when it is on and its identity already exists. The rung never CREATES the
+    # identity: that is the boot bootstrap's job (free_tier_bootstrap), so provider resolution
+    # stays free of network and a fresh install without the bootstrap resolves exactly as upstream
+    # does.
     if not skip_free_tier:
         try:
             from hermes_cli.anon_auth import guest_enabled, has_guest
@@ -1407,14 +1394,6 @@ def resolve_provider(
                 return "nous"
         except Exception as exc:
             logger.debug("free tier check during provider resolution skipped: %s", exc)
-    # AWS Bedrock via the boto3 credential chain (IAM roles, SSO, env vars): implicit host state,
-    # below explicit keys and below the free tier.
-    try:
-        from agent.bedrock_adapter import has_aws_credentials
-        if has_aws_credentials():
-            return "bedrock"
-    except ImportError:
-        pass  # boto3 not installed
     from hermes_constants import display_hermes_home, profile_cli_selector, profile_name_for_home
     # A named profile owns its credentials: the root's auth.json is never inherited (#111724), so
     # the guidance names the profile the user must sign in to.
@@ -1863,13 +1842,6 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
         "logged_in": available, "auth_verified": auth_verified, "auth_source": auth_source}
 
 
-def _get_aws_sdk_auth_status(target: str) -> Dict[str, Any]:
-    """AWS SDK providers (Bedrock) — check via boto3 credential chain."""
-    try:
-        from agent.bedrock_adapter import has_aws_credentials
-        return {"logged_in": has_aws_credentials(), "provider": target}
-    except ImportError:
-        return {"logged_in": False, "provider": target, "error": "boto3 not installed"}
 
 
 def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
@@ -1896,8 +1868,7 @@ _BESPOKE_STATUS_FUNCTIONS: Dict[str, str] = {
     "azure-foundry": "_get_azure_foundry_auth_status"}
 _STATUS_BY_AUTH_TYPE: Dict[str, str] = {
     "external_process": "get_external_process_provider_status",
-    "api_key": "get_api_key_provider_status",
-    "aws_sdk": "_get_aws_sdk_auth_status"}
+    "api_key": "get_api_key_provider_status"}
 
 
 def _get_azure_foundry_auth_status() -> Dict[str, Any]:

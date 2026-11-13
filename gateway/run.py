@@ -2774,8 +2774,6 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
 # artifacts should be eligible for automatic append when the model omits them
 # from the final gateway reply.
 _AUTO_APPEND_MEDIA_TOOL_NAMES = {
-    "text_to_speech",
-    "text_to_speech_tool",
     "image_generate",
 }
 
@@ -2909,7 +2907,6 @@ def _collect_auto_append_media_tags(
     tool_name_by_call_id = _tool_name_by_call_id(new_messages)
 
     media_tags: List[str] = []
-    has_voice_directive = False
     for msg in new_messages:
         if msg.get("role") not in ("tool", "function"):
             continue
@@ -2941,10 +2938,8 @@ def _collect_auto_append_media_tags(
             path = match.group(1).strip().rstrip('",}')
             if path and path not in history_media_paths:
                 media_tags.append(f"MEDIA:{path}")
-        if "[[audio_as_voice]]" in content:
-            has_voice_directive = True
 
-    return media_tags, has_voice_directive
+    return media_tags
 
 
 def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
@@ -2973,7 +2968,7 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
         # extractor so the dedup set sees every path that could actually have
         # been delivered.
         media_files, _ = BasePlatformAdapter.extract_media(content)
-        paths.update(path for path, _is_voice in media_files)
+        paths.update(media_files)
 
     for msg in agent_history:
         role = msg.get("role")
@@ -3551,9 +3546,6 @@ def _platform_has_bot_credential(platform: "Platform", platform_config: "Platfor
     return False
 
 
-_DOCKER_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$")
-_DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS = {"/output", "/outputs"}
-
 # Internal bridge, not a config source: seed from the canonical default after dotenv so an ambient
 # process/.env value can never control lease safety.
 from hermes_cli.config_defaults import DEFAULT_CONFIG as _DEFAULT_CONFIG, DEFAULT_MAX_TURNS as _DEFAULT_MAX_TURNS
@@ -3576,7 +3568,6 @@ _AGENT_ENV_BRIDGE = {
 # config-authoritative knobs for the session-search index (env stays the cross-process carrier).
 _SESSIONS_ENV_BRIDGE = {"cjk_fts": "HERMES_CJK_FTS", "search_slow_ms": "HERMES_SEARCH_SLOW_MS"}
 _DISPLAY_ENV_BRIDGE = {
-    "busy_text_mode": "HERMES_GATEWAY_BUSY_TEXT_MODE",
     "busy_ack_enabled": "HERMES_GATEWAY_BUSY_ACK_ENABLED"}
 
 
@@ -3612,31 +3603,10 @@ def _bridge_terminal_config_to_env(_terminal_cfg: dict) -> None:
         "timeout": "TERMINAL_TIMEOUT",
         "home_mode": "TERMINAL_HOME_MODE",
         "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
-        "docker_image": "TERMINAL_DOCKER_IMAGE",
-        "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
-        "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
-        "modal_image": "TERMINAL_MODAL_IMAGE",
-        "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-        "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
         "ssh_host": "TERMINAL_SSH_HOST",
         "ssh_user": "TERMINAL_SSH_USER",
         "ssh_port": "TERMINAL_SSH_PORT",
         "ssh_key": "TERMINAL_SSH_KEY",
-        "container_cpu": "TERMINAL_CONTAINER_CPU",
-        "container_memory": "TERMINAL_CONTAINER_MEMORY",
-        "container_disk": "TERMINAL_CONTAINER_DISK",
-        "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
-        "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
-        "docker_env": "TERMINAL_DOCKER_ENV",
-        "docker_extra_args": "TERMINAL_DOCKER_EXTRA_ARGS",
-        "docker_shm_size": "TERMINAL_DOCKER_SHM_SIZE",
-        "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
-        "docker_network": "TERMINAL_DOCKER_NETWORK",
-        "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
-        "docker_snap_compat": "TERMINAL_DOCKER_SNAP_COMPAT",
-        "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
-        "docker_shared_container_key": "TERMINAL_DOCKER_SHARED_CONTAINER_KEY",
-        "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
         "sandbox_dir": "TERMINAL_SANDBOX_DIR",
         "persistent_shell": "TERMINAL_PERSISTENT_SHELL"}
     for _cfg_key, _env_var in _terminal_env_map.items():
@@ -3698,10 +3668,6 @@ def _bridge_config_to_env(_cfg: dict) -> None:
     _bridge_section_to_env(_cfg.get("sessions", {}), _SESSIONS_ENV_BRIDGE)
     _display_cfg = _cfg.get("display", {})
     _bridge_section_to_env(_display_cfg, _DISPLAY_ENV_BRIDGE)
-    # Documented service-manager override: env wins when set (other display bridges stay config-first).
-    if (isinstance(_display_cfg, dict) and "busy_steer_ack_enabled" in _display_cfg
-            and "HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED" not in os.environ):
-        os.environ["HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED"] = str(_display_cfg["busy_steer_ack_enabled"])
     _tz_cfg = _cfg.get("timezone", "")
     if _tz_cfg and isinstance(_tz_cfg, str):
         os.environ["HERMES_TIMEZONE"] = _tz_cfg.strip()
@@ -3775,30 +3741,10 @@ if _config_path.exists():
                 "timeout": "TERMINAL_TIMEOUT",
                 "home_mode": "TERMINAL_HOME_MODE",
                 "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
-                "docker_image": "TERMINAL_DOCKER_IMAGE",
-                "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
-                "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
-                "modal_image": "TERMINAL_MODAL_IMAGE",
-                "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-                "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
                 "ssh_host": "TERMINAL_SSH_HOST",
                 "ssh_user": "TERMINAL_SSH_USER",
                 "ssh_port": "TERMINAL_SSH_PORT",
                 "ssh_key": "TERMINAL_SSH_KEY",
-                "container_cpu": "TERMINAL_CONTAINER_CPU",
-                "container_memory": "TERMINAL_CONTAINER_MEMORY",
-                "container_disk": "TERMINAL_CONTAINER_DISK",
-                "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
-                "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
-                "docker_env": "TERMINAL_DOCKER_ENV",
-                "docker_extra_args": "TERMINAL_DOCKER_EXTRA_ARGS",
-                "docker_shm_size": "TERMINAL_DOCKER_SHM_SIZE",
-                "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
-                "docker_network": "TERMINAL_DOCKER_NETWORK",
-                "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
-                "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
-                "docker_shared_container_key": "TERMINAL_DOCKER_SHARED_CONTAINER_KEY",
-                "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
                 "sandbox_dir": "TERMINAL_SANDBOX_DIR",
                 "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
             }
@@ -3924,29 +3870,8 @@ if _config_path.exists():
                 )
         _display_cfg = _cfg.get("display", {})
         if _display_cfg and isinstance(_display_cfg, dict):
-            if "busy_text_mode" in _display_cfg:
-                os.environ["HERMES_GATEWAY_BUSY_TEXT_MODE"] = str(_display_cfg["busy_text_mode"])
             if "busy_ack_enabled" in _display_cfg:
                 os.environ["HERMES_GATEWAY_BUSY_ACK_ENABLED"] = str(_display_cfg["busy_ack_enabled"])
-            # This process-level env var is documented as an override for
-            # service managers, so preserve it when already set. Other display
-            # bridges stay config-authoritative for backwards compatibility.
-            if (
-                "busy_steer_ack_enabled" in _display_cfg
-                and "HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED" not in os.environ
-            ):
-                os.environ["HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED"] = str(
-                    _display_cfg["busy_steer_ack_enabled"]
-                )
-            # Same preserve-existing-env semantics as busy_steer_ack_enabled
-            # above (service-manager override stays authoritative).
-            if (
-                "busy_steer_delivered_ack_enabled" in _display_cfg
-                and "HERMES_GATEWAY_BUSY_STEER_DELIVERED_ACK_ENABLED" not in os.environ
-            ):
-                os.environ["HERMES_GATEWAY_BUSY_STEER_DELIVERED_ACK_ENABLED"] = str(
-                    _display_cfg["busy_steer_delivered_ack_enabled"]
-                )
         # Timezone: bridge config.yaml → HERMES_TIMEZONE env var.
         _tz_cfg = _cfg.get("timezone", "")
         if _tz_cfg and isinstance(_tz_cfg, str):
@@ -4020,9 +3945,8 @@ os.environ["HERMES_QUIET"] = "1"
 
 # Set terminal working directory for messaging platforms.
 # config.yaml terminal.cwd is the canonical source (bridged to TERMINAL_CWD
-# by the config bridge above).  Placeholder values are resolved per-backend —
-# see gateway/cwd_placeholder.py for the three-case contract (local vs docker
-# mount-off vs docker mount-on).  MESSAGING_CWD is a backward-compat fallback.
+# Placeholder values are resolved per-backend — see gateway/cwd_placeholder.py
+# (local vs remote sandbox default).  MESSAGING_CWD is a backward-compat fallback.
 from gateway.cwd_placeholder import CWD_PLACEHOLDERS, resolve_placeholder_terminal_cwd
 from gateway.runtime_footer import turn_metrics
 
@@ -4032,10 +3956,6 @@ if not _configured_cwd or _configured_cwd in CWD_PLACEHOLDERS:
         configured_cwd=_configured_cwd,
         terminal_backend=os.environ.get("TERMINAL_ENV", ""),
         messaging_cwd=os.getenv("MESSAGING_CWD"),
-        docker_mount_cwd_to_workspace=os.getenv(
-            "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false"
-        ).lower()
-        in {"true", "1", "yes"},
         home_fallback=str(Path.home()),
     )
     if _resolved_cwd is None:
@@ -5017,7 +4937,6 @@ def _strip_response_attachments_for_direct_send(response: str, adapter) -> str:
     unsupported or unvalidated tags in the cleaned text.
     """
     _, cleaned = adapter.extract_media(response)
-    cleaned = cleaned.replace("[[audio_as_voice]]", "").strip()
     cleaned = cleaned.replace("[[as_document]]", "").strip()
     return cleaned.strip()
 
@@ -5890,7 +5809,7 @@ def _format_context_injection_progress(
     display copy is force-redacted and mention-neutralised before it leaves the
     gateway; the model still receives the untouched API content. Long blocks
     are split below the adapter's message cap so Discord/Telegram edits cannot
-    fail merely because Honcho returned a healthy amount of autobiography.
+    fail merely because a provider returned a healthy amount of autobiography.
 
     When ``include_content`` is False, return only the heading line with
     no char count, fences, body, or continuation chunks — unless a leading
@@ -6113,8 +6032,6 @@ class GatewayRunner(
 
     # Class-level defaults so partial construction in tests doesn't
     # blow up on attribute access.
-    _busy_input_mode: str = "interrupt"
-    _busy_text_mode: str = "interrupt"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     # LEGACY, non-authoritative: the after-turn wait is unbounded (see
     # ``_await_active_work_before_restart``), so this value never caps or
@@ -6263,7 +6180,6 @@ class GatewayRunner(
         # profile's adapters boot; written with the boot's served-profiles status
         # write so status surfaces show why a gate is off instead of only the log.
         self._gate_config_warnings: List[str] = []
-        self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
 
         # Load ephemeral config from config.yaml / env vars.
@@ -6272,12 +6188,6 @@ class GatewayRunner(
         self._reasoning_config = self._load_reasoning_config()
         self._service_tier = self._load_service_tier()
         self._show_reasoning = self._load_show_reasoning()
-        self._busy_text_mode = self._load_busy_text_mode()
-        # Secondary-profile busy modes are snapshotted during multiplex
-        # startup. Busy-message handlers consult these maps by routed source
-        # without rereading config or mutating process-global environment.
-        self._busy_input_modes_by_profile: Dict[str, str] = {}
-        self._busy_text_modes_by_profile: Dict[str, str] = {}
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._restart_after_turn_timeout = self._load_restart_after_turn_timeout()
         self._cron_drain_timeout = self._load_cron_drain_timeout()
@@ -6477,10 +6387,6 @@ class GatewayRunner(
         # some platforms).
         import itertools as _itertools
         self._slash_confirm_counter = _itertools.count(1)
-
-        # Persistent Honcho managers keyed by gateway session key.
-        # This preserves write_frequency="session" semantics across short-lived
-        # per-message AIAgent instances.
 
 
 
@@ -6717,56 +6623,6 @@ class GatewayRunner(
 
         self._session_db_handle_cache.close_all(_close)
 
-
-    def _warn_if_docker_media_delivery_is_risky(self) -> None:
-        """Warn when Docker-backed gateways lack an explicit export mount.
-
-        MEDIA delivery happens in the gateway process, so paths emitted by the model
-        must be readable from the host. A plain container-local path like
-        `/workspace/report.txt` or `/output/report.txt` often exists only inside
-        Docker, so users commonly need a dedicated export mount such as
-        `host-dir:/output`.
-        """
-        if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
-            return
-
-        connected = self.config.get_connected_platforms()
-        messaging_platforms = [p for p in connected if p not in {Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK}]
-        if not messaging_platforms:
-            return
-
-        raw_volumes = os.getenv("TERMINAL_DOCKER_VOLUMES", "").strip()
-        volumes: List[str] = []
-        if raw_volumes:
-            try:
-                parsed = json.loads(raw_volumes)
-                if isinstance(parsed, list):
-                    volumes = [str(v) for v in parsed if isinstance(v, str)]
-            except Exception:
-                logger.debug("Could not parse TERMINAL_DOCKER_VOLUMES for gateway media warning", exc_info=True)
-
-        has_explicit_output_mount = False
-        for spec in volumes:
-            match = _DOCKER_VOLUME_SPEC_RE.match(spec)
-            if not match:
-                continue
-            container_path = match.group("container")
-            if container_path in _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS:
-                has_explicit_output_mount = True
-                break
-
-        if has_explicit_output_mount:
-            return
-
-        logger.warning(
-            "Docker backend is enabled for the messaging gateway but no explicit host-visible "
-            "output mount (for example '/home/user/.hermes/cache/documents:/output') is configured. "
-            "This is fine if the model already emits host-visible paths, but MEDIA file delivery can fail "
-            "for container-local paths like '/workspace/...' or '/output/...'."
-        )
-
-
-
     # -- Setup skill availability ----------------------------------------
 
     def _has_setup_skill(self) -> bool:
@@ -6993,7 +6849,7 @@ class GatewayRunner(
 
 
     def _busy_drain_admission(
-        self, event: MessageEvent, session_key: str, effective_mode: str
+        self, event: MessageEvent, session_key: str
     ) -> str:
         """One answer for any busy follow-up that lands while ``_draining``.
 
@@ -7153,8 +7009,8 @@ class GatewayRunner(
 
 
 
-    # Hard cap on per-session pending follow-ups for busy_input_mode=queue
-    # (and the draining/steer-fallback/subagent-demotion paths that share
+    # Hard cap on per-session pending follow-ups on the queue paths
+    # (drain demotions and the subagent-demotion paths that share
     # this entry point).  Without a cap, a stuck agent + a rapid-fire user
     # could grow the overflow list unboundedly.  32 turns of queued
     # follow-ups is far beyond any realistic conversational backlog while
@@ -7172,150 +7028,7 @@ class GatewayRunner(
         effective_mode: str
         demoted_for_subagents: bool
         demoted_for_compression: bool
-        steered: bool
         redirected: bool
-        # Why a steer-mode message fell back to queue: "agent-not-live",
-        # "media-not-steerable", or "steer-failed" (None when no steer was attempted).
-        steer_fallback_reason: Optional[str] = None
-        # True when a steer-eligible follow-up that hit the agent-not-live window
-        # was parked in the steer-on-live slot instead of the pending FIFO — it is
-        # steered into the run the moment _run_agent_track_agent promotes the agent.
-        parked_for_steer: bool = False
-
-    def _steer_delivered_ack_enabled(self, event: MessageEvent) -> bool:
-        """Resolve the busy_steer_delivered_ack_enabled display setting.
-
-        Same pattern as busy_steer_ack_enabled below: the
-        HERMES_GATEWAY_BUSY_STEER_DELIVERED_ACK_ENABLED env var wins when
-        set; otherwise per-platform/global display config (default True).
-        """
-        _env = os.environ.get("HERMES_GATEWAY_BUSY_STEER_DELIVERED_ACK_ENABLED")
-        if _env is not None:
-            return _env.strip().lower() in {"1", "true", "yes", "on"}
-        from gateway.display_config import resolve_display_setting
-        return bool(
-            resolve_display_setting(
-                _load_gateway_config(),
-                _platform_config_key(event.source.platform),
-                "busy_steer_delivered_ack_enabled",
-                True,
-            )
-        )
-
-    def _drop_steer_delivered_listener(self, session_key: str) -> None:
-        """Unregister this session's unfired steer-delivery listener, if any.
-
-        Called at turn teardown (``_release_running_agent_state``, while
-        ``state.turn.agent`` is still set) and before registering a
-        replacement on a newer steer, so a listener that never fired can
-        never leak onto a later turn that reuses the same agent object.
-        """
-        state = self._peek_session_state(session_key)
-        if state is None:
-            return
-        listener = state.turn.steer_delivered_listener
-        state.turn.steer_delivered_listener = None
-        if listener is None:
-            return
-        agent = state.turn.agent
-        _unregister = getattr(agent, "unregister_steer_delivery_listener", None)
-        if callable(_unregister):
-            try:
-                _unregister(listener)
-            except Exception:
-                logger.debug(
-                    "Failed to unregister steer-delivery listener for session %s",
-                    session_key,
-                    exc_info=True,
-                )
-
-    def _register_steer_delivered_ack(
-        self, event: MessageEvent, session_key: str, agent: Any
-    ) -> None:
-        """Schedule the one-shot "✅ Steer delivered" follow-up ack.
-
-        The immediate busy-steer bubble promises FUTURE delivery ("Your
-        message arrives after the next tool call"). This registers a
-        listener on the running agent that fires when the steer text is
-        ACTUALLY injected into the model's context (AIAgent's mid-run drain
-        points) and sends the confirmation through the same
-        ``adapter._send_with_retry`` path as the busy ack.
-
-        The listener fires on the agent execution / tool-worker thread, so
-        the send is marshalled onto the gateway loop with
-        ``safe_schedule_threadsafe`` (the existing cross-thread notification
-        lane). One-shot bookkeeping happens inside that coroutine: the
-        TurnState slot doubles as the latch — cleared by the fire itself,
-        by a newer steer replacing this one, or by
-        ``_drop_steer_delivered_listener`` at turn teardown — so the ack is
-        sent at most once and never leaks into a later turn.
-        """
-        _register = getattr(agent, "register_steer_delivery_listener", None)
-        if not callable(_register):
-            return  # agent without the listener lane — nothing to hook
-        adapter = self._adapter_for_source(event.source)
-        if adapter is None:
-            return
-        reply_anchor = self._reply_anchor_for_event(event)
-        thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
-        # Reply threading mirrors the busy-ack send in
-        # _handle_active_session_busy_message (same Telegram DM-topic /
-        # thread handling).
-        reply_to = (
-            reply_anchor
-            if event.source.platform == Platform.TELEGRAM
-            and event.source.chat_type == "dm"
-            and event.source.thread_id
-            else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
-        )
-        chat_id = event.source.chat_id
-
-        def _listener(_injected_text: str) -> None:
-            # Agent-thread context — hop onto the gateway loop so the
-            # one-shot latch and the send stay single-threaded.
-            async def _deliver() -> None:
-                state = self._peek_session_state(session_key)
-                if state is None or state.turn.steer_delivered_listener is not _listener:
-                    return  # already fired / superseded / turn ended
-                state.turn.steer_delivered_listener = None
-                _unregister = getattr(agent, "unregister_steer_delivery_listener", None)
-                if callable(_unregister):
-                    try:
-                        _unregister(_listener)
-                    except Exception:
-                        logger.debug(
-                            "Failed to unregister steer-delivery listener",
-                            exc_info=True,
-                        )
-                try:
-                    await adapter._send_with_retry(
-                        chat_id=chat_id,
-                        content="✅ Steer delivered — your message is now in the model's context.",
-                        reply_to=reply_to,
-                        metadata=thread_meta,
-                    )
-                except Exception as _ack_err:
-                    logger.debug("Failed to send steer-delivered ack: %s", _ack_err)
-
-            safe_schedule_threadsafe(
-                _deliver(),
-                getattr(self, "_gateway_loop", None),
-                logger=logger,
-                log_message="steer-delivered ack scheduling error",
-            )
-
-        # An earlier steer in this run may still hold the slot; its text
-        # concatenates into the same eventual injection, so one ack is enough.
-        self._drop_steer_delivered_listener(session_key)
-        if not _register(_listener):
-            return
-        self._session_state(session_key).turn.steer_delivered_listener = _listener
-
-
-
-
-
-
 
     # Upper bound on off-loop agent-resource cleanup invoked from coroutines
     # running on the gateway's event loop (session-expiry sweep, in-turn
@@ -8273,7 +7986,6 @@ class GatewayRunner(
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
             adapter.set_platform_event_handler(self._primary_platform_event_handler())
-            adapter._busy_text_mode = self._busy_text_mode
             from gateway.overlap_restart import defer_adapter_until_authoritative, defer_primary_adapter
             pending = (platform, platform_config, adapter)
             if defer_adapter_until_authoritative(self, adapter):
@@ -10773,48 +10485,6 @@ class GatewayRunner(
         ("checkpoints", "max_file_size_mb"),
     )
 
-    _HONCHO_CACHE_BUSTING_KEYS = (
-        "honcho.peer_name",
-        "honcho.ai_peer",
-        "honcho.pin_peer_name",
-        "honcho.runtime_peer_prefix",
-        "honcho.user_peer_aliases",
-    )
-    _HONCHO_CACHE_BUSTING_MEMO: dict[tuple[str, int | None], dict[str, Any]] = {}
-
-    @classmethod
-    def _empty_honcho_cache_busting_config(cls) -> dict[str, Any]:
-        return {key: None for key in cls._HONCHO_CACHE_BUSTING_KEYS}
-
-    @classmethod
-    def _extract_honcho_cache_busting_config(cls) -> dict[str, Any]:
-        """Extract Honcho identity keys, memoized by honcho.json mtime."""
-        try:
-            from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
-
-            path = resolve_config_path()
-            try:
-                mtime_ns = path.stat().st_mtime_ns
-            except OSError:
-                mtime_ns = None
-            memo_key = (str(path), mtime_ns)
-            cached = cls._HONCHO_CACHE_BUSTING_MEMO.get(memo_key)
-            if cached is not None:
-                return dict(cached)
-
-            hcfg = HonchoClientConfig.from_global_config(config_path=path)
-            aliases = hcfg.user_peer_aliases or {}
-            values = {
-                "honcho.peer_name": hcfg.peer_name,
-                "honcho.ai_peer": hcfg.ai_peer,
-                "honcho.pin_peer_name": bool(hcfg.pin_peer_name),
-                "honcho.runtime_peer_prefix": hcfg.runtime_peer_prefix or "",
-                "honcho.user_peer_aliases": sorted(aliases.items()) if isinstance(aliases, dict) else [],
-            }
-            cls._HONCHO_CACHE_BUSTING_MEMO = {memo_key: values}
-            return dict(values)
-        except Exception:
-            return cls._empty_honcho_cache_busting_config()
 
 
 

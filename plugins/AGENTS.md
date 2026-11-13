@@ -1,8 +1,8 @@
 # plugins/ — plugin kinds, compat contract, in-tree policy
 
 Applies on top of the root `AGENTS.md`. Authoring guide + canonical compat contract:
-`website/docs/developer-guide/plugins/index.md`. Per-kind guides: `memory-provider-plugin.md`,
-`model-provider-plugin.md`, `context-engine-plugin.md`, `image-gen-provider-plugin.md`, ...
+the developer guide. Per-kind guides cover memory-provider,
+model-provider, context-engine, and image-gen-provider plugins.
 
 ## Plugins never touch core (Teknium, May 2026)
 
@@ -16,8 +16,8 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
 
 ## What may live in this tree (policy)
 
-- **No new in-tree memory providers (May 2026).** `plugins/memory/` is closed (honcho, mem0,
-  supermemory, byterover, hindsight, holographic, openviking, retaindb stay; bug fixes welcome). New
+- **In-tree memory providers.** `plugins/memory/` ships supermemory, byterover, hindsight,
+  holographic, retaindb; bug fixes welcome. New
   backends ship as standalone repos implementing the same `MemoryProvider` ABC, discovered through
   the same path, integrated via `hermes memory setup` / `post_setup()`.
 - **No new third-party-product plugins (June 2026).** Observability/metrics backends, vendor SaaS

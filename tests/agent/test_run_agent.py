@@ -5247,14 +5247,14 @@ class TestHookPayloadSanitizesSimpleNamespace:
     importing it, so sanitizing any hook payload that contained one raised
     ``NameError: name 'SimpleNamespace' is not defined``.
 
-    The non-OpenAI providers (Bedrock, Codex responses, the auxiliary client,
-    and the chat-completion stream stub) build their response / message /
-    tool_call objects as ``types.SimpleNamespace`` — see
-    ``agent/bedrock_adapter.py``, ``agent/codex_responses_adapter.py``, and
-    ``agent/auxiliary_client.py``. Those raw objects are handed straight to
-    ``_api_response_payload_for_hook`` for the ``post_api_request`` hook, so the
-    crash silently killed observability hooks for every one of those providers
-    (the call sites swallow the exception with ``except Exception: pass``).
+    Several non-OpenAI paths (Codex responses, the auxiliary client, and the
+    chat-completion stream stub) build their response / message / tool_call
+    objects as ``types.SimpleNamespace`` — see
+    ``agent/codex_responses_adapter.py`` and ``agent/auxiliary_client.py``.
+    Those raw objects are handed straight to ``_api_response_payload_for_hook``
+    for the ``post_api_request`` hook, so the crash silently killed
+    observability hooks for every one of those providers (the call sites
+    swallow the exception with ``except Exception: pass``).
     """
 
     def test_hook_jsonable_normalizes_simplenamespace(self):
@@ -5263,8 +5263,8 @@ class TestHookPayloadSanitizesSimpleNamespace:
         assert result == {"id": "call_1", "value": 42, "nested": {"name": "x"}}
 
     def test_api_response_payload_for_hook_normalizes_simplenamespace_tool_calls(self, agent):
-        # Shape mirrors agent/bedrock_adapter.py::normalize_converse_response and
-        # agent/codex_responses_adapter.py — raw SDK objects are SimpleNamespace.
+        # Shape mirrors agent/codex_responses_adapter.py — raw SDK objects
+        # are SimpleNamespace.
         tool_call = SimpleNamespace(
             id="call_1",
             type="function",
@@ -5944,8 +5944,8 @@ class TestSafeWriter:
             sys.stdout = original_stdout
             sys.stderr = original_stderr
 
-    # test_installed_before_init_time_honcho_error_prints removed —
-    # Honcho integration extracted to plugin (PR #4154).
+    # test_installed_before_init_time_honcho_error_prints removed
+    # (memory-provider integration extracted to plugin, PR #4154).
 
 
 
@@ -7395,7 +7395,7 @@ class TestMemoryContextSanitization:
         cleaned to just the surrounding text.  Used by build_memory_context_block
         (input-validation) and by plugins on their own backend boundary."""
         from agent.memory_manager import sanitize_context
-        user_text = "how is the honcho working"
+        user_text = "how is the hindsight working"
         injected = (
             user_text + "\n\n"
             "<memory-context>\n"
@@ -7408,4 +7408,4 @@ class TestMemoryContextSanitization:
         result = sanitize_context(injected)
         assert "memory-context" not in result.lower()
         assert "stale observation" not in result
-        assert "how is the honcho working" in result
+        assert "how is the hindsight working" in result

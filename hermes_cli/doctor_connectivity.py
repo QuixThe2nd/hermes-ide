@@ -86,7 +86,7 @@ def _build_apikey_providers_list() -> list:
     _known_names = {t[0] for t in _static}
     # Providers with a dedicated health check (custom headers/auth): skip their pluggable profiles so
     # the generic Bearer loop doesn't run a duplicate, broken check (Anthropic needs x-api-key).
-    _dedicated_canonical = {"anthropic", "openrouter", "bedrock"}
+    _dedicated_canonical = {"anthropic", "openrouter"}
     # Canonical profile names of the static rows, so profiles without a display_name don't duplicate.
     _known_canonical = {
         "zai", "kimi-coding", "stepfun", "kimi-coding-cn", "arcee", "gmi", "deepseek", "huggingface", "nvidia",
@@ -256,32 +256,10 @@ def _apikey_request(key: str, base_env, default_url) -> tuple:
     return base, url, headers
 
 
-def _probe_bedrock() -> ProbeResult:
-    name = "AWS Bedrock"
-    try:
-        from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
-    except ImportError:
-        return _skip(name)
-    if not has_aws_credentials():
-        return _skip(name)
-    auth_var, region, label = resolve_aws_auth_env_var(), resolve_bedrock_region(), name.ljust(20)
-    try:
-        import boto3
-        from botocore.config import Config as _BotoConfig
-        # Trim retries so a transient failure doesn't pad the doctor run by 30+ seconds.
-        client = boto3.client("bedrock", region_name=region, config=_BotoConfig(connect_timeout=5, read_timeout=10, retries={"max_attempts": 1}))
-        n = len(client.list_foundation_models().get("modelSummaries", []))
-        return _row(name, "ok", f"({auth_var}, {region}, {n} models)", label=label)
-    except ImportError:
-        pip = f"{sys.executable} -m pip install boto3"
-        return _row(name, "warn", f"(boto3 not installed — {pip})", [f"Install boto3 for Bedrock: {pip}"], label=label)
-    except Exception as e:
-        err_name = type(e).__name__
-        return _row(name, "warn", f"({err_name}: {e})", [f"AWS Bedrock: {err_name} — check IAM permissions for bedrock:ListFoundationModels"], label=label)
 
 
 def _probe_azure_entra() -> ProbeResult:
-    """Probe Azure Foundry Entra ID auth, parallel to ``_probe_bedrock``.
+    """Probe Azure Foundry Entra ID auth.
 
     Skipped unless the active config has ``model.provider: azure-foundry`` AND ``model.auth_mode: entra_id``
     — we don't probe the token-service / CLI chain for plain API-key Azure. Bounded by a 10s timeout.
@@ -361,20 +339,16 @@ def build_probes() -> list:
         ("OpenRouter API", _probe_openrouter), ("Anthropic API", _probe_anthropic),
         # functools.partial binds each row's args so every callable keeps its own provider.
         *((row[0], functools.partial(_probe_apikey_provider, *row)) for row in _APIKEY_PROVIDERS_CACHE),
-        ("AWS Bedrock", _probe_bedrock), ("Azure Foundry (Entra ID)", _probe_azure_entra),
+        ("Azure Foundry (Entra ID)", _probe_azure_entra),
     ]
 
 
 def run_probes(probes: list) -> list:
     """Run every probe in a thread pool; results in submission order.
 
-    Probes are independent HTTP calls (series cost ~5s wall, 2s of it boto3's IMDS lookup);
-    parallel collapses the section to roughly the slowest single probe without changing the output.
+    Probes are independent HTTP calls; parallel collapses the section to roughly the slowest
+    single probe without changing the output.
     """
-    # Disable boto3's EC2 instance-metadata probe (169.254.169.254, multi-second timeout off-EC2). Set on the
-    # parent thread before submitting so it never races a worker; has_aws_credentials() already gates on real creds.
-    _imds_prev = os.environ.get("AWS_EC2_METADATA_DISABLED")
-    os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
     try:
         # 8 workers is plenty — each probe is one HTTP call plus a TLS handshake.
         with concurrent.futures.ThreadPoolExecutor(max_workers=8, thread_name_prefix="doctor-probe") as ex:

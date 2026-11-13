@@ -73,9 +73,6 @@ def test_bounded_fast_window_policy(monkeypatch):
         fast_mode.begin_turn(proxied, conversation_history=[])
         assert "service_tier" not in fast_mode.effective_request_overrides(proxied), provider
         assert resolve_fast_mode_overrides("gpt-5.4", provider=provider, base_url=base_url) is None
-    assert resolve_fast_mode_overrides(
-        "claude-opus-5", provider="bedrock", base_url="https://bedrock-runtime.us-east-1.amazonaws.com"
-    ) is None
     # first-party routes (and the legacy model-only call) still resolve
     assert resolve_fast_mode_overrides("gpt-5.4", provider="openai-codex", base_url="https://chatgpt.com/backend-api/codex")
     assert resolve_fast_mode_overrides("grok-4.6", provider="xai", base_url="https://api.x.ai/v1")

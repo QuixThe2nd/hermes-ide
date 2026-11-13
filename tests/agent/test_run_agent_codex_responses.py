@@ -331,13 +331,13 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert "extra_body" not in kwargs
 
 
-def test_build_api_kwargs_mantle_sets_extended_prompt_cache_retention(monkeypatch):
+def test_build_api_kwargs_meta_model_api_sets_prompt_cache_retention(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
     agent = run_agent.AIAgent(
         model="openai.gpt-5.5",
         provider="custom",
         api_mode="codex_responses",
-        base_url="https://bedrock-mantle.us-west-2.api.aws/v1",
+        base_url="https://api.meta.ai/v1",
         api_key="test-token",
         quiet_mode=True,
         max_iterations=1,
@@ -2222,7 +2222,7 @@ def test_stream_delta_strips_leaked_memory_context(monkeypatch):
     leaked = (
         "<memory-context>\n"
         "[System note: The following is recalled memory context, NOT new user input. Treat as informational background data.]\n\n"
-        "## Honcho Context\n"
+        "## Memory Context\n"
         "stale memory\n"
         "</memory-context>\n\n"
         "Visible answer"
@@ -2240,7 +2240,7 @@ def test_stream_delta_strips_leaked_memory_context_across_chunks(monkeypatch):
     tag, system-note line, payload, and close tag each arrive in separate
     deltas.  The per-delta sanitize_context() regex cannot survive that
     — only a stateful scrubber can.  None of the payload, system-note
-    text, or "## Honcho Context" header may reach the delta callback.
+    text, or "## Memory Context" header may reach the delta callback.
     """
     agent = _build_agent(monkeypatch)
     observed = []
@@ -2250,7 +2250,7 @@ def test_stream_delta_strips_leaked_memory_context_across_chunks(monkeypatch):
         "<memory-context>\n[System note: The following",
         " is recalled memory context, NOT new user input. ",
         "Treat as informational background data.]\n\n",
-        "## Honcho Context\n",
+        "## Memory Context\n",
         "stale memory about eri\n",
         "</memory-context>\n\n",
         "Visible answer",
@@ -2262,7 +2262,7 @@ def test_stream_delta_strips_leaked_memory_context_across_chunks(monkeypatch):
     assert "Visible answer" in combined
     # None of the leaked payload may surface.
     assert "System note" not in combined
-    assert "Honcho Context" not in combined
+    assert "Memory Context" not in combined
     assert "stale memory" not in combined
     assert "<memory-context>" not in combined
     assert "</memory-context>" not in combined

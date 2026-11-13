@@ -909,7 +909,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         # Verify extraDependencyGroups passes through to python.nix
         extra-dependency-groups = let
           hermesWithGroups = hermes-agent.override {
-            extraDependencyGroups = [ "honcho" ];
+            extraDependencyGroups = [ "hindsight" ];
           };
         in pkgs.runCommand "hermes-extra-dependency-groups" { } ''
           set -e

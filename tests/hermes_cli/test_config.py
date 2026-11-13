@@ -251,6 +251,37 @@ class TestEmptyConfigSections:
         assert merged["section"] == {"a": 1}
 
 
+class TestLegacyKanbanConfigStillLoads:
+    """Configs written while the Kanban feature existed carry a top-level ``kanban:``
+    section and ``kanban`` entries in the per-platform toolset disable lists. The feature
+    is gone, but those configs must still load and the stale toolset name must stay a
+    silent no-op instead of a startup failure."""
+
+    def test_load_config_tolerates_legacy_kanban_keys(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text(
+                "model:\n"
+                "  default: test/custom\n"
+                "kanban:\n"
+                "  enabled: true\n"
+                "  default_board: work\n"
+                "tools:\n"
+                "  telegram:\n"
+                "    disabled: [kanban]\n"
+            )
+            config = load_config()
+            assert config["model"]["default"] == "test/custom"
+            assert config["kanban"] == {"enabled": True, "default_board": "work"}
+            assert config["tools"]["telegram"]["disabled"] == ["kanban"]
+
+    def test_legacy_kanban_toolset_name_is_a_silent_no_op(self):
+        from toolsets import get_toolset, resolve_multiple_toolsets, resolve_toolset
+
+        assert not get_toolset("kanban")
+        assert resolve_toolset("kanban") == []
+        assert resolve_multiple_toolsets(["kanban"]) == []
+
+
 class TestSaveAndLoadRoundtrip:
     @staticmethod
     def _deny_config_reads(config_path):
@@ -707,8 +738,7 @@ class TestOptionalEnvVarsRegistry:
 class TestMemoryProviderEnvVarsRegistry:
     """Every memory provider that reads an API key from the environment must
     have that key catalogued in OPTIONAL_ENV_VARS so the dashboard Keys page
-    and `hermes setup` surface it (previously only Honcho was listed, leaving
-    Hindsight/Supermemory/Mem0/RetainDB/ByteRover/OpenViking invisible).
+    and `hermes setup` surface it.
 
     This is a behavior contract, not a snapshot: it asserts each provider's
     primary credential key is present, tool-categorised, and password-masked —
@@ -717,13 +747,10 @@ class TestMemoryProviderEnvVarsRegistry:
 
     # provider primary-credential env key -> the tool-call name it powers.
     MEMORY_PROVIDER_KEYS = {
-        "HONCHO_API_KEY": "honcho_context",
         "HINDSIGHT_API_KEY": "hindsight_recall",
         "SUPERMEMORY_API_KEY": "supermemory_search",
-        "MEM0_API_KEY": "mem0_search",
         "RETAINDB_API_KEY": "retaindb_search",
         "BRV_API_KEY": "brv_query",
-        "OPENVIKING_API_KEY": "viking_search",
     }
 
     def test_memory_provider_keys_are_catalogued(self):
@@ -1319,7 +1346,7 @@ class TestDiscordChannelPromptsConfig:
         # File must NOT be a defaults dump — assert specific DEFAULT_CONFIG
         # top-level keys are absent (they should only appear via load_config's
         # deep-merge, not be written to the user's file by migration).
-        for default_key in ("tts", "compression", "security", "whatsapp", "bedrock"):
+        for default_key in ("tts", "compression", "security", "whatsapp"):
             assert default_key not in raw, (
                 f"{default_key} should not be in migrated config file — "
                 f"migration should use read_raw_config() to avoid defaults dump"
@@ -1547,7 +1574,7 @@ class TestMigrationWriteInvariant:
         # neither from per-version seeds nor the catch-all finalizer.
         for default_key in (
             "timezone", "curator", "auxiliary", "tts", "compression",
-            "whatsapp", "bedrock",
+            "whatsapp",
         ):
             assert default_key not in raw, (
                 f"{default_key} was materialised into a lean config by the "

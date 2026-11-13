@@ -33,6 +33,7 @@ from plugins.platforms.discord.reaction_gate import (
     split_reaction_clusters,
 )
 from plugins.platforms.discord.response_gate import (
+    JEV_DECISIONS_URL,
     ResponseGateError,
     build_conversation_state,
 )
@@ -50,7 +51,7 @@ BASE_DISTRIBUTION = {"👍": 0.50, "❤️": 0.30, "😂": 0.00, NONE_OPTION: 0.
 def _choice_client(*, emojis=EMOJIS, criteria=None) -> JevChoiceClient:
     """A real client; only its transport is ever stubbed, never its validation."""
     return JevChoiceClient(
-        credential="test-credential", model="typesafe/jev-1.13", timeout_seconds=3.0,
+        credential="test-credential", model="jev-1.13.0", timeout_seconds=3.0,
         emojis=emojis, criteria=build_reaction_criteria(emojis, criteria),
         instructions=build_reaction_instructions(),
     )
@@ -71,6 +72,53 @@ def _conversation_state(content: str = "thanks, that fixed it!") -> dict:
         message, channel=channel, bot_name="Winnie", bot_id=1,
         recent=[{"author": "Tek", "content": "earlier chatter"}], context_chars=8000,
     )
+
+
+class TestJevLitellmContract:
+    """The Jev callers post to the litellm proxy directly (2026-11 cutover from OpenRouter).
+
+    The fixed endpoint is the litellm proxy's ``POST /jev/decisions`` and the credential is
+    a litellm virtual key (``LITELLM_API_KEY``). Model ids are proxy-native: the OpenRouter
+    slug ``typesafe/jev-1.13`` is answered with 400 Unknown model.
+    """
+
+    def test_fixed_decisions_url_is_the_litellm_proxy(self):
+        import hermes_cli.goal_intent as goal_intent
+
+        assert JEV_DECISIONS_URL == "http://192.168.30.21:4000/jev/decisions"
+        # goal_intent duplicates the fixed URL on purpose (hermes_cli never imports a
+        # platform plugin module); the two spellings must never drift apart.
+        assert goal_intent.JEV_DECISIONS_URL == JEV_DECISIONS_URL
+
+    def test_default_judge_model_is_proxy_native(self):
+        from gateway.config import ResponseGateConfig
+        import hermes_cli.goal_intent as goal_intent
+
+        assert ResponseGateConfig().model == "jev-1.13.0"
+        assert ReactionGateConfig().model == "jev-1.13.0"
+        assert goal_intent.JEV_MODEL == ResponseGateConfig().model
+
+    def test_gate_credential_env_is_litellm_api_key(self, monkeypatch):
+        import asyncio
+
+        from plugins.platforms.discord.hub_client import DiscordHubClientAdapter
+
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.setenv("LITELLM_API_KEY", "sk-litellm-virtual")
+        captured = {}
+
+        async def fake_call(method, params=None):
+            captured["method"] = method
+            captured["params"] = params
+            return {"pid": 1, "token_key": "k"}
+
+        client = DiscordHubClientAdapter(PlatformConfig(token="fake-token"))
+        client._open_socket = lambda: asyncio.sleep(0)
+        client._call = fake_call
+        assert asyncio.run(client.connect()) is True
+        assert captured["method"] == "attach"
+        assert captured["params"]["gate_credential"] == "sk-litellm-virtual"
+
 
 
 class TestChooseReactionBoundary:
@@ -335,7 +383,7 @@ class TestReactionGateConfigFromDict:
             "timeout_seconds": 2.5,
             "context_messages": 5,
             "context_chars": 4096,
-            "model": "typesafe/jev-1.13",
+            "model": "jev-1.13.0",
             "decisions_url": "http://127.0.0.1:9000/decisions",
         })
         assert config.active is True
@@ -353,7 +401,7 @@ class TestReactionGateConfigFromDict:
         assert config.include_threads is True
         assert config.emojis == DEFAULT_REACTION_EMOJIS
         assert config.criteria == {}
-        assert config.model == "typesafe/jev-1.13"
+        assert config.model == "jev-1.13.0"
         assert config.timeout_seconds == 3.0
         assert config.context_messages == 10
         assert config.context_chars == 8000

@@ -359,7 +359,6 @@ def test_managed_request_does_not_add_sdk_headers_to_strict_callback(relay_turn)
         name="strict-native",
         model_name="strict-model",
         metadata={
-            "api_mode": "bedrock_converse",
             "api_request_id": "strict-native-request",
         },
     )
@@ -385,7 +384,6 @@ def test_managed_stream_does_not_add_sdk_headers_to_strict_callback(relay_turn):
         model_name="strict-model",
         finalizer=lambda: {"content": "provider-native"},
         metadata={
-            "api_mode": "bedrock_converse",
             "api_request_id": "strict-native-stream",
         },
     )

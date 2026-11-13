@@ -11,10 +11,7 @@ from hermes_cli.nous_account import (
 )
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 from utils import is_truthy_value
-from tools.tool_backend_helpers import (
-    fal_key_is_configured, has_direct_modal_credentials, normalize_modal_mode,
-    resolve_modal_backend_state
-)
+from tools.tool_backend_helpers import fal_key_is_configured
 
 
 _DEFAULT_PLATFORM_TOOLSETS = {"cli": "hermes-cli"}
@@ -30,7 +27,7 @@ class _FeatureSpec:
     # the free pool funds image but NOT video.
     coverage: str
     gateway: str  # managed gateway probed for readiness (video rides image's fal-queue)
-    # Config (section, selection field) written by apply_gateway_defaults; None = not offered (modal).
+    # Config (section, selection field) written by apply_gateway_defaults; None = not offered.
     section_field: Optional[tuple[str, str]] = None
     offer_label: str = ""
     direct_label: str = ""
@@ -51,7 +48,6 @@ _FEATURES: Dict[str, _FeatureSpec] = {
     "video_gen": _FeatureSpec(
         "Video generation", False, "fal-video", "fal-queue", ("video_gen", "provider"), "Video generation (FAL)", "FAL key",
     ),
-    "modal": _FeatureSpec("Modal execution", False, "modal", "modal"),
 }
 
 _FEATURE_ORDER = tuple(_FEATURES)
@@ -228,29 +224,6 @@ def _fal_feature(key: str, tool_enabled: bool, direct: bool, managed: bool, sele
     )
 
 
-def _modal_feature(terminal_cfg: Dict[str, object], tool_enabled: bool, managed: bool, managed_tools_flag: bool) -> NousFeatureState:
-    terminal_backend = _norm(terminal_cfg.get("backend"), "local")
-    modal_mode = normalize_modal_mode(terminal_cfg.get("modal_mode"))
-    direct_modal = has_direct_modal_credentials()
-    modal_state = resolve_modal_backend_state(modal_mode, has_direct=direct_modal, managed_ready=managed, managed_enabled=managed_tools_flag)
-    is_modal = terminal_backend == "modal"
-    # A non-modal terminal backend, or a resolved managed/direct selection, is always "available";
-    # otherwise report what the mode could use.
-    selected = modal_state["selected_backend"] if is_modal else None
-    if not is_modal or selected in ("managed", "direct"):
-        available, active = True, bool(tool_enabled)
-        managed_now = selected == "managed" and bool(tool_enabled)
-        direct_override = is_modal and selected == "direct" and bool(tool_enabled)
-    else:
-        managed_now = direct_override = active = False
-        available = bool({"managed": managed, "direct": direct_modal}.get(modal_mode, managed or direct_modal))
-    return _state(
-        "modal", available=available, active=active, managed_by_nous=managed_now, direct_override=direct_override,
-        toolset_enabled=tool_enabled, current_provider="Modal" if is_modal else terminal_backend or "local",
-        explicit_configured=is_modal,
-    )
-
-
 def get_nous_subscription_features(config: Optional[Dict[str, object]] = None, *, force_fresh: bool = False) -> NousSubscriptionFeatures:
     if config is None:
         config = load_config() or {}
@@ -260,7 +233,7 @@ def get_nous_subscription_features(config: Optional[Dict[str, object]] = None, *
     # availability is then narrowed by coverage (the pool funds image but not video, etc.).
     nous_auth_present = bool(account_info and account_info.logged_in)
     managed_tools_flag = nous_auth_present and account_info.tool_gateway_entitled
-    enabled = {key: _toolset_enabled(config, key) for key in ("web", "image_gen", "video_gen", "terminal")}
+    enabled = {key: _toolset_enabled(config, key) for key in ("web", "image_gen", "video_gen")}
     # Stored selections (strict model): "nous" = managed gateway; vendor name = that vendor direct;
     # None = never configured (autodetect). Lockstep with tool_backend_helpers.read_selection.
     selected = {
@@ -270,7 +243,7 @@ def get_nous_subscription_features(config: Optional[Dict[str, object]] = None, *
     use_gateway = {key: value == "nous" for key, value in selected.items()}
     # Managed availability per feature. A stored VENDOR selection pins the category to direct
     # credentials — managed availability must not light it up (the runtime errors, not reroutes).
-    # Features without a config selection field (modal) have no pin and read as unselected.
+    # Every remaining feature has a config selection field that pins vendor vs managed.
     managed = {
         key: (
             managed_tools_flag and is_managed_tool_gateway_ready(spec.gateway)
@@ -289,7 +262,6 @@ def get_nous_subscription_features(config: Optional[Dict[str, object]] = None, *
         "web": _web_feature(_section(config, "web"), enabled["web"], managed["web"], use_gateway["web"], direct_firecrawl),
         "image_gen": _fal("image_gen"),
         "video_gen": _fal("video_gen"),
-        "modal": _modal_feature(_section(config, "terminal"), enabled["terminal"], managed["modal"], managed_tools_flag),
     }
     return NousSubscriptionFeatures(
         subscribed=provider_is_nous or nous_auth_present, nous_auth_present=nous_auth_present,

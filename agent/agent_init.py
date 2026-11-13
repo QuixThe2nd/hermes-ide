@@ -366,10 +366,8 @@ class CompressionSettings(SimpleNamespace):
 
 
 _EXPLICIT_API_MODES = {
-    "chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse",
-    "codex_app_server",
+    "chat_completions", "codex_responses", "anthropic_messages", "codex_app_server",
 }
-
 
 def _resolve_api_mode(agent, api_mode, provider_name, base_url):
     """Set ``agent.api_mode`` (and provider rewrites) — ordered ladder, first match wins."""
@@ -393,10 +391,6 @@ def _resolve_api_mode(agent, api_mode, provider_name, base_url):
     elif url.rstrip("/").endswith("/anthropic"):
         # Third-party Anthropic-compatible endpoints (MiniMax, DashScope) end in /anthropic.
         agent.api_mode = "anthropic_messages"
-    elif agent.provider == "bedrock" or (
-        host.startswith("bedrock-runtime.") and base_url_host_matches(url, "amazonaws.com")
-    ):
-        agent.api_mode = "bedrock_converse"
     elif agent.provider in {"nous", "nous-portal", "nousresearch"}:
         # Portal is dual-wire (anthropic/* → Messages, else chat_completions); covers direct
         # AIAgent construction without a resolved runtime.
@@ -719,19 +713,12 @@ def _print_key_banner(key, label: str, warn_missing: bool = False) -> None:
 
 
 def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
-    """anthropic_messages: native Anthropic SDK (or AnthropicBedrock for Bedrock+Claude)."""
+    """anthropic_messages: native Anthropic SDK."""
     from agent.anthropic_adapter import build_anthropic_client
     from agent.anthropic_credentials import resolve_anthropic_token
     agent.client = None
     agent._client_kwargs = {}
     agent._anthropic_base_url = base_url
-    if agent.provider == "bedrock":
-        # AnthropicBedrock SDK for full feature parity (prompt caching, thinking budgets).
-        from agent.bedrock_adapter import bind_bedrock_runtime
-        bind_bedrock_runtime(agent, base_url, "anthropic_messages")
-        if not agent.quiet_mode:
-            print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock + AnthropicBedrock SDK, {agent._bedrock_region})")
-        return
     # ANTHROPIC_TOKEN fallback only for native Anthropic — other anthropic_messages providers
     # must use their own key or Anthropic credentials leak to third-party endpoints.
     # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
@@ -783,15 +770,6 @@ def _init_moa_client(agent, api_key):
     bind_moa_runtime(agent, agent.model, api_key)
     if not agent.quiet_mode:
         print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
-
-
-def _init_bedrock_client(agent, base_url):
-    """bedrock_converse: boto3 directly, no OpenAI client."""
-    from agent.bedrock_adapter import bind_bedrock_runtime
-    bind_bedrock_runtime(agent, base_url, "bedrock_converse")
-    if not agent.quiet_mode:
-        _gr_label = " + Guardrails" if agent._bedrock_guardrail_config else ""
-        print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock, {agent._bedrock_region}{_gr_label})")
 
 
 def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict[str, Any]:
@@ -926,13 +904,6 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
         agent.api_mode = "chat_completions"
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
-    try:
-        from agent.bedrock_adapter import configure_bedrock_openai_client_kwargs
-        configure_bedrock_openai_client_kwargs(client_kwargs, timeout=_provider_timeout)
-    except Exception:
-        if agent.provider == "bedrock" and "bedrock-mantle." in str(client_kwargs.get("base_url", "")):
-            raise
-
     agent._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
     _apply_openai_header_policy(agent, client_kwargs)
     agent.api_key = client_kwargs.get("api_key", "")
@@ -962,8 +933,6 @@ def _build_client(agent, api_key, base_url, fallback_model):
         _init_anthropic_client(agent, api_key, base_url, _provider_timeout)
     elif agent.provider == "moa":
         _init_moa_client(agent, api_key)
-    elif agent.api_mode == "bedrock_converse":
-        _init_bedrock_client(agent, base_url)
     else:
         _init_openai_client(agent, api_key, base_url, fallback_model, _provider_timeout)
 
@@ -1206,7 +1175,7 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
     if kwargs["platform"] == "cli":
         kwargs["warning_callback"] = agent._emit_warning
         kwargs["status_callback"] = agent._emit_status
-    # Session title (e.g. honcho derives chat-scoped session keys from it).
+    # Session title (memory providers derive chat-scoped session keys from it).
     if agent._session_db:
         with suppress(Exception):
             _st = agent._session_db.get_session_title(agent.session_id)
@@ -1216,7 +1185,7 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
                 if _source:
                     kwargs["session_title_source"] = _source
     # Gateway user/chat identity for per-user scoping (gateway_session_key: stable per-chat
-    # Honcho session isolation).
+    # provider session isolation).
     for _ident in _GATEWAY_IDENTITY_PARAMS:
         _val = getattr(agent, f"_{_ident}")
         if _val:

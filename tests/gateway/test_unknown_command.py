@@ -84,7 +84,6 @@ def _make_runner():
     runner._set_session_env = lambda _context: None
     runner._should_send_voice_reply = lambda *_args, **_kwargs: False
     runner._send_voice_reply = AsyncMock()
-    runner._capture_gateway_honcho_if_configured = lambda *args, **kwargs: None
     runner._emit_gateway_run_progress = AsyncMock()
     return runner
 
@@ -128,21 +127,6 @@ async def test_known_slash_command_not_flagged_as_unknown(monkeypatch):
     result = await runner._handle_message(_make_event("/status"))
 
     assert result is not None
-    assert "Unknown command" not in result
-
-
-@pytest.mark.asyncio
-async def test_egress_slash_command_reports_proxy_status(monkeypatch):
-    runner = _make_runner()
-    monkeypatch.setattr(
-        "hermes_cli.proxy_cli.format_status_text",
-        lambda: "Egress proxy status\nEnabled: no",
-    )
-
-    result = await runner._handle_message(_make_event("/egress"))
-
-    assert result is not None
-    assert "Egress proxy status" in result
     assert "Unknown command" not in result
 
 

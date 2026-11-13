@@ -849,7 +849,7 @@ class TestCachedAgentInactivityReset:
 class TestAgentConfigSignatureUserId:
     """Shared-thread cache must not reuse an agent across users.
 
-    HonchoSessionManager freezes the resolved runtime user identity at
+    The memory provider freezes the resolved runtime user identity at
     first-message init.  When the gateway session_key omits the participant
     ID (``thread_sessions_per_user=False``), a cached AIAgent created by
     user A would otherwise be reused for user B, attributing B's writes to

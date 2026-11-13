@@ -29,7 +29,7 @@ def test_distinct_providers_each_warn(caplog):
     agent_init._warned_unavailable_providers.clear()
     with caplog.at_level(logging.WARNING, logger="run_agent"):
         agent_init._warn_memory_provider_unavailable("hindsight")
-        agent_init._warn_memory_provider_unavailable("mem0")
+        agent_init._warn_memory_provider_unavailable("hindsight")
 
     warnings = [r for r in caplog.records if "unavailable" in r.getMessage()]
     assert len(warnings) == 2

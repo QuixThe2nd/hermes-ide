@@ -270,7 +270,6 @@ hermes-agent/
 ├── cron/                 # jobs.py + scheduler.py (+ scheduler_*.py)
 ├── evals/                # Offline benchmarks (codebase_navigability/, compaction/, ...)
 ├── scripts/              # run_tests.sh, release.py, check_compat_pointers.py, ci/
-├── website/              # Docusaurus docs (developer-guide/ holds the long-form area docs)
 └── tests/                # Pytest suite (~39k tests / ~3.7k files, Sep 2026)
 ```
 
@@ -281,7 +280,7 @@ Browse with `hermes logs [--follow] [--level ...] [--session ...]`.
 
 ## TypeScript Style
 
-Applies to TypeScript across Hermes: desktop, TUI, website, and future TS packages.
+Applies to TypeScript across Hermes: desktop, TUI, and future TS packages.
 
 - Prefer small nanostores over component state when state is shared, reused, or read by distant UI.
 - Let each feature own its atoms. Chat state belongs near chat, shell state near shell, shared state in `src/store`.
@@ -335,8 +334,8 @@ families: `hermes_state.py` (21), `gateway/run.py` (15), `tools/mcp_tool.py` (15
   (`_SLASH_DISPATCH` in `cli.py`, `_command_handler_table` in the gateway are the shape).
 - **No re-export shims for internal moves** ("keep the old name importable"). Internal paths
   are not API; external compat is handled ONCE by the compat layer, not per PR.
-- **Moving a symbol means fixing its docs in the same PR:** grep `website/docs`,
-  `skills/`, and every `AGENTS.md` for the old `path.py` + symbol (23 doc files went stale
+- **Moving a symbol means fixing its docs in the same PR:** grep `skills/`
+  and every `AGENTS.md` for the old `path.py` + symbol (23 doc files went stale
   after the refactor). `evals/codebase_navigability/static_metrics.py <tree> <label>` measures
   file/function/CC/elif distributions before/after a large PR in ~2 min.
 
@@ -606,7 +605,7 @@ Reference: #2810 (bounds pass), #9801 (SHA pinning + audit CI).
 `model`, `agent`, `terminal`, `compression`, `display`, `stt`, `tts`,
 `memory`, `security`, `delegation`, `smart_model_routing`, `checkpoints`,
 `auxiliary`, `curator`, `skills`, `gateway`, `logging`, `cron`, `profiles`,
-`plugins`, `honcho`.
+`plugins`.
 
 `auxiliary` holds per-task overrides for side-LLM work (curator, vision,
 embedding, title generation, session_search, etc.) — each task can pin
@@ -773,7 +772,7 @@ explicitly (it's idempotent).
 #### Native plugin compatibility policy
 
 The canonical contract and deprecation policy live in
-`website/docs/developer-guide/plugins/index.md#native-plugin-compatibility-contract`.
+the native plugin compatibility contract in the developer guide.
 Compatibility is enforced as a behavior contract, not through a monolithic
 `PLUGIN_API_VERSION`, a manifest-wide native `api:` match, or version literals
 on unrelated payloads. Keep documented plugin surfaces additive:
@@ -798,8 +797,7 @@ source-reading tests, or assertions that a global version literal changed.
 ### Memory-provider plugins (`plugins/memory/<name>/`)
 
 Separate discovery system for pluggable memory backends. Current built-in
-providers include **honcho, mem0, supermemory, byterover, hindsight,
-holographic, openviking, retaindb**.
+providers include **supermemory, byterover, hindsight, holographic, retaindb**.
 
 Discovery covers the same four sources as the general `PluginManager` —
 bundled, `$HERMES_HOME/plugins/`, `./.hermes/plugins/` (opt-in via
@@ -872,7 +870,7 @@ NOT import them (would double-instantiate `ProviderProfile`). Plugins
 without an explicit `kind:` get auto-coerced via a source-text heuristic
 (`register_provider` + `ProviderProfile` in `__init__.py`).
 
-Full authoring guide: `website/docs/developer-guide/model-provider-plugin.md`.
+Full authoring guide: the model-provider plugin page in the developer guide.
 
 ### Dashboard / context-engine / image-gen plugin directories
 
@@ -1082,7 +1080,7 @@ Config section (`curator:` in `config.yaml`):
 `enabled`, `interval_hours`, `min_idle_hours`, `stale_after_days`,
 `archive_after_days`, `backup.*`.
 
-Full user-facing docs: `website/docs/user-guide/features/curator.md`.
+Full user-facing docs: the curator page in the user guide.
 
 ---
 
@@ -1594,7 +1592,7 @@ extract, not to regex around it.
 | `cron/` | `cron/AGENTS.md` | Scheduler invariants and job fields |
 | `gateway/platforms/` new adapter | `gateway/platforms/ADDING_A_PLATFORM.md` | Step-by-step adapter guide |
 
-Long-form background lives in `website/docs/developer-guide/` (agent-loop, prompt-assembly,
+Long-form background lives in the developer guide (agent-loop, prompt-assembly,
 context-compression-and-caching, gateway-internals, tools-runtime, plugins/, cron-internals,
 session-storage, ...). Workflow rules (PR/issue/review/salvage process) live in the
 `hermes-agent-dev` skill, not here.

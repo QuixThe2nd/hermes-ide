@@ -34,7 +34,7 @@ Esta es la pregunta más común para los nuevos colaboradores. La respuesta casi
 - Requiere integración de extremo a extremo con claves API, flujos de autenticación o configuración de múltiples componentes gestionada por el harness del agente
 - Necesita lógica de procesamiento personalizada que debe ejecutarse con precisión en cada ocasión (no "mejor esfuerzo" de la interpretación del LLM)
 - Maneja datos binarios, streaming o eventos en tiempo real que no pueden pasar por el terminal
-- Ejemplos: automatización de navegador (gestión de sesiones Camofox), TTS (codificación de audio + entrega en plataforma), análisis de visión (manejo de imágenes base64)
+- Ejemplos: automatización de navegador (gestión de sesiones Camofox), análisis de visión (manejo de imágenes base64)
 
 ### ¿Debería la Habilidad estar incluida?
 
@@ -51,7 +51,7 @@ Si tu habilidad es especializada, contribuida por la comunidad o de nicho, es me
 
 ## Proveedores de Memoria: Publicar como Plugin Independiente
 
-**Ya no aceptamos nuevos proveedores de memoria en este repositorio.** El conjunto de proveedores integrados en `plugins/memory/` (honcho, mem0, supermemory, byterover, hindsight, holographic, openviking, retaindb) está cerrado. Si quieres añadir un nuevo backend de memoria, publícalo como un **repositorio de plugin independiente** que los usuarios instalen en `~/.hermes/plugins/` (o a través de un entry point de pip).
+**Ya no aceptamos nuevos proveedores de memoria en este repositorio.** El conjunto de proveedores integrados en `plugins/memory/` (supermemory, byterover, hindsight, holographic, retaindb) está cerrado. Si quieres añadir un nuevo backend de memoria, publícalo como un **repositorio de plugin independiente** que los usuarios instalen en `~/.hermes/plugins/` (o a través de un entry point de pip).
 
 Los plugins de memoria independientes:
 
