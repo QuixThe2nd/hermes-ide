@@ -65,6 +65,7 @@ class DiscordSessionRouter:
         self._versions: Dict[str, int] = {}
         self._current: Optional[str] = None
         self._undelivered: list[Dict[str, Any]] = []
+        self._store_path: Optional[Path] = None
         self._lock = asyncio.Lock()
         self._transport = transport
         self._version_field = version_field
@@ -77,6 +78,40 @@ class DiscordSessionRouter:
     @property
     def undelivered(self) -> list[Dict[str, Any]]:
         return list(self._undelivered)
+
+    def bind_store(self, path: Path) -> None:
+        """Mirror held events to *path* so a hub restart replays them on attach."""
+        if self._store_path is not None:
+            return
+        self._store_path = Path(path)
+        try:
+            rows = json.loads(self._store_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            rows = []
+        if isinstance(rows, list):
+            self._undelivered[:0] = [row for row in rows if isinstance(row, dict)]
+        self._save_undelivered()
+
+    def _save_undelivered(self) -> None:
+        path = self._store_path
+        if path is None:
+            return
+        try:
+            if not self._undelivered:
+                path.unlink(missing_ok=True)
+                return
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(path.name + ".tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(self._undelivered, handle, separators=(",", ":"))
+            os.replace(tmp, path)
+        except (OSError, TypeError, ValueError):
+            logger.warning("%s hub could not persist held events", self._transport, exc_info=True)
+
+    def _hold(self, record: Dict[str, Any]) -> None:
+        self._undelivered.append(record)
+        self._save_undelivered()
 
     def owner_for(self, session_key: str) -> Optional[str]:
         return self._owners.get(session_key)
@@ -141,7 +176,7 @@ class DiscordSessionRouter:
                     if candidate not in excluded
                 ), None)
         if generation is None:
-            self._undelivered.append(record)
+            self._hold(record)
             logger.warning(
                 "%s hub retained an event for %s: no eligible Hermes client is attached",
                 self._transport, session_key,
@@ -179,7 +214,7 @@ class DiscordSessionRouter:
                     session_key, record, excluded=excluded | {generation},
                 )
             # Do not send a possibly-received event to a second generation.
-            self._undelivered.append(record)
+            self._hold(record)
             logger.exception("%s hub retained an event for %s after delivery failed", self._transport, session_key)
             return None
         self._owners[session_key] = generation
@@ -227,10 +262,11 @@ class DiscordSessionRouter:
         for record in pending:
             key = str(record.get("session_key") or "")
             if not key:
-                self._undelivered.append(record)
+                self._hold(record)
                 continue
             if await self.route(key, record) is not None:
                 delivered += 1
+        self._save_undelivered()
         return delivered
 
 
@@ -336,7 +372,8 @@ class DiscordHubServer:
         self._adapter_profiles: Dict[str, set[str]] = {}
         self._adapter_routes: Dict[str, list] = {}
         self._raw_messages: "OrderedDict[str, Any]" = OrderedDict()
-        self._successors = OverlapSuccessorRegistry()
+        self._successors = OverlapSuccessorRegistry(
+            state_path=self.socket_path.parent / "hub-overlap-successors.json")
         self.matrix = MatrixHub(self)
         self._stopping = False
 
@@ -346,6 +383,9 @@ class DiscordHubServer:
             # Keep the first router as the single-token/test convenience API.
             router = self.router if not self._routers else DiscordSessionRouter()
             self._routers[token_key] = router
+            bind = getattr(router, "bind_store", None)
+            if callable(bind):
+                bind(self.socket_path.parent / f"hub-undelivered-discord-{token_key[:16]}.json")
         return router
 
     async def start(self) -> None:
