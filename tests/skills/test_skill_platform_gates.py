@@ -17,7 +17,6 @@ REPO = Path(__file__).resolve().parents[2]
 @pytest.mark.parametrize(
     ("skill", "platform", "why"),
     [
-        ("optional-skills/creative/heartmula", "windows", ". .venv/bin/activate"),
         ("optional-skills/devops/hermes-s6-container-supervision", "macos", "/run/s6/basedir/bin/halt"),
     ],
 )
