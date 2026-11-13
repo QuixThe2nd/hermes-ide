@@ -26,7 +26,7 @@ SURFACES = ("cli", "gateway", "tui")
 def test_some_commands_are_migrated():
     names = {cmd.name for cmd in MIGRATED}
     # The thin-slice set — extend as more commands migrate.
-    assert {"version", "egress", "profile", "bundles", "help", "commands"} <= names
+    assert {"version", "profile", "bundles", "help", "commands"} <= names
 
 
 

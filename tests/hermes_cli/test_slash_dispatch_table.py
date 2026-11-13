@@ -16,7 +16,7 @@ OLD_CHAIN_COMMANDS = [
     "sessions", "codex-runtime", "retry",
     "prompt", "undo", "branch", "worktree", "save", "cron", "suggestions",
     "blueprint", "skills", "learn", "init", "memory",
-    "platforms", "status", "context", "egress", "statusbar", "diff", "battery",
+    "platforms", "status", "context", "statusbar", "diff", "battery",
     "timestamps", "verbose", "focus", "compress", "usage", "subscription", "insights", "copy",
     "debug", "update", "version", "paste", "image", "reload", "reload-mcp",
     "reload-skills", "browser", "plugins", "rollback", "snapshot",

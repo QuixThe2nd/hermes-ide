@@ -132,21 +132,6 @@ async def test_known_slash_command_not_flagged_as_unknown(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_egress_slash_command_reports_proxy_status(monkeypatch):
-    runner = _make_runner()
-    monkeypatch.setattr(
-        "hermes_cli.proxy_cli.format_status_text",
-        lambda: "Egress proxy status\nEnabled: no",
-    )
-
-    result = await runner._handle_message(_make_event("/egress"))
-
-    assert result is not None
-    assert "Egress proxy status" in result
-    assert "Unknown command" not in result
-
-
-@pytest.mark.asyncio
 async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch):
     """Telegram autocomplete sends /reload_mcp for the /reload-mcp built-in.
     That must NOT be flagged as unknown."""

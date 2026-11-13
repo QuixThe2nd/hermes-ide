@@ -8,7 +8,6 @@ was already live. The copied release-checksum parser also has one canonical owne
 from agent.activity_tracking import ActivityTrackingMixin
 from agent.api_request_hooks import ApiRequestHooksMixin
 from agent.interrupt_control import InterruptControlMixin
-from agent.proxy_sources import iron_proxy
 from agent.rate_limit_credits import RateLimitCreditsMixin
 from agent.secret_sources import bitwarden
 from agent.session_persistence import SessionPersistenceMixin
@@ -76,11 +75,10 @@ def test_bridge_keeps_its_non_shadowed_reply_prefix_implementation():
     assert callable(WhatsAppAdapter._effective_reply_prefix)
 
 
-def test_checksum_parser_is_shared_from_bitwarden(tmp_path):
-    assert iron_proxy._expected_sha256 is bitwarden._expected_sha256
-    assert iron_proxy._expected_sha256.__module__ == bitwarden.__name__
+def test_checksum_parser_lives_on_bitwarden(tmp_path):
+    assert bitwarden._expected_sha256.__module__ == bitwarden.__name__
 
     checksum = tmp_path / "checksums.txt"
     digest = "a" * 64
     checksum.write_text(f"{digest}  artifact.tar.gz\n", encoding="utf-8")
-    assert iron_proxy._expected_sha256(checksum, "artifact.tar.gz") == digest
+    assert bitwarden._expected_sha256(checksum, "artifact.tar.gz") == digest

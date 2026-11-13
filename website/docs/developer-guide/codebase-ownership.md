@@ -20,7 +20,6 @@ Hermes is a large repository, and most contributions touch exactly one subsystem
 | Cron / scheduled jobs | `cron/` | [Cron Internals](cron-internals.md) |
 | Session storage | `hermes_state.py`, `hermes_state_*.py` | [Session Storage](session-storage.md) |
 | Browser stack | `tools/browser_tool.py`, `tools/browser_camofox.py`, `tools/browser_tool_lifecycle.py` | [Browser Automation](../user-guide/features/browser.md) |
-| Egress firewall | `agent/proxy_sources/iron_proxy.py` | [Egress Internals](egress-internals.md) |
 | ACP (IDE integration) | `acp_adapter/` | [ACP Internals](acp-internals.md) |
 | TUI | `ui-tui/`, `tui_gateway/` | [Worktree UI Development](worktree-ui-dev.md) |
 | Docs site | `website/` | [Contributing](contributing.md) |

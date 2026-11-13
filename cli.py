@@ -290,18 +290,13 @@ def _parse_service_tier_config(raw: str) -> str | None:
     return None
 
 
-# terminal.<key> -> TERMINAL_<KEY> env var. Container-resource keys apply to docker,
-# singularity, modal, daytona and vercel_sandbox only (ignored for local/ssh).
+# terminal.<key> -> TERMINAL_<KEY> env var. Built-in keys are local/ssh only (plus
+# backend-neutral settings); plugin backends read their own config.
 _TERMINAL_ENV_MAPPINGS = {
     key: f"TERMINAL_{key.upper()}"
     for key in (
-        "degraded_mode", "cwd", "timeout", "home_mode", "lifetime_seconds", "docker_image",
-        "docker_forward_env", "singularity_image", "modal_image", "daytona_image", "vercel_runtime",
-        "ssh_host", "ssh_user", "ssh_port", "ssh_key", "container_cpu", "container_memory",
-        "container_disk", "container_persistent", "docker_volumes", "docker_env", "docker_extra_args",
-        "docker_shm_size", "docker_mount_cwd_to_workspace", "docker_network", "docker_run_as_host_user",
-        "docker_snap_compat",
-        "docker_persist_across_processes", "docker_shared_container_key", "docker_orphan_reaper",
+        "degraded_mode", "cwd", "timeout", "home_mode", "lifetime_seconds",
+        "ssh_host", "ssh_user", "ssh_port", "ssh_key",
         "sandbox_dir", "persistent_shell",
     )
 }
@@ -385,10 +380,6 @@ def _cli_config_defaults():
         "model": {"default": "", "base_url": "", "provider": "auto"},
         "terminal": {
             "env_type": "local", "cwd": ".", "home_mode": "auto", "lifetime_seconds": 300,  # cwd "." -> os.getcwd()
-            "docker_image": img, "docker_forward_env": [], "singularity_image": f"docker://{img}",
-            "modal_image": img, "daytona_image": img, "docker_volumes": [],
-            "docker_mount_cwd_to_workspace": False,  # opt-in only: sandbox isolation
-            "docker_shared_container_key": "",
         },
         "browser": {
             "inactivity_timeout": 120,
@@ -3145,7 +3136,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         "retry": ("_cmd_retry", True), "prompt": ("_handle_prompt_compose_command", True),
         "undo": ("_cmd_undo", True), "save": ("save_conversation", True), "skills": ("_cmd_skills", True),
         "platforms": ("_show_gateway_status", False), "status": ("_show_session_status", False),
-        "context": ("_show_context_breakdown", True), "egress": ("_cmd_egress", True),
+        "context": ("_show_context_breakdown", True),
         "statusbar": ("_cmd_statusbar", True), "verbose": ("_toggle_verbose", False),
         "compress": ("_manual_compress", True), "subscription": ("_show_subscription", False),
         "insights": ("_show_insights", True), "update": ("_cmd_update", True),

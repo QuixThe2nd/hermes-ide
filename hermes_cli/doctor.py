@@ -318,7 +318,6 @@ _PLUGIN_COMPAT_LAZY = {
     'collect_deprecated_config_keys': ('hermes_cli.doctor_config', 'collect_deprecated_config_keys'),
     'collect_deprecated_env_vars': ('hermes_cli.doctor_config', 'collect_deprecated_env_vars'),
     'collect_relay_plugin_cutover_findings': ('hermes_cli.doctor_config', 'collect_relay_plugin_cutover_findings'),
-    'describe_vercel_auth': ('hermes_cli.vercel_auth', 'describe_vercel_auth'),
     'detect_install_method': ('hermes_cli.config', 'detect_install_method'),
     'is_nix_install_method': ('hermes_cli.config', 'is_nix_install_method'),
     'managed_scope_check': ('hermes_cli.doctor_config', 'managed_scope_check'),

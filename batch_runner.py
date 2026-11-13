@@ -173,58 +173,6 @@ def _failure_result(prompt_index: int, batch_num: int, error: str) -> Dict[str, 
     }
 
 
-def _prepare_container_image(
-    prompt_index: int, prompt_data: Dict[str, Any], batch_num: int, task_id: str, config: Dict[str, Any]
-) -> Optional[Dict[str, Any]]:
-    """Register the dataset row's per-prompt container image (``image``/``docker_image``)
-    for this task's sandbox (Docker, Modal, Singularity, Daytona).
-
-    For Docker the image is verified (local cache, then pull) before spending tokens on the
-    agent loop; Modal pulls server-side so no local check. Returns a failure result when the
-    pull fails, else ``None``.
-    """
-    container_image = prompt_data.get("image") or prompt_data.get("docker_image")
-    if not container_image:
-        return None
-    env_type = os.getenv("TERMINAL_ENV", "local")
-    if env_type == "docker":
-        import subprocess as _sp
-        try:
-            probe = _sp.run(
-                ["docker", "image", "inspect", container_image],
-                capture_output=True, timeout=10,
-            )
-            if probe.returncode != 0:
-                if config.get("verbose"):
-                    print(f"   Prompt {prompt_index}: Pulling docker image {container_image}...", flush=True)
-                pull = _sp.run(
-                    ["docker", "pull", container_image],
-                    capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600,
-                )
-                if pull.returncode != 0:
-                    return _failure_result(
-                        prompt_index, batch_num,
-                        f"Docker image not available: {container_image}\n{pull.stderr[:500]}",
-                    )
-        except FileNotFoundError:
-            pass  # Docker CLI not installed — skip check (e.g., Modal backend)
-        except Exception as img_err:
-            if config.get("verbose"):
-                print(f"   Prompt {prompt_index}: Docker image check failed: {img_err}", flush=True)
-    from tools.terminal_tool import register_task_env_overrides
-    overrides = {
-        "docker_image": container_image,
-        "modal_image": container_image,
-        "singularity_image": f"docker://{container_image}",
-        "daytona_image": container_image,
-    }
-    if prompt_data.get("cwd"):
-        overrides["cwd"] = prompt_data["cwd"]
-    register_task_env_overrides(task_id, overrides)
-    if config.get("verbose"):
-        print(f"   Prompt {prompt_index}: Using container image {container_image}")
-    return None
-
 
 def _process_single_prompt(
     prompt_index: int,
@@ -235,10 +183,9 @@ def _process_single_prompt(
     """Run the agent on one prompt; returns trajectory, stats and metadata (or a failure result)."""
     prompt = prompt_data["prompt"]
     task_id = f"task_{prompt_index}"
-    failure = _prepare_container_image(prompt_index, prompt_data, batch_num, task_id, config)
-    if failure is not None:
-        return failure
-
+    if prompt_data.get("cwd"):
+        from tools.terminal_tool import register_task_env_overrides
+        register_task_env_overrides(task_id, {"cwd": prompt_data["cwd"]})
     try:
         selected_toolsets = sample_toolsets_from_distribution(config["distribution"])
 

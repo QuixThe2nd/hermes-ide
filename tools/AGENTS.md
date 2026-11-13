@@ -76,7 +76,7 @@ Camofox; set `CAMOFOX_URL` and optionally `CAMOFOX_API_KEY` to connect.
 ## Backends and providers inside tools/
 
 Several tools front pluggable backends: terminal environments in `tools/environments/` (local,
-docker, ssh, modal, daytona, singularity; `terminal_tool_backends.py`, `tool_backend_helpers.py`),
+ssh; `terminal_tool_backends.py`, plugin providers via `agent/terminal_env_registry.py`),
 Camofox browser support (`browser_tool.py`, `browser_camofox.py`, lifecycle/snapshot/policy siblings),
 MCP client (`mcp_tool_*.py`: config, discovery, transport, registration, content, errors),
 skills hub sources (`skills_hub_official.py`

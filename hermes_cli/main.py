@@ -303,7 +303,6 @@ from hermes_cli.subcommands.fallback import build_fallback_parser
 from hermes_cli.subcommands.worktree import build_worktree_parser
 from hermes_cli.subcommands.secrets import build_secrets_parser
 from hermes_cli.subcommands.codex_runtime import build_codex_runtime_parser
-from hermes_cli.subcommands.egress import build_egress_parser
 from hermes_cli.subcommands.migrate import build_migrate_parser
 from hermes_cli.subcommands.checkpoints import build_checkpoints_parser
 from hermes_cli.subcommands.bundles import build_bundles_parser
@@ -2323,7 +2322,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "auth", "backup", "bundles", "checkpoints", "claw", "codex-runtime", "completion",
         "computer-use",
         "config", "console", "cron", "curator", "debug", "doctor",
-        "dump", "egress", "fallback", "gateway", "goals", "hooks", "import", "import-agent", "insights",
+        "dump", "fallback", "gateway", "goals", "hooks", "import", "import-agent", "insights",
         "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
         "model", "monitoring", "pairing", "pause", "peer", "plugins", "pm", "portal", "profile",
@@ -2789,8 +2788,6 @@ def _build_cli_parser():
     build_fallback_parser(subparsers)
     build_worktree_parser(subparsers)
     build_secrets_parser(subparsers)
-    # OUTBOUND egress firewall; ``hermes proxy`` (gateway group) is the INBOUND one.
-    build_egress_parser(subparsers)
     build_migrate_parser(subparsers)
     build_codex_runtime_parser(subparsers)
     build_gateway_parser(

@@ -302,36 +302,6 @@ class TestHonchoDoctorConfigDetection:
 
 
 
-def test_doctor_reports_vercel_backend_diagnostics(monkeypatch, tmp_path):
-    monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
-    monkeypatch.setenv("TERMINAL_VERCEL_RUNTIME", "python3.13")
-    monkeypatch.setenv("TERMINAL_CONTAINER_DISK", "2048")
-    monkeypatch.setenv("VERCEL_TOKEN", "super-secret-value")
-    monkeypatch.delenv("VERCEL_PROJECT_ID", raising=False)
-    monkeypatch.setenv("VERCEL_TEAM_ID", "team")
-    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object() if name == "vercel" else None)
-
-    fake_model_tools = types.SimpleNamespace(
-        check_tool_availability=lambda *a, **kw: ([], []),
-        TOOLSET_REQUIREMENTS={},
-    )
-    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
-
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        doctor_mod.run_doctor(Namespace(fix=False))
-
-    out = buf.getvalue()
-    assert "Vercel runtime" in out
-    assert "python3.13" in out
-    assert "Vercel custom disk unsupported" in out
-    assert "Vercel auth incomplete" in out
-    assert "VERCEL_PROJECT_ID" in out
-    assert "Vercel auth mode: incomplete access token" in out
-    assert "Vercel auth present env: VERCEL_TOKEN, VERCEL_TEAM_ID" in out
-    assert "Vercel auth missing env: VERCEL_PROJECT_ID" in out
-    assert "super-secret-value" not in out
-    assert "snapshot filesystem only" in out
 
 
 # ── Memory provider section (doctor should only check the *active* provider) ──
@@ -454,20 +424,14 @@ def test_run_doctor_termux_reports_camofox_prerequisites(monkeypatch, tmp_path):
     real_which = shutil.which
 
     def fake_which(cmd):
-        if cmd in {"docker", "node", "npm"}:
+        if cmd in {"node", "npm"}:
             return None
         return real_which(cmd)
 
     monkeypatch.setattr(shutil, "which", fake_which)
-    # The docker check resolves through find_docker() (which also knows the macOS Docker
-    # Desktop paths), so pin it off the host instead of relying on PATH alone.
-    from hermes_cli import doctor_tools
-
-    monkeypatch.setattr(doctor_tools, "find_docker", lambda: None)
 
     out = helper._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
 
-    assert "Docker backend is not available inside Termux" in out
     assert "Node.js not found" in out
     assert "optional, needed to install/run a local Camofox server" in out
     assert "Camofox server URL not configured" in out
@@ -477,7 +441,6 @@ def test_run_doctor_termux_reports_camofox_prerequisites(monkeypatch, tmp_path):
     assert "Matrix E2EE extra is excluded on Termux" in out
     assert "Local faster-whisper extra is excluded on Termux" in out
     assert "STT fallback: use Groq Whisper (set GROQ_API_KEY) or OpenAI Whisper (set VOICE_TOOLS_OPENAI_KEY)." in out
-    assert "docker not found (optional)" not in out
 
 
 def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, tmp_path):
@@ -1624,22 +1587,6 @@ class TestDoctorDeprecatedConfigAndEnv:
 
 
 
-
-
-def test_docker_daemon_probe_uses_version_not_info(monkeypatch):
-    """`docker info` needs the /info endpoint, which socket proxies commonly block, so doctor reported
-    "daemon not running" against a working DOCKER_HOST (#72927). `docker version` (/version) is what the
-    backend itself probes with."""
-    from hermes_cli import doctor_tools
-
-    calls: list = []
-    monkeypatch.setattr(doctor_tools, "find_docker", lambda: "/usr/bin/docker")
-    monkeypatch.setattr(doctor_tools, "_run_ok", lambda cmd, timeout, **kw: calls.append(cmd) or True)
-    monkeypatch.setattr(doctor_tools, "_require", lambda *a, **k: None)
-
-    doctor_tools._check_docker_backend("docker", False, [])
-
-    assert calls == [["/usr/bin/docker", "version"]]
 
 
 class TestStagedRuntimeVenv:
