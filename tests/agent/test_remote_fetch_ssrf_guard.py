@@ -78,8 +78,8 @@ SITES = {
         "agent.video_gen_provider").save_url_video(u, timeout=5),
     "image_gen/openai::_load_image_bytes": lambda u, mp, tmp: importlib.import_module(
         "plugins.image_gen.openai")._load_image_bytes(u),
-    "image_gen/openai-codex::_remote_image_to_data_url": lambda u, mp, tmp: importlib.import_module(
-        "plugins.image_gen.openai-codex")._remote_image_to_data_url(u),
+    "image_gen/litellm-codex-images::_remote_image_to_data_url": lambda u, mp, tmp: importlib.import_module(
+        "plugins.image_gen.litellm-codex-images")._remote_image_to_data_url(u),
     "skills_hub_skillssh::_sitemap_catalog": lambda u, mp, tmp: _sitemap_catalog(u, mp),
 }
 
