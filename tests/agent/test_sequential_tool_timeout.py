@@ -253,7 +253,7 @@ def test_sequential_timeout_skips_unbounded_delegate_tools(tmp_path, monkeypatch
 
     started = time.monotonic()
     with (
-        patch("run_agent.handle_function_call", side_effect=_dispatch),
+        patch("model_tools.handle_function_call", side_effect=_dispatch),
         patch(
             "agent.tool_executor._emit_terminal_post_tool_call",
             side_effect=_capture_terminal_event,
@@ -300,7 +300,7 @@ def test_sequential_timeout_skips_unbounded_restart_tool(tmp_path, monkeypatch):
 
     started = time.monotonic()
     with (
-        patch("run_agent.handle_function_call", side_effect=_dispatch),
+        patch("model_tools.handle_function_call", side_effect=_dispatch),
         patch(
             "agent.tool_executor._emit_terminal_post_tool_call",
             side_effect=_capture_terminal_event,
