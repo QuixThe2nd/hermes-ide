@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Big Steve",
+  "version": "1.0.0",
+  "description": "Side panel chat with Big Steve.",
+  "permissions": ["sidePanel", "scripting", "activeTab", "storage", "alarms", "tabs"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_title": "Big Steve",
+    "default_popup": "popup.html"
+  },
+  "commands": {
+    "open-sidebar": {
+      "suggested_key": {
+        "default": "Ctrl+B",
+        "mac": "Command+B"
+      },
+      "description": "Open the Big Steve sidebar"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ]
+}

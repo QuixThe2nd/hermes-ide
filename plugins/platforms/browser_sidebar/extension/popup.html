@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Big Steve</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <h1>Big Steve</h1>
+  <p id="status" class="disconnected">disconnected</p>
+  <p id="error" hidden></p>
+  <form id="token-form">
+    <label for="token">Token</label>
+    <textarea id="token" rows="4" spellcheck="false" autocomplete="off"></textarea>
+    <button type="submit">Save token</button>
+  </form>
+  <p class="note">If Command+B still opens Leo, open brave://settings/system/shortcuts and clear the Show sidebar shortcut, then set this extension's shortcut to Command+B at brave://extensions/shortcuts.</p>
+  <script src="popup.js"></script>
+</body>
+</html>
