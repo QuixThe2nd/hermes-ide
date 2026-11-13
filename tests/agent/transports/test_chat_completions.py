@@ -143,10 +143,10 @@ class TestChatCompletionsBasic:
     def test_convert_messages_strips_provider_replay_sidecars(self, transport):
         """Native-provider replay channels must not cross a provider boundary.
 
-        ``bedrock_content_blocks`` intentionally remains in durable history so
-        Bedrock can restore signed/reasoning blocks in their original order.
-        Chat Completions providers do not recognize it, though, and strict
-        endpoints reject unknown keys in ``messages`` with HTTP 400/422.
+        ``bedrock_content_blocks`` survives only in sessions recorded while the
+        Bedrock provider existed; history replay keeps it durable, but strict
+        endpoints reject unknown keys in ``messages`` with HTTP 400/422, so it
+        (like every other provider-native carrier) is stripped on the way out.
         """
         msgs = [
             {"role": "user", "content": "use a tool"},

@@ -74,7 +74,7 @@ class TestMaybeApplyCodexAppServerRuntime:
             "xai",
             "qwen-oauth",
             "opencode-zen",
-            "bedrock",
+            "vertex",
             "",
         ],
     )
