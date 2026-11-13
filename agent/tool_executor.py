@@ -133,19 +133,26 @@ _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
 # ``timeouts.tools.unbounded_tools`` in config.yaml (a list of tool names; an
 # explicit empty list disables the exemption entirely).
 #
-# Uniform delegation lifecycle: ALL four delegate tools are exempt in their
-# default (blocking) mode — a foreground fan-out, a multi-hour claude/cursor
-# run, or a days-long assistant mission wait is legitimate blocked work, not
-# a wedged thread. The 30s tool heartbeat keeps the gateway's inactivity
-# watchdog fed the whole time, so the deadline exemption is the only guard
-# that could kill one. Legacy aliases are listed too so an exemption survives
-# a replayed old-name call.
+# Uniform delegation lifecycle: ALL blocking delegation tools are exempt in
+# their default (foreground) mode — a foreground fan-out, a multi-hour
+# claude/cursor or lane run, or a days-long assistant mission wait is
+# legitimate blocked work, not a wedged thread. The 30s tool heartbeat keeps
+# the gateway's inactivity watchdog fed the whole time, so the deadline
+# exemption is the only guard that could kill one. Legacy aliases are listed
+# too so an exemption survives a replayed old-name call.
 _DEFAULT_UNBOUNDED_TOOLS = frozenset(
     {
         "delegate_agent",
         "delegate_claude_agent",
         "delegate_cursor_agent",
         "delegate_assistant",
+        # Delegation lanes (tools/delegate_lane*.py) share the same blocking
+        # foreground lifecycle as delegate_agent: a multi-hour lane run is
+        # legitimate blocked work, not a wedged thread.
+        "delegate_ui_dev",
+        "delegate_client_dev",
+        "delegate_backend_dev",
+        "delegate_reverse_engineer",
         # Hidden registry aliases (advertise=False) — dispatchable forever.
         "delegate_task",
         "restart",

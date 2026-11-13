@@ -648,10 +648,13 @@ class TestUnboundedToolsResolver:
     def test_default_covers_all_four_public_names_and_legacy_aliases(
         self, monkeypatch
     ):
-        """Every delegation tool blocks by default, so every name is exempt.
+        """Every blocking delegation tool is exempt, under every dispatchable name.
 
-        The hidden ``delegate_task`` registry alias stays dispatchable, and a
-        replayed old-name call is exactly as long-running as a new-name one.
+        The hidden ``delegate_task`` registry alias stays dispatchable, a
+        replayed old-name call is exactly as long-running as a new-name one,
+        and the four lane tools (ui/client/backend/reverse-engineer) block
+        the same way in foreground mode — their multi-hour runs must not be
+        killed by the generic batch deadline.
         """
         from agent import tool_executor
 
@@ -660,6 +663,12 @@ class TestUnboundedToolsResolver:
         assert {"delegate_agent", "delegate_claude_agent"} <= names
         assert {"delegate_cursor_agent", "delegate_assistant"} <= names
         assert "delegate_task" in names
+        assert {
+            "delegate_ui_dev",
+            "delegate_client_dev",
+            "delegate_backend_dev",
+            "delegate_reverse_engineer",
+        } <= names
         assert "dispatch_assistant" not in names
 
     def test_user_override_normalizes_legacy_spellings(self, monkeypatch):
