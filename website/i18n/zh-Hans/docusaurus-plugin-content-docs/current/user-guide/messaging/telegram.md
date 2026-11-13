@@ -425,7 +425,7 @@ telegram.error.InvalidToken: Not Found
 tail -f ~/.hermes/logs/gateway.log | grep -iE "telegram|cache"
 ```
 
-你应该看到 `[Telegram] Cached user voice at /home/<user>/.hermes/cache/audio/...` 行，且**没有**"文件过大"拒绝。结合上方的 `stt.enabled: false`，原始音频文件的路径会出现在 Agent 的入站消息中，供下游处理使用。
+你应该看到 `[Telegram] Cached user voice at /home/<user>/.hermes/cache/audio/...` 行，且**没有**"文件过大"拒绝。原始音频文件的路径会出现在 Agent 的入站消息中，供下游处理使用。
 
 ## 群聊使用
 

@@ -322,7 +322,9 @@ weeks (`s`, `m`, `h`, `d`, `w`). Malformed or torn JSONL rows are skipped.
 
 `chase` results also use the existing papercuts plugin to record
 operator-visible friction, with fields including session id and goal-active
-state. Duplicate chase papercuts are suppressed per session for 30 minutes.
+state. Only chases at or above the action confidence floor (the same `0.6`
+minimum auto-goal actions require) open a papercut; lower-confidence chases
+remain in the JSONL audit log only. Duplicate chase papercuts are suppressed per session for 30 minutes.
 If papercuts is unavailable, logging continues without any user-visible
 effect.
 

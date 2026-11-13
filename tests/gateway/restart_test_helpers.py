@@ -140,9 +140,6 @@ def make_restart_runner(
     runner._status_action_gerund = GatewayRunner._status_action_gerund.__get__(
         runner, GatewayRunner
     )
-    runner._queue_during_drain_enabled = GatewayRunner._queue_during_drain_enabled.__get__(
-        runner, GatewayRunner
-    )
     runner._running_agent_count = GatewayRunner._running_agent_count.__get__(
         runner, GatewayRunner
     )

@@ -402,7 +402,6 @@ For small text-based documents (.txt, .md), the file content is automatically ap
 | `send` | Text or rich post messages (auto-detected based on markdown content) |
 | `send_image` / `send_image_file` | Uploads image to Feishu, then sends as native image bubble (with optional caption) |
 | `send_document` | Uploads file to Feishu API, then sends as file attachment |
-| `send_voice` | Uploads audio file as a Feishu file attachment |
 | `send_video` | Uploads video and sends as native media message |
 | `send_animation` | GIFs are downgraded to file attachments (Feishu has no native GIF bubble) |
 

@@ -845,7 +845,7 @@ The Discord adapter supports native file uploads for every common media type via
 | Images (PNG/JPG/WebP) | Native Discord image attachment with inline preview |
 | Animated GIFs | `send_animation` uploads as `animation.gif` so Discord plays it inline (not as a static thumbnail) |
 | Video (MP4/MOV) | `send_video` — native video player |
-| Audio / Voice | `send_voice` — native voice message when possible, file attachment otherwise |
+| Audio | `send_document` — native file attachment |
 | Documents (PDF/ZIP/docx/etc.) | `send_document` — native attachment with download button |
 
 Discord's per-upload size limit depends on the server's boost tier (25 MB free, up to 500 MB). If Hermes gets an HTTP 413, the adapter falls back to a link pointing at the local cache path rather than failing silently.

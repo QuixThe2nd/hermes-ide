@@ -78,9 +78,6 @@ web:
 
 image_gen:
   provider: nous
-
-stt:
-  provider: nous
 ```
 
 ## 工作原理

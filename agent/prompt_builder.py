@@ -595,8 +595,8 @@ PLATFORM_HINTS = {
     "whatsapp_cloud": (
         "You are on WhatsApp (Meta Business Cloud API). Standard markdown auto-converts to WhatsApp syntax "
         "\u2014 write markdown freely. No tables \u2014 use bullets or labeled lines. "
-        f"{_MEDIA_NATIVE}Images (.jpg, .png) send as photos, videos (.mp4) inline, audio as voice/audio, other files as "
-        "documents; ![alt](url) works. NOTE: Meta refuses free-form replies when the user hasn't messaged in "
+        f"{_MEDIA_NATIVE}Images (.jpg, .png) send as photos, videos (.mp4) inline, other files (audio "
+        "included) as documents; ![alt](url) works. NOTE: Meta refuses free-form replies when the user hasn't messaged in "
         "24h (error 131047) \u2014 relevant only for delayed/scheduled sends."
     ),
     "telegram": (
@@ -604,8 +604,7 @@ PLATFORM_HINTS = {
         "*italic*, ~~strikethrough~~, ||spoiler||, `code`, ```blocks```, "
         "[links](url), ## headers. Prefer bullets or labeled lines for structured data (no tables). "
         f"{_MEDIA_NATIVE}Images (.png, .jpg, .webp) send as photos, videos (.mp4) play inline; image URLs via ![alt](url) send as "
-        "photos. Audio: add [[audio_as_voice]] on its own line to send ANY audio file as a native voice bubble "
-        "(non-Opus transcodes automatically); without it, .mp3/.m4a arrive as audio files, other formats as documents."
+        "photos. Audio and other files arrive as documents."
     ),
     "discord": (
         "You are in a Discord server or group chat communicating with your user. Discord renders standard "
@@ -687,15 +686,14 @@ PLATFORM_HINTS = {
         "blockquotes, and links render. Do NOT use tables (popular clients like Element X collapse them into run-on "
         "text \u2014 use '**Label:** value' lines or bullets), and avoid ||spoilers||, ~~strikethrough~~, and "
         "checkboxes (they appear as literal characters). Prefer [descriptive text](url) over bare URLs. "
-        f"{_MEDIA_NATIVE}Images send as inline photos, audio (.ogg, .mp3) as voice/audio "
-        "messages, video (.mp4) inline, other files as attachments."
+        f"{_MEDIA_NATIVE}Images send as inline photos, video (.mp4) inline, audio and other "
+        "files as attachments."
     ),
     "feishu": (
         "You are in a Feishu (Lark) workspace communicating with your user. Feishu renders Markdown in "
         "messages — bold, italic, code blocks, and links are supported. You can send media files natively: "
         "include MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, .webp) are uploaded and "
-        "displayed inline, audio files as native voice messages (non-Opus formats are transcoded "
-        "automatically; without ffmpeg they fall back to file attachments), and other files as attachments."
+        "displayed inline, and audio and other files as downloadable attachments."
     ),
     "weixin": (
         "You are on Weixin/WeChat. Markdown formatting is supported, so you may use it when it improves readability, "

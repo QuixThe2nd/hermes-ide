@@ -159,7 +159,7 @@ sudo hermes gateway install --system   # 仅 Linux：开机自启系统服务
 Agent 可通过响应中的 `MEDIA:` 标签发送媒体文件，支持以下投递方式：
 
 - **图片** — `send_multiple_images` 和 `send_image_file` 将 PNG、JPEG、GIF、WebP 作为原生 Signal 附件发送
-- **语音** — `send_voice` 将音频文件（OGG、MP3、WAV、M4A、AAC）作为附件发送
+- **音频** — 音频文件通过 `send_document` 作为附件发送
 - **视频** — `send_video` 发送 MP4 视频文件
 - **文档** — `send_document` 发送任意文件类型（PDF、ZIP 等）
 

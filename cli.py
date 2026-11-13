@@ -2557,9 +2557,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             enabled=display.get("persistent_output", True),
             max_lines=display.get("persistent_output_max_lines", 200),
         )
-        # Busy-input behavior is fixed: a message while the agent runs redirects the current run.
-        self.busy_input_mode = "interrupt"
-
         # verbose ONLY controls global DEBUG logging; tool_progress="verbose" is independent
         # (coupling them spewed every module's DEBUG logs to the console).
         self.verbose = bool(verbose) if verbose is not None else False

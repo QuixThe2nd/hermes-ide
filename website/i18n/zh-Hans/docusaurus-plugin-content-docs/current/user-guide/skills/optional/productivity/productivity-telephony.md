@@ -115,7 +115,7 @@ description: "无需修改核心工具即可赋予 Hermes 电话能力"
 
 原因：
 - 播放自定义 MP3 的最简方式
-- 与 Hermes `text_to_speech` 加公开文件托管或隧道配合良好
+- 与任意音频生成工具加公开文件托管或隧道配合良好
 
 ## 文件与持久化状态
 
@@ -297,7 +297,7 @@ python3 "$SCRIPT" twilio-inbox --since-last --mark-seen
 
 这是"下次加载 skill 时如何访问该号码收到的消息"的主要解决方案。
 
-### D. 使用内置 TTS 直接拨打 Twilio 电话
+### D. 使用 Twilio 文本转语音直接拨打 Twilio 电话
 
 ```bash
 python3 "$SCRIPT" twilio-call "+15551230000" --message "Hello! This is Hermes calling with your status update." --voice Polly.Joanna
@@ -305,10 +305,8 @@ python3 "$SCRIPT" twilio-call "+15551230000" --message "Hello! This is Hermes ca
 
 ### E. 使用预录/自定义语音消息拨打电话
 
-这是复用 Hermes 现有 `text_to_speech` 支持的主要路径。
-
 适用场景：
-- 希望通话使用 Hermes 配置的 TTS 语音，而非 Twilio `<Say>`
+- 希望通话播放预生成的音频文件，而非 Twilio `<Say>`
 - 需要单向语音传递（简报、告警、提醒、状态更新）
 - **不**需要实时对话式电话通话
 
@@ -318,14 +316,14 @@ python3 "$SCRIPT" twilio-call "+15551230000" --message "Hello! This is Hermes ca
 python3 "$SCRIPT" twilio-call "+155****0000" --audio-url "https://example.com/briefing.mp3"
 ```
 
-推荐的 Hermes TTS -> Twilio Play 工作流：
+推荐的音频 -> Twilio Play 工作流：
 
-1. 使用 Hermes `text_to_speech` 生成音频。
+1. 使用任意可用的 TTS 工具生成音频。
 2. 使生成的 MP3 可公开访问。
 3. 使用 `--audio-url` 拨打 Twilio 电话进行传递。
 
 示例 agent 流程：
-- 让 Hermes 使用 `text_to_speech` 创建消息音频
+- 使用可用的音频生成工具创建消息音频
 - 如有需要，通过临时静态托管/隧道/对象存储 URL 暴露文件
 - 使用 `twilio-call --audio-url ...` 通过电话传递
 
@@ -335,9 +333,8 @@ MP3 的推荐托管方式：
 - 电话服务商可直接获取的任意 HTTPS URL
 
 重要说明：
-- Hermes TTS 非常适合预录外呼消息
+- 预录 MP3 播放非常适合单向外呼消息
 - Bland/Vapi 更适合**实时对话式 AI 通话**，因为它们自行处理实时电话音频栈
-- 此处单独使用 Hermes STT/TTS 并非作为全双工电话对话引擎；那将需要比此 skill 所要引入的更重量级的流式/webhook 集成
 
 ### F. 使用 Twilio 直接通话导航电话树 / IVR
 

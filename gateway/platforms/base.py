@@ -44,45 +44,6 @@ _AUDIO_EXTS = frozenset(_AUDIO_MIME_TYPES)
 # Outbound dispatch partition for MEDIA/local files (image batch vs send_video).
 _VIDEO_EXTS = frozenset({".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"})
 _IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif"})
-# Telegram sendAudio accepts only MP3 / M4A; others go via sendVoice (Opus/OGG) or as a document.
-_TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
-_TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
-
-
-def transcode_to_ogg_opus(path: str, *, bitrate: str = "32k", timeout: int = 60,
-                          output_path: "str | None" = None) -> "str | None":
-    """Best-effort ffmpeg transcode to Ogg/Opus (voip-tuned) for native voice bubbles: the written
-    ``.ogg`` path (a NEW temp file unless ``output_path`` is given; caller cleans up), or None when
-    ffmpeg is missing/fails. ``output_path`` may equal ``path`` (in-place container repair) — the
-    encode goes through a sidecar so a failed run never truncates the source. Blocking (to_thread)."""
-    import shutil as _shutil
-    ffmpeg = _shutil.which("ffmpeg")
-    if not ffmpeg:
-        return None
-    if output_path is None:
-        fd, ogg_path = tempfile.mkstemp(prefix="voice_transcode_", suffix=".ogg")
-        os.close(fd)
-    else:
-        ogg_path = output_path
-    in_place = os.path.abspath(str(path)) == os.path.abspath(ogg_path)
-    work_path = ogg_path + ".tmp.ogg" if in_place else ogg_path
-    try:
-        result = subprocess.run(
-            [ffmpeg, "-v", "error", "-y", "-i", str(path),
-             "-acodec", "libopus", "-ac", "1", "-b:a", bitrate, "-vbr", "on",
-             "-application", "voip", "-compression_level", "10", "-f", "ogg", work_path],
-            capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL)
-        if result.returncode == 0 and os.path.getsize(work_path) > 0:
-            if in_place:
-                os.replace(work_path, ogg_path)
-            return ogg_path
-        logger.warning("ffmpeg Ogg/Opus transcode of %s failed (returncode=%s): %s", path, result.returncode,
-                       (result.stderr or b"").decode("utf-8", errors="replace")[:500])
-    except Exception:
-        logger.warning("voice transcode to Ogg/Opus failed for %s", path, exc_info=True)
-    with contextlib.suppress(OSError):
-        os.unlink(work_path)
-    return None
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
 # History dedup is best-effort: stay well below the Discord heartbeat watchdog and fail open.
 _HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS = 5.0
@@ -104,11 +65,6 @@ def _or_default(thunk, default, exc=(TypeError, ValueError)):
         return thunk()
     except exc:
         return default
-
-
-def _float_env(name: str, default: float) -> float:
-    raw = os.environ.get(name, "").strip()
-    return _or_default(lambda: float(raw) if raw else default, default)
 
 
 def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
@@ -178,19 +134,6 @@ def _media_failure_text(kind: str, file_name: "str | None" = None) -> str:
     """User-facing "couldn't deliver" notice; ``file_name`` is the only name ever shown."""
     suffix = f" ({file_name})" if file_name else ""
     return f"⚠️ Couldn't deliver the {kind} attachment{suffix}."
-
-
-def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bool:
-    """True when a media file should use the platform's audio sender. Telegram: explicit
-    ``is_voice`` ([[audio_as_voice]]) routes ANY format to the voice sender (adapter transcodes
-    non-Opus); otherwise only sendAudio's MP3/M4A qualify — a plain Opus/OGG attachment is never
-    turned into a voice bubble, everything else → document. Other platforms: any audio ext."""
-    normalized_ext = (ext or "").lower()
-    if normalized_ext not in _AUDIO_EXTS:
-        return False
-    if _platform_name(platform) != "telegram":
-        return True
-    return is_voice or normalized_ext in _TELEGRAM_AUDIO_ATTACHMENT_EXTS
 
 
 def utf16_len(s: str) -> int:
@@ -1226,7 +1169,7 @@ def _path_lacks_deliverable_extension(path: str) -> bool:
 
 
 def _has_media_directives(text: str) -> bool:
-    return "MEDIA:" in text or "[[audio_as_voice]]" in text or "[[as_document]]" in text
+    return "MEDIA:" in text or "[[as_document]]" in text
 
 
 # A provider can leak its exact end-of-sequence control token glued to the last MEDIA path
@@ -1322,7 +1265,7 @@ def _delete_spans(text: str, spans: list) -> str:
 
 
 def _strip_media_tag_directives(text: str) -> str:
-    """Remove MEDIA: tags and [[audio_as_voice]] / [[as_document]] markers so they never render
+    """Remove MEDIA: tags and [[as_document]] markers so they never render
     as text (backstop after ``extract_media``). Protected spans are mask-located only — tags
     inside them are neither stripped nor mangled, matching ``extract_media`` so display and
     delivery agree. Empty/None text is returned as-is.
@@ -1331,7 +1274,7 @@ def _strip_media_tag_directives(text: str) -> str:
     """
     if not text or not _has_media_directives(text):
         return text
-    cleaned = text.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
+    cleaned = text.replace("[[as_document]]", "")
     return _delete_spans(cleaned, _deliverable_tag_spans(cleaned))
 
 
@@ -1432,19 +1375,6 @@ async def cache_media_bytes_async(
         mime_type=mime_type,
         default_kind=default_kind,
     )
-
-
-@dataclass
-class TextDebounceState:
-    event: MessageEvent
-    task: asyncio.Task | None
-    first_ts: float
-    last_ts: float
-
-    def cancel_timer(self, *, unless: "asyncio.Task | None" = None) -> None:
-        """Cancel the pending flush timer (if live and not ``unless``)."""
-        if self.task is not None and self.task is not unless and not self.task.done():
-            self.task.cancel()
 
 
 def _append_text(existing: Optional[str], new: Optional[str]) -> str:
@@ -1796,13 +1726,6 @@ class BasePlatformAdapter(ABC):
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
-        # Legacy env knob; the runner syncs the busy_input_mode value after construction.
-        # Default "interrupt" so a pre-sync read never silently queues.
-        self._busy_text_mode: str = (
-            os.environ.get("HERMES_GATEWAY_BUSY_TEXT_MODE", "interrupt").strip().lower() or "interrupt")
-        self._busy_text_debounce_seconds: float = _float_env("HERMES_GATEWAY_BUSY_TEXT_DEBOUNCE_SECONDS", 0.35)
-        self._busy_text_hard_cap_seconds: float = _float_env("HERMES_GATEWAY_BUSY_TEXT_HARD_CAP_SECONDS", 1.0)
-        self._text_debounce: dict[str, TextDebounceState] = {}
         # handle_message() tasks; shutdown cancels them so a replaced gateway stops working.
         self._background_tasks: set[asyncio.Task] = set()
         # Session-scoped supervisors that keep platform typing alive while
@@ -2381,7 +2304,7 @@ class BasePlatformAdapter(ABC):
         if not transcript:
             return None
         # Exclude the CURRENT TURN (from the last user message on): rows persist as produced, so a
-        # text_to_speech media_tag would otherwise dedup away its own attachment.
+        # media_tag would otherwise dedup away its own attachment.
         history = list(transcript)
         last_user_idx = next(
             (i for i in range(len(history) - 1, -1, -1) if history[i].get("role") == "user"), None)
@@ -2679,19 +2602,11 @@ class BasePlatformAdapter(ABC):
             cleaned = re.sub(pattern, _remove_if_extracted, cleaned)
         return images, re.sub(r'\n{3,}', '\n\n', cleaned).strip()  # leftover blank lines
 
-    async def send_voice(
-        self, chat_id: str, audio_path: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
-        """Send audio as a native voice message (Telegram bubble / Discord attachment).
-        Default: friendly failure notice."""
-        return await self._send_media_fallback_notice(
-            "send_voice", "audio", audio_path, chat_id, caption, reply_to, metadata)
-
     async def _send_media_fallback_notice(
         self, method: str, kind: str, path: str, chat_id: str, caption: Optional[str],
         reply_to: Optional[str], metadata: Optional[Dict[str, Any]], *, file_name: Optional[str] = None,
     ) -> SendResult:
-        """Shared default for send_voice/send_video/send_document/send_image_file. The local path is
+        """Shared default for send_video/send_document/send_image_file. The local path is
         logged but NEVER echoed into chat (host layout leak); only the caller's ``file_name`` is
         shown."""
         logger.warning("[%s] %s fallback: native %s send unavailable for %s", self.name, method, kind, path)
@@ -2761,8 +2676,7 @@ class BasePlatformAdapter(ABC):
             "send_document", "file", file_path, chat_id, caption, reply_to, metadata, file_name=file_name)
 
     async def _notify_media_delivery_failure(
-        self, chat_id: str, media_path: str, *, is_voice: bool = False,
-        metadata: Optional[Dict[str, Any]] = None) -> None:
+        self, chat_id: str, media_path: str, *, metadata: Optional[Dict[str, Any]] = None) -> None:
         """User-visible notice when a MEDIA attachment upload failed: the tag was
         already stripped from the text, so silence would be a silent drop.
 
@@ -2771,7 +2685,7 @@ class BasePlatformAdapter(ABC):
         nothing), the user must see a failure notice instead of a silent drop (#66797).
         """
         ext = Path(media_path).suffix.lower()
-        if is_voice or should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
+        if ext in _AUDIO_EXTS:
             text = _media_failure_text("audio")
         elif ext in _VIDEO_EXTS:
             text = _media_failure_text("video")
@@ -2798,10 +2712,10 @@ class BasePlatformAdapter(ABC):
         return validate_media_delivery_path(path, session_key=session_key)
 
     @staticmethod
-    def filter_media_delivery_paths(media_files, session_key: str = "") -> List[Tuple[str, bool]]:
+    def filter_media_delivery_paths(media_files, session_key: str = "") -> List[str]:
         """Drop unsafe MEDIA paths and normalize accepted paths."""
         return [
-            (safe_path, bool(is_voice)) for media_path, is_voice in media_files or []
+            safe_path for media_path in media_files or []
             if (safe_path := _validated_delivery_path(media_path, session_key, "MEDIA directive path"))]
 
     @staticmethod
@@ -2854,14 +2768,13 @@ class BasePlatformAdapter(ABC):
         return _blank_spans(content, spans)
 
     @staticmethod
-    def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
-        """Extract ``MEDIA:<path>`` tags and strip ``[[audio_as_voice]]`` / ``[[as_document]]`` ->
-        ``([(path, is_voice), ...], cleaned)``. Both directives are message-global;
+    def extract_media(content: str) -> Tuple[List[str], str]:
+        """Extract ``MEDIA:<path>`` tags and strip the ``[[as_document]]`` directive ->
+        ``([path, ...], cleaned)``. The directive is message-global;
         ``[[as_document]]`` (unmodified sendDocument for large images) is detected by dispatch sites
         on the ORIGINAL response and only stripped here."""
         media = []
-        has_voice_tag = "[[audio_as_voice]]" in content
-        cleaned = content.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
+        cleaned = content.replace("[[as_document]]", "")
         # Scan a masked copy so example/stored MEDIA paths (code, quotes, JSON values) are never
         # delivered; dedupe on the expanded path so a file referenced twice uploads once.
         scan_content = _mask_media_scan_text(content)
@@ -2873,10 +2786,9 @@ class BasePlatformAdapter(ABC):
         seen_paths: set = set()
 
         def _add(path: str) -> None:
-            # is_voice only for audio: a voice-flagged image would leave the photo batch.
             if path not in seen_paths:
                 seen_paths.add(path)
-                media.append((path, has_voice_tag and os.path.splitext(path)[1].lower() in _AUDIO_EXTS))
+                media.append(path)
         for match in MEDIA_TAG_CLEANUP_RE.finditer(scan_content):
             path = _normalize_media_tag_path(match.group("path"))
             if path:
@@ -3503,112 +3415,6 @@ class BasePlatformAdapter(ABC):
             return existing_text
         return f"{existing_text}\n\n{new_text}".strip()
 
-    def _text_debounce_store(self) -> dict[str, TextDebounceState]:
-        return _lazy_attr(self, "_text_debounce", dict)
-
-    def _is_queue_text_debounce_candidate(self, event: MessageEvent) -> bool:
-        """Return True for normal text eligible for queue-mode debounce."""
-        result = (
-            getattr(self, "_busy_text_mode", "interrupt") == "queue"
-            and event.message_type == MessageType.TEXT and not getattr(event, "internal", False)
-            and not event.is_command() and bool((event.text or "").strip()))
-        if result:
-            logger.debug("[%s] Queue-text debounce candidate accepted: session=%s text_len=%d",
-                         self.name, getattr(event, "session_key", "?"), len(event.text or ""))
-        return result
-
-    def _can_merge_text_debounce_events(self, existing: MessageEvent, event: MessageEvent) -> bool:
-        """Return True when two text debounce events came from the same sender."""
-
-        def _identity(candidate: MessageEvent) -> tuple[str, ...] | None:
-            source = getattr(candidate, "source", None)
-            if source is None:
-                return None
-            platform = _platform_name(getattr(source, "platform", None))
-            sender = getattr(source, "user_id_alt", None) or getattr(source, "user_id", None)
-            if sender:
-                return (platform, str(sender))
-            if getattr(source, "chat_type", None) in {"dm", "private"} and getattr(source, "chat_id", None):
-                return (platform, "dm", str(source.chat_id))
-            return None
-        existing_sender = _identity(existing)
-        return existing_sender is not None and existing_sender == _identity(event)
-
-    def _text_debounce_delay(self, session_key: str) -> float:
-        """Return bounded busy-text debounce delay for ``session_key``."""
-        state = self._text_debounce_store().get(session_key)
-        if state is None:
-            return 0.0
-        deadline = min(state.last_ts + self._busy_text_debounce_seconds,
-                       state.first_ts + self._busy_text_hard_cap_seconds)
-        return max(0.0, deadline - time.monotonic())
-
-    async def _queue_text_debounce(self, session_key: str, event: MessageEvent) -> None:
-        """Buffer normal queue-mode busy text and schedule a bounded flush."""
-        store = self._text_debounce_store()
-        state = store.get(session_key)
-        if state is not None and not self._can_merge_text_debounce_events(state.event, event):
-            # Preserve sender attribution: flush the buffer as the next turn, new sender starts
-            # fresh.
-            await self._flush_text_debounce_now(session_key)
-            state = store.get(session_key)
-            if state is not None and not self._can_merge_text_debounce_events(state.event, event):
-                existing_pending = self._pending_messages.get(session_key)
-                if existing_pending is not None and self._can_merge_text_debounce_events(existing_pending, event):
-                    merge_pending_message_event(self._pending_messages, session_key, event, merge_text=True)
-                return
-        now = time.monotonic()
-        if state is None:
-            state = TextDebounceState(event=event, task=None, first_ts=now, last_ts=now)
-            store[session_key] = state
-        else:
-            if event.text:
-                state.event.text = _append_text(state.event.text, event.text)
-            latest_message_id = getattr(event, "message_id", None)
-            latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
-            if latest_message_id is not None:
-                state.event.message_id = str(latest_message_id)
-            if latest_anchor is not None and hasattr(state.event, "reply_to_message_id"):
-                state.event.reply_to_message_id = str(latest_anchor)
-            state.last_ts = now
-        state.cancel_timer()
-        delay = self._text_debounce_delay(session_key)
-        state.task = asyncio.create_task(self._flush_text_debounce(session_key, delay))
-
-    async def _flush_text_debounce(self, session_key: str, delay: float) -> None:
-        """Timer task that flushes the debounced text buffer."""
-        try:
-            await asyncio.sleep(delay)
-            await self._flush_text_debounce_now(session_key)
-        except asyncio.CancelledError:
-            return
-        finally:
-            current = asyncio.current_task()
-            state = self._text_debounce_store().get(session_key)
-            if state is not None and state.task is current:
-                state.task = None
-
-    async def _flush_text_debounce_now(self, session_key: str) -> bool:
-        """Force-flush one debounced busy-text burst into the pending slot."""
-        store = self._text_debounce_store()
-        state = store.get(session_key)
-        if state is None:
-            return False
-        state.cancel_timer(unless=asyncio.current_task())
-        state.task = None
-        pending = self._pending_messages.get(session_key)
-        if pending is not None and not self._can_merge_text_debounce_events(pending, state.event):
-            return False
-        store.pop(session_key, None)
-        merge_pending_message_event(self._pending_messages, session_key, state.event, merge_text=True)
-        return True
-
-    def _discard_text_debounce(self, session_key: str) -> None:
-        """Cancel and drop pending text debounce state for control commands."""
-        state = self._text_debounce_store().pop(session_key, None)
-        if state is not None:
-            state.cancel_timer()
-
     # ── Session task + guard ownership helpers: paired with the _session_tasks owner map so
     # reconciliation is deterministic across completion, /stop /new /reset, and stale-lock heal.
 
@@ -3636,7 +3442,6 @@ class BasePlatformAdapter(ABC):
         self._active_sessions.pop(session_key, None)
         self._pending_messages.pop(session_key, None)
         self._session_tasks.pop(session_key, None)
-        self._discard_text_debounce(session_key)
         return True
 
     def _start_session_processing(self, event: MessageEvent, session_key: str, *,
@@ -3690,7 +3495,6 @@ class BasePlatformAdapter(ABC):
                              session_key, exc_info=True)
         if discard_pending:
             self._pending_messages.pop(session_key, None)
-            self._discard_text_debounce(session_key)
         if release_guard:
             self._release_session_guard(session_key)
 
@@ -3698,7 +3502,6 @@ class BasePlatformAdapter(ABC):
         self, session_key: str, command_guard: asyncio.Event) -> None:
         """Tail of /stop, /new, /reset: release the command-scoped guard, then
         spawn a fresh processing task for any follow-up queued meanwhile."""
-        await self._flush_text_debounce_now(session_key)
         pending_event = self._pending_messages.pop(session_key, None)
         self._release_session_guard(session_key, guard=command_guard)
         if pending_event is not None:
@@ -3784,7 +3587,6 @@ class BasePlatformAdapter(ABC):
             try:
                 # /stop, /new, /reset: cancel + response + drain; other bypasses don't cancel.
                 if cmd and is_interrupt_then_dispatch(cmd):
-                    self._discard_text_debounce(session_key)
                     await self._dispatch_active_session_command(event, session_key, cmd)
                 else:
                     logger.debug("[%s] Command '/%s' bypassing active-session guard for %s",
@@ -3827,18 +3629,12 @@ class BasePlatformAdapter(ABC):
             event._gateway_processing_deferred = True
             event._gateway_accepted = True
             return
-        if self._is_queue_text_debounce_candidate(event):
-            logger.debug("[%s] New text message while session %s is active — "
-                         "debouncing follow-up (busy_text_mode=queue, window=%.2fs)", self.name,
-                         session_key, self._busy_text_debounce_seconds)
-            await self._queue_text_debounce(session_key, event)
-        else:
-            logger.debug("[%s] New message while session %s is active — queuing follow-up "
-                         "(no interrupt, will cascade after current turn)", self.name, session_key)
-            merge_pending_message_event(self._pending_messages, session_key, event,
-                                        merge_text=event.message_type == MessageType.TEXT)
-            event._gateway_processing_deferred = True
-            event._gateway_accepted = True
+        logger.debug("[%s] New message while session %s is active — queuing follow-up "
+                     "(no interrupt, will cascade after current turn)", self.name, session_key)
+        merge_pending_message_event(self._pending_messages, session_key, event,
+                                    merge_text=event.message_type == MessageType.TEXT)
+        event._gateway_processing_deferred = True
+        event._gateway_accepted = True
 
     async def _record_delivery_obligation(
         self, event: MessageEvent, session_key: str, text_content: str,
@@ -3910,14 +3706,14 @@ class BasePlatformAdapter(ABC):
         force_document_attachments: bool, metadata: Dict[str, Any],
         record_delivery: Callable) -> None:
         """Deliver MEDIA-tag files and detected local files by type: images batched via
-        ``send_multiple_images`` unless ``[[as_document]]``; otherwise audio → send_voice (MEDIA
-        tags only, never bare local files), video → send_video, else send_document. Every failure is
+        ``send_multiple_images`` unless ``[[as_document]]``; otherwise video → send_video,
+        else send_document (audio included). Every failure is
         reported. Each send feeds ``record_delivery`` so media-only turns report SUCCESS."""
         from urllib.parse import quote as _quote
 
         def _as_image(path: str) -> bool:
             return Path(path).suffix.lower() in _IMAGE_EXTS and not force_document_attachments
-        _image_paths = [p for p, is_voice in media_files if not is_voice and _as_image(p)]
+        _image_paths = [p for p in media_files if _as_image(p)]
         _image_paths += [p for p in local_files if _as_image(p)]
         if _image_paths:
             await self._send_image_batch(
@@ -3925,13 +3721,9 @@ class BasePlatformAdapter(ABC):
                 record_delivery)
         chat_id = event.source.chat_id
 
-        async def _send_one(path: str, *, is_voice: bool, media_tag: bool) -> SendResult:
-            """MEDIA-tag files (``media_tag``) may route to send_voice; bare local files never
-            do."""
+        async def _send_one(path: str, *, media_tag: bool) -> SendResult:
             ext = Path(path).suffix.lower()
-            if media_tag and should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
-                result = await self.send_voice(chat_id=chat_id, audio_path=path, metadata=metadata, is_voice=is_voice)
-            elif ext in _VIDEO_EXTS:
+            if ext in _VIDEO_EXTS:
                 if media_tag:
                     logger.info("[%s] Sending video attachment (%s) to %s", self.name, ext, chat_id)
                 result = await self.send_video(chat_id=chat_id, video_path=path, metadata=metadata)
@@ -3940,15 +3732,15 @@ class BasePlatformAdapter(ABC):
             if not result.success:
                 logger.warning("[%s] Failed to send %s (%s): %s", self.name,
                                "media" if media_tag else "local file", ext, result.error)
-                await self._notify_media_delivery_failure(chat_id, path, is_voice=is_voice, metadata=metadata)
+                await self._notify_media_delivery_failure(chat_id, path, metadata=metadata)
             return result
-        queue = [(p, v, True) for p, v in media_files if v or not _as_image(p)]
+        queue = [(p, True) for p in media_files if not _as_image(p)]
         if queue:
             logger.info("[%s] Delivering %d non-image MEDIA attachment(s)", self.name, len(queue))
-        queue += [(p, False, False) for p in local_files if not _as_image(p)]
-        for path, is_voice, media_tag in queue:
+        queue += [(p, False) for p in local_files if not _as_image(p)]
+        for path, media_tag in queue:
             try:
-                record_delivery(await _send_one(path, is_voice=is_voice, media_tag=media_tag))
+                record_delivery(await _send_one(path, media_tag=media_tag))
             except Exception as err:
                 record_delivery(SendResult(success=False, error=str(err)))
                 if media_tag:
@@ -4222,9 +4014,7 @@ class BasePlatformAdapter(ABC):
             )
             await self._run_processing_hook("on_processing_complete", event, outcome)
             _complete_replay(outcome)
-            # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
-            await self._flush_text_debounce_now(session_key)
             if session_key in self._pending_messages:
                 pending_event = self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
@@ -4254,8 +4044,6 @@ class BasePlatformAdapter(ABC):
             # Callback work or a late refresh may have recreated typing — one final bounded stop.
             await self._stop_typing_refresh(
                 event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
-            # Flush any timer that missed the in-band drain, then reconcile ownership.
-            await self._flush_text_debounce_now(session_key)
             # Turn done and no queued follow-up: keep the typing bubble alive
             # while async delegations for this session run in the background.
             # (A queued follow-up fails the _should_restart check, so the drain
@@ -4330,10 +4118,8 @@ class BasePlatformAdapter(ABC):
         with contextlib.suppress(Exception):  # flush pending messages to disk before clearing
             from gateway.shutdown_flush import flush_pending_to_file
             flush_pending_to_file(self._pending_messages, reason="adapter_shutdown")
-        for state in self._text_debounce_store().values():
-            state.cancel_timer()
         for bucket in (self._background_tasks, self._expected_cancelled_tasks, self._session_tasks,
-                       self._pending_messages, self._active_sessions, self._text_debounce_store()):
+                       self._pending_messages, self._active_sessions):
             bucket.clear()
 
     def has_pending_interrupt(self, session_key: str) -> bool:

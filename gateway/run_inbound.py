@@ -618,7 +618,7 @@ class GatewayInboundMixin:
         return False, None
 
     def _hm_busy_telegram_grace_queue(
-        self, event: "MessageEvent", source: SessionSource, _quick_key: str, effective_busy_input_mode: str
+        self, event: "MessageEvent", source: SessionSource, _quick_key: str
     ) -> bool:
         """Queue a Telegram text follow-up that lands within the post-start grace window."""
         from gateway.run import logger
@@ -635,38 +635,12 @@ class GatewayInboundMixin:
             "Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
             time.time() - _started_at, _quick_key,
         )
-        if effective_busy_input_mode != "queue":
-            self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)
-        else:
-            adapter = self._delivery_adapter_for(source)
-            if adapter:
-                self._enqueue_fifo(_quick_key, event, adapter)
+        self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)
         return True
 
     @staticmethod
     def _hm_text_only(event: "MessageEvent") -> bool:
         return event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
-
-    def _hm_busy_steer(self, event: "MessageEvent", running_agent: Any, _quick_key: str) -> bool:
-        """Steer mode: inject text mid-run via ``agent.steer()``, else fall back to queue semantics.
-
-        Returns whether the steer landed; the async caller (_hm_handle_running_session_message)
-        turns a True result into the same receipts the classic busy handler emits."""
-        from gateway.run import logger
-
-        steer_text = (event.text or "").strip()
-        steered = False
-        if self._hm_text_only(event) and steer_text and hasattr(running_agent, "steer"):
-            try:
-                steered = self._steer_running_agent(running_agent, self._steer_text_with_origin(steer_text, event))
-            except Exception as exc:
-                logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc)
-        if steered:
-            logger.debug("PRIORITY steer for session %s", _quick_key)
-            return True
-        logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
-        self._queue_or_replace_pending_event(_quick_key, event)
-        return False
 
     async def _hm_busy_interrupt(
         self, event: "MessageEvent", source: SessionSource, running_agent: Any, _quick_key: str
@@ -727,7 +701,7 @@ class GatewayInboundMixin:
         self, event: "MessageEvent", source: SessionSource, _quick_key: str
     ) -> Optional[str]:
         """Fast-path while this session's agent is running: interrupt by default (minimal latency);
-        busy_input_mode queue/steer, subagent and compression protection demote to queue."""
+        subagent and compression protection demote to queue."""
         from gateway.run import logger
 
         from gateway.run import _AGENT_PENDING_SENTINEL
@@ -735,8 +709,7 @@ class GatewayInboundMixin:
         if _handled:
             return _result
 
-        effective_busy_input_mode = self._effective_busy_input_mode(source)
-        if self._hm_busy_telegram_grace_queue(event, source, _quick_key, effective_busy_input_mode):
+        if self._hm_busy_telegram_grace_queue(event, source, _quick_key):
             return None
 
         _ra_state = self._peek_session_state(_quick_key)
@@ -767,39 +740,9 @@ class GatewayInboundMixin:
                 self, event, _quick_key, require_successor_ready=True,
             ):
                 return None
-            queue_during_drain = self._queue_during_drain_enabled(effective_busy_input_mode)
-            if queue_during_drain:
-                self._queue_or_replace_pending_event(_quick_key, event)
             return DeferredReply(
-                f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
-                if queue_during_drain
-                else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+                f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
             )
-        if effective_busy_input_mode == "queue":
-            logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
-            self._queue_or_replace_pending_event(_quick_key, event)
-            return None
-        if effective_busy_input_mode == "steer":
-            steered = self._hm_busy_steer(event, running_agent, _quick_key)
-            if steered:
-                # Receipt parity with the classic busy handler
-                # (_handle_active_session_busy_message): a steered follow-up
-                # gets the Discord ⏩ read-receipt on its own source message
-                # plus the one-shot "steer delivered" ack. The priority path
-                # stays bubble-silent — these two receipts are all it emits —
-                # and a failure here must never unwind a delivered steer.
-                try:
-                    if self._steer_delivered_ack_enabled(event):
-                        self._register_steer_delivered_ack(event, _quick_key, running_agent)
-                    await self._maybe_react_discord_busy_steer(
-                        event, self._delivery_adapter_for(source), _quick_key,
-                        steered=True, is_steer_mode=True,
-                    )
-                except Exception:
-                    logger.debug(
-                        "PRIORITY steer receipt failed for session %s", _quick_key, exc_info=True
-                    )
-            return None
         # Subagent protection: an interrupt cascades through ``_active_children`` and aborts
         # in-flight delegate_task work (/stop reached its handler above — still an escape hatch).
         # Compression protection: an interrupt would start a new turn on the pre-rotation parent
@@ -2101,17 +2044,12 @@ class GatewayInboundMixin:
                     # when the busy policy allows it (the photo merge happens
                     # inside it); cap/IO failure gets the honest drain refusal,
                     # same answer text follow-ups get — never a silent loss.
-                    return self._busy_drain_admission(
-                        event,
-                        _quick_key,
-                        self._effective_busy_input_mode(source),
-                    )
+                    return self._busy_drain_admission(event, _quick_key)
                 adapter = self._adapter_for_source(source)
                 if adapter:
                     merge_pending_message_event(adapter._pending_messages, _quick_key, event)
                 return None
 
-            effective_busy_input_mode = self._effective_busy_input_mode(source)
             _telegram_followup_grace = float(
                 os.getenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0")
             )
@@ -2128,9 +2066,7 @@ class GatewayInboundMixin:
                     # The grace window's in-memory queue dies with the process
                     # bounce — this sub-path takes the same durable admission
                     # as every other busy follow-up, never a silent loss.
-                    return self._busy_drain_admission(
-                        event, _quick_key, effective_busy_input_mode
-                    )
+                    return self._busy_drain_admission(event, _quick_key)
                 logger.debug(
                     "Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
                     time.time() - _started_at,
@@ -2138,15 +2074,12 @@ class GatewayInboundMixin:
                 )
                 adapter = self._adapter_for_source(source)
                 if adapter:
-                    if effective_busy_input_mode == "queue":
-                        self._enqueue_fifo(_quick_key, event, adapter)
-                    else:
-                        merge_pending_message_event(
-                            adapter._pending_messages,
-                            _quick_key,
-                            event,
-                            merge_text=True,
-                        )
+                    merge_pending_message_event(
+                        adapter._pending_messages,
+                        _quick_key,
+                        event,
+                        merge_text=True,
+                    )
                 return None
 
             _ra_state = self._peek_session_state(_quick_key)
@@ -2163,16 +2096,7 @@ class GatewayInboundMixin:
                     # process bounce — same durable admission as every other
                     # busy follow-up. (/stop above stays reachable: it is the
                     # in-flight-work lifecycle the drain itself depends on.)
-                    return self._busy_drain_admission(
-                        event, _quick_key, effective_busy_input_mode
-                    )
-                # Steer mode: a steer-eligible follow-up parks in the
-                # steer-on-live slot instead — injected the moment the agent
-                # build finishes, not parked as a second user turn.
-                if await self._maybe_park_steer_on_agent_live(
-                    event, _quick_key, effective_busy_input_mode, running_agent
-                ):
-                    return None
+                    return self._busy_drain_admission(event, _quick_key)
                 # Queue the message so it will be picked up after the
                 # agent starts. Internal events (resume wakes, background
                 # completions) ride the FIFO as their own turn — never merged
@@ -2191,27 +2115,17 @@ class GatewayInboundMixin:
                     )
                 return None
             if _drain_refuses:
-                return self._busy_drain_admission(
-                    event, _quick_key, effective_busy_input_mode
-                )
-            if effective_busy_input_mode == "queue":
-                logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
-                self._queue_or_replace_pending_event(_quick_key, event)
-                return None
-            # Steer/redirect resolution is shared with the adapter busy
+                return self._busy_drain_admission(event, _quick_key)
+            # Redirect/demotion resolution is shared with the adapter busy
             # handler (_handle_active_session_busy_message): one resolver
             # applies the interrupt->queue demotions (#30170 subagents,
-            # #56391 in-flight compression), attempts the mid-run steer
-            # (steer mode, voice transcripts folded in per #58780) or the
-            # text-only redirect (interrupt mode), and falls back to queue
-            # semantics when neither lands. /stop reaches its dedicated
-            # handler above, so the operator keeps a clean escape hatch.
+            # #56391 in-flight compression) and attempts the text-only
+            # redirect, falling back to queue semantics when it doesn't land.
+            # /stop reaches its dedicated handler above, so the operator keeps
+            # a clean escape hatch.
             outcome = await self._resolve_busy_steer_or_redirect(
-                event, _quick_key, effective_busy_input_mode, running_agent
+                event, _quick_key, running_agent
             )
-            if outcome.steered:
-                logger.debug("PRIORITY steer for session %s", _quick_key)
-                return None
             if outcome.redirected:
                 logger.debug("PRIORITY redirect for session %s", _quick_key)
                 return None

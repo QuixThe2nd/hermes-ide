@@ -415,7 +415,6 @@ unauthorized_dm_behavior: "pair"
 # 全局 gateway 设置
 group_sessions_per_user: true
 unauthorized_dm_behavior: "pair"
-stt_enabled: true
 
 # Slack 特定设置
 slack:

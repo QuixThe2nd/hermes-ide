@@ -1004,7 +1004,6 @@ class GatewayAdapterLifecycleMixin:
             )
             profile_cfg = load_gateway_config()
             violation = _own_policy_open_startup_violation(profile_cfg)
-        self._snapshot_profile_busy_modes(profile_name, profile_runtime_cfg)
         if violation:
             raise MultiplexConfigError(
                 f"Profile '{profile_name}' enables {violation}. "
@@ -1140,7 +1139,6 @@ class GatewayAdapterLifecycleMixin:
 
             profile_cfg = load_gateway_config()
             violation = _own_policy_open_startup_violation(profile_cfg)
-        self._snapshot_profile_busy_modes(profile_name, profile_runtime_cfg)
         if violation:
             raise MultiplexConfigError(
                 f"Profile '{profile_name}' enables {violation}. "
@@ -1322,7 +1320,6 @@ class GatewayAdapterLifecycleMixin:
     def _wire_adapter_handlers(
         self, adapter: BasePlatformAdapter, *, message_handler=None, fatal_error_handler=None,
         busy_session_handler=None, authorization_check=None, platform_event_handler=None,
-        busy_text_mode: Optional[str] = None,
     ) -> None:
         """Install the runner callbacks every adapter needs (defaults = primary handlers;
         secondary wiring passes profile-scoped variants). ``set_reaction_handler`` is optional."""
@@ -1338,7 +1335,6 @@ class GatewayAdapterLifecycleMixin:
             authorization_check or self._make_adapter_auth_check(adapter.platform)
         )
         adapter.set_platform_event_handler(platform_event_handler or self._primary_platform_event_handler())
-        adapter._busy_text_mode = (self._busy_text_mode if busy_text_mode is None else busy_text_mode)
 
     def _configure_profile_adapter(
         self, adapter: BasePlatformAdapter, profile_name: str, platform: Platform
@@ -1353,7 +1349,6 @@ class GatewayAdapterLifecycleMixin:
             _set_owner(profile_name)
         # Voice transcripts from this bot's channels dispatch through THIS adapter (primary wiring lives at
         # connect time; see #75198).
-        text_modes = getattr(self, "_busy_text_modes_by_profile", None)
         self._wire_adapter_handlers(
             adapter,
             message_handler=self._make_profile_message_handler(profile_name),
@@ -1361,11 +1356,6 @@ class GatewayAdapterLifecycleMixin:
             busy_session_handler=self._make_profile_busy_session_handler(profile_name),
             authorization_check=self._make_adapter_auth_check(platform, profile_name=profile_name),
             platform_event_handler=self._make_profile_platform_event_handler(profile_name),
-            busy_text_mode=(
-                text_modes.get(profile_name, self._busy_text_mode)
-                if isinstance(text_modes, dict)
-                else self._busy_text_mode
-            ),
         )
         # Secondary adapters carry their profile so prune paths namespace topic bindings correctly.
         # See #76423.

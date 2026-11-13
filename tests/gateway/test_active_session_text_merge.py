@@ -1,10 +1,8 @@
-"""Regression tests for active-session TEXT follow-up queueing.
+"""Regression tests for active-session TEXT follow-up handling.
 
 When the agent is actively running, rapid text follow-ups should survive as
-one next-turn pending message instead of clobbering each other. In
-``busy_text_mode=queue`` those active follow-ups first pass through a short
-debounce so bursty multi-message thoughts are merged before the active drain
-hands off the next turn.
+one next-turn pending message instead of clobbering each other, and control /
+clarify messages must bypass that merge lane entirely.
 """
 
 from __future__ import annotations
@@ -99,16 +97,8 @@ def _make_adapter() -> BasePlatformAdapter:
     adapter._fatal_error_retryable = True
     adapter._fatal_error_handler = None
     adapter._running = True
-    adapter._busy_text_mode = "queue"
-    adapter._busy_text_debounce_seconds = 0.1
-    adapter._busy_text_hard_cap_seconds = 1.0
-    adapter._text_debounce = {}
     adapter._typing_paused = set()
     return adapter
-
-
-def _debounced_event(adapter: BasePlatformAdapter, session_key: str) -> MessageEvent:
-    return adapter._text_debounce[session_key].event
 
 
 @pytest.mark.asyncio
@@ -172,7 +162,6 @@ async def test_dm_topic_recovery_stays_offloaded(monkeypatch):
 async def test_rapid_text_followups_accumulate_instead_of_replacing():
     """Rapid TEXT follow-ups must all survive in the pending event."""
     adapter = _make_adapter()
-    adapter._busy_text_mode = ""  # direct-merge behavior, no debounce
     first = _make_event("part one")
     session_key = build_session_key(first.source)
     adapter._active_sessions[session_key] = asyncio.Event()
@@ -186,39 +175,7 @@ async def test_rapid_text_followups_accumulate_instead_of_replacing():
 
 
 @pytest.mark.asyncio
-async def test_debounce_resets_timer_on_new_arrival():
-    adapter = _make_adapter()
-    adapter._busy_text_debounce_seconds = 0.1
-
-    first = _make_event("one")
-    session_key = build_session_key(first.source)
-    adapter._active_sessions[session_key] = asyncio.Event()
-
-    await adapter.handle_message(first)
-    task1 = adapter._text_debounce[session_key].task
-    assert task1 is not None
-    assert not task1.done()
-
-    await adapter.handle_message(_make_event("two"))
-    task2 = adapter._text_debounce[session_key].task
-    assert task2 is not None
-    assert task2 is not task1
-    await asyncio.sleep(0)
-    assert task1.cancelled() or task1.done()
-    assert adapter._text_debounce[session_key].task is task2
-
-    await adapter.handle_message(_make_event("three"))
-    task3 = adapter._text_debounce[session_key].task
-    assert task3 is not None
-    assert task3 is not task2
-
-    await asyncio.sleep(0.2)
-    assert session_key not in adapter._text_debounce
-    assert adapter._pending_messages[session_key].text == "one\ntwo\nthree"
-
-
-@pytest.mark.asyncio
-async def test_control_and_clarify_messages_bypass_text_debounce():
+async def test_control_and_clarify_messages_bypass_pending_merge():
     adapter = _make_adapter()
     started: list[str] = []
 
@@ -230,7 +187,6 @@ async def test_control_and_clarify_messages_bypass_text_debounce():
 
     await adapter.handle_message(_make_event("/status"))
     assert started == ["/status"]
-    assert adapter._text_debounce == {}
 
     answer = _make_event("clarify answer")
     session_key = build_session_key(answer.source)
@@ -241,20 +197,4 @@ async def test_control_and_clarify_messages_bypass_text_debounce():
         await adapter.handle_message(answer)
 
     adapter._message_handler.assert_awaited_once_with(answer)
-    assert session_key not in adapter._text_debounce
     assert session_key not in adapter._pending_messages
-
-
-def test_adapter_defaults_to_interrupt_mode(monkeypatch):
-    monkeypatch.delenv("HERMES_GATEWAY_BUSY_TEXT_MODE", raising=False)
-    adapter = _make_initialized_adapter()
-    assert adapter._busy_text_mode == "interrupt"
-    assert not adapter._is_queue_text_debounce_candidate(_make_event("hello"))
-
-
-def test_command_messages_bypass_debounce_even_in_queue_mode():
-    adapter = _make_adapter()
-    assert not adapter._is_queue_text_debounce_candidate(_make_event(""))
-    assert not adapter._is_queue_text_debounce_candidate(_make_event("/stop"))
-
-

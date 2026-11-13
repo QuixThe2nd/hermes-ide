@@ -272,9 +272,6 @@ hermes uninstall            Uninstall Hermes
 ```
 /config              Show config (CLI)
 /verbose             Cycle: off → new → all → verbose
-/voice [on|off|tts]  Voice mode
-/busy [sub]          Control how messages behave while Hermes works (CLI + gateway)
-                     (subcommands: queue, steer, interrupt, status)
 /indicator [style]   Pick the TUI busy-indicator style (CLI)
                      (styles: kaomoji, emoji, unicode, ascii)
 /skin [name]         Change theme (CLI)
@@ -356,8 +353,6 @@ Profiles 使用 `~/.hermes/profiles/<name>/`，布局相同。
 | `terminal` | `backend` (local/docker/ssh/modal), `cwd`, `timeout` (180) |
 | `compression` | `enabled`, `threshold` (0.50), `target_ratio` (0.20) |
 | `display` | `skin`, `tool_progress`, `show_reasoning`, `show_cost` |
-| `stt` | `enabled`, `provider` (local/groq/openai/mistral) |
-| `tts` | `provider` (edge/elevenlabs/openai/minimax/mistral/neutts) |
 | `memory` | `memory_enabled`, `user_profile_enabled`, `provider` |
 | `security` | `tirith_enabled`, `website_blocklist` |
 | `delegation` | `model`, `provider`, `base_url`, `api_key`, `max_iterations` (50), `reasoning_effort` |
@@ -411,7 +406,6 @@ Profiles 使用 `~/.hermes/profiles/<name>/`，布局相同。
 | `vision` | 图像分析 |
 | `image_gen` | AI 图像生成 |
 | `video` | 视频分析和生成 |
-| `tts` | 文字转语音 |
 | `skills` | Skill 浏览和管理 |
 | `memory` | 跨会话持久记忆 |
 | `session_search` | 搜索历史对话 |
@@ -468,42 +462,6 @@ hermes config set security.redact_secrets false
 ### 禁用 web/browser/image-gen 工具
 
 要完全阻止模型访问网络或媒体工具，打开 `hermes tools` 并按平台切换。在下次会话（`/new`）后生效。参见上方的工具与 Skill 部分。
-
----
-
-## 语音与转录
-
-### STT（语音 → 文字）
-
-来自消息平台的语音消息会自动转录。
-
-提供商优先级（自动检测）：
-1. **本地 faster-whisper** — 免费，无需 API key：`pip install faster-whisper`
-2. **Groq Whisper** — 免费套餐：设置 `GROQ_API_KEY`
-3. **OpenAI Whisper** — 付费：设置 `VOICE_TOOLS_OPENAI_KEY`
-4. **Mistral Voxtral** — 设置 `MISTRAL_API_KEY`
-
-配置：
-```yaml
-stt:
-  enabled: true
-  provider: local        # local, groq, openai, mistral
-  local:
-    model: base          # tiny, base, small, medium, large-v3
-```
-
-### TTS（文字 → 语音）
-
-| 提供商 | 环境变量 | 免费？ |
-|----------|---------|-------|
-| Edge TTS | 无 | 是（默认） |
-| ElevenLabs | `ELEVENLABS_API_KEY` | 免费套餐 |
-| OpenAI | `VOICE_TOOLS_OPENAI_KEY` | 付费 |
-| MiniMax | `MINIMAX_API_KEY` | 付费 |
-| Mistral (Voxtral) | `MISTRAL_API_KEY` | 付费 |
-| NeuTTS（本地） | 无（`pip install neutts[all]` + `espeak-ng`） | 免费 |
-
-语音命令：`/voice on`（语音对语音）、`/voice tts`（始终语音）、`/voice off`。
 
 ---
 
@@ -675,11 +633,6 @@ export PYTHONPATH="$(pwd)"
 ---
 
 ## 故障排查
-
-### 语音不工作
-1. 检查 `config.yaml` 中 `stt.enabled: true`
-2. 验证提供商：`pip install faster-whisper` 或设置 API key
-3. 在 gateway 中：`/restart`。在 CLI 中：退出并重新启动。
 
 ### 工具不可用
 1. `hermes tools` — 检查 toolset 是否为你的平台启用

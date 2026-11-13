@@ -192,33 +192,7 @@ class TestExtractMedia:
     def test_single_media_tag(self):
         content = "MEDIA:/path/to/audio.ogg"
         media, cleaned = BasePlatformAdapter.extract_media(content)
-        assert len(media) == 1
-        assert media[0][0] == "/path/to/audio.ogg"
-        assert media[0][1] is False  # no voice tag
-
-
-    def test_voice_directive_only_taints_audio_files(self):
-        """[[audio_as_voice]] is message-global but must only flag audio files.
-
-        A non-audio file marked is_voice is excluded from the embedded-photo
-        batch and falls through to send_document, so an image sharing a
-        message with a voice note used to arrive as a file attachment
-        (#44826).
-        """
-        content = "[[audio_as_voice]]\nMEDIA:/tmp/pic.png\nMEDIA:/tmp/voice.ogg"
-        media, cleaned = BasePlatformAdapter.extract_media(content)
-        flags = dict(media)
-        assert flags["/tmp/pic.png"] is False
-        assert flags["/tmp/voice.ogg"] is True
-        assert "[[audio_as_voice]]" not in cleaned
-
-    def test_voice_directive_skips_video_and_documents(self):
-        content = "[[audio_as_voice]]\nMEDIA:/tmp/clip.mp4\nMEDIA:/tmp/report.pdf\nMEDIA:/tmp/note.opus"
-        media, _ = BasePlatformAdapter.extract_media(content)
-        flags = dict(media)
-        assert flags["/tmp/clip.mp4"] is False
-        assert flags["/tmp/report.pdf"] is False
-        assert flags["/tmp/note.opus"] is True
+        assert media == ["/path/to/audio.ogg"]
 
     def test_multiple_media_tags(self):
         content = "MEDIA:/a.ogg\nMEDIA:/b.ogg"
@@ -236,8 +210,8 @@ class TestExtractMedia:
         content = "MEDIA:/tmp/test.png\nMEDIA:/tmp/test.png\nMEDIA:/tmp/other.png"
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert media == [
-            ("/tmp/test.png", False),
-            ("/tmp/other.png", False),
+            "/tmp/test.png",
+            "/tmp/other.png",
         ]
         assert cleaned == ""
 
@@ -247,31 +221,18 @@ class TestExtractMedia:
         home = os.path.expanduser("~")
         content = f"MEDIA:~/foo.png\nMEDIA:{home}/foo.png"
         media, _ = BasePlatformAdapter.extract_media(content)
-        assert media == [(f"{home}/foo.png", False)]
+        assert media == [f"{home}/foo.png"]
 
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
-        user-visible text just like [[audio_as_voice]]. Callers detect the
+        user-visible text. Callers detect the
         directive on the original content (before extract_media)."""
         content = "Here is your infographic:\n[[as_document]]\nMEDIA:/tmp/x.jpg"
         media, cleaned = BasePlatformAdapter.extract_media(content)
-        assert media == [("/tmp/x.jpg", False)]
+        assert media == ["/tmp/x.jpg"]
         assert "[[as_document]]" not in cleaned
         assert "Here is your infographic" in cleaned
 
-
-    def test_both_directives_can_coexist(self):
-        """A response could (rarely) contain both [[audio_as_voice]] for an
-        ogg file AND [[as_document]] for an attached image. The voice flag
-        propagates per-tuple; [[as_document]] is detected at dispatch."""
-        content = "[[audio_as_voice]]\n[[as_document]]\nMEDIA:/tmp/x.ogg"
-        media, cleaned = BasePlatformAdapter.extract_media(content)
-        # Voice flag is propagated to every media tuple (this matches the
-        # existing extract_media contract)
-        assert media == [("/tmp/x.ogg", True)]
-        # Both directives stripped from cleaned text
-        assert "[[audio_as_voice]]" not in cleaned
-        assert "[[as_document]]" not in cleaned
 
     # Windows path support — regression coverage for #34632
 
@@ -297,8 +258,7 @@ class TestExtractMedia:
             "Done."
         )
         media, cleaned = BasePlatformAdapter.extract_media(content)
-        assert len(media) == 1
-        assert media[0][0] == "/output/report.pdf"
+        assert media == ["/output/report.pdf"]
         assert "Done." in cleaned
         # The real tag is stripped from the delivered text...
         assert "MEDIA:/output/report.pdf" not in cleaned
@@ -311,7 +271,7 @@ class TestExtractMedia:
         same reply must not be blanked to whitespace."""
         content = "See MEDIA:/r/a.png and `MEDIA:/ex/b.png` inline"
         media, cleaned = BasePlatformAdapter.extract_media(content)
-        assert [p for p, _ in media] == ["/r/a.png"]
+        assert media == ["/r/a.png"]
         assert "`MEDIA:/ex/b.png`" in cleaned
 
     # --- Markdown emphasis wrapping tolerance ---
@@ -346,14 +306,7 @@ class TestMediaInsideSerializedJson:
         media, _ = BasePlatformAdapter.extract_media(
             'MEDIA:"/path/with space/file.png"'
         )
-        assert len(media) == 1 and media[0][0] == "/path/with space/file.png"
-
-    def test_tts_two_line_still_extracted(self):
-        media, _ = BasePlatformAdapter.extract_media(
-            "[[audio_as_voice]]\nMEDIA:/tmp/v.ogg"
-        )
-        assert len(media) == 1 and media[0][0] == "/tmp/v.ogg"
-        assert media[0][1] is True  # voice flag
+        assert media == ["/path/with space/file.png"]
 
     # --- cleaned-text invariants: real tags stripped, JSON data kept verbatim ---
 
@@ -362,7 +315,7 @@ class TestMediaInsideSerializedJson:
         literal text (stored data must read back unchanged)."""
         content = 'MEDIA:/real/r.png\nlog: {"old":"MEDIA:/stale/s.png"}'
         media, cleaned = BasePlatformAdapter.extract_media(content)
-        assert [p for p, _ in media] == ["/real/r.png"]
+        assert media == ["/real/r.png"]
         # The JSON-embedded path must survive verbatim — not blanked to spaces.
         assert '{"old":"MEDIA:/stale/s.png"}' in cleaned
 
@@ -417,8 +370,7 @@ class TestExtensionlessMediaDelivery:
 
         content = f"Here is your config:\nMEDIA:{caddy}\nDone."
         media, cleaned = BasePlatformAdapter.extract_media(content)
-        assert len(media) == 1
-        assert media[0][0] == str(caddy.resolve())
+        assert media == [str(caddy.resolve())]
         assert "MEDIA:" not in cleaned
         assert "Done." in cleaned
 
@@ -454,8 +406,7 @@ class TestUniversalMediaEgress:
 
         content = f"Here you go:\nMEDIA:{f}\nDone."
         media, cleaned = BasePlatformAdapter.extract_media(content)
-        assert len(media) == 1
-        assert media[0][0] == str(f.resolve())
+        assert media == [str(f.resolve())]
         assert "MEDIA:" not in cleaned
         assert "Done." in cleaned
 
@@ -466,7 +417,7 @@ class TestUniversalMediaEgress:
         # delivery surfaces the failure.
         content = "MEDIA:/nonexistent/report.pdf"
         media, cleaned = BasePlatformAdapter.extract_media(content)
-        assert media == [("/nonexistent/report.pdf", False)]
+        assert media == ["/nonexistent/report.pdf"]
         assert "MEDIA:" not in cleaned
 
 
@@ -511,11 +462,11 @@ class TestMediaDeliveryPathValidation:
         self._patch_roots(monkeypatch, root)
 
         filtered = BasePlatformAdapter.filter_media_delivery_paths([
-            (str(unsafe), False),
-            (str(safe), True),
+            str(unsafe),
+            str(safe),
         ])
 
-        assert filtered == [(str(safe.resolve()), True)]
+        assert filtered == [str(safe.resolve())]
 
 
     def test_allows_stale_kanban_attachment_but_not_neighboring_workspace(
@@ -983,27 +934,6 @@ class TestDockerContainerMediaPathTranslation:
 
 
 # ---------------------------------------------------------------------------
-# should_send_media_as_audio
-# ---------------------------------------------------------------------------
-
-class TestShouldSendMediaAsAudio:
-    """Audio-routing policy shared by gateway + scheduler + send_message."""
-
-    def test_unknown_extension_returns_false(self):
-        from gateway.platforms.base import should_send_media_as_audio
-        assert should_send_media_as_audio(None, ".png") is False
-        assert should_send_media_as_audio("telegram", ".pdf") is False
-
-
-    def test_telegram_ogg_opus_only_when_voice_flagged(self):
-        from gateway.platforms.base import should_send_media_as_audio
-        assert should_send_media_as_audio("telegram", ".ogg", is_voice=True) is True
-        assert should_send_media_as_audio("telegram", ".opus", is_voice=True) is True
-        assert should_send_media_as_audio("telegram", ".ogg") is False
-        assert should_send_media_as_audio("telegram", ".opus") is False
-
-
-# ---------------------------------------------------------------------------
 # truncate_message
 # ---------------------------------------------------------------------------
 
@@ -1254,7 +1184,7 @@ class TestMediaDeliveryDiagnosability:
                                      "HERMES_MEDIA_TRUST_RECENT_FILES": "0"}), \
                 patch("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", ()):
             with caplog.at_level("WARNING"):
-                out = BasePlatformAdapter.filter_media_delivery_paths([(str(outside), False)])
+                out = BasePlatformAdapter.filter_media_delivery_paths([str(outside)])
         assert out == []
         # The dropped path must be in the log so operators can diagnose it, with the REASON: a policy
         # rejection reads differently from a path that simply does not exist (#100074).
@@ -1263,7 +1193,7 @@ class TestMediaDeliveryDiagnosability:
     def test_missing_file_is_logged_as_not_found_not_unsafe(self, tmp_path, caplog):
         ghost = tmp_path / "never-written.pdf"
         with caplog.at_level("WARNING"):
-            assert BasePlatformAdapter.filter_media_delivery_paths([(str(ghost), False)]) == []
+            assert BasePlatformAdapter.filter_media_delivery_paths([str(ghost)]) == []
         assert "not found on this host" in caplog.text and "unsafe" not in caplog.text
 
     def test_crafted_null_path_does_not_abort_batch(self, tmp_path, monkeypatch):
@@ -1272,10 +1202,10 @@ class TestMediaDeliveryDiagnosability:
         good.write_bytes(b"\x89PNG")
         monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "0")
         out = BasePlatformAdapter.filter_media_delivery_paths([
-            ("~\x00evil.png", False),
-            (str(good), False),
+            "~\x00evil.png",
+            str(good),
         ])
-        assert out == [(str(good.resolve()), False)]
+        assert out == [str(good.resolve())]
 
 
 # ---------------------------------------------------------------------------
@@ -1474,10 +1404,10 @@ class TestDockerProfileSandboxMediaTranslation:
         produced.write_bytes(b"mp4")
 
         kept = BasePlatformAdapter.filter_media_delivery_paths(
-            [("/workspace/clip.mp4", False)], session_key=self.SESSION_KEY
+            ["/workspace/clip.mp4"], session_key=self.SESSION_KEY
         )
 
-        assert kept == [(str(produced.resolve()), False)]
+        assert kept == [str(produced.resolve())]
 
     def test_unresolved_docker_media_names_the_cause(self, monkeypatch, caplog):
         """A container path that resolves in no candidate sandbox must log

@@ -90,7 +90,6 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `OPENCODE_GO_BASE_URL` | 覆盖 OpenCode Go base URL |
 | `CLAUDE_CODE_OAUTH_TOKEN` | 手动导出时的显式 Claude Code token 覆盖 |
 | `HERMES_MODEL` | 在进程级别覆盖模型名称（供 cron 调度器使用；正常使用请优先在 `config.yaml` 中配置） |
-| `HERMES_LOCAL_STT_LANGUAGE` | 传递给 `HERMES_LOCAL_STT_COMMAND` 或自动检测的本地 `whisper` CLI 回退的默认语言（默认：`en`） |
 | `HERMES_HOME` | 覆盖 Hermes 配置目录（默认：`~/.hermes`）。同时限定 gateway PID 文件和 systemd 服务名称，允许多个安装并发运行 |
 | `HERMES_GIT_BASH_PATH` | **仅 Windows。** 覆盖终端工具的 `bash.exe` 发现路径。可指向任意 bash——完整 Git-for-Windows 安装、通过符号链接的 WSL bash、MSYS2、Cygwin。安装程序会自动将其设置为所配置的 PortableGit。参见 [Windows（原生）指南](../user-guide/windows-native.md#how-hermes-runs-shell-commands-on-windows) |
 | `HERMES_DISABLE_WINDOWS_UTF8` | **仅 Windows。** 设为 `1` 可禁用 UTF-8 stdio shim（`configure_windows_stdio()`），回退到控制台的本地代码页。用于排查编码问题；正常操作中极少需要 |
@@ -127,11 +126,6 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `CAMOFOX_ADOPT_EXISTING_TAB` | 设为 `true` 可在创建新标签页前复用现有 Camofox 标签页 |
 | `BROWSER_INACTIVITY_TIMEOUT` | 浏览器会话不活动超时（秒） |
 | `FAL_KEY` | 图像生成（[fal.ai](https://fal.ai/)） |
-| `GROQ_API_KEY` | Groq Whisper STT API 密钥（[groq.com](https://groq.com/)） |
-| `STT_GROQ_MODEL` | 覆盖 Groq STT 模型（默认：`whisper-large-v3-turbo`） |
-| `GROQ_BASE_URL` | 覆盖 Groq OpenAI 兼容 STT 端点 |
-| `STT_OPENAI_MODEL` | 覆盖 OpenAI STT 模型（默认：`whisper-1`） |
-| `STT_OPENAI_BASE_URL` | 覆盖 OpenAI 兼容 STT 端点 |
 | `GITHUB_TOKEN` | Skills Hub 的 GitHub token（更高 API 速率限制，技能发布） |
 | `HONCHO_API_KEY` | 跨会话用户建模（[honcho.dev](https://honcho.dev/)） |
 | `HONCHO_BASE_URL` | 自托管 Honcho 实例的 base URL（默认：Honcho 云）。本地实例无需 API 密钥 |
@@ -342,9 +336,6 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `BLUEBUBBLES_ALLOW_ALL_USERS` | 允许所有用户（`true`/`false`） |
 | `QQ_APP_ID` | 来自 [q.qq.com](https://q.qq.com) 的 QQ Bot App ID |
 | `QQ_CLIENT_SECRET` | 来自 [q.qq.com](https://q.qq.com) 的 QQ Bot App Secret |
-| `QQ_STT_API_KEY` | 外部 STT 回退提供商的 API 密钥（可选，当 QQ 内置 ASR 未返回文本时使用） |
-| `QQ_STT_BASE_URL` | 外部 STT 提供商的 base URL（可选） |
-| `QQ_STT_MODEL` | 外部 STT 提供商的模型名称（可选） |
 | `QQ_ALLOWED_USERS` | 允许向 bot 发送消息的逗号分隔 QQ 用户 openID |
 | `QQ_GROUP_ALLOWED_USERS` | 群 @消息访问的逗号分隔 QQ 群 ID |
 | `QQ_ALLOW_ALL_USERS` | 允许所有用户（`true`/`false`，覆盖 `QQ_ALLOWED_USERS`） |
