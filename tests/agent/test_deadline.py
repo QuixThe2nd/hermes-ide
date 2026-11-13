@@ -690,6 +690,35 @@ class TestUnboundedToolsResolver:
         assert tool_executor._resolve_unbounded_tools() == frozenset(
             {"delegate_cursor_agent"}
         )
+
+    def test_default_contains_lane_tools(self, monkeypatch):
+        """Foreground lane runs block legitimately (an OMP RPC goal-mode
+        reverse-engineer pass can run for hours); the 420s generic deadline
+        must not kill them — the same class as ``delegate_agent``."""
+        from agent import tool_executor
+
+        monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
+        names = tool_executor._resolve_unbounded_tools()
+        assert {
+            "delegate_ui_dev", "delegate_client_dev",
+            "delegate_backend_dev", "delegate_reverse_engineer",
+        } <= names
+
+    def test_user_override_omitting_lane_tools_warns(self, monkeypatch, caplog):
+        """A user list that replaces the default and omits lane tools warns,
+        the same way an omitted ``delegate_agent`` already warns."""
+        import logging
+
+        from agent import tool_executor
+
+        monkeypatch.setattr(
+            "agent.deadline._timeouts_section",
+            lambda: {"tools": {"unbounded_tools": ["delegate_agent"]}},
+        )
+        with caplog.at_level(logging.WARNING, logger="agent.tool_executor"):
+            names = tool_executor._resolve_unbounded_tools()
+        assert names == frozenset({"delegate_agent", "delegate_task"})
+        assert "delegate_reverse_engineer" in caplog.text
 # ---------------------------------------------------------------------------
 # Phase 3a (#85125): SuspectableBackend — poisoned-state contract.
 # ---------------------------------------------------------------------------
