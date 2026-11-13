@@ -272,8 +272,6 @@ hermes uninstall            Uninstall Hermes
 ```
 /config              Show config (CLI)
 /verbose             Cycle: off → new → all → verbose
-/busy [sub]          Control how messages behave while Hermes works (CLI + gateway)
-                     (subcommands: queue, steer, interrupt, status)
 /indicator [style]   Pick the TUI busy-indicator style (CLI)
                      (styles: kaomoji, emoji, unicode, ascii)
 /skin [name]         Change theme (CLI)
