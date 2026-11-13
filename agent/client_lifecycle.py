@@ -67,11 +67,6 @@ def _valid_credential_pair(api_key: Any, base_url: Any) -> bool:
 def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb_base_url: str, fb_api_mode: str) -> None:
     """Install the fallback client(s) in place, honoring request_timeout_seconds (None = SDK default)."""
     timeout = get_provider_request_timeout(fb_provider, fb_model)
-    if fb_provider == "bedrock" and fb_api_mode in ("anthropic_messages", "bedrock_converse"):
-        # Non-Mantle Bedrock: boto3-chain auth, no OpenAI/Anthropic SDK client to carry over.
-        from agent.bedrock_adapter import bind_bedrock_runtime
-        bind_bedrock_runtime(agent, fb_base_url, fb_api_mode)
-        return
     # The SDK exposes an empty/stale api_key when a rotating source is installed.
     key_provider = vars(fb_client).get("_api_key_provider")
     credential = key_provider if callable(key_provider) else fb_client.api_key
@@ -478,9 +473,7 @@ class ClientLifecycleMixin:
         self._abort_request_slot_client(_OPENAI_SLOT, client, reason=reason)
 
     def _request_anthropic_client_key(self) -> tuple:
-        """Cache key over everything forcing a fresh client: credential, base URL/region, timeout, 1M-beta flag."""
-        if getattr(self, "provider", None) == "bedrock":
-            return ("bedrock", getattr(self, "_bedrock_region", "us-east-1") or "us-east-1")
+        """Cache key over everything forcing a fresh client: credential, base URL, timeout, 1M-beta flag."""
         return (
             "direct", self._anthropic_api_key, getattr(self, "_anthropic_base_url", None),
             get_provider_request_timeout(self.provider, self.model), bool(getattr(self, "_oauth_1m_beta_disabled", False)),
@@ -497,9 +490,7 @@ class ClientLifecycleMixin:
         return _is_oauth_token(token) if self.provider == "anthropic" else False
 
     def _build_anthropic_client_for_key(self, key: tuple) -> Any:
-        from agent.anthropic_adapter import build_anthropic_bedrock_client, build_anthropic_client
-        if key[0] == "bedrock":
-            return build_anthropic_bedrock_client(key[1])
+        from agent.anthropic_adapter import build_anthropic_client
         return build_anthropic_client(key[1], key[2], timeout=key[3], drop_context_1m_beta=key[4])
 
     def _create_request_anthropic_client(self, *, reason: str) -> Any:
@@ -916,7 +907,7 @@ class ClientLifecycleMixin:
         if apply_user_headers:
             self._apply_user_default_headers()
         # Per-provider extra_headers last so they survive swaps/rebuilds. SECURITY: may carry credentials; never log.
-        if self.api_mode not in ("anthropic_messages", "bedrock_converse"):
+        if self.api_mode != "anthropic_messages":
             try:
                 from hermes_cli.config import apply_custom_provider_extra_headers_to_client_kwargs
                 apply_custom_provider_extra_headers_to_client_kwargs(self._client_kwargs, base_url)
@@ -925,8 +916,8 @@ class ClientLifecycleMixin:
 
     def _apply_user_default_headers(self) -> None:
         """Merge config ``model.default_headers`` onto the OpenAI client (user wins; WAFs rejecting SDK headers).
-        Delegates to ``agent.auxiliary_client`` so main and aux clients cannot drift. No-op for Anthropic/Bedrock."""
-        if self.api_mode in ("anthropic_messages", "bedrock_converse"):
+        Delegates to ``agent.auxiliary_client`` so main and aux clients cannot drift. No-op for Anthropic."""
+        if self.api_mode == "anthropic_messages":
             return
         from agent.auxiliary_client import _apply_user_default_headers as _merge_user_headers
         merged = _merge_user_headers(self._client_kwargs.get("default_headers"))
@@ -1005,5 +996,5 @@ class ClientLifecycleMixin:
         )
 
     def _rebuild_anthropic_client(self) -> None:
-        """Rebuild the Anthropic client after an interrupt/stale call (Bedrock SDK for bedrock; honors 1M-beta flag)."""
+        """Rebuild the Anthropic client after an interrupt/stale call (honors 1M-beta flag)."""
         self._anthropic_client = self._build_anthropic_client_for_key(self._request_anthropic_client_key())

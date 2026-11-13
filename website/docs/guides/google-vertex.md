@@ -143,6 +143,5 @@ The service account (or your ADC identity) needs the `roles/aiplatform.user` rol
 ## Related
 
 - [Google Gemini (AI Studio)](./google-gemini.md) — static-API-key Gemini without GCP
-- [AWS Bedrock](./aws-bedrock.md) — another native cloud-provider integration
 - [AI Providers](../integrations/providers.md)
 - [Configuration](../user-guide/configuration.md)

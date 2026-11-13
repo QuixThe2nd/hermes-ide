@@ -68,7 +68,7 @@ def test_all_profiles_register():
 
     # Spot-check representative providers from different categories
     for required in (
-        "openrouter", "anthropic", "custom", "bedrock", "openai-codex",
+        "openrouter", "anthropic", "custom", "openai-codex",
         "minimax-oauth", "gmi", "xiaomi", "alibaba-coding-plan", "fireworks",
         "nebius-token-factory",
     ):

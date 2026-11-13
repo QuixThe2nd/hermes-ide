@@ -29,7 +29,7 @@ logger = logging.getLogger("agent.conversation_loop")
 # codex_responses only reaches ``finish_reason == "length"`` for a tool call cut off by
 # max_output_tokens (turn_response_check.py::_derive_finish_reason); text truncation stays on
 # the Codex incomplete continuation, so the text branch below never double-continues it.
-_CONTINUABLE_MODES = {"chat_completions", "bedrock_converse", "anthropic_messages", "codex_responses"}
+_CONTINUABLE_MODES = {"chat_completions", "anthropic_messages", "codex_responses"}
 _THINK_TAG_RE = re.compile(r'<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>', re.IGNORECASE)
 _TRUNCATED_FINAL = site_copy("truncated")
 _FIRST_TRUNCATED_FINAL = _TRUNCATED_FINAL
@@ -650,8 +650,8 @@ def handle_content_policy_refusal(
 
     agent._flush_status_buffer()
     _refusal_log = _refusal_text[:500] + "..." if len(_refusal_text) > 500 else _refusal_text
-    # native_stop_reason tells an Anthropic classifier refusal (``refusal``) from a Bedrock guardrail
-    # block (``end_turn``); both arrive here as content_filter.
+    # native_stop_reason distinguishes an Anthropic classifier refusal (``refusal``) arriving
+    # as content_filter from other filtered stops.
     logger.warning(
         "%sModel declined to respond (finish_reason=content_filter). model=%s provider=%s "
         "native_stop_reason=%s stop_details=%s refusal=%s",

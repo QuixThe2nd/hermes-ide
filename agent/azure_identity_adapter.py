@@ -1,8 +1,8 @@
 """Microsoft Entra ID adapter for Microsoft Foundry.
 
 Keyless auth via the `azure-identity` ``DefaultAzureCredential`` chain (env service principal →
-workload identity → managed identity → VS Code → Azure CLI → azd → PowerShell → broker). Mirrors
-``agent/bedrock_adapter.py``: `azure-identity` is imported lazily (only for ``auth_mode = entra_id``);
+workload identity → managed identity → VS Code → Azure CLI → azd → PowerShell → broker).
+`azure-identity` is imported lazily (only for ``auth_mode = entra_id``);
 ``build_token_provider`` returns the zero-arg callable the OpenAI SDK calls before every request
 (transparent refresh); consumer helpers are split by purpose so logging paths never mint tokens and
 tokens never leak into cache keys; no JWT is persisted (azure-identity caches in-process / OS keychain).

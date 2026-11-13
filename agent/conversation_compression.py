@@ -3849,7 +3849,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
         # than minting a bearer JWT just to look up a context length.
         _raw_aux_key = getattr(client, "api_key", "")
         aux_api_key = "" if (callable(_raw_aux_key) and not isinstance(_raw_aux_key, str)) else str(_raw_aux_key or "")
-        # Resolve each model with its own provider so provider-specific paths (Bedrock table, OpenRouter API)
+        # Resolve each model with its own provider so provider-specific paths (OpenRouter API)
         # hit the correct client, not the main model's.
         _aux_provider = (
             _aux_cfg_provider if _aux_cfg_provider and _aux_cfg_provider != "auto" else getattr(agent, "provider", "")

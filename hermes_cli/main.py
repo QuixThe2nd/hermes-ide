@@ -635,7 +635,6 @@ from hermes_cli.model_setup_flows import (
     _model_flow_copilot_acp,
     _model_flow_kimi,
     _model_flow_stepfun,
-    _model_flow_bedrock,
     _model_flow_vertex,
     _model_flow_api_key_provider,
     _model_flow_anthropic,
@@ -1748,7 +1747,6 @@ _PROVIDER_MODEL_FLOWS = {
     "anthropic": lambda c, m, a: _model_flow_anthropic(c, m),
     "kimi-coding": lambda c, m, a: _model_flow_kimi(c, m),
     "stepfun": lambda c, m, a: _model_flow_stepfun(c, m),
-    "bedrock": lambda c, m, a: _model_flow_bedrock(c, m),
     "vertex": lambda c, m, a: _model_flow_vertex(c, m),
     "azure-foundry": lambda c, m, a: _model_flow_azure_foundry(c, m),
 }

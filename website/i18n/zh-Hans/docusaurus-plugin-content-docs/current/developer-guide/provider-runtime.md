@@ -57,7 +57,6 @@ Hermes 拥有一个共享的 provider 运行时解析器，用于以下场景：
 - Kilo Code
 - Hugging Face
 - OpenCode Zen / OpenCode Go
-- AWS Bedrock
 - Azure Foundry
 - NVIDIA NIM
 - xAI（Grok）

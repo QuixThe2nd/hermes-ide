@@ -14,7 +14,6 @@ import importlib.util
 # extra name -> module that proves it is installed
 ANCHORS: dict[str, str | tuple[str, ...]] = {
     "anthropic": "anthropic",
-    "bedrock": "boto3",
     "vertex": "google.auth",
     "azure-identity": "azure.identity",
     "exa": "exa_py",

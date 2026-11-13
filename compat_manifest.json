@@ -213,48 +213,6 @@
    "target": "(deleted; BASE body restored)"
   },
   {
-   "facade": "agent.bedrock_adapter",
-   "name": "CONTEXT_OVERFLOW_PATTERNS",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "agent.bedrock_adapter",
-   "name": "OVERLOAD_PATTERNS",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "agent.bedrock_adapter",
-   "name": "THROTTLE_PATTERNS",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "agent.bedrock_adapter",
-   "name": "call_converse_stream",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "agent.bedrock_adapter",
-   "name": "is_context_overflow_error",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of classify_bedrock_error)"
-  },
-  {
-   "facade": "agent.bedrock_adapter",
-   "name": "classify_bedrock_error",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "agent.bedrock_adapter",
-   "name": "is_context_overflow_error",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
    "facade": "agent.bounded_response",
    "name": "Optional",
    "kind": "import",
@@ -3223,24 +3181,6 @@
    "name": "set_active_moa_preset",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.model_setup_flows",
-   "name": "BEDROCK_GEO_PREFIXES",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.model_setup_flows_bedrock"
-  },
-  {
-   "facade": "hermes_cli.model_setup_flows",
-   "name": "bedrock_model_routable_from_region",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.model_setup_flows_bedrock"
-  },
-  {
-   "facade": "hermes_cli.model_setup_flows",
-   "name": "bedrock_region_geo_prefix",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.model_setup_flows_bedrock"
   },
   {
    "facade": "hermes_cli.model_setup_flows",

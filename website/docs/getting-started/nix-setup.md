@@ -793,7 +793,6 @@ This is resolved by uv alongside core dependencies — no PYTHONPATH patching, n
 | `dingtalk` | DingTalk |
 | `feishu` | Feishu/Lark |
 | `anthropic` | Native Anthropic SDK (not needed via OpenRouter) |
-| `bedrock` | AWS Bedrock (boto3) |
 | `azure-identity` | Azure Entra ID auth |
 | `honcho` | Honcho memory provider |
 | `hindsight` | Hindsight memory provider |

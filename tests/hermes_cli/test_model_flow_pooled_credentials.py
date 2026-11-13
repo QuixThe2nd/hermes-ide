@@ -29,10 +29,6 @@ class _ExhaustedPool:
         return None
 
 
-
-
-
-
 def test_generic_api_key_flow_passes_pool_key_to_existing_key_prompt(monkeypatch):
     from hermes_cli.model_setup_flows import _model_flow_api_key_provider
 
@@ -53,21 +49,3 @@ def test_generic_api_key_flow_passes_pool_key_to_existing_key_prompt(monkeypatch
     assert captured["existing_key"] == "pool-secret"
 
 
-
-
-def test_bedrock_flow_sees_pool_key_when_no_env(monkeypatch, capsys):
-    """Bedrock API-key mode must also see pool-backed credentials."""
-    from hermes_cli.model_setup_flows_bedrock import _model_flow_bedrock_api_key
-
-    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
-
-    with (
-        patch("hermes_cli.config.get_env_value", return_value=""),
-        patch("agent.credential_pool.load_pool", return_value=_AvailablePool()),
-        patch("builtins.input", return_value="k"),
-    ):
-        _model_flow_bedrock_api_key({}, "us-east-1")
-
-    out = capsys.readouterr().out
-    # The flow should show the pool-backed key, not prompt for a new one
-    assert "pool-secret" in out[:200] or "pool-sec" in out[:200]

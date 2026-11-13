@@ -31,7 +31,6 @@ class TestApiModeRegistration:
             "chat_completions",
             "codex_responses",
             "anthropic_messages",
-            "bedrock_converse",
         ):
             assert mode in _VALID_API_MODES
 

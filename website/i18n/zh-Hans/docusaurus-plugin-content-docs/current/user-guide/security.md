@@ -494,7 +494,7 @@ hermes doctor --ack <advisory-id>
 
 ### 可选依赖的懒加载安装
 
-许多功能（Honcho 记忆、Bedrock、Slack、Matrix 等）依赖并非每个用户都需要的 Python 包。Hermes 在首次使用时**懒加载**安装这些包，而非在 `hermes-agent[all]` 下急切安装。实现位于 `tools/lazy_deps.py`。
+许多功能（Honcho 记忆、Slack、Matrix 等）依赖并非每个用户都需要的 Python 包。Hermes 在首次使用时**懒加载**安装这些包，而非在 `hermes-agent[all]` 下急切安装。实现位于 `tools/lazy_deps.py`。
 
 此方案解决的权衡问题：
 

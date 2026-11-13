@@ -52,7 +52,6 @@
         extraDependencyGroups = [
           "anthropic"
           "azure-identity"
-          "bedrock"
           "daytona"
           "edge-tts"
           "exa"

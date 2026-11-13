@@ -105,15 +105,16 @@ class TestProviderEnvBlocklist:
             assert var not in result_env, f"{var} leaked into subprocess env"
 
     def test_bedrock_bearer_token_is_stripped(self):
-        """The Bedrock-specific bearer token is a Hermes inference secret
-        (analogous to OPENAI_API_KEY) and must not leak into subprocesses.
+        """The Bedrock bearer token is a Hermes inference secret and must
+        not leak into subprocesses, even though the Bedrock provider itself
+        has been stripped from this fork.
 
         Regression for #32314: AWS_BEARER_TOKEN_BEDROCK leaked into terminal /
-        execute_code children because the ``bedrock`` ProviderConfig declares
-        ``api_key_env_vars=()`` (auth_type="aws_sdk") and the blocklist builder
-        only consulted that field. The reporter caught it when ``opencode
-        models`` run inside a Hermes terminal enumerated the entire Bedrock
-        catalog off the leaked bearer token.
+        execute_code children because the ``bedrock`` ProviderConfig declared
+        ``api_key_env_vars=()`` (auth_type="aws_sdk"). The reporter caught it
+        when ``opencode models`` run inside a Hermes terminal enumerated the
+        entire Bedrock catalog off the leaked bearer token. The var stays on
+        the static blocklist so tokens issued before the strip never leak.
         """
         result_env = _run_with_env(extra_os_env={
             "AWS_BEARER_TOKEN_BEDROCK": "bedrock-bearer-secret",
@@ -1237,9 +1238,9 @@ class TestBlocklistCoverage:
                 )
 
     def test_bedrock_bearer_token_is_in_blocklist(self):
-        """auth_type='aws_sdk' providers contribute their Hermes-managed
-        inference token (the Bedrock bearer) to the blocklist, keyed off
-        auth_type so any future SDK-cred provider is covered automatically."""
+        """The Bedrock bearer token stays on the static blocklist after the
+        provider strip: tokens issued before the strip may still sit in a
+        user's environment and must never reach a child process."""
         assert "AWS_BEARER_TOKEN_BEDROCK" in _HERMES_PROVIDER_ENV_BLOCKLIST
 
     def test_general_aws_chain_not_in_blocklist(self):

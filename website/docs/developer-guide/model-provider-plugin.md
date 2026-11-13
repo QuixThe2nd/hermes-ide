@@ -6,7 +6,7 @@ description: "How to build a model provider (inference backend) plugin for Herme
 
 # Building a Model Provider Plugin
 
-Model provider plugins declare an inference backend — an OpenAI-compatible endpoint, an Anthropic Messages server, a Codex-style Responses API, or a Bedrock-native surface — that Hermes can route `AIAgent` calls through. Every built-in provider (OpenRouter, Anthropic, GMI, DeepSeek, Nvidia, …) ships as one of these plugins. Third parties can add their own by dropping a directory under `$HERMES_HOME/plugins/model-providers/` with zero changes to the repo.
+Model provider plugins declare an inference backend — an OpenAI-compatible endpoint, an Anthropic Messages server, or a Codex-style Responses API — that Hermes can route `AIAgent` calls through. Every built-in provider (OpenRouter, Anthropic, GMI, DeepSeek, Nvidia, …) ships as one of these plugins. Third parties can add their own by dropping a directory under `$HERMES_HOME/plugins/model-providers/` with zero changes to the repo.
 
 :::tip
 Model provider plugins are the third kind of **provider plugin**. The others are [Memory Provider Plugins](./memory-provider-plugin.md) (cross-session knowledge) and [Context Engine Plugins](./context-engine-plugin.md) (context compression strategies). All three follow the same "drop a directory, declare a profile, no repo edits" pattern.
@@ -92,7 +92,7 @@ Full definition in `providers/base.py`. The most useful ones:
 |---|---|---|
 | `name` | str | Canonical id — matches `model.provider` in `config.yaml` and the `--provider` flag |
 | `aliases` | `tuple[str, ...]` | Alternative names resolved by `get_provider_profile()` (e.g. `grok` → `xai`) |
-| `api_mode` | str | `chat_completions` \| `codex_responses` \| `anthropic_messages` \| `bedrock_converse` |
+| `api_mode` | str | `chat_completions` \| `codex_responses` \| `anthropic_messages` |
 | `display_name` | str | Human label shown in `hermes model` picker |
 | `description` | str | Picker subtitle |
 | `signup_url` | str | Shown during first-run setup ("get an API key here") |
@@ -140,8 +140,9 @@ class AcmeProfile(ProviderProfile):
 
     def fetch_models(self, *, api_key=None, base_url=None, timeout=8.0) -> list[str] | None:
         """Live catalog fetch. Default hits {models_url or base_url}/models with
-        Bearer auth. Override for: custom auth (Anthropic), no REST endpoint
-        (Bedrock → None), or public/unauthenticated catalogs (OpenRouter)."""
+        Bearer auth. Override for: custom auth (Anthropic), backends with no
+        REST catalog (return None), or public/unauthenticated catalogs
+        (OpenRouter)."""
         return super().fetch_models(api_key=api_key, base_url=base_url, timeout=timeout)
 
     def create_client(self, **client_kwargs):
@@ -180,7 +181,6 @@ Look at these bundled plugins for idioms:
 | `plugins/model-providers/qwen-oauth/` | Message normalization, `cache_control` injection, VL high-res |
 | `plugins/model-providers/nous/` | Attribution tags, "omit reasoning when disabled" |
 | `plugins/model-providers/custom/` | Ollama `num_ctx` + `think: false` quirks |
-| `plugins/model-providers/bedrock/` | `api_mode="bedrock_converse"`, `fetch_models` returns None (no REST endpoint) |
 
 ## User overrides — replace a built-in without editing the repo
 
@@ -222,7 +222,7 @@ Set `profile.api_mode` to match the default your provider ships — it acts as a
 | `oauth_device_code` | Device-code OAuth flow | — |
 | `oauth_external` | User signs in elsewhere, tokens land in `auth.json` | Anthropic OAuth, MiniMax OAuth, Qwen Portal, Nous Portal |
 | `copilot` | GitHub Copilot token refresh cycle | `copilot` plugin only |
-| `aws_sdk` | AWS SDK credential chain (IAM role, profile, env) | `bedrock` plugin only |
+| `aws_sdk` | AWS SDK credential chain (IAM role, profile, env) | Out-of-tree AWS-backed plugins (none bundled) |
 | `external_process` | Auth handled by a subprocess the agent spawns (see [External-process providers](#external-process-acp-providers)) | `copilot-acp` plugin, out-of-tree ACP plugins |
 
 `auth_type` gates which codepaths treat your provider as a "simple api-key provider" — if it's not `api_key`, the PluginManager still records the manifest but Hermes' CLI-level automation (doctor checks, `--provider` flag, setup wizard delegation) may skip over it.

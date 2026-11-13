@@ -36,7 +36,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Inference providers ───────────────────────────────────────────────
     # Native Anthropic SDK (provider=anthropic; aggregators use the openai SDK).
     "provider.anthropic": ("anthropic==0.87.0",),  # CVE-2026-34450, CVE-2026-34452
-    "provider.bedrock": ("boto3==1.42.89",),
     # Vertex OAuth2 token minting; google-auth is NOT in [all] on purpose.
     "provider.vertex": (
         "google-auth==2.55.1",

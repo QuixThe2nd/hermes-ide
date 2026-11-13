@@ -280,4 +280,3 @@ Upgrade Hermes and rerun `hermes model`. The native Gemini adapter sanitizes too
 - [AI Providers](../integrations/providers.md)
 - [Configuration](../user-guide/configuration.md)
 - [Fallback Providers](../user-guide/features/fallback-providers.md)
-- [AWS Bedrock](./aws-bedrock.md) — native cloud-provider integration using AWS credentials

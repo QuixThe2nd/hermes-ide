@@ -222,7 +222,7 @@ Memory provider 和 context engine 是 **provider 插件** — 每种类型同�
 | CLI / gateway 的**斜杠命令** | Python 插件 — `ctx.register_command()` | [Build a Hermes Plugin](/developer-guide/plugins) · [Extending the CLI](/developer-guide/extending-the-cli) |
 | `hermes <thing>` 的**子命令** | Python 插件 — `ctx.register_cli_command()` | [Extending the CLI](/developer-guide/extending-the-cli) |
 | 插件附带的**skill** | Python 插件 — `ctx.register_skill()` | [Creating Skills](/developer-guide/creating-skills) |
-| **推理后端**（LLM provider：OpenAI 兼容、Codex、Anthropic-Messages、Bedrock） | Provider 插件 — 在 `plugins/model-providers/<name>/` 中调用 `register_provider(ProviderProfile(...))` | **[Model Provider Plugins](/developer-guide/model-provider-plugin)** · [Adding Providers](/developer-guide/adding-providers) |
+| **推理后端**（LLM provider：OpenAI 兼容、Codex、Anthropic-Messages） | Provider 插件 — 在 `plugins/model-providers/<name>/` 中调用 `register_provider(ProviderProfile(...))` | **[Model Provider Plugins](/developer-guide/model-provider-plugin)** · [Adding Providers](/developer-guide/adding-providers) |
 | **Gateway 频道**（Discord / Telegram / IRC / Teams 等） | 平台插件 — 在 `plugins/platforms/<name>/` 中调用 `ctx.register_platform()` | [Adding Platform Adapters](/developer-guide/adding-platform-adapters) |
 | **Memory 后端**（Honcho、Mem0、Supermemory 等） | Memory 插件 — 在 `plugins/memory/<name>/` 中继承 `MemoryProvider` | [Memory Provider Plugins](/developer-guide/memory-provider-plugin) |
 | **上下文压缩策略** | Context-engine 插件 — `ctx.register_context_engine()` | [Context Engine Plugins](/developer-guide/context-engine-plugin) |

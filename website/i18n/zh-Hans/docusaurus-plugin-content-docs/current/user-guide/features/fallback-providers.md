@@ -66,7 +66,6 @@ fallback_model:
 | Google AI Studio | `gemini` | `GOOGLE_API_KEY`（别名：`GEMINI_API_KEY`） |
 | xAI（Grok） | `xai`（别名 `grok`） | `XAI_API_KEY`（可选：`XAI_BASE_URL`） |
 | xAI Grok OAuth（SuperGrok） | `xai-oauth`（别名 `grok-oauth`） | `hermes model` → xAI Grok OAuth（浏览器登录；需 SuperGrok 订阅） |
-| AWS Bedrock | `bedrock` | 标准 boto3 认证（`AWS_REGION` + `AWS_PROFILE` 或 `AWS_ACCESS_KEY_ID`） |
 | Qwen Portal（OAuth） | `qwen-oauth` | `hermes model`（Qwen Portal OAuth；可选：`HERMES_QWEN_BASE_URL`） |
 | MiniMax（OAuth） | `minimax-oauth` | `hermes model`（MiniMax 门户 OAuth） |
 | OpenCode Zen | `opencode-zen` | `OPENCODE_ZEN_API_KEY` |
@@ -329,7 +328,7 @@ auxiliary:
 
 Hermes 将以下情况识别为等同于 402 额度耗尽的容量错误（而非瞬时速率限制）：
 
-- Bedrock / LiteLLM：`Too many tokens per day`、`daily limit`、`tokens per day`
+- LiteLLM：`Too many tokens per day`、`daily limit`、`tokens per day`
 - Vertex AI / GCP：`quota exceeded`、`resource exhausted`、`RESOURCE_EXHAUSTED`
 - 通用：`daily quota`、`quota_exceeded`
 

@@ -1,6 +1,6 @@
 """Regression: hermes doctor must not run a generic Bearer-auth health
 check for providers that already have a dedicated check (Anthropic,
-OpenRouter, Bedrock).
+OpenRouter).
 
 Anthropic's native API requires `x-api-key` + `anthropic-version` headers;
 the generic loop sends `Authorization: Bearer ...` which Anthropic answers
@@ -35,10 +35,6 @@ def test_build_apikey_providers_list_skips_dedicated_check_providers():
     )
     assert "openrouter" not in names, (
         f"OpenRouter has a dedicated check; generic loop must skip it. "
-        f"Got: {sorted(names)}"
-    )
-    assert not any("bedrock" in name for name in names), (
-        f"Bedrock uses AWS SDK creds, not Bearer auth; generic loop must skip. "
         f"Got: {sorted(names)}"
     )
 

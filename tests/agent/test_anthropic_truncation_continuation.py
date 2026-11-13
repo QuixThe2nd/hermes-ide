@@ -3,8 +3,8 @@
 When an Anthropic response hits ``stop_reason: max_tokens`` (mapped to
 ``finish_reason == 'length'`` in run_agent), the agent must retry with
 a continuation prompt — the same behavior it has always had for
-chat_completions and bedrock_converse.  Before this PR, the
-``if self.api_mode in ('chat_completions', 'bedrock_converse'):`` guard
+chat_completions.  Before this PR, the
+``if self.api_mode in ('chat_completions', ...):`` guard
 silently dropped Anthropic-wire truncations on the floor, returning a
 half-finished response with no retry.
 
@@ -85,13 +85,13 @@ class TestTruncatedAnthropicResponseNormalization:
 class TestContinuationLogicBranching:
     """Symbolic check that the api_mode gate now includes anthropic_messages."""
 
-    @pytest.mark.parametrize("api_mode", ["chat_completions", "bedrock_converse", "anthropic_messages"])
+    @pytest.mark.parametrize("api_mode", ["chat_completions", "anthropic_messages"])
     def test_all_three_api_modes_hit_continuation_branch(self, api_mode):
         # The guard in run_agent.py is:
-        #   if self.api_mode in ("chat_completions", "bedrock_converse", "anthropic_messages"):
-        assert api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}
+        #   if self.api_mode in ("chat_completions", "anthropic_messages"):
+        assert api_mode in {"chat_completions", "anthropic_messages"}
 
     def test_codex_responses_still_excluded(self):
         # codex_responses has its own truncation path (not continuation-based)
         # and should NOT be routed through the shared block.
-        assert "codex_responses" not in {"chat_completions", "bedrock_converse", "anthropic_messages"}
+        assert "codex_responses" not in {"chat_completions", "anthropic_messages"}

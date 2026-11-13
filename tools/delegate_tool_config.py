@@ -171,7 +171,7 @@ def _inherit_parent_endpoint(parent_agent, surface_base_url: Optional[str], surf
     ``api_key`` can lag the live client (old OpenRouter URL vs local Ollama; a fallback runtime the surface attributes
     have not caught up with), and pairing the live endpoint with the surface key hands the child a (base_url, key)
     pair that was never valid anywhere — an instant, non-retryable 401 (#90009). The live client's key travels with
-    its URL; the surface attributes are used only when there is no live OpenAI-wire client (native Anthropic/Bedrock
+    its URL; the surface attributes are used only when there is no live OpenAI-wire client (native Anthropic
     runtimes keep ``client=None``)."""
     client_kwargs = getattr(parent_agent, "_client_kwargs", None)
     client = getattr(parent_agent, "client", None)
@@ -273,8 +273,8 @@ def _merge_request_overrides(runtime_overrides, explicit_overrides):
     return merged or None
 
 # Native-SDK providers speak their own wire protocol and can't be reached via chat_completions against a base_url:
-# always take the runtime-provider path (a configured base_url still flows through it, e.g. a Bedrock region).
-_NATIVE_SDK_PROVIDERS = frozenset({"bedrock", "vertex", "google", "google-genai"})
+# always take the runtime-provider path (a configured base_url still flows through it).
+_NATIVE_SDK_PROVIDERS = frozenset({"vertex", "google", "google-genai"})
 _EXPLICIT_API_MODES = frozenset({"chat_completions", "codex_responses", "anthropic_messages"})
 
 def _require_pinned_command(command: Optional[str], message: str) -> None:

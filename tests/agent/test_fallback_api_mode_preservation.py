@@ -4,7 +4,7 @@ Three behaviors salvaged from PR #79787:
 
 1. An explicit ``api_mode`` on the fallback entry is honored — and always
    wins, including an explicit ``chat_completions`` that would otherwise be
-   overridden by codex_responses / bedrock re-detection.
+   overridden by codex_responses re-detection.
 2. ``fb_api_mode`` is detected from the ORIGINAL ``base_url`` hint before
    ``resolve_provider_client`` / ``_to_openai_base_url`` can rewrite a
    dual-surface ``/anthropic`` base to ``/v1``.
@@ -107,21 +107,6 @@ class TestExplicitApiModeHonored:
         }]
         agent = _make_agent(fallback_model=fbs)
         _activate(agent, "https://api.openai.com/v1", "gpt-5.2")
-        assert agent.api_mode == "chat_completions"
-
-    def test_explicit_chat_completions_not_overridden_by_bedrock_redetection(self):
-        fbs = [{
-            "provider": "bedrock",
-            "model": "anthropic.claude-3-5-sonnet",
-            "api_key": "k",
-            "api_mode": "chat_completions",
-        }]
-        agent = _make_agent(fallback_model=fbs)
-        _activate(
-            agent,
-            "https://bedrock-runtime.us-east-1.amazonaws.com",
-            "anthropic.claude-3-5-sonnet",
-        )
         assert agent.api_mode == "chat_completions"
 
 

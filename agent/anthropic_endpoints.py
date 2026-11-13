@@ -1,8 +1,7 @@
 """Endpoint-family detection for Anthropic-compatible base URLs.
 
 A dozen services speak the Anthropic Messages API but differ in auth style, accepted beta
-headers, and request quirks (MiniMax, Kimi/Moonshot, DeepSeek, OpenCode, Azure AI Foundry, Nous
-Portal, Bedrock). Every such difference is decided from the configured base URL, so the
+Portal). Every such difference is decided from the configured base URL, so the
 predicates live together here as pure functions (no I/O, SDK or credentials) that both
 ``agent/anthropic_adapter.py`` and ``agent/anthropic_message_convert.py`` can import without a
 cycle.

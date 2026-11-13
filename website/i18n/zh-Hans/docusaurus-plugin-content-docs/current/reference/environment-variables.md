@@ -80,9 +80,6 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `XAI_API_KEY` | xAI（Grok）API 密钥，支持聊天和网络搜索（[console.x.ai](https://console.x.ai/)） |
 | `XAI_BASE_URL` | 覆盖 xAI base URL（默认：`https://api.x.ai/v1`） |
 | `MISTRAL_API_KEY` | Mistral API 密钥，用于 Mistral 平台功能（[console.mistral.ai](https://console.mistral.ai)） |
-| `AWS_REGION` | Bedrock 推理的 AWS 区域（例如 `us-east-1`、`eu-central-1`）。由 boto3 读取。 |
-| `AWS_PROFILE` | Bedrock 认证的 AWS 命名配置文件（读取 `~/.aws/credentials`）。不设置则使用默认 boto3 凭证链。 |
-| `BEDROCK_BASE_URL` | 覆盖 Bedrock runtime base URL（默认：`https://bedrock-runtime.us-east-1.amazonaws.com`；通常不设置，改用 `AWS_REGION`） |
 | `HERMES_QWEN_BASE_URL` | Qwen Portal base URL 覆盖（默认：`https://portal.qwen.ai/v1`） |
 | `OPENCODE_ZEN_API_KEY` | OpenCode Zen API 密钥——按需付费访问精选模型（[opencode.ai](https://opencode.ai/auth)） |
 | `OPENCODE_ZEN_BASE_URL` | 覆盖 OpenCode Zen base URL |

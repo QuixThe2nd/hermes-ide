@@ -129,18 +129,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `Path` | import | `pathlib` |
 | `is_background_review_enabled` | restored-def | `(deleted; BASE body restored)` |
 
-### `agent.bedrock_adapter`
-
-| name | kind | new location |
-|---|---|---|
-| `CONTEXT_OVERFLOW_PATTERNS` | restored-def | `(deleted; BASE body restored)` |
-| `OVERLOAD_PATTERNS` | restored-def | `(deleted; BASE body restored)` |
-| `THROTTLE_PATTERNS` | restored-def | `(deleted; BASE body restored)` |
-| `call_converse_stream` | restored-def | `(deleted; BASE body restored)` |
-| `classify_bedrock_error` | restored-def | `(deleted; BASE body restored)` |
-| `is_context_overflow_error` | restored-helper | `(deleted; restored as a dependency of classify_bedrock_error)` |
-| `is_context_overflow_error` | restored-def | `(deleted; BASE body restored)` |
-
 ### `agent.bounded_response`
 
 | name | kind | new location |
@@ -1261,9 +1249,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 
 | name | kind | new location |
 |---|---|---|
-| `BEDROCK_GEO_PREFIXES` | moved-lazy | `hermes_cli.model_setup_flows_bedrock` |
-| `bedrock_model_routable_from_region` | moved-lazy | `hermes_cli.model_setup_flows_bedrock` |
-| `bedrock_region_geo_prefix` | moved-lazy | `hermes_cli.model_setup_flows_bedrock` |
 | `custom_provider_slug` | moved-lazy | `hermes_cli.providers` |
 | `line_input` | moved-lazy | `hermes_cli.cli_output` |
 | `subprocess` | import | `subprocess` |

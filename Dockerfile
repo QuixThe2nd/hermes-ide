@@ -227,7 +227,7 @@ RUN npm install --prefer-offline --no-audit --fetch-retries=5 && \
 # git) and `[yc-bench]` (another git dep), neither of which belongs in
 # the published container.
 #
-# Provider packages (anthropic, bedrock, azure-identity) are included
+# Provider packages (anthropic, azure-identity) are included
 # so Docker users can use these providers without requiring runtime
 # lazy-install access to PyPI (often blocked in containerized envs).
 #
@@ -252,7 +252,7 @@ RUN npm install --prefer-offline --no-audit --fetch-retries=5 && \
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix
+RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra azure-identity --extra hindsight --extra matrix
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.

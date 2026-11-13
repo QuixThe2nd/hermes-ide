@@ -51,7 +51,6 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Google Vertex AI** | `hermes model` → "Google Vertex AI" (provider: `vertex`; OAuth2 via service-account JSON or ADC, GCP billing) |
 | **OpenAI API (direct)** | `OPENAI_API_KEY` in `~/.hermes/.env` (provider: `openai-api`, optional `OPENAI_BASE_URL`) |
 | **Azure AI Foundry** | `hermes model` → "Azure AI Foundry" (provider: `azure-foundry`; uses Azure OpenAI / Foundry endpoint and key) |
-| **AWS Bedrock** | `hermes model` → "AWS Bedrock" (provider: `bedrock`; standard AWS credentials chain via boto3) |
 | **NVIDIA Build** | `NVIDIA_API_KEY` in `~/.hermes/.env` (provider: `nvidia`; NIM-hosted models on build.nvidia.com) |
 | **Ollama Cloud** | `hermes model` → "Ollama Cloud" (provider: `ollama-cloud`; cloud-hosted Ollama API) |
 | **Qwen OAuth** | `hermes model` → "Qwen OAuth" (provider: `qwen-oauth`; browser PKCE login) |
@@ -431,38 +430,6 @@ Both speak the same OpenAI-compatible API. Cloud is a first-class provider (`--p
 ### DeepInfra
 
 DeepInfra (`--provider deepinfra`, `DEEPINFRA_API_KEY`) is discovered live from its catalog. Reasoning is controlled through DeepInfra's top-level `reasoning_effort` field, so `agent.reasoning_effort` and per-model `agent.reasoning_overrides` work in **both directions**: an effort turns thinking on for models that default off (DeepSeek-V4.x), `agent.reasoning_effort: none` turns it off for models that default on (GLM-4.6, Qwen3-Thinking). Leaving reasoning unset keeps DeepInfra's per-model default; `xhigh` is native and `ultra` is sent as `max`.
-
-### AWS Bedrock
-
-Anthropic Claude, Amazon Nova, DeepSeek v3.2, Meta Llama 4, and other models via AWS Bedrock. Uses the AWS SDK (`boto3`) credential chain — no API key, just standard AWS auth.
-
-```bash
-# Simplest — named profile in ~/.aws/credentials
-hermes chat --provider bedrock --model us.anthropic.claude-sonnet-4-6
-
-# Or with explicit env vars
-AWS_PROFILE=myprofile AWS_REGION=us-east-1 hermes chat --provider bedrock --model us.anthropic.claude-sonnet-4-6
-```
-
-Or permanently in `config.yaml`:
-```yaml
-model:
-  provider: "bedrock"
-  default: "us.anthropic.claude-sonnet-4-6"
-bedrock:
-  region: "us-east-1"          # or set AWS_REGION
-  # profile: "myprofile"       # or set AWS_PROFILE
-  # discovery: true            # auto-discover region from IAM
-  # guardrail:                 # optional Bedrock Guardrails
-  #   guardrail_identifier: "your-guardrail-id"
-  #   guardrail_version: "DRAFT"
-```
-
-Authentication uses the standard boto3 chain: explicit `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE` from `~/.aws/credentials`, IAM role on EC2/ECS/Lambda, IMDS, or SSO. No env var is required if you're already authenticated with the AWS CLI.
-
-Bedrock uses the **Converse API** under the hood — requests are translated to Bedrock's model-agnostic shape, so the same config works for Claude, Nova, DeepSeek, and Llama models. Set `BEDROCK_BASE_URL` only if you're calling a non-default regional endpoint.
-
-See the [AWS Bedrock guide](../guides/aws-bedrock.md) for a walkthrough of IAM setup, region selection, and cross-region inference.
 
 ### Google Vertex AI
 
@@ -1263,12 +1230,10 @@ settings, or `model_overrides.*.*.max_output_tokens`. Remove these legacy settin
 Custom OpenAI-compatible endpoints receive no automatic catalog-sized output cap.
 Their server defaults apply; these can be lower than the model maximum.
 
-Native Anthropic Messages (including the native Anthropic Bedrock path) requires
-`max_tokens`, so Hermes supplies an internal value. Bedrock Converse is a separate
-protocol: its optional `inferenceConfig.maxTokens` is omitted by default, which
-[AWS documents as the model maximum](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_InferenceConfiguration.html).
-Internal bounded tasks and provider-specific protocol requirements remain implementation
-details. Omission does not universally select a model's maximum output.
+Native Anthropic Messages requires `max_tokens`, so Hermes supplies an
+internal value. Internal bounded tasks and provider-specific protocol
+requirements remain implementation details. Omission does not universally
+select a model's maximum output.
 
 Set `context_length` when auto-detection gets the window size wrong.
 
@@ -1679,7 +1644,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. The chain is tried entry-by-entry; activation is one-shot per session.
 
-Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `actual`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `tencent-tokenplan`, `nebius-token-factory`, `router`, `custom`.
+Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `actual`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `tencent-tokenplan`, `nebius-token-factory`, `router`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — or interactively via `hermes fallback`. For full details on when it triggers, how the chain advances, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](../user-guide/features/fallback-providers.md).

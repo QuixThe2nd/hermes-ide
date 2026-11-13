@@ -334,37 +334,6 @@ model:
 两者使用相同的 OpenAI 兼容 API。Cloud 是一等提供商（`--provider ollama-cloud`，`OLLAMA_API_KEY`）；本地 Ollama 通过自定义端点流程访问（基础 URL `http://localhost:11434/v1`，无需 key）。对于无法在本地运行的大模型使用 Cloud；对于隐私保护或离线工作使用本地。
 :::
 
-### AWS Bedrock
-
-通过 AWS Bedrock 使用 Anthropic Claude、Amazon Nova、DeepSeek v3.2、Meta Llama 4 等模型。使用 AWS SDK（`boto3`）凭据链——无需 API key，使用标准 AWS 认证即可。
-
-```bash
-# 最简方式——~/.aws/credentials 中的命名 profile
-hermes chat --provider bedrock --model us.anthropic.claude-sonnet-4-6
-
-# 或使用显式环境变量
-AWS_PROFILE=myprofile AWS_REGION=us-east-1 hermes chat --provider bedrock --model us.anthropic.claude-sonnet-4-6
-```
-
-或在 `config.yaml` 中永久设置：
-```yaml
-model:
-  provider: "bedrock"
-  default: "us.anthropic.claude-sonnet-4-6"
-bedrock:
-  region: "us-east-1"          # 或设置 AWS_REGION
-  # profile: "myprofile"       # 或设置 AWS_PROFILE
-  # discovery: true            # 从 IAM 自动发现区域
-  # guardrail:                 # 可选的 Bedrock Guardrails
-  #   guardrail_identifier: "your-guardrail-id"
-  #   guardrail_version: "DRAFT"
-```
-
-认证使用标准 boto3 链：显式 `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`、`~/.aws/credentials` 中的 `AWS_PROFILE`、EC2/ECS/Lambda 上的 IAM 角色、IMDS 或 SSO。如果已通过 AWS CLI 认证，无需设置任何环境变量。
-
-Bedrock 底层使用 **Converse API**——请求被转换为 Bedrock 的模型无关格式，因此同一配置适用于 Claude、Nova、DeepSeek 和 Llama 模型。仅在调用非默认区域端点时才需设置 `BEDROCK_BASE_URL`。
-
-参见 [AWS Bedrock 指南](../guides/aws-bedrock.md)，了解 IAM 配置、区域选择和跨区域推理的详细步骤。
 
 ### Qwen Portal（OAuth）
 
@@ -1083,7 +1052,7 @@ model:
 :::note 两个设置，容易混淆
 **`context_length`** 是**总上下文窗口**——输入和输出 token 的合计预算（例如 Claude Opus 4.6 为 200,000）。Hermes 用它来决定何时压缩历史记录以及验证 API 请求。
 
-**输出上限**限制单次响应，而非对话历史。Hermes 不再读取 `model.max_tokens`、`HERMES_MAX_TOKENS` 或提供商及模型的输出上限设置。兼容端点使用服务器默认值；该值不一定是模型最大值。原生 Anthropic Messages 仍要求 `max_tokens`，Hermes 会提供内部值。Bedrock Converse 的可选输出限制默认省略。
+**输出上限**限制单次响应，而非对话历史。Hermes 不再读取 `model.max_tokens`、`HERMES_MAX_TOKENS` 或提供商及模型的输出上限设置。兼容端点使用服务器默认值；该值不一定是模型最大值。原生 Anthropic Messages 仍要求 `max_tokens`，Hermes 会提供内部值。
 
 当自动检测获取的窗口大小不正确时，设置 `context_length`。
 请删除旧的用户输出上限配置；内部任务预算与 MCP 采样安全预算保持不变。
@@ -1405,7 +1374,7 @@ fallback_model:
 
 激活时，故障转移在不丢失对话的情况下中途切换模型和提供商。链按条目逐一尝试；每个会话激活一次。
 
-支持的提供商：`openrouter`、`nous`、`openai-codex`、`copilot`、`copilot-acp`、`anthropic`、`gemini`、`qwen-oauth`、`huggingface`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`bedrock`、`azure-foundry`、`opencode-zen`、`opencode-go`、`kilocode`、`xiaomi`、`arcee`、`gmi`、`stepfun`、`lmstudio`、`alibaba`、`alibaba-coding-plan`、`tencent-tokenhub`、`custom`。
+支持的提供商：`openrouter`、`nous`、`openai-codex`、`copilot`、`copilot-acp`、`anthropic`、`gemini`、`qwen-oauth`、`huggingface`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`azure-foundry`、`opencode-zen`、`opencode-go`、`kilocode`、`xiaomi`、`arcee`、`gmi`、`stepfun`、`lmstudio`、`alibaba`、`alibaba-coding-plan`、`tencent-tokenhub`、`custom`。
 
 :::tip
 故障转移仅通过 `config.yaml` 配置——或通过 `hermes fallback` 交互式配置。有关触发时机、链推进方式以及与辅助任务和委托的交互，参见[故障转移提供商](../user-guide/features/fallback-providers.md)。

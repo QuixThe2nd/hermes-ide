@@ -251,4 +251,3 @@ GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 - [AI Providers](../integrations/providers.md)
 - [Configuration](../user-guide/configuration.md)
 - [Fallback Providers](../user-guide/features/fallback-providers.md)
-- [AWS Bedrock](./aws-bedrock.md) — 使用 AWS 凭据的原生云 provider 集成
