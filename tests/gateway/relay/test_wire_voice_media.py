@@ -8,12 +8,10 @@ uploads). The gateway side has two obligations:
    predates the wire value — and
 2. the connector's rich ``media[]`` array (each entry carries the
    per-attachment ``mime``) must land on ``event.media_types`` so run.py's
-   per-attachment classifiers (``_event_media_is_stt_input``, image vs
-   document routing) work for relayed events, not just native adapters.
+   per-attachment classifiers (image vs document routing) work for
+   relayed events, not just native adapters.
 
-Live-verified failure (staging 2026-08-26): a voice note arrived as
-``MessageType.AUDIO`` with ``media_types == []`` — STT never fired and the
-agent got a "the user sent an audio file attachment" note instead.
+Voice notes must keep per-attachment media types so they are not dropped.
 
 Pure unit tests: no socket, no websockets dependency.
 """
@@ -116,66 +114,18 @@ class TestMediaTypesMapping:
         assert ev.media_types == ["image/png"]
 
 
-class TestSttGate:
-    """Direct assertions on run.py's STT gate against REAL wire-parsed
-    events. The PR's acceptance criterion is STT routing, not object
-    construction — pin the user-visible invariant here.
+class TestVoiceNotesAreNotTranscribed:
+    """Voice notes stay a wire type. They are not routed into an STT pipeline."""
 
-    Note the deployment-ordering consequence: MessageType.VOICE parses on
-    ANY gateway (the enum predates this PR) and the gate accepts VOICE with
-    empty media_types, so a NEW connector + OLD gateway already fires STT
-    for voice notes. Desirable — but it means the gate's behaviour is part
-    of the wire contract, and it must not silently change."""
+    def test_stt_classifier_is_gone(self):
+        import gateway.run as run
+        assert not hasattr(run, "_event_media_is_stt_input")
 
-    def test_new_connector_voice_event_is_stt_eligible(self):
-        from gateway.run import _event_media_is_stt_input
-
-        ev = _event_from_wire(
-            _wire_event(
-                "voice",
-                media=[{"url": "https://gw/relay/media/x", "kind": "voice", "mime": "audio/ogg"}],
-                media_urls=["https://gw/relay/media/x"],
-            )
-        )
-        assert _event_media_is_stt_input(ev, 0) is True
-
-    def test_voice_event_stt_eligible_even_without_media_types(self):
-        """A new-connector/old-gateway-shaped event — voice type, no
-        media[] — still fires STT (the gate's VOICE branch doesn't consult
-        media_types). Pins the rollout behaviour, not just the new one."""
-        from gateway.run import _event_media_is_stt_input
-
-        ev = _event_from_wire(
-            _wire_event("voice", media_urls=["https://gw/relay/media/x"])
-        )
-        # No media[] ⇒ no per-attachment mime, but the slot still exists so the
-        # parallel-array invariant holds (see TestParallelArrayLengthInvariant).
+    def test_voice_event_keeps_parallel_media_types(self):
+        ev = _event_from_wire(_wire_event("voice", media_urls=["https://gw/relay/media/x"]))
+        assert ev.message_type.name == "VOICE"
         assert ev.media_types == [""]
-        assert _event_media_is_stt_input(ev, 0) is True
 
-    def test_legacy_audio_typed_voice_note_stays_out_of_stt(self):
-        from gateway.run import _event_media_is_stt_input
-
-        ev = _event_from_wire(
-            _wire_event(
-                "audio",
-                media=[{"url": "https://gw/relay/media/x", "kind": "voice", "mime": "audio/ogg"}],
-                media_urls=["https://gw/relay/media/x"],
-            )
-        )
-        assert _event_media_is_stt_input(ev, 0) is False
-
-    def test_music_upload_is_never_stt_eligible(self):
-        from gateway.run import _event_media_is_stt_input
-
-        ev = _event_from_wire(
-            _wire_event(
-                "audio",
-                media=[{"url": "https://cdn/x/song.mp3", "kind": "audio", "mime": "audio/mpeg"}],
-                media_urls=["https://cdn/x/song.mp3"],
-            )
-        )
-        assert _event_media_is_stt_input(ev, 0) is False
 
 class TestUrlMimePairingThroughLocalization:
     """The end-to-end invariant my unit tests originally missed.

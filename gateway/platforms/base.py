@@ -525,7 +525,7 @@ def _cleanup_cache_dir(cache_dir: Path, max_age_hours: int) -> int:
     return removed
 
 
-# Audio cache utilities (same pattern as images; feeds the STT tool).
+# Audio cache utilities (same pattern as images; inbound voice notes are files).
 AUDIO_CACHE_DIR = get_hermes_dir("cache/audio", "audio_cache")
 get_audio_cache_dir, cleanup_audio_cache = _cache_dir_accessors(
     "audio", "AUDIO_CACHE_DIR", "cache/audio", "audio_cache")
@@ -533,7 +533,7 @@ get_audio_cache_dir, cleanup_audio_cache = _cache_dir_accessors(
 
 def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
     """Save raw audio bytes to the cache (container-sniffed ext); return the path."""
-    # tools.audio_container is the ONE owner of container detection (outbound TTS repair + here).
+    # tools.audio_container is the ONE owner of container detection.
     from tools.audio_container import sniff_audio_ext
     validate_inbound_media_size(len(data), media_type="audio")
     return _write_cache_file(get_audio_cache_dir(), "audio", sniff_audio_ext(data, ext), data)
@@ -1394,11 +1394,6 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
                 existing.message_type = MessageType.PHOTO
             elif existing_type == MessageType.TEXT and event.message_type != MessageType.TEXT:
                 existing.message_type = event.message_type
-            # Drop the *derived* STT cache (event changed); the echo ledger must survive or
-            # notes echo twice.
-            for attr in ("_gateway_pending_stt_text", "_gateway_pending_stt_transcripts"):
-                if hasattr(existing, attr):
-                    delattr(existing, attr)
             return transfer_replay_completion(existing, event)
         both_text = existing_type == MessageType.TEXT and event.message_type == MessageType.TEXT
         if merge_text and both_text:

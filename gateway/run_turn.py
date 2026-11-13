@@ -6200,12 +6200,7 @@ class GatewayTurnMixin:
         pending_text = None
         if _peek_event is not None:
             pending_text = _peek_event.text or ""
-            if self._pending_event_audio_paths(_peek_event):
-                pending_text, _ = await self._transcribe_and_echo_pending_voice(
-                    _peek_event, adapter, source, pending_text, log_context=log_context,
-                    metadata={"thread_id": source.thread_id} if source.thread_id else None,
-                )
-            elif not pending_text and (getattr(_peek_event, "media_urls", None) or []):
+            if not pending_text and (getattr(_peek_event, "media_urls", None) or []):
                 pending_text = _build_media_placeholder(_peek_event)
         log()
         agent.interrupt(pending_text)
@@ -6531,16 +6526,8 @@ class GatewayTurnMixin:
                 else:
                     pending = interrupt_message
             elif pending_event:
-                # Transcribe audio BEFORE it becomes the next user turn (real transcript, not a path).
                 _pending_text = pending_event.text or ""
-                if self._pending_event_audio_paths(pending_event):
-                    pending, _ = await self._transcribe_and_echo_pending_voice(
-                        pending_event, adapter, source, _pending_text, log_context="Voice-drain",
-                        metadata={"thread_id": source.thread_id} if source.thread_id else None,
-                    )
-                    pending = pending or _build_media_placeholder(pending_event)
-                else:
-                    pending = _pending_text or _build_media_placeholder(pending_event)
+                pending = _pending_text or _build_media_placeholder(pending_event)
                 if pending:
                     logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
 
@@ -7755,22 +7742,8 @@ class GatewayTurnMixin:
                             if _peek_event is not None:
                                 pending_text = _peek_event.text or ""
                                 # Transcribe audio media BEFORE signaling the
-                                # agent, so voice messages interrupt with the
-                                # real transcript instead of an empty string
-                                # (or file-path placeholder). Matches the UX
-                                # of fresh voice messages including the
-                                # optional 🎙️ echo back to the user.
                                 _media_urls = getattr(_peek_event, "media_urls", None) or []
-                                if self._pending_event_audio_paths(_peek_event):
-                                    pending_text, _ = await self._transcribe_and_echo_pending_voice(
-                                        _peek_event,
-                                        _adapter,
-                                        source,
-                                        pending_text,
-                                        log_context="Voice-interrupt",
-                                        metadata={"thread_id": source.thread_id} if source.thread_id else None,
-                                    )
-                                elif not pending_text and _media_urls:
+                                if not pending_text and _media_urls:
                                     pending_text = _build_media_placeholder(_peek_event)
                             logger.debug("Interrupt detected from adapter, signaling agent...")
                             agent.interrupt(pending_text)
@@ -8015,16 +7988,7 @@ class GatewayTurnMixin:
                             _bp_text = _bp_event.text if _bp_event else None
                             if _bp_event is not None:
                                 _bp_media_urls = getattr(_bp_event, "media_urls", None) or []
-                                if self._pending_event_audio_paths(_bp_event):
-                                    _bp_text, _ = await self._transcribe_and_echo_pending_voice(
-                                        _bp_event,
-                                        _backup_adapter,
-                                        source,
-                                        _bp_text or "",
-                                        log_context="Voice-backup-interrupt",
-                                        metadata={"thread_id": source.thread_id} if source.thread_id else None,
-                                    )
-                                elif not _bp_text and _bp_media_urls:
+                                if not _bp_text and _bp_media_urls:
                                     _bp_text = _build_media_placeholder(_bp_event)
                             logger.info(
                                 "Backup interrupt detected for session %s "
@@ -8113,16 +8077,7 @@ class GatewayTurnMixin:
                             _bp_text = _bp_event.text if _bp_event else None
                             if _bp_event is not None:
                                 _bp_media_urls = getattr(_bp_event, "media_urls", None) or []
-                                if self._pending_event_audio_paths(_bp_event):
-                                    _bp_text, _ = await self._transcribe_and_echo_pending_voice(
-                                        _bp_event,
-                                        _backup_adapter,
-                                        source,
-                                        _bp_text or "",
-                                        log_context="Voice-backup-interrupt",
-                                        metadata={"thread_id": source.thread_id} if source.thread_id else None,
-                                    )
-                                elif not _bp_text and _bp_media_urls:
+                                if not _bp_text and _bp_media_urls:
                                     _bp_text = _build_media_placeholder(_bp_event)
                             logger.info(
                                 "Backup interrupt detected for session %s "
@@ -8262,25 +8217,8 @@ class GatewayTurnMixin:
                 elif pending_event:
                     # Transcribe audio media on the dequeued event BEFORE it is
                     # handed back as the next user turn, so queued/interrupting
-                    # voice messages drain with the real transcript instead of
-                    # a file-path placeholder. When configured, echo each
-                    # transcript back to the user in the same 🎙️ format as
-                    # fresh voice messages.
                     _pending_text = pending_event.text or ""
-                    _media_urls = getattr(pending_event, "media_urls", None) or []
-                    if self._pending_event_audio_paths(pending_event):
-                        pending, _ = await self._transcribe_and_echo_pending_voice(
-                            pending_event,
-                            adapter,
-                            source,
-                            _pending_text,
-                            log_context="Voice-drain",
-                            metadata={"thread_id": source.thread_id} if source.thread_id else None,
-                        )
-                        if not pending:
-                            pending = _build_media_placeholder(pending_event)
-                    else:
-                        pending = _pending_text or _build_media_placeholder(pending_event)
+                    pending = _pending_text or _build_media_placeholder(pending_event)
                     if pending:
                         logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
 
