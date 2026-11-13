@@ -2,6 +2,7 @@
 
 import copy
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -110,17 +111,35 @@ def test_non_quota_error_does_not_advance_chain(monkeypatch, workdir):
     assert result["final_report"].endswith(result["receipt"])
 
 
-def test_omp_argv_has_required_flags_model_soul_and_tools():
+def test_omp_argv_has_required_flags_model_soul_and_tools(tmp_path):
+    session_dir = tmp_path / "sessions"
+    transcript = session_dir / "session.jsonl"
     argv = omp.build_omp_argv(
         "provider/model", "Inspect the layout", binary="omp",
         soul=Path("soul.md"), tools_allowlist=["read", "grep"],
+        session_dir=session_dir,
     )
-    assert argv[1:8] == [
-        "-p", "--mode", "json", "--no-session", "--auto-approve", "--model", "provider/model",
-    ]
-    assert argv[8:10] == ["--append-system-prompt", "soul.md"]
-    assert argv[10:12] == ["--tools", "read,grep"]
+    assert "--no-session" not in argv
+    assert argv[1:6] == ["-p", "--mode", "json", "--auto-approve", "--model"]
+    assert argv[6] == "provider/model"
+    assert argv[argv.index("--session-dir") + 1] == str(session_dir)
+    assert argv[argv.index("--append-system-prompt") + 1] == "soul.md"
+    assert argv[argv.index("--tools") + 1] == "read,grep"
     assert argv[-1] == "Inspect the layout"
+    assert "test-key" not in " ".join(argv)
+
+    restored = omp.build_omp_argv(
+        "provider/model", "Inspect the layout", binary="omp",
+        soul=Path("soul.md"), tools_allowlist=["read", "grep"],
+        session_dir=session_dir, restore=transcript,
+    )
+    assert "--no-session" not in restored
+    assert "--restore" in restored
+    assert restored[restored.index("--restore") + 1] == str(transcript)
+    assert "Inspect the layout" not in restored
+    assert restored[restored.index("--append-system-prompt") + 1] == "soul.md"
+    assert restored[restored.index("--tools") + 1] == "read,grep"
+    assert "test-key" not in " ".join(restored)
 
 
 def test_omp_run_loads_secret_and_stages_only_declared_mcp(monkeypatch, tmp_path, workdir):
@@ -140,6 +159,7 @@ def test_omp_run_loads_secret_and_stages_only_declared_mcp(monkeypatch, tmp_path
         return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(event) + "\n", stderr="")
 
     monkeypatch.setattr(omp.subprocess, "run", _completed)
+    monkeypatch.setattr(omp, "caller_killed_service_cgroup", lambda: None)
     config = {"binary": "omp", "secrets_file": str(secrets)}
     re_spec = resolve_lane_spec("reverse_engineer", {"reverse_engineer": {
         # The bundled reverse_engineer default is goal mode; pin the one-shot
@@ -589,6 +609,7 @@ def test_subagent_lane_prepends_soul_to_child_system_prompt(monkeypatch, workdir
     parent.provider_sort = None
     parent._session_db = None
     parent._delegate_depth = 0
+    parent._oneshot_children_spawned = 0
     parent._active_children = []
     parent._active_children_lock = threading.Lock()
     parent._print_fn = None
@@ -877,3 +898,262 @@ def test_handler_ignores_progress_description_in_prompt(monkeypatch, workdir):
     assert "Change the API" in captured["prompt"]
     assert "retry gate" not in captured["prompt"]
     assert "description" not in captured["prompt"]
+
+
+# --- OMP session resume (same session, turns already on disk) -----------------
+
+
+_MAX_OMP_SPAWNS = 3
+
+
+@pytest.mark.parametrize(
+    "error,returncode,session_exists,expected",
+    [
+        ("Connection closed", 1, False, True),
+        ("Timeout on reading data from socket", 1, False, True),
+        ("", 0, True, True),
+        (None, 0, True, True),
+        ("OMP returned no final assistant text", 0, True, True),
+        (None, None, True, True),
+        ("task failed", None, True, True),
+        ("429 all deployments are in cooldown", 1, True, False),
+        ("in cooldown", 1, True, False),
+        ("connection refused", 1, True, False),
+        ("401 invalid api key", 1, True, False),
+        ("invalid api key", 1, True, False),
+        ("", 0, False, False),
+        (None, None, False, False),
+        ("task failed", 1, True, False),
+    ],
+)
+def test_recoverable_lane_failure_classifies_interruptions_not_quota(
+    error, returncode, session_exists, expected
+):
+    assert omp.recoverable_lane_failure(error, returncode, session_exists) is expected
+
+
+def _lane_secrets(tmp_path):
+    secrets = tmp_path / "omp.env"
+    secrets.write_text("LITELLM_API_KEY=test-key\n", encoding="utf-8")
+    soul = tmp_path / "soul.md"
+    soul.write_text("Preserve spacing.\n", encoding="utf-8")
+    spec = resolve_lane_spec("ui_dev", {"ui_dev": {
+        "soul": str(soul), "mcp": None, "tools_allowlist": ["read", "grep"],
+    }})
+    return spec, {"binary": "omp", "secrets_file": str(secrets)}
+
+
+def _plant_omp_log(pid, body, *, date):
+    directory = omp.omp_log_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"omp.{date}.{pid}.log"
+    path.write_text(body if str(body).endswith("\n") else str(body) + "\n", encoding="utf-8")
+    return path
+
+
+def _turn_end(text):
+    return json.dumps({
+        "type": "turn_end", "message": {"content": [{"text": text}]},
+    }) + "\n"
+
+
+def _completed(argv, code, stdout="", stderr="", pid=None):
+    proc = subprocess.CompletedProcess(argv, 0 if code is None else code, stdout=stdout, stderr=stderr)
+    proc.returncode = code
+    if pid is not None:
+        proc.pid = pid
+    return proc
+
+
+def test_omp_lane_writes_live_session_before_spawn_on_success_and_failure(monkeypatch, tmp_path, workdir):
+    spec, config = _lane_secrets(tmp_path)
+    monkeypatch.setattr(omp, "caller_killed_service_cgroup", lambda: None)
+    seen = {}
+
+    def _run(argv, **kwargs):
+        live = json.loads((workdir / ".hermes-lane" / "live.json").read_text(encoding="utf-8"))
+        seen["live"] = live
+        seen["argv"] = list(argv)
+        assert Path(live["session_dir"]).is_absolute()
+        assert live["session_dir"] == str((workdir / ".hermes-lane" / "provider" / "model").resolve())
+        return _completed(argv, 0, stdout=_turn_end("layout aligned"))
+
+    monkeypatch.setattr(omp.subprocess, "run", _run)
+    success = omp.run_omp_lane(spec, "Align the panel", str(workdir), "provider/model", omp_config=config)
+    assert success["success"] is True
+    assert success["session_dir"] == seen["live"]["session_dir"]
+    assert seen["live"]["model"] == "provider/model"
+    assert "--no-session" not in seen["argv"]
+    assert seen["argv"][seen["argv"].index("--session-dir") + 1] == success["session_dir"]
+
+    def _fail(argv, **kwargs):
+        return _completed(argv, 1, stderr="connection refused")
+
+    monkeypatch.setattr(omp.subprocess, "run", _fail)
+    failure = omp.run_omp_lane(spec, "Align the panel", str(workdir), "provider/model", omp_config=config)
+    assert failure["success"] is False
+    assert failure["session_dir"] == success["session_dir"]
+    assert failure["quota"] is False
+
+
+def test_omp_lane_restores_session_when_log_reports_connection_closed(monkeypatch, tmp_path, workdir):
+    spec, config = _lane_secrets(tmp_path)
+    monkeypatch.setattr(omp, "caller_killed_service_cgroup", lambda: None)
+    pid = 424242101
+    decoy_pid = 424242102
+    planted = []
+    calls = []
+
+    def _run(argv, **kwargs):
+        calls.append(list(argv))
+        live = json.loads((workdir / ".hermes-lane" / "live.json").read_text(encoding="utf-8"))
+        session_dir = Path(live["session_dir"])
+        (session_dir / "session.jsonl").write_text('{"type":"turn"}\n', encoding="utf-8")
+        if len(calls) == 1:
+            planted.append(_plant_omp_log(
+                pid, '{"pid": %s, "errorMessage": "Connection closed"}\n' % pid, date="1999-03-07",
+            ))
+            planted.append(_plant_omp_log(
+                decoy_pid, '{"pid": %s, "errorMessage": "429 in cooldown"}\n' % decoy_pid, date="2042-12-31",
+            ))
+            return _completed(argv, 0, pid=pid)
+        return _completed(argv, 0, stdout=_turn_end("resumed from disk"))
+
+    monkeypatch.setattr(omp.subprocess, "run", _run)
+    try:
+        result = omp.run_omp_lane(
+            spec, "Align the panel", str(workdir), "provider/model", omp_config=config,
+        )
+    finally:
+        for path in planted:
+            path.unlink(missing_ok=True)
+    assert result["success"] is True
+    assert result["final_report"] == "resumed from disk"
+    assert result["session_dir"] == str((workdir / ".hermes-lane" / "provider" / "model").resolve())
+    assert len(calls) == 2
+    assert "--restore" not in calls[0]
+    assert calls[0][-1] == "Align the panel"
+    restore = calls[1]
+    assert restore[restore.index("--restore") + 1] == str(Path(result["session_dir"]) / "session.jsonl")
+    assert "Align the panel" not in restore
+    assert "--append-system-prompt" in restore and "--tools" in restore
+    assert all("test-key" not in argument for argv in calls for argument in argv)
+
+
+def test_omp_cooldown_log_does_not_restore_and_still_advances_model_chain(monkeypatch, tmp_path, workdir):
+    spec, config = _lane_secrets(tmp_path)
+    _configure(
+        monkeypatch,
+        {"ui_dev": {
+            "models": ["provider/limited", "provider/winner"],
+            "soul": spec["soul"], "mcp": None, "tools_allowlist": ["read", "grep"],
+        }},
+        omp_config=config,
+    )
+    monkeypatch.setattr(omp, "caller_killed_service_cgroup", lambda: None)
+    pid = 424242201
+    decoy_pid = 424242202
+    planted = []
+    calls = []
+
+    def _run(argv, **kwargs):
+        calls.append(list(argv))
+        model = argv[argv.index("--model") + 1]
+        if not model.endswith("limited"):
+            return _completed(argv, 0, stdout=_turn_end("UI updated"))
+        session_dir = (workdir / ".hermes-lane" / "provider" / "limited").resolve()
+        session_dir.mkdir(parents=True, exist_ok=True)
+        (session_dir / "session.jsonl").write_text("{}\n", encoding="utf-8")
+        if len(calls) == 1:
+            planted.append(_plant_omp_log(
+                pid, '{"pid": %s, "errorMessage": "429 all deployments are in cooldown"}\n' % pid,
+                date="2001-01-09",
+            ))
+            decoy = _plant_omp_log(
+                decoy_pid, '{"pid": %s, "errorMessage": "Connection closed"}\n' % decoy_pid,
+                date="2041-08-08",
+            )
+            os.utime(decoy, (decoy.stat().st_atime, decoy.stat().st_mtime + 50))
+            planted.append(decoy)
+        return _completed(argv, 0, pid=pid)
+
+    monkeypatch.setattr(omp.subprocess, "run", _run)
+    try:
+        result = json.loads(registry.dispatch(
+            "delegate_ui_dev", {"task": "Align the panel", "workdir": str(workdir)},
+        ))
+    finally:
+        for path in planted:
+            path.unlink(missing_ok=True)
+    limited = [argv for argv in calls if "provider/limited" in argv]
+    assert len(limited) == 1
+    assert "--restore" not in limited[0]
+    assert result["success"] is True
+    assert result["model"] == "provider/winner"
+    assert result["attempts"][0]["quota"] is True
+
+
+def test_omp_lane_caps_restores_at_two(monkeypatch, tmp_path, workdir):
+    spec, config = _lane_secrets(tmp_path)
+    monkeypatch.setattr(omp, "caller_killed_service_cgroup", lambda: None)
+    calls = []
+
+    def _run(argv, **kwargs):
+        calls.append(list(argv))
+        live = json.loads((workdir / ".hermes-lane" / "live.json").read_text(encoding="utf-8"))
+        Path(live["session_dir"]).joinpath("session.jsonl").write_text("{}\n", encoding="utf-8")
+        if len(calls) > _MAX_OMP_SPAWNS:
+            return _completed(argv, 1, stderr="connection refused")
+        return _completed(argv, None, stderr="Connection closed")
+
+    monkeypatch.setattr(omp.subprocess, "run", _run)
+    result = omp.run_omp_lane(spec, "Align the panel", str(workdir), "provider/model", omp_config=config)
+    assert len(calls) == _MAX_OMP_SPAWNS
+    assert result["success"] is False
+    assert "Connection closed" in result["error"]
+    assert "--restore" not in calls[0]
+    assert calls[0][-1] == "Align the panel"
+    for argv in calls[1:]:
+        assert "--restore" in argv
+        assert "Align the panel" not in argv
+    assert result["session_dir"] == str((workdir / ".hermes-lane" / "provider" / "model").resolve())
+
+
+@pytest.mark.parametrize("stderr,code", [
+    ("connection refused", 1),
+    ("401 invalid api key", 1),
+])
+def test_omp_lane_does_not_restore_terminal_failures(monkeypatch, tmp_path, workdir, stderr, code):
+    spec, config = _lane_secrets(tmp_path)
+    monkeypatch.setattr(omp, "caller_killed_service_cgroup", lambda: None)
+    calls = []
+
+    def _run(argv, **kwargs):
+        calls.append(list(argv))
+        live = json.loads((workdir / ".hermes-lane" / "live.json").read_text(encoding="utf-8"))
+        Path(live["session_dir"]).joinpath("session.jsonl").write_text("{}\n", encoding="utf-8")
+        return _completed(argv, code, stderr=stderr)
+
+    monkeypatch.setattr(omp.subprocess, "run", _run)
+    result = omp.run_omp_lane(spec, "Align the panel", str(workdir), "provider/model", omp_config=config)
+    assert len(calls) == 1
+    assert result["success"] is False
+    assert result["quota"] is False
+    assert "--restore" not in calls[0]
+
+
+def test_omp_lane_does_not_restore_empty_result_without_a_session(monkeypatch, tmp_path, workdir):
+    spec, config = _lane_secrets(tmp_path)
+    monkeypatch.setattr(omp, "caller_killed_service_cgroup", lambda: None)
+    calls = []
+
+    def _run(argv, **kwargs):
+        calls.append(list(argv))
+        return _completed(argv, 0)
+
+    monkeypatch.setattr(omp.subprocess, "run", _run)
+    result = omp.run_omp_lane(spec, "Align the panel", str(workdir), "provider/model", omp_config=config)
+    assert len(calls) == 1
+    assert result["success"] is False
+    assert result["quota"] is False
+    assert "session_dir" in result
