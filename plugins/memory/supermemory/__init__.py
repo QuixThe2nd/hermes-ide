@@ -336,7 +336,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
 
     def is_available(self) -> bool:
         # Key presence only, no SDK import check: the SDK is lazy-installed in initialize(), so gating on
-        # importability here is a chicken-and-egg trap on sealed venvs. Mirrors honcho/mem0.
+        # importability here is a chicken-and-egg trap on sealed venvs. Mirrors hindsight.
         return bool(get_secret("SUPERMEMORY_API_KEY", ""))
 
     def get_config_schema(self):

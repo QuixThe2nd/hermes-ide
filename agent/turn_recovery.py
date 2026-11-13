@@ -204,9 +204,8 @@ def recover_before_classification(
     api_kwargs: Any, active_system_prompt: Any,
 ) -> Tuple[bool, Any]:
     """Recovery branches that run BEFORE ``classify_api_error``: UnicodeEncodeError
-    sanitization, provider image-content rejection (switch session to text-only), and the
-    Bedrock AnthropicBedrock SDK streaming fallback. Returns ``(retry_now,
-    active_system_prompt)``; the prompt may be ASCII-sanitized in place."""
+    sanitization and provider image-content rejection (switch session to text-only). Returns
+    ``(retry_now, active_system_prompt)``; the prompt may be ASCII-sanitized in place."""
     if isinstance(api_error, UnicodeEncodeError) and getattr(agent, '_unicode_sanitization_passes', 0) < 2:
         _recovered, active_system_prompt = _recover_unicode_encode_error(
             agent, api_error, messages, api_messages, api_kwargs, active_system_prompt
@@ -236,22 +235,6 @@ def recover_before_classification(
         )
         return True, active_system_prompt
 
-    # AnthropicBedrock SDK raises "Unexpected event order" when Bedrock errors before
-    # message_start; fall back to native Converse for this session.
-    if (
-        isinstance(api_error, RuntimeError)
-        and "unexpected event order" in str(api_error).lower()
-        and getattr(agent, "provider", "") == "bedrock"
-        and agent.api_mode == "anthropic_messages"
-        and not getattr(agent, "_bedrock_converse_fallback_attempted", False)
-    ):
-        agent._bedrock_converse_fallback_attempted = True
-        agent.api_mode = "bedrock_converse"
-        agent._bedrock_region = getattr(agent, "_bedrock_region", None) or "us-east-1"
-        agent.client = None  # Drop the AnthropicBedrock client
-        agent._client_kwargs = {}
-        _vlines(agent, "⚠️  AnthropicBedrock SDK streaming failed — falling back to native Converse API for this session.")
-        return True, active_system_prompt
     return False, active_system_prompt
 
 
@@ -1414,8 +1397,6 @@ def validate_response_shape(agent: Any, response: Any) -> Tuple[bool, List[str]]
         return True, ["response.output is empty"]
     if agent.api_mode == "anthropic_messages":
         detail = "response.content invalid (not a non-empty list)"
-    elif agent.api_mode == "bedrock_converse":
-        detail = "Bedrock response invalid (no output or choices)"
     elif not hasattr(response, 'choices'):
         detail = "response has no 'choices' attribute"
     elif response.choices is None:

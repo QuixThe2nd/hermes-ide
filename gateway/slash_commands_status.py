@@ -487,22 +487,6 @@ class GatewayStatusCommandsMixin:
             lines += ["", t("gateway.agents.none")]
         return "\n".join(lines)
 
-    async def _handle_topup_command(self, event: MessageEvent) -> str:
-        """Handle /topup -- show the Nous balance and hand off to the portal. Does NOT charge, confirm,
-        or track payment (that happens in the browser; the next /topup shows the new balance)."""
-        from agent.account_usage import build_credits_view
-        view = await _quiet(lambda: asyncio.to_thread(build_credits_view, markdown=True))
-        if view is None or not view.logged_in:
-            return t("gateway.credits.not_logged_in")
-        # Drop the helper's 📈 header; we print our own.
-        lines = ["💳 **Nous balance**"] + [ln for ln in view.balance_lines if not ln.lstrip().startswith("📈")]
-        if view.identity_line:
-            lines += ["", view.identity_line]
-        if view.topup_url:
-            lines += ["", f"Manage billing on the portal: {view.topup_url}",
-                      "Top up and manage billing in the browser — your balance updates here after."]
-        return "\n".join(lines)
-
     def _context_breakdown_block(self, agent, source, expanded: bool) -> list[str]:
         """/context per-category block (plain text, chars/4 estimate, same engine as /usage).
         Runs in a thread; returns [] and never raises."""

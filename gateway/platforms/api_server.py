@@ -1551,7 +1551,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     # -- Session header helpers -------------------------------------------------------
 
-    # Cap on session headers: above any realistic channel id, safe for Honcho / state.db.
+    # Cap on session headers: above any realistic channel id, safe for providers / state.db.
     _MAX_SESSION_HEADER_LEN = 256
     # Source stamped on every session row this platform owns (also hardwired in
     # _bind_api_server_session and _create_agent) so peer lookups can filter on it.

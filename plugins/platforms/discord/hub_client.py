@@ -681,12 +681,6 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
             "send_multiple_images", chat_id, images,
             metadata=metadata, reply_to=reply_to))
 
-    async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None,
-                         reply_to: Optional[str] = None, metadata: Optional[dict] = None, **kwargs) -> SendResult:
-        return self._send_result(await self._rpc(
-            "send_voice", chat_id, audio_path, caption=caption,
-            reply_to=reply_to, metadata=metadata, **kwargs))
-
     async def send_image_file(self, chat_id: str, image_path: str, caption: Optional[str] = None,
                               reply_to: Optional[str] = None, metadata: Optional[dict] = None) -> SendResult:
         return self._send_result(await self._rpc(

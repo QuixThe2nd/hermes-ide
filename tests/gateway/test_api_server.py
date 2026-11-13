@@ -2518,7 +2518,7 @@ class TestSessionIdHeader:
 
 class TestSessionKeyHeader:
     """The session key is a stable per-channel identifier that scopes
-    long-term memory (e.g. Honcho) independently of the transcript-scoped
+    long-term memory (e.g. Hindsight) independently of the transcript-scoped
     session_id.  A third-party Web UI passes one stable key per assistant
     channel and rotates session_id on /new, matching the native
     gateway's session_key / session_id split.

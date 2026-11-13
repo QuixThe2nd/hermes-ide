@@ -404,7 +404,7 @@ def _nous_portal_recommended_names() -> set[str]:
 
 def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     """Generic live /v1/models probe. Returns None when the API was unreachable (the caller then
-    tries Bedrock discovery / the curated catalog)."""
+    tries the curated catalog)."""
     from hermes_cli import models as _m
 
     api_models = _m.fetch_api_models(req.api_key, req.base_url)
@@ -448,25 +448,6 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     return _reject(f"Model `{req.requested}` was not found in this provider's model listing.{match.suggestion_text}")
 
 
-def _validate_bedrock(req: _Request) -> Optional[dict[str, Any]]:
-    """Bedrock's runtime URL has no /models; discovery goes through the AWS control plane
-    (ListFoundationModels + ListInferenceProfiles). Any failure falls through (None)."""
-    try:
-        from agent.bedrock_adapter import discover_bedrock_models, resolve_bedrock_runtime_region
-
-        region = resolve_bedrock_runtime_region()
-        discovered_ids = {m["id"] for m in discover_bedrock_models(region)}
-        match = _match_in_catalog(req.requested, list(discovered_ids), suggest_cutoff=0.4)
-        if match.exact:
-            return _accept()
-        # Still accept (custom inference profiles / cross-account access), but warn.
-        return _soft_accept(
-            f"Note: `{req.requested}` was not found in Bedrock model discovery for {region}. "
-            f"It may still work with custom inference profiles or cross-account access."
-            f"{match.suggestion_text}"
-        )
-    except Exception:
-        return None
 
 
 def _validate_catalog_fallback(req: _Request) -> dict[str, Any]:
@@ -506,8 +487,7 @@ def _for(*providers: str) -> Callable[[_Request], bool]:
 
 
 # (gate, branch): the branch runs when the gate passes; the first non-None verdict wins. ORDER IS
-# BEHAVIOR: moa → whitespace → OpenRouter preset parse → LM Studio → Ollama native → custom →
-# codex/xai static → MiniMax → Anthropic native → Anthropic Messages → live listing → Bedrock →
+# codex/xai static → MiniMax → Anthropic native → Anthropic Messages → live listing →
 # curated-catalog fallback (always decides).
 _LADDER: tuple[tuple[Callable[[_Request], bool], Callable[[_Request], Optional[dict[str, Any]]]], ...] = (
     (_for("moa"), _validate_moa),
@@ -521,8 +501,6 @@ _LADDER: tuple[tuple[Callable[[_Request], bool], Callable[[_Request], Optional[d
     (_for("anthropic"), _validate_anthropic),
     (lambda req: req.api_mode == "anthropic_messages", _validate_anthropic_messages),
     (lambda req: True, _validate_live_listing),
-    # API unreachable — accept and persist, but warn so typos don't silently break things.
-    (_for("bedrock"), _validate_bedrock),
     (lambda req: True, _validate_catalog_fallback),
 )
 

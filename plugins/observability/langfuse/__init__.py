@@ -417,11 +417,11 @@ def _coerce_request_messages(*, request_messages: Any = None, messages: Any = No
 
 
 def _serialize_system_prompt(system_prompt: Any) -> Optional[dict[str, Any]]:
-    """Normalize Anthropic/Bedrock ``system`` param or OpenAI-style system content."""
+    """Normalize Anthropic-style ``system`` param or OpenAI-style system content."""
     if isinstance(system_prompt, str):
         text = system_prompt.strip()
     elif isinstance(system_prompt, list):
-        # Anthropic: {"type": "text", "text": ...}; Bedrock Converse: {"text": ...}; or bare strings.
+        # Anthropic: {"type": "text", "text": ...}; or bare strings (and untyped {"text": ...} blocks).
         blocks = ((b.get("text", "") if b.get("type") in ("text", None) and "text" in b else None)
                   if isinstance(b, dict) else b for b in system_prompt)
         text = "\n\n".join(b for b in blocks if isinstance(b, str) and b)

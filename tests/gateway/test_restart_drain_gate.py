@@ -117,7 +117,6 @@ def _make_gate_runner():
     runner._set_session_env = lambda _context: None
     runner._should_send_voice_reply = lambda *_a, **_k: False
     runner._send_voice_reply = AsyncMock()
-    runner._capture_gateway_honcho_if_configured = lambda *a, **k: None
     runner._emit_gateway_run_progress = AsyncMock()
     runner._queued_events = {}
     runner._session_run_generation = {}
@@ -461,14 +460,16 @@ async def test_telegram_grace_followup_during_drain_is_refused_honestly():
 
     from gateway.run_drain_queue import drain_queue_path
 
+    from unittest.mock import MagicMock
+
     runner, mock_adapter = _make_gate_runner()
     _mark_busy(runner)
+    agent = MagicMock()
     runner._peek_session_state = lambda _key: _sub_path_state(
-        started_ts=time.time(), agent=object()  # real agent, not the sentinel
+        started_ts=time.time(), agent=agent  # real agent, not the sentinel
     )
     runner._draining = True
     runner._restart_requested = True
-    runner._busy_input_mode = "queue"
 
     result = await runner._handle_message(_make_event("grace follow-up"))
 
@@ -476,11 +477,13 @@ async def test_telegram_grace_followup_during_drain_is_refused_honestly():
     assert not drain_queue_path().exists()
 
     # Control: with admission open the same sub-path keeps its in-memory-only
-    # shape — None, nothing recorded (the branch really was taken).
+    # shape — None, nothing recorded (the branch really was taken); the busy
+    # follow-up interrupts the running turn.
     runner._draining = False
     runner._restart_requested = False
-    mock_adapter._pending_messages.clear()
+    agent.interrupt.reset_mock()
     assert await runner._handle_message(_make_event("grace control")) is None
+    agent.interrupt.assert_called_once()
     assert not drain_queue_path().exists()
 
 

@@ -14,7 +14,6 @@ import importlib.util
 # extra name -> module that proves it is installed
 ANCHORS: dict[str, str | tuple[str, ...]] = {
     "anthropic": "anthropic",
-    "bedrock": "boto3",
     "vertex": "google.auth",
     "azure-identity": "azure.identity",
     "exa": "exa_py",
@@ -23,13 +22,11 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "otlp": "opentelemetry.sdk",
     "mistral": "mistralai",
     "fal": "fal_client",
-    "honcho": "honcho",
     # The hindsight-client wheel (0.6.1 / 0.9.2) ships hindsight_client*, never a
     # top-level ``hindsight`` module — anchoring on the package name made
     # available("hindsight") a permanent false negative (pc_1de37914422e).
     "hindsight": "hindsight_client",
     "supermemory": "supermemory",
-    "mem0": "mem0",
     "messaging": "discord",
     "discord": "discord",
     "matrix": ("mautrix", "asyncpg", "aiosqlite", "markdown", "aiohttp_socks"),

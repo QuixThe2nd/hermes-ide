@@ -363,7 +363,7 @@ class TestCustomProviderOpenAIWireCapability:
 
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
-    @pytest.mark.parametrize("api_mode", ["codex_responses", "bedrock_converse"])
+    @pytest.mark.parametrize("api_mode", ["codex_responses"])
     def test_explicit_true_does_not_cross_into_other_wire_protocols(self, api_mode):
         agent = self._configured_agent(enabled=True, api_mode=api_mode)
 
@@ -859,7 +859,7 @@ class TestLiteLLMOpenAIWire:
         assert agent._anthropic_prompt_cache_policy() == (True, False)
 
     @pytest.mark.parametrize(
-        "api_mode", ["codex_responses", "bedrock_converse", "codex_app_server"]
+        "api_mode", ["codex_responses", "codex_app_server"]
     )
     def test_litellm_claude_on_other_transports_does_not_cache(self, api_mode):
         # The grant is scoped to chat_completions. Other transports carry

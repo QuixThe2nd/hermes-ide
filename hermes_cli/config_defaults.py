@@ -317,8 +317,7 @@ DEFAULT_CONFIG = {
 
     "terminal": {
         "backend": "local",
-        "modal_mode": "auto",
-        # Remote-backend connection-class failures (SSH host unreachable, Docker daemon down):
+        # Remote-backend connection-class failures (SSH host unreachable):
         # "warn" = structured degraded tool result with reason + retry hint; "fail" = raise error +
         # traceback.
         "degraded_mode": "warn",
@@ -366,43 +365,6 @@ DEFAULT_CONFIG = {
         # go first because n/nvm/asdf write PATH exports there without an interactivity guard. Turn
         # off if an rc file misbehaves when sourced non-interactively (exits on TTY check).
         "auto_source_bashrc": True,
-        "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        "docker_forward_env": [],
-        # Exact key-value env pairs set inside Docker containers (unlike docker_forward_env, which
-        # reads host values) — useful under systemd without the user's shell env. Example:
-        # {"SSH_AUTH_SOCK": "/run/user/1000/ssh-agent.sock"}
-        "docker_env": {},
-        "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
-        "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        "vercel_runtime": "node24",  # vercel_sandbox backend only: node24 | node22 | python3.13
-        # Container limits (docker, singularity, modal, daytona, vercel_sandbox; not local/ssh).
-        "container_cpu": 1,
-        "container_memory": 5120,       # MB (default 5GB)
-        "container_disk": 51200,        # MB (default 50GB)
-        "container_persistent": True,   # Persist filesystem across sessions
-        # Docker volume mounts, "host_path:container_path" (docker -v syntax), e.g.
-        # ["/home/user/.hermes/cache/documents:/output"]. For gateway MEDIA delivery, write to
-        # /output/... inside Docker and emit the host-visible path in MEDIA:, not the container one.
-        "docker_volumes": [],
-        "docker_mount_cwd_to_workspace": False,  # mount host cwd at /workspace (weakens isolation)
-        "docker_network": True,  # false = --network=none, no network access from commands
-        "docker_extra_args": [],        # Extra flags passed verbatim to docker run
-        # /dev/shm size for the Docker sandbox. Docker's 64 MB default silently breaks
-        # Chromium/Playwright and PyTorch DataLoader workers; tmpfs is lazily allocated so the
-        # higher ceiling is free until used. "" or "0" = omit the flag (Docker default).
-        "docker_shm_size": "1g",
-        # Run the container as the host uid:gid (`--user`) so files written to bind mounts
-        # (docker_volumes, persistent workspace, mounted cwd) are owned by you, not root. Off by
-        # default for images whose entrypoints must start as root (e.g. the bundled Hermes image,
-        # which drops to `hermes` via s6-setuidgid). When on, SETUID/SETGID caps are omitted.
-        "docker_run_as_host_user": False,
-        # Snap-packaged Docker under AppArmor (Ubuntu cloud images; LP#1908448) refuses to exec
-        # anything under `--init` or `--security-opt no-new-privileges` ("operation not
-        # permitted"). True drops those two flags; every other hardening stays. See #9730.
-        "docker_snap_compat": False,
-        # Trusted profiles sharing one Docker container identity; empty = per-profile boundary.
-        "docker_shared_container_key": "",
         # Keep a long-lived bash shell across execute() calls so cwd/env/shell variables survive.
         # Applies to non-local backends (SSH); local is opt-in via TERMINAL_LOCAL_PERSISTENT env.
         "persistent_shell": True,
@@ -588,7 +550,7 @@ DEFAULT_CONFIG = {
         # micro_compact: opt-in — after each turn fold the oldest un-absorbed exchange into a
         # rolling summary, amortizing compression cost. Off by default because every pass rewrites
         # sent history and breaks the prompt-cache prefix EVERY turn; enable only if the amortized
-        # stall beats the cached-prefix discount. See website/docs/developer-guide/micro-compaction.md.
+        # stall beats the cached-prefix discount. See the micro-compaction developer guide.
         "micro_compact": False,
         # Cadence: run a pass every Nth completed turn (1 = one cache break per turn, 5 = a fifth of
         # the breaks). Clamped >= 1; ignored unless micro_compact is true.
@@ -665,22 +627,6 @@ DEFAULT_CONFIG = {
     # non-falsy values are ignored; falsy (false, null, "off", "disabled", "no", "none") disables
     # caching.
     "prompt_caching": {"cache_ttl": "5m"},
-    "bedrock": {  # AWS Bedrock; only used when model.provider is "bedrock".
-        "region": "",  # empty = AWS_REGION env var → us-east-1
-        "discovery": {
-            "enabled": True,           # auto-discover models via ListFoundationModels
-            "provider_filter": [],     # restrict to these providers, e.g. ["anthropic", "amazon"]
-            "refresh_interval": 3600,  # cache discovery results (seconds)
-        },
-        # Bedrock Guardrails: create one in the console, then set ID and version.
-        # https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails.html
-        "guardrail": {
-            "guardrail_identifier": "",  # e.g. "abc123def456"
-            "guardrail_version": "",     # e.g. "1" or "DRAFT"
-            "stream_processing_mode": "async",  # "sync" | "async"
-            "trace": "disabled",         # "enabled" | "disabled" | "enabled_full"
-        },
-    },
     # Auxiliary model config — provider/model per side task. provider "auto" = auto-detect;
     # empty model = provider's default aux model; all tasks fall back to
     # openrouter:google/gemini-3-flash-preview when the configured provider is unavailable.
@@ -780,14 +726,6 @@ DEFAULT_CONFIG = {
         # Skip tool-call-only assistant entries in the recap so it isn't dominated by `[2 tool
         # calls: ...]` lines; False shows them inline.
         "resume_skip_tool_only": True,
-        # steer mode: false hides only the "Steered into current run" bubble; steering itself still
-        # happens.
-        "busy_steer_ack_enabled": True,
-        # Follow-up "✅ Steer delivered" bubble sent the moment the steered
-        # text is actually injected into the model's context (the initial
-        # ack only promises that it will arrive). Set false to keep only
-        # the initial acknowledgment.
-        "busy_steer_delivered_ack_enabled": True,
         # Classic CLI multiline fallbacks beyond Alt+Enter.
         # Default true matches Claude Code / Codex / OpenCode: Ctrl+J inserts
         # a newline, a trailing backslash followed by Enter continues the draft,
@@ -983,8 +921,8 @@ DEFAULT_CONFIG = {
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # Periodic built-in memory review; 0 when an external provider auto-extracts.
         "nudge_interval": 10,
-        # External memory provider plugin (empty = built-in only); only ONE at a time: "openviking",
-        # "mem0", "hindsight", "holographic", "retaindb", "byterover".
+        # External memory provider plugin (empty = built-in only); only ONE at a time: "hindsight",
+        # "holographic", "retaindb", "byterover", "supermemory".
         "provider": "",
     },
 
@@ -1228,9 +1166,6 @@ DEFAULT_CONFIG = {
             "keep": 2,  # retain last N regular snapshots
         },
     },
-    # Honcho AI-native memory — ~/.honcho/config.json is the source of truth (apiKey, workspace,
-    # peerName, sessions, enabled); hermes-specific overrides only here.
-    "honcho": {},
     # IANA timezone (e.g. "Asia/Kolkata", "America/New_York"). Empty = server-local time.
     "timezone": "",
 
@@ -1338,7 +1273,7 @@ DEFAULT_CONFIG = {
     # Shell-script hooks: event name (pre_tool_call, post_tool_call, pre_llm_call, subagent_stop,
     # ...) -> list of {matcher, command, timeout}. First run of a new command prompts for consent;
     # approvals persist in ~/.hermes/shell-hooks-allowlist.json. Schema + examples:
-    # website/docs/user-guide/features/hooks.md.
+    # the hosted hooks user guide.
     "hooks": {},
     # Auto-accept shell-hook registrations without a TTY prompt (also --accept-hooks or
     # HERMES_ACCEPT_HOOKS=1). Gateway/cron/non-interactive runs need one of these to pick up
@@ -1782,7 +1717,7 @@ DEFAULT_CONFIG = {
     },
     # Privacy-safe aggregate metrics in this profile's local telemetry dir. Collection (`enabled`)
     # and transmission to Nous (`send`) are SEPARATE opt-ins; see
-    # website/docs/developer-guide/relay-shared-metrics.md Appendix A for consent/retention.
+    # the relay shared-metrics developer guide, Appendix A for consent/retention.
     "telemetry": {
         "shared_metrics": {
             "enabled": False,
@@ -2015,33 +1950,6 @@ DEFAULT_CONFIG = {
         # development from source.
         "allow_unsigned_driver": False,
     },
-    # Egress credential-injection proxy (iron-proxy) for remote terminal sandboxes (Docker today):
-    # the sandbox sees opaque tokens and iron-proxy swaps in real credentials at egress, so a
-    # compromised sandbox leaks only tokens that work behind the trusted proxy. Configure with
-    # `hermes egress setup`.
-    "proxy": {
-        "enabled": False,  # When false, nothing starts, no docker mounts, no binary installs.
-        # Tunnel listener port; sandboxes get HTTPS_PROXY=http://<host>:<port>.
-        "tunnel_port": 9090,
-        # Auto-download the pinned binary into ~/.hermes/bin/; False = iron-proxy on PATH.
-        "auto_install": True,
-        # Upstream secret source: env = process env; bitwarden = refetch via `bws secret list` on
-        # each proxy restart (requires secrets.bitwarden.enabled).
-        "credential_source": "env",
-        # True: the Docker backend refuses to start a sandbox if the proxy is enabled but not
-        # running. False: fall back to direct outbound with real credentials.
-        "enforce_on_docker": True,
-        # With credential_source bitwarden, a missing BWS token/project_id or an empty fetch makes
-        # the daemon raise. True silently falls back to host env (useful mid-migration). A leftover
-        # fail_on_uncovered_providers key is ignored.
-        "allow_env_fallback": False,
-        # SSRF deny list. None/empty = loopback, link-local (incl. 169.254.169.254 metadata),
-        # RFC1918. Explicit [] opts out (only for hermetic loopback tests).
-        "upstream_deny_cidrs": None,
-        # Extra allowed upstream hosts beyond the bundled major-provider defaults; wildcards
-        # (`*.foo.com`) supported.
-        "extra_allowed_hosts": [],
-    },
     "desktop": {  # Session-GUI settings shared by TUI and JSON-RPC clients.
         # Git repo discovery for the Projects sidebar; empty roots = bounded scan of $HOME.
         "repo_scan_enabled": True,
@@ -2251,11 +2159,6 @@ OPTIONAL_ENV_VARS = {
         "https://console.upstage.ai/api-keys", advanced=False),
     "UPSTAGE_BASE_URL": _prov("Upstage base URL override (default: https://api.upstage.ai/v1)",
         "Upstage base URL (leave empty for default)", None, password=False),
-    "AWS_REGION": _prov("AWS region for Bedrock API calls (e.g. us-east-1, eu-central-1)",
-        "AWS Region", "https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-regions.html",
-        password=False),
-    "AWS_PROFILE": _prov("AWS named profile for Bedrock authentication (from ~/.aws/credentials)",
-        "AWS Profile", None, password=False),
     "AZURE_FOUNDRY_API_KEY": _prov("Azure Foundry API key for custom Azure endpoints",
         "Azure Foundry API Key", "https://ai.azure.com/", advanced=False),
     "AZURE_FOUNDRY_BASE_URL": _prov(
@@ -2336,11 +2239,6 @@ OPTIONAL_ENV_VARS = {
         "Airtable API key", "https://airtable.com/create/tokens"),
     "TENOR_API_KEY": _skill("Tenor API key for GIF search (used by the `gif-search` skill)",
         "Tenor API key", "https://developers.google.com/tenor/guides/quickstart"),
-    # ── Honcho ──
-    "HONCHO_API_KEY": _tool("Honcho API key for AI-native persistent memory", "Honcho API key",
-        "https://app.honcho.dev", tools=["honcho_context"]),
-    "HONCHO_BASE_URL": _tool("Base URL for self-hosted Honcho instances (no API key needed)",
-        "Honcho base URL (e.g. http://localhost:8000)", password=None),
     # ── Hindsight ──
     "HINDSIGHT_API_KEY": _tool("Hindsight API key for graph-aware persistent memory",
         "Hindsight API key", "https://hindsight.vectorize.io", tools=["hindsight_recall"]),
@@ -2350,9 +2248,6 @@ OPTIONAL_ENV_VARS = {
     # ── Supermemory ──
     "SUPERMEMORY_API_KEY": _tool("Supermemory API key for conversation-scoped persistent memory",
         "Supermemory API key", "https://supermemory.ai", tools=["supermemory_search"]),
-    # ── Mem0 ──
-    "MEM0_API_KEY": _tool("Mem0 Platform API key for semantic persistent memory", "Mem0 API key",
-        "https://app.mem0.ai", tools=["mem0_search"]),
     # ── RetainDB ──
     "RETAINDB_API_KEY": _tool("RetainDB API key for persistent memory", "RetainDB API key",
         "https://retaindb.com", tools=["retaindb_search"]),
@@ -2362,11 +2257,6 @@ OPTIONAL_ENV_VARS = {
     # ── ByteRover ──
     "BRV_API_KEY": _tool("ByteRover API key (optional, for cloud sync — local-first by default)",
         "ByteRover API key", "https://app.byterover.dev", tools=["brv_query"]),
-    # ── OpenViking ──
-    "OPENVIKING_API_KEY": _tool("OpenViking API key (leave blank for local dev mode)",
-        "OpenViking API key", tools=["viking_search"]),
-    "OPENVIKING_ENDPOINT": _tool("OpenViking server URL (default: http://127.0.0.1:1933)",
-        "OpenViking endpoint", password=None, advanced=True),
     # ── Langfuse observability ──
     "HERMES_LANGFUSE_PUBLIC_KEY": _tool("Langfuse project public key (pk-lf-...)",
         "Langfuse public key", "https://cloud.langfuse.com", password=False),

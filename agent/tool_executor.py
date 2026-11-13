@@ -146,6 +146,12 @@ _DEFAULT_UNBOUNDED_TOOLS = frozenset(
         "delegate_claude_agent",
         "delegate_cursor_agent",
         "delegate_assistant",
+        # Opt-in lane tools — a foreground lane run (especially an OMP RPC
+        # goal-mode reverse-engineer pass) legitimately blocks for a long time.
+        "delegate_ui_dev",
+        "delegate_client_dev",
+        "delegate_backend_dev",
+        "delegate_reverse_engineer",
         # Hidden registry aliases (advertise=False) — dispatchable forever.
         "delegate_task",
         "restart",
@@ -167,6 +173,15 @@ _TOOL_NAME_ALIASES = {
     "delegate_task": "delegate_agent",
 }
 
+# Lane tools named here (not imported from tools.delegate_lane_specs to keep
+# agent -> tools import edges at call sites only).
+_LANE_TOOL_NAMES = frozenset({
+    "delegate_ui_dev",
+    "delegate_client_dev",
+    "delegate_backend_dev",
+    "delegate_reverse_engineer",
+})
+
 
 def _resolve_unbounded_tools() -> frozenset[str]:
     from agent.deadline import resolve_name_list
@@ -183,12 +198,22 @@ def _resolve_unbounded_tools() -> frozenset[str]:
             expanded.add(new)
         if new in expanded:
             expanded.add(old)
-    if not expanded & {"delegate_agent", "delegate_task"}:
+    if not expanded & ({"delegate_agent", "delegate_task"} | _LANE_TOOL_NAMES):
         logger.warning(
             "timeouts.tools.unbounded_tools names no delegation tool; a "
             "foreground delegate_agent call will be killed by the %ss batch "
             "deadline. Add 'delegate_agent' to keep long blocking delegations "
             "alive.",
+            _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S,
+        )
+    missing_lanes = _LANE_TOOL_NAMES - expanded
+    if missing_lanes:
+        logger.warning(
+            "timeouts.tools.unbounded_tools omits the lane tool(s) %s; their "
+            "foreground calls will be killed by the %ss batch deadline. Add "
+            "them to keep long blocking lane runs (e.g. an OMP goal-mode "
+            "reverse-engineer pass) alive.",
+            ", ".join(sorted(missing_lanes)),
             _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S,
         )
     return frozenset(expanded)
@@ -1605,7 +1630,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
             error_log="context_engine.handle_tool_call raised for %s: %s",
         )
     if agent._memory_manager and agent._memory_manager.has_tool(function_name):
-        # Memory-provider tools (hindsight_retain, honcho_search, ...) are not in the registry.
+        # Memory-provider tools (hindsight_retain, supermemory_search, ...) are not in the registry.
         return _SequentialDispatch(
             execute=lambda next_args: agent._memory_manager.handle_tool_call(function_name, next_args),
             spinner=_start_quiet_tool_spinner(agent, function_name, function_args),

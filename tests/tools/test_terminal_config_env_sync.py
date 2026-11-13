@@ -161,26 +161,14 @@ def test_cli_and_gateway_env_maps_agree():
 
 def test_save_config_set_supports_critical_bridged_keys():
     """``hermes config set terminal.X true`` must propagate to .env for
-    known-critical keys.  This used to be an all-keys invariant but the SSH
-    terminal keys (ssh_*) aren't in _config_to_env_sync and are instead
-    handled via the separate api_keys TERMINAL_SSH_* fallback path or
-    user-edits-yaml-directly.
-
-    Until those gaps are audited and fixed, pin the specific keys that are
-    load-bearing for the docker backend so the bugs we fixed cannot silently
-    regress.  (docker_volumes / docker_forward_env, previously listed here as
-    gaps, are now bridged — see the dedicated tests below.)
-    """
+    known-critical keys (backend, lifecycle, ssh connection settings)."""
     save_keys = _save_config_env_sync_keys()
     required = {
-        "docker_run_as_host_user",
-        "docker_mount_cwd_to_workspace",
         "backend",
-        "docker_image",
-        "container_cpu",
-        "container_memory",
-        "container_disk",
-        "container_persistent",
+        "timeout",
+        "ssh_host",
+        "ssh_user",
+        "persistent_shell",
     }
     missing = required - save_keys
     assert not missing, (
@@ -190,143 +178,14 @@ def test_save_config_set_supports_critical_bridged_keys():
     )
 
 
-def test_docker_run_as_host_user_is_bridged_everywhere():
-    """Explicit pin for the bug we just fixed.
-
-    docker_run_as_host_user was added to terminal_tool._get_env_config and
-    DockerEnvironment but NOT to cli.py's env_mappings or gateway/run.py's
-    _terminal_env_map, so ``terminal.docker_run_as_host_user: true`` in
-    config.yaml had no effect at runtime.  This guard makes the regression
-    impossible to reintroduce silently.
-    """
-    assert "docker_run_as_host_user" in _cli_env_map_keys()
-    assert "docker_run_as_host_user" in _gateway_env_map_keys()
-    assert "docker_run_as_host_user" in _save_config_env_sync_keys()
-    assert "TERMINAL_DOCKER_RUN_AS_HOST_USER" in _terminal_tool_env_var_names()
+def test_ssh_keys_are_bridged_everywhere():
+    """The ssh connection keys must reach every bridge: a config.yaml-only
+    ``terminal.ssh_host`` that only works on one entry point is the exact
+    drift class this suite exists to catch."""
+    for key in ("ssh_host", "ssh_user", "ssh_port", "ssh_key"):
+        assert key in _cli_env_map_keys()
+        assert key in _gateway_env_map_keys()
+        assert key in _save_config_env_sync_keys()
+        assert f"TERMINAL_{key.upper()}" in _terminal_tool_env_var_names()
 
 
-def test_docker_mount_cwd_to_workspace_is_bridged_everywhere():
-    """Same regression class — docker_mount_cwd_to_workspace was missing from
-    gateway/run.py's _terminal_env_map until the docker_run_as_host_user
-    audit caught it.
-    """
-    assert "docker_mount_cwd_to_workspace" in _cli_env_map_keys()
-    assert "docker_mount_cwd_to_workspace" in _gateway_env_map_keys()
-    assert "docker_mount_cwd_to_workspace" in _save_config_env_sync_keys()
-    assert "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE" in _terminal_tool_env_var_names()
-
-
-def test_docker_env_is_bridged_everywhere():
-    """Regression pin for docker_env config key being silently ignored.
-
-    ``terminal.docker_env`` in config.yaml specifies extra env vars to inject
-    into the Docker container at runtime.  The key was present in
-    _create_environment's container_config consumer (line ~1130) but never
-    bridged from config.yaml to TERMINAL_DOCKER_ENV, so the dict was always
-    empty regardless of what the user set.  Guard all four bridging points so
-    this cannot regress.
-    """
-    assert "docker_env" in _cli_env_map_keys()
-    assert "docker_env" in _gateway_env_map_keys()
-    assert "docker_env" in _save_config_env_sync_keys()
-    assert "TERMINAL_DOCKER_ENV" in _terminal_tool_env_var_names()
-
-
-def test_docker_extra_args_is_bridged_everywhere():
-    """Regression pin for docker_extra_args config key being silently ignored.
-
-    ``terminal.docker_extra_args`` in config.yaml passes extra flags verbatim
-    to ``docker run`` (e.g. ``--gpus=all``, ``--shm-size=16g``).  The key was
-    present in DEFAULT_CONFIG, TERMINAL_CONFIG_ENV_MAP (so ``hermes config
-    set`` bridged it), terminal_tool._get_env_config (reads
-    TERMINAL_DOCKER_EXTRA_ARGS), and DockerEnvironment (applies extra_args) --
-    but it was MISSING from cli.py's env_mappings and gateway/run.py's
-    _terminal_env_map.  So a user who hand-edited config.yaml had their GPU /
-    shm-size flags silently dropped on the CLI and gateway/desktop paths,
-    while ``image``/``volumes`` (which were in those maps) bridged fine --
-    producing the "Hermes partially reads the Docker config" symptom.  Guard
-    all four bridging points so this cannot regress.
-    """
-    assert "docker_extra_args" in _cli_env_map_keys()
-    assert "docker_extra_args" in _gateway_env_map_keys()
-    assert "docker_extra_args" in _save_config_env_sync_keys()
-    assert "TERMINAL_DOCKER_EXTRA_ARGS" in _terminal_tool_env_var_names()
-
-
-def test_docker_persist_across_processes_is_bridged_everywhere():
-    """Regression pin for the cross-process container reuse toggle.
-
-    ``terminal.docker_persist_across_processes`` (issue #20561) controls
-    whether ``DockerEnvironment.__init__`` probes for and reuses an existing
-    labeled container at startup, and whether ``cleanup()`` removes the
-    container on Hermes exit or just stops it (keeping it for the next
-    process).  Same four-bridge invariant as docker_run_as_host_user /
-    docker_env / docker_mount_cwd_to_workspace — drift between any of the
-    four sites means ``terminal.docker_persist_across_processes: false`` in
-    config.yaml silently does nothing for that entry point, leaving the
-    user unable to opt out of the documented "ONE long-lived container
-    shared across sessions" behavior.
-    """
-    assert "docker_persist_across_processes" in _cli_env_map_keys()
-    assert "docker_persist_across_processes" in _gateway_env_map_keys()
-    assert "docker_persist_across_processes" in _save_config_env_sync_keys()
-    assert "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES" in _terminal_tool_env_var_names()
-
-
-def test_docker_orphan_reaper_is_bridged_everywhere():
-    """Regression pin for the startup orphan reaper toggle (issue #20561).
-
-    ``terminal.docker_orphan_reaper`` controls whether Hermes sweeps stale
-    Exited containers from prior SIGKILL'd processes at startup.  Same
-    four-site bridge invariant — drift means
-    ``terminal.docker_orphan_reaper: false`` silently does nothing for one
-    entry point, and the reaper either runs when the operator disabled it
-    or fails to run when they enabled it.
-    """
-    assert "docker_orphan_reaper" in _cli_env_map_keys()
-    assert "docker_orphan_reaper" in _gateway_env_map_keys()
-    assert "docker_orphan_reaper" in _save_config_env_sync_keys()
-    assert "TERMINAL_DOCKER_ORPHAN_REAPER" in _terminal_tool_env_var_names()
-
-
-def test_docker_volumes_is_bridged_everywhere():
-    """Regression pin for ``terminal.docker_volumes`` being silently dropped by
-    ``hermes config set``.
-
-    The JSON list of ``host:container`` bind mounts was bridged by cli.py and
-    gateway/run.py and consumed by terminal_tool (via json.loads), but was
-    missing from set_config_value's _config_to_env_sync.  So
-    ``hermes config set terminal.docker_volumes '["/host:/workspace"]'`` wrote
-    config.yaml yet left the running process's TERMINAL_DOCKER_VOLUMES stale —
-    the mounts didn't apply until a full restart.  Same four-site bridge
-    invariant as docker_env / docker_run_as_host_user.
-    """
-    assert "docker_volumes" in _cli_env_map_keys()
-    assert "docker_volumes" in _gateway_env_map_keys()
-    assert "docker_volumes" in _save_config_env_sync_keys()
-    assert "TERMINAL_DOCKER_VOLUMES" in _terminal_tool_env_var_names()
-
-
-def test_docker_forward_env_is_bridged_everywhere():
-    """Regression pin for ``terminal.docker_forward_env`` — the sibling gap to
-    docker_volumes.
-
-    The JSON list of host env-var names forwarded into the container was
-    bridged by cli.py and gateway/run.py and consumed by terminal_tool (via
-    json.loads), but missing from set_config_value's _config_to_env_sync, so
-    ``hermes config set terminal.docker_forward_env '["GITHUB_TOKEN"]'`` had no
-    effect on the running process until restart.
-    """
-    assert "docker_forward_env" in _cli_env_map_keys()
-    assert "docker_forward_env" in _gateway_env_map_keys()
-    assert "docker_forward_env" in _save_config_env_sync_keys()
-    assert "TERMINAL_DOCKER_FORWARD_ENV" in _terminal_tool_env_var_names()
-
-
-def test_docker_snap_compat_is_bridged_everywhere():
-    """#9730: ``terminal.docker_snap_compat`` must reach the container on the CLI, gateway and
-    ``hermes config set`` paths, like every other docker_* key (see docker_extra_args above)."""
-    assert "docker_snap_compat" in _cli_env_map_keys()
-    assert "docker_snap_compat" in _gateway_env_map_keys()
-    assert "docker_snap_compat" in _save_config_env_sync_keys()
-    assert "TERMINAL_DOCKER_SNAP_COMPAT" in _terminal_tool_env_var_names()

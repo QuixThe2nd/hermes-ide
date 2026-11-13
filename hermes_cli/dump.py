@@ -152,8 +152,8 @@ def _get_model_and_provider(config: dict) -> tuple[str, str]:
 _INTERESTING_PATHS = (
     ("agent", "max_turns"), ("agent", "gateway_timeout"), ("agent", "session_stall_timeout"),
     ("agent", "sanitizer_heal_escalation_threshold"), ("agent", "tool_use_enforcement"),
-    ("agent", "execution_guidance"), ("terminal", "backend"), ("terminal", "docker_image"),
-    ("terminal", "persistent_shell"), ("browser", "allow_private_urls"), ("compression", "enabled"),
+    ("agent", "execution_guidance"), ("terminal", "backend"), ("terminal", "persistent_shell"),
+    ("browser", "allow_private_urls"), ("compression", "enabled"),
     ("compression", "threshold"), ("compression", "in_place"), ("display", "streaming"),
     ("display", "skin"), ("display", "show_reasoning"),
 )

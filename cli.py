@@ -290,18 +290,13 @@ def _parse_service_tier_config(raw: str) -> str | None:
     return None
 
 
-# terminal.<key> -> TERMINAL_<KEY> env var. Container-resource keys apply to docker,
-# singularity, modal, daytona and vercel_sandbox only (ignored for local/ssh).
+# terminal.<key> -> TERMINAL_<KEY> env var. Built-in keys are local/ssh only (plus
+# backend-neutral settings); plugin backends read their own config.
 _TERMINAL_ENV_MAPPINGS = {
     key: f"TERMINAL_{key.upper()}"
     for key in (
-        "degraded_mode", "cwd", "timeout", "home_mode", "lifetime_seconds", "docker_image",
-        "docker_forward_env", "singularity_image", "modal_image", "daytona_image", "vercel_runtime",
-        "ssh_host", "ssh_user", "ssh_port", "ssh_key", "container_cpu", "container_memory",
-        "container_disk", "container_persistent", "docker_volumes", "docker_env", "docker_extra_args",
-        "docker_shm_size", "docker_mount_cwd_to_workspace", "docker_network", "docker_run_as_host_user",
-        "docker_snap_compat",
-        "docker_persist_across_processes", "docker_shared_container_key", "docker_orphan_reaper",
+        "degraded_mode", "cwd", "timeout", "home_mode", "lifetime_seconds",
+        "ssh_host", "ssh_user", "ssh_port", "ssh_key",
         "sandbox_dir", "persistent_shell",
     )
 }
@@ -385,10 +380,6 @@ def _cli_config_defaults():
         "model": {"default": "", "base_url": "", "provider": "auto"},
         "terminal": {
             "env_type": "local", "cwd": ".", "home_mode": "auto", "lifetime_seconds": 300,  # cwd "." -> os.getcwd()
-            "docker_image": img, "docker_forward_env": [], "singularity_image": f"docker://{img}",
-            "modal_image": img, "daytona_image": img, "docker_volumes": [],
-            "docker_mount_cwd_to_workspace": False,  # opt-in only: sandbox isolation
-            "docker_shared_container_key": "",
         },
         "browser": {
             "inactivity_timeout": 120,
@@ -2557,9 +2548,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             enabled=display.get("persistent_output", True),
             max_lines=display.get("persistent_output_max_lines", 200),
         )
-        # Busy-input behavior is fixed: a message while the agent runs redirects the current run.
-        self.busy_input_mode = "interrupt"
-
         # verbose ONLY controls global DEBUG logging; tool_progress="verbose" is independent
         # (coupling them spewed every module's DEBUG logs to the console).
         self.verbose = bool(verbose) if verbose is not None else False
@@ -3148,10 +3136,10 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         "retry": ("_cmd_retry", True), "prompt": ("_handle_prompt_compose_command", True),
         "undo": ("_cmd_undo", True), "save": ("save_conversation", True), "skills": ("_cmd_skills", True),
         "platforms": ("_show_gateway_status", False), "status": ("_show_session_status", False),
-        "context": ("_show_context_breakdown", True), "egress": ("_cmd_egress", True),
+        "context": ("_show_context_breakdown", True),
         "statusbar": ("_cmd_statusbar", True), "verbose": ("_toggle_verbose", False),
         "compress": ("_manual_compress", True), "subscription": ("_show_subscription", False),
-        "topup": ("_show_billing", True), "insights": ("_show_insights", True), "update": ("_cmd_update", True),
+        "insights": ("_show_insights", True), "update": ("_cmd_update", True),
         "version": ("_cmd_version", True), "paste": ("_handle_paste_command", False), "reload": ("_cmd_reload", True),
         "reload-mcp": ("_confirm_and_reload_mcp", True), "reload-skills": ("_cmd_reload_skills", True),
         "plugins": ("_cmd_plugins", True), "stop": ("_handle_stop_command", False),
@@ -3598,7 +3586,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._console_print()
 
     def _tui_startup_prewarm_and_warnings(self, _welcome_skin):
-        """Idle-window prewarms (picker cache, agent runtime imports) plus the redaction-off and OpenClaw-residue banners."""
+        """Idle-window prewarms (picker cache, agent runtime imports) plus the redaction-off banner."""
         # Warm the /model picker cache off-thread (else its first open blocks ~1-2s).
         with suppress(Exception):
             from hermes_cli.model_switch_providers import prewarm_picker_cache_async
@@ -3632,24 +3620,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                     "[cyan]security.redact_secrets: true[/] in config.yaml "
                     "to re-enable."
                 )
-        # One-time banner when ~/.openclaw/ is left over from a migration.
-        try:
-            from agent.onboarding import (
-                OPENCLAW_RESIDUE_FLAG, detect_openclaw_residue, is_seen, mark_seen, openclaw_residue_hint_cli,
-            )
-            if not is_seen(self.config, OPENCLAW_RESIDUE_FLAG) and detect_openclaw_residue():
-                try:
-                    _resid_color = _welcome_skin.get_color("banner_dim", "#B8860B")
-                except Exception:
-                    _resid_color = "#B8860B"
-                self._console_print(f"[{_resid_color}]{openclaw_residue_hint_cli()}[/]")
-                try:
-                    from hermes_cli.config import get_config_path as _get_cfg_path_resid
-                    mark_seen(_get_cfg_path_resid(), OPENCLAW_RESIDUE_FLAG)
-                except Exception:
-                    pass  # banner fires again next session
-        except Exception:
-            pass
 
     def _tui_startup_background_maintenance(self):
         """Best-effort startup passes: curator skill maintenance, personal + org skill sync.

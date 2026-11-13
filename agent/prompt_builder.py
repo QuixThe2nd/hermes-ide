@@ -595,8 +595,8 @@ PLATFORM_HINTS = {
     "whatsapp_cloud": (
         "You are on WhatsApp (Meta Business Cloud API). Standard markdown auto-converts to WhatsApp syntax "
         "\u2014 write markdown freely. No tables \u2014 use bullets or labeled lines. "
-        f"{_MEDIA_NATIVE}Images (.jpg, .png) send as photos, videos (.mp4) inline, audio as voice/audio, other files as "
-        "documents; ![alt](url) works. NOTE: Meta refuses free-form replies when the user hasn't messaged in "
+        f"{_MEDIA_NATIVE}Images (.jpg, .png) send as photos, videos (.mp4) inline, other files (audio "
+        "included) as documents; ![alt](url) works. NOTE: Meta refuses free-form replies when the user hasn't messaged in "
         "24h (error 131047) \u2014 relevant only for delayed/scheduled sends."
     ),
     "telegram": (
@@ -604,8 +604,7 @@ PLATFORM_HINTS = {
         "*italic*, ~~strikethrough~~, ||spoiler||, `code`, ```blocks```, "
         "[links](url), ## headers. Prefer bullets or labeled lines for structured data (no tables). "
         f"{_MEDIA_NATIVE}Images (.png, .jpg, .webp) send as photos, videos (.mp4) play inline; image URLs via ![alt](url) send as "
-        "photos. Audio: add [[audio_as_voice]] on its own line to send ANY audio file as a native voice bubble "
-        "(non-Opus transcodes automatically); without it, .mp3/.m4a arrive as audio files, other formats as documents."
+        "photos. Audio and other files arrive as documents."
     ),
     "discord": (
         "You are in a Discord server or group chat communicating with your user. Discord renders standard "
@@ -687,15 +686,14 @@ PLATFORM_HINTS = {
         "blockquotes, and links render. Do NOT use tables (popular clients like Element X collapse them into run-on "
         "text \u2014 use '**Label:** value' lines or bullets), and avoid ||spoilers||, ~~strikethrough~~, and "
         "checkboxes (they appear as literal characters). Prefer [descriptive text](url) over bare URLs. "
-        f"{_MEDIA_NATIVE}Images send as inline photos, audio (.ogg, .mp3) as voice/audio "
-        "messages, video (.mp4) inline, other files as attachments."
+        f"{_MEDIA_NATIVE}Images send as inline photos, video (.mp4) inline, audio and other "
+        "files as attachments."
     ),
     "feishu": (
         "You are in a Feishu (Lark) workspace communicating with your user. Feishu renders Markdown in "
         "messages — bold, italic, code blocks, and links are supported. You can send media files natively: "
         "include MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, .webp) are uploaded and "
-        "displayed inline, audio files as native voice messages (non-Opus formats are transcoded "
-        "automatically; without ffmpeg they fall back to file attachments), and other files as attachments."
+        "displayed inline, and audio and other files as downloadable attachments."
     ),
     "weixin": (
         "You are on Weixin/WeChat. Markdown formatting is supported, so you may use it when it improves readability, "
@@ -744,16 +742,10 @@ WSL_ENVIRONMENT_HINT = (
 
 # Backends that run commands (and every file tool) in a separate container / remote host: host OS/$HOME/cwd
 # would mislead, so the agent only sees the machine it can touch.
-_REMOTE_TERMINAL_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "ssh", "vercel_sandbox", "managed_modal"})
+_REMOTE_TERMINAL_BACKENDS = frozenset({"ssh"})
 
 # Used when the live probe fails: only what the backend choice implies — never an invented cwd/user/$HOME.
 _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
-    "docker": "a Docker container (Linux)",
-    "singularity": "a Singularity container (Linux)",
-    "modal": "a Modal sandbox (Linux)",
-    "managed_modal": "a managed Modal sandbox (Linux)",
-    "daytona": "a Daytona workspace (Linux)",
-    "vercel_sandbox": "a Vercel sandbox (Linux)",
     "ssh": "a remote host reached over SSH (likely Linux)",
 }
 
@@ -823,8 +815,6 @@ def _tenv_read(name: str, default: str = "") -> str:
     return terminal_env(name, default)
 
 
-_BACKEND_IMAGE_KEYS = {b: f"{b}_image" for b in ("docker", "singularity", "modal", "daytona")}
-# (config key, default) pairs forwarded to _create_environment's container_config.
 # Single-line POSIX probe; `2>/dev/null` keeps a missing binary from polluting output.
 _BACKEND_PROBE_CMD = (
     "printf 'os=%s\\nkernel=%s\\nhome=%s\\ncwd=%s\\nuser=%s\\n' \"$(uname -s 2>/dev/null || echo unknown)\" "
@@ -835,18 +825,14 @@ _BACKEND_PROBE_CMD = (
 
 def _run_backend_probe(env_type: str, terminal_tool) -> str:
     """Execute the probe command inside a freshly built backend; "" when it yields nothing."""
-    from tools.terminal_tool_backends import _container_config_from_config, _create_environment, _ssh_config_from_config
+    from tools.terminal_tool_backends import _create_environment, _ssh_config_from_config
     from tools.terminal_tool_lifecycle import _cleanup_env
 
     config = terminal_tool._get_env_config()
-    # Same container_config shaper as the live terminal path: a private copy of the key table here
-    # drifted (no docker_network) and gave the probe a bridge-networked container under lockdown.
     env = _create_environment(
-        env_type=env_type, image=config.get(_BACKEND_IMAGE_KEYS[env_type], "") if env_type in _BACKEND_IMAGE_KEYS else "", cwd=config.get("cwd", ""),
+        env_type=env_type, image="", cwd=config.get("cwd", ""),
         timeout=config.get("timeout", 180),
         ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
-        container_config=(_container_config_from_config(config)
-                          if terminal_tool._is_container_backend(env_type) else None),
         task_id="prompt-backend-probe", host_cwd=config.get("host_cwd"),
         # Only ssh honors this: an isolated ControlMaster socket and no remote dir setup / file sync /
         # snapshot. A normal SSHEnvironment would upload the whole ~/.hermes tree just to run `uname`,

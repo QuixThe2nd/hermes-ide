@@ -1,8 +1,7 @@
 # Durable & Background Systems
 
 Three systems run alongside the main conversation loop. Quick reference
-here; full developer notes live in `AGENTS.md`, user-facing docs under
-`website/docs/user-guide/features/`.
+here; full developer notes live in `AGENTS.md`.
 
 ### Delegation (`delegate_agent`)
 

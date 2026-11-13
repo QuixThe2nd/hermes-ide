@@ -102,7 +102,6 @@ WHERE hidden = 0
 LINEAGE_WORKER_SOURCES = frozenset((
     "subagent",         # delegate_tool children
     "tool",             # sessions launched by a tool integration
-    "kanban",           # historical kanban board workers
     "research-worker",  # deep_research lane/synthesis runs
 ))
 

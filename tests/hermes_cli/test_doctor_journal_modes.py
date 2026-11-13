@@ -368,19 +368,14 @@ class TestReportDatabaseJournalModes:
     def test_lists_every_managed_database(self, tmp_path, capsys):
         _make_db(tmp_path / "state.db", journal_mode="WAL")
         _make_db(tmp_path / "projects.db")
-        _make_db(tmp_path / "kanban.db")
-        board = tmp_path / "kanban" / "boards" / "myboard"
-        board.mkdir(parents=True)
-        _make_db(board / "kanban.db", journal_mode="WAL")
+        _make_db(tmp_path / "response_store.db", journal_mode="WAL")
 
         doctor_platform._report_database_journal_modes(tmp_path, VULNERABLE)
 
         out = capsys.readouterr().out
         assert "state.db is in WAL mode" in out
         assert "projects.db: rollback journal mode" in out
-        assert "kanban.db: rollback journal mode" in out
-        board_rel = os.path.join("kanban", "boards", "myboard", "kanban.db")
-        assert f"{board_rel} is in WAL mode" in out
+        assert "response_store.db is in WAL mode" in out
 
     def test_missing_databases_are_skipped(self, tmp_path, capsys):
         doctor_platform._report_database_journal_modes(tmp_path, VULNERABLE)

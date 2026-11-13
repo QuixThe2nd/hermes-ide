@@ -200,7 +200,7 @@ class GatewayProfileReconcileMixin:
         if isinstance(gate_warnings, list):
             drop_prefix = f"{name}:"
             gate_warnings[:] = [w for w in gate_warnings if not w.startswith(drop_prefix)]
-        for attr in ("pairing_stores", "_busy_text_modes_by_profile", "_busy_input_modes_by_profile"):
+        for attr in ("pairing_stores",):
             store = getattr(self, attr, None)
             if isinstance(store, dict):
                 store.pop(name, None)

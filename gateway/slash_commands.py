@@ -34,7 +34,6 @@ from gateway.session_transcript import TranscriptReadError
 from gateway.slash_commands_goals import GatewayGoalCommandsMixin
 from gateway.slash_commands_model import GatewayModelCommandsMixin
 from gateway.slash_commands_session import GatewaySessionCommandsMixin
-from gateway.slash_commands_login import GatewayLoginCommandsMixin
 from gateway.slash_commands_status import HISTORY_UNREADABLE, GatewayStatusCommandsMixin
 from hermes_cli.config import atomic_config_write, cfg_get
 from utils import atomic_json_write, is_truthy_value
@@ -162,7 +161,6 @@ class _RestartMarkerAttempt:
 
 
 class GatewaySlashCommandsMixin(
-    GatewayLoginCommandsMixin,
     GatewayModelCommandsMixin,
     GatewaySessionCommandsMixin,
     GatewayStatusCommandsMixin,

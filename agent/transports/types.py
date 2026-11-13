@@ -82,7 +82,6 @@ class NormalizedResponse:
     # Order-preserving Anthropic blocks, present only when a turn interleaves signed
     # thinking with tool_use (replay order invalidates signatures otherwise).
     anthropic_content_blocks = property(lambda self: self._pd("anthropic_content_blocks"))
-    bedrock_content_blocks = property(lambda self: self._pd("bedrock_content_blocks"))  # order-preserving Converse blocks
     codex_reasoning_items = property(lambda self: self._pd("codex_reasoning_items"))
     codex_message_items = property(lambda self: self._pd("codex_message_items"))
 

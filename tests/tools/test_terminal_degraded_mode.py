@@ -80,25 +80,6 @@ class TestExceptionClassification:
         with pytest.raises(EnvironmentConnectionError):
             SSHEnvironment(host="unreachable.invalid", user="nobody")
 
-    def test_docker_missing_executable_raises_connection_error(self, monkeypatch):
-        from tools.environments import docker as docker_env
-
-        monkeypatch.setattr(docker_env, "find_docker", lambda: None)
-        with pytest.raises(EnvironmentConnectionError):
-            docker_env._ensure_docker_available()
-
-    def test_docker_daemon_timeout_raises_connection_error(self, monkeypatch):
-        from tools.environments import docker as docker_env
-
-        monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-
-        def _timeout(*a, **k):
-            raise subprocess.TimeoutExpired(cmd="docker version", timeout=5)
-
-        monkeypatch.setattr(docker_env.subprocess, "run", _timeout)
-        with pytest.raises(EnvironmentConnectionError):
-            docker_env._ensure_docker_available()
-
     def test_connection_error_is_a_runtime_error(self):
         # Existing catchers of RuntimeError must keep working unchanged.
         assert issubclass(EnvironmentConnectionError, RuntimeError)
@@ -118,18 +99,6 @@ class TestDegradedToolResult:
         r = json.loads(isolated_env.terminal_tool("echo hi", task_id="t-degraded-ssh"))
         assert r["status"] == "degraded"
         assert r["exit_code"] == -1
-        assert "reason" in r and r["reason"]
-        assert "retry_hint" in r and r["retry_hint"]
-        assert "traceback" not in r
-
-    def test_docker_daemon_down_returns_degraded_result(self, isolated_env, monkeypatch):
-        monkeypatch.setenv("TERMINAL_ENV", "docker")
-        monkeypatch.delenv("TERMINAL_DEGRADED_MODE", raising=False)
-        monkeypatch.setattr(isolated_env, "_maybe_reap_docker_orphans", lambda _cc: None)
-        monkeypatch.setattr("tools.environments.docker.find_docker", lambda: None)
-
-        r = json.loads(isolated_env.terminal_tool("echo hi", task_id="t-degraded-docker"))
-        assert r["status"] == "degraded"
         assert "reason" in r and r["reason"]
         assert "retry_hint" in r and r["retry_hint"]
         assert "traceback" not in r
@@ -203,19 +172,24 @@ class TestFailModePreservesRaiseBehavior:
 
 class TestConfigBridging:
     def test_degraded_mode_is_bridged_everywhere(self):
-        """terminal.degraded_mode must ride every config->env bridge path,
-        same four-site invariant as the docker_* keys."""
-        from tests.tools.test_terminal_config_env_sync import (
-            _cli_env_map_keys,
-            _gateway_env_map_keys,
-            _save_config_env_sync_keys,
-            _terminal_tool_env_var_names,
-        )
+        """terminal.degraded_mode must ride every config->env bridge path
+        (cli.py, gateway/run.py, set_config_value, terminal_tool consumption)."""
+        import inspect
+        import re
 
-        assert "degraded_mode" in _cli_env_map_keys()
-        assert "degraded_mode" in _gateway_env_map_keys()
-        assert "degraded_mode" in _save_config_env_sync_keys()
-        assert "TERMINAL_DEGRADED_MODE" in _terminal_tool_env_var_names()
+        import cli
+        import gateway.run as gw_run
+        import hermes_cli.config as hc_config
+        import tools.terminal_tool as tt
+
+        assert "degraded_mode" in cli._TERMINAL_ENV_MAPPINGS
+        gw_source = inspect.getsource(gw_run)
+        m = re.search(r"_terminal_env_map = \{(.*?)\}", gw_source, re.DOTALL)
+        assert m and '"degraded_mode"' in m.group(1)
+        assert "degraded_mode" in hc_config.TERMINAL_CONFIG_ENV_MAP
+        assert "TERMINAL_DEGRADED_MODE" in set(
+            re.findall(r'["\'](TERMINAL_[A-Z0-9_]+)["\']', inspect.getsource(tt))
+        )
 
     def test_default_config_carries_degraded_mode(self):
         from hermes_cli.config_defaults import DEFAULT_CONFIG

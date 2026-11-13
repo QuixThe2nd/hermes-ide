@@ -6,8 +6,8 @@ account (``POST /api/anonymous/create``); its ``anon_`` credential is later exch
 JWTs (``POST /api/anonymous/token``). The result is persisted as the singleton ``providers.nous``; it
 becomes ``active_provider`` only when the bootstrap's inventory found nothing else usable, so an
 install with its own key keeps that key for inference and uses the identity for connectors only. In
-the resolver ladder (``resolve_provider``) an existing free-tier identity sits directly above the
-implicit AWS Bedrock chain (NS-829): any explicit provider (env key, ``model.provider``, OpenRouter
+the resolver ladder (``resolve_provider``) an existing free-tier identity sits below every
+explicit-intent rung (NS-829): any explicit provider (env key, ``model.provider``, OpenRouter
 pool, a logged-in ``active_provider``) beats it, and the ladder never creates one.
 
 Only two mechanics differ from an OAuth login and both are isolated behind ``is_guest_state``:

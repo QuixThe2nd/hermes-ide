@@ -39,7 +39,7 @@ class TestSpacedPaths:
         media, cleaned = BasePlatformAdapter.extract_media(
             f"MEDIA:{p} is the log you asked for"
         )
-        assert [os.path.realpath(x) for x, _ in media] == [os.path.realpath(str(p))]
+        assert [os.path.realpath(x) for x in media] == [os.path.realpath(str(p))]
         assert "is the log you asked for" in cleaned
 
 
@@ -51,7 +51,7 @@ class TestSpacedPaths:
         media, cleaned = BasePlatformAdapter.extract_media(
             f"MEDIA:{a} MEDIA:{b}"
         )
-        got = sorted(os.path.realpath(x) for x, _ in media)
+        got = sorted(os.path.realpath(x) for x in media)
         assert got == sorted(
             [os.path.realpath(str(a)), os.path.realpath(str(b))]
         )

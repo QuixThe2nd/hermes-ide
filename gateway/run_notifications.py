@@ -303,7 +303,7 @@ class GatewayNotificationsMixin:
         with _log_suppressed(logging.WARNING, "Post-stream media extraction failed: %s"):
             # Capture [[as_document]] before extract_media strips it: images then go via send_document.
             force_document_attachments = "[[as_document]]" in response
-            from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
+            from gateway.platforms.base import BasePlatformAdapter
             media_files, cleaned = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
             # Strip image URLs (parity with the non-streaming chain); no extract_local_files here.
@@ -322,26 +322,22 @@ class GatewayNotificationsMixin:
             )
             chat_id = event.source.chat_id
             # Images go out as one batch (e.g. Signal's multi-attachment RPC) unless [[as_document]].
-            def _is_photo(media_path: str, is_voice: bool) -> bool:
+            def _is_photo(media_path: str) -> bool:
                 ext = Path(media_path).suffix.lower()
-                return ext in _IMAGE_EXTS and not is_voice and not force_document_attachments
+                return ext in _IMAGE_EXTS and not force_document_attachments
 
-            image_paths = [p for p, v in media_files if _is_photo(p, v)]
-            non_image_media = [(p, v) for p, v in media_files if not _is_photo(p, v)]
+            image_paths = [p for p in media_files if _is_photo(p)]
+            non_image_media = [p for p in media_files if not _is_photo(p)]
             if image_paths:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
                     await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
-            for media_path, is_voice in non_image_media:
+            for media_path in non_image_media:
                 try:
                     ext = Path(media_path).suffix.lower()
-                    if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
-                            chat_id=chat_id, audio_path=media_path, metadata=_thread_meta, is_voice=is_voice,
-                        )
-                    elif ext in _VIDEO_EXTS:
+                    if ext in _VIDEO_EXTS:
                         await adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=_thread_meta)
                     else:
                         await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)

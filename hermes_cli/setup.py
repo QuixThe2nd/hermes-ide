@@ -457,8 +457,8 @@ def setup_model_provider(config: dict, *, quick: bool = False):
             print_info(line)
 
     # Re-sync from disk in place: cmd_model saved via its own load/save cycle and the wizard's
-    # final save_config(config) must not clobber it with stale values. Rotation, vision and TTS
-    # keep safe defaults (configure via `hermes auth add` / `hermes setup tts`).
+    # final save_config(config) must not clobber it with stale values. Rotation and vision
+    # keep safe defaults (configure via `hermes auth add`).
     config.clear()
     config.update(load_config())
     save_config(config)
@@ -653,7 +653,6 @@ def _record_send_consent_change(*, enabled: bool) -> None:
 from hermes_cli.setup_terminal import setup_terminal_backend  # noqa: E402
 from hermes_cli.setup_platforms import setup_gateway  # noqa: E402
 from hermes_cli.setup_summary import _print_setup_summary  # noqa: E402,F401
-from hermes_cli.setup_migration import _offer_openclaw_migration, _skip_configured_section  # noqa: E402
 from hermes_cli.setup_quick import _run_portal_one_shot, _run_quick_setup  # noqa: E402
 
 
@@ -694,41 +693,27 @@ def _run_setup_section(config: dict, section: str) -> None:
     print_success(f"{label} configuration complete!")
 
 
-def _run_full_setup(config: dict, hermes_home, *, is_existing: bool, migration_ran: bool) -> None:
-    """Full Setup — run all sections, honoring post-migration skips."""
+def _run_full_setup(config: dict, hermes_home, *, is_existing: bool) -> None:
+    """Full Setup — run all sections."""
     print_header("Configuration Location")
     _info(f"Config file:  {get_config_path()}", f"Secrets file: {get_env_path()}",
           f"Data folder:  {hermes_home}", f"Install dir:  {PROJECT_ROOT}", None,
           "You can edit these files directly or use 'hermes config edit'")
-    if migration_ran:
-        _info(None, "Settings were imported from OpenClaw.",
-              "Each section below will show what was imported — press Enter to keep,",
-              "or choose to reconfigure if needed.")
 
     # Agent Settings are not prompted: first installs get defaults, existing keep theirs.
     if not is_existing:
         _apply_default_agent_settings(config)
 
-    def _skip(key: str, label: str) -> bool:
-        return migration_ran and _skip_configured_section(config, key, label)
-
     def _gateway_step() -> None:
-        if not _skip("gateway", "Messaging Platforms"):
-            setup_gateway(config)
-            return
-        # A skipped (migrated) gateway section still needs its service so imported platforms
-        # and cron jobs become active.
+        setup_gateway(config)
         from hermes_cli.gateway import ensure_gateway_service
         ensure_gateway_service(context="setup")
 
-    def _step(key: str, label: str, run) -> tuple:
-        return label, lambda: None if _skip(key, label) else run()
-
     _run_setup_steps([
-        _step("model", "Model & Provider", lambda: setup_model_provider(config)),
-        _step("terminal", "Terminal Backend", lambda: setup_terminal_backend(config)),
+        ("Model & Provider", lambda: setup_model_provider(config)),
+        ("Terminal Backend", lambda: setup_terminal_backend(config)),
         ("Messaging Platforms", _gateway_step),
-        _step("tools", "Tools", lambda: setup_tools(config, first_install=not is_existing))])
+        ("Tools", lambda: setup_tools(config, first_install=not is_existing))])
 
 
 # First-time mode picker: (menu label, setup_quick runner name) — None falls through to Full Setup.
@@ -782,10 +767,9 @@ def _run_setup_wizard_impl(args):
                   "├─────────────────────────────────────────────────────────┤",
                   "│  Let's configure your Hermes Agent installation.       │",
                   "│  Press Ctrl+C at any time to exit.                     │")
-    migration_ran = False
     if is_existing:
         # Full reconfigure wizard is the default (Enter keeps each current value); `--quick`
-        # narrows it to missing items (partial OpenClaw import, cleared key). --reconfigure is a
+        # narrows it to missing items (partial import, cleared key). --reconfigure is a
         # backwards-compatible no-op here.
         if quick_requested:
             _run_setup_steps([("Quick Setup", lambda: _run_quick_setup(config, hermes_home))])
@@ -801,16 +785,13 @@ def _run_setup_wizard_impl(args):
         print()
         if reconfigure_requested or quick_requested:
             _info("No existing configuration found — running first-time setup.", None)
-        migration_ran = _offer_openclaw_migration(hermes_home)  # before configuration begins
-        if migration_ran:
-            config = load_config()
         setup_mode = prompt_choice("How would you like to set up Hermes?", [label for label, _ in _FIRST_TIME_MODES], 0)
         label, runner = _FIRST_TIME_MODES[setup_mode]
         if runner is not None:
             from hermes_cli import setup_quick
             _run_setup_steps([(label, lambda: getattr(setup_quick, runner)(config, hermes_home, is_existing))])
             return
-    _run_full_setup(config, hermes_home, is_existing=is_existing, migration_ran=migration_ran)
+    _run_full_setup(config, hermes_home, is_existing=is_existing)
 
     # Save and show summary
     save_config(config)

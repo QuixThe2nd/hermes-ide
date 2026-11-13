@@ -1100,7 +1100,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     # non-streaming paths share the same regex, so a tag is treated identically whichever path delivered the
     # text.
     def _clean_for_display(text: str) -> str:
-        """Hide MEDIA:<path> / [[audio_as_voice]] directives; media is delivered post-stream."""
+        """Hide MEDIA:<path> directives; media is delivered post-stream."""
         return _BasePlatformAdapter.strip_media_directives_for_display(text)
 
     # ── fork overrides on the transport mixin (reply-ping only on the final answer,

@@ -296,22 +296,3 @@ class TestYamlConfigLoading:
         assert os.environ.get("DISCORD_REPLY_TO_MODE") == "all"
 
 
-class TestVoiceReplyReference:
-    """send_voice builds its reply reference from ids too — same no-fetch
-    pin as the text path (construction happens before the file read)."""
-
-    @pytest.mark.asyncio
-    async def test_voice_reply_constructs_reference_without_fetch(self, tmp_path, monkeypatch):
-        adapter, channel, _ = _make_discord_adapter("first")
-        audio = tmp_path / "clip.ogg"
-        audio.write_bytes(b"OggS" + b"\x00" * 64)
-        monkeypatch.setattr(adapter, "_is_forum_parent", lambda _c: True)
-        forum_posts = []
-        async def fake_forum_post(_channel, **kwargs):
-            forum_posts.append(kwargs)
-            return MagicMock(success=True, message_id="77")
-        monkeypatch.setattr(adapter, "_forum_post_file", fake_forum_post)
-
-        await adapter.send_voice("12345", str(audio), reply_to="999", metadata={"notify": True})
-
-        channel.fetch_message.assert_not_called()

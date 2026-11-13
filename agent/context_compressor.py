@@ -1219,7 +1219,7 @@ _REPLAY_BUDGET_KEYS = "reasoning", "reasoning_content", "codex_reasoning_items",
 
 # Keys replayed on EVERY retained assistant turn: Codex items ride every request and message items are needed
 # for prefix-cache continuity. Generic thinking keys ship for the newest turn only elsewhere (Anthropic strips
-# older, Bedrock never replays, strict chat-completions reject or pad the field); charging them everywhere overcut.
+# older turns are never replayed, strict chat-completions reject or pad the field); charging them everywhere overcut.
 _ALWAYS_REPLAYED_BUDGET_KEYS = "codex_reasoning_items", "codex_message_items"
 _NEWEST_TURN_ONLY_BUDGET_KEYS = "reasoning", "reasoning_content"
 
@@ -1784,7 +1784,6 @@ _TOOL_RESULT_SUMMARIZERS = {
     "memory": _sum_template("[memory] {action} on {target}", action="?", target="?"),
     "todo_list": lambda *a: "[todo] updated task list",
     "clarify": _sum_clarify,
-    "text_to_speech": _sum_template("[text_to_speech] generated audio ({content_len:,} chars)"),
     "cronjob_manage": _sum_template("[cronjob] {action}", action="?"),
     "process_manage": _sum_template("[process] {action} session={session_id}", action="?", session_id="?"),
 }
@@ -4961,7 +4960,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Fold the summary into a carried tail row (in place) when no standalone role alternates."""
         old_content = msg.get("content", "")
         if force_user_leading and summary_role == "user":
-            # Anthropic/Bedrock: summary must lead the first visible message; the real request
+            # Anthropic: summary must lead the first visible message; the real request
             # follows the end marker.
             msg["content"] = _append_text_to_content(old_content, summary + "\n\n" + _SUMMARY_END_MARKER + "\n\n", prepend=True)
         else:

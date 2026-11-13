@@ -37,16 +37,6 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "interim_assistant_messages": True,
     "suppress_warning_notifications": False,
     "busy_ack_detail": True,
-    # Whether busy_input_mode=steer sends a visible "Steered into current run"
-    # acknowledgment after successfully injecting the user's mid-turn message.
-    # Disable when the platform should steer silently (the text still lands in
-    # the active run; only the confirmation echo is suppressed).
-    "busy_steer_ack_enabled": True,
-    # Whether steer mode ALSO sends the follow-up "✅ Steer delivered" bubble
-    # at the moment the steered text is actually injected into the model's
-    # context (the immediate ack only promises that it WILL arrive). Disable
-    # to keep only the initial acknowledgment.
-    "busy_steer_delivered_ack_enabled": True,
     # When true, delete tool-progress / status bubbles
     # after the final response lands on platforms that support message
     # deletion (e.g. Telegram). Off by default — progress is still shown
@@ -217,9 +207,6 @@ _NORMALISERS: dict[str, Any] = {
     "interim_assistant_messages": _norm_bool,
     "suppress_warning_notifications": _norm_suppress_warning_notifications,
     "busy_ack_detail": _norm_bool,
-    "busy_steer_ack_enabled": _norm_bool,
-    # Fork additions: the second steer ack + live retry-progress rail.
-    "busy_steer_delivered_ack_enabled": _norm_bool,
     "retry_progress": _norm_bool,
     "thinking_progress": _norm_bool,
     "cleanup_progress": _norm_cleanup_progress,

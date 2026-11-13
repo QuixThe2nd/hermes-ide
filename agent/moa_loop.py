@@ -27,6 +27,8 @@ from agent.moa_alternation import destination_key, is_role_alternation_rejection
 from agent.transports import get_transport
 from agent.usage_pricing import CanonicalUsage
 
+from prompts.load import load
+
 logger = logging.getLogger(__name__)
 
 # Privacy filter (moa.privacy_filter: '' | display | full): PII classes agent.redact
@@ -186,36 +188,7 @@ _REFERENCE_TOOL_RESULT_BUDGET = 4000
 
 # Reference system prompt: without this framing a reference assumes it is the acting
 # agent and refuses ("I can't access repositories") or tries to call tools.
-_REFERENCE_SYSTEM_PROMPT = (
-    "You are a reference advisor in a Mixture of Agents (MoA) process. You are "
-    "NOT the acting agent and you do NOT execute anything: you cannot call "
-    "tools, run commands, browse, or access files, repositories, or URLs, and "
-    "you should not try to or apologize for being unable to. A separate "
-    "aggregator/orchestrator model holds those capabilities and will take the "
-    "actual actions.\n\n"
-    "CRITICAL: You must NEVER claim or imply that you have executed a command, "
-    "downloaded a file, accessed a URL, or performed any action. You can only "
-    "analyze and advise based on the conversation context. Examples of what to "
-    "avoid:\n"
-    "- Bad: \"I ran curl and got 404.\"\n"
-    "- Bad: \"I downloaded the file successfully.\"\n"
-    "- Bad: \"I checked the repository and found...\"\n"
-    "- Good: \"Based on the error pattern, a curl request to that URL would likely return 404.\"\n"
-    "- Good: \"The conversation suggests downloading this file may help.\"\n"
-    "- Good: \"From the context, checking the repository would reveal...\"\n\n"
-    "The conversation below is the current state of a task handled by that "
-    "acting agent. Your job is to give your most intelligent analysis of that "
-    "state: understand the goal, reason about the problem, and advise on what "
-    "to do next. Surface the best approach, concrete next steps and tool-use "
-    "strategy, likely pitfalls and risks, and anything the acting agent may "
-    "have missed or gotten wrong. Assume any referenced files, URLs, or "
-    "systems exist and reason about them from the context given rather than "
-    "asking for access.\n\n"
-    "Respond with your advice directly — no preamble, no disclaimers about "
-    "tools or access. Your response is private guidance handed to the "
-    "aggregator, not an answer shown to the user. NEVER claim to have executed "
-    "anything."
-)
+_REFERENCE_SYSTEM_PROMPT = load("moa_reference_system")
 
 
 def _slot_label(slot: dict[str, Any]) -> str:

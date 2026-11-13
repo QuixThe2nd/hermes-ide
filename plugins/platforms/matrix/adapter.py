@@ -17,15 +17,12 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
 from __future__ import annotations
 
 import asyncio
-import array
 import inspect
 from contextlib import suppress
 import logging
 import mimetypes
 import os
 import re
-import shutil
-import subprocess
 import sys
 import time
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -65,86 +62,11 @@ from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
 )
-from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
 from plugins.platforms.matrix.adapter_inbox import MatrixInboxRouter, parse_inbox_rooms
 
 logger = logging.getLogger(__name__)
-
-_MATRIX_VOICE_WAVEFORM_BINS = 30
-
-
-def _run_media_tool(cmd: list, *, timeout: int, text: bool = False):
-    """Run ffmpeg/ffprobe with captured output and no stdin."""
-    return subprocess.run(cmd, capture_output=True, text=text, timeout=timeout, stdin=subprocess.DEVNULL)
-
-
-def _matrix_voice_metadata_for_file(path: Path) -> Dict[str, Any]:
-    """Best-effort duration + MSC1767 waveform for voice bubbles; must work without ffprobe/ffmpeg."""
-    metadata: Dict[str, Any] = {}
-    ffprobe = shutil.which("ffprobe")
-    if ffprobe:
-        try:
-            result = _run_media_tool(
-                [ffprobe, "-v", "error", "-show_entries", "format=duration", "-of",
-                 "default=noprint_wrappers=1:nokey=1", str(path)], timeout=10, text=True)
-            if result.returncode == 0:
-                duration = float((result.stdout or "").strip() or 0)
-                if duration > 0:
-                    metadata["duration"] = int(duration * 1000)
-        except Exception:
-            logger.debug("Matrix: failed to probe voice duration for %s", path, exc_info=True)
-    ffmpeg = shutil.which("ffmpeg")
-    if ffmpeg:
-        try:
-            result = _run_media_tool(
-                [ffmpeg, "-v", "error", "-i", str(path), "-ac", "1", "-ar", "8000", "-f", "s16le", "-"], timeout=15)
-            if result.returncode == 0 and result.stdout:
-                samples = array.array("h")
-                samples.frombytes(result.stdout)
-                if sys.byteorder != "little":
-                    samples.byteswap()
-                if samples:
-                    count, bins = len(samples), _MATRIX_VOICE_WAVEFORM_BINS
-                    waveform = []
-                    for idx in range(bins):
-                        start = idx * count // bins
-                        peak = max(abs(v) for v in samples[start:max(start + 1, (idx + 1) * count // bins)])
-                        waveform.append(min(1024, int(peak / 32767 * 1024)))
-                    metadata["waveform"] = waveform
-        except Exception:
-            logger.debug("Matrix: failed to build voice waveform for %s", path, exc_info=True)
-    return metadata
-
-_MATRIX_BANG_COMMAND_RE = re.compile(r"^!([A-Za-z][A-Za-z0-9_-]*)(?=$|\s)(.*)$", re.DOTALL)
-
-
-def _resolve_matrix_bang_command(name: str) -> str | None:
-    """Resolve a ``!command`` token (Matrix clients reserve ``/``) to a dispatchable token.
-    Only known gateway/skill commands resolve, so ordinary exclamations stay chat text. Returns
-    whichever candidate resolved — raw lowercased first, then ``_``→``-`` — never a forced
-    canonical form: aliases pass through for the dispatcher."""
-    if not name:
-        return None
-    candidates = list(dict.fromkeys((name.lower(), name.lower().replace("_", "-"))))
-    try:
-        from hermes_cli.commands import is_gateway_known_command
-        for candidate in candidates:
-            if is_gateway_known_command(candidate):
-                return candidate
-    except Exception:
-        logger.debug("Matrix: is_gateway_known_command failed for %r", name, exc_info=True)
-    try:
-        from agent.skill_commands import get_skill_commands
-        skill_commands = get_skill_commands() or {}  # keys are slash-prefixed ("/arxiv")
-        for candidate in candidates:
-            if f"/{candidate}" in skill_commands:
-                return candidate
-    except Exception:
-        logger.debug("Matrix: get_skill_commands failed for %r", name, exc_info=True)
-    return None
-
 
 def _normalize_matrix_bang_command(text: str) -> str:
     """Convert Matrix ``!command`` aliases to normal Hermes ``/command`` text."""
@@ -1595,26 +1517,6 @@ class MatrixAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         return await self._send_local_file(chat_id, file_path, "m.file", caption, reply_to, file_name, metadata)
 
-    async def send_voice(
-        self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Upload audio as an MSC3245 voice message. Voice bubbles need Ogg/Opus but callers pass any
-        format (e.g. TTS output), so transcode here — best-effort: without ffmpeg the original is sent."""
-        converted_path: Optional[str] = None
-        if not str(audio_path).lower().endswith((".ogg", ".oga", ".opus")):
-            # 48k (not the 32k default): Element renders voice bubbles at a higher quality tier.
-            converted_path = await asyncio.to_thread(transcode_to_ogg_opus, audio_path, bitrate="48k", timeout=30)
-        try:
-            return await self._send_local_file(
-                chat_id, converted_path or audio_path, "m.audio", caption, reply_to,
-                # keep the caller's basename (the temp transcode file has a generated name)
-                file_name=(Path(audio_path).with_suffix(".ogg").name if converted_path else None),
-                metadata=metadata, is_voice=True)
-        finally:
-            if converted_path:
-                with suppress(OSError):
-                    os.unlink(converted_path)
-
     async def send_video(
         self, chat_id: str, video_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
@@ -1709,8 +1611,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _upload_and_send(
         self, room_id: str, data: bytes, filename: str, content_type: str, msgtype: str,
-        caption: Optional[str] = None, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
-        is_voice: bool = False, voice_metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        caption: Optional[str] = None, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if len(data) > self._max_media_bytes:
             return self._media_too_large(len(data))
         upload_data = data
@@ -1734,14 +1635,6 @@ class MatrixAdapter(BasePlatformAdapter):
             msg_content["file"] = {**encrypted_file.serialize(), "url": str(mxc_url)}
         else:
             msg_content["url"] = str(mxc_url)
-        if is_voice:  # MSC3245 native voice flag + MSC1767 audio metadata
-            msg_content["org.matrix.msc3245.voice"] = {}
-            audio_metadata = {
-                k: v for k in ("duration", "waveform") if (v := (voice_metadata or {}).get(k)) is not None}
-            if "duration" in audio_metadata:
-                msg_content["info"]["duration"] = audio_metadata["duration"]
-            if audio_metadata:
-                msg_content["org.matrix.msc1767.audio"] = audio_metadata
         reply_to = self._inbox_router.child_reply_anchor(room_id, reply_to)
         self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
         return await self._send_content_event(room_id, msg_content)
@@ -1772,8 +1665,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _send_local_file(
         self, room_id: str, file_path: str, msgtype: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, file_name: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
-        is_voice: bool = False) -> SendResult:
+        reply_to: Optional[str] = None, file_name: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         p = Path(file_path).expanduser()
         if not p.exists():
             # file_path is host-local; never echo it into chat.
@@ -1787,12 +1679,9 @@ class MatrixAdapter(BasePlatformAdapter):
         if file_size > self._max_media_bytes:
             return self._media_too_large(file_size)
         fname = file_name or p.name
-        # ffprobe/ffmpeg probing is blocking (subprocess timeouts up to 15s) —
-        # run it off the event loop so voice uploads never stall the adapter.
-        voice_metadata = await asyncio.to_thread(_matrix_voice_metadata_for_file, p) if is_voice else None
         return await self._upload_and_send(
             room_id, p.read_bytes(), fname, mimetypes.guess_type(fname)[0] or "application/octet-stream", msgtype,
-            caption, reply_to, metadata, is_voice, voice_metadata)
+            caption, reply_to, metadata)
 
     async def _sync_loop(self) -> None:
         client = self._client

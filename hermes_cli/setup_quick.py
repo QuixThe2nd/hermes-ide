@@ -59,7 +59,7 @@ def _run_portal_one_shot(config: dict) -> None:
     from hermes_cli.setup import _info, _print_banner, print_error, print_info, print_success
     _print_banner("│     ☤ Hermes Setup — Nous Portal (one-shot)             │")
     _info(None, "  One subscription, 300+ models, plus the Tool Gateway:",
-          "    web search, image generation, TTS, browser automation",
+          "    web search, image generation, browser automation",
           "    — all routed through your Nous Portal sub.", None,
           "  Sign up: https://portal.nousresearch.com/manage-subscription", None)
 
@@ -94,7 +94,7 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
     # Step 1: Nous Portal — OAuth login + model selection (provider set to "nous" by the save).
     print_header("Nous Portal", gap=True)
     _info("One subscription, 300+ models, plus the Tool Gateway:",
-          "  web search, image generation, TTS, browser automation.",
+          "  web search, image generation, browser automation.",
           "Sign up: https://portal.nousresearch.com/manage-subscription", None)
 
     def _on_error(exc: Exception) -> None:

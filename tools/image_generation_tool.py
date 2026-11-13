@@ -282,11 +282,9 @@ def _upscale_image(image_url: str, original_prompt: str) -> Optional[Dict[str, A
 
 
 # --- Artifact path hinting for non-local terminal backends ---
-_CONTAINER_HOME_ENVS = {"DockerEnvironment", "SingularityEnvironment", "ModalEnvironment"}
 # No env yet: only deterministic cache roots translate side-effect free (SSH: tilde path; its
 # first sync uploads the cache file).
-_CACHE_BASE_BY_BACKEND = {"docker": "/root/.hermes", "singularity": "/root/.hermes",
-                          "modal": "/root/.hermes", "ssh": "~/.hermes"}
+_CACHE_BASE_BY_BACKEND = {"ssh": "~/.hermes"}
 
 
 def _looks_like_absolute_file_path(value: str) -> bool:
@@ -306,7 +304,8 @@ def _active_terminal_env(task_id: str | None):
 
 def _agent_cache_base_for_env(env: Any) -> str | None:
     if env is not None:
-        # Optional extension hook: an environment may expose its own agent-visible cache root.
+        # Optional extension hook: an environment may expose its own agent-visible cache root
+        # (plugin container backends use this; built-in remote backends expose _remote_home).
         explicit = getattr(env, "agent_visible_cache_base", None)
         if callable(explicit):
             try:
@@ -318,8 +317,6 @@ def _agent_cache_base_for_env(env: Any) -> str | None:
         remote_home = getattr(env, "_remote_home", None)
         if remote_home:
             return f"{str(remote_home).rstrip('/')}/.hermes"
-        if env.__class__.__name__ in _CONTAINER_HOME_ENVS:
-            return "/root/.hermes"
     from tools.terminal_scope import terminal_env
     backend = (terminal_env("TERMINAL_ENV") or "local").strip().lower()
     return _CACHE_BASE_BY_BACKEND.get(backend)

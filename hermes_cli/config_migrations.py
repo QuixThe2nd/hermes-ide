@@ -190,43 +190,6 @@ def _migrate_to_13(results: Dict[str, Any], quiet: bool) -> None:
             pass
 
 
-_LOCAL_WHISPER_MODELS = frozenset({
-    "tiny.en", "tiny", "base.en", "base", "small.en", "small",
-    "medium.en", "medium", "large-v1", "large-v2", "large-v3",
-    "large", "distil-large-v2", "distil-medium.en",
-    "distil-small.en", "distil-large-v3", "distil-large-v3.5",
-    "large-v3-turbo", "turbo"})
-
-
-def _migrate_to_14(results: Dict[str, Any], quiet: bool) -> None:
-    # 13 → 14: legacy flat stt.model → provider section. A provider-agnostic `stt.model` fed
-    # OpenAI names to faster-whisper ("Invalid model size"). Only the raw (user-written) config
-    # decides; a nested model the user already set is never overwritten.
-    raw_stt = read_raw_config().get("stt", {})
-    if not (isinstance(raw_stt, dict) and "model" in raw_stt):
-        return
-    legacy_model = raw_stt["model"]
-    provider = raw_stt.get("provider", "local")
-    config = read_raw_config()
-    stt = config.get("stt", {})
-    stt.pop("model", None)
-
-    def _place(section: str) -> None:
-        existing = raw_stt.get(section, {})
-        if not isinstance(existing, dict) or "model" not in existing:
-            stt.setdefault(section, {})["model"] = legacy_model
-
-    if provider in {"local", "local_command"}:
-        # An OpenAI model name is dropped; the local section already defaults to "base".
-        if legacy_model in _LOCAL_WHISPER_MODELS:
-            _place("local")
-    else:
-        _place(provider)
-    config["stt"] = stt
-    _commit(
-        config, results, quiet, None, "  ✓ Migrated legacy stt.model to provider-specific config")
-
-
 def _migrate_to_16(results: Dict[str, Any], quiet: bool) -> None:
     # 15 → 16: display.tool_progress_overrides → display.platforms.<plat>.tool_progress.
     config = read_raw_config()
@@ -1153,7 +1116,6 @@ def _migrate_to_46(results: Dict[str, Any], quiet: bool) -> None:
 MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (12, _migrate_to_12),
     (13, _migrate_to_13),
-    (14, _migrate_to_14),
     (16, _migrate_to_16),
     (17, _migrate_to_17),
     (21, _migrate_to_21),

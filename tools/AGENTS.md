@@ -1,7 +1,7 @@
 # tools/ + toolsets.py + model_tools.py — model tools
 
 Applies on top of the root `AGENTS.md`: settle the **Footprint Ladder** before adding anything here.
-Most capabilities should NOT be core tools. Long-form: `website/docs/developer-guide/adding-tools.md`,
+Most capabilities should NOT be core tools. Long-form: the adding-tools developer guide,
 `tools-runtime.md`.
 
 ## Registry and discovery
@@ -76,7 +76,7 @@ Camofox; set `CAMOFOX_URL` and optionally `CAMOFOX_API_KEY` to connect.
 ## Backends and providers inside tools/
 
 Several tools front pluggable backends: terminal environments in `tools/environments/` (local,
-docker, ssh, modal, daytona, singularity; `terminal_tool_backends.py`, `tool_backend_helpers.py`),
+ssh; `terminal_tool_backends.py`, plugin providers via `agent/terminal_env_registry.py`),
 Camofox browser support (`browser_tool.py`, `browser_camofox.py`, lifecycle/snapshot/policy siblings),
 MCP client (`mcp_tool_*.py`: config, discovery, transport, registration, content, errors),
 skills hub sources (`skills_hub_official.py`
@@ -144,7 +144,7 @@ delegation is process-local; work that must survive restart uses `cronjob` or
 idle paths, TUI `session.interrupt`, ACP `cancel`, CLI `/stop` via `interrupt_all`) calls
 `async_delegation.interrupt_for_session` too. Depth>0 delegations are always synchronous
 (`_model_background_value`), so the stop recurses through the child's own `_active_children` fan-out; an
-interrupted entry's `summary` is the child's last real assistant text (`_build_result_entry`). API: `website/docs/developer-guide/subagent-lifecycle-api.md`.
+interrupted entry's `summary` is the child's last real assistant text (`_build_result_entry`). API: see the subagent-lifecycle developer guide.
 
 ## Tests
 

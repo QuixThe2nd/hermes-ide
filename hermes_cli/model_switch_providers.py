@@ -372,36 +372,6 @@ def _azure_entra_configured(read_env=os.environ.get) -> bool:
     return bool(str(model_cfg.get("base_url") or "").strip() or read_env("AZURE_FOUNDRY_BASE_URL"))
 
 
-def _has_fast_aws_sdk_signal() -> bool:
-    """True when explicit AWS auth config is present in the environment.
-
-    Deliberately avoids botocore's full credential chain: picker discovery runs for non-Bedrock
-    providers too, and botocore may probe EC2 IMDS (169.254.169.254) before giving up."""
-    def _set(name: str) -> bool:
-        return bool(os.environ.get(name, "").strip())
-    return (
-        _set("AWS_BEARER_TOKEN_BEDROCK")
-        or (_set("AWS_ACCESS_KEY_ID") and _set("AWS_SECRET_ACCESS_KEY"))
-        or any(_set(name) for name in (
-            "AWS_PROFILE", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
-            "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_WEB_IDENTITY_TOKEN_FILE")))
-
-
-def _has_aws_sdk_creds_for_listing(slug: str, current_provider: str) -> bool:
-    """AWS SDK credential check; the full boto3 chain is only consulted for the *current* provider."""
-    if _has_fast_aws_sdk_signal():
-        return True
-    if str(slug or "").strip().lower() != str(current_provider or "").strip().lower():
-        return False
-    try:
-        from agent.bedrock_adapter import has_aws_credentials
-        return bool(has_aws_credentials())
-    except Exception:
-        return False
-
-
-def _is_aws_sdk(pconfig) -> bool:
-    return bool(pconfig) and getattr(pconfig, "auth_type", "") == "aws_sdk"
 
 
 def _live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str, merge_models_dev: bool = True,
@@ -428,16 +398,6 @@ def _first_curated(curated: dict, keys) -> list:
             break
     return model_ids
 
-
-def _aws_live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str,
-                             non_blocking: bool = False) -> list:
-    """Bedrock: live discovery reflects the active region (eu.*, ap.*) rather than the static
-    us.* list; any failure falls back to the curated list."""
-    try:
-        return _live_or_curated_ids(slug, curated, *fallback_keys, merge_models_dev=False,
-                                    non_blocking=non_blocking) or []
-    except Exception:
-        return _first_curated(curated, fallback_keys or (slug,)) or []
 
 
 def _nous_picker_model_ids(curated: dict, force_fresh_nous_tier: bool) -> list:
@@ -820,12 +780,9 @@ def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
 
 
 def _overlay_has_creds(b: _PickerBuild, pid: str, hermes_slug: str, overlay) -> bool:
-    """Section-2 credential ladder: env/SDK, external-process executable, auth store, pool,
+    """Section-2 credential ladder: env, external-process executable, auth store, pool,
     anthropic's external credential files."""
-    if overlay.auth_type == "aws_sdk":
-        has_creds = _has_aws_sdk_creds_for_listing(hermes_slug, b.current_provider)
-    else:
-        has_creds = _overlay_has_env_creds(pid, hermes_slug, overlay, os.environ.get)
+    has_creds = _overlay_has_env_creds(pid, hermes_slug, overlay, os.environ.get)
     # External-process providers (copilot-acp) hold no key/token/pool entry by design — the
     # spawned ACP subprocess brings its own auth. "Configured" means the executable resolves.
     # "Configured" means the executable resolves, which is exactly what get_auth_status() reports for them;
@@ -891,9 +848,6 @@ def _lap_overlay_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
             # appear; falls back to curated when unreachable (or not yet cached on the read path).
             model_ids = _live_or_curated_ids(hermes_slug, b.curated, merge_models_dev=False,
                                              non_blocking=b.non_blocking_catalogs)
-        elif overlay.auth_type == "aws_sdk":
-            model_ids = _aws_live_or_curated_ids(hermes_slug, b.curated, hermes_slug, pid,
-                                                 non_blocking=b.non_blocking_catalogs)
         elif hermes_slug == "nous":
             # A guest identity never needs the Portal catalog: add_builtin_row pins nous/welcome
             # (or drops the row when nous.guest is off), so only a real account fetches.
@@ -932,15 +886,11 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
             sib_vars = set(sib.api_key_env_vars) if sib else set()
             if lit and lit <= sib_vars < set(cp_config.api_key_env_vars) and cp.slug != b.current_provider:
                 continue
-        has_creds = has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug) or (
-            _is_aws_sdk(cp_config) and _has_aws_sdk_creds_for_listing(cp.slug, b.current_provider))
+        has_creds = has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug)
         if not has_creds:
             continue
-        if _is_aws_sdk(cp_config):
-            model_ids = _aws_live_or_curated_ids(cp.slug, b.curated, non_blocking=b.non_blocking_catalogs)
-        else:
-            model_ids = _live_or_curated_ids(cp.slug, b.curated, merge_models_dev=False,
-                                             non_blocking=b.non_blocking_catalogs)
+        model_ids = _live_or_curated_ids(cp.slug, b.curated, merge_models_dev=False,
+                                         non_blocking=b.non_blocking_catalogs)
         b.add_builtin_row(
             cp.slug, cp.label, cp.slug == b.current_provider, model_ids, "canonical", uncapped_ok=False)
 

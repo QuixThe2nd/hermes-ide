@@ -24,7 +24,7 @@ The biggest piece of that machinery is Discord. This fork is **Discord First**: 
 
 ## Discord First
 
-Start with a home server: a new Discord server for just you and your bot, then run `/sethomeserver`. Consider it mission control. Hermes builds the whole house in one pass: Notifications, Lounges, Honcho Memory, Models, and Speeds, with Notifications at the top. Moving an existing home server needs confirmation, because even Discord layout changes have somehow acquired paperwork.
+Start with a home server: a new Discord server for just you and your bot, then run `/sethomeserver`. Consider it mission control. Hermes builds the whole house in one pass: Notifications, Lounges, Models, and Speeds, with Notifications at the top. Moving an existing home server needs confirmation, because even Discord layout changes have somehow acquired paperwork.
 
 The home_server plugin keeps that layout in sync. It checks at most hourly, but the template fingerprint bypasses the wait when the layout changes, so new or reordered channels appear straight away. It is idempotent, keeps categories and channels in template order, never deletes anything, renames legacy Quotas and Chat categories to Models and Lounges in place, and does not clobber existing home, notification, or rename targets.
 
@@ -76,7 +76,7 @@ Every final reply can carry a one-line runtime footer — model, context %, per-
 
 Multiplexed profiles use their own `display.show_reasoning`. When enabled, a single `💭 Reasoned about <describe>` line summarizes the first non-empty reasoning line, using Discord subtext or italic text elsewhere. Streaming previews and interim updates stay standalone, and only the completed final answer reply-pings you. If an auto-threaded root turn cannot attach a reply reference, the final message uses an inline mention instead — with a masked jump link to the message that started the thread, so you can hop straight back to it; when the guild id is unavailable it degrades to the plain mention.
 
-Clarify prompts mention the requesting user by default; set `discord.clarify_mentions: false` to stop that. The questions are numbered plain text rather than buttons, because Discord component views time out. A `resolve_ticket` proposal is terminal: the confirmation embed is the reply, and Hermes does not add another message underneath it.
+Clarify prompts mention the requesting user by default; set `discord.clarify_mentions: false` to stop that. The questions are numbered plain text rather than buttons, because Discord component views time out.
 
 The typing indicator stays on while a background delegated task is still running. MoA consult and debate progress uses one self-editing embed per call that names every configured advisor model and shows each one waiting, responded, failed, or skipped as results arrive — round by round for debates — with live N/T advisor counts on `moa_ask`. Cursor runs post a Cursor-branded progress embed with a "Watch live session" link instead of dumping a URL, and Claude runs post a Claude-branded embed that links into the local viewer after the delegation tool-progress message, in the same order as Cursor.
 
@@ -123,7 +123,7 @@ Encrypted openings preserve encryption in the child or fail closed. Replay/resta
 
 ## Memory and profiles
 
-Memory should fail loudly. Honcho memory tools return dead API keys, 401s, and timeouts as real errors instead of pretending there was simply nothing to store or recall.
+Memory should fail loudly. Memory-provider tools return dead API keys, 401s, and timeouts as real errors instead of pretending there was simply nothing to store or recall.
 
 Hindsight can use `{chat}` inside `bank_id_template`, which gives one profile a separate bank for each messaging chat. It also skips memory lines already injected earlier in the same session. On the first bank init, Hermes seeds a `retain_mission` that ignores transient task state and two recall rules: prefer newer facts and ignore session dumps.
 
@@ -203,7 +203,7 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenR
 <table>
 <tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
 <tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Cross-platform conversation continuity.</td></tr>
-<tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. <a href="https://github.com/plastic-labs/honcho">Honcho</a> dialectic user modeling. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard.</td></tr>
+<tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard.</td></tr>
 <tr><td><b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Daily reports, nightly backups, weekly audits — all in natural language, running unattended.</td></tr>
 <tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams. Write Python scripts that call tools via RPC, collapsing multi-step pipelines into zero-context-cost turns.</td></tr>
 <tr><td><b>Runs anywhere, not just your laptop</b></td><td>Seven terminal backends — local, Docker, SSH, Singularity, Modal, Daytona, and Vercel Sandbox. Daytona and Modal offer serverless persistence — your agent's environment hibernates when idle and wakes on demand, costing nearly nothing between sessions. Run it on a $5 VPS or a GPU cluster.</td></tr>
@@ -292,7 +292,6 @@ hermes config set   # Set individual config values
 hermes config get   # Print individual config values
 hermes gateway      # Start the messaging gateway (Telegram, Discord, etc.)
 hermes setup        # Run the full setup wizard (configures everything at once)
-hermes claw migrate # Migrate from OpenClaw (if coming from OpenClaw)
 hermes update       # Update to the latest version
 hermes doctor       # Diagnose any issues
 ```
@@ -362,37 +361,6 @@ All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes
 | [CLI Reference](https://hermes-agent.nousresearch.com/docs/reference/cli-commands)                  | All commands and flags                                     |
 | [Environment Variables](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) | Complete env var reference                                 |
 
----
-
-## Migrating from OpenClaw
-
-If you're coming from OpenClaw, Hermes can automatically import your settings, memories, skills, and API keys.
-
-**During first-time setup:** The setup wizard (`hermes setup`) automatically detects `~/.openclaw` and offers to migrate before configuration begins.
-
-**Anytime after install:**
-
-```bash
-hermes claw migrate              # Interactive migration (full preset)
-hermes claw migrate --dry-run    # Preview what would be migrated
-hermes claw migrate --preset user-data   # Migrate without secrets
-hermes claw migrate --overwrite  # Overwrite existing conflicts
-```
-
-What gets imported:
-
-- **SOUL.md** — persona file
-- **Memories** — MEMORY.md and USER.md entries
-- **Skills** — user-created skills → `~/.hermes/skills/openclaw-imports/`
-- **Command allowlist** — approval patterns
-- **Messaging settings** — platform configs, allowed users, working directory
-- **API keys** — allowlisted secrets (Telegram, OpenRouter, OpenAI, Anthropic, ElevenLabs)
-- **Workspace instructions** — AGENTS.md (with `--workspace-target`)
-
-See `hermes claw migrate --help` for all options, or use the `openclaw-migration` skill for an interactive agent-guided migration with dry-run previews.
-
----
-
 ## Contributing
 
 We welcome contributions! See the [Contributing Guide](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) for development setup, code style, and PR process.
@@ -432,7 +400,6 @@ scripts/run_tests.sh
 - 📚 [Skills Hub](https://agentskills.io)
 - 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
 - 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Linux desktop-control MCP server for Hermes and other MCP hosts, with AT-SPI accessibility trees, Wayland/X11 input, screenshots, and compositor window targeting.
-- 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
 
 ---
 

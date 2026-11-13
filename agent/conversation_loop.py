@@ -3514,14 +3514,6 @@ def _run_conversation_inlined(
                             error_details.append("response is None")
                         else:
                             error_details.append("response.content invalid (not a non-empty list)")
-                elif agent.api_mode == "bedrock_converse":
-                    _btv = agent._get_transport()
-                    if not _btv.validate_response(response):
-                        response_invalid = True
-                        if response is None:
-                            error_details.append("response is None")
-                        else:
-                            error_details.append("Bedrock response invalid (no output or choices)")
                 else:
                     _ctv = agent._get_transport()
                     if not _ctv.validate_response(response):
@@ -3746,11 +3738,6 @@ def _run_conversation_inlined(
                 elif agent.api_mode == "anthropic_messages":
                     _tfr = agent._get_transport()
                     finish_reason = _tfr.map_finish_reason(response.stop_reason)
-                elif agent.api_mode == "bedrock_converse":
-                    # Bedrock response already normalized at dispatch — use transport
-                    _bt_fr = agent._get_transport()
-                    _bedrock_result = _bt_fr.normalize_response(response)
-                    finish_reason = _bedrock_result.finish_reason
                 else:
                     _cc_fr = agent._get_transport()
                     _finish_result = _cc_fr.normalize_response(response)
@@ -3773,7 +3760,7 @@ def _run_conversation_inlined(
                 # Anthropic ``stop_reason="refusal"`` → ``content_filter``;
                 # OpenAI / portal ``finish_reason="content_filter"`` or a
                 # populated ``message.refusal`` (mapped in the chat_completions
-                # transport); Bedrock ``guardrail_intervened``. The content is
+                # transport). The content is
                 # typically empty, so without this branch the response falls
                 # through to the empty-response / invalid-response retry loops
                 # and is mis-surfaced as "rate limited" / "no content after
@@ -3886,7 +3873,7 @@ def _run_conversation_inlined(
 
                     # Normalize the truncated response to a single OpenAI-style
                     # message shape so text-continuation and tool-call retry
-                    # work uniformly across chat_completions, bedrock_converse,
+                    # work uniformly across chat_completions
                     # and anthropic_messages.  For Anthropic we use the same
                     # adapter the agent loop already relies on so the rebuilt
                     # interim assistant message is byte-identical to what
@@ -4019,7 +4006,7 @@ def _run_conversation_inlined(
                             "error": _rep_error,
                         }
 
-                    if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
+                    if agent.api_mode in {"chat_completions", "anthropic_messages"}:
                         assistant_message = _trunc_msg
                         # ── Content-filter stream stall → fallback (#32421) ──
                         # When the provider's output-layer safety filter (e.g.
@@ -4233,7 +4220,7 @@ def _run_conversation_inlined(
                                 "error": "Response remained truncated after 4 continuation attempts",
                             }
 
-                    if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
+                    if agent.api_mode in {"chat_completions", "anthropic_messages"}:
                         assistant_message = _trunc_msg
                         if assistant_message is not None and _trunc_has_tool_calls:
                             _is_stub_stall = (
@@ -4940,31 +4927,6 @@ def _run_conversation_inlined(
                         f"{agent.log_prefix}⚠️  Server rejected image content — "
                         f"switching to text-only mode for this session"
                         + (". Stripped images from history and retrying." if _imgs_removed else "."),
-                        force=True,
-                    )
-                    continue
-
-                # ── Bedrock AnthropicBedrock SDK streaming failure ──
-                # The Anthropic SDK's stream accumulator raises RuntimeError
-                # "Unexpected event order" when Bedrock returns an error event
-                # before message_start (throttling, overload, validation).
-                # Fall back to the native Converse API path for the rest of
-                # this session — it handles these errors gracefully.  Ref: #28156.
-                if (
-                    isinstance(api_error, RuntimeError)
-                    and "unexpected event order" in str(api_error).lower()
-                    and getattr(agent, "provider", "") == "bedrock"
-                    and agent.api_mode == "anthropic_messages"
-                    and not getattr(agent, "_bedrock_converse_fallback_attempted", False)
-                ):
-                    agent._bedrock_converse_fallback_attempted = True
-                    agent.api_mode = "bedrock_converse"
-                    agent._bedrock_region = getattr(agent, "_bedrock_region", None) or "us-east-1"
-                    agent.client = None  # Drop the AnthropicBedrock client
-                    agent._client_kwargs = {}
-                    agent._vprint(
-                        f"{agent.log_prefix}⚠️  AnthropicBedrock SDK streaming failed — "
-                        f"falling back to native Converse API for this session.",
                         force=True,
                     )
                     continue

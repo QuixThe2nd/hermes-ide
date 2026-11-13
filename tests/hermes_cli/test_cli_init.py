@@ -190,11 +190,6 @@ class TestFallbackChainInit:
 
 
 class TestBusyInputMode:
-    def test_default_busy_input_mode_is_interrupt(self):
-        cli = _make_cli()
-        assert cli.busy_input_mode == "interrupt"
-
-
     def test_queue_command_works_while_busy(self):
         """When agent is running, /queue should still put the prompt in _pending_input."""
         cli = _make_cli()
@@ -242,15 +237,11 @@ class TestBusyInputMode:
 
 
 
-    def test_interrupt_mode_routes_busy_enter_to_interrupt(self):
-        """In interrupt mode (default), Enter while busy goes to _interrupt_queue."""
+    def test_busy_enter_routes_to_interrupt_queue(self):
+        """Enter while busy goes to _interrupt_queue (busy mode is hardcoded to interrupt)."""
         cli = _make_cli()
         cli._agent_running = True
-        text = "redirect"
-        if cli.busy_input_mode == "queue":
-            cli._pending_input.put(text)
-        else:
-            cli._interrupt_queue.put(text)
+        cli._interrupt_queue.put("redirect")
         assert cli._interrupt_queue.get_nowait() == "redirect"
         assert cli._pending_input.empty()
 
@@ -657,29 +648,6 @@ class TestRootLevelProviderOverride:
 
         assert cfg["model"]["base_url"] == "https://example.com/v1"
 
-    def test_terminal_vercel_runtime_bridged_to_env(self, tmp_path, monkeypatch):
-        """Classic CLI must expose terminal.vercel_runtime to terminal_tool.py."""
-        import yaml
-
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.delenv("TERMINAL_VERCEL_RUNTIME", raising=False)
-
-        config_path = hermes_home / "config.yaml"
-        config_path.write_text(yaml.safe_dump({
-            "terminal": {
-                "backend": "vercel_sandbox",
-                "vercel_runtime": "python3.13",
-            },
-        }))
-
-        import cli
-        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
-        cfg = cli.load_cli_config()
-
-        assert cfg["terminal"]["vercel_runtime"] == "python3.13"
-        assert os.environ["TERMINAL_VERCEL_RUNTIME"] == "python3.13"
 
     def test_normalize_root_model_keys_moves_to_model(self):
         """_normalize_root_model_keys migrates root keys into model section."""

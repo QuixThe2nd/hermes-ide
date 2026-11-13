@@ -147,7 +147,6 @@ def _snap(
 # stable enough to encode exactly. Each snapshot is (provider, source_url,
 # pricing_version, {model-or-models: per-1M rates (input, output[, cache_read[,
 # cache_write]])}); a tuple key shares one rate row across several model ids.
-_BEDROCK_URL = "https://aws.amazon.com/bedrock/pricing/"
 _ANTHROPIC_URL = "https://platform.claude.com/docs/en/about-claude/pricing"
 _GOOGLE_URL = "https://ai.google.dev/pricing"
 _OPUS = ("5.00", "25.00", "0.50", "6.25")
@@ -203,18 +202,6 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         "gemini-3-pro-preview": ("2.00", "12.00", "0.20"), "gemini-3-flash-preview": ("0.50", "3.00", "0.05"),
         "gemini-2.5-flash": ("0.15", "0.60", "0.015"), "gemini-2.0-flash": ("0.10", "0.40", "0.01"),
     }),
-    # AWS Bedrock on-demand: same per-token rates as the model provider, billed
-    # through AWS. Current-gen Claude rows are commercial-list snapshots (the AWS
-    # Price List API had not published these SKUs machine-readably).
-    ("bedrock", _BEDROCK_URL, "anthropic-list-2026-07", {
-        ("anthropic.claude-opus-4-8", "anthropic.claude-opus-4-7", "anthropic.claude-opus-4-6"): _OPUS,
-    }),
-    ("bedrock", _BEDROCK_URL, "bedrock-pricing-2026-06", {"anthropic.claude-sonnet-5": _SONNET}),
-    ("bedrock", _BEDROCK_URL, "bedrock-pricing-2026-04", {
-        ("anthropic.claude-sonnet-4-6", "anthropic.claude-sonnet-4-5"): _SONNET,
-        "anthropic.claude-haiku-4-5": ("0.80", "4.00", "0.08", "1.00"),
-        "amazon.nova-pro": ("0.80", "3.20"), "amazon.nova-lite": ("0.06", "0.24"), "amazon.nova-micro": ("0.035", "0.14"),
-    }),
     ("minimax", None, "minimax-pricing-2026-04", {"minimax-m2.7": ("0.30", "1.20")}),
     ("minimax-cn", None, "minimax-pricing-2026-04", {"minimax-m2.7": ("0.30", "1.20")}),
     # Fireworks AI serverless (Standard tier) publishes a per-model cached_input
@@ -268,7 +255,7 @@ _OFFICIAL_DOCS_PRICING[("google", "gemini-2.5-pro")] = _snap(
     tier_threshold_tokens=200_000, input_cost_per_million_above=Decimal("2.50"),
     output_cost_per_million_above=Decimal("15.00"),
 )
-del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET
+del _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET
 
 # GPT-5.6 "-pro" high-effort variants bill at the base tier's per-token rates
 # (more tokens per task, not a higher rate); the Hermes-side "-900k" Codex
@@ -363,24 +350,11 @@ def resolve_billing_route(
     return BillingRoute(provider=provider_name or "unknown", model=bare if model else "", base_url=url, billing_mode="unknown")
 
 
-_BEDROCK_REGION_PREFIXES = ("global.", "us.", "eu.", "apac.", "ap.", "au.", "jp.", "ca.", "sa.", "me.", "af.")
-# Bedrock ids end in documented date/revision/profile components (``-20250514-v1:0``).
-_BEDROCK_TRAILERS = (r":\d+$", r"-v\d+$", r"-\d{8}$")
-
 
 def _strip_prefix(name: str, prefixes: tuple[str, ...]) -> str:
     """Drop the first matching prefix (at most one), else return ``name`` unchanged."""
     return next((name[len(p):] for p in prefixes if name.startswith(p)), name)
 
-
-def _normalize_bedrock_model_name(model: str) -> str:
-    """Bare foundation-model id: strip the cross-region inference-profile scope
-    (``us.``/``global.``/...), map dotted versions (``4.7`` → ``4-7``), then
-    strip the trailing date/revision/profile components."""
-    name = re.sub(r"(\d+)\.(\d+)", r"\1-\2", _strip_prefix(model.lower().strip(), _BEDROCK_REGION_PREFIXES))
-    for pattern in _BEDROCK_TRAILERS:
-        name = re.sub(pattern, "", name)
-    return name
 
 
 def _normalize_anthropic_model_name(model: str) -> str:
@@ -388,9 +362,8 @@ def _normalize_anthropic_model_name(model: str) -> str:
     return re.sub(r"(\d+)\.(\d+)", r"\1-\2", _strip_prefix(model.lower().strip(), ("anthropic/",)))
 
 
-# Anthropic dot-notation (opus-4.7) and Bedrock region-prefixed ids need
-# normalizing before a second lookup.
-_MODEL_NORMALIZERS = {"anthropic": _normalize_anthropic_model_name, "bedrock": _normalize_bedrock_model_name}
+# Anthropic dot-notation (opus-4.7) needs normalizing before a second lookup.
+_MODEL_NORMALIZERS = {"anthropic": _normalize_anthropic_model_name}
 
 
 def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:

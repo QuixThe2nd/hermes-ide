@@ -213,48 +213,6 @@
    "target": "(deleted; BASE body restored)"
   },
   {
-   "facade": "agent.bedrock_adapter",
-   "name": "CONTEXT_OVERFLOW_PATTERNS",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "agent.bedrock_adapter",
-   "name": "OVERLOAD_PATTERNS",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "agent.bedrock_adapter",
-   "name": "THROTTLE_PATTERNS",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "agent.bedrock_adapter",
-   "name": "call_converse_stream",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "agent.bedrock_adapter",
-   "name": "is_context_overflow_error",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of classify_bedrock_error)"
-  },
-  {
-   "facade": "agent.bedrock_adapter",
-   "name": "classify_bedrock_error",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "agent.bedrock_adapter",
-   "name": "is_context_overflow_error",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
    "facade": "agent.bounded_response",
    "name": "Optional",
    "kind": "import",
@@ -3226,24 +3184,6 @@
   },
   {
    "facade": "hermes_cli.model_setup_flows",
-   "name": "BEDROCK_GEO_PREFIXES",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.model_setup_flows_bedrock"
-  },
-  {
-   "facade": "hermes_cli.model_setup_flows",
-   "name": "bedrock_model_routable_from_region",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.model_setup_flows_bedrock"
-  },
-  {
-   "facade": "hermes_cli.model_setup_flows",
-   "name": "bedrock_region_geo_prefix",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.model_setup_flows_bedrock"
-  },
-  {
-   "facade": "hermes_cli.model_setup_flows",
    "name": "custom_provider_slug",
    "kind": "moved-lazy",
    "target": "hermes_cli.providers"
@@ -4657,108 +4597,6 @@
    "name": "importlib",
    "kind": "import",
    "target": "importlib"
-  },
-  {
-   "facade": "plugins.memory.honcho",
-   "name": "CONCLUDE_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.honcho",
-   "name": "CONTEXT_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.honcho",
-   "name": "PROFILE_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.honcho",
-   "name": "REASONING_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.honcho",
-   "name": "SEARCH_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.honcho",
-   "name": "TRIVIAL_PROMPT_RE",
-   "kind": "moved-lazy",
-   "target": "agent.memory_provider"
-  },
-  {
-   "facade": "plugins.memory.honcho.client",
-   "name": "SingletonSlot",
-   "kind": "moved-lazy",
-   "target": "plugins.plugin_utils"
-  },
-  {
-   "facade": "plugins.memory.honcho.oauth",
-   "name": "Callable",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "plugins.memory.honcho.session",
-   "name": "Callable",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "plugins.memory.honcho.session",
-   "name": "Path",
-   "kind": "import",
-   "target": "pathlib"
-  },
-  {
-   "facade": "plugins.memory.honcho.session",
-   "name": "hashlib",
-   "kind": "import",
-   "target": "hashlib"
-  },
-  {
-   "facade": "plugins.memory.honcho.session",
-   "name": "re",
-   "kind": "import",
-   "target": "re"
-  },
-  {
-   "facade": "plugins.memory.mem0",
-   "name": "ADD_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.mem0",
-   "name": "DELETE_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.mem0",
-   "name": "SEARCH_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.mem0",
-   "name": "UPDATE_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.mem0._setup",
-   "name": "has_oss_flags",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
   },
   {
    "facade": "plugins.memory.retaindb",

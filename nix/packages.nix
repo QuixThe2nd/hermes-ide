@@ -52,7 +52,6 @@
         extraDependencyGroups = [
           "anthropic"
           "azure-identity"
-          "bedrock"
           "daytona"
           "edge-tts"
           "exa"
@@ -60,7 +59,6 @@
           "feishu"
           "firecrawl"
           "hindsight"
-          "honcho"
           "messaging"
           "modal"
           "parallel-web"

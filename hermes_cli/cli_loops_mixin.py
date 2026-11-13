@@ -187,11 +187,6 @@ class CLILoopsMixin:
         with self._busy_command(self._slow_command_status(cmd_original)):
             self._handle_skills_command(cmd_original)
 
-    def _cmd_egress(self, cmd_original: str):
-        from hermes_cli.slash_exec import CommandContext, execute_command
-        text = execute_command("egress", CommandContext(surface="cli")).text
-        self._console_print(text, highlight=False, markup=False)
-
     def _cmd_statusbar(self, cmd_original: str):
         self._status_bar_visible = not self._status_bar_visible
         self._console_print(f"  Status bar {'visible' if self._status_bar_visible else 'hidden'}")
