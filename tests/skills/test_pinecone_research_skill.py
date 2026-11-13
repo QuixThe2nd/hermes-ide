@@ -3,7 +3,6 @@ Smoke tests for the pinecone-research optional skill.
 
 Validates:
   - SKILL.md frontmatter conforms to the ≤60-char description standard
-  - The skill name is distinct from the existing mlops/pinecone skill
   - Frontmatter has required fields
 """
 from __future__ import annotations
@@ -19,13 +18,6 @@ SKILL_DIR = (
     / "optional-skills"
     / "research"
     / "pinecone-research"
-)
-
-MLOPS_PINECONE_DIR = (
-    Path(__file__).resolve().parents[2]
-    / "optional-skills"
-    / "mlops"
-    / "pinecone"
 )
 
 

@@ -154,7 +154,7 @@ TIPS = [
     "The agent has two memory stores: personal notes (~2200 chars) and user profile (~1375 chars).",
     "Corrections you give the agent (\"no, do it this way\") are often auto-saved to memory.",
     # --- Skills ---
-    "Over 80 bundled skills covering github, creative, mlops, productivity, research, and more.",
+    "Over 80 bundled skills covering github, creative, productivity, research, and more.",
     "Every installed skill automatically becomes a slash command — type / to see them all.",
     "hermes skills install official/security/1password installs optional skills from the repo.",
     "Skills can restrict to specific OS platforms — some only load on macOS or Linux.",
