@@ -8,7 +8,7 @@ description: "Automatic standing goals: task-like messages start the loop, and H
 
 A standing goal gives Hermes an objective that survives across turns. Every
 eligible message is classified by a Jev Decisions model
-(`typesafe/jev-1.13` via Openrouter): task-like messages **start a goal
+(`jev-1.13.0` via the litellm proxy): task-like messages **start a goal
 automatically**, follow-up task messages extend it, approvals resume a paused
 loop, and chases reopen work that finished or stalled. After every turn a
 lightweight judge model checks whether the goal is satisfied by the
@@ -298,8 +298,8 @@ goals:
 Automatic goals are always on — there is no mode setting. A `goals.auto` key
 left over in a config.yaml from an older install is ignored, not an error;
 you can delete it. Every eligible human message is classified by one Jev
-Decisions POST to Openrouter (`typesafe/jev-1.13`, 8s timeout, one retry,
-then fail closed as `unknown`). The classifier needs `OPENROUTER_API_KEY`
+Decisions POST to the litellm Jev endpoint (`jev-1.13.0`, 8s timeout, one retry,
+then fail closed as `unknown`). The classifier needs `LITELLM_API_KEY` (a litellm virtual key)
 (in `.env` or the platform's secret scope); without a key, goals simply never
 start automatically — nothing else changes. Internal/system events,
 bot-authored messages, blank messages, and slash commands are skipped.

@@ -470,7 +470,7 @@ discord:
     timeout_seconds: 3.0      # per-request budget; over budget means deny
     context_messages: 10      # recent same-channel messages sent as evidence
     context_chars: 8000       # total character budget for that evidence block
-    model: typesafe/jev-1.13  # judge model; fixed default, no fallback chain
+    model: jev-1.13.0  # judge model; fixed default, no fallback chain
     threads_require_membership: true  # threads stay silent until the bot has participated (default)
 ```
 
@@ -484,7 +484,7 @@ discord:
 
 **Evidence.** The judge sees the candidate message plus a bounded window of recent messages from the same channel or thread — up to `context_messages` messages and `context_chars` characters. Nothing from other channels, and nothing beyond that window.
 
-**Fail-closed.** A timeout, a malformed answer, or a missing `OPENROUTER_API_KEY` means a silent deny in `enforce`; the gate never admits on failure. Because a silent deny is easy to miss, `enforce` without a usable key also logs one loud warning at startup — `shadow` does not. The key is read once at connect time from the profile environment, so it must be set before the gateway starts; it is not a `config.yaml` key.
+**Fail-closed.** A timeout, a malformed answer, or a missing `LITELLM_API_KEY` (a litellm virtual key) means a silent deny in `enforce`; the gate never admits on failure. Because a silent deny is easy to miss, `enforce` without a usable key also logs one loud warning at startup — `shadow` does not. The key is read once at connect time from the profile environment, so it must be set before the gateway starts; it is not a `config.yaml` key.
 
 Values outside the documented ranges (threshold or any of the three cutoffs outside `0..1`, `timeout_seconds` above `30`, oversized context bounds) refuse to load rather than quietly degrading into "admit everything".
 
@@ -514,7 +514,7 @@ discord:
     timeout_seconds: 3.0       # per-request budget; over budget means no reaction
     context_messages: 10       # recent same-channel messages sent as evidence
     context_chars: 8000        # total character budget for that evidence block
-    model: typesafe/jev-1.13   # judge model; fixed default, no fallback chain
+    model: jev-1.13.0  # judge model; fixed default, no fallback chain
     decision_formula: 'abstain < 0.5 or (emoji_count >= 2 and top > 5 * second)'  # the default rule, spelled out
     include_threads: true            # a listed parent channel id also selects its threads (default)
     threads_require_membership: true  # in-scope threads stay silent until the bot has participated (default)
@@ -538,7 +538,7 @@ discord:
 
 **Evidence.** The judge sees the candidate message plus a bounded window of recent messages from the same channel *or thread* — up to `context_messages` messages and `context_chars` characters. The window holds the messages that preceded the candidate when it arrived (never the candidate itself) plus this bot's own delivered final replies, so a user's "thanks" after one of them reads as connected. A thread's evidence never merges its parent channel's history, and nothing from other channels is included. Message text is evidence about the conversation, never instructions to the judge, and logs carry only channel/message ids and the outcome — never message content.
 
-**Fail-closed.** A missing `OPENROUTER_API_KEY`, timeout, transport error, malformed answer, unknown option, or an incoherent probability distribution means *no reaction* — never a fallback emoji and never a text reply. Like the speaking gate, the key is read once at connect time from the profile environment, not from `config.yaml`.
+**Fail-closed.** A missing `LITELLM_API_KEY` (a litellm virtual key), timeout, transport error, malformed answer, unknown option, or an incoherent probability distribution means *no reaction* — never a fallback emoji and never a text reply. Like the speaking gate, the key is read once at connect time from the profile environment, not from `config.yaml`.
 
 **Live reload.** Edits to the `reaction_gate` block in `config.yaml` are picked up by the running adapter within a few seconds — no restart needed. The reload resolves the block exactly like startup does (including the [managed-scope](/user-guide/managed-scope) overlay and the nested `gateway.platforms.discord` / `platforms.discord` / `gateway.discord` spellings), so a live edit has the same effect as a restart, and administrator-pinned values cannot be bypassed by editing the user file. An invalid edit — broken YAML, a non-mapping document (including an empty file mid-save), or a block that fails validation — keeps the active gate; removing the block from an otherwise valid file, or setting `enabled: false`, turns it off. That includes `decision_formula`: changing thresholds or flipping `or` to `and` applies on the next decision after the reload, with no restart or reconnect.
 
