@@ -1,0 +1,96 @@
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  background: #141414;
+  color: #f2f2f2;
+  font: 15px/1.45 system-ui, sans-serif;
+}
+
+header {
+  padding: 12px 14px 8px;
+  border-bottom: 1px solid #2c2c2c;
+}
+
+h1 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.banner {
+  padding: 8px 14px;
+  background: #5a2a2a;
+  color: #ffd6d6;
+}
+
+.banner[hidden] {
+  display: none;
+}
+
+.transcript {
+  flex: 1;
+  overflow: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.bubble {
+  max-width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: #222;
+}
+
+.who {
+  margin-bottom: 4px;
+  color: #bdbdbd;
+  font-size: 12px;
+}
+
+.bubble.user {
+  background: #243044;
+}
+
+.bubble.error {
+  background: #3a2020;
+  color: #ffc9c9;
+}
+
+.bubble.streaming .text::after {
+  content: " ▍";
+  color: #9ad;
+}
+
+.composer {
+  padding: 10px;
+  border-top: 1px solid #2c2c2c;
+}
+
+textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 64px;
+  padding: 8px;
+  border: 1px solid #4a4a4a;
+  border-radius: 8px;
+  background: #1e1e1e;
+  color: #f2f2f2;
+  font: inherit;
+}
