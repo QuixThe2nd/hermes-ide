@@ -949,26 +949,26 @@ class TestImportAtomicWrites:
         dst_home.mkdir()
         hermes_home = dst_home / ".hermes"
         hermes_home.mkdir()
-        honcho = dst_home / ".honcho"
-        honcho.mkdir()
+        provider = dst_home / ".hindsight"
+        provider.mkdir()
         original = '{"peer":"original"}'
-        (honcho / "config.json").write_text(original)
+        (provider / "config.json").write_text(original)
 
         zip_path = tmp_path / "backup.zip"
         self._zip(zip_path, {
             "config.yaml": "model: {}\n",
-            "_external/.honcho/config.json": '{"peer":"replacement"}',
+            "_external/.hindsight/config.json": '{"peer":"replacement"}',
         })
 
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: dst_home)
-        _break_member(monkeypatch, "_external/.honcho/config.json")
+        _break_member(monkeypatch, "_external/.hindsight/config.json")
 
         from hermes_cli.backup import run_import
         run_import(Namespace(zipfile=str(zip_path), force=True))
 
-        assert (honcho / "config.json").read_text() == original
-        assert list(honcho.glob(".config.json.*")) == []
+        assert (provider / "config.json").read_text() == original
+        assert list(provider.glob(".config.json.*")) == []
 
     @pytest.mark.skipif(os.name != "posix", reason="POSIX symlinks")
     def test_symlinked_target_keeps_its_symlink(self, tmp_path, monkeypatch):
@@ -1008,11 +1008,11 @@ class TestImportAtomicWrites:
         hermes_home.mkdir()
         dotfiles = dst_home / "dotfiles"
         dotfiles.mkdir()
-        real = dotfiles / "honcho.json"
+        real = dotfiles / "hindsight.json"
         real.write_text('{"peer":"original"}')
-        honcho = dst_home / ".honcho"
-        honcho.mkdir()
-        link = honcho / "config.json"
+        provider = dst_home / ".hindsight"
+        provider.mkdir()
+        link = provider / "config.json"
         link.symlink_to(real)
 
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -1021,7 +1021,7 @@ class TestImportAtomicWrites:
         zip_path = tmp_path / "backup.zip"
         self._zip(zip_path, {
             "config.yaml": "model: {}\n",
-            "_external/.honcho/config.json": '{"peer":"restored"}',
+            "_external/.hindsight/config.json": '{"peer":"restored"}',
         })
 
         from hermes_cli.backup import run_import
@@ -2316,7 +2316,7 @@ class TestModelRouteBundleRestore:
 
 
 # ---------------------------------------------------------------------------
-# Memory-provider external paths (~/.honcho, ~/.hindsight, ...) — captured via
+# Memory-provider external paths (~/.hindsight, ...) — captured via
 # MemoryProvider.backup_paths() and restored to their original home-relative
 # location, NOT under HERMES_HOME. (backup/import cycle data-loss fix)
 # ---------------------------------------------------------------------------
@@ -2370,7 +2370,7 @@ class TestMemoryProviderExternalPaths:
             zf.writestr("config.yaml", "model: {}\n")
             zf.writestr(".env", "X=1\n")
             zf.writestr("state.db", "")
-            zf.writestr("_external/.honcho/config.json", '{"peer":"bob"}')
+            zf.writestr("_external/.hindsight/config.json", '{"peer":"bob"}')
 
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: dst_home)
@@ -2378,7 +2378,7 @@ class TestMemoryProviderExternalPaths:
         from hermes_cli.backup import run_import
         run_import(Namespace(zipfile=str(zip_path), force=True))
 
-        restored = dst_home / ".honcho" / "config.json"
+        restored = dst_home / ".hindsight" / "config.json"
         assert restored.exists()
         assert restored.read_text() == '{"peer":"bob"}'
         # Credential-shaped file tightened.

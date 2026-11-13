@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 # Flag names (stable — used as config.yaml keys under onboarding.seen)
 TOOL_PROGRESS_FLAG = "tool_progress_prompt"
-OPENCLAW_RESIDUE_FLAG = "openclaw_residue_cleanup"
 PROFILE_BUILD_FLAG = "profile_build_offered"
 
 
@@ -28,25 +27,6 @@ def tool_progress_hint_gateway() -> str:
 def tool_progress_hint_cli() -> str:
     return ("(tip) That tool ran for a while. Use /verbose to cycle tool-progress "
             "display modes (all -> new -> off -> verbose). This tip only shows once.")
-
-
-def openclaw_residue_hint_cli() -> str:
-    """Banner shown the first time Hermes finds ``~/.openclaw/``: migrate first, cleanup (which breaks OpenClaw) after."""
-    return (
-        "A legacy OpenClaw directory was detected at ~/.openclaw/.\n"
-        "To port your config, memory, and skills over to Hermes, run `hermes claw migrate`.\n"
-        "If you've already migrated and want to archive the old directory, run `hermes claw cleanup` "
-        "(renames it to ~/.openclaw.pre-migration — OpenClaw will stop working after this).\n"
-        "This tip only shows once."
-    )
-
-
-def detect_openclaw_residue(home: Optional[Path] = None) -> bool:
-    """True if ``$HOME/.openclaw`` is a directory (``home`` override for tests)."""
-    try:
-        return ((home or Path.home()) / ".openclaw").is_dir()
-    except OSError:
-        return False
 
 
 def _onboarding_section(config: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -119,8 +99,6 @@ def mark_seen(config_path: Path, flag: str) -> bool:
 
 
 __all__ = [
-    "TOOL_PROGRESS_FLAG", "OPENCLAW_RESIDUE_FLAG", "PROFILE_BUILD_FLAG",
     "tool_progress_hint_gateway", "tool_progress_hint_cli",
-    "openclaw_residue_hint_cli", "detect_openclaw_residue", "profile_build_mode", "profile_build_directive",
     "is_seen", "mark_seen",
 ]

@@ -5944,8 +5944,8 @@ class TestSafeWriter:
             sys.stdout = original_stdout
             sys.stderr = original_stderr
 
-    # test_installed_before_init_time_honcho_error_prints removed —
-    # Honcho integration extracted to plugin (PR #4154).
+    # test_installed_before_init_time_honcho_error_prints removed
+    # (memory-provider integration extracted to plugin, PR #4154).
 
 
 
@@ -7395,7 +7395,7 @@ class TestMemoryContextSanitization:
         cleaned to just the surrounding text.  Used by build_memory_context_block
         (input-validation) and by plugins on their own backend boundary."""
         from agent.memory_manager import sanitize_context
-        user_text = "how is the honcho working"
+        user_text = "how is the hindsight working"
         injected = (
             user_text + "\n\n"
             "<memory-context>\n"
@@ -7408,4 +7408,4 @@ class TestMemoryContextSanitization:
         result = sanitize_context(injected)
         assert "memory-context" not in result.lower()
         assert "stale observation" not in result
-        assert "how is the honcho working" in result
+        assert "how is the hindsight working" in result

@@ -43,18 +43,13 @@ def test_shutdown_memory_provider_is_idempotent():
     manager.shutdown_all.assert_called_once()
 
 
-def test_blank_memory_provider_does_not_auto_enable_honcho():
-    """Blank memory.provider should remain opt-out even if Honcho fallback looks configured."""
+def test_blank_memory_provider_stays_opt_out():
+    """Blank memory.provider must remain an opt-out: no provider is auto-enabled."""
     cfg = {"memory": {"provider": ""}, "agent": {}}
-    honcho_cfg = SimpleNamespace(enabled=True, api_key="stale-key", base_url=None)
 
     with (
         patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("hermes_cli.config.save_config") as save_config,
-        patch(
-            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
-            return_value=honcho_cfg,
-        ) as from_global_config,
         patch("plugins.memory.load_memory_provider") as load_memory_provider,
         patch("agent.model_metadata.get_model_context_length", return_value=204_800),
         patch("model_tools.get_tool_definitions", return_value=[]),
@@ -72,7 +67,6 @@ def test_blank_memory_provider_does_not_auto_enable_honcho():
         )
 
     assert agent._memory_manager is None
-    from_global_config.assert_not_called()
     load_memory_provider.assert_not_called()
     save_config.assert_not_called()
 
@@ -137,7 +131,7 @@ class CoreShadowProvider:
         return [
             {"name": "clarify", "description": "shadows built-in clarify"},
             {"name": "delegate_agent", "description": "shadows built-in delegate"},
-            {"name": "honcho_search", "description": "legit memory tool"},
+            {"name": "hindsight_recall", "description": "legit memory tool"},
         ]
 
 
@@ -160,13 +154,13 @@ def test_core_tool_names_rejected_from_memory_routing_table():
     assert "delegate_agent" not in mm._tool_to_provider
 
     # Non-conflicting tool survives
-    assert mm.has_tool("honcho_search")
-    assert "honcho_search" in mm._tool_to_provider
+    assert mm.has_tool("hindsight_recall")
+    assert "hindsight_recall" in mm._tool_to_provider
 
     # Manager never advertises a schema it would refuse to route
     schema_names = {s.get("name") for s in mm.get_all_tool_schemas()}
     assert "clarify" not in schema_names
     assert "delegate_agent" not in schema_names
-    assert "honcho_search" in schema_names
+    assert "hindsight_recall" in schema_names
 
 

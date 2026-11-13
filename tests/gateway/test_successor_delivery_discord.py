@@ -77,7 +77,6 @@ def _make_gate_runner(adapter):
     runner._set_session_env = lambda _context: None
     runner._should_send_voice_reply = lambda *_a, **_k: False
     runner._send_voice_reply = AsyncMock()
-    runner._capture_gateway_honcho_if_configured = lambda *a, **k: None
     runner._emit_gateway_run_progress = AsyncMock()
     runner._queued_events = {}
     runner._session_run_generation = {}

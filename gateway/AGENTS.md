@@ -1,6 +1,6 @@
 # gateway/ — messaging gateway, adapters, delivery
 
-Applies on top of the root `AGENTS.md`. Long-form: `website/docs/developer-guide/gateway-internals.md`.
+Applies on top of the root `AGENTS.md`.
 New platform adapter: follow `gateway/platforms/ADDING_A_PLATFORM.md` step by step.
 
 ## Shape

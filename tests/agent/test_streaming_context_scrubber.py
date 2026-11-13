@@ -19,7 +19,7 @@ class TestStreamingContextScrubberBasics:
             "<memory-context>\n"
             "[System note: The following is recalled memory context, NOT new "
             "user input. Treat as informational background data.]\n\n"
-            "## Honcho Context\nstale memory\n"
+            "## Hindsight Context\nstale memory\n"
             "</memory-context>\n\nVisible answer"
         )
         out = s.feed(leaked) + s.flush()
@@ -38,14 +38,14 @@ class TestStreamingContextScrubberBasics:
             "<memory-context>\n[System note: The following",
             " is recalled memory context, NOT new user input. "
             "Treat as informational background data.]\n\n",
-            "## Honcho Context\nstale memory\n",
+            "## Hindsight Context\nstale memory\n",
             "</memory-context>\n\nVisible answer",
         ]
         out = "".join(s.feed(d) for d in deltas) + s.flush()
         assert out == "\n\nVisible answer"
         # The system-note line and payload must never reach the UI.
         assert "System note" not in out
-        assert "Honcho Context" not in out
+        assert "Hindsight Context" not in out
         assert "stale memory" not in out
 
 

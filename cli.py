@@ -3586,7 +3586,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._console_print()
 
     def _tui_startup_prewarm_and_warnings(self, _welcome_skin):
-        """Idle-window prewarms (picker cache, agent runtime imports) plus the redaction-off and OpenClaw-residue banners."""
+        """Idle-window prewarms (picker cache, agent runtime imports) plus the redaction-off banner."""
         # Warm the /model picker cache off-thread (else its first open blocks ~1-2s).
         with suppress(Exception):
             from hermes_cli.model_switch_providers import prewarm_picker_cache_async
@@ -3620,24 +3620,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                     "[cyan]security.redact_secrets: true[/] in config.yaml "
                     "to re-enable."
                 )
-        # One-time banner when ~/.openclaw/ is left over from a migration.
-        try:
-            from agent.onboarding import (
-                OPENCLAW_RESIDUE_FLAG, detect_openclaw_residue, is_seen, mark_seen, openclaw_residue_hint_cli,
-            )
-            if not is_seen(self.config, OPENCLAW_RESIDUE_FLAG) and detect_openclaw_residue():
-                try:
-                    _resid_color = _welcome_skin.get_color("banner_dim", "#B8860B")
-                except Exception:
-                    _resid_color = "#B8860B"
-                self._console_print(f"[{_resid_color}]{openclaw_residue_hint_cli()}[/]")
-                try:
-                    from hermes_cli.config import get_config_path as _get_cfg_path_resid
-                    mark_seen(_get_cfg_path_resid(), OPENCLAW_RESIDUE_FLAG)
-                except Exception:
-                    pass  # banner fires again next session
-        except Exception:
-            pass
 
     def _tui_startup_background_maintenance(self):
         """Best-effort startup passes: curator skill maintenance, personal + org skill sync.

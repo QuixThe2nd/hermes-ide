@@ -134,17 +134,7 @@ def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
 
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
-    from hermes_cli.doctor_state import _honcho_is_configured_for_doctor
-    updated_available, updated_unavailable = list(available), []
-    for item in unavailable:
-        if item.get("name") == "honcho" and _honcho_is_configured_for_doctor():
-            gated = "honcho"
-        else:
-            updated_unavailable.append(item)
-            continue
-        if gated not in updated_available:
-            updated_available.append(gated)
-    return updated_available, updated_unavailable
+    return list(available), list(unavailable)
 
 
 def _enabled_cli_toolsets_for_doctor() -> set[str] | None:

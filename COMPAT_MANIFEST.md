@@ -1634,7 +1634,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `RawConfigUpdate` | moved-lazy | `hermes_cli.web_models` |
 | `RegistryFull` | moved-lazy | `hermes_cli.pty_session` |
 | `Response` | unrestorable | `no top-level definition on BASE` |
-| `STORAGE_HONCHO_HOST_BLOCK` | moved-lazy | `plugins.memory.config_schema` |
 | `SecretStr` | unrestorable | `no top-level definition on BASE` |
 | `SessionImport` | moved-lazy | `hermes_cli.web_models` |
 | `SessionPrune` | moved-lazy | `hermes_cli.web_models` |
@@ -2161,53 +2160,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `dataclass` | import | `dataclasses` |
 | `importlib` | import | `importlib` |
-
-### `plugins.memory.honcho`
-
-| name | kind | new location |
-|---|---|---|
-| `CONCLUDE_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `CONTEXT_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `PROFILE_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `REASONING_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `SEARCH_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `TRIVIAL_PROMPT_RE` | moved-lazy | `agent.memory_provider` |
-
-### `plugins.memory.honcho.client`
-
-| name | kind | new location |
-|---|---|---|
-| `SingletonSlot` | moved-lazy | `plugins.plugin_utils` |
-
-### `plugins.memory.honcho.oauth`
-
-| name | kind | new location |
-|---|---|---|
-| `Callable` | import | `typing` |
-
-### `plugins.memory.honcho.session`
-
-| name | kind | new location |
-|---|---|---|
-| `Callable` | import | `typing` |
-| `Path` | import | `pathlib` |
-| `hashlib` | import | `hashlib` |
-| `re` | import | `re` |
-
-### `plugins.memory.mem0`
-
-| name | kind | new location |
-|---|---|---|
-| `ADD_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `DELETE_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `SEARCH_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `UPDATE_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-
-### `plugins.memory.mem0._setup`
-
-| name | kind | new location |
-|---|---|---|
-| `has_oss_flags` | restored-def | `(deleted; BASE body restored)` |
 
 ### `plugins.memory.retaindb`
 

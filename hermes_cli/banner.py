@@ -776,7 +776,7 @@ def compute_toolset_availability(enabled_toolsets: List[str] = None) -> Dict[str
     if _enabled_ts:
         unavailable_toolsets = [
             item for item in unavailable_toolsets if str(item.get("id", item.get("name", ""))) in _enabled_ts]
-    # Toolsets with a check_fn are lazy-initialized (e.g. honcho): unavailable at banner time
+    # Toolsets with a check_fn are lazy-initialized (e.g. hindsight): unavailable at banner time
     # because the check hasn't run yet, but not misconfigured.
     lazy_tools, disabled_tools = set(), set()
     for item in unavailable_toolsets:

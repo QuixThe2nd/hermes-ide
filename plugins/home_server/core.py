@@ -6,8 +6,6 @@ and keeps in sync the whole structure:
 * ``Notifications``   — text channels ``model-fallback``, ``gateway-restarts``,
   ``other`` (first: pinned to the top of the guild)
 * ``Lounges``         — text channels ``inbox``, ``outbox``
-* ``Honcho Memory``   — text channels ``explicit-facts``, ``deductions``,
-  ``patterns``, ``contradictions``
 * ``Models``          — voice channels ``Codex``, ``Kimi``, ``z.ai``,
   ``Cursor``, ``Grok``
 * ``Speeds``          — voice channels ``qBittorrent``, ``SABnzbd``, ``slskd``
@@ -17,8 +15,7 @@ Creation alone is worthless, so reconcile also *wires* what it provisions:
 channel points at Notifications/``gateway-restarts``,
 ``gateway.restart_channel_rename`` points at that same channel so it shows
 ``agents-N`` while the gateway
-is up and ``restarting-N-agents`` while it drains, each memory channel gets
-a Discord webhook exported as a ``HONCHO_DISCORD_WEBHOOK_*`` secret, and
+is up and ``restarting-N-agents`` while it drains, and
 the ``quota_channels`` / ``speed_channels`` config sections are pointed at
 the created voice channels.
 
@@ -69,22 +66,12 @@ MAX_RETRY_AFTER_SECONDS = 10.0
 # reconcile numbers the enabled categories 0..N in this order (Notifications
 # lands at the top of the guild) and the template fingerprint covers it, so
 # reordering here re-syncs provisioned guilds automatically.
-MODULE_KEYS = ("notifications", "chat", "memory", "quotas", "speeds")
+MODULE_KEYS = ("notifications", "chat", "quotas", "speeds")
 
 # Env var holding the bot token in HERMES_HOME/secrets/discord.env. Exposed as
 # a constant so tests (and any future caller) reference the same key instead of
 # re-typing the literal.
 DISCORD_TOKEN_ENV_KEY = "DISCORD_BOT_TOKEN"
-
-# Memory channel -> exported webhook env var. Keys mirror the conclusion levels
-# of the Honcho discord_notifications patch (see its manifest.json), so the
-# channel named "patterns" really is the one Honcho's *inductive* stream posts to.
-MEMORY_WEBHOOK_ENV = {
-    "explicit-facts": "HONCHO_DISCORD_WEBHOOK_EXPLICIT",
-    "deductions": "HONCHO_DISCORD_WEBHOOK_DEDUCTIVE",
-    "patterns": "HONCHO_DISCORD_WEBHOOK_INDUCTIVE",
-    "contradictions": "HONCHO_DISCORD_WEBHOOK_CONTRADICTION",
-}
 
 
 class HomeServerError(Exception):
@@ -101,7 +88,7 @@ class ChannelSpec:
     """One channel of the canonical template.
 
     ``key`` is the wiring slug used by the consumers we hand the channel to
-    (quota provider key, speeds downloader key, or memory env slug); it is only
+    (quota provider key or speeds downloader key); it is only
     a lookup key, never a Discord ID.
     """
 
@@ -170,24 +157,6 @@ TEMPLATE: Dict[str, ModuleSpec] = {
             "something to tell you. The outbox is for messages you hand off "
             "to Hermes. Cron deliveries, cross-platform messages, and gateway "
             "lifecycle pings land in the Notifications category instead."
-        ),
-    ),
-    "memory": ModuleSpec(
-        key="memory",
-        category="Honcho Memory",
-        channels=(
-            ChannelSpec("explicit-facts", CHANNEL_TYPE_TEXT, "explicit"),
-            ChannelSpec("deductions", CHANNEL_TYPE_TEXT, "deductive"),
-            ChannelSpec("patterns", CHANNEL_TYPE_TEXT, "inductive"),
-            ChannelSpec("contradictions", CHANNEL_TYPE_TEXT, "contradiction"),
-        ),
-        embed_title="🧠 Honcho Memory",
-        embed_description=(
-            "Hermes learns as you talk, and this category shows that learning "
-            "as it happens. explicit-facts are things you stated directly, "
-            "deductions are inferences from them, patterns are recurring "
-            "behaviour, and contradictions flag where something new disagreed "
-            "with what was already believed."
         ),
     ),
     "quotas": ModuleSpec(
@@ -792,40 +761,6 @@ def wire_hermes_starts(state: Mapping[str, Any]) -> str:
     return adopt_home_server_inbox()
 
 
-def wire_memory_webhooks(
-    client: DiscordClient, state: Mapping[str, Any]
-) -> Dict[str, str]:
-    """Create one webhook per memory channel and export it as a secret.
-
-    Idempotent in the strictest sense: a webhook is only minted for levels
-    whose env var is currently missing/empty, so a second reconcile creates
-    nothing at all. A level the user already pointed somewhere else is never
-    clobbered.
-    """
-    memory = (state.get("channels") or {}).get("memory") or {}
-    guild_id = str(state.get("guild_id") or "")
-    if not memory or not guild_id:
-        return {}
-
-    env_keys = list(MEMORY_WEBHOOK_ENV.values())
-    already_set = _existing_env_values(_env_path(), env_keys)
-    missing = [key for key in env_keys if key not in already_set]
-    if not missing:
-        return {key: "kept" for key in env_keys}
-
-    wanted: Dict[str, str] = {}
-    for channel_name, env_key in MEMORY_WEBHOOK_ENV.items():
-        if env_key not in missing:
-            continue
-        channel_id = str(memory.get(channel_name) or "")
-        if not channel_id:
-            continue
-        webhook = client.create_webhook(channel_id, name="Honcho Memory")
-        wanted[env_key] = str(webhook["url"])
-
-    return merge_env_secrets(wanted)
-
-
 def wire_quota_channels(state: Mapping[str, Any]) -> bool:
     quotas = (state.get("channels") or {}).get("quotas") or {}
     guild_id = str(state.get("guild_id") or "")
@@ -1309,8 +1244,6 @@ def reconcile(
                 notify_channels["gateway-restarts"]
             )
 
-    if modules["memory"] and state["channels"].get("memory"):
-        report["wired"]["memory_webhooks"] = wire_memory_webhooks(client, state)
 
     if modules["quotas"] and state["channels"].get("quotas"):
         report["wired"]["quota_channels"] = wire_quota_channels(state)

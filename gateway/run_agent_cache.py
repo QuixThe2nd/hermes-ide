@@ -81,14 +81,6 @@ class GatewayAgentCacheMixin:
         except Exception:
             out["tools.registry_generation"] = None
 
-        # Honcho identity-mapping keys live in honcho.json, not user_config.
-        # Only read that file when Honcho is the active memory provider.
-        provider = cfg_get(cfg, "memory", "provider")
-        if isinstance(provider, str) and provider.lower() == "honcho":
-            out.update(cls._extract_honcho_cache_busting_config())
-        else:
-            out.update(cls._empty_honcho_cache_busting_config())
-
         return out
 
     # Kept for the process lifetime: loading a provider imports its plugin module, and this runs on every inbound message.
@@ -140,17 +132,15 @@ class GatewayAgentCacheMixin:
 
         ``user_id`` and ``user_id_alt`` are the runtime user identities
         carried by the current message's gateway source.  They participate
-        in the cache key because the Honcho memory provider freezes them
-        into ``HonchoSessionManager`` at first-message init (see
-        ``plugins/memory/honcho/__init__.py::_do_session_init``).  Without
-        them in the signature, a shared-thread session_key (one in which
+        in the cache key because a memory provider may freeze them into
+        its per-session manager at first-message init.  Without them in
+        the signature, a shared-thread session_key (one in which
         ``build_session_key`` intentionally omits the participant ID,
         e.g. ``thread_sessions_per_user=False``) would reuse the cached
-        AIAgent across distinct users, causing the second user's messages
-        to be attributed to the first user's resolved Honcho peer.  This
-        broke #27371's per-user-peer contract in multi-user gateways.
-        Per-user agent rebuilds in shared threads trade prompt-cache
-        warmth for correct memory attribution.
+        AIAgent across distinct users, attributing the second user's
+        messages to the first user's memory identity.  Per-user agent
+        rebuilds in shared threads trade prompt-cache warmth for correct
+        memory attribution.
         """
         import hashlib, json as _j
 

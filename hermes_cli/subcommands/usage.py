@@ -13,7 +13,7 @@ import sys
 
 
 def usage_snapshot_document(snapshot) -> dict:
-    """``hermes usage --json`` document. Schema is documented in website/docs/reference/cli-commands.md —
+    """``hermes usage --json`` document. Schema is documented in the hosted CLI reference —
     keep the keys stable; extend only by adding keys."""
     return {
         "provider": snapshot.provider,

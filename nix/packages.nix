@@ -59,7 +59,6 @@
           "feishu"
           "firecrawl"
           "hindsight"
-          "honcho"
           "messaging"
           "modal"
           "parallel-web"

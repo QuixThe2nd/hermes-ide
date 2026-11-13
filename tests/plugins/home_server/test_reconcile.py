@@ -14,8 +14,8 @@ from plugins.home_server.core import (
     template_fingerprint,
 )
 
-# 5 categories + 2 chat + 3 notifications + 4 memory + 5 model voices + 3 speeds.
-FIRST_RUN_CREATES = 5 + 2 + 3 + 4 + 5 + 3
+# 4 categories + 2 chat + 3 notifications + 5 model voices + 3 speeds.
+FIRST_RUN_CREATES = 4 + 2 + 3 + 5 + 3
 
 
 def test_first_run_creates_the_whole_template(hermes, guild, make_discord):
@@ -97,9 +97,8 @@ def test_fresh_provision_seats_notifications_at_the_top(hermes, make_discord, st
     }
     assert positions["notifications"] == 0
     assert positions["chat"] == 1
-    assert positions["memory"] == 2
-    assert positions["quotas"] == 3
-    assert positions["speeds"] == 4
+    assert positions["quotas"] == 2
+    assert positions["speeds"] == 3
 
     # Channels inside a category follow ChannelSpec order.
     notifications = state()["channels"]["notifications"]
@@ -125,11 +124,8 @@ def test_existing_guild_is_reordered_notifications_first(
             {"id": "10", "name": "Chat", "type": CHANNEL_TYPE_CATEGORY, "position": 3},
             {"id": "11", "name": "inbox", "type": CHANNEL_TYPE_TEXT, "parent_id": "10", "position": 0},
             {"id": "12", "name": "outbox", "type": CHANNEL_TYPE_TEXT, "parent_id": "10", "position": 1},
-            {"id": "20", "name": "Honcho Memory", "type": CHANNEL_TYPE_CATEGORY, "position": 0},
-            {"id": "21", "name": "explicit-facts", "type": CHANNEL_TYPE_TEXT, "parent_id": "20", "position": 0},
-            {"id": "22", "name": "deductions", "type": CHANNEL_TYPE_TEXT, "parent_id": "20", "position": 1},
-            {"id": "23", "name": "patterns", "type": CHANNEL_TYPE_TEXT, "parent_id": "20", "position": 2},
-            {"id": "24", "name": "contradictions", "type": CHANNEL_TYPE_TEXT, "parent_id": "20", "position": 3},
+            # Legacy memory category (removed module): unmanaged, must survive untouched.
+            {"id": "20", "name": "Legacy Memory", "type": CHANNEL_TYPE_CATEGORY, "position": 0},
             {"id": "30", "name": "Models", "type": CHANNEL_TYPE_CATEGORY, "position": 2},
             {"id": "31", "name": "Codex", "type": CHANNEL_TYPE_VOICE, "parent_id": "30", "position": 0},
             {"id": "40", "name": "Speeds", "type": CHANNEL_TYPE_CATEGORY, "position": 1},
@@ -218,13 +214,12 @@ def test_unknown_extra_channels_are_left_alone_and_nothing_deleted(hermes, make_
 def test_disabled_modules_are_skipped_entirely(
     hermes, guild, make_discord, write_config, read_config
 ):
-    write_config({"guild_id": guild, "modules": {"speeds": False, "memory": False}})
+    write_config({"guild_id": guild, "modules": {"speeds": False}})
     discord = make_discord()
     report = reconcile(http_fn=discord)
 
     names = {c["name"] for c in discord.channels.values()}
     assert "Speeds" not in names
-    assert "Honcho Memory" not in names
     assert "qBittorrent" not in names
     assert "Lounges" in names and "Models" in names
 
@@ -625,32 +620,6 @@ def test_quota_and_speeds_config_are_written_and_unrelated_keys_kept(
         config["quota_channels"]["channel_ids"]["codex"]
         == state()["channels"]["quotas"]["Codex"]
     )
-
-
-def test_memory_webhooks_are_created_and_exported(hermes, make_discord):
-    discord = make_discord()
-    reconcile(http_fn=discord)
-
-    env = (hermes / ".env").read_text(encoding="utf-8")
-    assert "HONCHO_DISCORD_WEBHOOK_EXPLICIT=" in env
-    assert "HONCHO_DISCORD_WEBHOOK_INDUCTIVE=" in env
-    assert len(discord.webhooks) == 4
-
-
-def test_memory_webhook_env_is_never_overwritten(hermes, make_discord):
-    (hermes / ".env").write_text(
-        "HONCHO_DISCORD_WEBHOOK_EXPLICIT=mine-not-yours\n", encoding="utf-8"
-    )
-    discord = make_discord()
-    reconcile(http_fn=discord)
-
-    env = (hermes / ".env").read_text(encoding="utf-8")
-    assert "HONCHO_DISCORD_WEBHOOK_EXPLICIT=mine-not-yours" in env
-    assert len(discord.webhooks) == 3
-
-    before = len(discord.webhooks)
-    reconcile(http_fn=discord)
-    assert len(discord.webhooks) == before
 
 
 def test_disabled_feature_is_a_noop(hermes, make_discord, write_config):

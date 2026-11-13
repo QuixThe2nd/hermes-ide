@@ -1,6 +1,6 @@
 # hermes_cli/ + cli.py — CLI, slash commands, config, skins, updater, profiles
 
-Applies on top of the root `AGENTS.md`. Long-form: `website/docs/developer-guide/cli-internals.md`.
+Applies on top of the root `AGENTS.md`.
 
 ## CLI architecture
 
@@ -19,7 +19,7 @@ Rules: all interactive menu-pickers use curses (`hermes_cli/curses_ui.py`; examp
 `hermes_cli/tools_config.py`). Never emit `\033[K` (ANSI erase-to-EOL) in spinner/display code —
 it leaks as literal `?[K` under prompt_toolkit's `patch_stdout`; space-pad instead:
 `f"\r{line}{' ' * pad}"`. Wrapper CLIs extend via the protected hooks in `cli_tui_mixin.py`
-(`website/docs/developer-guide/extending-the-cli.md`), not by overriding `run()`.
+(see the extending-the-cli developer guide), not by overriding `run()`.
 
 ## Slash command registry (`hermes_cli/commands.py`)
 
@@ -57,7 +57,7 @@ Do not add a surface-specific goal parser. ACP has no goal command or goal loop 
   migrate/transform existing config (rename keys, restructure); new keys deep-merge automatically.
   Top-level sections (non-exhaustive): `model, agent, terminal, compression, display, stt, tts,
   memory, security, delegation, smart_model_routing, checkpoints, auxiliary, curator, skills,
-  gateway, logging, cron, profiles, plugins, honcho`. `auxiliary` = per-task side-LLM overrides
+  gateway, logging, cron, profiles, plugins`. `auxiliary` = per-task side-LLM overrides
   (`agent/AGENTS.md`); `curator` = `enabled, interval_hours, min_idle_hours, stale_after_days,
   archive_after_days, backup.*`.
 - **.env = SECRETS ONLY** (keys, tokens, passwords): add to `OPTIONAL_ENV_VARS` with
@@ -94,7 +94,7 @@ from `default`). Built-ins in `_BUILTIN_SKINS`: `default`, `ares`, `mono`, `slat
 (banner border/title/accent/dim/text, response_border), `spinner.*` (waiting/thinking faces,
 thinking_verbs, wings), `tool_prefix`, `tool_emojis`, `branding.*` (agent_name, welcome,
 response_label, prompt_symbol). Consumers: `banner.py`, `display.py`, `cli.py`. Key-by-key table
-and YAML template: `website/docs/user-guide/features/skins.md`.
+and YAML template (see the skins user guide).
 
 ## Update pipeline (`hermes update`) — transactional; every stage guards a real field failure
 
@@ -158,7 +158,7 @@ Process-scan coordination between the updater and the gateway is being replaced 
 gateway-owned control socket (#92091); scans are the fallback layer for old/crashed processes — read
 #92091 before adding any heuristic. Process identity rules (never argv substrings; canonical
 matchers; parser-derived flag sets; never blanket-exclude gateway ancestors, #87594): root
-`AGENTS.md` and `website/docs/developer-guide/cli-internals.md`.
+`AGENTS.md`.
 
 ## Profiles (multi-instance)
 
