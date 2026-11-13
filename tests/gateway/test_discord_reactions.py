@@ -3,7 +3,7 @@
 import asyncio
 import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -141,36 +141,11 @@ async def test_reactions_disabled_via_env(adapter, monkeypatch):
     adapter.send.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_raw_decision_reaction_routes_to_pending_listener(adapter):
-    payload = SimpleNamespace(
-        emoji=SimpleNamespace(name="✅"),
-        user_id=42,
-        channel_id=123,
-        message_id=456,
-    )
-
-    with patch(
-        "tools.discord_resolve_tool.handle_resolve_reaction",
-        return_value={"acted": False, "reason": "not_listening"},
-    ) as resolve:
-        await adapter._dispatch_raw_reaction(payload)
-
-    resolve.assert_called_once_with("123", "456", "✅", "***")
-
-
-@pytest.mark.asyncio
-async def test_raw_decision_reaction_filters_the_bots_own_seeded_reactions(adapter):
-    payload = SimpleNamespace(
-        emoji=SimpleNamespace(name="❌"),
-        user_id=adapter._client.user.id,
-        channel_id=123,
-        message_id=456,
-    )
-
-    with patch("tools.discord_resolve_tool.handle_resolve_reaction") as resolve:
-        await adapter._dispatch_raw_reaction(payload)
-
-    resolve.assert_not_called()
-
+def test_raw_decision_reaction_route_removed(adapter):
+    """``resolve_ticket`` is removed: the raw-reaction dispatch whose only
+    consumer was ``handle_resolve_reaction`` is gone with it. A ✅/❌
+    reaction therefore has no path into a deleted module — nothing to
+    patch, nothing to raise."""
+    assert not hasattr(DiscordAdapter, "_dispatch_raw_reaction")
+    assert not hasattr(adapter, "_dispatch_raw_reaction")
 
