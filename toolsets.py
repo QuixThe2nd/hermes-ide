@@ -344,8 +344,8 @@ TOOLSETS = {
     # Tools are injected via MemoryManager, not the toolset system.
 
     "discord": {
-        "description": "Discord read and participate tools (fetch messages, search members, create threads, resolve tickets)",
-        "tools": ["discord", "resolve_ticket"],
+        "description": "Discord read and participate tools (fetch messages, search members, create threads)",
+        "tools": ["discord"],
         "includes": [],
     },
 
@@ -469,7 +469,6 @@ TOOLSETS = {
         "tools": _HERMES_CORE_TOOLS + [
             "discord",
             "discord_admin",
-            "resolve_ticket",
         ],
         "includes": []
     },

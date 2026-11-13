@@ -940,20 +940,6 @@ def _describe_papercuts_phrase(_tool_name: str, args: dict) -> str | None:
     return f"{label} {papercut_id}" if papercut_id and _describe_action_key(args) in ("resolve", "ignore") else label
 
 
-_RESOLVE_TICKET_DESCRIBE_ACTIONS = {
-    "propose": "Proposing to close a Discord ticket", "close": "Closing a Discord ticket",
-}
-
-
-def _describe_resolve_ticket_phrase(_tool_name: str, args: dict) -> str | None:
-    action = args.get("action") or "propose"  # function/schema default
-    label = _describe_enum_label(_RESOLVE_TICKET_DESCRIBE_ACTIONS, action)
-    if label is None:
-        return "Managing Discord ticket resolution"
-    channel_id = _describe_arg(args, "channel_id")
-    return f"{label} in channel {channel_id}" if channel_id else label
-
-
 _START_CONVERSATION_DESCRIBE_ACTIONS = {
     "start": "Starting a conversation", "setup": "Provisioning a conversation channel",
 }
@@ -1194,7 +1180,6 @@ _DESCRIBE_SUBJECT_BUILDERS.update({
     "moa_ask": _describe_fixed("Asking advisor models"),
     "moa_debate": _describe_fixed("Running an advisor debate"),
     "restart": _describe_fixed("Restarting the agent"),
-    "resolve_ticket": _describe_resolve_ticket_phrase,
     "papercuts": _describe_papercuts_phrase,
     "start_conversation": _describe_start_conversation_phrase,
     "x_search": _describe_x_search_phrase,

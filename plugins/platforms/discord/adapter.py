@@ -1464,10 +1464,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             async def on_thread_update(before, after):
                 await adapter_self._on_platform_thread_update(before, after)
 
-            @self._client.event
-            async def on_raw_reaction_add(payload):
-                await adapter_self._dispatch_raw_reaction(payload)
-
             if self._slash_commands:
                 # Registration walks the skill catalog on disk (#110707); keep the loop free.
                 await asyncio.to_thread(self._register_slash_commands)
@@ -5245,39 +5241,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 exc_info=True,
             )
             return SendResult(success=False, error=str(e))
-
-    async def _dispatch_raw_reaction(self, payload: Any) -> None:
-        """One raw reaction event, routed by emoji to its owning feature.
-
-        Consumer: resolve-ticket confirmations (✅/❌ on their embeds),
-        filtered to their own messages through the pending-listener
-        store, so an unrelated reaction costs one cheap emoji check and
-        never reaches the handler.
-        """
-        try:
-            emoji_name = getattr(payload.emoji, "name", None)
-        except Exception:
-            emoji_name = None
-
-        if emoji_name in ("✅", "❌"):
-            bot_user = self._client.user if self._client else None
-            if bot_user is not None and payload.user_id == bot_user.id:
-                return
-            try:
-                from tools.discord_resolve_tool import handle_resolve_reaction
-                result = await asyncio.to_thread(
-                    handle_resolve_reaction,
-                    str(payload.channel_id),
-                    str(payload.message_id),
-                    emoji_name,
-                    self.config.token,
-                )
-                if result.get("acted"):
-                    logger.info("[%s] resolve_ticket reaction: %s", self.name, result)
-            except Exception:
-                logger.exception(
-                    "[%s] resolve_ticket reaction handler failed", self.name
-                )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Start a persistent typing loop (POST typing every 12s; indicator lasts ~10s).
