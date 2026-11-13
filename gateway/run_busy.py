@@ -875,13 +875,13 @@ class GatewayBusySessionMixin:
     _PLAIN_COMMANDS = (
         "status", "context", "restart", "pause", "agents", "bg", "btw",
         "subgoal", "verbose", "help",
-        "commands", "profile", "login", "update", "version",
+        "commands", "profile", "update", "version",
     )
     # Dispatched only on the idle path (busy dispatch has its own allowlist).
     _IDLE_COMMANDS = (
         "topic", "whoami", "platform", "stop", "memory", "skills",
         "codex-runtime", "suggestions", "save", "retry",
-        "setnotify", "clearnotify", "compress", "usage", "topup", "insights", "reload-mcp", "reload-skills",
+        "setnotify", "clearnotify", "compress", "usage", "insights", "reload-mcp", "reload-skills",
         "debug", "title", "resume", "sessions", "branch", "rollback", "diff",
         "loop", "refine", "review",
     )
