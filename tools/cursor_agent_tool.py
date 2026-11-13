@@ -18,7 +18,11 @@ holds the key. The worker process and its descendants never receive
 already used by local ``agent``. The key is never placed in argv,
 log files, worker env, or the tool result. A missing or empty key fails
 clearly — there is no silent fallback to the local CLI or to
-``os.environ``.
+``os.environ``. That rule governs key *loading* only; a Cloud **poll
+timeout** is the one later failure that falls through to a single local
+CLI run (see ``tools/cursor_cloud_timeout_fallback.py``) — safe because a
+Cloud timeout leaves the scratch clone untouched: the Cloud Agent edits a
+remote checkout built from pushed refs, not this workdir.
 
 Backend
 -------
@@ -86,6 +90,12 @@ from tools.cursor_run_receipts import (
     request_fingerprint,
     update_receipt,
     validate_receipt_binding,
+)
+from tools.cursor_cloud_timeout_fallback import (
+    handle_cloud_poll_timeout,
+    is_poll_get_timeout_error,
+    is_wall_clock_poll_timeout,
+    snapshot_workdir_status,
 )
 from tools.delegate_evidence_gate import apply_evidence_gate
 from tools.delegate_tool_config import _cfg
@@ -1633,6 +1643,10 @@ def _execute_cloud_delegation(
     agent_obj: Optional[Dict[str, Any]] = None
     run_obj: Dict[str, Any] = {}
     started_mono = time.monotonic()
+    # Compared against a second snapshot when a poll timeout is handled: an
+    # unchanged tree proves the scratch clone is untouched and a local
+    # fallback may write to it (the Cloud Agent edits a remote checkout).
+    start_status = snapshot_workdir_status(str(workdir_path))
 
     if cloud_agent_id and cloud_run_id:
         run_obj = fetch_cloud_run(cloud_agent_id, cloud_run_id, api_key)
@@ -1789,6 +1803,32 @@ def _execute_cloud_delegation(
         receipt = read_receipt(receipt_path) or receipt
         started_mono = time.monotonic()
 
+    def _poll_timeout_fallback(error_detail: str) -> str:
+        """One local fallback for a poll timeout; Cloud is never retried."""
+        fallback_json, fallback_outcome = handle_cloud_poll_timeout(
+            task=task,
+            workdir=str(workdir_path),
+            model=model_name,
+            timeout_seconds=clamped_timeout,
+            start_status=start_status,
+            error_detail=error_detail,
+            agent_id=cloud_agent_id,
+            run_id=cloud_run_id,
+            api_key=api_key,
+            hermes_session_id=hermes_session_id,
+            tool_call_id=tool_call_id,
+            log_path=str(log_path),
+        )
+        finalize_receipt(
+            receipt_path,
+            outcome=fallback_outcome,
+            terminal_result={"result_json": fallback_json},
+            log_path=str(log_path),
+            cloud_agent_id=cloud_agent_id,
+            cloud_run_id=cloud_run_id,
+        )
+        return fallback_json
+
     progress_url = extract_progress_url(agent_obj)
     if not run_obj or not is_terminal_run_status(run_obj.get("status")):
         try:
@@ -1800,6 +1840,8 @@ def _execute_cloud_delegation(
                 started_mono=started_mono,
             )
         except CursorCloudError as exc:
+            if is_poll_get_timeout_error(exc):
+                return _poll_timeout_fallback(str(exc))
             result_json = _make_result(success=False, error=str(exc))
             finalize_receipt(
                 receipt_path,
@@ -1810,6 +1852,8 @@ def _execute_cloud_delegation(
                 cloud_run_id=cloud_run_id,
             )
             return result_json
+        if is_wall_clock_poll_timeout(run_obj):
+            return _poll_timeout_fallback("timeout")
 
     result_json, _success, outcome, _cloud_status = _build_cloud_tool_result_from_run(
         agent=agent_obj,
@@ -2805,6 +2849,10 @@ CURSOR_AGENT_SCHEMA = {
         "Unpushed commits and dirty working-tree changes are invisible to the "
         "run; the tool refuses to start when local HEAD is ahead of origin. "
         "Nothing runs on this host. Does not open a PR or request reviewers. "
+        "On a poll timeout only, the call falls through once to a local CLI "
+        "run in workdir — a Cloud timeout leaves the scratch clone untouched "
+        "because the Cloud Agent edits a remote checkout built from pushed "
+        "refs, not this workdir — and never retries Cloud. "
         "Available only when the Cursor Agent CLI binary is installed."
     ),
     "parameters": {
