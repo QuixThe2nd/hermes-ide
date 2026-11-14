@@ -431,6 +431,9 @@ class ResearchRunner:
             return
         sanitized = citations_mod.remove_unledgered_urls(corrected, evidence_urls)
         retry = citations_mod.validate_citations(sanitized, evidence_urls)
+        if not sanitized.strip():
+            retry.ok = False
+            retry.errors.append("sanitized correction contains no content or citations")
         self._record_synthesis(
             directory, attempts=2, correction_used=True, citation_errors=retry.errors
         )
