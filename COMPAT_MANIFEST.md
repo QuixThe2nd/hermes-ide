@@ -2161,31 +2161,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `dataclass` | import | `dataclasses` |
 | `importlib` | import | `importlib` |
 
-### `plugins.memory.retaindb`
 
-| name | kind | new location |
-|---|---|---|
-| `CONTEXT_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `Dict` | import | `typing` |
-| `FILE_DELETE_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `FILE_INGEST_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `FILE_LIST_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `FILE_READ_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `FILE_UPLOAD_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `FORGET_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `List` | import | `typing` |
-| `PROFILE_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `REMEMBER_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `SEARCH_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-
-### `plugins.memory.supermemory`
-
-| name | kind | new location |
-|---|---|---|
-| `FORGET_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `PROFILE_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `SEARCH_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `STORE_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
 
 ### `plugins.platforms.a2a.protocol`
 

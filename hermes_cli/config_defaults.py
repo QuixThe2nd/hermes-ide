@@ -921,8 +921,8 @@ DEFAULT_CONFIG = {
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # Periodic built-in memory review; 0 when an external provider auto-extracts.
         "nudge_interval": 10,
-        # External memory provider plugin (empty = built-in only); only ONE at a time: "hindsight",
-        # "holographic", "retaindb", "byterover", "supermemory".
+        # External memory provider plugin (empty = built-in only). The only
+        # built-in external provider is "hindsight". Unknown names fail closed.
         "provider": "",
     },
 
@@ -2245,18 +2245,6 @@ OPTIONAL_ENV_VARS = {
     "HINDSIGHT_API_URL": _tool(
         "Base URL for the Hindsight API (default: https://api.hindsight.vectorize.io)",
         "Hindsight API URL", password=None, advanced=True),
-    # ── Supermemory ──
-    "SUPERMEMORY_API_KEY": _tool("Supermemory API key for conversation-scoped persistent memory",
-        "Supermemory API key", "https://supermemory.ai", tools=["supermemory_search"]),
-    # ── RetainDB ──
-    "RETAINDB_API_KEY": _tool("RetainDB API key for persistent memory", "RetainDB API key",
-        "https://retaindb.com", tools=["retaindb_search"]),
-    "RETAINDB_BASE_URL": _tool(
-        "Base URL for self-hosted RetainDB instances (default: https://api.retaindb.com)",
-        "RetainDB base URL", password=None, advanced=True),
-    # ── ByteRover ──
-    "BRV_API_KEY": _tool("ByteRover API key (optional, for cloud sync — local-first by default)",
-        "ByteRover API key", "https://app.byterover.dev", tools=["brv_query"]),
     # ── Langfuse observability ──
     "HERMES_LANGFUSE_PUBLIC_KEY": _tool("Langfuse project public key (pk-lf-...)",
         "Langfuse public key", "https://cloud.langfuse.com", password=False),

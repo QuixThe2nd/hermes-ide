@@ -219,12 +219,6 @@ discord = ["discord.py==2.7.1"]
 # can re-sync exactly the pin from core.
 doc-extract = ["firecrawl-anydoc==0.2.4"]
 trace-upload = ["huggingface-hub==1.24.0"]
-# Cloud memory provider — opt-in, lazy-installed via tools/lazy_deps.py
-# (memory.supermemory) at first use. Exact pins MUST match the
-# LAZY_DEPS pins (enforced by tests/test_project_metadata.py). Deliberately
-# excluded from [all] like hindsight so a quarantined upstream release
-# can't break fresh installs.
-supermemory = ["supermemory==3.50.0"]
 # Image resize recovery for the vision tools. Pillow is now a CORE dependency
 # (see the main `dependencies` list above) since the byte/pixel shrink paths are on
 # the default vision-embed path and the mid-session lazy install deadlocked the
@@ -503,7 +497,6 @@ wheel = false
 slack-bolt = false
 slack-sdk = false
 starlette = false
-supermemory = false
 tenacity = false
 ty = false
 tzdata = false

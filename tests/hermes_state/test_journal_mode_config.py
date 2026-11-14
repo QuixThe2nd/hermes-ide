@@ -289,7 +289,6 @@ def test_real_db_openers_honor_configured_delete(monkeypatch, tmp_path):
     from gateway.platforms.api_server import ResponseStore
     from hermes_cli import projects_db
     from hermes_state import SessionDB
-    from plugins.memory.holographic.store import MemoryStore
     from plugins.platforms.discord.recovery import DiscordRecoveryStore
     from tools import async_delegation
 
@@ -338,14 +337,6 @@ def test_real_db_openers_honor_configured_delete(monkeypatch, tmp_path):
     finally:
         projects_conn.close()
 
-    holographic = MemoryStore(db_path=tmp_path / "memory_store.db")
-    try:
-        observed["holographic"] = holographic._conn.execute(
-            "PRAGMA journal_mode"
-        ).fetchone()[0].lower()
-    finally:
-        holographic.close()
-
     response_store = ResponseStore(db_path=str(tmp_path / "response_store.db"))
     try:
         observed["response_store"] = response_store._conn.execute(
@@ -362,6 +353,5 @@ def test_real_db_openers_honor_configured_delete(monkeypatch, tmp_path):
         "discord_recovery": "delete",
         "session_db": "delete",
         "projects": "delete",
-        "holographic": "delete",
         "response_store": "delete",
     }

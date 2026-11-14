@@ -26,7 +26,6 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     # top-level ``hindsight`` module — anchoring on the package name made
     # available("hindsight") a permanent false negative (pc_1de37914422e).
     "hindsight": "hindsight_client",
-    "supermemory": "supermemory",
     "messaging": "discord",
     "discord": "discord",
     "matrix": ("mautrix", "asyncpg", "aiosqlite", "markdown", "aiohttp_socks"),

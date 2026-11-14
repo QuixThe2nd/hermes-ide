@@ -1,8 +1,7 @@
 """Multiplex invariant: memory-provider identity/tenant/endpoint never comes from the default profile.
 
 Under ``gateway.multiplex_profiles`` ``os.environ`` is the DEFAULT profile's ``.env``. When a secondary
-profile's scope does not define SUPERMEMORY_CONTAINER_TAG / RETAINDB_PROJECT /
-HINDSIGHT_BANK_ID, the provider must fall back to its own default
+profile's scope does not define HINDSIGHT_BANK_ID, the provider must fall back to its own default
 (per-profile partition), NOT write the secondary's memories into the default profile's account.
 """
 from __future__ import annotations
@@ -12,8 +11,6 @@ import pytest
 from agent import secret_scope
 
 _DEFAULT_ENV = {
-    "SUPERMEMORY_CONTAINER_TAG": "tag-default", "SUPERMEMORY_BASE_URL": "https://sm.default",
-    "RETAINDB_PROJECT": "proj-default", "RETAINDB_BASE_URL": "https://rdb.default",
     "HINDSIGHT_BANK_ID": "bank-default", "HINDSIGHT_MODE": "local_external", "HINDSIGHT_API_URL": "http://hs.default",
     "HINDSIGHT_RETAIN_TAGS": "tag-default", "HINDSIGHT_RETAIN_OBSERVATION_SCOPES": "per_tag",
     "HINDSIGHT_RETAIN_SOURCE": "source-default", "HINDSIGHT_RETAIN_USER_PREFIX": "UserDefault",
@@ -34,7 +31,7 @@ def secondary_profile(monkeypatch, tmp_path):
     (prof_b / "config.yaml").write_text("{}\n")
     monkeypatch.setenv("HERMES_HOME", str(prof_b))
     secret_scope.set_multiplex_active(True)
-    token = secret_scope.set_secret_scope({"RETAINDB_API_KEY": "rdb-b", "SUPERMEMORY_API_KEY": "sm-b"})
+    token = secret_scope.set_secret_scope({"HINDSIGHT_API_KEY": "hs-b"})
     try:
         yield prof_b
     finally:
@@ -44,16 +41,6 @@ def secondary_profile(monkeypatch, tmp_path):
 
 def test_secondary_profile_memory_identity_never_inherits_default_environ(secondary_profile):
     import plugins.memory.hindsight as hindsight
-    import plugins.memory.retaindb as retaindb
-    import plugins.memory.supermemory as supermemory
-
-    assert supermemory._resolve_container_tag("cfg_tag", "id") == "cfg_tag"
-    assert "default" not in supermemory._resolve_base_url("")
-
-    provider = retaindb.RetainDBMemoryProvider()
-    provider.initialize("s1", hermes_home=str(secondary_profile))
-    assert provider._client.project == "hermes-b"
-    assert "default" not in provider._client.base_url
 
     hcfg = hindsight._load_config()
     assert (hcfg["banks"]["hermes"]["bankId"], hcfg["mode"]) == ("hermes", "cloud")

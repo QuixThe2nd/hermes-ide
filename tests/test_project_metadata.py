@@ -65,7 +65,6 @@ def test_lazy_installable_extras_excluded_from_all():
         "messaging", "matrix",
         "discord",
         "hindsight",
-        "supermemory",
         "mistral",  # mistralai provider SDK, lazy-installed
     }
     all_extra_specs = optional_dependencies["all"]
