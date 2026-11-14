@@ -36,16 +36,19 @@ on the origin remote.
 
 Run-poll timeout recovery
 -------------------------
-A timed-out run poll may leave the scratch clone untouched. For a GET request
-timeout or the local polling deadline, Hermes requests cancellation, captures
-an immediate read-only ``git status --short`` snapshot (including untracked
-files), and waits for Cursor to confirm a terminal status before starting any
-local writer. A ``FINISHED`` run returns its authoritative Cloud result. Other terminal
-statuses run the original task once with local Claude Code in the same workdir
-only while the requested finite budget remains; zero keeps its unbounded meaning.
-An exhausted budget returns ``timeout`` without starting another writer. If no
-terminal status can be confirmed, local execution does not start.
-The fallback retains the no-push instruction and returns the cloud timeout cause
+The Cloud phase executes remotely, so a run-poll timeout itself leaves the local
+scratch checkout untouched; only the subsequent local fallback may edit it. For
+a GET request timeout or the local polling deadline, Hermes requests cancellation,
+captures an immediate 10-second read-only ``git status --short`` snapshot
+(including untracked files), and waits for Cursor to confirm a terminal status
+before starting any local writer. A ``FINISHED`` run returns its authoritative
+Cloud result. Other terminal statuses run the original task once with local
+Claude Code in ``/goal`` mode in the same workdir only when the status snapshot
+is verified clean and enough of the requested finite budget remains for the
+local runner; zero keeps its unbounded meaning. Dirty or unverifiable trees and
+an exhausted or insufficient budget return without starting another writer. If
+no terminal status can be confirmed, local execution does not start. The
+fallback retains the no-push instruction and returns the cloud timeout cause
 and status snapshot as metadata. Interruption and non-timeout cloud errors never
 trigger local fallback.
 Before local execution, Hermes records the confirmed Cloud ids and terminal status
@@ -1759,12 +1762,34 @@ def _run_local_claude_after_poll_timeout(
     )
 
     local_payload: Optional[Dict[str, Any]] = None
-    if timeout_seconds > 0:
+    if _check_interrupted():
+        local_payload = json.loads(_make_result(success=False, error="interrupted"))
+    elif git_status.get("returncode") != 0:
+        local_payload = json.loads(
+            _make_result(
+                success=False,
+                error=(
+                    "local Claude fallback not started: workdir git status "
+                    "is unverifiable"
+                ),
+            )
+        )
+    elif str(git_status.get("stdout") or "").strip():
+        local_payload = json.loads(
+            _make_result(
+                success=False,
+                error=(
+                    "local Claude fallback not started: workdir has uncommitted "
+                    "or untracked changes"
+                ),
+            )
+        )
+    elif timeout_seconds > 0:
         remaining = int(timeout_seconds - (time.monotonic() - started_mono))
-        if remaining <= 0:
+        if remaining < MIN_TIMEOUT_SECONDS:
             local_payload = json.loads(_make_result(success=False, error="timeout"))
         else:
-            local_timeout = min(MAX_TIMEOUT_SECONDS, max(MIN_TIMEOUT_SECONDS, remaining))
+            local_timeout = min(MAX_TIMEOUT_SECONDS, remaining)
     else:
         local_timeout = 0
 
@@ -1773,7 +1798,7 @@ def _run_local_claude_after_poll_timeout(
             from tools.claude_agent_tool import delegate_claude_agent
 
             local_result = delegate_claude_agent(
-                task=NO_PUSH_PROMPT_PREFIX + task,
+                task=f"/goal {NO_PUSH_PROMPT_PREFIX}{task}",
                 workdir=workdir,
                 timeout_seconds=local_timeout,
                 permission_mode="acceptEdits",
@@ -3084,9 +3109,11 @@ CURSOR_AGENT_SCHEMA = {
         "the local branch as startingRef when that branch exists on origin). "
         "Unpushed commits and dirty working-tree changes are invisible to the "
         "cloud phase; the tool refuses to start when local HEAD is ahead of origin. "
-        "A cloud run-poll timeout requests cancellation, records git status, and "
-        "waits for a terminal Cloud status before any local execution; FINISHED "
-        "returns the Cloud result. Does not open a PR or request reviewers. "
+        "A cloud run-poll timeout leaves the local scratch checkout untouched, "
+        "requests cancellation, records git status, and waits for a terminal "
+        "Cloud status before any local execution. Local Claude fallback uses "
+        "/goal only with a clean, verified status; dirty or unverifiable trees "
+        "are refused. FINISHED returns the Cloud result. "
         "Available only when the Cursor Agent CLI binary is installed."
     ),
     "parameters": {

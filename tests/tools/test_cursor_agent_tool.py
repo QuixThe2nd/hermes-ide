@@ -1763,7 +1763,8 @@ def _assert_local_fallback_call(call, workdir, task):
     from tools import cursor_agent_tool
 
     assert call["workdir"] == str(workdir.resolve())
-    assert call["task"].startswith(cursor_agent_tool.NO_PUSH_PROMPT_PREFIX)
+    assert call["task"].startswith("/goal ")
+    assert cursor_agent_tool.NO_PUSH_PROMPT_PREFIX in call["task"]
     assert call["task"].endswith(task)
     assert call["background"] is False
     assert call["permission_mode"] == "acceptEdits"
@@ -1829,6 +1830,75 @@ def test_local_fallback_preserves_unbounded_timeout(monkeypatch, tmp_path):
     assert result["success"] is True
     assert len(local_calls) == 1
     assert local_calls[0]["timeout_seconds"] == 0
+
+def test_local_fallback_uses_goal_mode_with_original_task_once(monkeypatch, tmp_path):
+    from tools import claude_agent_tool
+    from tools import cursor_agent_tool
+
+    task = "finish locally"
+    local_calls = _install_local_claude_result(
+        monkeypatch,
+        {"success": True, "final_report": "local Claude completed", "error": None},
+    )
+
+    result_json, outcome = _run_local_fallback_for_test(
+        timeout_seconds=0,
+        started_mono=100.0,
+        workdir=tmp_path,
+    )
+
+    assert outcome == "success"
+    assert json.loads(result_json)["success"] is True
+    assert len(local_calls) == 1
+    prompt = local_calls[0]["task"]
+    assert prompt.startswith("/goal ")
+    assert claude_agent_tool._extract_goal_condition(prompt) is not None
+    assert cursor_agent_tool.NO_PUSH_PROMPT_PREFIX in prompt
+    assert prompt.count(task) == 1
+
+
+def test_local_fallback_near_budget_expiry_does_not_start_claude(
+    monkeypatch, tmp_path
+):
+    from tools import cursor_agent_tool
+
+    local_calls = _install_local_claude_result(
+        monkeypatch,
+        {"success": True, "final_report": "must not overrun", "error": None},
+    )
+    monkeypatch.setattr(cursor_agent_tool.time, "monotonic", lambda: 190.0)
+
+    result_json, outcome = _run_local_fallback_for_test(
+        timeout_seconds=120,
+        started_mono=100.0,
+        workdir=tmp_path,
+    )
+
+    assert local_calls == []
+    assert outcome == "timeout"
+    assert json.loads(result_json)["error"] == "timeout"
+
+
+def test_local_fallback_interruption_does_not_start_claude(monkeypatch, tmp_path):
+    from tools import cursor_agent_tool
+
+    local_calls = _install_local_claude_result(
+        monkeypatch,
+        {"success": True, "final_report": "must not run", "error": None},
+    )
+    monkeypatch.setattr(cursor_agent_tool, "_check_interrupted", lambda: True)
+
+    result_json, outcome = _run_local_fallback_for_test(
+        timeout_seconds=0,
+        started_mono=100.0,
+        workdir=tmp_path,
+    )
+
+    assert local_calls == []
+    assert outcome == "interrupted"
+    result = json.loads(result_json)
+    assert result["success"] is False
+    assert result["error"] == "interrupted"
 
 
 @pytest.mark.parametrize("local_error", ["timeout", "interrupted"])
@@ -1901,7 +1971,6 @@ def test_cloud_poll_get_timeout_falls_back_to_local_claude(monkeypatch, tmp_path
     from tools import cursor_agent_tool
 
     repo = _init_repo_with_bare_origin(tmp_path)
-    (repo / "untracked.txt").write_text("cloud never touched this\n", encoding="utf-8")
     real_poll = cursor_agent_tool.poll_cloud_run
     _install_cloud_happy_path(monkeypatch, tmp_path)
     monkeypatch.setattr(cursor_agent_tool, "poll_cloud_run", real_poll)
@@ -1952,7 +2021,95 @@ def test_cloud_poll_get_timeout_falls_back_to_local_claude(monkeypatch, tmp_path
     fallback = result["fallback"]
     assert fallback["reason"] == "cursor_cloud_run_poll_timeout"
     assert "GET /v1/agents/" in fallback["cloud_timeout"]
-    assert "?? untracked.txt" in fallback["git_status"]["stdout"]
+    assert fallback["git_status"]["stdout"] == ""
+
+
+@pytest.mark.parametrize("probe", ["dirty", "unverifiable"])
+def test_cloud_timeout_refuses_unsafe_local_fallback(monkeypatch, tmp_path, probe):
+    from tools import cursor_agent_tool
+
+    repo = _init_repo_with_bare_origin(tmp_path)
+    real_poll = cursor_agent_tool.poll_cloud_run
+    _install_cloud_happy_path(monkeypatch, tmp_path)
+    monkeypatch.setattr(cursor_agent_tool, "poll_cloud_run", real_poll)
+    monkeypatch.setattr(cursor_agent_tool, "_check_interrupted", lambda: False)
+    if probe == "dirty":
+        (repo / "untracked.txt").write_text("pre-existing local work\n", encoding="utf-8")
+    else:
+        monkeypatch.setattr(
+            cursor_agent_tool,
+            "_capture_workdir_git_status",
+            lambda workdir: {
+                "command": "git status --short --untracked-files=all",
+                "returncode": 128,
+                "stdout": "",
+                "stderr": "status unavailable",
+            },
+        )
+
+    poll_gets = []
+
+    def _http(method, path, **kwargs):
+        if method == "GET" and not poll_gets:
+            poll_gets.append(path)
+            raise TimeoutError("Cursor Cloud Agent run poll request timed out")
+        if method == "GET":
+            return {
+                "id": "run-aaaa",
+                "agentId": _default_client_agent_id(),
+                "status": "CANCELLED",
+            }
+        if method == "POST" and path.endswith("/cancel"):
+            return {}
+        raise AssertionError((method, path))
+
+    monkeypatch.setattr(cursor_agent_tool, "_http_request", _http)
+    local_calls = _install_local_claude_result(
+        monkeypatch,
+        {"success": True, "final_report": "must not run", "error": None},
+    )
+
+    result = json.loads(
+        _delegate(
+            task="do not overwrite local work",
+            workdir=str(repo.resolve()),
+            timeout_seconds=120,
+        )
+    )
+
+    assert result["success"] is False
+    assert local_calls == []
+    assert len(poll_gets) == 1
+    assert "local Claude fallback not started" in result["error"]
+    status = result["fallback"]["git_status"]
+    if probe == "dirty":
+        assert "?? untracked.txt" in status["stdout"]
+    else:
+        assert status["returncode"] == 128
+
+    def _create_must_not_run(*args, **kwargs):
+        raise AssertionError("refusal recovery created replacement Cloud work")
+
+    monkeypatch.setattr(
+        cursor_agent_tool,
+        "create_agent_with_timeout_dedupe",
+        _create_must_not_run,
+    )
+    repeated = json.loads(
+        _delegate(
+            task="do not overwrite local work",
+            workdir=str(repo.resolve()),
+            timeout_seconds=120,
+        )
+    )
+    assert repeated["success"] is False
+    assert repeated["error"] == result["error"]
+    assert repeated["fallback"] == result["fallback"]
+    assert local_calls == []
+    if probe == "dirty":
+        assert (repo / "untracked.txt").read_text(encoding="utf-8") == (
+            "pre-existing local work\n"
+        )
 
 
 @pytest.mark.parametrize(
@@ -2096,7 +2253,6 @@ def test_cloud_poll_budget_timeout_falls_back_to_local_claude(monkeypatch, tmp_p
     from tools import cursor_agent_tool
 
     repo = _init_repo_with_bare_origin(tmp_path)
-    (repo / "untracked.txt").write_text("still untouched\n", encoding="utf-8")
     _install_cloud_happy_path(monkeypatch, tmp_path)
     client_id = _default_client_agent_id()
     monkeypatch.setattr(
@@ -2147,7 +2303,7 @@ def test_cloud_poll_budget_timeout_falls_back_to_local_claude(monkeypatch, tmp_p
     _assert_local_fallback_call(local_calls[0], repo, "finish locally")
     assert events == ["cancel", "status", "claude"]
     assert result["fallback"]["cloud_timeout"] == "cloud poll budget exhausted"
-    assert "?? untracked.txt" in result["fallback"]["git_status"]["stdout"]
+    assert result["fallback"]["git_status"]["stdout"] == ""
 
 
 def test_cloud_timeout_preserves_local_claude_failure(monkeypatch, tmp_path):
