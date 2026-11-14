@@ -89,7 +89,10 @@ def _register_gateway_start_hook(monkeypatch):
     return hooks[0][1]
 
 
-def test_gateway_start_hook_reconciles_enabled_state(monkeypatch, user_scope, home):
+def test_gateway_start_hook_reconciles_enabled_state(monkeypatch, user_scope):
+    monkeypatch.setenv(
+        "HERMES_HOME", "/home/hermes-auto-update-tests/legacy-gateway/.hermes"
+    )
     calls: list[list[str]] = []
 
     def fake_systemctl(args):
