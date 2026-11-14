@@ -172,7 +172,8 @@ class _LiveServer:
 
     def __init__(self, extra=None):
         self.port = _free_port()
-        self.adapter = bs.BrowserSidebarAdapter(_config({"token": TOKEN, **(extra or {})}))
+        self.adapter = bs.BrowserSidebarAdapter(
+            _config({"token": TOKEN, "port": self.port, **(extra or {})}))
         self.events = []
         self.failures = []
 
@@ -208,7 +209,10 @@ async def test_wrong_token_subprotocol_rejected_1008():
 @pytest.mark.asyncio
 async def test_non_tchar_token_rejected_1008():
     async with _LiveServer(extra={"token": "bad token"}) as live:
-        ws = await live.connect_client(token="bad token")
+        # The client library rejects a non-tchar OFFER before any network I/O,
+        # so offer a valid subprotocol; the server's configured token is still
+        # non-tchar and must reject the handshake with 1008.
+        ws = await live.connect_client(token=TOKEN)
         with pytest.raises(Exception) as excinfo:
             await ws.recv()
         closed = excinfo.value

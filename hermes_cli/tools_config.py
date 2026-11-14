@@ -129,7 +129,10 @@ def gui_toolset_label(label: str) -> str:
 # that explicitly enable it (`hermes tools` → Skills List (model-facing), or
 # listing `skills_list` in platform_toolsets). Listing skills without it is
 # always available via the `hermes skills list` CLI command.
-_DEFAULT_OFF_TOOLSETS = {"moa", "video", "video_gen", "x_search", "quota_channels", "assistant_handoff", "file_readonly", "skills_list"}
+_DEFAULT_OFF_TOOLSETS = {
+    "moa", "video", "video_gen", "x_search", "quota_channels", "assistant_handoff",
+    "file_readonly", "skills_list", "browser_sidebar",
+}
 
 
 
@@ -518,7 +521,8 @@ def _enabled_plugin_toolsets(config: dict, platform: str, toolset_names: List[st
     }
     return {
         pts for pts in plugin_ts_keys
-        if pts in toolset_names or (pts not in _DEFAULT_OFF_TOOLSETS and pts not in declined)
+        if _toolset_allowed_for_platform(pts, platform)
+        and (pts in toolset_names or (pts not in _DEFAULT_OFF_TOOLSETS and pts not in declined))
     }
     # An unresolvable name must never be echoed back as an "enabled" toolset:
     # the caller would believe the platform has it while get_toolset()
@@ -579,7 +583,11 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
         enabled_toolsets.add("context_engine")
 
     # Explicit non-configurable entries (custom toolsets, MCP server names) pass through.
-    explicit_passthrough = {ts for ts in toolset_names if ts not in explicit_known_keys and ts not in platform_default_keys}
+    explicit_passthrough = {
+        ts for ts in toolset_names
+        if ts not in explicit_known_keys and ts not in platform_default_keys
+        and _toolset_allowed_for_platform(ts, platform)
+    }
     # #38798: an unresolvable name must never be echoed back as an "enabled" toolset — the caller
     # would believe the platform has it while get_toolset() resolves zero tools. Enabled MCP server
     # names and the "no_mcp" sentinel are not toolsets, but they DO resolve to tools, so they never
