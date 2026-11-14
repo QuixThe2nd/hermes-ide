@@ -819,7 +819,7 @@ def _build_providers() -> List[OpenRouterCompatImageProvider]:
                     "key": "OPENROUTER_API_KEY", "prompt": "OpenRouter API key", "url": "https://openrouter.ai/keys",
                 }],
             }),
-        # No picker row: Portal models are offered inside the single managed "Nous Subscription" row
+        # No picker row: Portal models are offered inside the single managed "Nous Tool Gateway" row
         # (tools/image_generation_managed.py). A row of its own also wrote `provider: nous` and so
         # read "active" alongside the managed FAL row while the runtime routed its pick to FAL.
         OpenRouterCompatImageProvider(

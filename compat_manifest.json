@@ -3471,18 +3471,6 @@
    "target": "hermes_cli.models_reasoning_caps"
   },
   {
-   "facade": "hermes_cli.nous_billing",
-   "name": "BILLING_MANAGE_SCOPE",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.nous_subscription",
-   "name": "managed_nous_tools_enabled",
-   "kind": "moved-lazy",
-   "target": "tools.tool_backend_helpers"
-  },
-  {
    "facade": "hermes_cli.observability.relay_shared_metrics",
    "name": "CLIENT_ACTIVE_MARK",
    "kind": "moved-lazy",
@@ -3808,12 +3796,6 @@
   },
   {
    "facade": "hermes_cli.setup",
-   "name": "get_nous_subscription_features",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.nous_subscription"
-  },
-  {
-   "facade": "hermes_cli.setup",
    "name": "get_optional_skills_dir",
    "kind": "moved-lazy",
    "target": "hermes_constants"
@@ -3859,12 +3841,6 @@
    "name": "get_nous_portal_account_info",
    "kind": "moved-lazy",
    "target": "hermes_cli.nous_account"
-  },
-  {
-   "facade": "hermes_cli.status",
-   "name": "get_nous_subscription_features",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.nous_subscription"
   },
   {
    "facade": "hermes_cli.status",
@@ -3967,12 +3943,6 @@
    "name": "urllib",
    "kind": "import",
    "target": "urllib.parse"
-  },
-  {
-   "facade": "hermes_cli.tools_config",
-   "name": "MANAGED_FEATURE_COVERAGE_CATEGORY",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.nous_subscription"
   },
   {
    "facade": "hermes_cli.tools_config",

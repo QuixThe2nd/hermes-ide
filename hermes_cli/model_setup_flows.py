@@ -275,20 +275,11 @@ def _nous_persist_selection(selected: str, creds: dict) -> dict:
 def _model_flow_nous(config, current_model="", args=None):
     """Nous Portal provider: ensure logged in, then pick model."""
     from hermes_cli.auth import get_provider_auth_state, _prompt_model_selection, _login_nous, PROVIDER_REGISTRY
-    from hermes_cli.config import load_config
-    from hermes_cli.nous_subscription import prompt_enable_tool_gateway
     state = get_provider_auth_state("nous")
     if not state or not state.get("access_token"):
         _say("Not logged into Nous Portal. Starting login...", "")
-
-        def _login_then_offer_gateway(login_args, pconfig):
-            _login_nous(login_args, pconfig)
-            # Offer Tool Gateway enablement for paid subscribers
-            with contextlib.suppress(Exception):
-                prompt_enable_tool_gateway(load_config() or {})
-
         # login_nous already handles model selection + config update
-        _run_login(_login_then_offer_gateway, _nous_login_args(args), PROVIDER_REGISTRY["nous"])
+        _run_login(_login_nous, _nous_login_args(args), PROVIDER_REGISTRY["nous"])
         return
 
     # Already logged in — the curated list (agentic models users know from OpenRouter)
@@ -356,8 +347,6 @@ def _model_flow_nous(config, current_model="", args=None):
         return
     config = _nous_persist_selection(selected, creds)
     print(f"Default model set to: {selected} (via Nous Portal)")
-    # Offer Tool Gateway enablement for paid subscribers
-    prompt_enable_tool_gateway(config)
 
 
 def _model_flow_openai_codex(config, current_model=""):

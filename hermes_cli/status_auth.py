@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from hermes_cli.auth import AuthError
 from hermes_cli.nous_account import (
     format_nous_portal_entitlement_message, get_nous_portal_account_info)
-from hermes_cli.nous_subscription import get_nous_subscription_features
+from hermes_cli.nous_tools import get_nous_tool_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 from hermes_cli import config
 
@@ -79,9 +79,9 @@ _APIKEY_PROVIDERS = {
 
 # Nous Tool Gateway per-feature state: first matching (predicate(feature, nous_auth), text(feature)).
 _FEATURE_STATES = (
-    (lambda f, _: f.managed_by_nous, lambda f: "active via Nous subscription"),
+    (lambda f, _: f.managed_by_nous, lambda f: "active via Nous Tool Gateway"),
     (lambda f, _: f.active, lambda f: f"active via {f.current_provider or 'configured provider'}"),
-    (lambda f, auth: f.included_by_default and auth, lambda f: "included by subscription, not currently selected"),
+    (lambda f, auth: f.included_by_default and auth, lambda f: "included with Tool Gateway, not currently selected"),
 )
 
 
@@ -157,7 +157,7 @@ def _render_auth_providers(ctx):
 
 def _render_nous_gateway(ctx):
     if managed_nous_tools_enabled():
-        features = get_nous_subscription_features(ctx.config)
+        features = get_nous_tool_features(ctx.config)
         _status._section("Nous Tool Gateway")
         print("  Nous Portal   ✓ managed tools available" if features.nous_auth_present
               else "  Nous Portal   ✗ not logged in")

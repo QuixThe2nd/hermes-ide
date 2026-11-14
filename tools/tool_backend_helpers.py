@@ -109,7 +109,7 @@ def prefers_gateway(config_section: str) -> bool:
         return False
 
 
-# Provider value the managed "Nous Subscription" picker rows write for every category;
+# Provider value the managed "Nous Tool Gateway" picker rows write for every category;
 # any other name = that vendor direct; no key = legacy autodetect.
 NOUS_MANAGED_PROVIDER = "nous"
 # Per-capability keys that also count as "this category has been configured".

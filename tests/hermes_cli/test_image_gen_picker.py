@@ -151,7 +151,7 @@ class TestConfigWriting:
 
         monkeypatch.setattr(
             tools_config,
-            "get_nous_subscription_features",
+            "get_nous_tool_features",
             lambda config, **kwargs: SimpleNamespace(
                 features={"image_gen": SimpleNamespace(managed_by_nous=True)}
             ),
@@ -159,7 +159,7 @@ class TestConfigWriting:
 
         config = {"image_gen": {"provider": "openai", "use_gateway": False}}
         nous_row = {
-            "name": "Nous Subscription",
+            "name": "Nous Tool Gateway",
             "managed_nous_feature": "image_gen",
         }
         openai_row = {

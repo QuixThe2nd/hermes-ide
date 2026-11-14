@@ -51,7 +51,7 @@ _managed_fal_client_config = None
 _managed_fal_client_lock = threading.Lock()
 
 
-# --- Managed FAL gateway (Nous Subscription) ---
+# --- Managed FAL gateway (Nous Tool Gateway) ---
 def _resolve_managed_fal_gateway():
     """Managed gateway config for the stored `hermes tools` selection, or ``None`` for direct FAL.
 
@@ -137,13 +137,13 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
             billing = _managed_fal_billing_error(exc, "model")
             if billing is not None:
                 raise ValueError(
-                    f"Nous Subscription gateway rejected model '{model}' (HTTP {status}): {billing}") from exc
+                    f"Nous Tool Gateway rejected model '{model}' (HTTP {status}): {billing}") from exc
             gateway_message = ""
             if status in {401, 402, 403}:
                 gateway_message = "\n\n" + nous_tool_gateway_unavailable_message(
                     "managed FAL image generation", force_fresh=True)
             raise ValueError(
-                f"Nous Subscription gateway rejected model '{model}' (HTTP {status}). This model "
+                f"Nous Tool Gateway rejected model '{model}' (HTTP {status}). This model "
                 f"may not yet be enabled on the Nous Portal's FAL proxy. Either:\n"
                 f"  • Set FAL_KEY in your environment to use FAL.ai directly, or\n"
                 f"  • Pick a different model via `hermes tools` → Image Generation."

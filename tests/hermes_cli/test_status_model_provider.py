@@ -3,7 +3,6 @@
 from types import SimpleNamespace
 
 from hermes_cli.nous_account import NousPaidServiceAccessInfo, NousPortalAccountInfo
-from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
 import subprocess
 
 

@@ -90,10 +90,6 @@ def _quiet_reconfigure(monkeypatch):
     # _configure_provider resolves the post-setup hook lazily from tools_config.
     monkeypatch.setattr(tc, "_run_post_setup", lambda *a, **k: None, raising=False)
     monkeypatch.setattr(tools_config_post_setup, "_run_post_setup", lambda *a, **k: None, raising=False)
-    # Managed rows gate on live Portal auth — stub it green.
-    import hermes_cli.nous_subscription as ns
-
-    monkeypatch.setattr(ns, "ensure_nous_portal_access", lambda **k: True)
 
 
 def test_reconfigure_managed_fal_row_keeps_managed_selection(monkeypatch):
