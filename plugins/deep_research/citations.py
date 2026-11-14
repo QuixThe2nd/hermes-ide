@@ -18,7 +18,7 @@ from urllib.parse import urlsplit, urlunsplit
 # ``Foo_(bar)``); the Markdown link closer is split off afterwards by paren
 # balance (:func:`_strip_prose_tail`), not by the character class.
 _URL_RE = re.compile(
-    r"""(?:\]\(\s*)?(https?://[^\s<>"'\]]+)""",
+    r"""(?:\]\(\s*<?)?(https?://[^\s<>"'\]]+)""",
     re.IGNORECASE,
 )
 
@@ -30,7 +30,7 @@ _SCHEME_HTTP = re.compile(r"^https?://", re.IGNORECASE)
 
 _REFERENCE_DEFINITION_RE = re.compile(
     r"(?m)^ {0,3}\[(?P<label>[^]\n]+)\]:[ \t]*"
-    r"(?P<url>https?://[^\s<>\"'\]]+)[^\n]*(?:\n|$)",
+    r"<?(?P<url>https?://[^\s<>\"'\]]+)[^\n]*(?:\n|$)",
     re.IGNORECASE,
 )
 _REFERENCE_USE_RE = re.compile(
@@ -212,6 +212,11 @@ def remove_unledgered_urls(report_text: str, evidence_urls: Iterable[str]) -> st
                 start = label_start - 1 if text[label_start - 1:label_start] == "!" else label_start
                 end = link_end
                 replacement = text[label_start + 1:match.start()]
+        elif text[url_start - 1:url_start] == "<" and text[url_end:url_end + 1] == ">":
+            start, end = url_start - 1, url_end + 1
+            if text[end:end + 1] in (".", ",", ";", ":", "!", "?"):
+                if text[start - 1:start] in (" ", "\t"):
+                    start -= 1
         elif text[url_end:url_end + 1] in (".", ",", ";", ":", "!", "?"):
             # Avoid leaving a space before sentence punctuation after a bare URL.
             if text[url_start - 1:url_start] in (" ", "\t"):
