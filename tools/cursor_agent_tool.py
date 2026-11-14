@@ -42,6 +42,17 @@ API ``autoCreatePR: false``, a prompt-level no-push instruction, and
 process-local Git overrides are defense-in-depth only. Operators must use
 isolated scratch clones or worktrees for protected repos. The caller's
 ``.git/config`` is not rewritten.
+
+Run-poll transport recovery
+---------------------------
+A timeout from the run-poll GET triggers one immediate local Claude ``/goal``
+run with the original task and timeout. Hermes first takes a bounded,
+read-only ``git status --porcelain=v1`` observation and requests best-effort
+cloud cancellation. Cloud timeouts leave Cursor's isolated scratch clone
+untouched; local execution uses the original workdir and never resets, cleans,
+or discards pre-existing changes. Background runs refuse the local transfer
+with no local work started because their cloud-only interrupt handle cannot
+terminate a transferred Claude process.
 """
 
 from __future__ import annotations
@@ -447,6 +458,10 @@ def parse_cursor_agent_log(log_text: str) -> Dict[str, Any]:
 
 class CursorCloudError(Exception):
     """User-visible Cloud Agent failure that is safe to put in the tool result."""
+
+
+class CursorCloudPollTimeoutError(CursorCloudError):
+    """Transport timeout from the run-poll GET, eligible for local recovery."""
 
 
 class CursorApiKeyError(CursorCloudError):
@@ -1160,7 +1175,8 @@ def poll_cloud_run(
                 timeout=HTTP_TIMEOUT_SECONDS,
             )
         except TimeoutError as exc:
-            raise CursorCloudError(str(exc)) from None
+            detail = str(exc) or "Cursor Cloud Agent run-poll GET transport timed out"
+            raise CursorCloudPollTimeoutError(detail) from None
         if not isinstance(last, dict):
             raise CursorCloudError("Cursor Cloud Agent poll returned a non-object")
         status = str(last.get("status") or "").strip().upper()
@@ -1345,6 +1361,11 @@ def _authoritative_terminal_reconcile(
     client_id = str(receipt.get("client_agent_id") or "")
     if client_id and cloud_agent_id != client_id:
         return None, False
+    from tools.cursor_agent_poll_fallback import finalized_local_fallback_result
+
+    local_result_json = finalized_local_fallback_result(receipt)
+    if local_result_json is not None:
+        return local_result_json, False
 
     try:
         run_obj = fetch_cloud_run(cloud_agent_id, cloud_run_id, api_key)
@@ -1799,6 +1820,39 @@ def _execute_cloud_delegation(
                 timeout_seconds=clamped_timeout,
                 started_mono=started_mono,
             )
+        except CursorCloudPollTimeoutError as exc:
+            from tools.cursor_agent_poll_fallback import (
+                observe_workdir_git_status,
+                run_local_claude_fallback,
+            )
+
+            observation = observe_workdir_git_status(workdir)
+            cancel_cloud_run(cloud_agent_id, cloud_run_id, api_key)
+            payload, outcome = run_local_claude_fallback(
+                task=task,
+                workdir=workdir,
+                timeout_seconds=clamped_timeout,
+                hermes_session_id=hermes_session_id,
+                tool_call_id=tool_call_id,
+                cloud_agent_id=cloud_agent_id,
+                cloud_run_id=cloud_run_id,
+                cloud_poll_error=str(exc),
+                progress_url=progress_url,
+                attempt_id=str(receipt.get("attempt_id") or ""),
+                cloud_log_path=str(log_path),
+                delivery_mode=str(receipt.get("delivery_mode") or "foreground"),
+                observation=observation,
+            )
+            result_json = json.dumps(payload, ensure_ascii=False)
+            finalize_receipt(
+                receipt_path,
+                outcome=outcome,
+                terminal_result={"result_json": result_json},
+                log_path=str(payload.get("log_path") or log_path),
+                cloud_agent_id=cloud_agent_id,
+                cloud_run_id=cloud_run_id,
+            )
+            return result_json
         except CursorCloudError as exc:
             result_json = _make_result(success=False, error=str(exc))
             finalize_receipt(
@@ -2210,8 +2264,8 @@ def recover_delegate_cursor_agent_history(
                         )
                     )
                     return history, (
-                        "[System note: Recovered a terminal delegate_cursor_agent result "
-                        "from authoritative Cursor Cloud evidence without re-invoking create.]"
+                        "[System note: Recovered a terminal delegate_cursor_agent "
+                        "result without re-invoking create.]"
                     )
                 if not cloud_still_running:
                     return agent_history, (
@@ -2804,8 +2858,13 @@ CURSOR_AGENT_SCHEMA = {
         "the local branch as startingRef when that branch exists on origin). "
         "Unpushed commits and dirty working-tree changes are invisible to the "
         "run; the tool refuses to start when local HEAD is ahead of origin. "
-        "Nothing runs on this host. Does not open a PR or request reviewers. "
-        "Available only when the Cursor Agent CLI binary is installed."
+        "A run-poll GET transport timeout requests cloud cancellation and "
+        "immediately continues once through local Claude /goal in the original "
+        "workdir, without resetting its changes; Cursor's scratch clone stays "
+        "untouched. "
+        "Background poll timeouts refuse local transfer with no local work started. "
+        "Does not open a PR or request reviewers. Available only when the Cursor "
+        "Agent CLI binary is installed."
     ),
     "parameters": {
         "type": "object",

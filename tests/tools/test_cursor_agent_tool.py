@@ -1748,6 +1748,311 @@ def test_poll_http_error_is_clear(monkeypatch):
             started_mono=time.monotonic(),
         )
 
+def _install_two_poll_timeouts(monkeypatch, tmp_path):
+    """Queue two poll GET timeouts; correct fallback must consume only the first."""
+    from tools import cursor_agent_tool
+
+    real_poll = cursor_agent_tool.poll_cloud_run
+    _install_cloud_happy_path(monkeypatch, tmp_path)
+    monkeypatch.setattr(cursor_agent_tool, "poll_cloud_run", real_poll)
+    monkeypatch.setattr(cursor_agent_tool, "_check_interrupted", lambda: False)
+
+    poll_gets: list[str] = []
+    cancelled: list[tuple[str, str, str]] = []
+    events: list[str] = []
+
+    def _http(method, path, **kwargs):
+        if method == "GET" and "/runs/" in path:
+            poll_gets.append(path)
+            raise TimeoutError(f"queued poll GET timeout {len(poll_gets)}")
+        raise AssertionError(f"unexpected cloud request: {method} {path}")
+
+    def _cancel(agent_id, run_id, api_key):
+        cancelled.append((agent_id, run_id, api_key))
+        events.append("cancel")
+        return {}
+
+    monkeypatch.setattr(cursor_agent_tool, "_http_request", _http)
+    monkeypatch.setattr(cursor_agent_tool, "cancel_cloud_run", _cancel)
+    return poll_gets, cancelled, events
+
+
+def test_poll_transport_timeout_falls_back_to_local_claude_immediately(
+    monkeypatch, tmp_path
+):
+    from tools import claude_agent_tool, cursor_agent_tool
+    from tools.cursor_run_receipts import read_receipt, receipt_path_for_binding
+
+    repo = _init_repo_with_bare_origin(tmp_path)
+    (repo / "keep-me.txt").write_text("pre-existing local edit\n", encoding="utf-8")
+    (repo / "local-note.txt").write_text("leave this untracked file alone\n", encoding="utf-8")
+    before = _snapshot_git_state(repo)
+    before_status = subprocess.run(
+        ["git", "status", "--porcelain=v1"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert " M keep-me.txt" in before_status
+    assert "?? local-note.txt" in before_status
+
+    poll_gets, cancelled, events = _install_two_poll_timeouts(monkeypatch, tmp_path)
+    from tools import cursor_agent_poll_fallback
+
+    real_observe = cursor_agent_poll_fallback.observe_workdir_git_status
+
+    def _observe(workdir):
+        events.append("observe")
+        return real_observe(workdir)
+
+    monkeypatch.setattr(
+        cursor_agent_poll_fallback, "observe_workdir_git_status", _observe
+    )
+    local_calls: list[dict] = []
+    local_status_at_start: list[str] = []
+    local_log = tmp_path / "claude-local.log"
+
+    def _local_claude(**kwargs):
+        local_calls.append(kwargs)
+        events.append("claude")
+        local_status_at_start.append(
+            subprocess.run(
+                ["git", "status", "--porcelain=v1"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+        )
+        return json.dumps(
+            {
+                "success": True,
+                "final_report": "local Claude completed the task",
+                "delegations": [],
+                "duration_seconds": 2.5,
+                "session_id": "claude-local-session",
+                "log_path": str(local_log),
+                "error": None,
+                "evidence": [{"kind": "command", "summary": "focused tests passed"}],
+            }
+        )
+
+    monkeypatch.setattr(claude_agent_tool, "delegate_claude_agent", _local_claude)
+    original_task = "Fix poll fallback\nKeep the existing API stable."
+    result = json.loads(
+        _delegate(
+            task=original_task,
+            workdir=str(repo.resolve()),
+            model="composer-2.5-fast",
+            timeout_seconds=321,
+        )
+    )
+
+    assert result["success"] is True, result.get("error")
+    assert len(local_calls) == 1
+    local = local_calls[0]
+    assert local["workdir"] == str(repo.resolve())
+    assert local["timeout_seconds"] == 321
+    assert local["background"] is False
+    assert local["session_id"] == _DEFAULT_DELEGATE_SESSION
+    assert local["tool_call_id"] == _DEFAULT_DELEGATE_TOOL_CALL
+    assert "model" not in local
+    assert local["task"].startswith("/goal ")
+    assert local["task"].count("/goal") == 1
+    assert original_task in local["task"]
+    assert "cloud polling timed out" in local["task"].lower()
+    assert "scratch clone" in local["task"].lower()
+    assert "untouched" in local["task"].lower()
+    assert "pre-existing" in local["task"].lower()
+
+    # The first timeout transfers immediately; the queued second GET is never used.
+    assert len(poll_gets) == 1
+    client_id = _default_client_agent_id()
+    assert cancelled == [(client_id, "run-aaaa", "test-secret-key")]
+    assert events == ["observe", "cancel", "claude"]
+    assert local_status_at_start == [before_status]
+    assert _snapshot_git_state(repo) == before
+    assert (repo / "local-note.txt").read_text(encoding="utf-8") == (
+        "leave this untracked file alone\n"
+    )
+
+    assert result["agent_id"] == client_id
+    assert result["run_id"] == "run-aaaa"
+    assert result["cloud_status"] == "POLL_TIMEOUT"
+    assert result["fallback_reason"] == "cloud_poll_timeout"
+    assert result["fallback_backend"] == "claude"
+    assert "queued poll GET timeout 1" in result["cloud_poll_error"]
+    assert result["session_id"] == "claude-local-session"
+    assert result["log_path"] == str(local_log)
+    assert result["evidence"] == [{"kind": "command", "summary": "focused tests passed"}]
+    workspace = result["workspace_git_status"]
+    assert workspace["state"] == "dirty"
+    assert workspace["returncode"] == 0
+    assert workspace["stdout"] == before_status
+    report = result["final_report"].lower()
+    assert "cloud polling timed out" in report
+    assert "scratch clone" in report and "untouched" in report
+    assert "dirty" in report and " m keep-me.txt" in report
+    assert "local claude completed the task" in report
+
+    receipt = read_receipt(
+        receipt_path_for_binding(_DEFAULT_DELEGATE_SESSION, _DEFAULT_DELEGATE_TOOL_CALL)
+    )
+    assert receipt is not None
+    assert receipt["state"] == "terminal"
+    assert receipt["outcome"] == "success"
+    assert receipt["execution_mode"] == "cloud"
+    assert receipt["cloud_agent_id"] == client_id
+    assert receipt["cloud_run_id"] == "run-aaaa"
+    assert receipt["log_path"] == str(local_log)
+    assert json.loads(receipt["terminal_result"]["result_json"]) == result
+
+
+def test_poll_timeout_preserves_existing_goal_and_local_timeout_result(
+    monkeypatch, tmp_path
+):
+    from tools import claude_agent_tool
+    from tools.cursor_run_receipts import read_receipt, receipt_path_for_binding
+
+    workdir = tmp_path / "repo"
+    workdir.mkdir()
+    poll_gets, _cancelled, _events = _install_two_poll_timeouts(monkeypatch, tmp_path)
+    local_calls: list[dict] = []
+
+    def _local_timeout(**kwargs):
+        local_calls.append(kwargs)
+        return json.dumps(
+            {
+                "success": False,
+                "final_report": "local Claude hit its deadline",
+                "delegations": [],
+                "duration_seconds": 77.0,
+                "session_id": "claude-timeout-session",
+                "log_path": "/tmp/claude-timeout.log",
+                "error": "timeout",
+            }
+        )
+
+    monkeypatch.setattr(claude_agent_tool, "delegate_claude_agent", _local_timeout)
+    result = json.loads(
+        _delegate(
+            task="/goal keep this existing goal verbatim",
+            workdir=str(workdir.resolve()),
+            timeout_seconds=77,
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "timeout"
+    assert result["duration_seconds"] == 77.0
+    assert result["fallback_reason"] == "cloud_poll_timeout"
+    assert len(local_calls) == 1
+    assert local_calls[0]["task"].count("/goal") == 1
+    assert "/goal keep this existing goal verbatim" in local_calls[0]["task"]
+    assert len(poll_gets) == 1
+    receipt = read_receipt(
+        receipt_path_for_binding(_DEFAULT_DELEGATE_SESSION, _DEFAULT_DELEGATE_TOOL_CALL)
+    )
+    assert receipt is not None
+    assert receipt["outcome"] == "timeout"
+
+
+def test_poll_timeout_combines_claude_unavailable_and_workspace_errors(
+    monkeypatch, tmp_path
+):
+    from tools import claude_agent_tool
+
+    workdir = tmp_path / "not-a-git-repo"
+    workdir.mkdir()
+    poll_gets, _cancelled, _events = _install_two_poll_timeouts(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        claude_agent_tool,
+        "delegate_claude_agent",
+        lambda **kwargs: json.dumps(
+            {
+                "success": False,
+                "final_report": "",
+                "delegations": [],
+                "duration_seconds": 0.0,
+                "session_id": None,
+                "log_path": None,
+                "error": "Claude Code (GLM) wrapper binary not found",
+            }
+        ),
+    )
+
+    result = json.loads(
+        _delegate(task="needs Claude", workdir=str(workdir.resolve()))
+    )
+
+    assert result["success"] is False
+    assert "queued poll GET timeout 1" in result["cloud_poll_error"]
+    assert "cloud" in result["error"].lower()
+    assert "timed out" in result["error"].lower()
+    assert "wrapper binary not found" in result["error"]
+    assert result["workspace_git_status"]["state"] == "error"
+    assert result["workspace_git_status"]["returncode"] != 0
+    assert "error" in result["final_report"].lower()
+    assert len(poll_gets) == 1
+
+
+@pytest.mark.parametrize("mode", ["http_500", "overall_timeout", "interrupted", "finished"])
+def test_non_transport_poll_outcomes_never_start_local_fallback(
+    monkeypatch, tmp_path, mode
+):
+    from tools import claude_agent_tool, cursor_agent_tool
+
+    _install_cloud_happy_path(monkeypatch, tmp_path)
+    workdir = tmp_path / "repo"
+    workdir.mkdir()
+    local_calls: list[dict] = []
+    monkeypatch.setattr(
+        claude_agent_tool,
+        "delegate_claude_agent",
+        lambda **kwargs: local_calls.append(kwargs) or "{}",
+    )
+
+    if mode == "http_500":
+        def _poll(**kwargs):
+            raise cursor_agent_tool.CursorCloudError("Cloud poll HTTP 500")
+    elif mode == "overall_timeout":
+        def _poll(**kwargs):
+            return {
+                "id": "run-aaaa",
+                "agentId": _default_client_agent_id(),
+                "status": "CANCELLED",
+                "_local_error": "timeout",
+            }
+    elif mode == "interrupted":
+        def _poll(**kwargs):
+            return {
+                "id": "run-aaaa",
+                "agentId": _default_client_agent_id(),
+                "status": "CANCELLED",
+                "_local_error": "interrupted",
+            }
+    else:
+        def _poll(**kwargs):
+            return {
+                "id": "run-aaaa",
+                "agentId": _default_client_agent_id(),
+                "status": "FINISHED",
+                "result": "cloud terminal success",
+            }
+
+    monkeypatch.setattr(cursor_agent_tool, "poll_cloud_run", _poll)
+    result = json.loads(_delegate(task="no fallback", workdir=str(workdir.resolve())))
+
+    assert local_calls == []
+    assert "fallback_reason" not in result
+    if mode == "finished":
+        assert result["success"] is True
+        assert result["final_report"] == "cloud terminal success"
+    elif mode == "http_500":
+        assert result["error"] == "Cloud poll HTTP 500"
+    else:
+        assert result["error"] == mode.replace("overall_", "")
 
 def test_progress_url_is_exact_api_value(monkeypatch, tmp_path):
     from tools import cursor_agent_tool
