@@ -1,4 +1,4 @@
-"""Managed ("Nous Subscription") image generation: one picker row, one model catalog.
+"""Managed ("Nous Tool Gateway") image generation: one picker row, one model catalog.
 
 Three gateways sit behind the single stored selection ``image_gen.provider: nous``; the stored
 ``image_gen.model`` decides which one serves a request:

@@ -441,10 +441,6 @@ def test_model_flow_nous_does_not_restore_stale_custom_api_key(tmp_path, monkeyp
         "hermes_cli.auth._prompt_model_selection",
         lambda *args, **kwargs: selected_model,
     )
-    monkeypatch.setattr(
-        "hermes_cli.nous_subscription.prompt_enable_tool_gateway",
-        lambda config: None,
-    )
 
     hermes_main._model_flow_nous(stale_config, current_model="glm-5.2")
 

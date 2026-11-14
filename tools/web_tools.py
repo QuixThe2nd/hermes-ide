@@ -237,7 +237,7 @@ def _get_backend() -> str:
         # Strict: the stored selection is final, known name or not — an
         # unknown/typoed name surfaces as the vendor path's honest error
         # rather than silently rerouting through the credential ladder.
-        # The managed "Nous Subscription" selection ("nous") is serviced by
+        # The managed "Nous Tool Gateway" selection ("nous") is serviced by
         # the firecrawl provider, whose client resolver routes it through
         # the managed Tool Gateway.
         from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER

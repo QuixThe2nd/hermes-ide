@@ -814,7 +814,6 @@ import shutil  # noqa: F401,E402
 
 
 _PLUGIN_COMPAT_LAZY = {
-    'get_nous_subscription_features': ('hermes_cli.nous_subscription', 'get_nous_subscription_features'),
     'get_optional_skills_dir': ('hermes_constants', 'get_optional_skills_dir'),
     'managed_nous_tools_enabled': ('tools.tool_backend_helpers', 'managed_nous_tools_enabled'),
 }

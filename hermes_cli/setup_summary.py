@@ -2,7 +2,7 @@
 resolved through the module object so test patches on ``hermes_cli.setup.<name>`` take effect."""
 
 import logging
-from hermes_cli import nous_subscription
+from hermes_cli import nous_tools
 
 logger = logging.getLogger("hermes_cli.setup")
 
@@ -46,7 +46,7 @@ def _first_available_plugin_provider(registry: str, skip: str = None):
     return None
 
 
-# ---- tool_status row builders: each takes (config, subscription_features) and returns
+# ---- tool_status row builders: each takes (config, tool_features) and returns
 # a (name, available, hint) row or None (row omitted). Evaluated in _TOOL_ROW_BUILDERS order.
 
 def _vision_row(config, feats):
@@ -70,7 +70,7 @@ def _managed_or_provider_row(feature, name: str, managed_label: str, missing_hin
 
 def _web_row(config, feats):
     # Web tools (Exa, Parallel, Firecrawl, Tavily, or Keenable)
-    return _managed_or_provider_row(feats.web, "Web Search & Extract", "Nous subscription", _WEB_MISSING)
+    return _managed_or_provider_row(feats.web, "Web Search & Extract", "Nous Tool Gateway", _WEB_MISSING)
 
 
 def _browser_row(config, feats):
@@ -82,7 +82,7 @@ def _browser_row(config, feats):
 def _image_gen_row(config, feats):
     # FAL (direct or via Nous), or any plugin-registered provider (OpenAI, etc.)
     if feats.image_gen.managed_by_nous:
-        return ("Image Generation (Nous subscription)", True, None)
+        return ("Image Generation (Nous Tool Gateway)", True, None)
     if feats.image_gen.available:
         return ("Image Generation", True, None)
     # Probe plugin-registered providers so OpenAI-only setups don't show as "missing FAL_KEY".
@@ -96,7 +96,7 @@ def _video_gen_row(config, feats):
     # Opt-in via `hermes tools` → Video Generation. Only show the row when a plugin reports
     # available so we don't badger users who don't care about video gen with a "missing" line.
     if feats.video_gen.managed_by_nous:
-        return ("Video Generation (FAL via Nous subscription)", True, None)
+        return ("Video Generation (FAL via Nous Tool Gateway)", True, None)
     backend = _first_available_plugin_provider("video_gen_registry")
     return (f"Video Generation ({backend})", True, None) if backend else None
 
@@ -151,9 +151,9 @@ def _print_setup_summary(config: dict, hermes_home):
     _setup.print_header("Tool Availability Summary")
 
     tool_status = []
-    subscription_features = nous_subscription.get_nous_subscription_features(config)
+    tool_features = nous_tools.get_nous_tool_features(config)
     for build in _TOOL_ROW_BUILDERS:
-        row = build(config, subscription_features)
+        row = build(config, tool_features)
         tool_status.extend(row if isinstance(row, list) else [] if row is None else [row])
 
     available_count = sum(1 for _, avail, _ in tool_status if avail)

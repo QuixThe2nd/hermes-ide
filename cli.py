@@ -3138,7 +3138,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         "platforms": ("_show_gateway_status", False), "status": ("_show_session_status", False),
         "context": ("_show_context_breakdown", True),
         "statusbar": ("_cmd_statusbar", True), "verbose": ("_toggle_verbose", False),
-        "compress": ("_manual_compress", True), "subscription": ("_show_subscription", False),
+        "compress": ("_manual_compress", True),
         "insights": ("_show_insights", True), "update": ("_cmd_update", True),
         "version": ("_cmd_version", True), "paste": ("_handle_paste_command", False), "reload": ("_cmd_reload", True),
         "reload-mcp": ("_confirm_and_reload_mcp", True), "reload-skills": ("_cmd_reload_skills", True),

@@ -35,7 +35,6 @@ class TestLoginNous:
     def _run(self, monkeypatch, tmp_path):
         import hermes_cli.auth as auth_mod
         import hermes_cli.auth_nous as auth_nous
-        import hermes_cli.nous_subscription as ns
 
         seen: dict = {}
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -71,8 +70,6 @@ class TestLoginNous:
             "union_with_portal_paid_recommendations",
             lambda ids, pricing, _portal: (list(ids), pricing),
         )
-        monkeypatch.setattr(ns, "prompt_enable_tool_gateway", lambda _c: None)
-
         def _capture(model_ids, **kwargs):
             seen["model_ids"] = list(model_ids)
             return None

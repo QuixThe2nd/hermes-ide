@@ -8,7 +8,6 @@ from hermes_cli.colors import Colors, color
 from hermes_cli.config import load_config
 
 DEFAULT_PORTAL_URL = "https://portal.nousresearch.com"
-SUBSCRIPTION_URL = "https://portal.nousresearch.com/manage-subscription"
 DOCS_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/features/tool-gateway"
 # Static `portal tools` catalog — the partners Tool Gateway routes to today: (key, label, partner).
 _CATALOG = [
@@ -35,7 +34,7 @@ def _heading(title: str) -> None:
 def _cmd_status(args) -> int:
     """Show Portal auth + Tool Gateway routing summary."""
     from hermes_cli.auth import get_nous_auth_status_local
-    from hermes_cli.nous_subscription import get_nous_subscription_features
+    from hermes_cli.nous_tools import get_nous_tool_features
 
     config = load_config() or {}
     try:
@@ -58,7 +57,7 @@ def _cmd_status(args) -> int:
             print(f"  API:     {auth['inference_base_url']}")
     else:
         print(f"  Auth:    {color('not logged in', Colors.YELLOW)}")
-        print(f"  Sign up: {SUBSCRIPTION_URL}")
+        print(f"  Sign up: {DEFAULT_PORTAL_URL}")
         print("  Login:   hermes portal")
 
     # Provider selection (independent of auth)
@@ -71,9 +70,9 @@ def _cmd_status(args) -> int:
 
     _heading("Tool Gateway")
     try:
-        features = get_nous_subscription_features(config)
+        features = get_nous_tool_features(config)
     except Exception:
-        print("  (could not resolve subscription state)")
+        print("  (could not resolve Tool Gateway state)")
         return 0
     rows = [(feat.label, _feature_state(feat, via_nous="via Nous Portal")) for feat in features.items()]
     width = max((len(r[0]) for r in rows), default=0)
@@ -86,10 +85,10 @@ def _cmd_status(args) -> int:
 
 
 def _cmd_open(args) -> int:
-    """Open the Portal subscription page in the default browser."""
-    print(f"Opening {SUBSCRIPTION_URL}")
+    """Open the Nous Portal page in the default browser."""
+    print(f"Opening {DEFAULT_PORTAL_URL}")
     try:
-        opened = webbrowser.open(SUBSCRIPTION_URL)
+        opened = webbrowser.open(DEFAULT_PORTAL_URL)
     except Exception:
         opened = False
     if opened:
@@ -101,11 +100,11 @@ def _cmd_open(args) -> int:
 
 def _cmd_tools(args) -> int:
     """List the Tool Gateway catalog + current routing."""
-    from hermes_cli.nous_subscription import get_nous_subscription_features
+    from hermes_cli.nous_tools import get_nous_tool_features
 
     config = load_config() or {}
     try:
-        features = get_nous_subscription_features(config)
+        features = get_nous_tool_features(config)
     except Exception:
         print("Could not resolve Tool Gateway state.", file=sys.stderr)
         return 1
@@ -122,7 +121,7 @@ def _cmd_tools(args) -> int:
         print(f"  {label:<{label_width}}  partner: {partner:<14} {state}")
 
     print()
-    print(color(f"  Manage your subscription: {SUBSCRIPTION_URL}", Colors.DIM))
+    print(color(f"  Portal: {DEFAULT_PORTAL_URL}", Colors.DIM))
     print(color(f"  Docs: {DOCS_URL}", Colors.DIM))
     return 0
 
@@ -188,7 +187,7 @@ def add_parser(subparsers) -> None:
         ("login", "Log in to Nous Portal + set it up (default; one-shot onboarding)"),
         ("info", "Show Portal auth + Tool Gateway routing summary"),
         ("status", None),
-        ("open", "Open the Portal subscription page in your default browser"),
+        ("open", "Open the Nous Portal page in your default browser"),
         ("tools", "List Tool Gateway tools and which are routed via Nous"),
     ):
         portal_sub.add_parser(name, **({} if help_text is None else {"help": help_text}))
