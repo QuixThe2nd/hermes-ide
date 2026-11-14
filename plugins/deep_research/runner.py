@@ -429,12 +429,16 @@ class ResearchRunner:
                 f"correction writer failed: {stderr or f'exit {code}'}",
             )
             return
-        retry = citations_mod.validate_citations(corrected, evidence_urls)
+        sanitized = citations_mod.remove_unledgered_urls(corrected, evidence_urls)
+        retry = citations_mod.validate_citations(sanitized, evidence_urls)
+        if not sanitized.strip():
+            retry.ok = False
+            retry.errors.append("sanitized correction contains no content or citations")
         self._record_synthesis(
             directory, attempts=2, correction_used=True, citation_errors=retry.errors
         )
         if retry.ok:
-            self._publish(directory, corrected)
+            self._publish(directory, sanitized)
             return
         self._preserve_and_fail(
             directory, corrected,

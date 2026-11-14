@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from plugins.deep_research import jobs, runner
+from plugins.deep_research import citations, jobs, runner
 from plugins.deep_research.config import DeepResearchConfig, load_deep_research_config
 
 GOOD_URL = "https://example.org/primary"
@@ -427,7 +427,7 @@ class TestCitationGating:
         status = jobs.read_status(directory)
         synthesis = status["synthesis"]
         assert synthesis["attempts"] == 2 and synthesis["correction_used"] is True
-        assert any(INVENTED_URL in e for e in synthesis["citation_errors"])
+        assert any("no citations" in e for e in synthesis["citation_errors"])
         assert "correction pass" in (status["error"] or "")
         # Draft preserved for inspection; report.md never published.
         assert not (directory / "report.md").exists()
@@ -447,6 +447,83 @@ class TestCitationGating:
         assert state == "completed"
         assert "Corrected draft" in (directory / "report.md").read_text(encoding="utf-8")
         assert jobs.read_status(directory)["synthesis"]["correction_used"] is True
+
+    @pytest.mark.parametrize(
+        "corrected",
+        [INVENTED_URL, f" \n\t{INVENTED_URL}\n "],
+        ids=["empty", "whitespace_only"],
+    )
+    def test_correction_sanitizing_to_no_content_fails_closed(
+        self, home: Path, corrected: str
+    ) -> None:
+        job_id, directory = _make_job(home, questions=None)
+        _seed_evidence(directory, GOOD_URL)
+        spawn = FakeSpawn(
+            writers=[f"Bad [x]({INVENTED_URL}/initial).", corrected]
+        )
+
+        state = _run(job_id, home, spawn)
+
+        assert state == "failed"
+        status = jobs.read_status(directory)
+        error = "sanitized correction contains no content or citations"
+        assert "citation validation failed after correction pass" in status["error"]
+        assert error in status["error"]
+        assert status["synthesis"]["citation_errors"] == [error]
+        assert (directory / "report.draft.md").read_text(encoding="utf-8") == corrected
+        assert not (directory / "report.md").exists()
+
+
+    def test_correction_removes_unledgered_urls_and_preserves_valid_rows(self, home: Path) -> None:
+        job_id, directory = _make_job(home, questions=None)
+        evidence_urls = [f"https://example.org/evidence/{index}" for index in range(50)]
+        _seed_evidence(directory, *evidence_urls, OTHER_URL)
+        rows = [
+            f"| {index} | Finding {index} | [source]({url}) |"
+            for index, url in enumerate(evidence_urls)
+        ]
+        corrected = (
+            "# Results\n\n"
+            "| Row | Finding | Citation |\n"
+            "| ---: | --- | --- |\n"
+            + "\n".join(rows)
+            + f"""
+
+## Sources
+Summary links: [overview]({INVENTED_URL}/overview), [methods]({INVENTED_URL}/methods), and [history]({INVENTED_URL}/history).
+Redundant inline link: [appendix]({INVENTED_URL}/appendix).
+Bare supplementary URL: {INVENTED_URL}/bare.
+Reference summary: [background][unfetched].
+Ledger reference: [primary][fetched].
+
+[unfetched]: {INVENTED_URL}/reference
+[fetched]: {OTHER_URL}
+"""
+        )
+        spawn = FakeSpawn(
+            writers=[f"Initial [bad]({INVENTED_URL}/initial).", corrected]
+        )
+
+        state = _run(job_id, home, spawn)
+
+        assert state == "completed"
+        report = (directory / "report.md").read_text(encoding="utf-8")
+        for index, url in enumerate(evidence_urls):
+            assert f"| {index} | Finding {index} | [source]({url}) |" in report
+        assert "Summary links: overview, methods, and history." in report
+        assert "Redundant inline link: appendix." in report
+        assert "Bare supplementary URL:" in report
+        assert "Reference summary: background." in report
+        assert "Ledger reference: [primary][fetched]." in report
+        assert f"[fetched]: {OTHER_URL}" in report
+        assert INVENTED_URL not in report
+        verdict = citations.validate_citations(report, [*evidence_urls, OTHER_URL])
+        assert verdict.ok, verdict.errors
+        assert len(spawn.argvs) == 3  # lane, synthesis, and the one correction
+        synthesis = jobs.read_status(directory)["synthesis"]
+        assert synthesis["attempts"] == 2 and synthesis["correction_used"] is True
+        assert synthesis["citation_errors"] == []
+        assert not (directory / "report.draft.md").exists()
 
     def test_report_with_no_citations_fails_closed(self, home: Path) -> None:
         job_id, directory = _make_job(home, questions=None)
