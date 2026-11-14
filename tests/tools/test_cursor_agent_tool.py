@@ -2063,6 +2063,326 @@ def test_no_push_restored_on_poll_failure(monkeypatch, tmp_path):
     assert "GH_TOKEN" not in json.dumps(captured["payload"])
 
 
+def _install_cloud_poll_failure(
+    monkeypatch,
+    tmp_path,
+    repo,
+    *,
+    initial_error=None,
+    reconcile_status="CANCELLED",
+    reconcile_error=None,
+    reconcile_run_id="run-aaaa",
+    git_status_error=None,
+    fallback_result=None,
+):
+    """Drive the real delegate + poll path with one failed GET and one reconcile."""
+    from tools import claude_agent_tool, cursor_agent_tool
+
+    real_poll = cursor_agent_tool.poll_cloud_run
+    _install_cloud_happy_path(monkeypatch, tmp_path)
+    monkeypatch.setattr(cursor_agent_tool, "poll_cloud_run", real_poll)
+    monkeypatch.setattr(cursor_agent_tool, "_check_interrupted", lambda: False)
+
+    client_id = _default_client_agent_id()
+    run_path = f"/v1/agents/{client_id}/runs/run-aaaa"
+    timeout_error = f"Cursor Cloud Agent request timed out: GET {run_path}"
+    state = {
+        "events": [],
+        "get_paths": [],
+        "fallback_calls": [],
+        "run_path": run_path,
+        "timeout_error": timeout_error,
+    }
+
+    def _http(method, path, **kwargs):
+        del kwargs
+        assert (method, path) == ("GET", run_path)
+        state["get_paths"].append(path)
+        if len(state["get_paths"]) == 1:
+            if initial_error is not None:
+                state["events"].append("poll_failure")
+                raise initial_error
+            state["events"].append("poll_timeout")
+            raise TimeoutError(timeout_error)
+        if len(state["get_paths"]) > 2:
+            raise cursor_agent_tool.CursorCloudError("unexpected extra cloud poll")
+        state["events"].append("reconcile")
+        if isinstance(reconcile_error, Exception):
+            raise reconcile_error
+        if reconcile_error:
+            raise cursor_agent_tool.CursorCloudError(str(reconcile_error))
+        return {
+            "id": reconcile_run_id,
+            "agentId": client_id,
+            "status": reconcile_status,
+            "result": "cloud result must not replace fallback",
+        }
+
+    monkeypatch.setattr(cursor_agent_tool, "_http_request", _http)
+    real_run = subprocess.run
+
+    def _run(cmd, *args, **kwargs):
+        command = [str(part) for part in cmd] if isinstance(cmd, (list, tuple)) else []
+        if command and command[0] == "git" and "status" in command[1:]:
+            state["events"].append("git_status")
+            if git_status_error:
+                if kwargs.get("check"):
+                    raise subprocess.CalledProcessError(
+                        1, cmd, output="", stderr=git_status_error
+                    )
+                return subprocess.CompletedProcess(
+                    cmd, 1, stdout="", stderr=git_status_error
+                )
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(cursor_agent_tool.subprocess, "run", _run)
+
+    def _fallback(task, workdir, **kwargs):
+        state["events"].append("claude_fallback")
+        state["fallback_calls"].append({"task": task, "workdir": workdir, **kwargs})
+        if fallback_result is not None:
+            return fallback_result
+        return json.dumps(
+            {
+                "success": True,
+                "error": None,
+                "final_report": "Claude completed the original task.",
+                "session_id": "claude-fallback-session",
+                "duration_seconds": 1.25,
+                "num_turns": 2,
+                "cost_usd": 0.01,
+                "models_used": ["glm-5.2"],
+                "permission_denials": None,
+                "log_path": "claude-fallback.log",
+                "warnings": [],
+            }
+        )
+
+    monkeypatch.setattr(claude_agent_tool, "delegate_claude_agent", _fallback)
+    return state
+
+
+def _run_cloud_poll_failure(monkeypatch, tmp_path, *, dirty=False, **scenario):
+    repo = _init_repo_with_bare_origin(tmp_path)
+    if dirty:
+        (repo / "local-change.txt").write_text("do not overwrite\n", encoding="utf-8")
+    state = _install_cloud_poll_failure(monkeypatch, tmp_path, repo, **scenario)
+    raw = _delegate(
+        task="implement the original task",
+        workdir=str(repo.resolve()),
+        timeout_seconds=60,
+    )
+    return raw, state, repo
+
+
+def _assert_cloud_receipt_owns_result(raw, *, outcome):
+    from tools.cursor_run_receipts import read_receipt, receipt_path_for_binding
+
+    path = receipt_path_for_binding(_DEFAULT_DELEGATE_SESSION, _DEFAULT_DELEGATE_TOOL_CALL)
+    receipt = read_receipt(path)
+    assert receipt is not None
+    assert receipt["state"] == "terminal"
+    assert receipt["outcome"] == outcome
+    assert receipt["cloud_agent_id"] == _default_client_agent_id()
+    assert receipt["cloud_run_id"] == "run-aaaa"
+    assert receipt["terminal_result"] == {"result_json": raw}
+
+
+@pytest.mark.parametrize("terminal_status", ["CANCELLED", "FINISHED"])
+def test_cloud_poll_timeout_falls_back_to_claude_for_clean_terminal_run(
+    monkeypatch, tmp_path, terminal_status
+):
+    raw, state, repo = _run_cloud_poll_failure(
+        monkeypatch, tmp_path, reconcile_status=terminal_status
+    )
+    result = json.loads(raw)
+
+    assert state["fallback_calls"], "timed-out cloud run never reached local Claude"
+    call = state["fallback_calls"][0]
+    assert call["task"] == "implement the original task"
+    assert call["workdir"] == str(repo.resolve())
+    assert call["background"] is False
+    assert call["session_id"] == _DEFAULT_DELEGATE_SESSION
+    assert call["tool_call_id"] == _DEFAULT_DELEGATE_TOOL_CALL
+    assert call["timeout_seconds"] == 0
+    assert call.get("model") is None
+    assert result["success"] is True
+    assert result["error"] is None
+    assert result["final_report"] == "Claude completed the original task."
+    fallback = result.get("fallback")
+    assert isinstance(fallback, dict)
+    assert fallback["backend"] == "claude"
+    assert fallback["reason"] == "cloud_poll_timeout"
+    assert fallback["cloud_agent_id"] == _default_client_agent_id()
+    assert fallback["cloud_run_id"] == "run-aaaa"
+    assert fallback["cloud_status"] == terminal_status
+    assert (repo / "keep-me.txt").read_text(encoding="utf-8") == "preserve\n"
+    _assert_cloud_receipt_owns_result(raw, outcome="success")
+
+
+@pytest.mark.parametrize(
+    "fallback_result",
+    [
+        None,
+        json.dumps(
+            {
+                "success": False,
+                "error": "local Claude failed",
+                "final_report": "local failure report",
+                "num_turns": 3,
+            }
+        ),
+    ],
+    ids=["successful-fallback", "failed-fallback"],
+)
+def test_cloud_poll_timeout_fallback_owns_repeat_invocation(
+    monkeypatch, tmp_path, fallback_result
+):
+    first_raw, state, repo = _run_cloud_poll_failure(
+        monkeypatch, tmp_path, fallback_result=fallback_result
+    )
+    first_result = json.loads(first_raw)
+    original_gets = list(state["get_paths"])
+    original_events = list(state["events"])
+    from tools import cursor_agent_tool
+
+    def _repeat_cloud_http(method, path, **kwargs):
+        del kwargs
+        assert method == "GET"
+        state["get_paths"].append(path)
+        state["events"].append("repeat_cloud_fetch")
+        if path == state["run_path"]:
+            return {
+                "id": "run-aaaa",
+                "agentId": _default_client_agent_id(),
+                "status": first_result["fallback"]["cloud_status"],
+                "result": "older Cloud result overwrote local Claude",
+            }
+        if path == f"/v1/agents/{_default_client_agent_id()}":
+            return {"id": _default_client_agent_id()}
+        raise AssertionError(f"unexpected repeat Cloud request: {path}")
+
+    monkeypatch.setattr(cursor_agent_tool, "_http_request", _repeat_cloud_http)
+
+    repeated_raw = _delegate(
+        task="implement the original task",
+        workdir=str(repo.resolve()),
+        timeout_seconds=60,
+    )
+
+    assert repeated_raw == first_raw
+    assert json.loads(repeated_raw)["fallback"] == first_result["fallback"]
+    assert state["get_paths"] == original_gets
+    assert state["events"] == original_events
+    assert len(state["fallback_calls"]) == 1
+    _assert_cloud_receipt_owns_result(
+        repeated_raw,
+        outcome="success" if first_result["success"] is True else "failed",
+    )
+
+
+def test_cloud_poll_timeout_inspects_git_before_reconcile_without_poll_retry(
+    monkeypatch, tmp_path
+):
+    _raw, state, _repo = _run_cloud_poll_failure(monkeypatch, tmp_path)
+
+    assert state["events"] == [
+        "poll_timeout",
+        "git_status",
+        "reconcile",
+        "claude_fallback",
+    ]
+    assert state["get_paths"] == [state["run_path"], state["run_path"]]
+
+
+@pytest.mark.parametrize(
+    "scenario,inspection_reason,max_gets",
+    [
+        ({"reconcile_status": "RUNNING"}, "running", 2),
+        (
+            {"reconcile_error": TimeoutError("authoritative reconciliation timed out")},
+            "authoritative reconciliation timed out",
+            2,
+        ),
+        ({"git_status_error": "git status unavailable"}, "git status unavailable", 1),
+        ({"dirty": True}, "dirty", 2),
+        ({"reconcile_run_id": "run-other"}, "mismatch", 2),
+    ],
+    ids=["active", "unverifiable", "git-status-failed", "dirty", "mismatched-run"],
+)
+def test_cloud_poll_timeout_refuses_fallback_when_safety_check_fails(
+    monkeypatch, tmp_path, scenario, inspection_reason, max_gets
+):
+    raw, state, _repo = _run_cloud_poll_failure(monkeypatch, tmp_path, **scenario)
+    result = json.loads(raw)
+    error = (result.get("error") or "").lower()
+
+    assert state["fallback_calls"] == []
+    assert result["success"] is False
+    assert state["timeout_error"].lower() in error
+    assert inspection_reason.lower() in error
+    assert len(state["get_paths"]) <= max_gets
+    _assert_cloud_receipt_owns_result(raw, outcome="failed")
+
+
+def test_cloud_poll_timeout_preserves_failed_claude_fallback(monkeypatch, tmp_path):
+    raw, state, _repo = _run_cloud_poll_failure(
+        monkeypatch,
+        tmp_path,
+        fallback_result=json.dumps(
+            {
+                "success": False,
+                "error": "local Claude failed",
+                "final_report": "local failure report",
+                "num_turns": 3,
+            }
+        ),
+    )
+    result = json.loads(raw)
+
+    assert state["fallback_calls"]
+    assert result["success"] is False
+    assert result["error"] == "local Claude failed"
+    assert result["final_report"] == "local failure report"
+    assert result["num_turns"] == 3
+    assert result["fallback"]["backend"] == "claude"
+    assert result["fallback"]["reason"] == "cloud_poll_timeout"
+    _assert_cloud_receipt_owns_result(raw, outcome="failed")
+
+
+def test_cloud_poll_timeout_rejects_malformed_claude_fallback(monkeypatch, tmp_path):
+    raw, state, _repo = _run_cloud_poll_failure(
+        monkeypatch, tmp_path, fallback_result='{"success":'
+    )
+    result = json.loads(raw)
+
+    assert state["fallback_calls"]
+    assert result["success"] is False
+    assert state["timeout_error"] in result["error"]
+    assert "malformed" in result["error"].lower()
+    assert result["fallback"]["backend"] == "claude"
+    assert result["fallback"]["reason"] == "cloud_poll_timeout"
+    _assert_cloud_receipt_owns_result(raw, outcome="failed")
+
+
+def test_non_timeout_poll_failure_keeps_existing_behavior(monkeypatch, tmp_path):
+    from tools import cursor_agent_tool
+
+    raw, state, _repo = _run_cloud_poll_failure(
+        monkeypatch,
+        tmp_path,
+        initial_error=cursor_agent_tool.CursorCloudError("poll failed"),
+    )
+    result = json.loads(raw)
+
+    assert result["success"] is False
+    assert result["error"] == "poll failed"
+    assert state["events"] == ["poll_failure"]
+    assert state["get_paths"] == [state["run_path"]]
+    assert state["fallback_calls"] == []
+    _assert_cloud_receipt_owns_result(raw, outcome="failed")
+
+
 def test_progress_url_emitted_once_before_poll_via_handle_function_call(monkeypatch, tmp_path):
     from model_tools import handle_function_call
     from tools import cursor_agent_tool
