@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 import importlib
+from pathlib import Path
 
 import pytest
+import yaml
 
 plugin = importlib.import_module("plugins.image_gen.litellm-codex-images")
+
+
+def test_manifest_is_valid_yaml():
+    manifest_path = Path(plugin.__file__).with_name("plugin.yaml")
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["name"] == "litellm-codex-images"
+    assert manifest["kind"] == "backend"
 
 
 def test_missing_named_entry_fails_closed(monkeypatch):
