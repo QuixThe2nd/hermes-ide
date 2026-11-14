@@ -36,21 +36,23 @@ on the origin remote.
 
 Run-poll timeout recovery
 -------------------------
-The Cloud phase executes remotely, so a run-poll timeout itself leaves the local
-scratch checkout untouched; only the subsequent local fallback may edit it. For
-a GET request timeout or the local polling deadline, Hermes requests cancellation,
-captures an immediate 10-second read-only ``git status --short`` snapshot
-(including untracked files), and waits for Cursor to confirm a terminal status
-before starting any local writer. A ``FINISHED`` run returns its authoritative
-Cloud result. Other terminal statuses run the original task once with local
-Claude Code in ``/goal`` mode in the same workdir only when the status snapshot
-is verified clean. A completed Cloud timeout consumes the Cloud budget; the
-local fallback receives a fresh bounded budget, while zero keeps its unbounded
-meaning. Dirty or unverifiable trees return without starting another writer. If
-no terminal status can be confirmed, local execution does not start. The
-fallback retains the no-push instruction and returns the cloud timeout cause
-and status snapshot as metadata. Interruption and non-timeout cloud errors never
-trigger local fallback.
+The Cloud phase executes in a Cursor-managed checkout, so a run-poll timeout
+itself makes no edits to the local scratch checkout; only the subsequent local
+fallback may edit it. For a GET request timeout or the local polling deadline,
+Hermes requests cancellation, captures an immediate 10-second read-only
+``git status --porcelain`` snapshot (including untracked files), and waits for
+Cursor to confirm a terminal status before starting any local writer. Local
+fallback occurs only after that cancellation/terminal confirmation. A
+``FINISHED`` run returns its authoritative Cloud result. Other terminal statuses
+run the original task once with local Claude Code in ``/goal`` mode in the same
+workdir only when the status snapshot is verified clean. A completed Cloud
+timeout consumes the Cloud budget; the local fallback receives a fresh bounded
+budget, using ``MAX_TIMEOUT_SECONDS`` when the Cloud timeout is unbounded.
+Dirty or unverifiable trees return without starting another writer. If no
+terminal status can be confirmed, local execution does not start. The fallback
+retains the no-push instruction and returns the cloud timeout cause and status
+snapshot as metadata. Interruption and non-timeout cloud errors never trigger
+local fallback.
 Before local execution, Hermes records the confirmed Cloud ids and terminal status
 in the receipt. Restart and repeat recovery reuse a cached local result only when
 that pre-execution provenance matches fresh terminal Cloud evidence; result-source
@@ -1691,7 +1693,7 @@ def _build_cloud_tool_result_from_run(
 
 def _capture_workdir_git_status(workdir: str) -> Dict[str, Any]:
     """Capture the pre-fallback checkout state without modifying task files."""
-    command = ["git", "-C", workdir, "status", "--short", "--untracked-files=all"]
+    command = ["git", "-C", workdir, "status", "--porcelain", "--untracked-files=all"]
     try:
         proc = subprocess.run(
             command,
@@ -1702,13 +1704,13 @@ def _capture_workdir_git_status(workdir: str) -> Dict[str, Any]:
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return {
-            "command": "git status --short --untracked-files=all",
+            "command": "git status --porcelain --untracked-files=all",
             "returncode": None,
             "stdout": "",
             "stderr": str(exc),
         }
     return {
-        "command": "git status --short --untracked-files=all",
+        "command": "git status --porcelain --untracked-files=all",
         "returncode": proc.returncode,
         "stdout": proc.stdout or "",
         "stderr": proc.stderr or "",
@@ -1748,7 +1750,6 @@ def _run_local_claude_after_poll_timeout(
     task: str,
     workdir: str,
     timeout_seconds: int,
-    started_mono: float,
     hermes_session_id: str,
     tool_call_id: Optional[str],
     cloud_agent_id: str,
@@ -1784,14 +1785,12 @@ def _run_local_claude_after_poll_timeout(
                 ),
             )
         )
-    elif timeout_seconds > 0:
-        remaining = int(timeout_seconds - (time.monotonic() - started_mono))
-        if remaining < MIN_TIMEOUT_SECONDS:
-            local_payload = json.loads(_make_result(success=False, error="timeout"))
-        else:
-            local_timeout = min(MAX_TIMEOUT_SECONDS, remaining)
     else:
-        local_timeout = 0
+        local_timeout = (
+            min(MAX_TIMEOUT_SECONDS, timeout_seconds)
+            if timeout_seconds > 0
+            else MAX_TIMEOUT_SECONDS
+        )
 
     if local_payload is None:
         try:
@@ -2094,8 +2093,6 @@ def _execute_cloud_delegation(
                     task=task,
                     workdir=workdir,
                     timeout_seconds=clamped_timeout,
-                    # Cloud consumed its budget; Claude gets a fresh local budget.
-                    started_mono=time.monotonic(),
                     hermes_session_id=hermes_session_id,
                     tool_call_id=tool_call_id,
                     cloud_agent_id=cloud_agent_id,
@@ -3139,9 +3136,9 @@ CURSOR_AGENT_SCHEMA = {
             "timeout_seconds": {
                 "type": "integer",
                 "description": (
-                    f"Maximum wall-clock seconds before the run is terminated. "
-                    f"0 (default) means no limit at all — a quiet run is never "
-                    f"killed for silence. Positive values clamp to "
+                    f"Maximum Cloud polling wall-clock seconds before cancellation. "
+                    f"0 (default) means no Cloud polling limit; any local fallback "
+                    f"still gets a fresh bounded timeout. Positive values clamp to "
                     f"{MIN_TIMEOUT_SECONDS}–{MAX_TIMEOUT_SECONDS}."
                 ),
                 "default": DEFAULT_TIMEOUT_SECONDS,
