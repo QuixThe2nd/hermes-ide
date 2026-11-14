@@ -44,9 +44,9 @@ captures an immediate 10-second read-only ``git status --short`` snapshot
 before starting any local writer. A ``FINISHED`` run returns its authoritative
 Cloud result. Other terminal statuses run the original task once with local
 Claude Code in ``/goal`` mode in the same workdir only when the status snapshot
-is verified clean and enough of the requested finite budget remains for the
-local runner; zero keeps its unbounded meaning. Dirty or unverifiable trees and
-an exhausted or insufficient budget return without starting another writer. If
+is verified clean. A completed Cloud timeout consumes the Cloud budget; the
+local fallback receives a fresh bounded budget, while zero keeps its unbounded
+meaning. Dirty or unverifiable trees return without starting another writer. If
 no terminal status can be confirmed, local execution does not start. The
 fallback retains the no-push instruction and returns the cloud timeout cause
 and status snapshot as metadata. Interruption and non-timeout cloud errors never
@@ -2094,7 +2094,8 @@ def _execute_cloud_delegation(
                     task=task,
                     workdir=workdir,
                     timeout_seconds=clamped_timeout,
-                    started_mono=started_mono,
+                    # Cloud consumed its budget; Claude gets a fresh local budget.
+                    started_mono=time.monotonic(),
                     hermes_session_id=hermes_session_id,
                     tool_call_id=tool_call_id,
                     cloud_agent_id=cloud_agent_id,
