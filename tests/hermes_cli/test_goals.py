@@ -238,10 +238,13 @@ class TestJudgeParseFailureAutoPause:
             assert d2["should_continue"] is False
             assert d2["status"] == "paused"
             assert mgr.state.consecutive_parse_failures == 2
-            # Message points at the config surface so the user can fix it.
+            # Message is a single truthful line pointing at the config surface,
+            # without inventing a specific provider/model example.
             assert "auxiliary" in d2["message"]
             assert "goal_judge" in d2["message"]
             assert "config.yaml" in d2["message"]
+            assert "\n" not in d2["message"]
+            assert "deepseek" not in d2["message"].lower()
 
 
     def test_auto_pause_after_two_consecutive_transport_failures(self, hermes_home):
@@ -262,6 +265,10 @@ class TestJudgeParseFailureAutoPause:
             d2 = mgr.evaluate_after_turn("step 2")
             assert d2["should_continue"] is False
             assert d2["status"] == "paused"
+            # Single-line truthful message; no fake provider/key config example.
+            assert "\n" not in d2["message"]
+            assert "deepseek" not in d2["message"].lower()
+            assert "errors.log" in d2["message"]
 
 
 
