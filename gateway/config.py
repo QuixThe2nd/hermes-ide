@@ -240,6 +240,12 @@ class Platform(Enum):
         except Exception:
             return set()
 
+    def __str__(self) -> str:
+        # Render as the wire value ("discord"), not "Platform.DISCORD": platform
+        # names cross into logs, session keys and config as plain strings, and
+        # every str(platform) reader previously had to remember to call .value.
+        return str(self.value)
+
 
 # Built-in values snapshotted before any dynamic _missing_ lookup.
 _BUILTIN_PLATFORM_VALUES = frozenset(m.value for m in Platform.__members__.values())
