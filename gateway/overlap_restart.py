@@ -316,6 +316,17 @@ async def handoff_overlap_event(
     adapter = _overlap_adapter(runner, event.source)
     if adapter is None:
         return False
+    if (
+        require_successor_ready
+        and target_pid is None
+        and getattr(runner, "_draining", False)
+        and getattr(runner, "_restart_task_started", False)
+        and not getattr(runner, "_overlap_restart_successor_started", False)
+        and not getattr(runner, "_overlap_successor_spawning", False)
+    ):
+        # Successor-less drain: the hub would exclude this generation and
+        # retain the event with no one left to deliver it to. Keep it local.
+        return False
     ready = getattr(adapter, "admits_owned_work_while_draining", None)
     handoff = getattr(adapter, "handoff_event", None)
     if not callable(handoff):
@@ -358,6 +369,41 @@ async def handoff_to_overlap_predecessor(
     return predecessor > 0 and await handoff_overlap_event(
         runner, event, session_key, target_pid=predecessor,
     )
+
+
+_RECONNECT_WAIT_SECONDS = 120.0
+
+
+def _has_overlap_adapter(runner: Any) -> bool:
+    return any(
+        getattr(adapter, "supports_overlap_restart", False) is True
+        for adapter in _iter_adapters(runner)
+    )
+
+
+_HUB_TRANSPORTS = frozenset({"discord", "matrix"})
+
+
+def _reconnecting_overlap_adapter(runner: Any) -> bool:
+    """True while a hub transport sits in the reconnect queue."""
+    for platform in (getattr(runner, "_failed_platforms", None) or {}):
+        if str(getattr(platform, "value", platform)).lower() in _HUB_TRANSPORTS:
+            return True
+    return False
+
+
+async def _wait_for_reconnecting_overlap_adapters(
+    runner: Any, timeout: float = _RECONNECT_WAIT_SECONDS, poll: float = 0.5,
+) -> None:
+    if _has_overlap_adapter(runner) or not _reconnecting_overlap_adapter(runner):
+        return
+    logger.info("Overlap restart waiting for hub adapters to reconnect before spawning a successor")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        await asyncio.sleep(poll)
+        if _has_overlap_adapter(runner):
+            return
+    logger.warning("Hub adapters did not reconnect within %.0fs", timeout)
 
 
 def _iter_adapters(runner: Any):
@@ -463,6 +509,12 @@ async def spawn_successor(
             "agent-core restarts without bouncing platform gateway connections"
         )
         return None
+    # A hub bounce (or any transient hub drop) pulls hub adapters out of
+    # runner.adapters until the reconnect watcher brings them back. Spawning
+    # in that window used to find no adapter and silently fall back to a
+    # successor-less drain, which hands every new event back to a hub with
+    # nowhere to deliver it. Wait for the reconnect instead.
+    await _wait_for_reconnecting_overlap_adapters(runner)
     for adapter in _iter_adapters(runner):
         if getattr(adapter, "supports_overlap_restart", False) is not True:
             continue
@@ -508,6 +560,11 @@ async def spawn_successor(
                     mark_ready()
         logger.info("Overlapping gateway successor started as pid %s", pid)
         return int(pid)
+    logger.warning(
+        "Overlap restart found no connected hub adapter to spawn a successor; "
+        "falling back to the legacy drain path"
+    )
+    return None
     return None
 
 
