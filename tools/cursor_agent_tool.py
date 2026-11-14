@@ -34,6 +34,28 @@ polls the run until a terminal Cloud Agent status. ``force`` does not
 enable pushes or PRs. ``startingRef`` is sent only when that branch exists
 on the origin remote.
 
+Run-poll timeout recovery
+-------------------------
+The Cloud phase executes remotely, so a run-poll timeout itself leaves the local
+scratch checkout untouched; only the subsequent local fallback may edit it. For
+a GET request timeout or the local polling deadline, Hermes requests cancellation,
+captures an immediate 10-second read-only ``git status --short`` snapshot
+(including untracked files), and waits for Cursor to confirm a terminal status
+before starting any local writer. A ``FINISHED`` run returns its authoritative
+Cloud result. Other terminal statuses run the original task once with local
+Claude Code in ``/goal`` mode in the same workdir only when the status snapshot
+is verified clean and enough of the requested finite budget remains for the
+local runner; zero keeps its unbounded meaning. Dirty or unverifiable trees and
+an exhausted or insufficient budget return without starting another writer. If
+no terminal status can be confirmed, local execution does not start. The
+fallback retains the no-push instruction and returns the cloud timeout cause
+and status snapshot as metadata. Interruption and non-timeout cloud errors never
+trigger local fallback.
+Before local execution, Hermes records the confirmed Cloud ids and terminal status
+in the receipt. Restart and repeat recovery reuse a cached local result only when
+that pre-execution provenance matches fresh terminal Cloud evidence; result-source
+and payload metadata alone are not authoritative.
+
 Authority and no-push
 ---------------------
 Workdir authority matches the existing local executor: a same-user coding
@@ -135,6 +157,7 @@ DEFAULT_ORCHESTRATION_PROMPT = (
 POST_TIMEOUT_SECONDS = 30.0
 HTTP_TIMEOUT_SECONDS = 30.0
 POLL_INTERVAL_SECONDS = 2.0
+CANCEL_CONFIRM_TIMEOUT_SECONDS = HTTP_TIMEOUT_SECONDS
 WORKER_LOG_MAX_BYTES = 256 * 1024
 WORKER_READY_ATTEMPTS = 5
 WORKER_READY_DELAY_SECONDS = 0.5
@@ -145,6 +168,7 @@ WORKER_AUTH_ERROR = (
 )
 NO_PUSH_PUSHURL = "disabled://hermes-no-push"
 TERMINAL_RUN_STATUSES = frozenset({"FINISHED", "ERROR", "CANCELLED", "EXPIRED"})
+LOCAL_FALLBACK_RESULT_SOURCE = "local_claude_after_poll_timeout"
 _NO_PUSH_ENV_KEYS = frozenset({
     "GH_TOKEN",
     "GITHUB_TOKEN",
@@ -1150,6 +1174,10 @@ def poll_cloud_run(
             cancel_cloud_run(agent_id, run_id, api_key)
             last["status"] = last.get("status") or "CANCELLED"
             last["_local_error"] = "timeout"
+            last["_local_timeout_cause"] = (
+                f"Cursor Cloud Agent polling exceeded {timeout_seconds} seconds"
+            )
+            last["_local_cancel_requested"] = True
             return last
 
         try:
@@ -1160,7 +1188,13 @@ def poll_cloud_run(
                 timeout=HTTP_TIMEOUT_SECONDS,
             )
         except TimeoutError as exc:
-            raise CursorCloudError(str(exc)) from None
+            cancel_cloud_run(agent_id, run_id, api_key)
+            last["_local_error"] = "timeout"
+            last["_local_timeout_cause"] = (
+                str(exc) or "Cursor Cloud Agent run poll request timed out"
+            )
+            last["_local_cancel_requested"] = True
+            return last
         if not isinstance(last, dict):
             raise CursorCloudError("Cursor Cloud Agent poll returned a non-object")
         status = str(last.get("status") or "").strip().upper()
@@ -1324,6 +1358,58 @@ def _revalidate_receipt_for_recovery(
     )
 
 
+def _validated_local_fallback_result(
+    receipt: Dict[str, Any], *, cloud_status: str
+) -> Optional[str]:
+    """Return a completed local fallback with matching pre-execution provenance."""
+    terminal_result = receipt.get("terminal_result")
+    if (
+        not isinstance(terminal_result, dict)
+        or terminal_result.get("result_source") != LOCAL_FALLBACK_RESULT_SOURCE
+    ):
+        return None
+    provenance = receipt.get("local_fallback")
+    if (
+        not isinstance(provenance, dict)
+        or str(provenance.get("cloud_agent_id") or "")
+        != str(receipt.get("cloud_agent_id") or "")
+        or str(provenance.get("cloud_run_id") or "")
+        != str(receipt.get("cloud_run_id") or "")
+        or provenance.get("cloud_status") != cloud_status
+    ):
+        return None
+    result_json = terminal_result.get("result_json")
+    if not isinstance(result_json, str):
+        return None
+    try:
+        payload = json.loads(result_json)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    fallback = payload.get("fallback")
+    if not isinstance(fallback, dict):
+        return None
+    if (
+        fallback.get("backend") != "claude"
+        or fallback.get("reason") != "cursor_cloud_run_poll_timeout"
+        or str(fallback.get("cloud_agent_id") or "") != str(receipt.get("cloud_agent_id") or "")
+        or str(fallback.get("cloud_run_id") or "") != str(receipt.get("cloud_run_id") or "")
+    ):
+        return None
+
+    local_error = payload.get("error")
+    if payload.get("success") is True:
+        expected_outcome = "success"
+    elif local_error in ("timeout", "interrupted"):
+        expected_outcome = local_error
+    else:
+        expected_outcome = "failed"
+    if receipt.get("outcome") != expected_outcome:
+        return None
+    return result_json
+
+
 def _authoritative_terminal_reconcile(
     receipt: Dict[str, Any],
     receipt_path: Path,
@@ -1353,6 +1439,14 @@ def _authoritative_terminal_reconcile(
 
     if not is_terminal_run_status(run_obj.get("status")):
         return None, True
+
+    cloud_status = str(run_obj.get("status") or "").upper()
+    if cloud_status != "FINISHED":
+        local_result_json = _validated_local_fallback_result(
+            receipt, cloud_status=cloud_status
+        )
+        if local_result_json is not None:
+            return local_result_json, False
 
     try:
         agent_obj = fetch_cloud_agent(cloud_agent_id, api_key)
@@ -1595,6 +1689,155 @@ def _build_cloud_tool_result_from_run(
     )
 
 
+def _capture_workdir_git_status(workdir: str) -> Dict[str, Any]:
+    """Capture the pre-fallback checkout state without modifying task files."""
+    command = ["git", "-C", workdir, "status", "--short", "--untracked-files=all"]
+    try:
+        proc = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {
+            "command": "git status --short --untracked-files=all",
+            "returncode": None,
+            "stdout": "",
+            "stderr": str(exc),
+        }
+    return {
+        "command": "git status --short --untracked-files=all",
+        "returncode": proc.returncode,
+        "stdout": proc.stdout or "",
+        "stderr": proc.stderr or "",
+    }
+
+
+def _confirm_cloud_run_stopped(
+    *,
+    agent_id: str,
+    run_id: str,
+    api_key: str,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Return the terminal run, or an error while a writer may remain."""
+    deadline = time.monotonic() + CANCEL_CONFIRM_TIMEOUT_SECONDS
+    last_status = "UNKNOWN"
+    while True:
+        try:
+            current = fetch_cloud_run(agent_id, run_id, api_key)
+        except (CursorCloudError, TimeoutError) as exc:
+            return None, f"Cursor Cloud Agent cancellation confirmation failed: {exc}"
+
+        last_status = str(current.get("status") or "UNKNOWN").strip().upper()
+        if is_terminal_run_status(last_status):
+            return current, None
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None, (
+                "Cursor Cloud Agent cancellation was not confirmed before "
+                f"the confirmation deadline (last status: {last_status})"
+            )
+        time.sleep(min(POLL_INTERVAL_SECONDS, remaining))
+
+
+def _run_local_claude_after_poll_timeout(
+    *,
+    task: str,
+    workdir: str,
+    timeout_seconds: int,
+    started_mono: float,
+    hermes_session_id: str,
+    tool_call_id: Optional[str],
+    cloud_agent_id: str,
+    cloud_run_id: str,
+    run: Dict[str, Any],
+    git_status: Dict[str, Any],
+) -> Tuple[str, str]:
+    """Run Claude locally once after the caller confirms Cloud has stopped."""
+    cloud_timeout = str(
+        run.get("_local_timeout_cause") or "Cursor Cloud Agent run poll timed out"
+    )
+
+    local_payload: Optional[Dict[str, Any]] = None
+    if _check_interrupted():
+        local_payload = json.loads(_make_result(success=False, error="interrupted"))
+    elif git_status.get("returncode") != 0:
+        local_payload = json.loads(
+            _make_result(
+                success=False,
+                error=(
+                    "local Claude fallback not started: workdir git status "
+                    "is unverifiable"
+                ),
+            )
+        )
+    elif str(git_status.get("stdout") or "").strip():
+        local_payload = json.loads(
+            _make_result(
+                success=False,
+                error=(
+                    "local Claude fallback not started: workdir has uncommitted "
+                    "or untracked changes"
+                ),
+            )
+        )
+    elif timeout_seconds > 0:
+        remaining = int(timeout_seconds - (time.monotonic() - started_mono))
+        if remaining < MIN_TIMEOUT_SECONDS:
+            local_payload = json.loads(_make_result(success=False, error="timeout"))
+        else:
+            local_timeout = min(MAX_TIMEOUT_SECONDS, remaining)
+    else:
+        local_timeout = 0
+
+    if local_payload is None:
+        try:
+            from tools.claude_agent_tool import delegate_claude_agent
+
+            local_result = delegate_claude_agent(
+                task=f"/goal {NO_PUSH_PROMPT_PREFIX}{task}",
+                workdir=workdir,
+                timeout_seconds=local_timeout,
+                permission_mode="acceptEdits",
+                background=False,
+                session_id=hermes_session_id or None,
+                tool_call_id=tool_call_id,
+            )
+            local_payload = json.loads(local_result)
+            if not isinstance(local_payload, dict):
+                raise ValueError("local Claude fallback returned a non-object result")
+        except Exception as exc:
+            local_payload = json.loads(
+                _make_result(
+                    success=False,
+                    error=str(exc) or type(exc).__name__,
+                )
+            )
+
+    local_payload["fallback"] = {
+        "backend": "claude",
+        "reason": "cursor_cloud_run_poll_timeout",
+        "cloud_timeout": cloud_timeout,
+        "cloud_agent_id": cloud_agent_id,
+        "cloud_run_id": cloud_run_id,
+        "git_status": git_status,
+    }
+    success = local_payload.get("success") is True
+    outcome = "success"
+    if not success:
+        local_error = str(local_payload.get("error") or "local Claude fallback failed")
+        local_payload["local_error"] = local_error
+        outcome = local_error if local_error in ("timeout", "interrupted") else "failed"
+        if outcome == "failed":
+            local_payload["error"] = (
+                f"{local_error}; Cursor Cloud Agent run-poll timeout: {cloud_timeout}"
+            )
+    return json.dumps(local_payload, ensure_ascii=False), outcome
+
+
 def _execute_cloud_delegation(
     *,
     task: str,
@@ -1805,6 +2048,68 @@ def _execute_cloud_delegation(
                 receipt_path,
                 outcome="failed",
                 terminal_result={"result_json": result_json},
+                log_path=str(log_path),
+                cloud_agent_id=cloud_agent_id,
+                cloud_run_id=cloud_run_id,
+            )
+            return result_json
+
+    if run_obj.get("_local_error") == "timeout":
+        if run_obj.get("_local_cancel_requested") is not True:
+            cancel_cloud_run(cloud_agent_id, cloud_run_id, api_key)
+        git_status = _capture_workdir_git_status(workdir)
+        confirmed_run, confirmation_error = _confirm_cloud_run_stopped(
+            agent_id=cloud_agent_id,
+            run_id=cloud_run_id,
+            api_key=api_key,
+        )
+        confirmed_status = str((confirmed_run or {}).get("status") or "").upper()
+        if confirmation_error is None and confirmed_status == "FINISHED":
+            run_obj = confirmed_run or run_obj
+        else:
+            if confirmation_error:
+                cloud_timeout = str(
+                    run_obj.get("_local_timeout_cause")
+                    or "Cursor Cloud Agent run poll timed out"
+                )
+                result_json = _make_result(
+                    success=False,
+                    error=(
+                        f"Cursor Cloud Agent run-poll timeout: {cloud_timeout}; "
+                        f"local Claude fallback not started: {confirmation_error}"
+                    ),
+                )
+                outcome = "failed"
+                terminal_result = {"result_json": result_json}
+            else:
+                update_receipt(
+                    receipt_path,
+                    local_fallback={
+                        "cloud_agent_id": cloud_agent_id,
+                        "cloud_run_id": cloud_run_id,
+                        "cloud_status": confirmed_status,
+                    },
+                )
+                result_json, outcome = _run_local_claude_after_poll_timeout(
+                    task=task,
+                    workdir=workdir,
+                    timeout_seconds=clamped_timeout,
+                    started_mono=started_mono,
+                    hermes_session_id=hermes_session_id,
+                    tool_call_id=tool_call_id,
+                    cloud_agent_id=cloud_agent_id,
+                    cloud_run_id=cloud_run_id,
+                    run=run_obj,
+                    git_status=git_status,
+                )
+                terminal_result = {
+                    "result_json": result_json,
+                    "result_source": LOCAL_FALLBACK_RESULT_SOURCE,
+                }
+            finalize_receipt(
+                receipt_path,
+                outcome=outcome,
+                terminal_result=terminal_result,
                 log_path=str(log_path),
                 cloud_agent_id=cloud_agent_id,
                 cloud_run_id=cloud_run_id,
@@ -2803,8 +3108,12 @@ CURSOR_AGENT_SCHEMA = {
         "what is already PUSHED to workdir's GitHub origin (origin URL, plus "
         "the local branch as startingRef when that branch exists on origin). "
         "Unpushed commits and dirty working-tree changes are invisible to the "
-        "run; the tool refuses to start when local HEAD is ahead of origin. "
-        "Nothing runs on this host. Does not open a PR or request reviewers. "
+        "cloud phase; the tool refuses to start when local HEAD is ahead of origin. "
+        "A cloud run-poll timeout leaves the local scratch checkout untouched, "
+        "requests cancellation, records git status, and waits for a terminal "
+        "Cloud status before any local execution. Local Claude fallback uses "
+        "/goal only with a clean, verified status; dirty or unverifiable trees "
+        "are refused. FINISHED returns the Cloud result. "
         "Available only when the Cursor Agent CLI binary is installed."
     ),
     "parameters": {
