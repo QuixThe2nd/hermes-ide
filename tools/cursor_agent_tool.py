@@ -40,9 +40,11 @@ A timed-out run poll may leave the scratch clone untouched. For a GET request
 timeout or the local polling deadline, Hermes requests cancellation, captures
 an immediate read-only ``git status --short`` snapshot (including untracked
 files), and waits for Cursor to confirm a terminal status before starting any
-local writer. A ``FINISHED`` run returns its authoritative Cloud result; other
-terminal statuses run the original task once with local Claude Code in the same
-workdir. If no terminal status can be confirmed, local execution does not start.
+local writer. A ``FINISHED`` run returns its authoritative Cloud result. Other terminal
+statuses run the original task once with local Claude Code in the same workdir
+only while the requested finite budget remains; zero keeps its unbounded meaning.
+An exhausted budget returns ``timeout`` without starting another writer. If no
+terminal status can be confirmed, local execution does not start.
 The fallback retains the no-push instruction and returns the cloud timeout cause
 and status snapshot as metadata. Interruption and non-timeout cloud errors never
 trigger local fallback.
@@ -159,6 +161,7 @@ WORKER_AUTH_ERROR = (
 )
 NO_PUSH_PUSHURL = "disabled://hermes-no-push"
 TERMINAL_RUN_STATUSES = frozenset({"FINISHED", "ERROR", "CANCELLED", "EXPIRED"})
+LOCAL_FALLBACK_RESULT_SOURCE = "local_claude_after_poll_timeout"
 _NO_PUSH_ENV_KEYS = frozenset({
     "GH_TOKEN",
     "GITHUB_TOKEN",
@@ -1348,6 +1351,46 @@ def _revalidate_receipt_for_recovery(
     )
 
 
+def _validated_local_fallback_result(receipt: Dict[str, Any]) -> Optional[str]:
+    """Return only a receipt-marked, binding-matched completed local fallback."""
+    terminal_result = receipt.get("terminal_result")
+    if (
+        not isinstance(terminal_result, dict)
+        or terminal_result.get("result_source") != LOCAL_FALLBACK_RESULT_SOURCE
+    ):
+        return None
+    result_json = terminal_result.get("result_json")
+    if not isinstance(result_json, str):
+        return None
+    try:
+        payload = json.loads(result_json)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    fallback = payload.get("fallback")
+    if not isinstance(fallback, dict):
+        return None
+    if (
+        fallback.get("backend") != "claude"
+        or fallback.get("reason") != "cursor_cloud_run_poll_timeout"
+        or str(fallback.get("cloud_agent_id") or "") != str(receipt.get("cloud_agent_id") or "")
+        or str(fallback.get("cloud_run_id") or "") != str(receipt.get("cloud_run_id") or "")
+    ):
+        return None
+
+    local_error = payload.get("error")
+    if payload.get("success") is True:
+        expected_outcome = "success"
+    elif local_error in ("timeout", "interrupted"):
+        expected_outcome = local_error
+    else:
+        expected_outcome = "failed"
+    if receipt.get("outcome") != expected_outcome:
+        return None
+    return result_json
+
+
 def _authoritative_terminal_reconcile(
     receipt: Dict[str, Any],
     receipt_path: Path,
@@ -1361,28 +1404,6 @@ def _authoritative_terminal_reconcile(
     True, the local terminal claim was stale and polling should resume. When
     both indicate failure, fail closed without appending.
     """
-    terminal_result = receipt.get("terminal_result")
-    result_json = (
-        terminal_result.get("result_json") if isinstance(terminal_result, dict) else None
-    )
-    if isinstance(result_json, str):
-        try:
-            terminal_payload = json.loads(result_json)
-        except json.JSONDecodeError:
-            terminal_payload = {}
-        fallback = (
-            terminal_payload.get("fallback") if isinstance(terminal_payload, dict) else None
-        )
-        if (
-            isinstance(fallback, dict)
-            and fallback.get("backend") == "claude"
-            and fallback.get("reason") == "cursor_cloud_run_poll_timeout"
-        ):
-            # Local work cannot be validated against the cancelled cloud run.
-            # Its terminal result is authoritative after receipt binding checks;
-            # cloud reconciliation would erase it and could resume duplicate work.
-            return result_json, False
-
     cloud_agent_id = str(receipt.get("cloud_agent_id") or "")
     cloud_run_id = str(receipt.get("cloud_run_id") or "")
     if not cloud_agent_id or not cloud_run_id:
@@ -1399,6 +1420,11 @@ def _authoritative_terminal_reconcile(
 
     if not is_terminal_run_status(run_obj.get("status")):
         return None, True
+
+    if str(run_obj.get("status") or "").upper() != "FINISHED":
+        local_result_json = _validated_local_fallback_result(receipt)
+        if local_result_json is not None:
+            return local_result_json, False
 
     try:
         agent_obj = fetch_cloud_agent(cloud_agent_id, api_key)
@@ -1713,35 +1739,39 @@ def _run_local_claude_after_poll_timeout(
         run.get("_local_timeout_cause") or "Cursor Cloud Agent run poll timed out"
     )
 
+    local_payload: Optional[Dict[str, Any]] = None
     if timeout_seconds > 0:
-        remaining = max(0, int(timeout_seconds - (time.monotonic() - started_mono)))
-        local_timeout = min(MAX_TIMEOUT_SECONDS, max(MIN_TIMEOUT_SECONDS, remaining))
+        remaining = int(timeout_seconds - (time.monotonic() - started_mono))
+        if remaining <= 0:
+            local_payload = json.loads(_make_result(success=False, error="timeout"))
+        else:
+            local_timeout = min(MAX_TIMEOUT_SECONDS, max(MIN_TIMEOUT_SECONDS, remaining))
     else:
-        # Cloud's unlimited setting must not create an unbounded recovery writer.
-        local_timeout = MAX_TIMEOUT_SECONDS
+        local_timeout = 0
 
-    try:
-        from tools.claude_agent_tool import delegate_claude_agent
+    if local_payload is None:
+        try:
+            from tools.claude_agent_tool import delegate_claude_agent
 
-        local_result = delegate_claude_agent(
-            task=NO_PUSH_PROMPT_PREFIX + task,
-            workdir=workdir,
-            timeout_seconds=local_timeout,
-            permission_mode="acceptEdits",
-            background=False,
-            session_id=hermes_session_id or None,
-            tool_call_id=tool_call_id,
-        )
-        local_payload = json.loads(local_result)
-        if not isinstance(local_payload, dict):
-            raise ValueError("local Claude fallback returned a non-object result")
-    except Exception as exc:
-        local_payload = json.loads(
-            _make_result(
-                success=False,
-                error=str(exc) or type(exc).__name__,
+            local_result = delegate_claude_agent(
+                task=NO_PUSH_PROMPT_PREFIX + task,
+                workdir=workdir,
+                timeout_seconds=local_timeout,
+                permission_mode="acceptEdits",
+                background=False,
+                session_id=hermes_session_id or None,
+                tool_call_id=tool_call_id,
             )
-        )
+            local_payload = json.loads(local_result)
+            if not isinstance(local_payload, dict):
+                raise ValueError("local Claude fallback returned a non-object result")
+        except Exception as exc:
+            local_payload = json.loads(
+                _make_result(
+                    success=False,
+                    error=str(exc) or type(exc).__name__,
+                )
+            )
 
     local_payload["fallback"] = {
         "backend": "claude",
@@ -1752,13 +1782,16 @@ def _run_local_claude_after_poll_timeout(
         "git_status": git_status,
     }
     success = local_payload.get("success") is True
+    outcome = "success"
     if not success:
         local_error = str(local_payload.get("error") or "local Claude fallback failed")
         local_payload["local_error"] = local_error
-        local_payload["error"] = (
-            f"{local_error}; Cursor Cloud Agent run-poll timeout: {cloud_timeout}"
-        )
-    return json.dumps(local_payload, ensure_ascii=False), "success" if success else "failed"
+        outcome = local_error if local_error in ("timeout", "interrupted") else "failed"
+        if outcome == "failed":
+            local_payload["error"] = (
+                f"{local_error}; Cursor Cloud Agent run-poll timeout: {cloud_timeout}"
+            )
+    return json.dumps(local_payload, ensure_ascii=False), outcome
 
 
 def _execute_cloud_delegation(
@@ -2003,6 +2036,7 @@ def _execute_cloud_delegation(
                     ),
                 )
                 outcome = "failed"
+                terminal_result = {"result_json": result_json}
             else:
                 result_json, outcome = _run_local_claude_after_poll_timeout(
                     task=task,
@@ -2016,10 +2050,14 @@ def _execute_cloud_delegation(
                     run=run_obj,
                     git_status=git_status,
                 )
+                terminal_result = {
+                    "result_json": result_json,
+                    "result_source": LOCAL_FALLBACK_RESULT_SOURCE,
+                }
             finalize_receipt(
                 receipt_path,
                 outcome=outcome,
-                terminal_result={"result_json": result_json},
+                terminal_result=terminal_result,
                 log_path=str(log_path),
                 cloud_agent_id=cloud_agent_id,
                 cloud_run_id=cloud_run_id,

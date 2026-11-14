@@ -231,7 +231,7 @@ def test_terminal_while_gateway_down_recovers_without_create(cloud_env):
 
 
 def test_terminal_local_fallback_recovers_without_reexecution(cloud_env, monkeypatch):
-    """A terminal local fallback is authoritative; the cancelled cloud run is not retried."""
+    """A source-marked local fallback survives recovery without another writer."""
     cloud, workdir = cloud_env
     session_id = "sess-local-fallback-terminal"
     tool_call_id = "call-local-fallback-terminal"
@@ -269,6 +269,8 @@ def test_terminal_local_fallback_recovers_without_reexecution(cloud_env, monkeyp
                 "backend": "claude",
                 "reason": "cursor_cloud_run_poll_timeout",
                 "cloud_timeout": "cloud poll budget exhausted",
+                "cloud_agent_id": client_id,
+                "cloud_run_id": "run-local-fallback",
                 "git_status": {"returncode": 0, "stdout": "?? untracked.txt\n"},
             },
         }
@@ -276,7 +278,10 @@ def test_terminal_local_fallback_recovers_without_reexecution(cloud_env, monkeyp
     finalize_receipt(
         receipt_path,
         outcome="success",
-        terminal_result={"result_json": result_json},
+        terminal_result={
+            "result_json": result_json,
+            "result_source": "local_claude_after_poll_timeout",
+        },
         cloud_agent_id=client_id,
         cloud_run_id="run-local-fallback",
     )
@@ -299,7 +304,7 @@ def test_terminal_local_fallback_recovers_without_reexecution(cloud_env, monkeyp
     assert recovered["final_report"] == "local Claude completed"
     assert recovered["fallback"]["cloud_timeout"] == "cloud poll budget exhausted"
     assert cloud.create_calls == 0
-    assert cloud.get_run_calls == 0
+    assert cloud.get_run_calls == 1
     assert cloud.get_agent_calls == 0
     assert cloud.poll_calls == 0
     assert note and "terminal" in note.lower()
@@ -1111,6 +1116,8 @@ def _seed_forged_terminal_receipt(
     tool_call_id: str,
     *,
     run_id: str,
+    cached_payload: dict | None = None,
+    result_source: str | None = None,
 ) -> Path:
     """Persist a valid terminal receipt whose cached result_json is forged."""
     from tools.cursor_run_receipts import finalize_receipt, persist_cloud_ids
@@ -1128,16 +1135,52 @@ def _seed_forged_terminal_receipt(
         task="cloud task",
     )
     persist_cloud_ids(receipt_path, cloud_agent_id=client_id, cloud_run_id=run_id)
+    terminal_result = {
+        "result_json": json.dumps(
+            cached_payload or {"success": True, "final_report": FORGED_MARKER}
+        )
+    }
+    if result_source is not None:
+        terminal_result["result_source"] = result_source
     finalize_receipt(
         receipt_path,
         outcome="success",
-        terminal_result={
-            "result_json": json.dumps({"success": True, "final_report": FORGED_MARKER})
-        },
+        terminal_result=terminal_result,
         cloud_agent_id=client_id,
         cloud_run_id=run_id,
     )
     return receipt_path
+
+
+def _seed_forged_fallback_terminal_receipt(
+    workdir: Path,
+    session_id: str,
+    tool_call_id: str,
+    *,
+    run_id: str,
+    result_source: str | None = None,
+) -> Path:
+    client_id = deterministic_client_agent_id(session_id, tool_call_id)
+    return _seed_forged_terminal_receipt(
+        workdir,
+        session_id,
+        tool_call_id,
+        run_id=run_id,
+        cached_payload={
+            "success": True,
+            "final_report": FORGED_MARKER,
+            "error": None,
+            "fallback": {
+                "backend": "claude",
+                "reason": "cursor_cloud_run_poll_timeout",
+                "cloud_timeout": "cloud poll budget exhausted",
+                "cloud_agent_id": client_id,
+                "cloud_run_id": run_id,
+                "git_status": {"returncode": 0, "stdout": ""},
+            },
+        },
+        result_source=result_source,
+    )
 
 
 def test_repeat_invoke_forged_cached_terminal_not_returned(cloud_env):
@@ -1166,6 +1209,107 @@ def test_repeat_invoke_forged_cached_terminal_not_returned(cloud_env):
     receipt = read_receipt(receipt_path)
     assert receipt is not None
     assert FORGED_MARKER not in json.dumps(receipt)
+
+
+@pytest.mark.parametrize(
+    "result_source",
+    [None, "local_claude_after_poll_timeout"],
+    ids=["forged-shape-only", "previously-completed-local-fallback"],
+)
+def test_repeat_invoke_local_fallback_cache_cloud_finished_wins(
+    cloud_env, result_source
+):
+    cloud, workdir = cloud_env
+    session_id = "sess-repeat-fallback-finished"
+    tool_call_id = "call-repeat-fallback-finished"
+    client_id = deterministic_client_agent_id(session_id, tool_call_id)
+    cloud.seed_terminal(
+        agent_id=client_id,
+        run_id="run-finished",
+        result_text="authoritative cloud report",
+    )
+    receipt_path = _seed_forged_fallback_terminal_receipt(
+        workdir,
+        session_id,
+        tool_call_id,
+        run_id="run-finished",
+        result_source=result_source,
+    )
+    cloud.fail_create = True
+    cloud.reset_counters()
+
+    result = _delegate(cloud, workdir, session_id=session_id, tool_call_id=tool_call_id)
+
+    assert result["success"] is True
+    assert result["final_report"] == "authoritative cloud report"
+    assert FORGED_MARKER not in json.dumps(result)
+    assert cloud.create_calls == 0
+    assert cloud.get_run_calls == 1
+    assert cloud.get_agent_calls == 1
+    assert cloud.poll_calls == 0
+    receipt = read_receipt(receipt_path)
+    assert receipt is not None
+    assert FORGED_MARKER not in json.dumps(receipt)
+
+
+def test_repeat_invoke_forged_fallback_cloud_running_resumes_without_local(
+    cloud_env, monkeypatch
+):
+    cloud, workdir = cloud_env
+    session_id = "sess-repeat-fallback-running"
+    tool_call_id = "call-repeat-fallback-running"
+    client_id = deterministic_client_agent_id(session_id, tool_call_id)
+    cloud.seed_running(agent_id=client_id, run_id="run-live", status="RUNNING")
+    _seed_forged_fallback_terminal_receipt(
+        workdir, session_id, tool_call_id, run_id="run-live"
+    )
+    cloud.fail_create = True
+    cloud.reset_counters()
+
+    def _local_must_not_run(**kwargs):
+        raise AssertionError("forged cached fallback launched a duplicate local writer")
+
+    monkeypatch.setattr(
+        "tools.claude_agent_tool.delegate_claude_agent", _local_must_not_run
+    )
+    result = _delegate(cloud, workdir, session_id=session_id, tool_call_id=tool_call_id)
+
+    assert result["success"] is True
+    assert result["final_report"] == "cloud done"
+    assert FORGED_MARKER not in json.dumps(result)
+    assert cloud.create_calls == 0
+    assert cloud.get_run_calls == 2
+    assert cloud.get_agent_calls == 1
+    assert cloud.poll_calls == 1
+
+
+def test_repeat_invoke_forged_fallback_cloud_missing_fails_closed(
+    cloud_env, monkeypatch
+):
+    cloud, workdir = cloud_env
+    session_id = "sess-repeat-fallback-missing"
+    tool_call_id = "call-repeat-fallback-missing"
+    _seed_forged_fallback_terminal_receipt(
+        workdir, session_id, tool_call_id, run_id="run-missing"
+    )
+    cloud.fail_create = True
+    cloud.reset_counters()
+
+    def _local_must_not_run(**kwargs):
+        raise AssertionError("unverifiable fallback launched a local writer")
+
+    monkeypatch.setattr(
+        "tools.claude_agent_tool.delegate_claude_agent", _local_must_not_run
+    )
+    result = _delegate(cloud, workdir, session_id=session_id, tool_call_id=tool_call_id)
+
+    assert result["success"] is False
+    assert FORGED_MARKER not in json.dumps(result)
+    assert "could not be verified against Cursor Cloud" in result["error"]
+    assert cloud.create_calls == 0
+    assert cloud.get_run_calls == 1
+    assert cloud.get_agent_calls == 0
+    assert cloud.poll_calls == 0
 
 
 def test_repeat_invoke_terminal_receipt_cloud_running_resumes_poll(cloud_env):

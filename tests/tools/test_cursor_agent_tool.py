@@ -1770,6 +1770,127 @@ def _assert_local_fallback_call(call, workdir, task):
     assert 0 < call["timeout_seconds"] <= 120
     assert "model" not in call
 
+def _run_local_fallback_for_test(*, timeout_seconds, started_mono, workdir):
+    from tools import cursor_agent_tool
+
+    return cursor_agent_tool._run_local_claude_after_poll_timeout(
+        task="finish locally",
+        workdir=str(workdir.resolve()),
+        timeout_seconds=timeout_seconds,
+        started_mono=started_mono,
+        hermes_session_id=_DEFAULT_DELEGATE_SESSION,
+        tool_call_id=_DEFAULT_DELEGATE_TOOL_CALL,
+        cloud_agent_id="bc-local-fallback",
+        cloud_run_id="run-local-fallback",
+        run={"_local_timeout_cause": "cloud poll budget exhausted"},
+        git_status={"returncode": 0, "stdout": ""},
+    )
+
+
+def test_local_fallback_expired_overall_budget_does_not_start_claude(
+    monkeypatch, tmp_path
+):
+    from tools import cursor_agent_tool
+
+    local_calls = _install_local_claude_result(
+        monkeypatch,
+        {"success": True, "final_report": "must not run", "error": None},
+    )
+    monkeypatch.setattr(cursor_agent_tool.time, "monotonic", lambda: 221.0)
+
+    result_json, outcome = _run_local_fallback_for_test(
+        timeout_seconds=120,
+        started_mono=100.0,
+        workdir=tmp_path,
+    )
+    result = json.loads(result_json)
+
+    assert local_calls == []
+    assert outcome == "timeout"
+    assert result["success"] is False
+    assert result["error"] == "timeout"
+    assert result["fallback"]["cloud_timeout"] == "cloud poll budget exhausted"
+
+
+def test_local_fallback_preserves_unbounded_timeout(monkeypatch, tmp_path):
+    local_calls = _install_local_claude_result(
+        monkeypatch,
+        {"success": True, "final_report": "local Claude completed", "error": None},
+    )
+
+    result_json, outcome = _run_local_fallback_for_test(
+        timeout_seconds=0,
+        started_mono=100.0,
+        workdir=tmp_path,
+    )
+    result = json.loads(result_json)
+
+    assert outcome == "success"
+    assert result["success"] is True
+    assert len(local_calls) == 1
+    assert local_calls[0]["timeout_seconds"] == 0
+
+
+@pytest.mark.parametrize("local_error", ["timeout", "interrupted"])
+def test_local_fallback_preserves_terminal_status_for_receipt_and_event(
+    monkeypatch, tmp_path, local_error
+):
+    from tools import cursor_agent_tool
+    from tools.cursor_run_receipts import read_receipt, receipt_path_for_binding
+
+    repo = _init_repo_with_bare_origin(tmp_path)
+    _install_cloud_happy_path(monkeypatch, tmp_path)
+    client_id = _default_client_agent_id()
+    monkeypatch.setattr(
+        cursor_agent_tool,
+        "poll_cloud_run",
+        lambda **kwargs: {
+            "id": "run-aaaa",
+            "agentId": client_id,
+            "status": "RUNNING",
+            "_local_error": "timeout",
+            "_local_timeout_cause": "cloud poll budget exhausted",
+        },
+    )
+    monkeypatch.setattr(cursor_agent_tool, "cancel_cloud_run", lambda *args: None)
+    monkeypatch.setattr(
+        cursor_agent_tool,
+        "fetch_cloud_run",
+        lambda *args: {
+            "id": "run-aaaa",
+            "agentId": client_id,
+            "status": "CANCELLED",
+        },
+    )
+    local_calls = _install_local_claude_result(
+        monkeypatch,
+        {"success": False, "final_report": "", "error": local_error},
+    )
+
+    result_json = _delegate(
+        task="preserve local terminal status",
+        workdir=str(repo.resolve()),
+        timeout_seconds=120,
+    )
+    result = json.loads(result_json)
+    receipt = read_receipt(
+        receipt_path_for_binding(_DEFAULT_DELEGATE_SESSION, _DEFAULT_DELEGATE_TOOL_CALL)
+    )
+    event = cursor_agent_tool._cloud_event_from_result_json(
+        result_json, model_name=None
+    )
+
+    assert len(local_calls) == 1
+    assert result["success"] is False
+    assert result["error"] == local_error
+    assert result["local_error"] == local_error
+    assert result["fallback"]["cloud_timeout"] == "cloud poll budget exhausted"
+    assert receipt is not None
+    assert receipt["outcome"] == local_error
+    assert event["status"] == local_error
+    assert event["error"] == local_error
+    assert event["exit_reason"] == local_error
+
 
 def test_cloud_poll_get_timeout_falls_back_to_local_claude(monkeypatch, tmp_path):
     from tools import cursor_agent_tool
