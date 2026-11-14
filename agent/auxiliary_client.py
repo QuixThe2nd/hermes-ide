@@ -5194,6 +5194,24 @@ _EXPLICIT_PROVIDER_BRANCHES: Dict[str, Callable[[_ResolveRequest], _ResolveResul
 }
 
 
+
+def _unknown_model_provider(provider: str) -> bool:
+    """True when a name is not the LiteLLM/custom path, a named providers: entry, or a registered plugin.
+
+    Bundled model-provider plugins other than ``custom`` are not shipped. Those names
+    must not fall through to ``PROVIDER_REGISTRY`` and pretend to be a working builtin.
+    """
+    if not provider or provider in {"auto", "custom", "moa"} or provider.startswith("custom:"):
+        return False
+    if _routes_to_custom_endpoint(provider):
+        return False
+    try:
+        from providers import get_provider_profile
+    except Exception:
+        return True
+    return get_provider_profile(provider) is None
+
+
 def resolve_provider_client(
     provider: str, model: str = None, async_mode: bool = False, raw_codex: bool = False,
     explicit_base_url: str = None, explicit_api_key: Optional[Union[str, Callable[[], str]]] = None,
@@ -5257,6 +5275,13 @@ def resolve_provider_client(
         provider, original_provider, model, async_mode, raw_codex,
         explicit_base_url, explicit_api_key, api_mode, main_runtime, is_vision, task,
     )
+    if _unknown_model_provider(provider):
+        logger.warning(
+            "resolve_provider_client: unknown provider %r; failing closed "
+            "(bundled model providers are limited to custom / custom:<name>, including custom:litellm)",
+            provider,
+        )
+        return None, None
     branch = _EXPLICIT_PROVIDER_BRANCHES.get(provider)
     if branch is not None:
         return branch(req)

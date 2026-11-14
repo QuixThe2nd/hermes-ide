@@ -38,7 +38,7 @@ def test_bundled_plugins_discovered():
     assert plugins_dir.is_dir(), f"Missing {plugins_dir}"
 
     child_dirs = [c for c in plugins_dir.iterdir() if c.is_dir()]
-    assert len(child_dirs) >= 28, f"Expected at least 28 provider plugins, found {len(child_dirs)}"
+    assert [c.name for c in child_dirs] == ["custom"], f"Only the custom/LiteLLM plugin should remain, found {[c.name for c in child_dirs]}"
 
     for child in child_dirs:
         assert (child / "__init__.py").exists(), f"{child.name} missing __init__.py"
@@ -67,12 +67,9 @@ def test_all_profiles_register():
     )
 
     # Spot-check representative providers from different categories
-    for required in (
-        "openrouter", "anthropic", "custom", "openai-codex",
-        "minimax-oauth", "gmi", "xiaomi", "alibaba-coding-plan", "fireworks",
-        "nebius-token-factory",
-    ):
-        assert required in names, f"Missing profile: {required}"
+    assert names == ["custom"], names
+    for banned in ("openrouter", "anthropic", "openai-codex", "gemini", "nous"):
+        assert banned not in names, banned
 
 
 def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
@@ -84,16 +81,16 @@ def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
     # get_hermes_home() may be module-cached depending on codebase; ensure the
     # env var is the source of truth. Most code paths re-read it each call.
 
-    # Drop a user plugin that replaces 'gmi'
-    user_gmi = hermes_home / "plugins" / "model-providers" / "gmi"
+    # Drop a user plugin that replaces bundled 'custom'
+    user_gmi = hermes_home / "plugins" / "model-providers" / "custom"
     user_gmi.mkdir(parents=True)
     (user_gmi / "__init__.py").write_text(
         "from providers import register_provider\n"
         "from providers.base import ProviderProfile\n"
         "\n"
         "custom_gmi = ProviderProfile(\n"
-        '    name="gmi",\n'
-        '    aliases=("gmi-user-override-test",),\n'
+        '    name="custom",\n'
+        '    aliases=("custom-user-override-test",),\n'
         '    env_vars=("GMI_API_KEY",),\n'
         '    base_url="https://user-override.example.com/v1",\n'
         '    auth_type="api_key",\n'
@@ -110,12 +107,12 @@ def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
     _clear_provider_caches()
     from providers import get_provider_profile
 
-    gmi = get_provider_profile("gmi")
+    gmi = get_provider_profile("custom")
     assert gmi is not None
     assert gmi.base_url == "https://user-override.example.com/v1", (
         f"User override not applied; got base_url={gmi.base_url!r}"
     )
-    assert "gmi-user-override-test" in gmi.aliases
+    assert "custom-user-override-test" in gmi.aliases
 
     # Clean up: reset discovery state so other tests see the bundled version
     _clear_provider_caches()

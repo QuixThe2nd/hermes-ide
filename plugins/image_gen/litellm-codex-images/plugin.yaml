@@ -1,0 +1,1 @@
+name: litellm-codex-images\nversion: 1.0.0\ndescription: "Codex-native image generation through the named providers: entry litellm-codex-images. Fails closed when that entry or its key is missing."\nauthor: NousResearch\nkind: backend\n
