@@ -19,6 +19,7 @@ from plugins.auto_update.config import (
     default_schedule_calendar,
 )
 from plugins.auto_update.legacy import duplicate_scheduler_present, migrate_legacy_units
+from plugins.auto_update.ownership import enforce_scheduler_ownership
 from plugins.auto_update.platform import (
     InstallScope,
     build_systemctl_cmd,
@@ -446,6 +447,8 @@ def reconcile_units(
     run_systemctl: Callable[[Sequence[str]], tuple[int, str, str]] | None = None,
     scope: InstallScope | None = None,
     write_stamp: Callable[[Path, str], None] | None = None,
+    takeover: bool = False,
+    state_dir: str | Path | None = None,
 ) -> ReconcileResult:
     runner = _resolve_systemctl_runner(run_systemctl)
     if not platform_supported():
@@ -471,6 +474,29 @@ def reconcile_units(
             warnings=("systemd user manager unavailable for this install",),
         )
 
+    hermes_home = str(get_hermes_home().resolve())
+    ownership_warning = enforce_scheduler_ownership(
+        selected,
+        service_path=service_unit_path(selected),
+        timer_path=timer_unit_path(selected),
+        hermes_home=hermes_home,
+        enabled=enabled,
+        takeover=takeover,
+        state_dir=state_dir,
+    )
+    if ownership_warning:
+        return ReconcileResult(
+            supported=True,
+            scope=selected,
+            changed=False,
+            enabled=False,
+            timer_active=False,
+            legacy=(),
+            warnings=(ownership_warning,),
+            enabled_known=False,
+            timer_active_known=False,
+        )
+
     if not enabled:
         disable_warnings = disable_timer(selected, run_systemctl=runner)
         warnings = list(disable_warnings)
@@ -493,7 +519,6 @@ def reconcile_units(
             timer_active_known=active_known,
         )
 
-    hermes_home = str(get_hermes_home().resolve())
     service_body = render_service_unit(
         hermes_home=hermes_home,
         exec_start=unit_exec_start_argv(),

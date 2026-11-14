@@ -96,7 +96,7 @@ def test_reconcile_partial_cfg_uses_canonical_defaults(user_scope, monkeypatch, 
         lambda scope, timer_name=TIMER_NAME: stamp_dir / f"stamp-{timer_name}",
     )
 
-    reconcile_units({}, enabled=True, run_systemctl=fake_systemctl)
+    reconcile_units({}, enabled=True, takeover=True, run_systemctl=fake_systemctl)
     timer_body = timer_unit_path(user_scope).read_text(encoding="utf-8")
     assert "OnCalendar=*-*-* 00,06,12,18:00:00" in timer_body
     assert "RandomizedDelaySec=0" in timer_body
@@ -141,7 +141,7 @@ def test_reconcile_legacy_hour_window_renders_requested_schedule(
     legacy_cfg = load_auto_update_config(
         {"schedule_start_hour": 4, "schedule_end_hour": 8}
     )
-    reconcile_units(legacy_cfg, enabled=True, run_systemctl=fake_systemctl)
+    reconcile_units(legacy_cfg, enabled=True, takeover=True, run_systemctl=fake_systemctl)
     timer_body = timer_unit_path(user_scope).read_text(encoding="utf-8")
     assert "OnCalendar=*-*-* 04,05,06,07:00:00" in timer_body
 
@@ -182,13 +182,13 @@ def test_reconcile_idempotent_and_atomic(user_scope, cfg, monkeypatch, tmp_path)
         lambda scope, timer_name=TIMER_NAME: stamp_dir / f"stamp-{timer_name}",
     )
 
-    first = reconcile_units(cfg, enabled=True, run_systemctl=fake_systemctl)
+    first = reconcile_units(cfg, enabled=True, takeover=True, run_systemctl=fake_systemctl)
     service_path = service_unit_path(user_scope)
     timer_path = timer_unit_path(user_scope)
     service_bytes = service_path.read_bytes()
     timer_bytes = timer_path.read_bytes()
 
-    second = reconcile_units(cfg, enabled=True, run_systemctl=fake_systemctl)
+    second = reconcile_units(cfg, enabled=True, takeover=True, run_systemctl=fake_systemctl)
     assert service_path.read_bytes() == service_bytes
     assert timer_path.read_bytes() == timer_bytes
     assert first.changed is True
@@ -244,6 +244,7 @@ def test_first_enable_prestamps_and_does_not_start_service(
     reconcile_units(
         cfg,
         enabled=True,
+        takeover=True,
         run_systemctl=fake_systemctl,
         write_stamp=fake_write,
     )

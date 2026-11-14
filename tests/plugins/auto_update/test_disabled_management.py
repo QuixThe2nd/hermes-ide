@@ -327,7 +327,7 @@ def test_failed_enable_reports_truthful_state_and_nonzero_exit(
         "plugins.auto_update.systemd.default_systemctl_runner", fake_systemctl
     )
 
-    exit_code = cmd_enable()
+    exit_code = cmd_enable(takeover=True)
     captured = capsys.readouterr().out
     assert exit_code != 0
     assert "Scheduler installed" not in captured
@@ -416,7 +416,12 @@ def test_reconcile_partial_systemctl_outcomes(
         lambda *_args, **_kwargs: False,
     )
 
-    result = reconcile_units(cfg, enabled=want_enabled, run_systemctl=fake_systemctl)
+    result = reconcile_units(
+        cfg,
+        enabled=want_enabled,
+        takeover=want_enabled,
+        run_systemctl=fake_systemctl,
+    )
     assert result.enabled is expected_enabled
     assert result.timer_active is expected_active
     assert bool(result.warnings) is expect_warning

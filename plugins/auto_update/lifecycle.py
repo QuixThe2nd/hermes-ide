@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 import sys
 from typing import Callable, Sequence
 
@@ -29,11 +30,14 @@ def reconcile_scheduler_on_load(
     *,
     run_systemctl: Callable[[Sequence[str]], tuple[int, str, str]] | None = None,
     scope=None,
+    takeover: bool = False,
+    state_dir: str | Path | None = None,
 ) -> ReconcileResult | None:
     """Install/reconcile hook — never call from ``register()`` or oneshot ``run``.
 
-    Explicit disablement (``auto_update.enabled: false`` or ``plugins.disabled``)
-    stops any installed timer. Enabled installs reconcile idempotently.
+    Explicit disablement stops a same-owned installed timer. Enabled installs
+    reconcile only after persistent ownership verification; takeover is an
+    explicit management-CLI choice, never inferred from lifecycle context.
     """
     if is_oneshot_run_invocation():
         return None
@@ -47,6 +51,9 @@ def reconcile_scheduler_on_load(
         kwargs["run_systemctl"] = run_systemctl
     if scope is not None:
         kwargs["scope"] = scope
+    kwargs["takeover"] = takeover
+    if state_dir is not None:
+        kwargs["state_dir"] = state_dir
     try:
         return reconcile_units(cfg, enabled=enabled, **kwargs)
     except Exception as exc:

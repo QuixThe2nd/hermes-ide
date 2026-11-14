@@ -246,7 +246,7 @@ def test_enable_path_probe_failure_exits_nonzero_with_diagnostic(
         "plugins.auto_update.systemd.default_systemctl_runner", fake_systemctl
     )
 
-    exit_code = cmd_enable()
+    exit_code = cmd_enable(takeover=True)
     captured = capsys.readouterr().out
     assert exit_code != 0
     assert "Scheduler installed" not in captured
