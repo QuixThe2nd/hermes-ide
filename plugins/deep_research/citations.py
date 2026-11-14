@@ -102,6 +102,60 @@ def extract_report_urls(text: str) -> List[str]:
     return urls
 
 
+def strip_unledgered_urls(report_text: str, evidence_urls: Iterable[str]) -> str:
+    """Remove unledgered URL occurrences without rewriting surrounding prose.
+
+    Markdown links keep their label, while source-only bare-URL list items are
+    removed with their marker. Every candidate uses the same normalization as
+    citation validation; ledgered text remains byte-for-byte untouched.
+    """
+    text = report_text or ""
+    allowed = {normalize_url(url) for url in evidence_urls if url}
+
+    # Re-scan after each removal so URLs inside a removed link's label cannot
+    # leave overlapping matches or dangling Markdown behind.
+    while True:
+        for match in _URL_RE.finditer(text):
+            raw = _strip_prose_tail(match.group(1))
+            if not raw or normalize_url(raw) in allowed:
+                continue
+
+            start = match.start(1)
+            end = start + len(raw)
+            replacement = ""
+            is_markdown_destination = match.start() < match.start(1)
+
+            if is_markdown_destination:
+                opener = text.rfind("[", 0, match.start())
+                if opener >= 0:
+                    label = text[opener + 1:match.start()]
+                    if "\n" not in label:
+                        start = opener - 1 if opener > 0 and text[opener - 1] == "!" else opener
+                        replacement = label
+                        closing = end
+                        while closing < len(text) and text[closing] in " \t":
+                            closing += 1
+                        if closing < len(text) and text[closing] == ")":
+                            end = closing + 1
+            else:
+                line_start = text.rfind("\n", 0, start) + 1
+                line_end = text.find("\n", end)
+                if line_end < 0:
+                    line_end = len(text)
+                before = text[line_start:start]
+                after = text[end:line_end]
+                if re.fullmatch(r"[ \t]*(?:[-+*]|\d+[.)])[ \t]*", before) and re.fullmatch(
+                    r"[ \t]*[.,;:!?]?[ \t]*", after
+                ):
+                    start = line_start
+                    end = line_end + 1 if line_end < len(text) else line_end
+
+            text = text[:start] + replacement + text[end:]
+            break
+        else:
+            return text
+
+
 def validate_citations(
     report_text: str,
     evidence_urls: Iterable[str],
