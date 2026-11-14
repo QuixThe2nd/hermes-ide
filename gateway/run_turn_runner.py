@@ -1494,24 +1494,15 @@ class TurnRunner(_TurnRunnerCore):
                     stream_consumer.stream_deltas_enabled = want_stream_deltas
             except Exception as err:
                 logger.debug("Could not set up stream consumer: %s", err)
-        # Deltas tee to the stream consumer (when text streaming is on) and to streaming TTS.
-        delta_sinks = [sc for sc in ((stream_consumer if want_stream_deltas else None), stts) if sc is not None]
         stream_delta_cb = None
-        if delta_sinks:
+        if stream_consumer is not None and want_stream_deltas:
             def stream_delta_cb(text: Optional[str]) -> None:
                 if ctx._run_still_current():
-                    for sink in delta_sinks:
-                        sink.on_delta(text)
+                    stream_consumer.on_delta(text)
 
         def interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
                 return
-            if stts is not None:
-                # Flush accepted deltas; completed commentary is a separate speech segment.
-                stts.on_delta(None)
-                if not already_streamed:
-                    stts.on_delta(text)
-                    stts.on_delta(None)
             if stream_consumer is not None:
                 stream_consumer.on_segment_break() if already_streamed else stream_consumer.on_commentary(text)
             elif not already_streamed and ctx._status_adapter and str(text or "").strip():
