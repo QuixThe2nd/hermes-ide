@@ -106,16 +106,18 @@ def _save_enabled_flag(enabled: bool) -> None:
     save_config(cfg)
 
 
-def cmd_enable() -> int:
+def cmd_enable(*, takeover: bool = False) -> int:
     if not platform_supported():
         print(
             "Hermes auto-update requires Linux with systemd; nothing was installed."
         )
         return 1
     _save_enabled_flag(True)
-    result = reconcile_scheduler_on_load()
+    result = reconcile_scheduler_on_load(takeover=takeover)
     if result is None:
-        result = reconcile_units(load_auto_update_config(), enabled=True)
+        result = reconcile_units(
+            load_auto_update_config(), enabled=True, takeover=takeover
+        )
     print(format_status(result))
     if _management_failed(result, want_enabled=True):
         return 1
@@ -135,11 +137,13 @@ def cmd_disable() -> int:
     return 0
 
 
-def cmd_reconcile() -> int:
-    result = reconcile_scheduler_on_load()
+def cmd_reconcile(*, takeover: bool = False) -> int:
+    result = reconcile_scheduler_on_load(takeover=takeover)
     if result is None:
         enabled = _effective_enabled()
-        result = reconcile_units(load_auto_update_config(), enabled=enabled)
+        result = reconcile_units(
+            load_auto_update_config(), enabled=enabled, takeover=takeover
+        )
     print(format_status(result))
     if not result.supported and platform_supported():
         return 1
@@ -240,11 +244,23 @@ def register_management_cli(subparser: argparse.ArgumentParser):
     """Register management subcommands only (no ``run`` oneshot entrypoint)."""
     subs = subparser.add_subparsers(dest="auto_update_command")
     subs.add_parser("status", help="Show scheduler and config status")
-    subs.add_parser("enable", help="Enable unattended updates and install the timer")
+    enable_parser = subs.add_parser(
+        "enable", help="Enable unattended updates and install the timer"
+    )
+    enable_parser.add_argument(
+        "--takeover",
+        action="store_true",
+        help="Allow a disposable HERMES_HOME and explicitly transfer ownership",
+    )
     subs.add_parser("disable", help="Disable unattended updates and stop the timer")
-    subs.add_parser(
+    reconcile_parser = subs.add_parser(
         "reconcile",
         help="Rewrite systemd units idempotently (respects explicit disable)",
+    )
+    reconcile_parser.add_argument(
+        "--takeover",
+        action="store_true",
+        help="Allow a disposable HERMES_HOME and explicitly transfer ownership",
     )
     return subs
 
@@ -268,11 +284,11 @@ def auto_update_command(args: argparse.Namespace) -> int:
     if sub == "status":
         return cmd_status()
     if sub == "enable":
-        return cmd_enable()
+        return cmd_enable(takeover=bool(getattr(args, "takeover", False)))
     if sub == "disable":
         return cmd_disable()
     if sub == "reconcile":
-        return cmd_reconcile()
+        return cmd_reconcile(takeover=bool(getattr(args, "takeover", False)))
     if sub == "run":
         return cmd_run()
     if sub == "activate":
@@ -290,11 +306,11 @@ def management_auto_update_command(args: argparse.Namespace) -> int:
     if sub == "status":
         return cmd_status()
     if sub == "enable":
-        return cmd_enable()
+        return cmd_enable(takeover=bool(getattr(args, "takeover", False)))
     if sub == "disable":
         return cmd_disable()
     if sub == "reconcile":
-        return cmd_reconcile()
+        return cmd_reconcile(takeover=bool(getattr(args, "takeover", False)))
     print("usage: hermes auto_update {status,enable,disable,reconcile}")
     return 2
 
