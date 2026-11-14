@@ -448,6 +448,32 @@ class TestCitationGating:
         assert "Corrected draft" in (directory / "report.md").read_text(encoding="utf-8")
         assert jobs.read_status(directory)["synthesis"]["correction_used"] is True
 
+    @pytest.mark.parametrize(
+        "corrected",
+        [INVENTED_URL, f" \n\t{INVENTED_URL}\n "],
+        ids=["empty", "whitespace_only"],
+    )
+    def test_correction_sanitizing_to_no_content_fails_closed(
+        self, home: Path, corrected: str
+    ) -> None:
+        job_id, directory = _make_job(home, questions=None)
+        _seed_evidence(directory, GOOD_URL)
+        spawn = FakeSpawn(
+            writers=[f"Bad [x]({INVENTED_URL}/initial).", corrected]
+        )
+
+        state = _run(job_id, home, spawn)
+
+        assert state == "failed"
+        status = jobs.read_status(directory)
+        error = "sanitized correction contains no content or citations"
+        assert "citation validation failed after correction pass" in status["error"]
+        assert error in status["error"]
+        assert status["synthesis"]["citation_errors"] == [error]
+        assert (directory / "report.draft.md").read_text(encoding="utf-8") == corrected
+        assert not (directory / "report.md").exists()
+
+
     def test_correction_removes_unledgered_urls_and_preserves_valid_rows(self, home: Path) -> None:
         job_id, directory = _make_job(home, questions=None)
         evidence_urls = [f"https://example.org/evidence/{index}" for index in range(50)]

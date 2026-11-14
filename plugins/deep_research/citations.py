@@ -192,46 +192,52 @@ def remove_unledgered_urls(report_text: str, evidence_urls: Iterable[str]) -> st
     """
     allowed = {normalize_url(url) for url in evidence_urls if url}
     text = _strip_unledgered_references(report_text or "", allowed)
-    pieces: List[str] = []
-    cursor = 0
+    # Restarting after an overlapping inline label removes at least its link
+    # destination and delimiters. Text therefore shrinks on every pass, bounding
+    # the iterative rescans without depending on Python's recursion limit.
+    while True:
+        pieces: List[str] = []
+        cursor = 0
 
-    for match in _URL_RE.finditer(text):
-        if match.start() < cursor:
-            continue  # Already removed with an enclosing inline link.
-        raw = _strip_prose_tail(match.group(1))
-        if normalize_url(raw) in allowed:
-            continue
+        for match in _URL_RE.finditer(text):
+            if match.start() < cursor:
+                continue  # Already removed with an enclosing inline link.
+            raw = _strip_prose_tail(match.group(1))
+            if normalize_url(raw) in allowed:
+                continue
 
-        url_start = match.start(1)
-        url_end = url_start + len(raw)
-        start, end, replacement = url_start, url_end, ""
-        if match.group(0).startswith("]("):
-            label_start = _inline_label_start(text, match.start())
-            link_end = _inline_link_end(text, url_end)
-            if label_start >= 0 and link_end >= 0:
-                start = label_start - 1 if text[label_start - 1:label_start] == "!" else label_start
-                end = link_end
-                replacement = text[label_start + 1:match.start()]
-                if start < cursor:
-                    # A URL in the label was already visited. Restart after unlinking
-                    # so the visible label is sanitized instead of reintroducing it.
-                    return remove_unledgered_urls(text[:start] + replacement + text[end:], allowed)
-        elif text[url_start - 1:url_start] == "<" and text[url_end:url_end + 1] == ">":
-            start, end = url_start - 1, url_end + 1
-            if text[end:end + 1] in (".", ",", ";", ":", "!", "?"):
-                if text[start - 1:start] in (" ", "\t"):
+            url_start = match.start(1)
+            url_end = url_start + len(raw)
+            start, end, replacement = url_start, url_end, ""
+            if match.group(0).startswith("]("):
+                label_start = _inline_label_start(text, match.start())
+                link_end = _inline_link_end(text, url_end)
+                if label_start >= 0 and link_end >= 0:
+                    start = label_start - 1 if text[label_start - 1:label_start] == "!" else label_start
+                    end = link_end
+                    replacement = text[label_start + 1:match.start()]
+                    if start < cursor:
+                        # A URL in the label was already visited. Unlink and
+                        # restart so the visible label is sanitized next pass.
+                        text = text[:start] + replacement + text[end:]
+                        break
+            elif text[url_start - 1:url_start] == "<" and text[url_end:url_end + 1] == ">":
+                start, end = url_start - 1, url_end + 1
+                if text[end:end + 1] in (".", ",", ";", ":", "!", "?"):
+                    if text[start - 1:start] in (" ", "\t"):
+                        start -= 1
+            elif text[url_end:url_end + 1] in (".", ",", ";", ":", "!", "?"):
+                # Avoid leaving a space before sentence punctuation after a bare URL.
+                if text[url_start - 1:url_start] in (" ", "\t"):
                     start -= 1
-        elif text[url_end:url_end + 1] in (".", ",", ";", ":", "!", "?"):
-            # Avoid leaving a space before sentence punctuation after a bare URL.
-            if text[url_start - 1:url_start] in (" ", "\t"):
-                start -= 1
 
-        pieces.append(text[cursor:start])
-        pieces.append(replacement)
-        cursor = end
+            pieces.append(text[cursor:start])
+            pieces.append(replacement)
+            cursor = end
 
-    pieces.append(text[cursor:])
-    return "".join(pieces)
+        else:
+            pieces.append(text[cursor:])
+            return "".join(pieces)
 
 
 def validate_citations(

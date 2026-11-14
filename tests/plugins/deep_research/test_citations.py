@@ -121,6 +121,25 @@ class TestUnledgeredUrlCleanup:
         verdict = validate_citations(cleaned, [PAREN_URL])
         assert verdict.ok, verdict.errors
 
+    def test_many_unledgered_url_inline_labels_do_not_recurse(self) -> None:
+        unknown_urls = [
+            f"https://example.org/not-fetched/{index}" for index in range(1101)
+        ]
+        valid_link = f"[source]({PAREN_URL})"
+        text = "\n".join(
+            [*(f"[{url}]({url})" for url in unknown_urls), valid_link]
+        )
+
+        cleaned = citations.remove_unledgered_urls(text, [PAREN_URL])
+
+        assert valid_link in cleaned
+        assert all(url not in cleaned for url in unknown_urls)
+        assert extract_report_urls(cleaned) == [PAREN_URL]
+        verdict = validate_citations(cleaned, [PAREN_URL])
+        assert verdict.ok, verdict.errors
+        assert citations.remove_unledgered_urls(cleaned, [PAREN_URL]) == cleaned
+
+
     def test_unledgered_only_citations_leave_no_citations(self) -> None:
         unknown = "https://example.org/not-fetched"
 
