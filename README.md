@@ -21,11 +21,11 @@ It started as a fork of [Hermes Agent](https://github.com/NousResearch/hermes-ag
 
 **upstream hermes**
 
-![gone](https://img.shields.io/badge/gone-16%25-orange) ![new](https://img.shields.io/badge/new-41%25-orange) ![delta](https://img.shields.io/badge/delta-3.5_added_per_1_deleted,_41%25_larger-orange)
+![gone](https://img.shields.io/badge/gone-16%25-orange) ![new](https://img.shields.io/badge/new-41%25-orange) ![delta](https://img.shields.io/badge/delta-3.5_added_per_1_deleted,_42%25_larger-orange)
 
 - 16% of the original code is gone
 - 41% of the code it has now is new
-- 3.5 added per 1 deleted, 41% larger
+- 3.5 added per 1 deleted, 42% larger
 
 Code means py/ts/tsx/js/jsx/mjs/cjs/css/scss/vue/rs/go/sh, not tests, compared with the last commit both trees still share.
 <!-- divergence-badges:end -->
