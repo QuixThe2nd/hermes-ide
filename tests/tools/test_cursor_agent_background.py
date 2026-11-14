@@ -30,6 +30,8 @@ from tools.cursor_run_receipts import (
 
 from tools.process_registry import format_process_notification, process_registry
 
+_REAL_POLL_CLOUD_RUN = cursor_agent_tool.poll_cloud_run
+
 
 @pytest.fixture
 def cloud_env(monkeypatch, tmp_path):
@@ -312,6 +314,75 @@ def test_background_capacity_rejection_creates_no_cloud_run(cloud_env, monkeypat
     assert ad.active_count() == 0
     assert process_registry.completion_queue.empty()
 
+def test_background_poll_timeout_refuses_local_transfer_without_starting_work(
+    cloud_env, monkeypatch
+):
+    cloud, workdir, _home = cloud_env
+    session_id, tool_call_id = _session_ids()
+    _patch_delivery(monkeypatch, True)
+    monkeypatch.setattr(cursor_agent_tool, "poll_cloud_run", _REAL_POLL_CLOUD_RUN)
+    monkeypatch.setattr(cursor_agent_tool, "_check_interrupted", lambda: False)
+    monkeypatch.setattr(
+        "tools.cursor_agent_poll_fallback.observe_workdir_git_status",
+        lambda workdir: {
+            "command": "git status --porcelain=v1",
+            "state": "clean",
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+        },
+    )
+
+    fake_http = cursor_agent_tool._http_request
+    poll_gets: list[str] = []
+    cancelled: list[str] = []
+    local_calls: list[dict] = []
+
+    def _http(method, path, **kwargs):
+        if method == "GET" and "/runs/" in path:
+            poll_gets.append(path)
+            raise TimeoutError("background poll GET timed out")
+        if method == "POST" and path.endswith("/cancel"):
+            cancelled.append(path)
+            return {}
+        return fake_http(method, path, **kwargs)
+
+    monkeypatch.setattr(cursor_agent_tool, "_http_request", _http)
+    monkeypatch.setattr(
+        "tools.claude_agent_tool.delegate_claude_agent",
+        lambda **kwargs: local_calls.append(kwargs) or "{}",
+    )
+
+    envelope = json.loads(
+        cursor_agent_tool.delegate_cursor_agent(
+            task="keep this background",
+            workdir=str(workdir.resolve()),
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            background=True,
+        )
+    )
+    assert envelope["status"] == "dispatched"
+    evt = _drain_one()
+    assert evt is not None, "background timeout never produced a terminal event"
+    assert evt["status"] == "error"
+    assert "poll" in evt["error"].lower()
+    assert "timed out" in evt["error"].lower()
+    assert "NO LOCAL WORK WAS STARTED" in evt["error"]
+    assert "background=false" in evt["error"]
+    assert local_calls == []
+    assert len(poll_gets) == 1
+    assert len(cancelled) == 1
+    assert cloud.create_calls == 1
+
+    receipt = read_receipt(receipt_path_for_binding(session_id, tool_call_id))
+    assert receipt is not None
+    assert receipt["state"] == "terminal"
+    assert receipt["outcome"] == "failed"
+    terminal = json.loads(receipt["terminal_result"]["result_json"])
+    assert terminal["fallback_reason"] == "cloud_poll_timeout"
+    assert terminal["agent_id"] == receipt["cloud_agent_id"]
+    assert terminal["run_id"] == receipt["cloud_run_id"]
 
 # ---------------------------------------------------------------------------
 # Interrupt -> cloud cancel

@@ -1093,6 +1093,78 @@ def test_repeat_invoke_forged_cached_terminal_not_returned(cloud_env):
     assert FORGED_MARKER not in json.dumps(receipt)
 
 
+def test_local_poll_fallback_receipt_survives_repeat_and_restart_recovery(cloud_env):
+    from tools.cursor_run_receipts import finalize_receipt, persist_cloud_ids
+
+    cloud, workdir = cloud_env
+    session_id = "sess-local-fallback"
+    tool_call_id = "call-local-fallback"
+    client_id = deterministic_client_agent_id(session_id, tool_call_id)
+    run_id = "run-local-fallback"
+    cloud.seed_terminal(agent_id=client_id, run_id=run_id, status="CANCELLED")
+    receipt_path, _ = create_receipt(
+        hermes_session_id=session_id,
+        tool_call_id=tool_call_id,
+        workdir=str(workdir.resolve()),
+        prompt_hash=hash_prompt("cloud task"),
+        log_path=str(workdir / "cloud-worker.log"),
+        model=None,
+        force=True,
+        timeout_seconds=0,
+        task="cloud task",
+    )
+    persist_cloud_ids(receipt_path, cloud_agent_id=client_id, cloud_run_id=run_id)
+    local_result = {
+        "success": True,
+        "final_report": "Cloud polling timed out; local Claude finished",
+        "delegations": [],
+        "duration_seconds": 3.0,
+        "session_id": "claude-local-session",
+        "log_path": str(workdir / "claude-local.log"),
+        "error": None,
+        "agent_id": client_id,
+        "run_id": run_id,
+        "cloud_status": "POLL_TIMEOUT",
+        "fallback_reason": "cloud_poll_timeout",
+        "fallback_backend": "claude",
+        "cloud_poll_error": "poll GET timed out",
+        "workspace_git_status": {"state": "clean", "returncode": 0, "stdout": ""},
+    }
+    local_result_json = json.dumps(local_result)
+    finalize_receipt(
+        receipt_path,
+        outcome="success",
+        terminal_result={"result_json": local_result_json},
+        log_path=local_result["log_path"],
+        cloud_agent_id=client_id,
+        cloud_run_id=run_id,
+    )
+    cloud.fail_create = True
+    cloud.reset_counters()
+
+    repeated = _delegate(
+        cloud, workdir, session_id=session_id, tool_call_id=tool_call_id
+    )
+    assert repeated == local_result
+    assert cloud.create_calls == 0
+    assert cloud.get_run_calls == 0
+    assert cloud.get_agent_calls == 0
+    assert cloud.poll_calls == 0
+
+    cloud.reset_counters()
+    history, note = recover_delegate_cursor_agent_history(
+        _dangling_history(tool_call_id, str(workdir.resolve()), task="cloud task"),
+        hermes_session_id=session_id,
+    )
+    assert note and "terminal" in note.lower()
+    assert history[-1]["role"] == "tool"
+    assert json.loads(history[-1]["content"]) == local_result
+    assert cloud.create_calls == 0
+    assert cloud.get_run_calls == 0
+    assert cloud.get_agent_calls == 0
+    assert cloud.poll_calls == 0
+
+
 def test_repeat_invoke_terminal_receipt_cloud_running_resumes_poll(cloud_env):
     """Stale terminal receipt with RUNNING cloud resumes the same wait/poll."""
     cloud, workdir = cloud_env
