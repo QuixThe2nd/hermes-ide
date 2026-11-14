@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -231,7 +232,7 @@ def test_disposable_gateway_home_preserves_production_scheduler(
 
     from plugins.auto_update import register
 
-    hooks: list[tuple[str, object]] = []
+    hooks: list[tuple[str, Callable[..., object]]] = []
 
     class Ctx:
         def register_cli_command(self, **kwargs):
@@ -671,3 +672,247 @@ def test_cli_disposable_refusal_is_nonzero_and_actionable(
     assert "--takeover" in capsys.readouterr().out
     assert calls == []
     assert not service_unit_path(user_scope).exists()
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_timer_unit_write_failure_rolls_back_partial_reconcile(
+    existing, user_scope, cfg, monkeypatch
+):
+    from plugins.auto_update import systemd
+
+    calls: list[list[str]] = []
+    runner = _patch_reconcile(monkeypatch, user_scope, STABLE_HOME, calls)
+    if existing:
+        reconcile_units(cfg, enabled=True, scope=user_scope, run_systemctl=runner)
+        _set_home(monkeypatch, ALTERNATE_HOME)
+    paths = (service_unit_path(user_scope), timer_unit_path(user_scope), _owner_path(user_scope))
+    before = tuple(path.read_bytes() if path.exists() else None for path in paths)
+    calls.clear()
+    original_atomic_write = systemd.atomic_write
+
+    def fail_timer_write(path, content):
+        if path == timer_unit_path(user_scope):
+            raise OSError("timer write denied")
+        return original_atomic_write(path, content)
+
+    monkeypatch.setattr("plugins.auto_update.systemd.atomic_write", fail_timer_write)
+
+    result = reconcile_units(
+        {**cfg, "schedule": "*-*-* 01,07,13,19:00:00"},
+        enabled=True,
+        takeover=existing,
+        scope=user_scope,
+        run_systemctl=runner,
+    )
+
+    assert "failed to write systemd units" in "\n".join(result.warnings)
+    assert tuple(path.read_bytes() if path.exists() else None for path in paths) == before
+    _assert_final_mutation_is_reload(calls)
+
+
+def _stateful_systemctl(calls, *, enabled=False, active=False, fail_enable=False):
+    state = {"enabled": enabled, "active": active}
+
+    def runner(args):
+        calls.append(list(args))
+        if args[-2:] == ["stop", TIMER_NAME]:
+            state["active"] = False
+            return 0, "", ""
+        if args[-2:] == ["disable", TIMER_NAME]:
+            state["enabled"] = False
+            return 0, "", ""
+        if args[-3:] == ["enable", "--now", TIMER_NAME]:
+            state.update(enabled=True, active=True)
+            if fail_enable:
+                return 1, "", "enable rejected after activation"
+            return 0, "", ""
+        if args[-2:] == ["is-enabled", TIMER_NAME]:
+            return (
+                (0, "enabled\n", "")
+                if state["enabled"]
+                else (1, "disabled\n", "")
+            )
+        if args[-2:] == ["is-active", TIMER_NAME]:
+            return (
+                (0, "active\n", "")
+                if state["active"]
+                else (1, "inactive\n", "")
+            )
+        return 0, "", ""
+
+    return runner, state
+
+
+@pytest.mark.parametrize("failure", ["enable", "owner"])
+def test_failed_first_install_restores_inactive_disabled_timer(
+    failure, user_scope, cfg, monkeypatch
+):
+    from plugins.auto_update import systemd
+
+    calls: list[list[str]] = []
+    _patch_reconcile(monkeypatch, user_scope, STABLE_HOME, calls)
+    runner, state = _stateful_systemctl(calls, fail_enable=failure == "enable")
+    if failure == "owner":
+        original_atomic_write = systemd.atomic_write
+
+        def fail_owner_write(path, content):
+            if path == _owner_path(user_scope):
+                raise OSError("owner write denied")
+            return original_atomic_write(path, content)
+
+        monkeypatch.setattr("plugins.auto_update.systemd.atomic_write", fail_owner_write)
+
+    result = reconcile_units(
+        cfg,
+        enabled=True,
+        scope=user_scope,
+        run_systemctl=runner,
+        write_stamp=lambda _path, _payload: None,
+    )
+
+    assert result.enabled is False
+    assert result.timer_active is False
+    assert state == {"enabled": False, "active": False}
+    assert not service_unit_path(user_scope).exists()
+    assert not timer_unit_path(user_scope).exists()
+    assert not _owner_path(user_scope).exists()
+    assert any("stop" in call for call in calls)
+    assert any("disable" in call for call in calls)
+    _assert_final_mutation_is_reload(calls)
+
+
+def test_failed_takeover_restores_previously_disabled_timer(
+    user_scope, cfg, monkeypatch
+):
+    from plugins.auto_update import systemd
+
+    calls: list[list[str]] = []
+    _patch_reconcile(monkeypatch, user_scope, STABLE_HOME, calls)
+    runner, state = _stateful_systemctl(calls)
+    reconcile_units(
+        cfg,
+        enabled=True,
+        scope=user_scope,
+        run_systemctl=runner,
+        write_stamp=lambda _path, _payload: None,
+    )
+    reconcile_units(cfg, enabled=False, scope=user_scope, run_systemctl=runner)
+    assert state == {"enabled": False, "active": False}
+    paths = (service_unit_path(user_scope), timer_unit_path(user_scope), _owner_path(user_scope))
+    before = tuple(path.read_bytes() for path in paths)
+    calls.clear()
+
+    _set_home(monkeypatch, ALTERNATE_HOME)
+    original_atomic_write = systemd.atomic_write
+
+    def fail_owner_write(path, content):
+        if path == _owner_path(user_scope):
+            raise OSError("owner write denied")
+        return original_atomic_write(path, content)
+
+    monkeypatch.setattr("plugins.auto_update.systemd.atomic_write", fail_owner_write)
+
+    result = reconcile_units(
+        cfg,
+        enabled=True,
+        takeover=True,
+        scope=user_scope,
+        run_systemctl=runner,
+        write_stamp=lambda _path, _payload: None,
+    )
+
+    assert result.enabled is False
+    assert result.timer_active is False
+    assert state == {"enabled": False, "active": False}
+    assert tuple(path.read_bytes() for path in paths) == before
+    _assert_final_mutation_is_reload(calls)
+
+
+@pytest.mark.parametrize("command", ["enable", "reconcile"])
+def test_cli_surfaces_lifecycle_failure_without_fallback_retry(
+    command, user_scope, cfg, monkeypatch, capsys
+):
+    from plugins.auto_update.cli import cmd_enable
+    from plugins.auto_update.systemd import ReconcileResult
+
+    _patch_lifecycle(monkeypatch, cfg)
+    monkeypatch.setattr("plugins.auto_update.cli.platform_supported", lambda: True)
+    monkeypatch.setattr("plugins.auto_update.cli._save_enabled_flag", lambda _enabled: None)
+    monkeypatch.setattr("plugins.auto_update.cli._effective_enabled", lambda: True)
+
+    def fail_lifecycle(*_args, **_kwargs):
+        raise OSError("reconcile write failed")
+
+    monkeypatch.setattr("plugins.auto_update.lifecycle.reconcile_units", fail_lifecycle)
+    fallback_calls: list[dict] = []
+
+    def fallback(*_args, **kwargs):
+        fallback_calls.append(kwargs)
+        return ReconcileResult(
+            supported=True,
+            scope=user_scope,
+            changed=True,
+            enabled=True,
+            timer_active=True,
+            legacy=(),
+            warnings=(),
+        )
+
+    monkeypatch.setattr("plugins.auto_update.cli.reconcile_units", fallback)
+
+    exit_code = cmd_enable() if command == "enable" else cmd_reconcile()
+
+    assert exit_code != 0
+    assert fallback_calls == []
+    assert "reconcile write failed" in capsys.readouterr().out
+
+
+def test_overlapping_foreign_reconcile_cannot_both_claim_scheduler(
+    user_scope, cfg, monkeypatch
+):
+    from plugins.auto_update import systemd
+
+    calls: list[list[str]] = []
+    runner = _patch_reconcile(monkeypatch, user_scope, STABLE_HOME, calls)
+    current_home = [STABLE_HOME]
+    monkeypatch.setattr(
+        "plugins.auto_update.systemd.get_hermes_home", lambda: current_home[0]
+    )
+    original_write_units = systemd.write_units_if_changed
+    nested: list = []
+    started = False
+
+    def overlapping_reconcile(*args, **kwargs):
+        nonlocal started
+        if not started:
+            started = True
+            current_home[0] = ALTERNATE_HOME
+            try:
+                nested.append(
+                    reconcile_units(
+                        cfg,
+                        enabled=True,
+                        scope=user_scope,
+                        run_systemctl=runner,
+                    )
+                )
+            finally:
+                current_home[0] = STABLE_HOME
+        return original_write_units(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "plugins.auto_update.systemd.write_units_if_changed", overlapping_reconcile
+    )
+
+    outer = reconcile_units(
+        cfg, enabled=True, scope=user_scope, run_systemctl=runner
+    )
+
+    assert outer.enabled is True
+    assert len(nested) == 1
+    assert nested[0].enabled_known is False
+    assert "already in progress" in "\n".join(nested[0].warnings)
+    assert _owner_data(user_scope)["hermes_home"] == str(STABLE_HOME)
+    assert f"Environment=HERMES_HOME={STABLE_HOME}" in service_unit_path(
+        user_scope
+    ).read_text(encoding="utf-8")
