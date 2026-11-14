@@ -212,6 +212,10 @@ def remove_unledgered_urls(report_text: str, evidence_urls: Iterable[str]) -> st
                 start = label_start - 1 if text[label_start - 1:label_start] == "!" else label_start
                 end = link_end
                 replacement = text[label_start + 1:match.start()]
+                if start < cursor:
+                    # A URL in the label was already visited. Restart after unlinking
+                    # so the visible label is sanitized instead of reintroducing it.
+                    return remove_unledgered_urls(text[:start] + replacement + text[end:], allowed)
         elif text[url_start - 1:url_start] == "<" and text[url_end:url_end + 1] == ">":
             start, end = url_start - 1, url_end + 1
             if text[end:end + 1] in (".", ",", ";", ":", "!", "?"):

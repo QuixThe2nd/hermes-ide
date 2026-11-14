@@ -110,6 +110,17 @@ class TestUnledgeredUrlCleanup:
         verdict = validate_citations(cleaned, [PAREN_URL])
         assert verdict.ok, verdict.errors
 
+    def test_unledgered_url_inline_label_is_not_reintroduced(self) -> None:
+        unknown = "https://example.org/not-fetched"
+        text = f"[{unknown}]({unknown}) and [source]({PAREN_URL})."
+
+        cleaned = citations.remove_unledgered_urls(text, [PAREN_URL])
+
+        assert cleaned == f" and [source]({PAREN_URL})."
+        assert citations.remove_unledgered_urls(cleaned, [PAREN_URL]) == cleaned
+        verdict = validate_citations(cleaned, [PAREN_URL])
+        assert verdict.ok, verdict.errors
+
     def test_unledgered_only_citations_leave_no_citations(self) -> None:
         unknown = "https://example.org/not-fetched"
 
