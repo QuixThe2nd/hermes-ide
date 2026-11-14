@@ -737,6 +737,18 @@ def reconcile_units(
             warnings.append(
                 f"failed to daemon-reload: {err.strip() or code}"
             )
+            _rollback_unit_writes(selected, previous_units, runner, warnings)
+            return ReconcileResult(
+                supported=True,
+                scope=selected,
+                changed=changed,
+                enabled=False,
+                timer_active=False,
+                legacy=(),
+                warnings=tuple(warnings),
+                enabled_known=False,
+                timer_active_known=False,
+            )
 
     legacy = migrate_legacy_units(selected, run_systemctl=runner)
     warnings.extend(legacy.warnings)

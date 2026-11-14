@@ -461,6 +461,42 @@ def test_failed_takeover_retains_old_owner_and_blocks_implicit_retry(
     assert tuple(path.read_bytes() for path in paths) == before
     assert "--takeover" in "\n".join(retry.warnings)
 
+def test_failed_takeover_daemon_reload_restores_previous_units_and_owner(
+    user_scope, cfg, monkeypatch
+):
+    calls: list[list[str]] = []
+    runner = _patch_reconcile(monkeypatch, user_scope, STABLE_HOME, calls)
+    reconcile_units(cfg, enabled=True, scope=user_scope, run_systemctl=runner)
+    paths = (service_unit_path(user_scope), timer_unit_path(user_scope), _owner_path(user_scope))
+    before = tuple(path.read_bytes() for path in paths)
+    calls.clear()
+
+    _set_home(monkeypatch, ALTERNATE_HOME)
+    reload_attempts = 0
+
+    def fail_first_reload(args):
+        nonlocal reload_attempts
+        if args[-1:] == ["daemon-reload"]:
+            reload_attempts += 1
+            if reload_attempts == 1:
+                calls.append(list(args))
+                return 1, "", "reload rejected"
+        return runner(args)
+
+    result = reconcile_units(
+        cfg,
+        enabled=True,
+        takeover=True,
+        scope=user_scope,
+        run_systemctl=fail_first_reload,
+    )
+
+    assert "failed to daemon-reload" in "\n".join(result.warnings)
+    assert tuple(path.read_bytes() for path in paths) == before
+    assert not any("enable" in call and TIMER_NAME in call for call in calls)
+    assert reload_attempts == 2
+    _assert_final_mutation_is_reload(calls)
+
 
 def test_owner_write_failure_retains_previous_owner(user_scope, cfg, monkeypatch):
     from plugins.auto_update import systemd
