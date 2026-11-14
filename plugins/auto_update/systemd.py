@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -32,6 +33,8 @@ logger = logging.getLogger(__name__)
 
 SERVICE_NAME = "hermes-auto-updater.service"
 TIMER_NAME = "hermes-auto-updater.timer"
+OWNER_FILENAME = "hermes-auto-updater.owner.json"
+OWNER_FORMAT = 1
 
 
 class ProbeOutcome(Enum):
@@ -87,6 +90,10 @@ def service_unit_path(scope: InstallScope, service_name: str = SERVICE_NAME) -> 
 
 def timer_unit_path(scope: InstallScope, timer_name: str = TIMER_NAME) -> Path:
     return scope.unit_dir / timer_name
+
+
+def scheduler_owner_path(scope: InstallScope) -> Path:
+    return scope.unit_dir / OWNER_FILENAME
 
 
 def _systemd_quote(value: str) -> str:
@@ -188,6 +195,166 @@ def atomic_write(path: Path, content: str) -> bool:
     return True
 
 
+def _canonical_home(path: Path) -> Path:
+    return path.expanduser().resolve()
+
+
+def _systemd_words(value: str) -> list[str]:
+    words: list[str] = []
+    chars: list[str] = []
+    quote: str | None = None
+    escaped = False
+    started = False
+    for char in value:
+        if escaped:
+            chars.append(char)
+            escaped = False
+            started = True
+        elif char == "\\":
+            escaped = True
+            started = True
+        elif quote is not None:
+            if char == quote:
+                quote = None
+            else:
+                chars.append(char)
+        elif char in {"'", '"'}:
+            quote = char
+            started = True
+        elif char.isspace():
+            if started:
+                words.append("".join(chars))
+                chars = []
+                started = False
+        else:
+            chars.append(char)
+            started = True
+    if escaped or quote is not None:
+        raise ValueError("unterminated systemd quoting")
+    if started:
+        words.append("".join(chars))
+    return words
+
+
+def _canonical_legacy_home(value: str) -> Path | None:
+    decoded: list[str] = []
+    index = 0
+    while index < len(value):
+        if value[index] != "%":
+            decoded.append(value[index])
+            index += 1
+        elif index + 1 < len(value) and value[index + 1] == "%":
+            decoded.append("%")
+            index += 2
+        else:
+            return None
+    try:
+        path = Path("".join(decoded))
+        if not path.is_absolute():
+            return None
+        return _canonical_home(path)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _legacy_service_home(content: str) -> Path | None:
+    environment_values: list[str] = []
+    working_directories: list[str] = []
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        try:
+            if line.startswith("Environment="):
+                for assignment in _systemd_words(line[len("Environment=") :]):
+                    if assignment.startswith("HERMES_HOME="):
+                        environment_values.append(assignment.split("=", 1)[1])
+            elif line.startswith("WorkingDirectory="):
+                words = _systemd_words(line[len("WorkingDirectory=") :])
+                if len(words) != 1:
+                    return None
+                working_directories.append(words[0])
+        except ValueError:
+            return None
+    if environment_values:
+        return _canonical_legacy_home(environment_values[-1])
+    if working_directories:
+        return _canonical_legacy_home(working_directories[-1])
+    return None
+
+
+def _takeover_warning(reason: str) -> str:
+    return (
+        f"failed to reconcile scheduler ownership: {reason}; "
+        "run `hermes auto_update reconcile --takeover` to explicitly replace it"
+    )
+
+
+def _read_owner_record(scope: InstallScope) -> tuple[Path | None, str | None]:
+    path = scheduler_owner_path(scope)
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None, None
+    except (OSError, UnicodeError) as exc:
+        return None, f"owner record is unreadable: {exc}"
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict) or set(data) != {"format", "hermes_home"}:
+            raise ValueError("wrong owner record shape")
+        if type(data["format"]) is not int or data["format"] != OWNER_FORMAT:
+            raise ValueError("unsupported owner record format")
+        stored = data["hermes_home"]
+        if not isinstance(stored, str) or not Path(stored).is_absolute():
+            raise ValueError("owner home is not an absolute path")
+        recorded = _canonical_home(Path(stored))
+        if str(recorded) != stored:
+            raise ValueError("owner home is not canonical")
+        return recorded, None
+    except (ValueError, TypeError, OSError, RuntimeError) as exc:
+        return None, f"owner record is invalid: {exc}"
+
+
+def _ownership_refusal(scope: InstallScope, current_home: Path) -> str | None:
+    recorded, record_error = _read_owner_record(scope)
+    if record_error:
+        return _takeover_warning(record_error)
+    if recorded is not None:
+        if recorded == current_home:
+            return None
+        return _takeover_warning(
+            f"existing units belong to {recorded}, not {current_home}"
+        )
+
+    service = service_unit_path(scope)
+    timer = timer_unit_path(scope)
+    try:
+        if not service.exists() and not timer.exists():
+            return None
+        content = service.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        return _takeover_warning(f"existing units cannot be inspected: {exc}")
+    legacy_home = _legacy_service_home(content)
+    if legacy_home is None:
+        return _takeover_warning("existing service has no verifiable canonical HERMES_HOME")
+    if legacy_home != current_home:
+        return _takeover_warning(
+            f"existing units belong to {legacy_home}, not {current_home}"
+        )
+    return None
+
+
+def _write_owner_record(scope: InstallScope, home: Path) -> None:
+    path = scheduler_owner_path(scope)
+    payload = json.dumps(
+        {"format": OWNER_FORMAT, "hermes_home": str(home)}, sort_keys=True
+    ) + "\n"
+    try:
+        if path.read_text(encoding="utf-8") == payload:
+            return
+    except (OSError, UnicodeError):
+        pass
+    atomic_write(path, payload)
+
+
 def write_units_if_changed(
     scope: InstallScope,
     *,
@@ -207,6 +374,30 @@ def write_units_if_changed(
         atomic_write(path, body)
         changed = True
     return changed
+
+
+def _rollback_unit_writes(
+    scope: InstallScope,
+    previous_units: Sequence[tuple[Path, bytes | None]],
+    runner: Callable[[Sequence[str]], tuple[int, str, str]],
+    warnings: list[str],
+) -> None:
+    for path, previous in previous_units:
+        try:
+            if previous is None:
+                path.unlink(missing_ok=True)
+            else:
+                tmp = path.with_suffix(path.suffix + ".tmp")
+                tmp.write_bytes(previous)
+                os.replace(tmp, path)
+        except OSError as exc:
+            warnings.append(f"failed to restore {path.name} after failed reconcile: {exc}")
+
+    code, _, err = runner(build_systemctl_cmd(scope, "daemon-reload"))
+    if code != 0:
+        warnings.append(
+            f"failed to daemon-reload after unit rollback: {err.strip() or code}"
+        )
 
 
 def default_systemctl_runner(args: Sequence[str]) -> tuple[int, str, str]:
@@ -446,6 +637,7 @@ def reconcile_units(
     run_systemctl: Callable[[Sequence[str]], tuple[int, str, str]] | None = None,
     scope: InstallScope | None = None,
     write_stamp: Callable[[Path, str], None] | None = None,
+    takeover: bool = False,
 ) -> ReconcileResult:
     runner = _resolve_systemctl_runner(run_systemctl)
     if not platform_supported():
@@ -493,7 +685,27 @@ def reconcile_units(
             timer_active_known=active_known,
         )
 
-    hermes_home = str(get_hermes_home().resolve())
+    refusal: str | None = None
+    try:
+        current_home = _canonical_home(get_hermes_home())
+    except (OSError, RuntimeError, ValueError) as exc:
+        current_home = None
+        refusal = _takeover_warning(f"HERMES_HOME cannot be canonicalized: {exc}")
+    if current_home is not None and not takeover:
+        refusal = _ownership_refusal(selected, current_home)
+    if current_home is None or refusal:
+        return ReconcileResult(
+            supported=True,
+            scope=selected,
+            changed=False,
+            enabled=False,
+            timer_active=False,
+            legacy=(),
+            warnings=(refusal,),
+            enabled_known=False,
+            timer_active_known=False,
+        )
+    hermes_home = str(current_home)
     service_body = render_service_unit(
         hermes_home=hermes_home,
         exec_start=unit_exec_start_argv(),
@@ -507,6 +719,10 @@ def reconcile_units(
         accuracy_sec=str(cfg.get("accuracy_sec", DEFAULT_ACCURACY_SEC)),
     )
 
+    unit_paths = (service_unit_path(selected), timer_unit_path(selected))
+    previous_units = tuple(
+        (path, path.read_bytes() if path.is_file() else None) for path in unit_paths
+    )
     changed = write_units_if_changed(
         selected,
         service_body=service_body,
@@ -528,6 +744,8 @@ def reconcile_units(
         warnings.append(
             "legacy hermes-auto-update.timer still present; refusing duplicate schedulers"
         )
+        if changed:
+            _rollback_unit_writes(selected, previous_units, runner, warnings)
         return ReconcileResult(
             supported=True,
             scope=selected,
@@ -550,6 +768,15 @@ def reconcile_units(
     )
     if code != 0:
         warnings.append(f"failed to enable timer: {err.strip() or code}")
+        if changed:
+            _rollback_unit_writes(selected, previous_units, runner, warnings)
+    else:
+        try:
+            _write_owner_record(selected, current_home)
+        except OSError as exc:
+            warnings.append(f"failed to record scheduler ownership: {exc}")
+            if changed:
+                _rollback_unit_writes(selected, previous_units, runner, warnings)
 
     enabled_probe = probe_timer_is_enabled(selected, run_systemctl=runner)
     active_probe = probe_timer_is_active(selected, run_systemctl=runner)
