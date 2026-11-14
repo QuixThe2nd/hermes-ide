@@ -448,6 +448,43 @@ class TestCitationGating:
         assert "Corrected draft" in (directory / "report.md").read_text(encoding="utf-8")
         assert jobs.read_status(directory)["synthesis"]["correction_used"] is True
 
+    def test_correction_strips_residual_unledgered_urls_before_publishing(self, home: Path) -> None:
+        job_id, directory = _make_job(home, questions=None)
+        _seed_evidence(directory, GOOD_URL)
+        homepage = "https://example.com/"
+        index = "https://example.com/index.html"
+        corrected = (
+            f"Corrected finding with [primary]({GOOD_URL}).\n"
+            f"Redundant [inline source]({INVENTED_URL}) keeps this prose.\n\n"
+            "## Sources\n"
+            f"- [Primary evidence]({GOOD_URL})\n"
+            f"- {homepage}\n"
+            f"- {index}\n"
+        )
+        spawn = FakeSpawn(
+            writers=[f"Bad draft citing [x]({INVENTED_URL}).", corrected]
+        )
+
+        state = _run(job_id, home, spawn)
+
+        assert state == "completed"
+        report = (directory / "report.md").read_text(encoding="utf-8")
+        assert "Redundant inline source keeps this prose." in report
+        assert "## Sources" in report
+        assert report.count(GOOD_URL) == 2
+        assert homepage not in report
+        assert index not in report
+        assert INVENTED_URL not in report
+        assert "- \n" not in report
+        assert "](" not in report.replace(f"[primary]({GOOD_URL})", "").replace(
+            f"[Primary evidence]({GOOD_URL})", ""
+        )
+        synthesis = jobs.read_status(directory)["synthesis"]
+        assert synthesis["attempts"] == 2
+        assert synthesis["citation_errors"] == []
+        # One lane, one synthesis, one bounded correction: no extra writer pass.
+        assert len(spawn.argvs) == 3
+
     def test_report_with_no_citations_fails_closed(self, home: Path) -> None:
         job_id, directory = _make_job(home, questions=None)
         _seed_evidence(directory, GOOD_URL)
