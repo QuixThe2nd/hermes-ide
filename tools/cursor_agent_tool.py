@@ -18,7 +18,12 @@ holds the key. The worker process and its descendants never receive
 already used by local ``agent``. The key is never placed in argv,
 log files, worker env, or the tool result. A missing or empty key fails
 clearly — there is no silent fallback to the local CLI or to
-``os.environ``.
+``os.environ``. The same no-fallback rule bounds poll failures: a Cloud
+status-poll timeout is not proof the scratch clone is untouched (the run
+may still be writing remotely and is not cancelled on a transport miss),
+so the tool result carries a ``git status`` snapshot of ``workdir``; a
+parent may switch to a local lane only when that snapshot is clean, and
+this tool never starts that lane.
 
 Backend
 -------
@@ -135,6 +140,10 @@ DEFAULT_ORCHESTRATION_PROMPT = (
 POST_TIMEOUT_SECONDS = 30.0
 HTTP_TIMEOUT_SECONDS = 30.0
 POLL_INTERVAL_SECONDS = 2.0
+# Consecutive status-GET timeouts tolerated before polling gives up. One
+# miss is a transport blip, not a run failure — the remote worker may still
+# be writing, so giving up must never cancel the run.
+POLL_GET_TIMEOUT_MISSES = 3
 WORKER_LOG_MAX_BYTES = 256 * 1024
 WORKER_READY_ATTEMPTS = 5
 WORKER_READY_DELAY_SECONDS = 0.5
@@ -447,6 +456,15 @@ def parse_cursor_agent_log(log_text: str) -> Dict[str, Any]:
 
 class CursorCloudError(Exception):
     """User-visible Cloud Agent failure that is safe to put in the tool result."""
+
+
+class CursorCloudPollTimeout(CursorCloudError):
+    """Status polling gave up after repeated GET timeouts.
+
+    Distinct from an HTTP-level :class:`CursorCloudError`: the run may still
+    be alive remotely, so the caller must not cancel it and must attach a
+    workdir git-status snapshot instead of an empty error string.
+    """
 
 
 class CursorApiKeyError(CursorCloudError):
@@ -1138,8 +1156,15 @@ def poll_cloud_run(
     timeout_seconds: int,
     started_mono: float,
 ) -> Dict[str, Any]:
-    """Poll GET /v1/agents/{id}/runs/{runId} until a terminal status."""
+    """Poll GET /v1/agents/{id}/runs/{runId} until a terminal status.
+
+    A status-GET timeout is a transport miss, not a run failure: the remote
+    run may still be alive and writing, so up to
+    ``POLL_GET_TIMEOUT_MISSES`` consecutive misses are retried and giving up
+    never cancels the run.
+    """
     last: Dict[str, Any] = {"id": run_id, "agentId": agent_id, "status": "CREATING"}
+    consecutive_get_timeouts = 0
     while True:
         if _check_interrupted():
             cancel_cloud_run(agent_id, run_id, api_key)
@@ -1160,7 +1185,12 @@ def poll_cloud_run(
                 timeout=HTTP_TIMEOUT_SECONDS,
             )
         except TimeoutError as exc:
-            raise CursorCloudError(str(exc)) from None
+            consecutive_get_timeouts += 1
+            if consecutive_get_timeouts >= POLL_GET_TIMEOUT_MISSES:
+                raise CursorCloudPollTimeout(str(exc)) from None
+            time.sleep(POLL_INTERVAL_SECONDS)
+            continue
+        consecutive_get_timeouts = 0
         if not isinstance(last, dict):
             raise CursorCloudError("Cursor Cloud Agent poll returned a non-object")
         status = str(last.get("status") or "").strip().upper()
@@ -1168,6 +1198,35 @@ def poll_cloud_run(
         if is_terminal_run_status(status):
             return last
         time.sleep(POLL_INTERVAL_SECONDS)
+
+
+def snapshot_workdir_git_status(workdir: str) -> Dict[str, Any]:
+    """Best-effort ``git status --porcelain`` snapshot of ``workdir``.
+
+    Evidence for a poll give-up: the tool result must say whether the local
+    checkout is clean instead of claiming an untouched scratch clone. Never
+    raises — a non-repo or failing git yields ``clean=None`` with the reason
+    in ``error``.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", workdir, "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {
+            "clean": None,
+            "porcelain": "",
+            "error": f"git status failed: {type(exc).__name__}",
+        }
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip() or f"exit {proc.returncode}"
+        return {"clean": None, "porcelain": "", "error": f"git status failed: {detail}"}
+    porcelain = proc.stdout or ""
+    return {"clean": porcelain.strip() == "", "porcelain": porcelain, "error": None}
 
 
 class MachineWorker:
@@ -1799,6 +1858,48 @@ def _execute_cloud_delegation(
                 timeout_seconds=clamped_timeout,
                 started_mono=started_mono,
             )
+        except CursorCloudPollTimeout as exc:
+            # Repeated status-GET timeouts: the remote run may still be
+            # alive (a My Machines worker may still be writing), so do NOT
+            # cancel it. The result still carries evidence — a git-status
+            # snapshot of the local checkout. A local lane is only hinted
+            # when that snapshot is clean; this tool never starts one.
+            snapshot = snapshot_workdir_git_status(workdir)
+            if snapshot["clean"] is True:
+                local_lane_hint = (
+                    "The workdir checkout is clean (git status --porcelain is "
+                    "empty), so a parent agent may switch to a local lane for "
+                    "this task; this tool did not start one and did not cancel "
+                    "the remote run."
+                )
+            elif snapshot["clean"] is False:
+                local_lane_hint = (
+                    "The workdir checkout has changes (git status --porcelain "
+                    "is not empty); a second writer must not be started while "
+                    "the Cursor run may still be writing — this tool started "
+                    "no local lane and did not cancel the remote run."
+                )
+            else:
+                local_lane_hint = (
+                    "The workdir git status could not be read, so the checkout "
+                    "must not be assumed untouched; this tool started no local "
+                    "lane and did not cancel the remote run."
+                )
+            result_json = _make_result(
+                success=False,
+                error=str(exc),
+                workdir_git_status=snapshot,
+                local_lane_hint=local_lane_hint,
+            )
+            finalize_receipt(
+                receipt_path,
+                outcome="timeout",
+                terminal_result={"result_json": result_json},
+                log_path=str(log_path),
+                cloud_agent_id=cloud_agent_id,
+                cloud_run_id=cloud_run_id,
+            )
+            return result_json
         except CursorCloudError as exc:
             result_json = _make_result(success=False, error=str(exc))
             finalize_receipt(

@@ -1749,6 +1749,236 @@ def test_poll_http_error_is_clear(monkeypatch):
         )
 
 
+def test_poll_get_timeout_retries_once_and_finishes(monkeypatch):
+    """A single slow status GET must not end the run empty-handed."""
+    from tools import cursor_agent_tool
+
+    cancelled: list[str] = []
+    gets: list[str] = []
+
+    def _http(method, path, **kwargs):
+        if method == "GET" and path == "/v1/agents/bc-1/runs/run-1":
+            gets.append(path)
+            if len(gets) == 1:
+                raise TimeoutError(
+                    "Cursor Cloud Agent request timed out: GET /v1/agents/bc-1/runs/run-1"
+                )
+            return {
+                "id": "run-1",
+                "agentId": "bc-1",
+                "status": "FINISHED",
+                "result": "done",
+            }
+        if method == "POST" and path.endswith("/cancel"):
+            cancelled.append(path)
+            return {}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(cursor_agent_tool, "_http_request", _http)
+    monkeypatch.setattr(cursor_agent_tool, "POLL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(cursor_agent_tool, "_check_interrupted", lambda: False)
+    run = cursor_agent_tool.poll_cloud_run(
+        agent_id="bc-1",
+        run_id="run-1",
+        api_key="test-secret-key",
+        timeout_seconds=0,
+        started_mono=time.monotonic(),
+    )
+    assert run["status"] == "FINISHED"
+    assert run["result"] == "done"
+    assert len(gets) == 2
+    assert cancelled == []
+
+
+def test_poll_timeout_giveup_after_consecutive_misses_never_cancels(monkeypatch):
+    from tools import cursor_agent_tool
+
+    cancelled: list[str] = []
+    gets: list[str] = []
+
+    def _http(method, path, **kwargs):
+        if method == "GET" and path == "/v1/agents/bc-1/runs/run-1":
+            gets.append(path)
+            raise TimeoutError(
+                "Cursor Cloud Agent request timed out: GET /v1/agents/bc-1/runs/run-1"
+            )
+        if method == "POST" and path.endswith("/cancel"):
+            cancelled.append(path)
+            return {}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(cursor_agent_tool, "_http_request", _http)
+    monkeypatch.setattr(cursor_agent_tool, "POLL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(cursor_agent_tool, "_check_interrupted", lambda: False)
+    raised: BaseException | None = None
+    try:
+        cursor_agent_tool.poll_cloud_run(
+            agent_id="bc-1",
+            run_id="run-1",
+            api_key="test-secret-key",
+            timeout_seconds=0,
+            started_mono=time.monotonic(),
+        )
+    except BaseException as exc:
+        raised = exc
+    assert raised is not None, "poll must give up after repeated GET timeouts"
+    assert type(raised).__name__ == "CursorCloudPollTimeout", type(raised).__name__
+    assert "timed out" in str(raised)
+    assert len(gets) == cursor_agent_tool.POLL_GET_TIMEOUT_MISSES
+    assert cancelled == []
+
+
+def _setup_clean_repo(workdir: Path) -> None:
+    workdir.mkdir(parents=True)
+    subprocess.run(["git", "-C", str(workdir), "init", "-q"], check=True)
+
+
+def _setup_dirty_repo(workdir: Path) -> None:
+    _setup_clean_repo(workdir)
+    (workdir / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+
+
+def _setup_plain_dir(workdir: Path) -> None:
+    workdir.mkdir(parents=True)
+
+
+def _install_cloud_poll_timeout_path(monkeypatch, tmp_path, *, setup_workdir):
+    """Real delegate_cursor_agent path with only the run-status GET timing out.
+
+    ``poll_cloud_run`` stays real (re-installed over the happy-path stub);
+    the transport raises TimeoutError for every run GET so the poll exhausts
+    its miss budget. Subprocess spawning is recorded once create returns, so
+    tests can prove the only new process is the git-status snapshot.
+    """
+    from tools import cursor_agent_tool
+
+    real_poll = cursor_agent_tool.poll_cloud_run
+    _install_cloud_happy_path(monkeypatch, tmp_path)
+    monkeypatch.setattr(cursor_agent_tool, "poll_cloud_run", real_poll)
+
+    gets: list[str] = []
+    posts: list[str] = []
+
+    def _http(method, path, **kwargs):
+        if method == "GET" and "/runs/" in path:
+            gets.append(path)
+            raise TimeoutError(
+                f"Cursor Cloud Agent request timed out: {method} {path}"
+            )
+        if method == "POST" and path.endswith("/cancel"):
+            posts.append(path)
+            return {}
+        raise AssertionError(f"unexpected cloud call: {method} {path}")
+
+    monkeypatch.setattr(cursor_agent_tool, "_http_request", _http)
+
+    spawned: list[list[str]] = []
+    recording = {"on": False}
+    real_popen = subprocess.Popen
+
+    def _spy_popen(*args, **kwargs):
+        cmd = args[0] if args else kwargs.get("args")
+        if recording["on"] and cmd is not None:
+            spawned.append([str(part) for part in cmd])
+        return real_popen(*args, **kwargs)
+
+    # subprocess.run is a Popen wrapper, so one Popen-level spy sees every
+    # spawn exactly once — the git-status snapshot and any local CLI a bug
+    # might have started alike.
+    monkeypatch.setattr(subprocess, "Popen", _spy_popen)
+
+    client_id = _default_client_agent_id()
+
+    def _create(payload, api_key):
+        recording["on"] = True  # everything from here on is the poll phase
+        return (
+            {
+                "id": client_id,
+                "name": "hermes-test",
+                "url": f"https://cursor.com/agents/{client_id}",
+                "latestRunId": "run-aaaa",
+            },
+            {"id": "run-aaaa", "agentId": client_id, "status": "CREATING"},
+        )
+
+    monkeypatch.setattr(cursor_agent_tool, "create_agent_with_timeout_dedupe", _create)
+    workdir = tmp_path / "repo"
+    setup_workdir(workdir)
+    return workdir.resolve(), gets, posts, spawned, client_id
+
+
+def test_poll_retries_exhausted_clean_workdir_hints_local_lane(monkeypatch, tmp_path):
+    from tools import cursor_agent_tool
+    from tools.cursor_run_receipts import find_receipt_for_binding
+
+
+    workdir, gets, posts, spawned, client_id = _install_cloud_poll_timeout_path(
+        monkeypatch, tmp_path, setup_workdir=_setup_clean_repo
+    )
+
+    result = json.loads(_delegate(task="ship it", workdir=str(workdir)))
+
+    assert result["success"] is False
+    assert "timed out" in (result["error"] or "")
+    snapshot = result["workdir_git_status"]
+    assert snapshot["clean"] is True
+    assert snapshot["porcelain"] == ""
+    assert snapshot["error"] is None
+    hint = result["local_lane_hint"]
+    assert "may switch" in hint
+    assert "did not start" in hint
+    # A transport miss is not proof the remote run is dead: never cancel.
+    assert posts == []
+    assert len(gets) == cursor_agent_tool.POLL_GET_TIMEOUT_MISSES
+    # The only new process after create is the git-status snapshot:
+    # no claude, no local `agent` task run.
+    assert spawned == [["git", "-C", str(workdir), "status", "--porcelain"]]
+    found = find_receipt_for_binding(_DEFAULT_DELEGATE_SESSION, _DEFAULT_DELEGATE_TOOL_CALL)
+    assert found is not None
+    receipt = found[1]
+    assert receipt["state"] == "terminal"
+    assert receipt["outcome"] == "timeout"
+    assert receipt["cloud_agent_id"] == client_id
+    assert receipt["cloud_run_id"] == "run-aaaa"
+
+
+def test_poll_retries_exhausted_dirty_workdir_forbids_second_writer(monkeypatch, tmp_path):
+    workdir, gets, posts, _spawned, _client_id = _install_cloud_poll_timeout_path(
+        monkeypatch, tmp_path, setup_workdir=_setup_dirty_repo
+    )
+
+    result = json.loads(_delegate(task="ship it", workdir=str(workdir)))
+
+    assert result["success"] is False
+    snapshot = result["workdir_git_status"]
+    assert snapshot["clean"] is False
+    assert "untracked.txt" in snapshot["porcelain"]
+    hint = result["local_lane_hint"]
+    assert "second writer" in hint
+    assert "may switch" not in hint
+    assert posts == []
+    assert len(gets) >= 1
+
+
+def test_poll_retries_exhausted_unreadable_status_is_none(monkeypatch, tmp_path):
+    workdir, gets, posts, _spawned, _client_id = _install_cloud_poll_timeout_path(
+        monkeypatch, tmp_path, setup_workdir=_setup_plain_dir
+    )
+
+    result = json.loads(_delegate(task="ship it", workdir=str(workdir)))
+
+    assert result["success"] is False
+    snapshot = result["workdir_git_status"]
+    assert snapshot["clean"] is None
+    assert snapshot["porcelain"] == ""
+    assert snapshot["error"]
+    hint = result["local_lane_hint"]
+    assert "untouched" in hint
+    assert "may switch" not in hint
+    assert posts == []
+    assert len(gets) >= 1
+
+
 def test_progress_url_is_exact_api_value(monkeypatch, tmp_path):
     from tools import cursor_agent_tool
 
