@@ -128,6 +128,16 @@ def reconcile_scheduler_on_load(
         return reconcile_units(cfg, enabled=enabled, **kwargs)
     except Exception as exc:
         logger.warning(
-            "auto_update scheduler reconcile skipped: %s", exc, exc_info=True
+            "auto_update scheduler reconcile failed: %s", exc, exc_info=True
         )
-        return None
+        return ReconcileResult(
+            supported=True,
+            scope=scope,
+            changed=False,
+            enabled=False,
+            timer_active=False,
+            legacy=(),
+            warnings=(f"failed to reconcile scheduler: {exc}",),
+            enabled_known=False,
+            timer_active_known=False,
+        )

@@ -7,10 +7,16 @@ import logging
 import os
 import subprocess
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence, cast
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None  # type: ignore
 
 from hermes_constants import display_hermes_home, get_hermes_home
 
@@ -94,6 +100,36 @@ def timer_unit_path(scope: InstallScope, timer_name: str = TIMER_NAME) -> Path:
 
 def scheduler_owner_path(scope: InstallScope) -> Path:
     return scope.unit_dir / OWNER_FILENAME
+
+
+@contextmanager
+def _scheduler_reconcile_lock(scope: InstallScope) -> Iterator[str | None]:
+    """Serialize reconciles without leaving a lock file in systemd's unit dir."""
+    if fcntl is None:  # pragma: no cover - real Windows is unsupported above
+        yield None
+        return
+
+    try:
+        scope.unit_dir.mkdir(parents=True, exist_ok=True)
+        fd = os.open(scope.unit_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError as exc:
+        yield f"failed to acquire scheduler reconcile lock: {exc}"
+        return
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield "failed to reconcile scheduler: another reconcile is already in progress"
+            return
+        except OSError as exc:
+            yield f"failed to acquire scheduler reconcile lock: {exc}"
+            return
+        try:
+            yield None
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 def _systemd_quote(value: str) -> str:
@@ -381,7 +417,28 @@ def _rollback_unit_writes(
     previous_units: Sequence[tuple[Path, bytes | None]],
     runner: Callable[[Sequence[str]], tuple[int, str, str]],
     warnings: list[str],
+    *,
+    previous_enabled: ProbeResult | None = None,
+    previous_active: ProbeResult | None = None,
 ) -> None:
+    if previous_enabled is not None and previous_active is not None:
+        if not previous_enabled.known or not previous_active.known:
+            warnings.append(
+                "failed to restore previous timer state: pre-reconcile probe was inconclusive"
+            )
+        else:
+            actions: list[str] = []
+            if not previous_active.as_bool:
+                actions.append("stop")
+            if not previous_enabled.as_bool:
+                actions.append("disable")
+            for action in actions:
+                code, _, err = runner(build_systemctl_cmd(scope, action, TIMER_NAME))
+                if code != 0:
+                    warnings.append(
+                        f"failed to restore timer {action} state: {err.strip() or code}"
+                    )
+
     for path, previous in previous_units:
         try:
             if previous is None:
@@ -639,7 +696,6 @@ def reconcile_units(
     write_stamp: Callable[[Path, str], None] | None = None,
     takeover: bool = False,
 ) -> ReconcileResult:
-    runner = _resolve_systemctl_runner(run_systemctl)
     if not platform_supported():
         return ReconcileResult(
             supported=False,
@@ -663,6 +719,49 @@ def reconcile_units(
             warnings=("systemd user manager unavailable for this install",),
         )
 
+    if not enabled:
+        return _reconcile_units_in_scope(
+            cfg,
+            enabled=False,
+            run_systemctl=run_systemctl,
+            scope=selected,
+            write_stamp=write_stamp,
+            takeover=takeover,
+        )
+    with _scheduler_reconcile_lock(selected) as lock_error:
+        if lock_error is not None:
+            return ReconcileResult(
+                supported=True,
+                scope=selected,
+                changed=False,
+                enabled=False,
+                timer_active=False,
+                legacy=(),
+                warnings=(lock_error,),
+                enabled_known=False,
+                timer_active_known=False,
+            )
+        return _reconcile_units_in_scope(
+            cfg,
+            enabled=True,
+            run_systemctl=run_systemctl,
+            scope=selected,
+            write_stamp=write_stamp,
+            takeover=takeover,
+        )
+
+
+def _reconcile_units_in_scope(
+    cfg: Mapping[str, object],
+    *,
+    enabled: bool,
+    run_systemctl: Callable[[Sequence[str]], tuple[int, str, str]] | None,
+    scope: InstallScope,
+    write_stamp: Callable[[Path, str], None] | None,
+    takeover: bool,
+) -> ReconcileResult:
+    runner = _resolve_systemctl_runner(run_systemctl)
+    selected = scope
     if not enabled:
         disable_warnings = disable_timer(selected, run_systemctl=runner)
         warnings = list(disable_warnings)
@@ -701,7 +800,7 @@ def reconcile_units(
             enabled=False,
             timer_active=False,
             legacy=(),
-            warnings=(refusal,),
+            warnings=(cast(str, refusal),),
             enabled_known=False,
             timer_active_known=False,
         )
@@ -714,7 +813,7 @@ def reconcile_units(
     timer_body = render_timer_unit(
         schedule=str(cfg.get("schedule") or default_schedule_calendar()),
         randomized_delay_sec=int(
-            cfg.get("randomized_delay_sec", DEFAULT_RANDOMIZED_DELAY_SEC)
+            cast(Any, cfg.get("randomized_delay_sec", DEFAULT_RANDOMIZED_DELAY_SEC))
         ),
         accuracy_sec=str(cfg.get("accuracy_sec", DEFAULT_ACCURACY_SEC)),
     )
@@ -723,12 +822,27 @@ def reconcile_units(
     previous_units = tuple(
         (path, path.read_bytes() if path.is_file() else None) for path in unit_paths
     )
-    changed = write_units_if_changed(
-        selected,
-        service_body=service_body,
-        timer_body=timer_body,
-    )
     warnings: list[str] = []
+    try:
+        changed = write_units_if_changed(
+            selected,
+            service_body=service_body,
+            timer_body=timer_body,
+        )
+    except (OSError, UnicodeError) as exc:
+        warnings.append(f"failed to write systemd units: {exc}")
+        _rollback_unit_writes(selected, previous_units, runner, warnings)
+        return ReconcileResult(
+            supported=True,
+            scope=selected,
+            changed=True,
+            enabled=False,
+            timer_active=False,
+            legacy=(),
+            warnings=tuple(warnings),
+            enabled_known=False,
+            timer_active_known=False,
+        )
     if changed:
         code, _, err = runner(
             build_systemctl_cmd(selected, "daemon-reload")
@@ -770,6 +884,7 @@ def reconcile_units(
 
     # Enable/start TIMER ONLY — never start the oneshot service immediately.
     enabled_probe = probe_timer_is_enabled(selected, run_systemctl=runner)
+    active_probe = probe_timer_is_active(selected, run_systemctl=runner)
     if enabled_probe.outcome == ProbeOutcome.QUERY_FAILED:
         warnings.append(_probe_warning("enabled", enabled_probe))
     elif enabled_probe.outcome == ProbeOutcome.FALSE:
@@ -780,15 +895,27 @@ def reconcile_units(
     )
     if code != 0:
         warnings.append(f"failed to enable timer: {err.strip() or code}")
-        if changed:
-            _rollback_unit_writes(selected, previous_units, runner, warnings)
+        _rollback_unit_writes(
+            selected,
+            previous_units,
+            runner,
+            warnings,
+            previous_enabled=enabled_probe,
+            previous_active=active_probe,
+        )
     else:
         try:
             _write_owner_record(selected, current_home)
         except OSError as exc:
             warnings.append(f"failed to record scheduler ownership: {exc}")
-            if changed:
-                _rollback_unit_writes(selected, previous_units, runner, warnings)
+            _rollback_unit_writes(
+                selected,
+                previous_units,
+                runner,
+                warnings,
+                previous_enabled=enabled_probe,
+                previous_active=active_probe,
+            )
 
     enabled_probe = probe_timer_is_enabled(selected, run_systemctl=runner)
     active_probe = probe_timer_is_active(selected, run_systemctl=runner)
