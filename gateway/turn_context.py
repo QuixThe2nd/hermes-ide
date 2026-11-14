@@ -103,6 +103,9 @@ class TurnContext:
     result_holder: list = field(default_factory=lambda: [None])
     tools_holder: list = field(default_factory=lambda: [None])
     stream_consumer_holder: list = field(default_factory=lambda: [None])
+    # Streaming-TTS sink for stream deltas (None = no TTS this turn), single-element
+    # so the outer body can wire it after the context is built.
+    streaming_tts_consumer_holder: list = field(default_factory=lambda: [None])
     # voice-ack wiring
     # hook / status bridge wiring
     _loop_for_step: Any = None
