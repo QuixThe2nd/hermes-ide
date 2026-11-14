@@ -1887,6 +1887,11 @@ def test_local_fallback_preserves_terminal_status_for_receipt_and_event(
     assert result["fallback"]["cloud_timeout"] == "cloud poll budget exhausted"
     assert receipt is not None
     assert receipt["outcome"] == local_error
+    assert receipt["local_fallback"] == {
+        "cloud_agent_id": client_id,
+        "cloud_run_id": "run-aaaa",
+        "cloud_status": "CANCELLED",
+    }
     assert event["status"] == local_error
     assert event["error"] == local_error
     assert event["exit_reason"] == local_error

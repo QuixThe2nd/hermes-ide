@@ -48,6 +48,10 @@ terminal status can be confirmed, local execution does not start.
 The fallback retains the no-push instruction and returns the cloud timeout cause
 and status snapshot as metadata. Interruption and non-timeout cloud errors never
 trigger local fallback.
+Before local execution, Hermes records the confirmed Cloud ids and terminal status
+in the receipt. Restart and repeat recovery reuse a cached local result only when
+that pre-execution provenance matches fresh terminal Cloud evidence; result-source
+and payload metadata alone are not authoritative.
 
 Authority and no-push
 ---------------------
@@ -1351,12 +1355,24 @@ def _revalidate_receipt_for_recovery(
     )
 
 
-def _validated_local_fallback_result(receipt: Dict[str, Any]) -> Optional[str]:
-    """Return only a receipt-marked, binding-matched completed local fallback."""
+def _validated_local_fallback_result(
+    receipt: Dict[str, Any], *, cloud_status: str
+) -> Optional[str]:
+    """Return a completed local fallback with matching pre-execution provenance."""
     terminal_result = receipt.get("terminal_result")
     if (
         not isinstance(terminal_result, dict)
         or terminal_result.get("result_source") != LOCAL_FALLBACK_RESULT_SOURCE
+    ):
+        return None
+    provenance = receipt.get("local_fallback")
+    if (
+        not isinstance(provenance, dict)
+        or str(provenance.get("cloud_agent_id") or "")
+        != str(receipt.get("cloud_agent_id") or "")
+        or str(provenance.get("cloud_run_id") or "")
+        != str(receipt.get("cloud_run_id") or "")
+        or provenance.get("cloud_status") != cloud_status
     ):
         return None
     result_json = terminal_result.get("result_json")
@@ -1421,8 +1437,11 @@ def _authoritative_terminal_reconcile(
     if not is_terminal_run_status(run_obj.get("status")):
         return None, True
 
-    if str(run_obj.get("status") or "").upper() != "FINISHED":
-        local_result_json = _validated_local_fallback_result(receipt)
+    cloud_status = str(run_obj.get("status") or "").upper()
+    if cloud_status != "FINISHED":
+        local_result_json = _validated_local_fallback_result(
+            receipt, cloud_status=cloud_status
+        )
         if local_result_json is not None:
             return local_result_json, False
 
@@ -2038,6 +2057,14 @@ def _execute_cloud_delegation(
                 outcome = "failed"
                 terminal_result = {"result_json": result_json}
             else:
+                update_receipt(
+                    receipt_path,
+                    local_fallback={
+                        "cloud_agent_id": cloud_agent_id,
+                        "cloud_run_id": cloud_run_id,
+                        "cloud_status": confirmed_status,
+                    },
+                )
                 result_json, outcome = _run_local_claude_after_poll_timeout(
                     task=task,
                     workdir=workdir,
