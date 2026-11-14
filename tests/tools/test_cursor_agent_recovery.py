@@ -230,6 +230,81 @@ def test_terminal_while_gateway_down_recovers_without_create(cloud_env):
     assert note and "terminal" in note.lower()
 
 
+def test_terminal_local_fallback_recovers_without_reexecution(cloud_env, monkeypatch):
+    """A terminal local fallback is authoritative; the cancelled cloud run is not retried."""
+    cloud, workdir = cloud_env
+    session_id = "sess-local-fallback-terminal"
+    tool_call_id = "call-local-fallback-terminal"
+    client_id = deterministic_client_agent_id(session_id, tool_call_id)
+    cloud.seed_terminal(
+        agent_id=client_id,
+        run_id="run-local-fallback",
+        status="CANCELLED",
+        result_text="",
+    )
+    receipt_path, _receipt = create_receipt(
+        hermes_session_id=session_id,
+        tool_call_id=tool_call_id,
+        workdir=str(workdir),
+        prompt_hash=hash_prompt("cloud task"),
+        log_path=str(workdir / "worker.log"),
+        model=None,
+        force=True,
+        timeout_seconds=120,
+        task="cloud task",
+    )
+    from tools.cursor_run_receipts import finalize_receipt, persist_cloud_ids
+
+    persist_cloud_ids(
+        receipt_path,
+        cloud_agent_id=client_id,
+        cloud_run_id="run-local-fallback",
+    )
+    result_json = json.dumps(
+        {
+            "success": True,
+            "final_report": "local Claude completed",
+            "error": None,
+            "fallback": {
+                "backend": "claude",
+                "reason": "cursor_cloud_run_poll_timeout",
+                "cloud_timeout": "cloud poll budget exhausted",
+                "git_status": {"returncode": 0, "stdout": "?? untracked.txt\n"},
+            },
+        }
+    )
+    finalize_receipt(
+        receipt_path,
+        outcome="success",
+        terminal_result={"result_json": result_json},
+        cloud_agent_id=client_id,
+        cloud_run_id="run-local-fallback",
+    )
+    cloud.reset_counters()
+
+    def _local_must_not_run(**kwargs):
+        raise AssertionError("terminal local fallback was re-executed")
+
+    monkeypatch.setattr(
+        "tools.claude_agent_tool.delegate_claude_agent",
+        _local_must_not_run,
+    )
+    history, note = recover_delegate_cursor_agent_history(
+        _dangling_history(tool_call_id, str(workdir), task="cloud task"),
+        hermes_session_id=session_id,
+    )
+
+    recovered = json.loads(history[-1]["content"])
+    assert recovered["success"] is True
+    assert recovered["final_report"] == "local Claude completed"
+    assert recovered["fallback"]["cloud_timeout"] == "cloud poll budget exhausted"
+    assert cloud.create_calls == 0
+    assert cloud.get_run_calls == 0
+    assert cloud.get_agent_calls == 0
+    assert cloud.poll_calls == 0
+    assert note and "terminal" in note.lower()
+
+
 def test_running_recovery_resumes_poll_zero_create(cloud_env):
     cloud, workdir = cloud_env
     session_id = "sess-run"
