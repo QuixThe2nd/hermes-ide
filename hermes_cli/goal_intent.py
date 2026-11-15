@@ -472,6 +472,25 @@ def _chase_live_work(session_id: str) -> bool:
         return False
 
 
+def _chase_is_dormant(context: Dict[str, Any]) -> bool:
+    """Whether a chase matches the dormant-session papercut noise class.
+
+    The caller checks live work separately so chases on running work still log.
+    """
+    if any(
+        context.get(key)
+        for key in ("goal_active", "goal_paused", "goal_recently_completed")
+    ):
+        return False
+    age_minutes = context.get("last_assistant_age_minutes")
+    if age_minutes is None:
+        return True
+    return (
+        isinstance(age_minutes, (int, float))
+        and age_minutes > CHASE_DEDUPE_WINDOW.total_seconds() / 60
+    )
+
+
 def _log_chase_papercut(
     session_id: str, record: Dict[str, Any], context: Dict[str, Any]
 ) -> bool:
@@ -484,6 +503,8 @@ def _log_chase_papercut(
     live-work flag — present even when false.
     """
     live_work = _chase_live_work(session_id)
+    if not live_work and _chase_is_dormant(context):
+        return False
     cause = (
         "background or delegated work was live" if live_work
         else "no background or delegated work was live"
