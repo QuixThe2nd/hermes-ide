@@ -29,7 +29,7 @@ _callback_tls = threading.local()
 
 UnlockPrompt = Callable[[str, str], str]  # (backend_name, display_name) -> master password ("" = cancelled)
 # (origin, site label) -> {"identifier": str, "password": str} or None when the user declines. The
-# surface owns the masked fields; the tool stores the answer in the local vault and fills at once.
+# surface owns field presentation and transport disclosure; the tool stores and fills at once.
 SaveLoginPrompt = Callable[[str, str], Optional[Dict[str, str]]]
 
 
@@ -56,7 +56,7 @@ def get_code_prompt_callback() -> Optional[CodePrompt]:
 
 
 def set_save_login_prompt_callback(cb: Optional[SaveLoginPrompt]) -> None:
-    """Register the surface's "save this login" prompt (identifier + masked password), per thread."""
+    """Register the surface-owned save-login prompt in the current thread slot."""
     _callback_tls.save_login = cb
 
 
@@ -171,8 +171,11 @@ def _session_env(name: str) -> str:
         return os.getenv(name, "") or ""
 
 
-def can_prompt_here() -> bool:
-    """False in contexts where no human can answer (cron, webhook, api_server, -q)."""
+def can_prompt_here(callback: Optional[Callable] = None) -> bool:
+    """Whether this operation has a callback and the session permits human input.
+
+    ``callback`` defaults to the unlock prompt for compatibility with unlock callers.
+    """
     unattended = _session_env("HERMES_SESSION_PLATFORM") in {
         "webhook", "msgraph_webhook", "api_server",
     }
@@ -180,4 +183,4 @@ def can_prompt_here() -> bool:
         return False
     if is_truthy_value(_session_env("HERMES_SINGLE_QUERY_SESSION")):
         return False
-    return get_unlock_prompt_callback() is not None
+    return (callback if callback is not None else get_unlock_prompt_callback()) is not None

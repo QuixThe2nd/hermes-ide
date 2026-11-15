@@ -2139,8 +2139,19 @@ class TurnRunner(_TurnRunnerCore):
                     "forced_recovery_control": True,
                 }
             from agent.notification_presentation import notification_turn
-            with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
-                return agent.run_conversation(api_message, **kwargs)
+            from gateway.vault_prompt_lifecycle import vault_save_login_scope
+
+            adapter = self._runner._delivery_adapter_for(ctx.source)
+            with vault_save_login_scope(
+                adapter,
+                source=ctx.source,
+                session_key=session_key,
+                loop=ctx._loop_for_step,
+                chat_id=ctx._status_chat_id or ctx.source.chat_id,
+                metadata=ctx._status_thread_metadata,
+            ):
+                with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
+                    return agent.run_conversation(api_message, **kwargs)
         finally:
             # Cancel pending clarify entries so blocked agent threads don't hang past the end of the
             # run (interrupt, completion, gateway shutdown). Idempotent.

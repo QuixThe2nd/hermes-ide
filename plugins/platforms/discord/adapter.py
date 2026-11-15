@@ -1164,6 +1164,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._reaction_gate_managed_env: Optional[Dict[str, str]] = None
         self._reaction_gate_profile_name: str = "default"
         self.gateway_runner = None  # Set by gateway/run.py for cross-platform delivery
+        self._vault_prompt_bindings: Dict[str, Any] = {}
+        self._vault_prompt_requests: Dict[str, Any] = {}
+        self._vault_prompt_sessions: Dict[tuple[str, str], str] = {}
+        self._vault_prompt_lock = threading.RLock()
         # Text batching: merge rapid successive messages (Telegram-style)
         self._text_batch_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", 0.6)
         self._text_batch_split_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0)
@@ -2789,6 +2793,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
         self._disconnecting = True
+        from plugins.platforms.discord.vault_prompts import close_all_vault_prompts
+        close_all_vault_prompts(self)
         # Cancel the liveness probe first so it can't fire a spurious fatal/reconnect mid-teardown.
         await self._cancel_liveness_task()
         # Cancel the bot task before closing: after a connect() timeout client.start() may still run
@@ -7001,6 +7007,40 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if result.success and _metadata_marks_nonconversational(metadata):
             await self._nonconversational_messages.mark_many([result.message_id])
         return result
+
+    def create_vault_save_login_binding(
+        self,
+        *,
+        source,
+        identity,
+        session_key: str,
+        loop,
+        chat_id=None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        """Create the source-owned Discord modal binding for one agent turn."""
+        if (
+            loop is None
+            or not source.user_id
+            or not source.chat_id
+            or not session_key
+            or self._source_session_key(source) != session_key
+        ):
+            return None
+        from plugins.platforms.discord.vault_prompts import DiscordVaultPromptBinding
+        return DiscordVaultPromptBinding(
+            self,
+            source=source,
+            identity=identity,
+            session_key=session_key,
+            loop=loop,
+            chat_id=chat_id,
+            metadata=metadata,
+            authorize=lambda interaction: _component_check_auth(
+                interaction, self._allowed_user_ids, self._allowed_role_ids
+            ),
+        )
+
 
     async def send_model_picker(
         self, chat_id: str, providers: list, current_model: str, current_provider: str,

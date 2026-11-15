@@ -138,10 +138,35 @@ def _ensure_discord_mock() -> None:
         def __init__(self, timeout=None):
             self.timeout = timeout
             self.children = []
+            self._stopped = False
         def add_item(self, item):
             self.children.append(item)
         def clear_items(self):
             self.children.clear()
+        def stop(self):
+            self._stopped = True
+        def is_finished(self):
+            return self._stopped
+
+    class _FakeModal(_FakeView):
+        def __init__(self, *, title=None, timeout=None, custom_id=None, **_):
+            super().__init__(timeout=timeout)
+            self.title = title
+            self.custom_id = custom_id
+
+    class _FakeTextInput:
+        def __init__(self, *, label=None, style=None, custom_id=None, placeholder=None,
+                     default=None, required=True, min_length=None, max_length=None, row=None, **_):
+            self.label = label
+            self.style = style
+            self.custom_id = custom_id
+            self.placeholder = placeholder
+            self.default = default
+            self.value = default or ""
+            self.required = required
+            self.min_length = min_length
+            self.max_length = max_length
+            self.row = row
 
     class _FakeSelect:
         def __init__(self, *, placeholder=None, options=None, custom_id=None, **_):
@@ -185,6 +210,8 @@ def _ensure_discord_mock() -> None:
 
     discord_mod.ui = SimpleNamespace(
         View=_FakeView,
+        Modal=_FakeModal,
+        TextInput=_FakeTextInput,
         Select=_FakeSelect,
         Button=_FakeButton,
         button=lambda *a, **k: (lambda fn: fn),
