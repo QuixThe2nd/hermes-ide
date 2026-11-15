@@ -1308,18 +1308,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `warm_nous_reasoning_caps_async` | moved-lazy | `hermes_cli.models_reasoning_caps` |
 | `warm_openrouter_reasoning_caps_async` | moved-lazy | `hermes_cli.models_reasoning_caps` |
 
-### `hermes_cli.nous_billing`
-
-| name | kind | new location |
-|---|---|---|
-| `BILLING_MANAGE_SCOPE` | restored-def | `(deleted; BASE body restored)` |
-
-### `hermes_cli.nous_subscription`
-
-| name | kind | new location |
-|---|---|---|
-| `managed_nous_tools_enabled` | moved-lazy | `tools.tool_backend_helpers` |
-
 ### `hermes_cli.observability.relay_runtime`
 
 | name | kind | new location |
@@ -1435,7 +1423,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `Any` | import | `typing` |
 | `Dict` | import | `typing` |
 | `Optional` | import | `typing` |
-| `get_nous_subscription_features` | moved-lazy | `hermes_cli.nous_subscription` |
 | `get_optional_skills_dir` | moved-lazy | `hermes_constants` |
 | `json` | import | `json` |
 | `managed_nous_tools_enabled` | moved-lazy | `tools.tool_backend_helpers` |
@@ -1459,7 +1446,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `format_nous_portal_entitlement_message` | moved-lazy | `hermes_cli.nous_account` |
 | `get_nous_portal_account_info` | moved-lazy | `hermes_cli.nous_account` |
-| `get_nous_subscription_features` | moved-lazy | `hermes_cli.nous_subscription` |
 | `managed_nous_tools_enabled` | moved-lazy | `tools.tool_backend_helpers` |
 | `redact_key` | moved-lazy | `hermes_cli.config` |
 | `subprocess` | import | `subprocess` |
@@ -1487,7 +1473,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 
 | name | kind | new location |
 |---|---|---|
-| `MANAGED_FEATURE_COVERAGE_CATEGORY` | moved-lazy | `hermes_cli.nous_subscription` |
 | `NOUS_MANAGED_PROVIDER` | moved-lazy | `tools.tool_backend_helpers` |
 | `base_url_hostname` | moved-lazy | `utils` |
 | `fal_key_is_configured` | moved-lazy | `tools.tool_backend_helpers` |
