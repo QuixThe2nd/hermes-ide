@@ -610,11 +610,143 @@ class GatewayBusySessionMixin:
             logger.warning("Gateway %s failed for session %s: %s", verb, session_key, exc)
             return False
 
-    async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
-        from gateway.run import (
-            _AGENT_PENDING_SENTINEL, _build_media_placeholder,
-            _load_gateway_config, _platform_config_key,
+    async def _maybe_react_discord_busy_redirect(
+        self, event: MessageEvent, adapter: Any, session_key: str,
+    ) -> None:
+        """Best-effort ⏩ on one accepted human Discord redirect."""
+        if event.source.platform != Platform.DISCORD or getattr(event.source, "is_bot", False):
+            return
+        reactions_gate = getattr(adapter, "_reactions_enabled", None)
+        if not callable(reactions_gate):
+            logger.debug("Discord redirect reaction skipped (missing reactions gate) for %s", session_key)
+            return
+        try:
+            if not reactions_gate():
+                return
+        except Exception:
+            logger.debug("Discord redirect reaction gate failed for %s", session_key, exc_info=True)
+            return
+        add_reaction = getattr(adapter, "_add_reaction", None)
+        raw = getattr(event, "raw_message", None)
+        if not callable(add_reaction) or raw is None:
+            logger.debug("Discord redirect reaction skipped (missing reaction target) for %s", session_key)
+            return
+        try:
+            await add_reaction(raw, "⏩")
+        except Exception as exc:
+            logger.debug("Discord redirect reaction failed for %s: %s", session_key, exc)
+
+    async def _send_busy_ack(
+        self, event: MessageEvent, adapter: Any, session_key: str,
+        running_agent: Any, outcome: Any,
+    ) -> None:
+        """Send the receipt owned by one resolved busy-message outcome."""
+        from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _platform_config_key
+
+        effective_mode = outcome.effective_mode
+        demoted_for_subagents = outcome.demoted_for_subagents
+        demoted_for_compression = outcome.demoted_for_compression
+        is_queue_mode = effective_mode == "queue"
+        is_redirect_mode = effective_mode == "interrupt" and outcome.redirected
+
+        # This legacy switch covers both the visible ack and its reaction.
+        busy_ack_enabled = os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() == "true"
+        if not busy_ack_enabled:
+            logger.debug("Busy ack suppressed for session %s", session_key)
+            return
+
+        if is_redirect_mode:
+            await self._maybe_react_discord_busy_redirect(event, adapter, session_key)
+
+        # Accepted redirects are distinct steering inputs, not repeated status
+        # pings: each receives an ack even inside the ordinary busy-ack cooldown.
+        now = time.time()
+        busy_state = self._peek_session_state(session_key)
+        last_ack = busy_state.turn.busy_ack_ts if busy_state else 0
+        if not is_redirect_mode and now - last_ack < 30:
+            return
+
+        from gateway.display_config import resolve_display_setting
+
+        self._session_state(session_key).turn.busy_ack_ts = now
+        status_parts = []
+        busy_ack_detail_enabled = bool(
+            resolve_display_setting(
+                _load_gateway_config(),
+                _platform_config_key(event.source.platform),
+                "busy_ack_detail",
+                True,
+            )
         )
+        if busy_ack_detail_enabled and running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+            try:
+                summary = running_agent.get_activity_summary()
+                iteration = summary.get("api_call_count", 0)
+                max_iter = summary.get("max_iterations", 0)
+                current_tool = summary.get("current_tool")
+                start_ts = busy_state.turn.started_ts if busy_state else 0
+                if start_ts:
+                    elapsed_min = int((now - start_ts) / 60)
+                    if elapsed_min > 0:
+                        status_parts.append(f"{elapsed_min} min elapsed")
+                if max_iter:
+                    # sys.maxsize means unbounded — render "iteration N" without
+                    # the sentinel denominator (#102806).
+                    from agent.session_activity import format_iteration_progress
+
+                    status_parts.append(format_iteration_progress(iteration, max_iter))
+                if current_tool:
+                    status_parts.append(f"running: {current_tool}")
+            except Exception:
+                pass
+
+        status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
+        if is_redirect_mode:
+            message = (
+                f"↪ Redirected current run{status_detail}. "
+                f"I'll adjust using your correction."
+            )
+        elif is_queue_mode and demoted_for_subagents:
+            message = (
+                f"⏳ Subagent working{status_detail} — your message is queued for "
+                f"when it finishes (use /stop to cancel everything)."
+            )
+        elif is_queue_mode and demoted_for_compression:
+            message = (
+                f"⏳ Compressing context{status_detail} — your message is queued for "
+                f"when it finishes (use /stop to cancel everything)."
+            )
+        elif is_queue_mode:
+            message = (
+                f"⏳ Queued for the next turn{status_detail}. "
+                f"I'll respond once the current task finishes."
+            )
+        else:
+            message = (
+                f"⚡ Interrupting current task{status_detail}. "
+                f"I'll respond to your message shortly."
+            )
+
+        reply_anchor = self._reply_anchor_for_event(event)
+        thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+        try:
+            await adapter._send_with_retry(
+                chat_id=event.source.chat_id,
+                content=message,
+                reply_to=(
+                    reply_anchor
+                    if event.source.platform == Platform.TELEGRAM
+                    and event.source.chat_type == "dm"
+                    and event.source.thread_id
+                    else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
+                ),
+                metadata=thread_meta,
+            )
+        except Exception as e:
+            logger.debug("Failed to send busy-ack: %s", e)
+
+    async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
+        from gateway.run import _AGENT_PENDING_SENTINEL, _build_media_placeholder
 
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -729,9 +861,6 @@ class GatewayBusySessionMixin:
         if not redirected:
             self._queue_or_replace_pending_event(session_key, event)
 
-        is_queue_mode = effective_mode == "queue"
-        is_redirect_mode = effective_mode == "interrupt" and redirected
-
         # If not demoted to queue, interrupt the running agent immediately.
         # This aborts in-flight tool calls and causes the agent loop to exit
         # at the next check point.
@@ -750,110 +879,7 @@ class GatewayBusySessionMixin:
             except Exception:
                 pass  # don't let interrupt failure block the ack
 
-        # Check if busy ack is disabled — skip sending but still process the input.
-        # Placed before debounce so we don't stamp a "last ack" timestamp that was
-        # never actually delivered.
-        busy_ack_enabled = os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() == "true"
-        if not busy_ack_enabled:
-            logger.debug("Busy ack suppressed for session %s", session_key)
-            return True  # input still processed, just no ack sent
-
-        # Debounce before consulting config-heavy display settings. Rapid
-        # follow-ups should be processed but should not trigger another config
-        # read just to discover that no ack will be sent.
-        _BUSY_ACK_COOLDOWN = 30
-        now = time.time()
-        last_ack = _busy_state.turn.busy_ack_ts if _busy_state else 0
-        if now - last_ack < _BUSY_ACK_COOLDOWN:
-            return True  # interrupt sent (if not queue), ack already delivered recently
-
-        from gateway.display_config import resolve_display_setting
-        platform_key = _platform_config_key(event.source.platform)
-
-        self._session_state(session_key).turn.busy_ack_ts = now
-
-        # Build a status-rich acknowledgment. Mobile chat defaults keep this
-        # terse; detailed iteration/tool state is still available in logs and
-        # can be opted in per platform via display.platforms.<platform>.busy_ack_detail.
-        status_parts = []
-        busy_ack_detail_enabled = bool(
-            resolve_display_setting(
-                _load_gateway_config(),
-                _platform_config_key(event.source.platform),
-                "busy_ack_detail",
-                True,
-            )
-        )
-
-        if busy_ack_detail_enabled and running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
-            try:
-                summary = running_agent.get_activity_summary()
-                iteration = summary.get("api_call_count", 0)
-                max_iter = summary.get("max_iterations", 0)
-                current_tool = summary.get("current_tool")
-                start_ts = _busy_state.turn.started_ts if _busy_state else 0
-                if start_ts:
-                    elapsed_min = int((now - start_ts) / 60)
-                    if elapsed_min > 0:
-                        status_parts.append(f"{elapsed_min} min elapsed")
-                if max_iter:
-                    # sys.maxsize means unbounded — render "iteration N" without
-                    # the sentinel denominator (#102806).
-                    from agent.session_activity import format_iteration_progress
-
-                    status_parts.append(format_iteration_progress(iteration, max_iter))
-                if current_tool:
-                    status_parts.append(f"running: {current_tool}")
-            except Exception:
-                pass
-
-        status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
-        if is_redirect_mode:
-            message = (
-                f"↪ Redirected current run{status_detail}. "
-                f"I'll adjust using your correction."
-            )
-        elif is_queue_mode and demoted_for_subagents:
-            # #30170 — explain the demotion so the user knows their
-            # follow-up didn't accidentally kill the subagent and
-            # discovers `/stop` as the explicit escape hatch.
-            message = (
-                f"⏳ Subagent working{status_detail} — your message is queued for "
-                f"when it finishes (use /stop to cancel everything)."
-            )
-        elif is_queue_mode and demoted_for_compression:
-            message = (
-                f"⏳ Compressing context{status_detail} — your message is queued for "
-                f"when it finishes (use /stop to cancel everything)."
-            )
-        elif is_queue_mode:
-            message = (
-                f"⏳ Queued for the next turn{status_detail}. "
-                f"I'll respond once the current task finishes."
-            )
-        else:
-            message = (
-                f"⚡ Interrupting current task{status_detail}. "
-                f"I'll respond to your message shortly."
-            )
-
-        reply_anchor = self._reply_anchor_for_event(event)
-        thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
-        try:
-            await adapter._send_with_retry(
-                chat_id=event.source.chat_id,
-                content=message,
-                reply_to=(
-                    reply_anchor
-                    if event.source.platform == Platform.TELEGRAM
-                    and event.source.chat_type == "dm"
-                    and event.source.thread_id
-                    else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
-                ),
-                metadata=thread_meta,
-            )
-        except Exception as e:
-            logger.debug("Failed to send busy-ack: %s", e)
+        await self._send_busy_ack(event, adapter, session_key, running_agent, outcome)
 
         return True
 

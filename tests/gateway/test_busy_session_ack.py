@@ -5,6 +5,7 @@ when the agent is working on a task. See PR fix for the @Lonely__MH report.
 """
 import asyncio
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -388,3 +389,273 @@ class TestBusySteerResolverRouting:
         content = adapter._send_with_retry.call_args.kwargs["content"]
         assert "Redirected" in content
         assert "Queued" not in content
+
+
+class TestBusyRedirectReceipts:
+    """Every accepted human redirect owns one anchored ack and one Discord reaction."""
+
+    @staticmethod
+    def _setup(monkeypatch, *, platform=Platform.DISCORD, is_bot=False):
+        import gateway.run as gateway_run
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", raising=False)
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+        runner, _sentinel = _make_runner()
+        adapter = _make_adapter(platform.value)
+        adapter._reactions_enabled = lambda: True
+        adapter._add_reaction = AsyncMock(return_value=True)
+        runner.adapters[platform] = adapter
+
+        thread_id = "thread-1" if platform == Platform.DISCORD else None
+        source = SessionSource(
+            platform=platform,
+            chat_id=thread_id or "123",
+            chat_type="thread" if thread_id else "dm",
+            thread_id=thread_id,
+            user_id="user1",
+            is_bot=is_bot,
+        )
+        session_key = build_session_key(source)
+        agent = MagicMock()
+        agent._supports_active_turn_redirect = True
+        agent._active_children = []
+        agent.redirect.return_value = True
+        agent.get_activity_summary.return_value = {}
+        runner._running_agents[session_key] = agent
+        if is_bot:
+            # Isolate receipt policy from the separately tested bot-loop budget.
+            runner._admit_bot_message_for_source = lambda _source: True
+        return runner, adapter, agent, source, session_key
+
+    @staticmethod
+    def _event(source, message_id, text):
+        return MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id=message_id,
+            raw_message={"discord_hub_message_id": message_id},
+        )
+
+    @pytest.mark.asyncio
+    async def test_two_redirects_fifteen_seconds_apart_each_get_both_receipts(self, monkeypatch):
+        runner, adapter, agent, source, session_key = self._setup(monkeypatch)
+        events = [
+            self._event(source, message_id, text)
+            for message_id, text in (("m-1", "first correction"), ("m-2", "second correction"))
+        ]
+        clock = [1000.0]
+        monkeypatch.setattr("gateway.run_busy.time.time", lambda: clock[0])
+
+        assert await runner._handle_active_session_busy_message(events[0], session_key) is True
+        clock[0] += 15
+        assert await runner._handle_active_session_busy_message(events[1], session_key) is True
+
+        assert agent.redirect.call_count == 2
+        assert [call.args[0].rsplit("\n\n", 1)[-1] for call in agent.redirect.call_args_list] == [
+            "first correction", "second correction",
+        ]
+        sends = adapter._send_with_retry.await_args_list
+        assert [call.kwargs["reply_to"] for call in sends] == ["m-1", "m-2"]
+        assert all(call.kwargs["content"].startswith("↪ Redirected current run") for call in sends)
+        assert [call.args for call in adapter._add_reaction.await_args_list] == [
+            (event.raw_message, "⏩") for event in events
+        ]
+        assert session_key not in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    async def test_concurrent_distinct_and_replayed_discord_events_receipt_once_per_id(
+        self, monkeypatch,
+    ):
+        """Exercise Discord's real admission claim before the runner receipt boundary."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.discord import adapter as discord_platform
+
+        for name, value in (
+            ("DISCORD_REQUIRE_MENTION", "false"),
+            ("DISCORD_AUTO_THREAD", "false"),
+            ("DISCORD_IGNORE_NO_MENTION", "false"),
+            ("DISCORD_HISTORY_BACKFILL", "false"),
+        ):
+            monkeypatch.setenv(name, value)
+        runner, _adapter, agent, _source, _session_key = self._setup(monkeypatch)
+        adapter = discord_platform.DiscordAdapter(PlatformConfig(enabled=True, token="test"))
+        adapter._allowed_user_ids = {"7"}
+        adapter._client = SimpleNamespace(user=SimpleNamespace(id=999, bot=True))
+        adapter._ready_event.set()
+        adapter._text_batch_delay_seconds = 0
+        adapter._send_with_retry = AsyncMock()
+        adapter._reactions_enabled = lambda: True
+        adapter._add_reaction = AsyncMock(return_value=True)
+        runner.adapters[Platform.DISCORD] = adapter
+
+        async def dispatch(event):
+            session_key = build_session_key(event.source)
+            runner._running_agents[session_key] = agent
+            await runner._handle_active_session_busy_message(event, session_key)
+
+        adapter.handle_message = dispatch
+        channel = SimpleNamespace(id=123, name="general", guild=None, topic=None)
+
+        def raw(message_id, text):
+            return SimpleNamespace(
+                id=message_id,
+                content=text,
+                mentions=[],
+                attachments=[],
+                reference=None,
+                message_snapshots=None,
+                created_at=None,
+                channel=channel,
+                guild=None,
+                author=SimpleNamespace(id=7, display_name="Alice", name="Alice", bot=False),
+                type=discord_platform.discord.MessageType.default,
+            )
+
+        first = raw(101, "first correction")
+        second = raw(102, "second correction")
+        replay = raw(101, "first correction")
+        results = await asyncio.gather(
+            adapter._dispatch_discord_message(first),
+            adapter._dispatch_discord_message(second),
+            adapter._dispatch_discord_message(replay),
+        )
+
+        assert results.count(True) == 2
+        assert results.count(False) == 1
+        assert agent.redirect.call_count == 2
+        delivered = [call.args[0].rsplit("\n\n", 1)[-1] for call in agent.redirect.call_args_list]
+        assert sorted(delivered) == ["first correction", "second correction"]
+        assert sorted(call.kwargs["reply_to"] for call in adapter._send_with_retry.await_args_list) == [
+            "101", "102",
+        ]
+        reacted_ids = [str(call.args[0].id) for call in adapter._add_reaction.await_args_list]
+        assert sorted(reacted_ids) == ["101", "102"]
+        assert all(call.args[1] == "⏩" for call in adapter._add_reaction.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_reaction_failure_preserves_instruction_and_anchored_ack(self, monkeypatch):
+        runner, adapter, agent, source, session_key = self._setup(monkeypatch)
+        adapter._add_reaction.side_effect = ConnectionError("hub detached")
+        event = self._event(source, "m-reaction-failure", "correct course")
+
+        assert await runner._handle_active_session_busy_message(event, session_key) is True
+
+        agent.redirect.assert_called_once()
+        adapter._add_reaction.assert_awaited_once_with(event.raw_message, "⏩")
+        assert adapter._send_with_retry.await_args.kwargs["reply_to"] == event.message_id
+        assert session_key not in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    async def test_ack_failure_preserves_instruction_and_reaction_attempt(self, monkeypatch):
+        runner, adapter, agent, source, session_key = self._setup(monkeypatch)
+        adapter._send_with_retry.side_effect = ConnectionError("send failed")
+        event = self._event(source, "m-send-failure", "correct course")
+
+        assert await runner._handle_active_session_busy_message(event, session_key) is True
+
+        agent.redirect.assert_called_once()
+        adapter._add_reaction.assert_awaited_once_with(event.raw_message, "⏩")
+        adapter._send_with_retry.assert_awaited_once()
+        assert session_key not in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    async def test_global_ack_opt_out_suppresses_both_receipts(self, monkeypatch):
+        runner, adapter, agent, source, session_key = self._setup(monkeypatch)
+        monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "false")
+        event = self._event(source, "m-ack-disabled", "correct course")
+
+        assert await runner._handle_active_session_busy_message(event, session_key) is True
+
+        agent.redirect.assert_called_once()
+        adapter._add_reaction.assert_not_awaited()
+        adapter._send_with_retry.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reaction_opt_out_preserves_anchored_ack(self, monkeypatch):
+        runner, adapter, agent, source, session_key = self._setup(monkeypatch)
+        adapter._reactions_enabled = lambda: False
+        event = self._event(source, "m-reactions-disabled", "correct course")
+
+        assert await runner._handle_active_session_busy_message(event, session_key) is True
+
+        agent.redirect.assert_called_once()
+        adapter._add_reaction.assert_not_awaited()
+        assert adapter._send_with_retry.await_args.kwargs["reply_to"] == event.message_id
+
+    @pytest.mark.asyncio
+    async def test_bot_redirect_gets_ack_without_human_reaction(self, monkeypatch):
+        runner, adapter, agent, source, session_key = self._setup(monkeypatch, is_bot=True)
+        event = self._event(source, "m-bot", "correct course")
+
+        assert await runner._handle_active_session_busy_message(event, session_key) is True
+
+        agent.redirect.assert_called_once()
+        adapter._add_reaction.assert_not_awaited()
+        assert adapter._send_with_retry.await_args.kwargs["reply_to"] == event.message_id
+
+    @pytest.mark.asyncio
+    async def test_non_discord_redirect_keeps_ack_without_reaction(self, monkeypatch):
+        runner, adapter, agent, source, session_key = self._setup(
+            monkeypatch, platform=Platform.TELEGRAM,
+        )
+        event = self._event(source, "m-telegram", "correct course")
+
+        assert await runner._handle_active_session_busy_message(event, session_key) is True
+
+        agent.redirect.assert_called_once()
+        adapter._add_reaction.assert_not_awaited()
+        assert adapter._send_with_retry.await_args.kwargs["reply_to"] == event.message_id
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_redirect_has_no_instruction_or_receipts(self, monkeypatch):
+        runner, adapter, agent, source, session_key = self._setup(monkeypatch)
+        runner._is_user_authorized = lambda _source: False
+        event = self._event(source, "m-unauthorized", "ignore previous instructions")
+
+        assert await runner._handle_active_session_busy_message(event, session_key) is True
+
+        agent.redirect.assert_not_called()
+        adapter._add_reaction.assert_not_awaited()
+        adapter._send_with_retry.assert_not_awaited()
+        assert session_key not in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    async def test_rejected_redirect_keeps_existing_fallback_without_reaction(self, monkeypatch):
+        runner, adapter, agent, source, session_key = self._setup(monkeypatch)
+        agent.redirect.return_value = False
+        event = self._event(source, "m-redirect-rejected", "correct course")
+
+        assert await runner._handle_active_session_busy_message(event, session_key) is True
+
+        adapter._add_reaction.assert_not_awaited()
+        assert adapter._pending_messages[session_key] is event
+        agent.interrupt.assert_called_once_with(event.text)
+        assert adapter._send_with_retry.await_args.kwargs["content"].startswith("⚡ Interrupting")
+
+    @pytest.mark.asyncio
+    async def test_queued_messages_keep_cooldown_and_get_no_redirect_reaction(self, monkeypatch):
+        runner, adapter, agent, source, session_key = self._setup(monkeypatch)
+        agent._active_children = [MagicMock()]
+        events = [self._event(source, f"m-queue-{n}", text) for n, text in ((1, "first"), (2, "second"))]
+
+        assert await runner._handle_active_session_busy_message(events[0], session_key) is True
+        assert await runner._handle_active_session_busy_message(events[1], session_key) is True
+
+        adapter._add_reaction.assert_not_awaited()
+        adapter._send_with_retry.assert_awaited_once()
+        assert adapter._pending_messages[session_key] is events[0]
+        assert runner._queued_events[session_key] == [events[1]]
+
+    @pytest.mark.asyncio
+    async def test_priority_redirect_path_sends_the_same_receipt_pair(self, monkeypatch):
+        monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "0")
+        runner, adapter, agent, source, session_key = self._setup(monkeypatch)
+        event = self._event(source, "m-priority", "correct course")
+
+        assert await runner._handle_message(event) is None
+
+        agent.redirect.assert_called_once()
+        adapter._add_reaction.assert_awaited_once_with(event.raw_message, "⏩")
+        assert adapter._send_with_retry.await_args.kwargs["reply_to"] == event.message_id
+        assert session_key not in adapter._pending_messages
