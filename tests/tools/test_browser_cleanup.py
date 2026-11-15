@@ -7,6 +7,11 @@ import pytest
 from tools import browser_tool_lifecycle as bt_lifecycle
 
 
+def _key(task_id):
+    from tools.browser_camofox import _session_key
+    return _session_key(task_id)
+
+
 @pytest.fixture
 def browser_state():
     from tools import browser_tool
@@ -186,8 +191,9 @@ def test_browser_turn_leases_are_profile_scoped(browser_state, tmp_path, monkeyp
 
 
 def test_ephemeral_cleanup_closes_camofox_and_clears_tracking(browser_state):
-    browser_state._active_sessions["task-1"] = {"backend": "camofox"}
-    browser_state._session_last_activity["task-1"] = 123.0
+    session_key = _key("task-1")
+    browser_state._active_sessions[session_key] = {"backend": "camofox"}
+    browser_state._session_last_activity[session_key] = 123.0
 
     with (
         patch("tools.browser_camofox.camofox_soft_cleanup", return_value=False),
@@ -196,12 +202,13 @@ def test_ephemeral_cleanup_closes_camofox_and_clears_tracking(browser_state):
         bt_lifecycle.cleanup_browser("task-1")
 
     close.assert_called_once_with("task-1")
-    assert "task-1" not in browser_state._active_sessions
-    assert "task-1" not in browser_state._session_last_activity
+    assert session_key not in browser_state._active_sessions
+    assert session_key not in browser_state._session_last_activity
 
 
 def test_managed_cleanup_preserves_remote_profile(browser_state):
-    browser_state._active_sessions["task-1"] = {"backend": "camofox"}
+    session_key = _key("task-1")
+    browser_state._active_sessions[session_key] = {"backend": "camofox"}
 
     with (
         patch("tools.browser_camofox.camofox_soft_cleanup", return_value=True) as soft_cleanup,
@@ -217,12 +224,14 @@ def test_managed_cleanup_preserves_remote_profile(browser_state):
 def test_cleanup_all_includes_direct_camofox_sessions(browser_state):
     from tools import browser_camofox
 
-    browser_state._active_sessions["facade-task"] = {"backend": "camofox"}
+    facade_key = _key("facade-task")
+    direct_key = _key("direct-task")
+    browser_state._active_sessions[facade_key] = {"backend": "camofox"}
     # Other tests in the browser suite may leave entries in _sessions; isolate this test.
     with browser_camofox._sessions_lock:
         saved_sessions = dict(browser_camofox._sessions)
         browser_camofox._sessions.clear()
-        browser_camofox._sessions["direct-task"] = {
+        browser_camofox._sessions[direct_key] = {
             "user_id": "u1",
             "tab_id": "tab-1",
             "session_key": "s1",
@@ -239,9 +248,9 @@ def test_cleanup_all_includes_direct_camofox_sessions(browser_state):
 
 
 def test_emergency_cleanup_clears_tracking_after_cleanup(browser_state):
-    browser_state._active_sessions["task-1"] = {"backend": "camofox"}
-    browser_state._active_sessions["task-2"] = {"backend": "camofox"}
-    browser_state._session_last_activity.update({"task-1": 1.0, "task-2": 2.0})
+    browser_state._active_sessions[_key("task-1")] = {"backend": "camofox"}
+    browser_state._active_sessions[_key("task-2")] = {"backend": "camofox"}
+    browser_state._session_last_activity.update({_key("task-1"): 1.0, _key("task-2"): 2.0})
 
     with patch("tools.browser_tool_lifecycle.cleanup_all_browsers") as cleanup_all:
         bt_lifecycle._emergency_cleanup_all_sessions()
@@ -270,12 +279,13 @@ def test_janitor_tears_down_under_owner_profile_scope(browser_state, tmp_path, m
         home_token = set_hermes_home_override(str(profile))
         scope_token = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(profile))
         try:
-            bt_lifecycle._update_session_activity("t1")
-            browser_state._active_sessions["t1"] = {"backend": "camofox"}
+            session_key = _key("t1")
+            bt_lifecycle._update_session_activity(session_key)
+            browser_state._active_sessions[session_key] = {"backend": "camofox"}
         finally:
             secret_scope.reset_secret_scope(scope_token)
             reset_hermes_home_override(home_token)
-        browser_state._session_last_activity["t1"] -= 10
+        browser_state._session_last_activity[session_key] -= 10
 
         seen = {}
 
@@ -291,29 +301,30 @@ def test_janitor_tears_down_under_owner_profile_scope(browser_state, tmp_path, m
         secret_scope.set_multiplex_active(False)
 
     assert seen == {"task_id": "t1", "home": str(profile), "url": "http://127.0.0.1:1"}
-    assert "t1" not in browser_state._session_last_activity
-    assert "t1" not in browser_state._active_sessions
-    assert "t1" not in browser_state._session_owner_homes
+    assert session_key not in browser_state._session_last_activity
+    assert session_key not in browser_state._active_sessions
+    assert session_key not in browser_state._session_owner_homes
 
 
 def test_repeated_janitor_failures_force_reap_tracking(browser_state):
+    session_key = _key("t1")
     browser_state.BROWSER_SESSION_INACTIVITY_TIMEOUT = 0
-    browser_state._active_sessions["t1"] = {"backend": "camofox"}
-    browser_state._session_last_activity["t1"] = 1.0
+    browser_state._active_sessions[session_key] = {"backend": "camofox"}
+    browser_state._session_last_activity[session_key] = 1.0
 
     with patch("tools.browser_tool_lifecycle._cleanup_single_browser_session", side_effect=RuntimeError("boom")):
         for _ in range(browser_state.MAX_INACTIVITY_CLEANUP_FAILURES - 1):
             bt_lifecycle._cleanup_inactive_browser_sessions()
-        bt_lifecycle._update_session_activity("t1")
-        browser_state._session_last_activity["t1"] = 1.0
-        assert browser_state._cleanup_failures["t1"] == browser_state.MAX_INACTIVITY_CLEANUP_FAILURES - 1
-        assert "t1" in browser_state._active_sessions
+        bt_lifecycle._update_session_activity(session_key)
+        browser_state._session_last_activity[session_key] = 1.0
+        assert browser_state._cleanup_failures[session_key] == browser_state.MAX_INACTIVITY_CLEANUP_FAILURES - 1
+        assert session_key in browser_state._active_sessions
 
         bt_lifecycle._cleanup_inactive_browser_sessions()
 
-    assert "t1" not in browser_state._active_sessions
-    assert "t1" not in browser_state._session_last_activity
-    assert "t1" not in browser_state._cleanup_failures
+    assert session_key not in browser_state._active_sessions
+    assert session_key not in browser_state._session_last_activity
+    assert session_key not in browser_state._cleanup_failures
 
 
 def test_second_ctrl_c_during_janitor_join_does_not_propagate(browser_state, monkeypatch):

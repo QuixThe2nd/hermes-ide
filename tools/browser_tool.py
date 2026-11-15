@@ -41,12 +41,12 @@ _cached_snapshot_threshold: Optional[Dict[str, int]] = None
 _snapshot_threshold_resolved = False
 _last_screenshot_cleanup_by_dir: dict[str, float] = {}
 
-# The lifecycle janitor and Camofox share task IDs. The facade entry is only
+# The lifecycle janitor and Camofox share (home_key, task_id) identities. The facade entry is only
 # bookkeeping; Camofox's own map holds the REST session identity and tab ID.
-_active_sessions: Dict[str, Dict[str, Any]] = {}
-_session_last_activity: Dict[str, float] = {}
-_session_owner_homes: Dict[str, str] = {}
-_cleanup_failures: Dict[str, int] = {}
+_active_sessions: Dict[tuple[str, str], Dict[str, Any]] = {}
+_session_last_activity: Dict[tuple[str, str], float] = {}
+_session_owner_homes: Dict[tuple[str, str], str] = {}
+_cleanup_failures: Dict[tuple[str, str], int] = {}
 _cleanup_thread = None
 _cleanup_running = False
 _cleanup_done = False
@@ -113,9 +113,10 @@ def _last_session_key(task_id: Optional[str]) -> str:
 
 def _track_activity(task_id: Optional[str]) -> str:
     effective = _last_session_key(task_id)
-    _lifecycle._update_session_activity(effective)
+    session_key = _camofox._session_key(effective)
+    _lifecycle._update_session_activity(session_key)
     with _cleanup_lock:
-        _active_sessions.setdefault(effective, {"backend": "camofox"})
+        _active_sessions.setdefault(session_key, {"backend": "camofox"})
     _lifecycle._start_browser_cleanup_thread()
     return effective
 
@@ -363,11 +364,35 @@ _BROWSER_TOOL_TABLE = (
 )
 
 
-def _handler(function, defaults: Dict[str, Any]):
+def _handler(function, defaults: Dict[str, Any], tool_name: Optional[str] = None):
     def handle(args, **kwargs):
-        return function(task_id=kwargs.get("task_id"), **{
+        name = tool_name or function.__name__
+        session_id = kwargs.get("session_id")
+        subscriber_token = None
+        try:
+            from tools.browser_progress import (
+                CAPTURE_AFTER_TOOLS, _NON_CHANGING_KEYS, browser_progress_subscriber_token,
+            )
+            if name in CAPTURE_AFTER_TOOLS and not (
+                name == "browser_press" and args.get("key", "Enter") in _NON_CHANGING_KEYS
+            ):
+                subscriber_token = browser_progress_subscriber_token(session_id)
+        except Exception:
+            subscriber_token = None
+        result = function(task_id=kwargs.get("task_id"), **{
             name: args.get(name, default) for name, default in defaults.items()
         })
+        if subscriber_token is not None:
+            try:
+                from tools.browser_progress import capture_browser_progress
+                capture_browser_progress(
+                    name, result,
+                    task_id=kwargs.get("task_id"), session_id=session_id,
+                    tool_call_id=kwargs.get("tool_call_id"), subscriber_token=subscriber_token,
+                )
+            except Exception:
+                logger.debug("Automatic browser progress capture failed", exc_info=True)
+        return result
 
     return handle
 
@@ -377,7 +402,7 @@ for _name, _emoji, _check_fn, _defaults in _BROWSER_TOOL_TABLE:
         name=_name,
         toolset="browser",
         schema=_BROWSER_SCHEMA_MAP[_name],
-        handler=_handler(globals()[_name], _defaults),
+        handler=_handler(globals()[_name], _defaults, _name),
         check_fn=_check_fn,
         emoji=_emoji,
     )

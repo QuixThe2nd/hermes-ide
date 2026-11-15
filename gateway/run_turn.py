@@ -7260,12 +7260,9 @@ class GatewayTurnMixin:
 
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if needs_progress_queue else None
-        # Structured tool-stage embeds (moa_ask / moa_debate): subscribe
-        # to agent.moa_loop's stage-event bus only when this turn's adapter
-        # can render stage embeds (Discord today) AND the user hasn't turned
-        # tool progress off. On every other platform no subscriber exists,
-        # so the MoA tools' stage reports are silent no-ops and the existing
-        # accumulated-progress behavior is untouched.
+        # Structured MoA stage embeds require Discord's embed capability and
+        # tool progress. Browser image delivery independently enables the same
+        # turn-scoped subscription below for supported Discord/Matrix adapters.
         _stage_embed_adapter = None
         if tool_progress_enabled and source.platform == Platform.DISCORD:
             _stage_candidate = self._adapter_for_source(source)
@@ -7274,7 +7271,21 @@ class GatewayTurnMixin:
                 for _attr in ("send_tool_stage_embed", "edit_tool_stage_embed")
             ):
                 _stage_embed_adapter = _stage_candidate
-        stage_event_queue = queue.Queue() if _stage_embed_adapter is not None else None
+        # Browser image events share the same bounded turn-owned queue.
+        _browser_progress_enabled = False
+        try:
+            from gateway.browser_progress import browser_progress_supported
+            from tools.browser_progress import browser_progress_enabled
+            _browser_progress_enabled = (
+                browser_progress_enabled(user_config)
+                and browser_progress_supported(source, self._delivery_adapter_for(source))
+            )
+        except Exception:
+            logger.debug("Browser progress image capability probe failed", exc_info=True)
+        if session_id and (_stage_embed_adapter is not None or _browser_progress_enabled):
+            stage_event_queue = queue.Queue(maxsize=32)
+        else:
+            stage_event_queue = None
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
@@ -7332,6 +7343,7 @@ class GatewayTurnMixin:
             log_queue=log_queue,
             stage_event_queue=stage_event_queue,
             _stage_embed_adapter=_stage_embed_adapter,
+            _browser_progress_enabled=_browser_progress_enabled,
             last_progress_msg=last_progress_msg,
             last_tool=last_tool,
             last_was_terminal_block=last_was_terminal_block,
@@ -7641,17 +7653,19 @@ class GatewayTurnMixin:
             # worker that owns delivery.
             turn_ctx.bind_progress_task(progress_task)
 
-        # Tool-stage embed drain (Discord): one self-editing embed per MoA
-        # tool invocation. The subscription is turn-scoped — unsubscribed in
-        # the finally below so a queued follow-up turn for the same session
-        # installs its own and never double-renders.
+        # Tool-stage event drain: one self-editing embed per MoA invocation,
+        # plus native browser images. The subscription is turn-scoped and closes
+        # before the final flush so a queued follow-up cannot double-render.
         stage_task = None
         _unsubscribe_stage_events = None
         if stage_event_queue is not None:
             from agent.moa_loop import subscribe_tool_stage_events
+            from tools.browser_progress import clear_browser_progress_state
 
+            clear_browser_progress_state(session_id)
             _unsubscribe_stage_events = subscribe_tool_stage_events(
-                session_id, turn_runner.tool_stage_event_callback
+                session_id, turn_runner.tool_stage_event_callback,
+                browser_progress=_browser_progress_enabled,
             )
             stage_task = asyncio.create_task(turn_runner.send_tool_stage_embeds())
 
@@ -8487,16 +8501,25 @@ class GatewayTurnMixin:
             except Exception:
                 logger.debug("context-card gate before cleanup failed", exc_info=True)
 
-            # Stop progress sender, interrupt monitor, and notification task
-            if progress_task:
-                progress_task.cancel()
-            if stage_task:
-                stage_task.cancel()
+            # Close producer admission before the normal-completion flush. The
+            # marker is FIFO behind the final tool's image; stale/cancelled turns
+            # skip the flush and retain the existing discard-on-teardown path.
             if _unsubscribe_stage_events is not None:
                 try:
                     _unsubscribe_stage_events()
                 except Exception:
                     pass
+            if stage_task and _browser_progress_enabled:
+                try:
+                    await turn_runner.flush_tool_stage_events(stage_task)
+                except Exception:
+                    logger.debug("Final browser progress flush failed", exc_info=True)
+
+            # Stop progress sender, stage consumer, interrupt monitor, and notification task.
+            if progress_task:
+                progress_task.cancel()
+            if stage_task:
+                stage_task.cancel()
             if log_task:
                 log_task.cancel()
             interrupt_monitor.cancel()
@@ -8591,6 +8614,11 @@ class GatewayTurnMixin:
                             "background turn task failed during cleanup",
                             exc_info=True,
                         )
+            if stage_event_queue is not None:
+                from gateway.browser_progress import discard_pending_browser_progress
+                from tools.browser_progress import clear_browser_progress_state
+                discard_pending_browser_progress(stage_event_queue)
+                clear_browser_progress_state(session_id)
 
         # If streaming already delivered the response, mark it so the
         # caller's send() is skipped (avoiding duplicate messages).

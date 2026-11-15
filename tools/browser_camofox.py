@@ -207,7 +207,7 @@ def _rewrite_loopback_url_for_camofox(url: str) -> tuple[str, Optional[Dict[str,
 
 
 # ---- Session management ----
-_sessions: Dict[str, Dict[str, Any]] = {}  # task_id -> {"user_id": str, "tab_id": str|None, ...}
+_sessions: Dict[tuple[str, str], Dict[str, Any]] = {}  # (home_key, task_id) -> REST session
 _sessions_lock = threading.Lock()
 
 
@@ -287,14 +287,20 @@ def _adopt_tab_for_lost_control_response(session: Dict[str, Any], posted_url: st
     return None
 
 
+def _session_key(task_id: Optional[str], *, home_key: Optional[str] = None) -> tuple[str, str]:
+    """Process-local browser identity; equal task IDs in different profiles never share a tab."""
+    return home_key or hermes_home_key(), task_id or "default"
+
+
 def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
     """Get or create the task's session. Identity precedence: external override
     (CAMOFOX_USER_ID / config) → profile-scoped identity when managed persistence
     is on → random ephemeral userId."""
     task_id = task_id or "default"
+    session_key = _session_key(task_id)
     with _sessions_lock:
-        if task_id in _sessions:
-            return _adopt_existing_tab(_sessions[task_id])
+        if session_key in _sessions:
+            return _adopt_existing_tab(_sessions[session_key])
         camofox_cfg = _get_camofox_config()
         identity = _camofox_identity_override(task_id, camofox_cfg)
         if identity is None and _managed_persistence_enabled(camofox_cfg):
@@ -305,8 +311,8 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
         else:
             managed, adopt = True, _flag("CAMOFOX_ADOPT_EXISTING_TAB", camofox_cfg, "adopt_existing_tab")
         session = {"user_id": identity["user_id"], "tab_id": None, "session_key": identity["session_key"],
-                   "managed": managed, "adopt_existing_tab": adopt}
-        _sessions[task_id] = session
+                   "managed": managed, "adopt_existing_tab": adopt, "home_key": session_key[0]}
+        _sessions[session_key] = session
         return _adopt_existing_tab(session)
 
 
@@ -332,9 +338,9 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
 
 
 def _drop_session(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Remove and return session info."""
+    """Remove and return the current profile's session info."""
     with _sessions_lock:
-        return _sessions.pop(task_id or "default", None)
+        return _sessions.pop(_session_key(task_id), None)
 
 
 def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
@@ -384,8 +390,12 @@ def _user_params(session: Dict[str, Any]) -> Dict[str, str]:
     return {"userId": session["user_id"]}
 
 
-def _snapshot_data(session: Dict[str, Any]) -> dict:
-    return _get(_tab_path(session, "snapshot"), params=_user_params(session))
+def _snapshot_data(session: Dict[str, Any], timeout: Optional[int] = None) -> dict:
+    path = _tab_path(session, "snapshot")
+    params = _user_params(session)
+    if timeout is None:
+        return _get(path, params=params)
+    return _get(path, params=params, timeout=timeout)
 
 
 def _parse_snapshot_images(snapshot: str) -> list[Dict[str, str]]:
