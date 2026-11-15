@@ -43,6 +43,7 @@ def _management_failed(result: ReconcileResult, *, want_enabled: bool) -> bool:
         w
         for w in result.warnings
         if w.startswith("failed to")
+        or (w.startswith("refusing ") and " takeover" in w)
         or w == "timer enabled but not active"
     ]
     if want_enabled:

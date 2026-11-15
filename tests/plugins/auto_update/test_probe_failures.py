@@ -10,6 +10,7 @@ from plugins.auto_update.platform import InstallScope
 from plugins.auto_update.systemd import (
     TIMER_NAME,
     ProbeOutcome,
+    ReconcileResult,
     format_status,
     probe_timer_is_active,
     probe_timer_is_enabled,
@@ -72,6 +73,35 @@ def _patch_reconcile_env(monkeypatch, hermes_home, user_scope):
         "plugins.auto_update.legacy.duplicate_scheduler_present",
         lambda *_args, **_kwargs: False,
     )
+
+
+@pytest.mark.parametrize(
+    ("warning", "expected_failed"),
+    [
+        (
+            "refusing user-scope takeover; installed service belongs to another HERMES_HOME",
+            True,
+        ),
+        (
+            "User-scoped timer selected but loginctl linger is off; enable linger after logout",
+            False,
+        ),
+    ],
+)
+def test_enabled_management_distinguishes_refusals_from_advisories(
+    warning, expected_failed, user_scope
+):
+    result = ReconcileResult(
+        supported=True,
+        scope=user_scope,
+        changed=False,
+        enabled=True,
+        timer_active=True,
+        legacy=(),
+        warnings=(warning,),
+    )
+
+    assert _management_failed(result, want_enabled=True) is expected_failed
 
 
 def test_clean_not_found_and_disabled_probes_remain_false(user_scope):
@@ -255,8 +285,6 @@ def test_enable_path_probe_failure_exits_nonzero_with_diagnostic(
 
 
 def test_format_status_shows_unknown_for_failed_probes(user_scope):
-    from plugins.auto_update.systemd import ReconcileResult
-
     result = ReconcileResult(
         supported=True,
         scope=user_scope,

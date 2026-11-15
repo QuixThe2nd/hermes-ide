@@ -28,6 +28,8 @@ from plugins.auto_update.systemd import (
     ReconcileResult,
     expected_timer_disable_argv,
     reconcile_units,
+    render_service_unit,
+    service_unit_path,
 )
 
 
@@ -334,6 +336,60 @@ def test_failed_enable_reports_truthful_state_and_nonzero_exit(
     assert "Enabled: no" in captured
     assert "Timer active: no" in captured
     assert "permission denied" in captured
+
+
+@pytest.mark.parametrize("subcommand", ["enable", "reconcile"])
+def test_enabled_management_fails_foreign_ownership_with_old_timer_enabled(
+    subcommand, hermes_home, user_scope, monkeypatch, capsys, tmp_path
+):
+    _write_config(hermes_home, {"auto_update": {"enabled": True}})
+    foreign_home = tmp_path / "foreign-home"
+    original_service = render_service_unit(
+        hermes_home=str(foreign_home.resolve()),
+        exec_start=["/usr/bin/python3", "-m", "hermes_cli.main", "auto_update", "run"],
+        scope=user_scope,
+    )
+    service_unit_path(user_scope).write_text(original_service, encoding="utf-8")
+    calls = []
+
+    def fake_systemctl(args):
+        calls.append(list(args))
+        if args[-2:] == ["is-enabled", TIMER_NAME]:
+            return 0, "enabled\n", ""
+        if args[-2:] == ["is-active", TIMER_NAME]:
+            return 0, "active\n", ""
+        raise AssertionError(f"ownership refusal issued unexpected systemctl call: {args}")
+
+    monkeypatch.setattr("plugins.auto_update.cli.platform_supported", lambda: True)
+    monkeypatch.setattr("plugins.auto_update.cli.plugin_explicitly_disabled", lambda: False)
+    monkeypatch.setattr(
+        "plugins.auto_update.cli.load_auto_update_config", lambda: {"enabled": True}
+    )
+    monkeypatch.setattr(
+        "plugins.auto_update.cli.reconcile_scheduler_on_load", lambda **kw: None
+    )
+    monkeypatch.setattr("plugins.auto_update.systemd.platform_supported", lambda: True)
+    monkeypatch.setattr(
+        "plugins.auto_update.systemd.detect_install_scope", lambda: user_scope
+    )
+    monkeypatch.setattr("plugins.auto_update.systemd.get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(
+        "plugins.auto_update.systemd.default_systemctl_runner", fake_systemctl
+    )
+
+    exit_code = auto_update_command(argparse.Namespace(auto_update_command=subcommand))
+    captured = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "refusing user-scope takeover" in captured
+    assert "Enabled: yes" in captured
+    assert "Timer active: yes" in captured
+    assert "Scheduler installed" not in captured
+    assert service_unit_path(user_scope).read_text(encoding="utf-8") == original_service
+    assert [call[-2:] for call in calls] == [
+        ["is-enabled", TIMER_NAME],
+        ["is-active", TIMER_NAME],
+    ]
 
 
 @pytest.mark.parametrize(
