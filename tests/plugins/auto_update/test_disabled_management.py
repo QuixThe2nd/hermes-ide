@@ -183,6 +183,9 @@ def test_gateway_start_under_plugins_disabled_stops_timer_only(
     mgr = PluginManager()
     mgr.discover_and_load()
     hook = _gateway_start_hook_from_manager(mgr)
+    monkeypatch.setenv(
+        "HERMES_HOME", "/home/hermes-auto-update-tests/disabled-plugin/.hermes"
+    )
     hook(scope=user_scope, run_systemctl=fake_systemctl)
 
     assert _timer_mutation_calls(calls) == expected_timer_disable_argv(user_scope)
@@ -423,6 +426,9 @@ def test_reconcile_partial_systemctl_outcomes(
 
 
 def test_reconcile_preserves_disabled_state_across_runs(user_scope, monkeypatch):
+    monkeypatch.setenv(
+        "HERMES_HOME", "/home/hermes-auto-update-tests/disabled-reconcile/.hermes"
+    )
     calls: list[list[str]] = []
 
     def fake_systemctl(args):

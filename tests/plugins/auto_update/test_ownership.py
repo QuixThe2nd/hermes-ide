@@ -943,6 +943,7 @@ def test_cli_surfaces_lifecycle_failure_without_fallback_retry(
     from plugins.auto_update.cli import cmd_enable
     from plugins.auto_update.systemd import ReconcileResult
 
+    monkeypatch.setenv("HERMES_HOME", str(STABLE_HOME))
     _patch_lifecycle(monkeypatch, cfg)
     monkeypatch.setattr("plugins.auto_update.cli.platform_supported", lambda: True)
     monkeypatch.setattr("plugins.auto_update.cli._save_enabled_flag", lambda _enabled: None)

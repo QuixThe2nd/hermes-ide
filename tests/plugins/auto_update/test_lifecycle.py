@@ -131,6 +131,9 @@ def test_gateway_start_hook_reconciles_enabled_state(monkeypatch, user_scope):
 def test_gateway_start_hook_disables_timer_when_explicitly_disabled(
     monkeypatch, user_scope
 ):
+    monkeypatch.setenv(
+        "HERMES_HOME", "/home/hermes-auto-update-tests/disabled-gateway/.hermes"
+    )
     calls: list[list[str]] = []
 
     def fake_systemctl(args):
@@ -207,6 +210,9 @@ def test_reconcile_scheduler_on_load_skips_oneshot(monkeypatch, user_scope):
 
 
 def test_explicit_disable_stops_timer_via_lifecycle(monkeypatch, user_scope):
+    monkeypatch.setenv(
+        "HERMES_HOME", "/home/hermes-auto-update-tests/disabled-lifecycle/.hermes"
+    )
     calls: list[list[str]] = []
 
     def fake_systemctl(args):
@@ -239,6 +245,9 @@ def test_explicit_disable_stops_timer_via_lifecycle(monkeypatch, user_scope):
 
 
 def test_disable_survives_subsequent_reconcile(monkeypatch, user_scope):
+    monkeypatch.setenv(
+        "HERMES_HOME", "/home/hermes-auto-update-tests/disabled-reconcile/.hermes"
+    )
     calls: list[list[str]] = []
 
     def fake_systemctl(args):
