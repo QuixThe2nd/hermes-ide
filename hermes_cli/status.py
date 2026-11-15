@@ -360,7 +360,6 @@ import subprocess  # noqa: F401,E402
 _PLUGIN_COMPAT_LAZY = {
     'format_nous_portal_entitlement_message': ('hermes_cli.nous_account', 'format_nous_portal_entitlement_message'),
     'get_nous_portal_account_info': ('hermes_cli.nous_account', 'get_nous_portal_account_info'),
-    'get_nous_subscription_features': ('hermes_cli.nous_subscription', 'get_nous_subscription_features'),
     'managed_nous_tools_enabled': ('tools.tool_backend_helpers', 'managed_nous_tools_enabled'),
     'redact_key': ('hermes_cli.config', 'redact_key'),
 }

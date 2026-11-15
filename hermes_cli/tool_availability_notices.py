@@ -13,7 +13,7 @@ from typing import Callable, Iterable, Optional
 # Toolsets whose ``env_vars`` list is a multi-provider dump that means nothing to a user; render one
 # sentence per toolset instead. Provider names must exist under plugins/web/ (or be the Nous-managed row).
 _MULTI_PROVIDER_NOTICES: dict[str, str] = {
-    "web": ("[yellow]⚠ Web search is off[/] — no search provider is set up yet (any one of Nous subscription, Exa, "
+    "web": ("[yellow]⚠ Web search is off[/] — no search provider is set up yet (any one of Nous Tool Gateway, Exa, "
             "Tavily, Firecrawl, Brave, or free DuckDuckGo works). Run [bold]hermes setup tools[/] and set one up under "
             "\"Web Search & Scraping\"."),
 }

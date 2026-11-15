@@ -316,7 +316,7 @@ TIPS = [
     # --- Credential Pools & Routing ---
     'hermes auth reset <provider> [target] clears cooldowns and exhaustion flags on a whole credential pool, or on one credential by index, id, or label.',
     'credential_pool_strategies.<provider>: round_robin cycles keys evenly instead of the fill_first default.',
-    'use_gateway: true per-tool routes web, image, or speech tools through your Nous subscription — no extra keys.',
+    'use_gateway: true per-tool routes web, image, or speech tools through the Nous Tool Gateway — no extra keys.',
     'provider_routing.data_collection: deny excludes data-storing providers on OpenRouter.',
     'provider_routing.require_parameters: true only routes to providers that support every param in your request.',
     # --- TUI & Dashboard ---
