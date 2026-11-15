@@ -355,10 +355,28 @@ def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
     return False
 
 
+class CamofoxNotConfiguredError(RuntimeError):
+    """CAMOFOX_URL is unset/empty: every server request would otherwise die inside
+    ``requests`` with a cryptic ``MissingSchema: Invalid URL '/tabs'`` on the
+    relative path, which reads like a page-URL problem instead of a missing
+    browser server configuration."""
+
+
+def _not_configured_message() -> str:
+    return (
+        "Camofox browser server is not configured: CAMOFOX_URL is unset. "
+        "Set CAMOFOX_URL in ~/.hermes/.env (e.g. CAMOFOX_URL=http://localhost:9377), "
+        "then start the server: npm start (in camofox-browser dir) "
+        "or: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
+
+
 # ---- HTTP helpers ----
 def _request(method: str, path: str, timeout: Optional[int] = None, **kwargs: Any) -> requests.Response:
     """Issue an authenticated request to camofox and return the raised-for-status response."""
-    resp = getattr(requests, method)(f"{get_camofox_url()}{path}", headers=_auth_headers(),
+    base_url = get_camofox_url()
+    if not base_url:
+        raise CamofoxNotConfiguredError(_not_configured_message())
+    resp = getattr(requests, method)(f"{base_url}{path}", headers=_auth_headers(),
                                      timeout=_get_command_timeout() if timeout is None else timeout, **kwargs)
     resp.raise_for_status()
     return resp
