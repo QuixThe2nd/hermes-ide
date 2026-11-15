@@ -32,6 +32,159 @@ def browser_state():
         live.update(state)
 
 
+def test_active_turn_browser_survives_idle_janitor_until_turn_cleanup(browser_state):
+    """Non-browser work and long model calls must not reap a live turn's tab."""
+    from types import SimpleNamespace
+
+    from agent.chat_completion_helpers import cleanup_task_resources
+    from agent.turn_context import _bind_turn_identity
+
+    agent = SimpleNamespace(verbose_logging=False, session_id="session-1")
+    browser_state.BROWSER_SESSION_INACTIVITY_TIMEOUT = 0
+    browser_state._active_sessions["task-1"] = {"backend": "camofox"}
+    browser_state._session_last_activity["task-1"] = 1.0
+
+    with (
+        patch("run_agent.cleanup_vm"),
+        patch("tools.browser_camofox.camofox_soft_cleanup", return_value=False),
+        patch("tools.browser_camofox.camofox_close") as close,
+    ):
+        _bind_turn_identity(agent, "task-1", None, None, None, None)
+        bt_lifecycle._cleanup_inactive_browser_sessions()
+
+        close.assert_not_called()
+        assert "task-1" in browser_state._active_sessions
+
+        cleanup_task_resources(agent, "task-1")
+        close.assert_called_once_with("task-1")
+        assert "task-1" not in browser_state._active_sessions
+
+        # Once ownership ends, an abandoned stale session is reclaimable again.
+        browser_state._active_sessions["task-1"] = {"backend": "camofox"}
+        browser_state._session_last_activity["task-1"] = 1.0
+        bt_lifecycle._cleanup_inactive_browser_sessions()
+        assert close.call_count == 2
+
+
+
+def test_repeated_turns_retain_and_release_the_same_browser_task(browser_state):
+    """A completed turn must not remove the next turn's idle protection."""
+    from types import SimpleNamespace
+
+    from agent.chat_completion_helpers import cleanup_task_resources
+    from agent.turn_context import _bind_turn_identity
+
+    agent = SimpleNamespace(verbose_logging=False, session_id="session-1")
+    browser_state.BROWSER_SESSION_INACTIVITY_TIMEOUT = 0
+
+    with (
+        patch("run_agent.cleanup_vm"),
+        patch("tools.browser_camofox.camofox_soft_cleanup", return_value=False),
+        patch("tools.browser_camofox.camofox_close") as close,
+    ):
+        for completed_turns in range(2):
+            browser_state._active_sessions["task-1"] = {"backend": "camofox"}
+            browser_state._session_last_activity["task-1"] = 1.0
+            _bind_turn_identity(agent, "task-1", None, None, None, None)
+
+            bt_lifecycle._cleanup_inactive_browser_sessions()
+            assert close.call_count == completed_turns
+            assert "task-1" in browser_state._active_sessions
+
+            cleanup_task_resources(agent, "task-1")
+            assert close.call_count == completed_turns + 1
+            assert "task-1" not in browser_state._active_sessions
+
+
+def test_early_browser_cleanup_exit_releases_turn_lease(browser_state):
+    """A failed close must not leave an ended turn permanently idle-protected."""
+    from types import SimpleNamespace
+
+    from agent.chat_completion_helpers import cleanup_task_resources
+    from agent.turn_context import _bind_turn_identity
+
+    agent = SimpleNamespace(verbose_logging=False, session_id="session-1")
+    browser_state.BROWSER_SESSION_INACTIVITY_TIMEOUT = 0
+    browser_state._active_sessions["task-1"] = {"backend": "camofox"}
+    browser_state._session_last_activity["task-1"] = 1.0
+
+    with (
+        patch("run_agent.cleanup_vm"),
+        patch("tools.browser_camofox.camofox_soft_cleanup", return_value=False),
+        patch("tools.browser_camofox.camofox_close") as close,
+    ):
+        _bind_turn_identity(agent, "task-1", None, None, None, None)
+        bt_lifecycle._cleanup_inactive_browser_sessions()
+        close.assert_not_called()
+
+        with patch("run_agent.cleanup_browser", side_effect=RuntimeError("close unavailable")):
+            cleanup_task_resources(agent, "task-1")
+
+        bt_lifecycle._cleanup_inactive_browser_sessions()
+        close.assert_called_once_with("task-1")
+        assert "task-1" not in browser_state._active_sessions
+
+def test_agent_close_releases_owned_browser_turn_lease(browser_state):
+    from types import SimpleNamespace
+
+    from agent.client_lifecycle import ClientLifecycleMixin
+    from agent.turn_context import _bind_turn_identity
+
+    agent = SimpleNamespace(session_id="session-1")
+    _bind_turn_identity(agent, "generated-task", None, None, None, None)
+    browser_state.BROWSER_SESSION_INACTIVITY_TIMEOUT = 0
+    browser_state._active_sessions["generated-task"] = {"backend": "camofox"}
+    browser_state._session_last_activity["generated-task"] = 1.0
+
+    with (
+        patch("run_agent.cleanup_vm"),
+        patch("run_agent.cleanup_browser"),
+        patch("tools.process_registry.process_registry.list_sessions", return_value=[]),
+        patch("tools.computer_use.tool.release_computer_use_session"),
+        patch("tools.file_tools.clear_file_ops_cache"),
+    ):
+        ClientLifecycleMixin._close_task_resources(agent, "session-1")
+
+    with (
+        patch("tools.browser_camofox.camofox_soft_cleanup", return_value=False),
+        patch("tools.browser_camofox.camofox_close") as close,
+    ):
+        bt_lifecycle._cleanup_inactive_browser_sessions()
+
+    close.assert_called_once_with("generated-task")
+
+
+def test_browser_turn_leases_are_profile_scoped(browser_state, tmp_path, monkeypatch):
+    home_a = tmp_path / "home-a"
+    home_b = tmp_path / "home-b"
+    task_id = "shared-task-id"
+    browser_state.BROWSER_SESSION_INACTIVITY_TIMEOUT = 0
+    browser_state._active_sessions[task_id] = {"backend": "camofox"}
+    browser_state._session_last_activity[task_id] = 1.0
+    browser_state._session_owner_homes[task_id] = str(home_a)
+
+    try:
+        monkeypatch.setenv("HERMES_HOME", str(home_a))
+        bt_lifecycle.retain_browser_session(task_id)
+        monkeypatch.setenv("HERMES_HOME", str(home_b))
+        bt_lifecycle.retain_browser_session(task_id)
+        bt_lifecycle.release_browser_session(task_id)
+
+        monkeypatch.setenv("HERMES_HOME", str(home_a))
+        with (
+            patch("tools.browser_camofox.camofox_soft_cleanup", return_value=False),
+            patch("tools.browser_camofox.camofox_close") as close,
+        ):
+            bt_lifecycle._cleanup_inactive_browser_sessions()
+
+        close.assert_not_called()
+        assert task_id in browser_state._active_sessions
+    finally:
+        for home in (home_a, home_b):
+            monkeypatch.setenv("HERMES_HOME", str(home))
+            bt_lifecycle.release_browser_session(task_id)
+
+
 def test_ephemeral_cleanup_closes_camofox_and_clears_tracking(browser_state):
     browser_state._active_sessions["task-1"] = {"backend": "camofox"}
     browser_state._session_last_activity["task-1"] = 123.0

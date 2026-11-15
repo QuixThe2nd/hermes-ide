@@ -9,8 +9,56 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+from hermes_constants import (
+    get_hermes_home, hermes_home_key, reset_hermes_home_override, set_hermes_home_override,
+)
 from tools.browser_tool_origin import origin as _bt
+
+# Browser idle cleanup must never mistake a quiet tool gap for an abandoned agent turn.
+# This registry is local rather than facade-owned so binding a turn does not import the
+# browser stack. Profile keys prevent same-ID turns from releasing each other's leases;
+# the reaping set closes the retain/cleanup race when a task ID is reused.
+_turn_lease_condition = threading.Condition()
+_active_turn_task_ids: set[tuple[str, str]] = set()
+_reaping_task_ids: set[tuple[str, str]] = set()
+
+
+def _lease_key(task_id: str, owner_home: Optional[str] = None) -> tuple[str, str]:
+    return hermes_home_key(owner_home), task_id
+
+
+def retain_browser_session(task_id: str) -> None:
+    """Keep this task's browser session alive until its owning turn releases it."""
+    if not task_id:
+        return
+    key = _lease_key(task_id)
+    with _turn_lease_condition:
+        while key in _reaping_task_ids:
+            _turn_lease_condition.wait()
+        _active_turn_task_ids.add(key)
+
+
+def release_browser_session(task_id: Optional[str], owner_home: Optional[str] = None) -> None:
+    """Release idle-janitor protection without closing the session itself."""
+    if not task_id:
+        return
+    with _turn_lease_condition:
+        _active_turn_task_ids.discard(_lease_key(task_id, owner_home))
+
+
+def _claim_inactive_session(task_id: str, owner_home: Optional[str] = None) -> bool:
+    key = _lease_key(task_id, owner_home)
+    with _turn_lease_condition:
+        if key in _active_turn_task_ids or key in _reaping_task_ids:
+            return False
+        _reaping_task_ids.add(key)
+        return True
+
+
+def _finish_session_reaping(task_id: str, owner_home: Optional[str] = None) -> None:
+    with _turn_lease_condition:
+        _reaping_task_ids.discard(_lease_key(task_id, owner_home))
+        _turn_lease_condition.notify_all()
 
 
 @contextlib.contextmanager
@@ -53,6 +101,8 @@ def _forget_session_tracking(task_id: str) -> None:
 def _cleanup_single_browser_session(task_id: str) -> None:
     from tools.browser_camofox import camofox_close, camofox_soft_cleanup
 
+    with _bt._cleanup_lock:
+        owner_home = _bt._session_owner_homes.get(task_id)
     try:
         if not camofox_soft_cleanup(task_id):
             camofox_close(task_id)
@@ -60,6 +110,7 @@ def _cleanup_single_browser_session(task_id: str) -> None:
         _bt.logger.warning("Camofox cleanup failed for %s: %s", task_id, exc)
     finally:
         _forget_session_tracking(task_id)
+        release_browser_session(task_id, owner_home)
 
 
 def cleanup_browser(task_id: Optional[str] = None) -> None:
@@ -71,22 +122,28 @@ def _cleanup_inactive_browser_sessions() -> None:
     now = time.time()
     with _bt._cleanup_lock:
         stale = [
-            task_id for task_id, last_activity in list(_bt._session_last_activity.items())
+            (task_id, _bt._session_owner_homes.get(task_id))
+            for task_id, last_activity in list(_bt._session_last_activity.items())
             if now - last_activity > _bt.BROWSER_SESSION_INACTIVITY_TIMEOUT
         ]
-    for task_id in stale:
+    for task_id, owner_home in stale:
+        if not _claim_inactive_session(task_id, owner_home):
+            continue
         try:
-            with _session_owner_scope(task_id):
-                _cleanup_single_browser_session(task_id)
-        except Exception as exc:
-            with _bt._cleanup_lock:
-                failures = _bt._cleanup_failures[task_id] = _bt._cleanup_failures.get(task_id, 0) + 1
-                if failures >= _bt.MAX_INACTIVITY_CLEANUP_FAILURES:
-                    _bt._active_sessions.pop(task_id, None)
-                    _bt._session_last_activity.pop(task_id, None)
-                    _bt._session_owner_homes.pop(task_id, None)
-                    _bt._cleanup_failures.pop(task_id, None)
-            _bt.logger.warning("Inactive Camofox cleanup failed for %s: %s", task_id, exc)
+            try:
+                with _session_owner_scope(task_id):
+                    _cleanup_single_browser_session(task_id)
+            except Exception as exc:
+                with _bt._cleanup_lock:
+                    failures = _bt._cleanup_failures[task_id] = _bt._cleanup_failures.get(task_id, 0) + 1
+                    if failures >= _bt.MAX_INACTIVITY_CLEANUP_FAILURES:
+                        _bt._active_sessions.pop(task_id, None)
+                        _bt._session_last_activity.pop(task_id, None)
+                        _bt._session_owner_homes.pop(task_id, None)
+                        _bt._cleanup_failures.pop(task_id, None)
+                _bt.logger.warning("Inactive Camofox cleanup failed for %s: %s", task_id, exc)
+        finally:
+            _finish_session_reaping(task_id, owner_home)
 
 
 def _start_browser_cleanup_thread() -> None:

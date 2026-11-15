@@ -2191,7 +2191,10 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
 
 def cleanup_task_resources(agent, task_id: str) -> None:
-    """Clean per-turn VM and Camofox resources; persistent terminal envs use their idle reaper."""
+    """End turn-owned browser protection, then clean per-turn VM and Camofox resources."""
+    from tools.browser_tool_lifecycle import release_browser_session
+
+    release_browser_session(task_id)
     try:
         if is_persistent_env(task_id):
             if agent.verbose_logging:

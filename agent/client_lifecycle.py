@@ -114,6 +114,13 @@ class ClientLifecycleMixin:
                         process["session_id"], source="agent_close", consume_output=True,
                     )
 
+        def release_browser_turns() -> None:
+            from tools.browser_tool_lifecycle import release_browser_session
+
+            owners = {task_id, *getattr(self, "_process_owner_task_ids", ())}
+            for owner in owners:
+                release_browser_session(owner)
+
         def release_computer_use() -> None:
             from tools.computer_use.tool import release_computer_use_session
             release_computer_use_session(task_id)
@@ -127,7 +134,7 @@ class ClientLifecycleMixin:
                 if owner and owner != task_id:
                     clear_file_ops_cache(owner)
 
-        for step in (kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id),
+        for step in (release_browser_turns, kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id),
                      release_computer_use, forget_file_state):
             _quietly(step)
 
