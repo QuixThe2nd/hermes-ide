@@ -1,0 +1,16 @@
+▶ pre-compiling bytecode cache
+Discovered 2 test files (~112 tests) under ['tests/agent/test_run_agent_codex_responses.py', 'tests/agent/test_codex_responses_adapter.py']; running with -j 30
+[ 39.3% |    44/~112 | ✓3 | ✗0] ✓ tests/agent/test_codex_responses_adapter.py (3✓, 1.3s)
+[100.0% |   112/~112 | ✓5 | ✗0] ✓ tests/agent/test_run_agent_codex_responses.py (2✓, 5.1s)
+
+=== Summary: 2 files, 5 tests passed, 0 failed (100% complete) in 5.1s (30 workers) ===
+  Durations cached to test_durations.json (2 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   2
+  Total subprocess CPU-wall: 6.3s  (runner wall: 5.1s, parallelism: 30x)
+  P50: 5.05s  P90: 5.05s  P95: 5.05s  P99: 5.05s  Max: 5.05s
+  <1s: 0 files (0%)  <2s: 1 files (50%)
+  Top 10 slowest:
+      5.05s  tests/agent/test_run_agent_codex_responses.py
+      1.29s  tests/agent/test_codex_responses_adapter.py
