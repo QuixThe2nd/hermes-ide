@@ -263,7 +263,7 @@ class _FakeCreateStream:
         self.closed = True
 
 
-def _codex_text_stream(text):
+def _codex_text_stream(text, *, status="completed", error=None):
     item = SimpleNamespace(
         type="message",
         status="completed",
@@ -274,9 +274,10 @@ def _codex_text_stream(text):
         SimpleNamespace(type="response.output_text.delta", delta=text),
         SimpleNamespace(type="response.output_item.done", item=item),
         SimpleNamespace(
-            type="response.completed",
+            type=f"response.{status}",
             response=SimpleNamespace(
-                status="completed",
+                status=status,
+                error=error,
                 usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
             ),
         ),
@@ -1250,6 +1251,8 @@ def test_run_conversation_recovers_interrupted_placeholder_in_same_run(monkeypat
 
     agent = _build_agent(monkeypatch)
     requests = []
+    streamed = []
+    agent.stream_delta_callback = streamed.append
 
     streams = iter([
         _codex_text_stream(_INTERRUPTED_PLACEHOLDER),
@@ -1271,6 +1274,10 @@ def test_run_conversation_recovers_interrupted_placeholder_in_same_run(monkeypat
     assert result["final_response"] == "Recovered without leaving the original run."
     assert result["api_calls"] == 2
     assert len(requests) == 2
+    assert streamed == [
+        _INTERRUPTED_PLACEHOLDER,
+        "Recovered without leaving the original run.",
+    ]
     judge.assert_not_called()
     assert requests[0]["instructions"] == requests[1]["instructions"]
     assert requests[0]["prompt_cache_key"] == requests[1]["prompt_cache_key"]
@@ -1282,6 +1289,83 @@ def test_run_conversation_recovers_interrupted_placeholder_in_same_run(monkeypat
     assert len(placeholder_rows) == 1
     assert placeholder_rows[0]["finish_reason"] == "incomplete"
     assert result["messages"][-1]["content"] == result["final_response"]
+
+
+def test_run_conversation_interrupt_after_placeholder_skips_continuation_request(monkeypatch):
+    """A user stop after the retained interim row wins before the next provider call."""
+    from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+
+    agent = _build_agent(monkeypatch)
+    requests = []
+    streamed = []
+    agent.stream_delta_callback = streamed.append
+    request_client = SimpleNamespace(
+        responses=SimpleNamespace(
+            create=lambda **kwargs: requests.append(kwargs)
+            or _codex_text_stream(_INTERRUPTED_PLACEHOLDER)
+        )
+    )
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **kwargs: request_client)
+    monkeypatch.setattr(agent, "_close_request_openai_client", lambda *args, **kwargs: None)
+    monkeypatch.setattr(agent, "_abort_request_openai_client", lambda *args, **kwargs: None)
+
+    real_emit = agent._emit_interim_assistant_message
+
+    def emit_then_interrupt(message):
+        real_emit(message)
+        if message.get("content") == _INTERRUPTED_PLACEHOLDER:
+            agent.interrupt("stop before the continuation")
+
+    monkeypatch.setattr(agent, "_emit_interim_assistant_message", emit_then_interrupt)
+
+    result = agent.run_conversation("Finish the interrupted answer")
+
+    assert result["completed"] is False
+    assert result["failed"] is False
+    assert result["interrupted"] is True
+    assert result["interrupt_message"] == "stop before the continuation"
+    assert result["api_calls"] == 1
+    assert len(requests) == 1
+    assert streamed == [_INTERRUPTED_PLACEHOLDER]
+    assert result["messages"][-1]["content"] == _INTERRUPTED_PLACEHOLDER
+    assert result["messages"][-1]["finish_reason"] == "incomplete"
+
+
+def test_run_conversation_failed_placeholder_does_not_start_continuation(monkeypatch):
+    """Terminal provider failure takes precedence over placeholder recovery."""
+    from unittest.mock import patch
+
+    from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+
+    agent = _build_agent(monkeypatch)
+    requests = []
+    request_client = SimpleNamespace(
+        responses=SimpleNamespace(
+            create=lambda **kwargs: requests.append(kwargs)
+            or _codex_text_stream(
+                _INTERRUPTED_PLACEHOLDER,
+                status="failed",
+                error=SimpleNamespace(
+                    code="server_error",
+                    message="provider terminal failure",
+                ),
+            )
+        )
+    )
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **kwargs: request_client)
+    monkeypatch.setattr(agent, "_close_request_openai_client", lambda *args, **kwargs: None)
+    monkeypatch.setattr(agent, "_abort_request_openai_client", lambda *args, **kwargs: None)
+
+    with patch(
+        "agent.turn_response_intake.continue_codex_incomplete",
+        side_effect=AssertionError("failed response entered incomplete continuation"),
+    ) as continuation:
+        result = agent.run_conversation("Finish the interrupted answer")
+
+    assert result["completed"] is False
+    assert result["failed"] is True
+    assert "server_error: provider terminal failure" in result["error"]
+    continuation.assert_not_called()
 
 
 def test_run_conversation_bounds_persistent_interrupted_placeholders(monkeypatch):

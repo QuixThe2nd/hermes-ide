@@ -101,3 +101,68 @@ git diff --check
 ```
 
 Results: all four commands exited zero. `compile.log` records the empty successful `py_compile` output.
+
+## Post-rebase final verification
+
+These runs used the scratch environment below. Each invocation received its own `--basetemp`: `scripts/run_tests.sh` starts one pytest process per file, so concurrent files must not share a pytest temporary root.
+
+```bash
+export HOME=/root/.hermes/cache/scratch/interruption-runtime-pr738-tests/home
+export HERMES_HOME=$HOME/.hermes
+export HERMES_TEST_ISOLATION=1
+export PYTHONDONTWRITEBYTECODE=1
+export HERMES_PYTHON=/root/hermes-agent/.venv/bin/python
+export TEST_ROOT=/root/.hermes/cache/scratch/interruption-runtime-pr738-tests
+```
+
+Focused recovery, failure-precedence, adapter-boundary, and real-gateway checks:
+
+```bash
+scripts/run_tests.sh tests/agent/test_run_agent_codex_responses.py \
+  -k 'test_run_conversation_recovers_interrupted_placeholder_in_same_run or test_run_conversation_interrupt_after_placeholder_skips_continuation_request or test_run_conversation_failed_placeholder_does_not_start_continuation or test_run_conversation_bounds_persistent_interrupted_placeholders' \
+  --basetemp=$TEST_ROOT/basetemp-final-agent-11 -q
+scripts/run_tests.sh tests/agent/test_codex_responses_adapter.py \
+  -k placeholder --basetemp=$TEST_ROOT/basetemp-final-adapter-11 -q
+scripts/run_tests.sh tests/gateway/test_codex_interruption_goal.py \
+  --basetemp=$TEST_ROOT/basetemp-final-gateway-11 -q
+```
+
+Results: four conversation tests, three adapter tests, and one gateway integration test passed; no retries or flakes. The gateway test proves same-turn recovery, stable prompt-cache identity, judgement of only the recovered answer, persisted `done` state, and no queued continuation.
+
+Full Codex modules were run separately:
+
+```bash
+scripts/run_tests.sh tests/agent/test_run_agent_codex_responses.py \
+  --basetemp=$TEST_ROOT/basetemp-codex-agent-standalone-9 -q
+scripts/run_tests.sh tests/agent/test_codex_responses_adapter.py \
+  --basetemp=$TEST_ROOT/basetemp-codex-adapter-standalone-12 -q
+```
+
+Results: the conversation module had 72 passes and the three known unrelated compression/truncated-tool failures; the adapter module had 53 passes. A separate adapter-plus-conversation invocation produced the same 125 passes and three failures.
+
+The adjacent agent suites and `tests/gateway/test_goal_verdict_send.py` passed in the combined adjacency run. The two files affected by the earlier shared-basetemp race were rerun independently:
+
+```bash
+scripts/run_tests.sh tests/gateway/test_goal_continuation_drain.py \
+  --basetemp=$TEST_ROOT/basetemp-drain-standalone-10 -q
+scripts/run_tests.sh tests/gateway/test_goal_auto.py \
+  --basetemp=$TEST_ROOT/basetemp-goal-auto-standalone-10 -q
+scripts/run_tests.sh tests/agent/test_partial_stream_finish_reason.py \
+  -k 'test_text_stream_with_final_usage_chunk_completes_as_stop or test_text_stream_abrupt_drop_without_usage_still_returns_stub' \
+  --basetemp=$TEST_ROOT/basetemp-stream-controls-10 -q
+```
+
+Results: two drain tests, 21 goal-automation tests, and two stream controls passed with no retries.
+
+Final static checks:
+
+```bash
+env PYTHONDONTWRITEBYTECODE=1 /root/hermes-agent/.venv/bin/python -m py_compile \
+  agent/codex_responses_adapter.py \
+  tests/agent/test_codex_responses_adapter.py \
+  tests/agent/test_run_agent_codex_responses.py \
+  tests/gateway/test_codex_interruption_goal.py
+git diff --check
+```
+
+Both commands exited zero.
