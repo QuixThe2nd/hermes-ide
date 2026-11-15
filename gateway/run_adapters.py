@@ -1520,10 +1520,13 @@ class GatewayAdapterLifecycleMixin:
         profile_pending = pending.setdefault(profile_name, {})
         if platform in profile_pending:
             return
-        profile_pending[platform] = self._retain_background_task(asyncio.create_task(
+        task = asyncio.create_task(
             self._run_secondary_profile_reconnect(profile_name, platform),
             name=f"secondary-reconnect:{profile_name}:{platform.value}",
-        ))
+        )
+        # Permanent retry service, not finite work for the restart drain to await.
+        task._hermes_supervised_watcher = True  # type: ignore[attr-defined]
+        profile_pending[platform] = self._retain_background_task(task)
 
     def _make_profile_fatal_error_handler(
         self, profile_name: str, platform: Platform
