@@ -36,6 +36,11 @@ _REFERENCE_DEFINITION_RE = re.compile(
 _REFERENCE_USE_RE = re.compile(
     r"!?\[(?P<text>[^]\n]+)\](?:\[(?P<label>[^]\n]*)\])?"
 )
+_ATX_HEADING_RE = re.compile(
+    r"^ {0,3}#{1,6}[ \t]+(?P<title>.*?)[ \t]*(?:\r?\n|$)"
+)
+_SETEXT_HEADING_RE = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*(?:\r?\n|$)")
+_FENCE_RE = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})")
 
 
 def _strip_unbalanced_parens(url: str) -> str:
@@ -115,6 +120,78 @@ def _reference_key(label: str) -> str:
     return " ".join(label.split()).casefold()
 
 
+def _markdown_lines(text: str) -> Iterable[tuple[str, bool]]:
+    """Yield lines and whether they are inside a fenced code block."""
+    fence = ""
+    for line in text.splitlines(keepends=True):
+        match = _FENCE_RE.match(line)
+        if fence:
+            yield line, True
+            if (
+                match
+                and match.group("marker")[0] == fence[0]
+                and len(match.group("marker")) >= len(fence)
+                and not line[match.end():].strip()
+            ):
+                fence = ""
+        elif match:
+            fence = match.group("marker")
+            yield line, True
+        else:
+            yield line, False
+
+
+def _final_sources_start(text: str) -> int:
+    """Locate ``Sources`` only when it is the document's final section."""
+    last_heading = None
+    offset = 0
+    for line, in_code in _markdown_lines(text):
+        if not in_code:
+            match = _ATX_HEADING_RE.match(line)
+            if match:
+                title = re.sub(r"[ \t]+#+$", "", match.group("title")).strip()
+                last_heading = (offset, title)
+            elif _SETEXT_HEADING_RE.match(line):
+                # Do not treat text under a later Setext heading as Sources.
+                last_heading = (offset, "")
+        offset += len(line)
+    if last_heading and last_heading[1].casefold() == "sources":
+        return last_heading[0]
+    return len(text)
+
+
+def _reference_use_labels(text: str) -> Set[str]:
+    labels: Set[str] = set()
+    for match in _REFERENCE_USE_RE.finditer(text):
+        label = match.group("label")
+        if label is None:
+            if text[match.end():match.end() + 1] == "(":
+                continue
+            label = match.group("text")
+        labels.add(_reference_key(label or match.group("text")))
+    return labels
+
+
+def _can_clean_sources(prefix: str, sources: str, allowed: Set[str]) -> bool:
+    """Reject ambiguous definitions and definitions used by report claims."""
+    if any(in_code for _line, in_code in _markdown_lines(sources)):
+        return False
+    definitions = list(_REFERENCE_DEFINITION_RE.finditer(sources))
+    counts = {}
+    for match in definitions:
+        key = _reference_key(match.group("label"))
+        counts[key] = counts.get(key, 0) + 1
+    external_labels = _reference_use_labels(prefix)
+    for match in definitions:
+        raw = _strip_prose_tail(match.group("url"))
+        if normalize_url(raw) in allowed:
+            continue
+        key = _reference_key(match.group("label"))
+        if counts[key] > 1 or key in external_labels:
+            return False
+    return True
+
+
 def _strip_unledgered_references(text: str, allowed: Set[str]) -> str:
     """Remove bad definitions and turn only their references into plain text."""
     known_labels: Set[str] = set()
@@ -192,15 +269,9 @@ def _inline_link_end(text: str, start: int) -> int:
     return -1
 
 
-def remove_unledgered_urls(report_text: str, evidence_urls: Iterable[str]) -> str:
-    """Remove unsupported URL destinations without removing supported report prose.
-
-    Inline and reference links become their visible label; bare URLs are removed.
-    Ledger-backed source text is left byte-for-byte unchanged. The caller must run
-    :func:`validate_citations` on the returned text before publishing it.
-    """
-    allowed = {normalize_url(url) for url in evidence_urls if url}
-    text = _strip_unledgered_references(report_text or "", allowed)
+def _remove_unledgered_urls(text: str, allowed: Set[str]) -> str:
+    """Clean one fragment whose URLs are known to be redundant."""
+    text = _strip_unledgered_references(text, allowed)
     # Restarting after an overlapping inline label removes at least its link
     # destination and delimiters. Text therefore shrinks on every pass, bounding
     # the iterative rescans without depending on Python's recursion limit.
@@ -247,6 +318,48 @@ def remove_unledgered_urls(report_text: str, evidence_urls: Iterable[str]) -> st
         else:
             pieces.append(text[cursor:])
             return "".join(pieces)
+
+
+def _remove_redundant_row_urls(text: str, allowed: Set[str]) -> str:
+    """Clean table cells that retain at least one ledger-backed citation."""
+    output: List[str] = []
+    for line, in_code in _markdown_lines(text):
+        body = line.rstrip("\r\n")
+        ending = line[len(body):]
+        stripped = body.strip()
+        if in_code or "\\|" in body or not (
+            stripped.startswith("|") and stripped.endswith("|")
+        ):
+            output.append(line)
+            continue
+        parts = body.split("|")
+        for index in range(1, len(parts) - 1):
+            cited = extract_report_urls(parts[index])
+            if any(url in allowed for url in cited) and any(
+                url not in allowed for url in cited
+            ):
+                parts[index] = _remove_unledgered_urls(parts[index], allowed)
+        output.append("|".join(parts) + ending)
+    return "".join(output)
+
+
+def remove_unledgered_urls(report_text: str, evidence_urls: Iterable[str]) -> str:
+    """Remove only unsupported URLs that are mechanically redundant.
+
+    Eligible URLs occur in the final ``Sources`` section or share a pipe-table
+    cell with a ledger-backed citation. Every other URL remains for
+    :func:`validate_citations` to reject. Inline and reference links in eligible
+    fragments become their visible label; bare URLs are removed.
+    """
+    allowed = {normalize_url(url) for url in evidence_urls if url}
+    text = report_text or ""
+    sources_start = _final_sources_start(text)
+    prefix = text[:sources_start]
+    sources = text[sources_start:]
+    cleaned_prefix = _remove_redundant_row_urls(prefix, allowed)
+    if sources and _can_clean_sources(prefix, sources, allowed):
+        sources = _remove_unledgered_urls(sources, allowed)
+    return cleaned_prefix + sources
 
 
 def validate_citations(
