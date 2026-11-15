@@ -2598,3 +2598,205 @@ def test_delegate_refuses_unpushed_workdir(monkeypatch, tmp_path):
     assert result["success"] is False
     assert "unpushed commit" in result["error"]
     assert called == []
+
+
+def _dirty_repo(tmp_path: Path, *, extra_untracked: int = 4) -> Path:
+    repo, _bare = _init_repo_with_origin(tmp_path)
+    (repo / "file.txt").write_text("modified\n", encoding="utf-8")
+    (repo / "staged.txt").write_text("staged\n", encoding="utf-8")
+    _run_git("add", "staged.txt", cwd=repo)
+    for index in range(extra_untracked):
+        (repo / f"untracked-{index}.txt").write_text("u\n", encoding="utf-8")
+    return repo
+
+
+def test_workdir_git_status_snapshot_reports_dirty_state(tmp_path):
+    from tools.cursor_agent_tool import workdir_git_status_snapshot
+
+    repo = _dirty_repo(tmp_path)
+    snapshot = workdir_git_status_snapshot(str(repo))
+    assert snapshot is not None
+    assert snapshot["branch"] == "main"
+    # 1 modified tracked file + 1 staged new file + 4 untracked
+    assert snapshot["dirty_count"] == 6
+    assert snapshot["untracked_count"] == 4
+    assert len(snapshot["sample_paths"]) == 5  # sample is capped
+    assert {"file.txt", "staged.txt"} <= set(snapshot["sample_paths"])
+
+
+def test_workdir_git_status_snapshot_clean_repo(tmp_path):
+    from tools.cursor_agent_tool import workdir_git_status_snapshot
+
+    repo, _bare = _init_repo_with_origin(tmp_path)
+    snapshot = workdir_git_status_snapshot(str(repo))
+    assert snapshot is not None
+    assert snapshot["branch"] == "main"
+    assert snapshot["dirty_count"] == 0
+    assert snapshot["untracked_count"] == 0
+    assert snapshot["sample_paths"] == []
+
+
+def test_workdir_git_status_snapshot_non_repo_returns_none(tmp_path):
+    from tools.cursor_agent_tool import workdir_git_status_snapshot
+
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert workdir_git_status_snapshot(str(plain)) is None
+    assert workdir_git_status_snapshot(str(tmp_path / "missing")) is None
+
+
+def _timeout_run() -> dict:
+    return {
+        "id": "run-timeout",
+        "agentId": "agent-timeout",
+        "status": "CANCELLED",
+        "_local_error": "timeout",
+    }
+
+
+def test_cloud_timeout_result_carries_git_status_and_local_fallback(tmp_path):
+    from tools import cursor_agent_tool
+
+    repo = _dirty_repo(tmp_path, extra_untracked=0)
+    result_json, success, outcome, _cloud_status = (
+        cursor_agent_tool._build_cloud_tool_result_from_run(
+            agent={"id": "agent-timeout"},
+            run=_timeout_run(),
+            duration_seconds=5.0,
+            log_path=None,
+            workdir=str(repo),
+        )
+    )
+    result = json.loads(result_json)
+    assert success is False
+    assert outcome == "timeout"
+    assert result["success"] is False
+    assert result["error"] == "timeout"
+    assert result["git_status"]["branch"] == "main"
+    assert result["git_status"]["dirty_count"] == 2
+    report = result["final_report"]
+    assert "timed out" in report
+    assert "2 uncommitted change(s)" in report
+    assert "file.txt" in report
+    assert "local Claude or Cursor CLI run" in report
+    assert "instead of retrying" in report
+
+
+def test_cloud_timeout_result_clean_workdir_reports_untouched(tmp_path):
+    from tools import cursor_agent_tool
+
+    repo, _bare = _init_repo_with_origin(tmp_path)
+    result_json, _success, _outcome, _cloud_status = (
+        cursor_agent_tool._build_cloud_tool_result_from_run(
+            agent={"id": "agent-timeout"},
+            run=_timeout_run(),
+            duration_seconds=5.0,
+            log_path=None,
+            workdir=str(repo),
+        )
+    )
+    result = json.loads(result_json)
+    assert result["git_status"]["dirty_count"] == 0
+    report = result["final_report"]
+    assert "clean" in report
+    assert "untouched" in report
+    assert "local Claude or Cursor CLI run" in report
+
+
+def test_cloud_timeout_result_non_repo_workdir_is_well_formed(tmp_path):
+    from tools import cursor_agent_tool
+
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    result_json, success, _outcome, _cloud_status = (
+        cursor_agent_tool._build_cloud_tool_result_from_run(
+            agent={"id": "agent-timeout"},
+            run=_timeout_run(),
+            duration_seconds=5.0,
+            log_path=None,
+            workdir=str(plain),
+        )
+    )
+    result = json.loads(result_json)
+    assert success is False
+    assert result["error"] == "timeout"
+    assert result.get("git_status") is None
+    assert "could not be determined" in result["final_report"]
+    assert "local Claude or Cursor CLI run" in result["final_report"]
+
+
+def test_cloud_finished_result_has_no_git_status(tmp_path):
+    from tools import cursor_agent_tool
+
+    repo, _bare = _init_repo_with_origin(tmp_path)
+    run = {
+        "id": "run-ok",
+        "agentId": "agent-ok",
+        "status": "FINISHED",
+        "result": "done",
+        "durationMs": 10,
+    }
+    result_json, success, outcome, _cloud_status = (
+        cursor_agent_tool._build_cloud_tool_result_from_run(
+            agent={"id": "agent-ok"},
+            run=run,
+            duration_seconds=1.0,
+            log_path=None,
+            task_text="status map",
+            workdir=str(repo),
+        )
+    )
+    result = json.loads(result_json)
+    assert success is True
+    assert outcome == "success"
+    assert result["success"] is True
+    assert "git_status" not in result
+
+
+def test_delegate_timeout_surfaces_git_status_end_to_end(monkeypatch, tmp_path):
+    """A cloud-poll timeout must answer the caller's real question: was the
+    scratch clone touched, and what should I run instead of retrying Cloud?"""
+    from tools import cursor_agent_tool
+
+    secret = tmp_path / "cursor-cloud.env"
+    secret.write_text("CURSOR_API_KEY=test-secret-key\n", encoding="utf-8")
+    monkeypatch.setattr(cursor_agent_tool, "CURSOR_CLOUD_ENV_PATH", secret)
+    monkeypatch.setattr(cursor_agent_tool, "resolve_cursor_agent_binary", lambda: "/usr/bin/agent")
+    monkeypatch.setattr(
+        cursor_agent_tool,
+        "resolve_workdir_origin",
+        lambda workdir: "https://github.com/acme/demo",
+    )
+    monkeypatch.setattr(cursor_agent_tool, "resolve_workdir_starting_ref", lambda workdir: None)
+    client_id = _default_client_agent_id()
+    monkeypatch.setattr(
+        cursor_agent_tool,
+        "create_agent_with_timeout_dedupe",
+        lambda payload, api_key: (
+            {"id": client_id, "name": "hermes-test", "latestRunId": "run-aaaa"},
+            {"id": "run-aaaa", "agentId": client_id, "status": "CREATING"},
+        ),
+    )
+    monkeypatch.setattr(
+        cursor_agent_tool,
+        "poll_cloud_run",
+        lambda **kwargs: {
+            "id": "run-aaaa",
+            "agentId": client_id,
+            "status": "CANCELLED",
+            "_local_error": "timeout",
+        },
+    )
+    repo = _dirty_repo(tmp_path, extra_untracked=0)
+    result = json.loads(
+        _delegate(
+            task="timeout with git state",
+            workdir=str(repo.resolve()),
+        )
+    )
+    assert result["success"] is False
+    assert result["error"] == "timeout"
+    assert result["git_status"]["branch"] == "main"
+    assert result["git_status"]["dirty_count"] == 2
+    assert "2 uncommitted change(s)" in result["final_report"]
+    assert "local Claude or Cursor CLI run" in result["final_report"]

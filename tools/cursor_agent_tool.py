@@ -30,9 +30,12 @@ login`` and never suggests putting the API key in worker env/argv), starts
 a unique short-lived
 ``agent worker --name … --worker-dir … --idle-release-timeout 0 start``
 for that checkout, POSTs ``/v1/agents`` with ``env.type=machine``, and
-polls the run until a terminal Cloud Agent status. ``force`` does not
-enable pushes or PRs. ``startingRef`` is sent only when that branch exists
-on the origin remote.
+polls the run until a terminal Cloud Agent status. A local poll timeout
+cancels the run and fails with a ``git_status`` snapshot of ``workdir``:
+a timeout does not imply disk writes, so the result reports the actual
+uncommitted state and advises a local Claude/Cursor CLI fallback instead
+of retrying Cloud. ``force`` does not enable pushes or PRs.
+``startingRef`` is sent only when that branch exists on the origin remote.
 
 Authority and no-push
 ---------------------
@@ -718,6 +721,58 @@ def detect_unpushed_head_commits(workdir: str) -> Optional[str]:
     except (OSError, subprocess.SubprocessError):
         return None
 
+GIT_STATUS_SAMPLE_LIMIT = 5
+GIT_STATUS_TIMEOUT_SECONDS = 10
+
+
+def workdir_git_status_snapshot(workdir: str | Path) -> Optional[Dict[str, Any]]:
+    """Summarize ``workdir``'s uncommitted state, or None when unknowable.
+
+    Backs the timeout result's guidance: a Cloud poll timeout says nothing
+    about disk writes, so the caller gets the workdir's actual git state
+    instead of guessing. Never raises — not a repo, git missing, or a slow
+    probe all map to None.
+    """
+    try:
+        branch_proc = subprocess.run(
+            ["git", "-C", str(workdir), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=GIT_STATUS_TIMEOUT_SECONDS,
+            check=False,
+        )
+        status_proc = subprocess.run(
+            ["git", "-C", str(workdir), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=GIT_STATUS_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if branch_proc.returncode != 0 or status_proc.returncode != 0:
+        return None
+    branch = (branch_proc.stdout or "").strip() or "unknown"
+    paths: List[str] = []
+    untracked = 0
+    for line in (status_proc.stdout or "").splitlines():
+        if len(line) < 4:
+            continue
+        if line.startswith("?? "):
+            untracked += 1
+        path = line[3:]
+        if " -> " in path:  # rename entries: keep the destination side
+            path = path.split(" -> ", 1)[1]
+        if len(path) >= 2 and path.startswith('"') and path.endswith('"'):
+            path = path[1:-1]
+        paths.append(path)
+    return {
+        "branch": branch,
+        "dirty_count": len(paths),
+        "untracked_count": untracked,
+        "sample_paths": paths[:GIT_STATUS_SAMPLE_LIMIT],
+    }
+
 
 def new_machine_name() -> str:
     return f"hermes-{uuid.uuid4().hex[:12]}"
@@ -1368,6 +1423,7 @@ def _authoritative_terminal_reconcile(
         log_path=str(receipt.get("log_path") or ""),
         attempt_id=str(receipt.get("attempt_id") or ""),
         task_text=str(receipt.get("task") or ""),
+        workdir=str(receipt.get("workdir") or "") or None,
     )
     finalize_receipt(
         receipt_path,
@@ -1513,6 +1569,46 @@ def _cloud_error_detail(final_report: str, run: Dict[str, Any]) -> str:
     return _CLOUD_ERROR_FALLBACK
 
 
+_CLOUD_TIMEOUT_HEADLINE = (
+    "Cursor Cloud Agent run timed out locally and was cancelled without a "
+    "final report. A timeout does not imply any disk writes; check the "
+    "workdir git state below before retrying."
+)
+_CLOUD_TIMEOUT_FALLBACK = (
+    "Inspect the workdir to confirm, then fall back to a local Claude or "
+    "Cursor CLI run there instead of retrying the Cursor Cloud Agent."
+)
+
+
+def _cloud_timeout_guidance(
+    *,
+    workdir: Optional[str],
+    git_status: Optional[Dict[str, Any]],
+) -> str:
+    """User-facing timeout report: workdir git state plus the local fallback."""
+    parts = [_CLOUD_TIMEOUT_HEADLINE]
+    if workdir:
+        if git_status is None:
+            parts.append(
+                f"The git state of workdir {workdir!r} could not be "
+                "determined; inspect it directly."
+            )
+        elif git_status.get("dirty_count"):
+            sample = ", ".join(git_status.get("sample_paths") or [])
+            parts.append(
+                f"Workdir {workdir!r} (branch {git_status.get('branch')!r}) "
+                f"has {git_status.get('dirty_count')} uncommitted change(s) "
+                f"({git_status.get('untracked_count')} untracked), e.g.: {sample}."
+            )
+        else:
+            parts.append(
+                f"Workdir {workdir!r} (branch {git_status.get('branch')!r}) "
+                "is clean — the scratch clone was left untouched."
+            )
+    parts.append(_CLOUD_TIMEOUT_FALLBACK)
+    return " ".join(parts)
+
+
 def _build_cloud_tool_result_from_run(
     *,
     agent: Optional[Dict[str, Any]],
@@ -1522,6 +1618,7 @@ def _build_cloud_tool_result_from_run(
     progress_url: Optional[str] = None,
     attempt_id: Optional[str] = None,
     task_text: str = "",
+    workdir: Optional[str] = None,
 ) -> Tuple[str, bool, str, Optional[str]]:
     fields = _cloud_result_fields(
         agent=agent,
@@ -1534,6 +1631,16 @@ def _build_cloud_tool_result_from_run(
     cloud_status = fields.get("cloud_status")
     outcome = _cloud_outcome_from_run(local_error=local_error, cloud_status=cloud_status)
     if local_error:
+        if local_error == "timeout":
+            # A poll timeout says nothing about disk writes: attach the
+            # workdir's actual git state and steer the caller to a local
+            # fallback instead of another Cloud round-trip.
+            git_status = workdir_git_status_snapshot(workdir) if workdir else None
+            if git_status is not None:
+                fields["git_status"] = git_status
+            guidance = _cloud_timeout_guidance(workdir=workdir, git_status=git_status)
+            prior = str(fields.get("final_report") or "").strip()
+            fields["final_report"] = f"{prior}\n\n{guidance}" if prior else guidance
         return (
             _make_cloud_tool_result(
                 success=False,
@@ -1644,6 +1751,7 @@ def _execute_cloud_delegation(
                 log_path=str(log_path),
                 attempt_id=str(receipt.get("attempt_id") or ""),
                 task_text=task,
+                workdir=workdir,
             )
             finalize_receipt(
                 receipt_path,
@@ -1681,6 +1789,7 @@ def _execute_cloud_delegation(
                     log_path=str(log_path),
                     attempt_id=str(receipt.get("attempt_id") or ""),
                     task_text=task,
+                    workdir=workdir,
                 )
                 finalize_receipt(
                     receipt_path,
@@ -1819,6 +1928,7 @@ def _execute_cloud_delegation(
         progress_url=progress_url,
         attempt_id=str(receipt.get("attempt_id") or ""),
         task_text=task,
+        workdir=workdir,
     )
     finalize_receipt(
         receipt_path,

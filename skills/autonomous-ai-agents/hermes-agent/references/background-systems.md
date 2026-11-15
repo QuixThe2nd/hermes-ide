@@ -25,6 +25,10 @@ explicit `background` argument.
   parent process exits, the child is lost. For work that must outlive
   the process, use `cronjob` or
   `terminal(background=True, notify_on_complete=True)`.
+- **Cursor Cloud timeouts:** a `delegate_cursor_agent` cloud-poll timeout
+  does not imply disk writes — the failure result carries a `git_status`
+  snapshot of the workdir and advises falling back to a local Claude or
+  Cursor CLI run instead of retrying Cloud.
 
 Config: `delegation.*` in `config.yaml`.
 
