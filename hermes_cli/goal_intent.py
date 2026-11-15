@@ -362,28 +362,31 @@ def _row_text(content: Any) -> str:
 
 
 def _assistant_snippet(rows: List[Dict[str, Any]]) -> Tuple[str, Optional[float]]:
-    """Newest assistant ``(text, row timestamp)`` from newest-first rows, bounded and
-    non-fatal on odd shapes. The timestamp is ``None`` when the row carries none."""
+    """Newest non-empty assistant ``(text, row timestamp)`` from chronological rows,
+    bounded and non-fatal on odd shapes. Textless tool-call rows are not replies."""
     for row in reversed(rows):
         if row.get("role") != "assistant":
             continue
+        text = _row_text(row.get("content"))
+        if not text:
+            continue
         ts = row.get("timestamp")
         age_ts = float(ts) if isinstance(ts, (int, float)) and not isinstance(ts, bool) else None
-        return _row_text(row.get("content"))[:_LAST_ASSISTANT_LIMIT], age_ts
+        return text[:_LAST_ASSISTANT_LIMIT], age_ts
     return "", None
 
 
 def _previous_user_message(rows: List[Dict[str, Any]]) -> str:
-    """The user message that preceded the last assistant reply (newest-first rows).
+    """The user message that preceded the last assistant turn in chronological rows.
 
-    Rows newer than the last assistant reply — the inbound message being
+    Rows newer than the last assistant turn — the inbound message being
     classified, usually already persisted — are skipped. Empty when the thread
-    has no assistant reply yet: the inbound message starts it.
+    has no assistant turn yet: the inbound message starts it.
     """
-    for idx, row in enumerate(rows):
-        if row.get("role") != "assistant":
+    for idx in range(len(rows) - 1, -1, -1):
+        if rows[idx].get("role") != "assistant":
             continue
-        for older in rows[idx + 1:]:
+        for older in reversed(rows[:idx]):
             if older.get("role") == "user":
                 text = _row_text(older.get("content"))
                 if text:

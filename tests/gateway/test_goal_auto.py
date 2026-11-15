@@ -53,6 +53,7 @@ def _decision(
     *,
     confidence: float = 0.9,
     last_assistant: str = "",
+    user_previous_message: str = "",
     contract_draft: dict | None = None,
 ) -> dict:
     return {
@@ -63,7 +64,7 @@ def _decision(
         "message": message,
         "session_id": SID,
         "last_assistant": last_assistant,
-        "user_previous_message": "",
+        "user_previous_message": user_previous_message,
         "record": {"label": label, "confidence": confidence},
     }
 
@@ -339,6 +340,50 @@ async def test_chase_after_window_starts_goal_from_chase_text_and_last_reply(run
     assert state.contract.outcome == "the proxy fix is verified working"
     # The chase goal text already quotes the reply; it is not duplicated.
     assert draft.call_args.kwargs["objective"].count("Still working") == 1
+
+
+@pytest.mark.asyncio
+async def test_idle_chase_without_prior_context_leaves_goal_unset(runner):
+    """A bare status chase with no resumable goal or exchange is handled by the reply."""
+    with patch("hermes_cli.goals.draft_contract", return_value=None) as draft:
+        notice = await runner._apply_auto_goal_decision(
+            _decision("chase", "status?"), _session_entry(), _source()
+        )
+
+    assert notice is None
+    assert _goal_state() is None
+    draft.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_idle_chase_recovers_previous_user_task(runner):
+    """Recover the task being chased instead of turning the chase itself into the goal."""
+    from hermes_cli.goals import GoalContract
+
+    previous_task = "recover my Snapchat account"
+    last_reply = "I started checking the account recovery options."
+    decision = _decision(
+        "chase",
+        "status?",
+        last_assistant=last_reply,
+        user_previous_message=previous_task,
+    )
+    with patch(
+        "hermes_cli.goals.draft_contract",
+        return_value=GoalContract(outcome="the Snapchat account is recovered"),
+    ) as draft:
+        notice = await runner._apply_auto_goal_decision(
+            decision, _session_entry(), _source()
+        )
+
+    assert notice is None
+    state = _goal_state()
+    assert state is not None and state.status == "active"
+    assert state.goal == (
+        f"{previous_task}\n\nAssistant's last reply, for context: {last_reply}"
+    )
+    assert "status?" not in state.goal
+    assert draft.call_args.kwargs["objective"] == state.goal
 
 
 # ── suppression ───────────────────────────────────────────────────────
