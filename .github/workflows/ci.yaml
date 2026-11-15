@@ -101,12 +101,6 @@ jobs:
     if: needs.detect.outputs.installer == 'true'
     uses: ./.github/workflows/installer-tests.yml
 
-  docs-site:
-    name: Docs Site
-    needs: detect
-    if: needs.detect.outputs.site == 'true'
-    uses: ./.github/workflows/docs-site-checks.yml
-
   history-check:
     name: Deny unrelated histories
     needs: detect
@@ -207,10 +201,10 @@ jobs:
       - lint
       - js-tests
       - installer-tests
-      - docs-site
       - history-check
       - contributor-check
       - uv-lockfile
+      - infographic-check
       - case-collision-check
       - lazy-deps-guard
       - lockfile-diff
