@@ -73,6 +73,7 @@ class TestUnledgeredUrlCleanup:
     def test_unledgered_mixed_syntax_preserves_prose_and_ledger_links(self) -> None:
         unknown = "https://example.org/wiki/Unfetched_(source)"
         text = (
+            "## Sources\n\n"
             f'[keep]({PAREN_URL}) and [drop]({unknown} "optional title")\n'
             f"Keep {PAREN_URL}; remove {unknown}.\n"
             "[keep ref][good] and [drop ref][bad].\n"
@@ -83,6 +84,7 @@ class TestUnledgeredUrlCleanup:
         cleaned = citations.remove_unledgered_urls(text, [PAREN_URL])
 
         assert cleaned == (
+            "## Sources\n\n"
             f"[keep]({PAREN_URL}) and drop\n"
             f"Keep {PAREN_URL}; remove.\n"
             "[keep ref][good] and drop ref.\n"
@@ -94,6 +96,7 @@ class TestUnledgeredUrlCleanup:
     def test_angle_bracket_destinations_preserve_labels_and_ledger_links(self) -> None:
         unknown = "https://example.org/not-fetched"
         text = (
+            "## Sources\n\n"
             f"Inline [visible](<{unknown}>) and [reference][bad].\n"
             f"Ledger [source](<{PAREN_URL}>).\n\n"
             f"Autolink <{unknown}>.\n"
@@ -103,6 +106,7 @@ class TestUnledgeredUrlCleanup:
         cleaned = citations.remove_unledgered_urls(text, [PAREN_URL])
 
         assert cleaned == (
+            "## Sources\n\n"
             "Inline visible and reference.\n"
             f"Ledger [source](<{PAREN_URL}>).\n\n"
             "Autolink.\n"
@@ -114,6 +118,7 @@ class TestUnledgeredUrlCleanup:
         retained = "https://evidence.example/one"
         evidence = "https://evidence.example/two"
         text = (
+            "## Sources\n\n"
             f"[retained]({retained})\n"
             "Broken [drop](https://unfetched.example/source then "
             f"[evidence]({evidence}) trailing) end ."
@@ -122,6 +127,7 @@ class TestUnledgeredUrlCleanup:
         cleaned = citations.remove_unledgered_urls(text, [retained, evidence])
 
         assert cleaned == (
+            "## Sources\n\n"
             f"[retained]({retained})\n"
             f"Broken drop then [evidence]({evidence}) trailing) end ."
         )
@@ -132,21 +138,21 @@ class TestUnledgeredUrlCleanup:
 
     def test_malformed_inline_link_does_not_consume_plain_prose(self) -> None:
         unknown = "https://unfetched.example/source"
-        text = f"Broken [drop]({unknown} ordinary prose) and [source]({PAREN_URL})."
+        text = f"## Sources\n\nBroken [drop]({unknown} ordinary prose) and [source]({PAREN_URL})."
 
         cleaned = citations.remove_unledgered_urls(text, [PAREN_URL])
 
-        assert cleaned == f"Broken drop ordinary prose) and [source]({PAREN_URL})."
+        assert cleaned == f"## Sources\n\nBroken drop ordinary prose) and [source]({PAREN_URL})."
         verdict = validate_citations(cleaned, [PAREN_URL])
         assert verdict.ok, verdict.errors
 
     def test_unledgered_url_inline_label_is_not_reintroduced(self) -> None:
         unknown = "https://example.org/not-fetched"
-        text = f"[{unknown}]({unknown}) and [source]({PAREN_URL})."
+        text = f"## Sources\n\n[{unknown}]({unknown}) and [source]({PAREN_URL})."
 
         cleaned = citations.remove_unledgered_urls(text, [PAREN_URL])
 
-        assert cleaned == f" and [source]({PAREN_URL})."
+        assert cleaned == f"## Sources\n\n and [source]({PAREN_URL})."
         assert citations.remove_unledgered_urls(cleaned, [PAREN_URL]) == cleaned
         verdict = validate_citations(cleaned, [PAREN_URL])
         assert verdict.ok, verdict.errors
@@ -157,7 +163,7 @@ class TestUnledgeredUrlCleanup:
         ]
         valid_link = f"[source]({PAREN_URL})"
         text = "\n".join(
-            [*(f"[{url}]({url})" for url in unknown_urls), valid_link]
+            ["## Sources", "", *(f"[{url}]({url})" for url in unknown_urls), valid_link]
         )
 
         cleaned = citations.remove_unledgered_urls(text, [PAREN_URL])
@@ -174,11 +180,27 @@ class TestUnledgeredUrlCleanup:
         unknown = "https://example.org/not-fetched"
 
         cleaned = citations.remove_unledgered_urls(
-            f"Report citing [visible text]({unknown}) and {unknown}.", [PAREN_URL]
+            f"## Sources\n\nReport citing [visible text]({unknown}) and {unknown}.", [PAREN_URL]
         )
 
-        assert cleaned == "Report citing visible text and."
+        assert cleaned == "## Sources\n\nReport citing visible text and."
         verdict = validate_citations(cleaned, [PAREN_URL])
         assert verdict.ok is False
         assert verdict.cited_urls == []
         assert any("no citations" in error for error in verdict.errors)
+
+    def test_duplicate_reference_unknown_first_does_not_retarget_to_valid_url(self) -> None:
+        unknown = "https://example.org/not-fetched"
+        text = (
+            "## Sources\n\n"
+            "Summary [background][shared].\n\n"
+            f"[shared]: {unknown}\n"
+            f"[shared]: {PAREN_URL}\n"
+        )
+
+        cleaned = citations.remove_unledgered_urls(text, [PAREN_URL])
+
+        assert cleaned == text
+        verdict = validate_citations(cleaned, [PAREN_URL])
+        assert verdict.ok is False
+        assert verdict.unknown_urls == [unknown]

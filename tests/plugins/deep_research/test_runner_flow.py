@@ -427,7 +427,7 @@ class TestCitationGating:
         status = jobs.read_status(directory)
         synthesis = status["synthesis"]
         assert synthesis["attempts"] == 2 and synthesis["correction_used"] is True
-        assert any("no citations" in e for e in synthesis["citation_errors"])
+        assert any(INVENTED_URL in e for e in synthesis["citation_errors"])
         assert "correction pass" in (status["error"] or "")
         # Draft preserved for inspection; report.md never published.
         assert not (directory / "report.md").exists()
@@ -448,12 +448,32 @@ class TestCitationGating:
         assert "Corrected draft" in (directory / "report.md").read_text(encoding="utf-8")
         assert jobs.read_status(directory)["synthesis"]["correction_used"] is True
 
+    def test_unsupported_claim_with_unrelated_valid_citation_fails_closed(self, home: Path) -> None:
+        job_id, directory = _make_job(home, questions=None)
+        _seed_evidence(directory, GOOD_URL)
+        corrected = (
+            "# Findings\n\n"
+            f"The runtime doubled throughput according to [the benchmark]({INVENTED_URL}/benchmark).\n"
+            f"An unrelated established result cites [the ledger source]({GOOD_URL}).\n"
+        )
+        spawn = FakeSpawn(
+            writers=[f"Initial [bad]({INVENTED_URL}/initial).", corrected]
+        )
+
+        state = _run(job_id, home, spawn)
+
+        assert state == "failed"
+        assert not (directory / "report.md").exists()
+        assert (directory / "report.draft.md").read_text(encoding="utf-8") == corrected
+        status = jobs.read_status(directory)
+        assert any(INVENTED_URL in error for error in status["synthesis"]["citation_errors"])
+
     @pytest.mark.parametrize(
         "corrected",
         [INVENTED_URL, f" \n\t{INVENTED_URL}\n "],
-        ids=["empty", "whitespace_only"],
+        ids=["bare", "whitespace_padded"],
     )
-    def test_correction_sanitizing_to_no_content_fails_closed(
+    def test_correction_with_only_unledgered_url_fails_closed(
         self, home: Path, corrected: str
     ) -> None:
         job_id, directory = _make_job(home, questions=None)
@@ -466,7 +486,7 @@ class TestCitationGating:
 
         assert state == "failed"
         status = jobs.read_status(directory)
-        error = "sanitized correction contains no content or citations"
+        error = f"report cites URL(s) absent from the evidence ledger: {INVENTED_URL}"
         assert "citation validation failed after correction pass" in status["error"]
         assert error in status["error"]
         assert status["synthesis"]["citation_errors"] == [error]
@@ -478,8 +498,11 @@ class TestCitationGating:
         job_id, directory = _make_job(home, questions=None)
         evidence_urls = [f"https://example.org/evidence/{index}" for index in range(50)]
         _seed_evidence(directory, *evidence_urls, OTHER_URL)
+        # An unledgered row URL is redundant only because the same citation
+        # cell retains a ledger-backed citation.
         rows = [
-            f"| {index} | Finding {index} | [source]({url}) |"
+            f"| {index} | Finding {index} | [source]({url}) "
+            f"[supplementary]({INVENTED_URL}/rows/{index}) |"
             for index, url in enumerate(evidence_urls)
         ]
         corrected = (
@@ -509,7 +532,7 @@ Ledger reference: [primary][fetched].
         assert state == "completed"
         report = (directory / "report.md").read_text(encoding="utf-8")
         for index, url in enumerate(evidence_urls):
-            assert f"| {index} | Finding {index} | [source]({url}) |" in report
+            assert f"| {index} | Finding {index} | [source]({url})" in report
         assert "Summary links: overview, methods, and history." in report
         assert "Redundant inline link: appendix." in report
         assert "Bare supplementary URL:" in report
