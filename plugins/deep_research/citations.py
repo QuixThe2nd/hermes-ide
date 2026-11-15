@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Iterable, List, Set
+from typing import Iterable, List, Optional, Set, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
 # Markdown links ``[label](https://…)``, reference links, and bare http(s)
@@ -27,6 +27,12 @@ _URL_RE = re.compile(
 _TRAILING_PUNCT = ".,;:!?]}'\">’”》"
 
 _SCHEME_HTTP = re.compile(r"^https?://", re.IGNORECASE)
+
+_LIST_ITEM_RE = re.compile(r"^\s*(?:[-+*]|\d+[.)])\s+(?P<content>.*?)\s*$")
+_ATX_HEADING_RE = re.compile(
+    r"^ {0,3}(?P<marks>#{1,6})[ \t]+(?P<title>.*?)[ \t]*#*[ \t]*$"
+)
+_SOURCE_ENTRY_PUNCT = " \t,;:.!-—–()<>"
 
 
 def _strip_unbalanced_parens(url: str) -> str:
@@ -100,6 +106,143 @@ def extract_report_urls(text: str) -> List[str]:
         seen.add(normalized)
         urls.append(normalized)
     return urls
+
+
+def _is_escaped(text: str, index: int) -> bool:
+    backslashes = 0
+    index -= 1
+    while index >= 0 and text[index] == "\\":
+        backslashes += 1
+        index -= 1
+    return backslashes % 2 == 1
+
+
+def _matching_open_bracket(text: str, close_bracket: int) -> Optional[int]:
+    depth = 0
+    for index in range(close_bracket, -1, -1):
+        if _is_escaped(text, index):
+            continue
+        if text[index] == "]":
+            depth += 1
+        elif text[index] == "[":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _matching_close_paren(text: str, open_paren: int) -> Optional[int]:
+    depth = 0
+    for index in range(open_paren, len(text)):
+        if _is_escaped(text, index):
+            continue
+        if text[index] == "(":
+            depth += 1
+        elif text[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _inline_link_span(
+    text: str, match: re.Match, url_end: int
+) -> Optional[Tuple[int, int, str]]:
+    """Return the complete inline-link span and its visible label."""
+    url_start = match.start(1)
+    prefix = text[match.start():url_start]
+    if prefix.startswith("]("):
+        close_bracket = match.start()
+    else:
+        angle_prefix = re.search(r"\]\(\s*<$", text[:url_start])
+        if angle_prefix is None:
+            return None
+        close_bracket = angle_prefix.start()
+
+    open_bracket = _matching_open_bracket(text, close_bracket)
+    if open_bracket is None:
+        return None
+    close_paren = _matching_close_paren(text, close_bracket + 1)
+    end = close_paren + 1 if close_paren is not None else url_end
+    start = open_bracket
+    if start > 0 and text[start - 1] == "!" and not _is_escaped(text, start - 1):
+        start -= 1
+    return start, end, text[open_bracket + 1:close_bracket]
+
+
+def _strip_unknown_from_line(text: str, allowed: Set[str], *, keep_labels: bool) -> str:
+    pieces: List[str] = []
+    cursor = 0
+    for match in _URL_RE.finditer(text):
+        raw = _strip_prose_tail(match.group(1))
+        if not raw:
+            continue
+        normalized = normalize_url(raw)
+        if not normalized or normalized in allowed:
+            continue
+
+        url_start = match.start(1)
+        url_end = url_start + len(raw)
+        link = _inline_link_span(text, match, url_end)
+        if link is not None:
+            start, end, label = link
+        else:
+            start, end, label = url_start, url_end, ""
+            if start > 0 and text[start - 1] == "<" and text[end:end + 1] == ">":
+                start -= 1
+                end += 1
+        if start < cursor:
+            continue
+        pieces.append(text[cursor:start])
+        if keep_labels:
+            pieces.append(label)
+        cursor = end
+    pieces.append(text[cursor:])
+    return "".join(pieces)
+
+
+def _is_unknown_only_source_entry(line: str, allowed: Set[str]) -> bool:
+    item = _LIST_ITEM_RE.match(line)
+    if item is None:
+        return False
+    content = item.group("content")
+    cited = extract_report_urls(content)
+    if not cited or any(url in allowed for url in cited):
+        return False
+    remainder = _strip_unknown_from_line(content, allowed, keep_labels=False)
+    return not remainder.strip(_SOURCE_ENTRY_PUNCT)
+
+
+def strip_unknown_citations(report_text: str, evidence_urls: Iterable[str]) -> str:
+    """Remove unledgered citations from a corrected report without losing prose.
+
+    Unknown inline links become their visible labels; bare URLs and autolinks
+    disappear. Under a ``Sources`` heading, list items containing only unknown
+    citations are pruned instead of leaving labels that look like sources.
+    """
+    if not report_text:
+        return report_text
+    allowed = {normalize_url(url) for url in evidence_urls if url}
+    output: List[str] = []
+    sources_heading_level: Optional[int] = None
+
+    for raw_line in report_text.splitlines(keepends=True):
+        body = raw_line.rstrip("\r\n")
+        ending = raw_line[len(body):]
+        heading = _ATX_HEADING_RE.match(body)
+        if heading is not None:
+            level = len(heading.group("marks"))
+            title = heading.group("title").strip().rstrip(":").strip().casefold()
+            if title == "sources":
+                sources_heading_level = level
+            elif sources_heading_level is not None and level <= sources_heading_level:
+                sources_heading_level = None
+
+        if sources_heading_level is not None and _is_unknown_only_source_entry(body, allowed):
+            continue
+        cleaned = _strip_unknown_from_line(body, allowed, keep_labels=True)
+        output.append(cleaned + ending)
+    return "".join(output)
 
 
 def validate_citations(

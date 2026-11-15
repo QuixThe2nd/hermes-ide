@@ -11,6 +11,7 @@ from __future__ import annotations
 from plugins.deep_research.citations import (
     extract_report_urls,
     normalize_url,
+    strip_unknown_citations,
     validate_citations,
 )
 
@@ -65,3 +66,37 @@ class TestParenProvenance:
         assert normalize_url(PAREN_URL) == PAREN_URL
         # An unbalanced trailing paren is prose, not URL.
         assert normalize_url("https://example.org/a)") == "https://example.org/a"
+
+
+class TestPostCorrectionCleanup:
+    def test_unknown_inline_link_becomes_label_while_known_link_is_untouched(self) -> None:
+        unknown = "https://example.org/wiki/Unknown_(baz)"
+        text = f"Keep [known]({PAREN_URL}) and drop [unknown]({unknown})."
+
+        cleaned = strip_unknown_citations(text, [PAREN_URL])
+
+        assert cleaned == f"Keep [known]({PAREN_URL}) and drop unknown."
+        verdict = validate_citations(cleaned, [PAREN_URL])
+        assert verdict.ok, verdict.errors
+
+    def test_unknown_only_source_entries_are_pruned_but_rows_and_prose_remain(self) -> None:
+        unknown_home = "https://unknown.example/"
+        unknown_index = "https://unknown.example/index"
+        text = (
+            f"| Row | Finding [redundant]({unknown_home}) |\n\n"
+            "## Sources\n"
+            f"- [Unknown home]({unknown_home})\n"
+            f"- {unknown_index}\n"
+            f"- [Known]({PAREN_URL})\n\n"
+            "## Notes\n"
+            f"Retain [readable label]({unknown_home}) as prose.\n"
+        )
+
+        cleaned = strip_unknown_citations(text, [PAREN_URL])
+
+        assert "| Row | Finding redundant |" in cleaned
+        assert "- [Unknown home]" not in cleaned
+        assert unknown_index not in cleaned
+        assert f"- [Known]({PAREN_URL})" in cleaned
+        assert "Retain readable label as prose." in cleaned
+        assert validate_citations(cleaned, [PAREN_URL]).ok

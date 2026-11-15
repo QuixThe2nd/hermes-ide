@@ -448,6 +448,50 @@ class TestCitationGating:
         assert "Corrected draft" in (directory / "report.md").read_text(encoding="utf-8")
         assert jobs.read_status(directory)["synthesis"]["correction_used"] is True
 
+    def test_correction_strips_unknown_urls_without_truncating_report(self, home: Path) -> None:
+        unknown_urls = [
+            "https://unknown.example/",
+            "https://unknown.example/index",
+            "https://other.example/",
+        ]
+        rows = [f"| Runtime {index} | Complete finding {index} |" for index in range(50)]
+        rows[0] = f"| Runtime 0 | Substantive finding [primary evidence]({GOOD_URL}) |"
+        rows[1] = (
+            "| Runtime 1 | Complete finding with "
+            f"[redundant source]({unknown_urls[0]}) |"
+        )
+        corrected = (
+            "# Runtime report\n\n"
+            "| Runtime | Finding |\n"
+            "| --- | --- |\n"
+            + "\n".join(rows)
+            + "\n\n## Sources\n"
+            + "\n".join(
+                f"- [Source {index}]({url})" for index, url in enumerate(unknown_urls)
+            )
+            + f"\n- [Primary evidence]({GOOD_URL})\n"
+        )
+        job_id, directory = _make_job(home, questions=None)
+        _seed_evidence(directory, GOOD_URL)
+        spawn = FakeSpawn(
+            writers=[f"Bad draft citing [x]({INVENTED_URL}).", corrected]
+        )
+
+        state = _run(job_id, home, spawn)
+
+        assert state == "completed"
+        report = (directory / "report.md").read_text(encoding="utf-8")
+        assert f"[primary evidence]({GOOD_URL})" in report
+        assert f"[Primary evidence]({GOOD_URL})" in report
+        assert "| Runtime 1 | Complete finding with redundant source |" in report
+        assert "| Runtime 49 | Complete finding 49 |" in report
+        for url in unknown_urls:
+            assert url not in report
+        for index in range(len(unknown_urls)):
+            assert f"- Source {index}" not in report
+        assert jobs.read_status(directory)["synthesis"]["attempts"] == 2
+        assert len(spawn.argvs) == 3
+
     def test_report_with_no_citations_fails_closed(self, home: Path) -> None:
         job_id, directory = _make_job(home, questions=None)
         _seed_evidence(directory, GOOD_URL)

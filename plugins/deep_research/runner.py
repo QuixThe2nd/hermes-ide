@@ -429,16 +429,23 @@ class ResearchRunner:
                 f"correction writer failed: {stderr or f'exit {code}'}",
             )
             return
-        retry = citations_mod.validate_citations(corrected, evidence_urls)
+        cleaned = citations_mod.strip_unknown_citations(corrected, evidence_urls)
+        retry = citations_mod.validate_citations(cleaned, evidence_urls)
+        citation_errors = retry.errors
+        if not retry.ok:
+            # Diagnostics must describe the raw correction preserved below.
+            citation_errors = citations_mod.validate_citations(
+                corrected, evidence_urls
+            ).errors or citation_errors
         self._record_synthesis(
-            directory, attempts=2, correction_used=True, citation_errors=retry.errors
+            directory, attempts=2, correction_used=True, citation_errors=citation_errors
         )
         if retry.ok:
-            self._publish(directory, corrected)
+            self._publish(directory, cleaned)
             return
         self._preserve_and_fail(
             directory, corrected,
-            "citation validation failed after correction pass: " + "; ".join(retry.errors),
+            "citation validation failed after correction pass: " + "; ".join(citation_errors),
         )
 
     def _write(self, directory: Path, name: str, prompt: str, profile: str, phase: str) -> Tuple[str, int, str]:
