@@ -20,6 +20,13 @@ def isolated_restart_home(tmp_path, monkeypatch):
 
     token = set_hermes_home_override(None)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # gateway.run freezes _hermes_home = get_hermes_home() at import (before
+    # the per-test redirect), and the shutdown path mkdirs marker files under
+    # it (_planned_restart_notification_path). Repoint the frozen global so
+    # restart sidecar writes land in the isolated home.
+    import gateway.run as _gateway_run
+
+    monkeypatch.setattr(_gateway_run, "_hermes_home", tmp_path)
     yield tmp_path
     reset_hermes_home_override(token)
 
@@ -109,7 +116,9 @@ async def test_restart_control_requests_the_same_overlap_flow(monkeypatch):
     assert result["queued"] is True
     assert result["status"] == "restarting"
     assert result["pid"] == os.getpid()
-    queued.assert_awaited_once_with(runner, None, None, restart_platforms=False)
+    queued.assert_awaited_once_with(
+        runner, None, None, restart_platforms=False, restart_hub=False
+    )
     runner.request_restart.assert_not_called()
 
 
@@ -155,7 +164,7 @@ async def test_restart_control_rebuilds_worker_requester(monkeypatch):
     source = args[1]
     assert args[0] is runner
     assert args[2] == "$event"
-    assert queued.await_args.kwargs == {"restart_platforms": False}
+    assert queued.await_args.kwargs == {"restart_platforms": False, "restart_hub": False}
     assert source.platform is Platform.MATRIX
     assert source.chat_id == "!room:example.org"
     assert source.chat_type == "group"
