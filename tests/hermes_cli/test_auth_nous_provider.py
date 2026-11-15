@@ -516,7 +516,6 @@ class TestLoginNousSkipKeepsCurrent:
         import hermes_cli.auth_nous as auth_nous
         import hermes_cli.models as models_mod
         from hermes_cli import models_pricing
-        import hermes_cli.nous_subscription as ns
 
         fake_auth_state = {
             "access_token": "fake-nous-token",
@@ -550,7 +549,6 @@ class TestLoginNousSkipKeepsCurrent:
             models_mod, "partition_nous_models_by_tier",
             lambda ids, p, free_tier=False: (ids, []),
         )
-        monkeypatch.setattr(ns, "prompt_enable_tool_gateway", lambda cfg: None)
         return free_tier_calls
 
     def test_skip_keep_current_preserves_provider_and_model(self, tmp_path, monkeypatch):

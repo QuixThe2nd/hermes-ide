@@ -360,7 +360,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 function ensureKeepalive() {
-  chrome.alarms.create(KEEPALIVE_ALARM, { delayInMinutes: 1, periodInMinutes: 1 }).catch?.(() => {});
+  Promise.resolve(chrome.alarms.create(KEEPALIVE_ALARM, { delayInMinutes: 1, periodInMinutes: 1 })).catch(() => {});
 }
 
 // Runs on every worker start and wake: listeners above are already registered

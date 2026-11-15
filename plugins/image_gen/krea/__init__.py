@@ -349,7 +349,7 @@ def _submit_job(
                     "Set KREA_API_KEY to use Krea directly, or pick a different model via "
                     "`hermes tools` → Image Generation.")
                 return None, fail(
-                    f"Nous Subscription Krea gateway rejected '{model_id}' "
+                    f"Nous Tool Gateway rejected Krea model '{model_id}' "
                     f"(HTTP {status}): {err_msg}. {hint}",
                     "api_error")
             return None, fail(failure.error, "api_error")
@@ -399,7 +399,7 @@ class KreaImageGenProvider(StaticImageGenProvider):
     default_model_id = DEFAULT_MODEL
     setup = dict(
         name="Krea", badge="paid",
-        tag="Krea 2 foundation model — Medium ($0.03), Large ($0.06), Medium Turbo ($0.015). Style transfer, moodboards, reference-guided generation. Direct key or managed Nous Subscription gateway.",
+        tag="Krea 2 foundation model — Medium ($0.03), Large ($0.06), Medium Turbo ($0.015). Style transfer, moodboards, reference-guided generation. Direct key or managed Nous Tool Gateway.",
         key="KREA_API_KEY", prompt="Krea API key", url="https://www.krea.ai/settings/api-tokens")
 
     def is_available(self) -> bool:
@@ -453,7 +453,7 @@ class KreaImageGenProvider(StaticImageGenProvider):
             for what, arg in _MANAGED_UNSUPPORTED:
                 if arg in payload:
                     return fail(
-                        f"Managed Krea (Nous Subscription) does not support {what}. "
+                        f"Managed Krea (Nous Tool Gateway) does not support {what}. "
                         f"Set KREA_API_KEY to use Krea directly, or omit `{arg}`.",
                         "unsupported_argument")
 

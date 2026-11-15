@@ -1169,6 +1169,12 @@ def _normalize_codex_response(
     if not final_text and (scan.saw_final_answer_phase or not scan.saw_commentary_phase):
         out_text = getattr(response, "output_text", "")
         final_text = out_text.strip() if isinstance(out_text, str) else final_text
+    # A clean-stop echo of our reserved interruption scaffold is not an answer. Keep the
+    # normalized text/replay items for the bounded continuation, but never finalize it.
+    # Local import avoids a module cycle with the runtime helpers that own the sentinel.
+    from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+
+    interrupted_placeholder_only = not tool_calls and final_text == _INTERRUPTED_PLACEHOLDER
     # Tool-call leak recovery: gpt-5.x sometimes emits the intended ``function_call`` as plain Harmony text
     # (``to=functions.foo {json}``) or Codex-CLI shell JSON (``{"cmd": ...}``). Treat as incomplete so the
     # continuation re-elicits a real call; clear the garbage.
@@ -1213,11 +1219,17 @@ def _normalize_codex_response(
     elif response_incomplete_content_filter:
         finish_reason = "content_filter"
     elif (
-        leaked_tool_call_text
+        interrupted_placeholder_only
+        or leaked_tool_call_text
         or scan.saw_streaming_or_item_incomplete
         or ((scan.has_incomplete_items or scan.saw_commentary_phase) and not scan.saw_final_answer_phase)
         or (reasoning_only and not trusted_final)
     ):
+        if interrupted_placeholder_only:
+            logger.warning(
+                "Codex response contained only the internal interruption placeholder; "
+                "treating it as incomplete for same-run continuation."
+            )
         finish_reason = "incomplete"
     else:
         finish_reason = "stop"
