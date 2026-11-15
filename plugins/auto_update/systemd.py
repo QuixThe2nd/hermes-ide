@@ -857,12 +857,34 @@ def _reconcile_units_in_scope(
                 timer_active_known=False,
             )
 
-    legacy = migrate_legacy_units(selected, run_systemctl=runner)
-    warnings.extend(legacy.warnings)
-    if duplicate_scheduler_present(selected, run_systemctl=runner):
-        warnings.append(
-            "legacy hermes-auto-update.timer still present; refusing duplicate schedulers"
-        )
+    try:
+        legacy = migrate_legacy_units(selected, run_systemctl=runner)
+        warnings.extend(legacy.warnings)
+        if duplicate_scheduler_present(selected, run_systemctl=runner):
+            warnings.append(
+                "legacy hermes-auto-update.timer still present; refusing duplicate schedulers"
+            )
+            if changed:
+                _rollback_unit_writes(selected, previous_units, runner, warnings)
+            return ReconcileResult(
+                supported=True,
+                scope=selected,
+                changed=changed,
+                enabled=False,
+                timer_active=False,
+                legacy=legacy.disabled_units,
+                warnings=tuple(warnings),
+            )
+
+        # Enable/start TIMER ONLY — never start the oneshot service immediately.
+        enabled_probe = probe_timer_is_enabled(selected, run_systemctl=runner)
+        active_probe = probe_timer_is_active(selected, run_systemctl=runner)
+        if enabled_probe.outcome == ProbeOutcome.QUERY_FAILED:
+            warnings.append(_probe_warning("enabled", enabled_probe))
+        elif enabled_probe.outcome == ProbeOutcome.FALSE:
+            prestamp_timer(selected, write_stamp=write_stamp)
+    except (OSError, UnicodeError) as exc:
+        warnings.append(f"failed to prepare scheduler: {exc}")
         if changed:
             _rollback_unit_writes(selected, previous_units, runner, warnings)
         return ReconcileResult(
@@ -871,17 +893,11 @@ def _reconcile_units_in_scope(
             changed=changed,
             enabled=False,
             timer_active=False,
-            legacy=legacy.disabled_units,
+            legacy=(),
             warnings=tuple(warnings),
+            enabled_known=False,
+            timer_active_known=False,
         )
-
-    # Enable/start TIMER ONLY — never start the oneshot service immediately.
-    enabled_probe = probe_timer_is_enabled(selected, run_systemctl=runner)
-    active_probe = probe_timer_is_active(selected, run_systemctl=runner)
-    if enabled_probe.outcome == ProbeOutcome.QUERY_FAILED:
-        warnings.append(_probe_warning("enabled", enabled_probe))
-    elif enabled_probe.outcome == ProbeOutcome.FALSE:
-        prestamp_timer(selected, write_stamp=write_stamp)
 
     code, _, err = runner(
         build_systemctl_cmd(selected, "enable", "--now", TIMER_NAME)

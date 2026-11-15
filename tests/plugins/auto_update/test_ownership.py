@@ -801,6 +801,56 @@ def _stateful_systemctl(calls, *, enabled=False, active=False, fail_enable=False
     return runner, state
 
 
+@pytest.mark.parametrize("failure_stage", ["migration", "prestamp"])
+@pytest.mark.parametrize("existing", [False, True])
+def test_post_reload_preparation_failure_rolls_back_partial_reconcile(
+    failure_stage, existing, user_scope, cfg, monkeypatch
+):
+    from plugins.auto_update import systemd
+
+    calls: list[list[str]] = []
+    _patch_reconcile(monkeypatch, user_scope, STABLE_HOME, calls)
+    runner, state = _stateful_systemctl(calls)
+    if existing:
+        reconcile_units(
+            cfg,
+            enabled=True,
+            scope=user_scope,
+            run_systemctl=runner,
+            write_stamp=lambda _path, _payload: None,
+        )
+        reconcile_units(cfg, enabled=False, scope=user_scope, run_systemctl=runner)
+    paths = (service_unit_path(user_scope), timer_unit_path(user_scope), _owner_path(user_scope))
+    before = tuple(path.read_bytes() if path.exists() else None for path in paths)
+    calls.clear()
+    _set_home(monkeypatch, ALTERNATE_HOME if existing else STABLE_HOME)
+
+    def fail_stamp(_path, _payload):
+        raise OSError("timer stamp denied")
+
+    if failure_stage == "migration":
+        def fail_migration(*_args, **_kwargs):
+            raise OSError("legacy backup denied")
+
+        monkeypatch.setattr(
+            "plugins.auto_update.systemd.migrate_legacy_units", fail_migration
+        )
+
+    result = reconcile_units(
+        cfg,
+        enabled=True,
+        takeover=existing,
+        scope=user_scope,
+        run_systemctl=runner,
+        write_stamp=fail_stamp,
+    )
+
+    assert "failed to prepare scheduler" in "\n".join(result.warnings)
+    assert tuple(path.read_bytes() if path.exists() else None for path in paths) == before
+    assert state == {"enabled": False, "active": False}
+    _assert_final_mutation_is_reload(calls)
+
+
 @pytest.mark.parametrize("failure", ["enable", "owner"])
 def test_failed_first_install_restores_inactive_disabled_timer(
     failure, user_scope, cfg, monkeypatch
