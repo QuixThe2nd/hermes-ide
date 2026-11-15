@@ -123,7 +123,7 @@ from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMEOUT_SECONDS = 0  # 0 = no wall-clock limit
+DEFAULT_TIMEOUT_SECONDS = 0  # 0 = no Cloud polling limit
 MIN_TIMEOUT_SECONDS = 60
 MAX_TIMEOUT_SECONDS = 1800
 _clamp_timeout_seconds = partial(
@@ -133,7 +133,8 @@ _clamp_timeout_seconds = partial(
     maximum=MAX_TIMEOUT_SECONDS,
 )
 # 0 = stall watchdog off — long quiet stretches are the normal case for
-# coding delegations; only an explicit positive timeout_seconds bounds a run.
+# coding delegations; only an explicit positive timeout_seconds bounds Cloud
+# polling. A local fallback always receives its own bounded budget.
 STALL_WATCHDOG_SECONDS = 0
 
 CURSOR_API_BASE = "https://api.cursor.com"
@@ -3107,7 +3108,8 @@ CURSOR_AGENT_SCHEMA = {
         "the local branch as startingRef when that branch exists on origin). "
         "Unpushed commits and dirty working-tree changes are invisible to the "
         "cloud phase; the tool refuses to start when local HEAD is ahead of origin. "
-        "A cloud run-poll timeout leaves the local scratch checkout untouched, "
+        "A cloud run-poll timeout itself does not write the local workdir; "
+        "the Cloud phase uses a Cursor-managed checkout. The timeout path "
         "requests cancellation, records git status, and waits for a terminal "
         "Cloud status before any local execution. Local Claude fallback uses "
         "/goal only with a clean, verified status; dirty or unverifiable trees "
