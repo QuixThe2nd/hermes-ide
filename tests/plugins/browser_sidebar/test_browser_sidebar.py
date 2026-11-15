@@ -7,6 +7,7 @@ The Brave extension sidebar talks to Hermes over one authenticated WebSocket
 import asyncio
 import json
 import socket
+import tempfile
 import threading
 from pathlib import Path
 
@@ -17,6 +18,9 @@ pytest.importorskip("websockets")
 from gateway.config import PlatformConfig, Platform  # noqa: E402
 from gateway.platforms.base import SendResult  # noqa: E402
 from plugins.platforms.browser_sidebar import adapter as bs  # noqa: E402
+from plugins.platforms.discord.hub import DiscordHubServer  # noqa: E402
+
+pytestmark = pytest.mark.platforms("posix")
 
 PLUGIN_DIR = Path(bs.__file__).parent
 
@@ -168,22 +172,29 @@ def test_run_tab_js_without_socket_returns_error_string():
 
 
 class _LiveServer:
-    """Adapter + real websockets server on an ephemeral port."""
+    """Real installation hub, attached adapter, and ephemeral WebSocket."""
 
     def __init__(self, extra=None):
+        self._tempdir = tempfile.TemporaryDirectory(dir="/tmp", prefix="browser-sidebar-hub-")
+        self.server = DiscordHubServer(Path(self._tempdir.name) / "hub.sock")
         self.port = _free_port()
         self.adapter = bs.BrowserSidebarAdapter(
             _config({"token": TOKEN, "port": self.port, **(extra or {})}))
+        self.adapter._socket_path = self.server.socket_path
+        self.adapter._owner_profile = "Big Steve"
         self.events = []
         self.failures = []
 
     async def __aenter__(self):
+        await self.server.start()
         self.adapter.set_message_handler(self._on_message)
         assert await self.adapter.connect(), "connect must succeed"
         return self
 
     async def __aexit__(self, *exc):
         await self.adapter.disconnect()
+        await self.server.stop()
+        self._tempdir.cleanup()
 
     async def _on_message(self, event):
         self.events.append(event)
