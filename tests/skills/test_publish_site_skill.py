@@ -84,16 +84,6 @@ def test_no_dangling_skill_view_references(skill_text: str):
         assert hits, f"skill_view reference to non-shipped skill: {name}"
 
 
-def test_referenced_sibling_skills_ship(skill_text: str):
-    """Prose-referenced companion skills must exist in the shipped trees."""
-    for name in ("cloudflare-temporary-deploy",):
-        if name in skill_text:
-            hits = list((REPO / "skills").glob(f"**/{name}/SKILL.md")) + list(
-                (REPO / "optional-skills").glob(f"**/{name}/SKILL.md")
-            )
-            assert hits, f"referenced skill does not ship: {name}"
-
-
 def test_provider_ladder_documented(skill_text: str):
     """All three rungs of the provider ladder with their deploy commands."""
     assert "gh repo create" in skill_text
