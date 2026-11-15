@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
 import subprocess
 import time
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from typing import Callable, Mapping, Sequence
 from hermes_constants import display_hermes_home, get_hermes_home
 
 from plugins.auto_update.config import (
+    _coerce_bool,
     DEFAULT_ACCURACY_SEC,
     DEFAULT_RANDOMIZED_DELAY_SEC,
     default_schedule_calendar,
@@ -110,6 +112,56 @@ def format_exec_start(argv: Sequence[str]) -> str:
 
 def format_environment(key: str, value: str) -> str:
     return f"Environment={_systemd_quote(f'{key}={value}')}"
+
+
+def _parse_unit_environment_home(body: str) -> str:
+    """Return the effective static HERMES_HOME from a rendered service unit."""
+    section = ""
+    homes: list[str] = []
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line
+            continue
+        if section != "[Service]" or not line.startswith("Environment="):
+            continue
+        lexer = shlex.shlex(line[len("Environment=") :], posix=True)
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        # The renderer only treats double quotes specially; an apostrophe in an
+        # unquoted home must survive parsing rather than looking like an opener.
+        lexer.quotes = '"'
+        try:
+            assignments = list(lexer)
+        except ValueError as exc:
+            raise ValueError("invalid Environment directive") from exc
+        for assignment in assignments:
+            key, separator, value = assignment.partition("=")
+            if separator and key == "HERMES_HOME":
+                # shlex preserves \$ inside double quotes; the renderer uses it
+                # to encode a literal dollar sign.
+                homes.append(value.replace("\\$", "$"))
+
+    if not homes:
+        raise ValueError("missing HERMES_HOME in [Service]")
+    raw_home = homes[-1]
+    decoded: list[str] = []
+    index = 0
+    while index < len(raw_home):
+        if raw_home[index] != "%":
+            decoded.append(raw_home[index])
+            index += 1
+            continue
+        if index + 1 >= len(raw_home) or raw_home[index + 1] != "%":
+            raise ValueError("unresolved systemd specifier in HERMES_HOME")
+        decoded.append("%")
+        index += 2
+    home = "".join(decoded)
+    if not home:
+        raise ValueError("empty HERMES_HOME")
+    if not Path(home).is_absolute():
+        raise ValueError("HERMES_HOME must be an absolute path")
+    return home
 
 
 def render_service_unit(
@@ -439,6 +491,48 @@ def linger_warning(scope: InstallScope | None) -> str | None:
     )
 
 
+def _unit_ownership_warning(
+    scope: InstallScope,
+    *,
+    hermes_home: str,
+    takeover: bool,
+) -> str | None:
+    """Describe why an existing unit cannot be reconciled by this home."""
+    path = service_unit_path(scope)
+    try:
+        installed_body = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeError) as exc:
+        return (
+            f"failed to reconcile scheduler: could not read installed {path} "
+            f"to verify HERMES_HOME ({exc}). No unit files, migration, or scheduler "
+            "state were changed. Restore read access, then rerun reconcile."
+        )
+
+    try:
+        installed_home = _parse_unit_environment_home(installed_body)
+        installed_path = Path(installed_home).resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        return (
+            f"failed to reconcile scheduler: could not verify HERMES_HOME in "
+            f"installed {path} ({exc}). No unit files, migration, or scheduler "
+            "state were changed. Repair its absolute Environment=HERMES_HOME=... "
+            "directive or remove the unit explicitly before reconciling."
+        )
+
+    if installed_path == Path(hermes_home) or takeover:
+        return None
+    scope_label = "machine-wide" if scope.system else "user-scope"
+    return (
+        f"failed to reconcile scheduler: refusing {scope_label} takeover; installed "
+        f"{SERVICE_NAME} belongs to HERMES_HOME={installed_home}, not {hermes_home}. "
+        "No unit files, migration, or scheduler state were changed. Set "
+        "auto_update.systemd_takeover: true in this profile and rerun "
+        "hermes auto_update reconcile to replace it deliberately."
+    )
+
+
 def reconcile_units(
     cfg: Mapping[str, object],
     *,
@@ -494,6 +588,31 @@ def reconcile_units(
         )
 
     hermes_home = str(get_hermes_home().resolve())
+    ownership_warning = _unit_ownership_warning(
+        selected,
+        hermes_home=hermes_home,
+        takeover=_coerce_bool(cfg.get("systemd_takeover"), False),
+    )
+    if ownership_warning is not None:
+        warnings = [ownership_warning]
+        enabled_probe = probe_timer_is_enabled(selected, run_systemctl=runner)
+        active_probe = probe_timer_is_active(selected, run_systemctl=runner)
+        enabled_state, active_state, enabled_known, active_known = _reconcile_probe_fields(
+            enabled_probe,
+            active_probe,
+            warnings,
+        )
+        return ReconcileResult(
+            supported=True,
+            scope=selected,
+            changed=False,
+            enabled=enabled_state,
+            timer_active=active_state,
+            legacy=(),
+            warnings=tuple(warnings),
+            enabled_known=enabled_known,
+            timer_active_known=active_known,
+        )
     service_body = render_service_unit(
         hermes_home=hermes_home,
         exec_start=unit_exec_start_argv(),

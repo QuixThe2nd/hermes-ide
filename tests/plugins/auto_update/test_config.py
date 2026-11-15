@@ -55,3 +55,11 @@ def test_enabled_string_false_counts_as_disabled():
 
 def test_enabled_string_true_is_not_explicit_disable():
     assert plugin_explicitly_disabled({"auto_update": {"enabled": "true"}}) is False
+
+
+def test_systemd_takeover_defaults_off_and_uses_boolean_coercion():
+    assert load_auto_update_config({})["systemd_takeover"] is False
+    for value in (True, 1, "1", "true", "YES", "on"):
+        assert load_auto_update_config({"systemd_takeover": value})["systemd_takeover"] is True
+    for value in (False, 0, None, "", "0", "false", "off", "unexpected"):
+        assert load_auto_update_config({"systemd_takeover": value})["systemd_takeover"] is False

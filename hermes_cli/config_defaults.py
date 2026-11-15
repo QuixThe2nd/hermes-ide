@@ -1743,6 +1743,10 @@ DEFAULT_CONFIG = {
     # always wins and survives reconcile/upgrade.
     "auto_update": {
         "enabled": True,
+        # Refuse to overwrite a systemd unit owned by another HERMES_HOME unless
+        # this profile explicitly opts into takeover. Invalid or unreadable
+        # ownership evidence remains refused even when this is true.
+        "systemd_takeover": False,
         "idle_minutes": 8,
         "schedule": "*-*-* 00,06,12,18:00:00",
         "randomized_delay_sec": 0,
