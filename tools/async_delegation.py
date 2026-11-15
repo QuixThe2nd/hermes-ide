@@ -725,8 +725,8 @@ def _session_records(statuses, session_key: str, origin_ui_session_id: str, pare
 
 
 def has_live_for_session(session_key: str = "", origin_ui_session_id: str = "", parent_session_id: str = "") -> bool:
-    """Whether a session still owns any live (running/stalling/finalizing) delegation."""
-    return bool(_session_records(_LIVE_STATES, session_key, origin_ui_session_id, parent_session_id))
+    """Whether a session still owns any active (running/stalling) delegation."""
+    return bool(_session_records(_ACTIVE_STATES, session_key, origin_ui_session_id, parent_session_id))
 
 
 def _new_delegation_id() -> str:

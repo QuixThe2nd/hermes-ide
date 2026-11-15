@@ -2119,6 +2119,15 @@ class GatewayInboundMixin:
             )
             if outcome.redirected:
                 logger.debug("PRIORITY redirect for session %s", _quick_key)
+                try:
+                    adapter = self._delivery_adapter_for(source)
+                    if adapter:
+                        await self._send_busy_ack(
+                            event, adapter, _quick_key, running_agent, outcome,
+                        )
+                except Exception:
+                    # Receipt failure must never unwind an accepted redirect.
+                    logger.debug("PRIORITY redirect receipt failed for %s", _quick_key, exc_info=True)
                 return None
             if outcome.effective_mode == "queue":
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)

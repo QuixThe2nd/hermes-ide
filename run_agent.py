@@ -2687,7 +2687,9 @@ class AIAgent(
                 self._pending_steer = None
         return True
 
-    def steer(self, text: str) -> bool:
+    def steer(
+        self, text: str, *, on_accept: Optional[Callable[[str], None]] = None,
+    ) -> bool:
         """
         Inject a user message into the next tool result without interrupting.
 
@@ -2701,6 +2703,7 @@ class AIAgent(
 
         Args:
             text: The user text to inject. Empty strings are ignored.
+            on_accept: Optional observer invoked before the steer is drainable.
 
         Returns:
             True if the steer was accepted, False if the text was empty.
@@ -2713,17 +2716,23 @@ class AIAgent(
             # Test stubs that built AIAgent via object.__new__ skip __init__.
             # Fall back to direct attribute set; no concurrent callers expected
             # in those stubs.
+            if on_accept is not None:
+                on_accept("steer")
             existing = getattr(self, "_pending_steer", None)
             self._pending_steer = (existing + "\n" + cleaned) if existing else cleaned
             return True
         with _lock:
+            if on_accept is not None:
+                on_accept("steer")
             if self._pending_steer:
                 self._pending_steer = self._pending_steer + "\n" + cleaned
             else:
                 self._pending_steer = cleaned
         return True
 
-    def redirect(self, text: str) -> bool:
+    def redirect(
+        self, text: str, *, on_accept: Optional[Callable[[str], None]] = None,
+    ) -> bool:
         """Redirect the active turn without converting it into a new task.
 
         During a normal Hermes model request this cancels only that request;
@@ -2733,6 +2742,10 @@ class AIAgent(
         it degrades to ``steer()`` so the tool can finish at a safe boundary.
         Codex app-server has a native ``turn/steer`` operation and uses it
         directly instead of cancelling.
+
+        ``on_accept`` synchronously receives ``"steer"`` or ``"redirect"``
+        from the exact branch that accepts this call. For a local steer it runs
+        under the pending-steer lock before the text becomes drainable.
 
         Returns ``False`` when there is no live turn or the text is empty, so
         surfaces can fall back to their existing next-turn queue.
@@ -2755,16 +2768,21 @@ class AIAgent(
                 elif self._interrupt_requested:
                     return False
                 try:
-                    return bool(_native_steer(cleaned))
+                    accepted = bool(_native_steer(cleaned))
                 except Exception:
                     logger.debug("Codex app-server turn/steer failed", exc_info=True)
                     return False
+                if accepted and on_accept is not None:
+                    on_accept("redirect")
+                return accepted
 
         # Never kill a tool merely to deliver conversational guidance. The
         # existing steer drain puts it on the final tool result before the next
         # model decision, including delegate_agent children.
         if getattr(self, "_executing_tools", False):
-            return self.steer(cleaned)
+            if on_accept is None:
+                return self.steer(cleaned)
+            return self.steer(cleaned, on_accept=on_accept)
 
         _model_active = getattr(self, "_model_request_active", None)
         _redirect_lock = getattr(self, "_pending_redirect_lock", None)
@@ -2774,6 +2792,8 @@ class AIAgent(
             existing = getattr(self, "_pending_redirect", None)
             if self._interrupt_requested and not existing:
                 return False
+            if on_accept is not None:
+                on_accept("redirect")
             self._pending_redirect = (
                 f"{existing}\n\n[Additional user correction]\n{cleaned}"
                 if existing
@@ -2789,6 +2809,8 @@ class AIAgent(
                     return False
                 if self._interrupt_requested and not self._pending_redirect:
                     return False
+                if on_accept is not None:
+                    on_accept("redirect")
                 if self._pending_redirect:
                     self._pending_redirect = (
                         f"{self._pending_redirect}\n\n"

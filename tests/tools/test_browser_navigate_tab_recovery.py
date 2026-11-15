@@ -50,6 +50,10 @@ def _tabs_requested(get_mock) -> bool:
     return any(call.args and call.args[0] == "/tabs" for call in get_mock.call_args_list)
 
 
+def _stored_session(task_id):
+    return bc._sessions[bc._session_key(task_id)]
+
+
 def test_timeout_after_tab_created_adopts_tab(monkeypatch):
     task_id = "rec-timeout"
     _install(monkeypatch,
@@ -58,7 +62,7 @@ def test_timeout_after_tab_created_adopts_tab(monkeypatch):
     try:
         nav = json.loads(camofox_navigate(TARGET_URL, task_id=task_id))
         assert nav["success"] is True
-        assert bc._sessions[task_id]["tab_id"] == "tab-9"
+        assert _stored_session(task_id)["tab_id"] == "tab-9"
 
         snap = json.loads(camofox_snapshot(task_id=task_id))
         assert "No browser session" not in json.dumps(snap)
@@ -74,7 +78,7 @@ def test_read_timeout_after_tab_created_adopts_tab(monkeypatch):
     try:
         nav = json.loads(camofox_navigate(TARGET_URL, task_id=task_id))
         assert nav["success"] is True
-        assert bc._sessions[task_id]["tab_id"] == "tab-r"
+        assert _stored_session(task_id)["tab_id"] == "tab-r"
     finally:
         bc._drop_session(task_id)
 
@@ -87,7 +91,7 @@ def test_timeout_with_no_tabs_preserves_failure(monkeypatch):
     try:
         nav = json.loads(camofox_navigate(TARGET_URL, task_id=task_id))
         assert nav["success"] is False
-        assert bc._sessions[task_id]["tab_id"] is None
+        assert _stored_session(task_id)["tab_id"] is None
 
         snap = json.loads(camofox_snapshot(task_id=task_id))
         assert "No browser session" in json.dumps(snap)
@@ -104,7 +108,7 @@ def test_timeout_with_non_matching_tab_url_not_adopted(monkeypatch):
     try:
         nav = json.loads(camofox_navigate(TARGET_URL, task_id=task_id))
         assert nav["success"] is False
-        assert bc._sessions[task_id]["tab_id"] is None
+        assert _stored_session(task_id)["tab_id"] is None
 
         snap = json.loads(camofox_snapshot(task_id=task_id))
         assert "No browser session" in json.dumps(snap)
@@ -120,7 +124,7 @@ def test_http_500_after_tab_created_adopts_tab(monkeypatch):
     try:
         nav = json.loads(camofox_navigate(TARGET_URL, task_id=task_id))
         assert nav["success"] is True
-        assert bc._sessions[task_id]["tab_id"] == "tab-5"
+        assert _stored_session(task_id)["tab_id"] == "tab-5"
 
         snap = json.loads(camofox_snapshot(task_id=task_id))
         assert "No browser session" not in json.dumps(snap)
@@ -136,7 +140,7 @@ def test_http_404_not_recovered_by_tab_listing(monkeypatch):
     try:
         nav = json.loads(camofox_navigate(TARGET_URL, task_id=task_id))
         assert nav["success"] is False
-        assert bc._sessions[task_id]["tab_id"] is None
+        assert _stored_session(task_id)["tab_id"] is None
         assert not _tabs_requested(get_mock)
     finally:
         bc._drop_session(task_id)
@@ -151,7 +155,7 @@ def test_connection_error_keeps_cannot_connect_message(monkeypatch):
         nav = json.loads(camofox_navigate(TARGET_URL, task_id=task_id))
         assert nav["success"] is False
         assert "Cannot connect to Camofox" in json.dumps(nav)
-        assert bc._sessions[task_id]["tab_id"] is None
+        assert _stored_session(task_id)["tab_id"] is None
         assert not _tabs_requested(get_mock)
     finally:
         bc._drop_session(task_id)
@@ -169,7 +173,7 @@ def test_navigate_timeout_on_existing_tab_adopts_matching_tab(monkeypatch):
 
         second = json.loads(camofox_navigate(TARGET_URL, task_id=task_id))
         assert second["success"] is True
-        assert bc._sessions[task_id]["tab_id"] == "tab-nav"
+        assert _stored_session(task_id)["tab_id"] == "tab-nav"
 
         snap = json.loads(camofox_snapshot(task_id=task_id))
         assert "No browser session" not in json.dumps(snap)

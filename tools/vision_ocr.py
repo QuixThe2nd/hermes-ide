@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -33,26 +34,39 @@ def is_billing_failure(error: Exception) -> bool:
         return False
 
 
+@dataclass(frozen=True, slots=True)
+class LocalOCRResult:
+    success: bool
+    text: str = ""
+
+
+def run_local_ocr_checked(image_path: Any, *, timeout: float = _OCR_TIMEOUT_SECONDS) -> LocalOCRResult:
+    """Distinguish a successful empty OCR read from unavailable/failed inspection."""
+    binary = shutil.which("tesseract")
+    if not binary:
+        return LocalOCRResult(False)
+    try:
+        from tools.environments.local import build_subprocess_env
+        completed = subprocess.run(
+            [binary, str(image_path), "stdout", "-l", "eng", "--psm", "6"],
+            capture_output=True, text=True, timeout=timeout,
+            env=build_subprocess_env(), shell=False, check=False)
+    except Exception as exc:
+        logger.info("Local OCR unavailable: %s", exc)
+        return LocalOCRResult(False)
+    if completed.returncode != 0:
+        return LocalOCRResult(False)
+    return LocalOCRResult(True, (completed.stdout or "").strip())
+
+
 def run_local_ocr(image_path: Any) -> Optional[str]:
     """Tesseract text for ``image_path`` prefixed with ``OCR_MARKER``, or ``None``.
 
     ``None`` (caller keeps its error) when tesseract is not installed, the
     subprocess fails, or it produces no text. Never raises.
     """
-    binary = shutil.which("tesseract")
-    if not binary:
-        return None
-    try:
-        from tools.environments.local import build_subprocess_env
-        completed = subprocess.run(
-            [binary, str(image_path), "stdout", "-l", "eng", "--psm", "6"],
-            capture_output=True, text=True, timeout=_OCR_TIMEOUT_SECONDS,
-            env=build_subprocess_env(), shell=False, check=False)
-    except Exception as exc:
-        logger.info("Local OCR fallback unavailable: %s", exc)
-        return None
-    text = (completed.stdout or "").strip()
-    return f"{OCR_MARKER} {text}" if text else None
+    result = run_local_ocr_checked(image_path)
+    return f"{OCR_MARKER} {result.text}" if result.success and result.text else None
 
 
 def billing_ocr_fallback(error: Exception, image_path: Any) -> Optional[str]:

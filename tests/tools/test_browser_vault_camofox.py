@@ -62,6 +62,47 @@ class TestEvalJsCamofoxDispatch:
             assert browser_vault_tool._current_page_origin("default") == "https://www.facebook.com"
 
 
+
+    def test_reset_inspection_failure_is_not_missing_fields(self, camofox_mode):
+        from agent.vault_store import VaultItemMeta
+
+        meta = VaultItemMeta(
+            id="vault_x", kind="login", label="FB", origin="https://facebook.com",
+            created_at="2026-01-01T00:00:00Z", identifier_type="email", identifier="u@x.com",
+            allowed_origins=("https://facebook.com",),
+        )
+
+        class _Backend:
+            name, display_name, needs_unlock = "local", "Local vault", False
+
+            def is_unlocked(self):
+                return True
+
+            def get_meta(self, handle):
+                return meta
+
+            def resolve_password(self, handle):
+                raise AssertionError("inspection failure must not resolve the secret")
+
+        with patch("agent.vault_backends.backend_for_handle", return_value=_Backend()), \
+             patch.object(browser_camofox, "_post", side_effect=[
+                 {"result": "https://facebook.com/reset"},
+                 {"success": False, "error_type": "evaluation_failed", "error": "Evaluation timed out"},
+             ]) as post:
+            raw = browser_vault_tool.registry.dispatch(
+                "browser_vault_fill", {"handle": meta.id, "purpose": "password_reset"}, task_id="default",
+            )
+
+        assert isinstance(raw, str)
+        out = json.loads(raw)
+        assert out["success"] is False
+        assert out["error_type"] == "evaluation_failed"
+        assert "Could not inspect page inputs" in out["error"]
+        assert "Evaluation timed out" in out["error"]
+        assert "No password-reset form fields" not in out["error"]
+        assert post.call_count == 2
+
+
 class TestCamofoxFailClosed:
     def test_secret_eval_fails_closed_without_key(self, camofox_mode):
         with patch("agent.secret_scope.get_secret", return_value=""), \

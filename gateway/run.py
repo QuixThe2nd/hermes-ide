@@ -6965,6 +6965,8 @@ class GatewayRunner(
         demoted_for_subagents: bool
         demoted_for_compression: bool
         redirected: bool
+        steered: bool = False  # redirect() degraded to pending-steer delivery during tools
+        steer_delivery: Any = dataclasses.field(default=None, repr=False, compare=False)
 
     # Upper bound on off-loop agent-resource cleanup invoked from coroutines
     # running on the gateway's event loop (session-expiry sweep, in-turn
@@ -11500,17 +11502,38 @@ async def _start_gateway_start_control_socket(runner):
     return _control_server
 
 
-def _start_gateway_start_cron_and_housekeeping(runner):
-    """Start the cron scheduler thread + gateway housekeeping thread; returns
-    ``(cron_stop, cron_provider, cron_thread, housekeeping_thread)``."""
-    # The event loop is passed so cron delivery can use live adapters (E2EE support).
+def _start_gateway_start_housekeeping(runner, cron_stop, cron_provider, cron_thread):
+    """Start gateway chores after this process owns normal gateway authority."""
+    housekeeping_thread = threading.Thread(
+        target=_start_gateway_housekeeping, args=(cron_stop,),
+        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop(),
+                "cron_provider": cron_provider, "runner": runner, "cron_thread": cron_thread},
+        daemon=True, name="gateway-housekeeping")
+    housekeeping_thread.start()
+    return housekeeping_thread
+
+
+def _start_gateway_start_cron_and_housekeeping(
+        runner, *, in_process_only: bool = False, with_housekeeping: bool = True):
+    """Start cron and optionally housekeeping; external providers can remain deferred.
+
+    Returns ``(stop_event, provider, ticker_thread, housekeeping_thread)``. A skipped external
+    provider is represented by ``None`` and is started by the authority-claim callback instead.
+    """
     from cron.scheduler_provider import (
-        InProcessCronScheduler, resolve_cron_scheduler, scheduler_for_profile_mode)
+        InProcessCronScheduler, resolve_cron_scheduler, scheduler_for_profile_mode,
+    )
+    from gateway.overlap_restart import can_dispatch_cron
+
     cron_stop = threading.Event()
     multiplex_cron = bool(getattr(runner.config, "multiplex_profiles", False))
     cron_provider = scheduler_for_profile_mode(
         resolve_cron_scheduler(), multiplex_profiles=multiplex_cron)
-    cron_start_kwargs: Dict[str, Any] = {"adapters": runner.adapters, "loop": asyncio.get_running_loop()}
+    if in_process_only and not isinstance(cron_provider, InProcessCronScheduler):
+        return cron_stop, None, None, None
+    cron_start_kwargs: Dict[str, Any] = {
+        "adapters": runner.adapters, "loop": asyncio.get_running_loop(),
+    }
 
     # Multiplex: tell the ticker which profile homes to tick (else secondary profiles' jobs never
     # run, #69377), including a ``--profile <name>`` multiplexer's OWN store.
@@ -11533,10 +11556,9 @@ def _start_gateway_start_cron_and_housekeeping(runner):
         except Exception as exc:
             logger.warning("Could not resolve profile homes for multiplex cron: %s", exc)
 
-    # Only the in-process ticker polls local due jobs, so only it gets the external-drain dispatch gate.
+    # Only the in-process ticker polls local due jobs, so only it gets the overlap/drain gate.
     if isinstance(cron_provider, InProcessCronScheduler):
-        cron_start_kwargs["can_dispatch"] = lambda: not (
-            runner._draining or runner._external_drain_active)
+        cron_start_kwargs["can_dispatch"] = lambda: can_dispatch_cron(runner)
     # Supervised: a ticker that dies without a stop request is respawned by housekeeping (#111010).
     from cron.scheduler_thread import SupervisedTickerThread
     cron_thread = SupervisedTickerThread(
@@ -11561,13 +11583,10 @@ def _start_gateway_start_cron_and_housekeeping(runner):
                 "restart`) so the profile env loads.",
                 getattr(cron_provider, "name", "external"))
 
-    # Gateway-only housekeeping runs independently of the cron provider; shares cron_stop for shutdown.
-    housekeeping_thread = threading.Thread(
-        target=_start_gateway_housekeeping, args=(cron_stop,),
-        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop(),
-                "cron_provider": cron_provider, "runner": runner, "cron_thread": cron_thread},
-        daemon=True, name="gateway-housekeeping")
-    housekeeping_thread.start()
+    housekeeping_thread = None
+    if with_housekeeping:
+        housekeeping_thread = _start_gateway_start_housekeeping(
+            runner, cron_stop, cron_provider, cron_thread)
     return cron_stop, cron_provider, cron_thread, housekeeping_thread
 
 
@@ -11799,6 +11818,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     cron_provider = cron_thread = housekeeping_thread = None
     _overlap_claim_task = None
     if runner._overlap_successor_pending:
+        cron_stop, cron_provider, cron_thread, housekeeping_thread = (
+            _start_gateway_start_cron_and_housekeeping(
+                runner, in_process_only=True, with_housekeeping=False))
         from gateway.overlap_restart import claim_when_predecessor_exits, start_deferred_adapters
 
         async def _on_overlap_authoritative() -> None:
@@ -11824,8 +11846,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             except Exception:
                 logger.debug("restart-hub: hub attach verification failed", exc_info=True)
             await runner._send_restart_notification()
-            cron_stop, cron_provider, cron_thread, housekeeping_thread = (
-                _start_gateway_start_cron_and_housekeeping(runner))
+            if cron_provider is None:
+                cron_stop, cron_provider, cron_thread, housekeeping_thread = (
+                    _start_gateway_start_cron_and_housekeeping(runner))
+            elif housekeeping_thread is None:
+                housekeeping_thread = _start_gateway_start_housekeeping(
+                    runner, cron_stop, cron_provider, cron_thread)
             runner._start_systemd_watchdog()
 
         _overlap_claim_task = asyncio.create_task(
