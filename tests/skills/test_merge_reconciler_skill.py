@@ -1,17 +1,14 @@
-"""Contract checks for the optional agent-merge-conflict-arbiter skill asset.
+"""Contract checks for the bundled merge-reconciler skill asset.
 
-Reads only the SKILL.md markdown asset — no .py source reads, no network.
+Supersedes the optional agent-merge-conflict-arbiter skill. Reads only the
+SKILL.md markdown asset — no .py source reads, no network.
 """
 import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SKILL_PATH = (
-    REPO_ROOT
-    / "optional-skills"
-    / "autonomous-ai-agents"
-    / "agent-merge-conflict-arbiter"
-    / "SKILL.md"
+    REPO_ROOT / "skills" / "autonomous-ai-agents" / "merge-reconciler" / "SKILL.md"
 )
 
 REQUIRED_SECTIONS = [
@@ -44,11 +41,21 @@ def test_skill_file_exists():
     assert SKILL_PATH.is_file()
 
 
+def test_superseded_optional_skill_removed():
+    old = (
+        REPO_ROOT
+        / "optional-skills"
+        / "autonomous-ai-agents"
+        / "agent-merge-conflict-arbiter"
+    )
+    assert not old.exists(), f"superseded optional skill still present: {old}"
+
+
 def test_frontmatter_required_fields():
     fm, _ = _frontmatter_and_body()
     for field in ("name", "description", "version", "author", "license", "platforms"):
         assert field in fm, f"missing frontmatter field: {field}"
-    assert fm["name"] == "agent-merge-conflict-arbiter"
+    assert fm["name"] == "merge-reconciler"
 
 
 def test_description_hardline():
@@ -77,8 +84,9 @@ def test_body_size_within_bundled_norms():
 
 def test_references_native_hermes_tools():
     _, body = _frontmatter_and_body()
-    for tool in ("`terminal`", "`read_file`", "`patch`", "`delegate_agent`"):
+    for tool in ("`terminal`", "`read_file`", "`patch`", "`search_files`"):
         assert tool in body, f"body must reference native tool {tool}"
+    assert "`delegate_agent`" in body, "spawned-agent shape must use delegate_agent"
 
 
 def test_classification_taxonomy_present():
@@ -95,6 +103,26 @@ def test_impartiality_contract_stated():
     _, body = _frontmatter_and_body()
     assert "never favor" in body.lower()
     assert "drive-by" in body.lower()
+
+
+def test_escalation_on_unrecoverable_intents():
+    """Tied or unrecoverable intents must escalate, never guess."""
+    _, body = _frontmatter_and_body()
+    assert re.search(r"escalate", body, re.IGNORECASE), "escalation rule missing"
+    assert "rather than guess" in body or "instead of guessing" in body
+
+
+def test_hotspot_signal_rule_present():
+    """Repeated conflicts on one file must be flagged as a hotspot."""
+    _, body = _frontmatter_and_body()
+    assert "hotspot" in body.lower(), "hotspot signal rule missing"
+
+
+def test_no_kanban_api_instructions():
+    """The retired kanban tool API must not appear in the portable skill."""
+    content = SKILL_PATH.read_text(encoding="utf-8")
+    for gone in ("kanban_create", "kanban_complete", "hermes kanban"):
+        assert gone not in content, f"obsolete instruction present: {gone}"
 
 
 def test_no_machine_local_paths():
