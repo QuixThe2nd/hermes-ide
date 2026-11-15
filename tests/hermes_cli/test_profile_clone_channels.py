@@ -181,7 +181,7 @@ _SHARED_ENV = (
 
 def test_ownership_inventory_strips_policy_relay_and_aliases_but_keeps_tool_credentials(home):
     """Gateway-wide policy, relay identity and alias-prefixed keys are channel settings.
-    TWILIO_* is shared with the telephony skill: with ``sms`` explicitly disabled, those keys are tool
+    TWILIO_* is shared with non-channel telephony tooling: with ``sms`` explicitly disabled, those keys are tool
     credentials and stay; sms policy keys such as ``SMS_WEBHOOK_PORT`` are stripped."""
     (home / ".env").write_text(_SHARED_ENV, encoding="utf-8")
     (home / "config.yaml").write_text(

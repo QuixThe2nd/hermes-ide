@@ -11,7 +11,7 @@ env-override table ``gateway.config_env._ENV_STEPS`` / ``_ENV_ENABLE_CREDENTIALS
 under its canonical ``<PLATFORM>_`` prefix and its historical alias prefixes. Gateway-wide channel
 policy (``GATEWAY_ALLOW_ALL_USERS`` / ``GATEWAY_ALLOWED_USERS``) and relay enrollment identity
 (``GATEWAY_RELAY_*``) are channel settings too. A prefix an adapter SHARES with a non-channel
-capability (``HASS_*`` is also the Home Assistant tool, ``TWILIO_*`` the telephony skill, ``EMAIL_*``
+capability (``HASS_*`` is also the Home Assistant tool, ``TWILIO_*`` telephony tooling, ``EMAIL_*``
 mail-sending scripts) is stripped only when the source actually runs that adapter — the credential is
 then the bot's identity; otherwise it is a tool key and survives. Model/provider keys, tool keys,
 memory and general config are never touched.
@@ -47,7 +47,7 @@ _GATEWAY_POLICY_KEYS = ("GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS")
 # channel only while the source runs that adapter; the adapter's policy keys are channel-only always.
 _SHARED_WITH_TOOLS: dict[str, tuple[str, ...]] = {
     "homeassistant": ("HASS_",),   # tools/homeassistant_tool.py reads HASS_TOKEN / HASS_URL
-    "sms": ("TWILIO_",),           # telephony skill reads TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN
+    "sms": ("TWILIO_",),           # telephony tooling reads TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN
     "email": ("EMAIL_",),          # mail-sending skills read EMAIL_ADDRESS / EMAIL_PASSWORD / EMAIL_SMTP_*
 }
 _POLICY_MARKERS = ("_ALLOWED_USERS", "_ALLOW_ALL_USERS", "_ALLOWED_CHATS", "_HOME_CHANNEL", "_HOME_ADDRESS")
