@@ -110,6 +110,36 @@ class TestUnledgeredUrlCleanup:
         verdict = validate_citations(cleaned, [PAREN_URL])
         assert verdict.ok, verdict.errors
 
+    def test_malformed_inline_link_preserves_following_evidence_and_prose(self) -> None:
+        retained = "https://evidence.example/one"
+        evidence = "https://evidence.example/two"
+        text = (
+            f"[retained]({retained})\n"
+            "Broken [drop](https://unfetched.example/source then "
+            f"[evidence]({evidence}) trailing) end ."
+        )
+
+        cleaned = citations.remove_unledgered_urls(text, [retained, evidence])
+
+        assert cleaned == (
+            f"[retained]({retained})\n"
+            f"Broken drop then [evidence]({evidence}) trailing) end ."
+        )
+        verdict = validate_citations(cleaned, [retained, evidence])
+        assert verdict.ok, verdict.errors
+        assert verdict.cited_urls == [retained, evidence]
+        assert citations.remove_unledgered_urls(cleaned, [retained, evidence]) == cleaned
+
+    def test_malformed_inline_link_does_not_consume_plain_prose(self) -> None:
+        unknown = "https://unfetched.example/source"
+        text = f"Broken [drop]({unknown} ordinary prose) and [source]({PAREN_URL})."
+
+        cleaned = citations.remove_unledgered_urls(text, [PAREN_URL])
+
+        assert cleaned == f"Broken drop ordinary prose) and [source]({PAREN_URL})."
+        verdict = validate_citations(cleaned, [PAREN_URL])
+        assert verdict.ok, verdict.errors
+
     def test_unledgered_url_inline_label_is_not_reintroduced(self) -> None:
         unknown = "https://example.org/not-fetched"
         text = f"[{unknown}]({unknown}) and [source]({PAREN_URL})."

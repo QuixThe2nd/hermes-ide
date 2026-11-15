@@ -171,6 +171,15 @@ def _inline_link_end(text: str, start: int) -> int:
         if quote:
             if char == quote and text[index - 1] != "\\":
                 quote = ""
+        elif char in " \t" and not nested:
+            # Only a title or the closing paren may follow top-level whitespace.
+            # Ordinary prose means this destination is malformed; do not scan
+            # through it and swallow a later citation while seeking a ")".
+            next_index = index + 1
+            while next_index < len(text) and text[next_index] in " \t":
+                next_index += 1
+            if next_index == len(text) or text[next_index] not in "()'\"":
+                return -1
         elif char in "'\"":
             quote = char
         elif char == "(":
@@ -212,9 +221,9 @@ def remove_unledgered_urls(report_text: str, evidence_urls: Iterable[str]) -> st
             if match.group(0).startswith("]("):
                 label_start = _inline_label_start(text, match.start())
                 link_end = _inline_link_end(text, url_end)
-                if label_start >= 0 and link_end >= 0:
+                if label_start >= 0:
                     start = label_start - 1 if text[label_start - 1:label_start] == "!" else label_start
-                    end = link_end
+                    end = link_end if link_end >= 0 else url_end
                     replacement = text[label_start + 1:match.start()]
                     if start < cursor:
                         # A URL in the label was already visited. Unlink and
