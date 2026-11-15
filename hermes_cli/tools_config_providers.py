@@ -14,7 +14,7 @@ from hermes_cli.cli_output import (
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import cfg_get, get_env_value, load_config, save_config, save_env_value
 from hermes_cli.nous_account import format_nous_portal_entitlement_message
-from hermes_cli.nous_subscription import MANAGED_FEATURE_COVERAGE_CATEGORY, NousSubscriptionFeatures
+from hermes_cli.nous_tools import MANAGED_FEATURE_COVERAGE_CATEGORY, NousToolFeatures
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, fal_key_is_configured
 from utils import base_url_hostname, is_truthy_value
 
@@ -126,15 +126,15 @@ _PLUGIN_ROW_BUILDERS = {
 
 
 def _visible_providers(
-    cat: dict, config: dict, *, force_fresh: bool = False, features: Optional[NousSubscriptionFeatures] = None,
+    cat: dict, config: dict, *, force_fresh: bool = False, features: Optional[NousToolFeatures] = None,
 ) -> list[dict]:
     """Provider entries visible for the current auth/config state.
     Nous-managed rows (``managed_nous_feature``) are always shown, even logged-out/unentitled, to
     advertise the capability."""
-    from hermes_cli.tools_config import get_nous_subscription_features
+    from hermes_cli.tools_config import get_nous_tool_features
 
     if features is None:
-        features = get_nous_subscription_features(config, force_fresh=force_fresh)
+        features = get_nous_tool_features(config, force_fresh=force_fresh)
     acct = features.account_info
     # Pool-only users (free tool pool, no paid access) get image gen but NOT video gen — the pool doesn't
     # fund `fal-video`, so hide the managed video row rather than advertise a denial.
@@ -208,7 +208,7 @@ def provider_readiness_status(provider: dict, config: dict, *, features=None, is
     """Honest readiness state for a provider picker row.
     ``features`` avoids re-fetching portal state per row. ``is_active`` is the completed-setup fallback
     for post_setup hooks with no registered installed-check (selecting a row runs its hook)."""
-    from hermes_cli.tools_config import _POST_SETUP_READY, _provider_env_ready, get_nous_subscription_features
+    from hermes_cli.tools_config import _POST_SETUP_READY, _provider_env_ready, get_nous_tool_features
     from hermes_cli.tools_config_post_setup import _POST_SETUP_AUTH_READY
 
     if provider.get("env_vars", []):
@@ -217,7 +217,7 @@ def provider_readiness_status(provider: dict, config: dict, *, features=None, is
     managed_feature = provider.get("managed_nous_feature")
     if provider.get("requires_nous_auth") or managed_feature:
         if features is None:
-            features = get_nous_subscription_features(config)
+            features = get_nous_tool_features(config)
         if not features.nous_auth_present:
             return "needs_auth"
         if managed_feature:
@@ -302,7 +302,7 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict, *, force_fres
     """Provider selection for a tool category, then API-key setup for the chosen row.
     ``reconfigure`` ("Reconfigure an existing tool"): no setup note / skip row / Nous marker, and the
     chosen provider goes through the key-update prompts instead of the new-enable prompts."""
-    from hermes_cli.tools_config import _prompt_choice, _provider_env_ready, get_nous_subscription_features
+    from hermes_cli.tools_config import _prompt_choice, _provider_env_ready, get_nous_tool_features
 
     name = cat["name"]
     providers = _visible_providers(cat, config, force_fresh=force_fresh)
@@ -325,7 +325,7 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict, *, force_fres
     _nous_logged_in = False
     if not reconfigure:
         try:
-            _nous_logged_in = bool(get_nous_subscription_features(config, force_fresh=force_fresh).nous_auth_present)
+            _nous_logged_in = bool(get_nous_tool_features(config, force_fresh=force_fresh).nous_auth_present)
         except Exception:
             pass
 
@@ -342,7 +342,7 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict, *, force_fres
         # Subscribers get the "included" star; everyone else a hint that selecting triggers a Portal login.
         sub_marker = ""
         if not reconfigure and p.get("managed_nous_feature"):
-            sub_marker = "  ★ Included with your Nous subscription" if _nous_logged_in else "  ★ via Nous Portal (login on select)"
+            sub_marker = "  ★ Included with your Nous Tool Gateway" if _nous_logged_in else "  ★ via Nous Portal (login on select)"
         provider_choices.append(f"{p['name']}{badge}{tag}{configured}{sub_marker}")
 
     if not reconfigure:
@@ -393,9 +393,9 @@ def _has_marker(provider: dict, marker: str) -> bool:
 def _managed_provider_active(provider: dict, config: dict, managed_feature: str, force_fresh: bool) -> bool:
     """Active check for a Nous-managed row: the feature must be managed AND the category's selected
     provider must be the row's vendor or ``nous``."""
-    from hermes_cli.tools_config import get_nous_subscription_features
+    from hermes_cli.tools_config import get_nous_tool_features
 
-    feature = get_nous_subscription_features(config, force_fresh=force_fresh).features.get(managed_feature)
+    feature = get_nous_tool_features(config, force_fresh=force_fresh).features.get(managed_feature)
     if feature is None:
         return False
     if managed_feature in ("image_gen", "video_gen"):
@@ -483,10 +483,10 @@ def _managed_image_catalog(config: dict):
 
     A free-pool account is funded for FAL only, so its picker never offers a Krea or Portal model it
     would be denied at generation time; a logged-out or paid account sees everything."""
-    from hermes_cli.tools_config import get_nous_subscription_features
+    from hermes_cli.tools_config import get_nous_tool_features
     from tools.image_generation_managed import managed_image_catalog
 
-    acct = get_nous_subscription_features(config).account_info
+    acct = get_nous_tool_features(config).account_info
     pool_only = bool(acct and acct.logged_in and acct.paid_service_access is not True)
     return managed_image_catalog(
         include_krea=not pool_only or acct.tool_gateway_entitled_for("krea"), include_portal=not pool_only)
@@ -497,7 +497,7 @@ def _managed_image_catalog(config: dict):
 # picker time. "nous" is the single managed row: one catalog spanning the FAL, Krea and Portal gateways.
 IMAGEGEN_BACKENDS = {
     "fal": {"display": "FAL.ai", "config_key": "image_gen", "catalog_fn": _fal_model_catalog},
-    "nous": {"display": "Nous Subscription", "config_key": "image_gen", "catalog_fn": _managed_image_catalog}}
+    "nous": {"display": "Nous Tool Gateway", "config_key": "image_gen", "catalog_fn": _managed_image_catalog}}
 
 
 def _plugin_model_catalog(registry_module: str, plugin_name: str):
@@ -658,7 +658,7 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
         config.setdefault("computer_use", {})["backend"] = provider["computer_use_backend"]
 
     if managed_feature and managed_feature not in {"web", "browser"}:
-        # Managed rows without a marker above (image_gen/video_gen "Nous Subscription" rows carry only
+        # Managed rows without a marker above (image_gen/video_gen "Nous Tool Gateway" rows carry only
         # managed_nous_feature) still persist the "nous" selection.
         section = config.setdefault(managed_feature, {})
         if isinstance(section, dict):
@@ -708,29 +708,21 @@ def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> N
 
 def _nous_provider_gate(provider: dict, config: dict, managed_feature, *, force_fresh: bool) -> bool:
     """Return False (after printing why) when a Nous-gated row cannot be selected.
-    Managed Tool Gateway rows are always listed but only *activate* with paid Nous Portal access —
-    selecting one runs an inline Portal login (auth + entitlement only, no inference-provider switch).
-    Pure pre-auth UX rows (``requires_nous_auth`` without a managed feature) keep the older logged-in +
+    Managed Tool Gateway rows need no gate here — the runtime gateway enforces its own access.
+    Pure pre-auth UX rows (``requires_nous_auth`` without a managed feature) keep the logged-in +
     entitled gate."""
-    from hermes_cli.tools_config import get_nous_subscription_features
-
     if managed_feature:
-        from hermes_cli.nous_subscription import ensure_nous_portal_access
-
-        if not ensure_nous_portal_access(
-            capability=f"{provider.get('name', 'the Nous Tool Gateway')}",
-            coverage_category=MANAGED_FEATURE_COVERAGE_CATEGORY.get(managed_feature)):
-            _print_warning("  Not enabled — Nous Portal access is required for this backend.")
-            return False
         return True
 
     if provider.get("requires_nous_auth"):
-        features = get_nous_subscription_features(config, force_fresh=force_fresh)
+        from hermes_cli.tools_config import get_nous_tool_features
+
+        features = get_nous_tool_features(config, force_fresh=force_fresh)
         entitled = bool(features.account_info and features.account_info.paid_service_access is True)
         if not features.nous_auth_present or not entitled:
             message = format_nous_portal_entitlement_message(
-                features.account_info, capability=f"{provider.get('name', 'Nous Subscription')}")
-            _print_warning(f"  {message or 'Nous Subscription is only available after logging into Nous Portal.'}")
+                features.account_info, capability=f"{provider.get('name', 'Nous Tool Gateway')}")
+            _print_warning(f"  {message or 'This backend is only available after logging into Nous Portal.'}")
             return False
     return True
 
@@ -762,7 +754,7 @@ def _print_provider_selection(provider: dict, managed_feature, *, reconfigure: b
 def _show_portal_hint(provider: dict, config: dict, managed_feature, force_fresh: bool) -> bool:
     """True when a BYOK row shares its category with a Nous-managed sibling and the user is not authed to
     Nous — a single dim hint tells them the key is avoidable via a Portal subscription."""
-    from hermes_cli.tools_config import TOOL_CATEGORIES, get_nous_subscription_features
+    from hermes_cli.tools_config import TOOL_CATEGORIES, get_nous_tool_features
 
     if managed_feature or provider.get("requires_nous_auth"):
         return False
@@ -770,7 +762,7 @@ def _show_portal_hint(provider: dict, config: dict, managed_feature, force_fresh
         for _cat in TOOL_CATEGORIES.values():
             _providers = _cat.get("providers", [])
             if provider in _providers and any(sib.get("managed_nous_feature") for sib in _providers):
-                return not get_nous_subscription_features(config, force_fresh=force_fresh).nous_auth_present
+                return not get_nous_tool_features(config, force_fresh=force_fresh).nous_auth_present
     except Exception:
         pass
     return False
@@ -861,12 +853,12 @@ def _configure_provider(provider: dict, config: dict, *, force_fresh: bool = Tru
                 _run_post_setup(provider["post_setup"])
         _print_success(f"  {provider['name']} - no configuration needed!")
         if managed_feature:
-            _print_info("  Requests for this tool will be billed to your Nous subscription.")
+            _print_info("  Requests for this tool will be billed via Nous Portal.")
         _finish_provider_selection(provider, config, managed_feature)
         return
 
     if not reconfigure and _show_portal_hint(provider, config, managed_feature, force_fresh):
-        _print_info("  Available through Nous Portal subscription.")
+        _print_info("  Available through the Nous Tool Gateway.")
 
     all_configured = _prompt_env_vars(env_vars, reconfigure=reconfigure)
     if provider.get("post_setup") and all_configured:

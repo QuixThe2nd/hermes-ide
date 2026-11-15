@@ -173,11 +173,15 @@ class BrowserSidebarAdapter(BasePlatformAdapter):
         self._lock_held = True
         try:
             from websockets.asyncio.server import serve
-            # No ``subprotocols=`` negotiation: completing the handshake and
-            # closing with 1008 (instead of an HTTP 400) lets the client see
-            # the auth verdict; the handler validates the raw
-            # Sec-WebSocket-Protocol header against the configured token.
-            self._server = await serve(self._handle_connection, self.host, self.port)
+            # Browsers require the server to select a client-offered
+            # subprotocol. Negotiation is also the authentication boundary:
+            # only the exact, sole configured token completes the handshake.
+            self._server = await serve(
+                self._handle_connection,
+                self.host,
+                self.port,
+                select_subprotocol=self._select_subprotocol,
+            )
         except Exception as exc:
             logger.error("browser_sidebar: cannot listen on %s:%s (%s)", self.host, self.port, exc)
             self._release_lock()
@@ -211,18 +215,18 @@ class BrowserSidebarAdapter(BasePlatformAdapter):
 
     # ── inbound frames ──────────────────────────────────────────────────────
 
-    @staticmethod
-    def _requested_token(ws) -> Optional[str]:
-        """The single subprotocol the client offered (Sec-WebSocket-Protocol)."""
-        raw = ""
-        with contextlib.suppress(Exception):
-            raw = str(ws.request.headers.get("Sec-WebSocket-Protocol") or "")
-        offered = [item.strip() for item in raw.split(",") if item.strip()]
-        return offered[0] if len(offered) == 1 else None
+    def _select_subprotocol(self, _connection, subprotocols):
+        """Select the sole configured token or reject authentication."""
+        from websockets.exceptions import NegotiationError
+        from websockets.typing import Subprotocol
+
+        if not _is_valid_token(self.token) or list(subprotocols) != [self.token]:
+            raise NegotiationError("unauthorized")
+        return Subprotocol(self.token)
 
     async def _handle_connection(self, ws) -> None:
         try:
-            if not _is_valid_token(self.token) or self._requested_token(ws) != self.token:
+            if ws.subprotocol != self.token:
                 await ws.close(code=1008, reason="unauthorized")
                 return
             previous, self._socket = self._socket, ws
@@ -253,8 +257,9 @@ class BrowserSidebarAdapter(BasePlatformAdapter):
             await self._handle_chat(frame)
         elif ftype == "tool_result":
             self._resolve_tool(frame)
-        elif ftype == "ready":
-            pass  # client hello; nothing to answer
+        elif ftype in {"hello", "ready"}:
+            if ftype == "hello":
+                await ws.send(json.dumps({"type": "ready"}))
         else:
             with contextlib.suppress(Exception):
                 await ws.send(json.dumps({"type": "error", "text": f"unknown frame type: {ftype!r}"}))
