@@ -15,7 +15,7 @@ metadata:
 
 Take a website, dashboard, or web app the user built (or you built for them) and put it online on infrastructure the user owns — GitHub Pages by default, Cloudflare Pages or Netlify when they need more. The discipline: preview locally for sign-off, version every deploy with a git tag, deploy through a provider ladder, verify the live URL with a real HTTP check, and keep rollback one command away.
 
-This skill covers static sites and SPA build output (plain HTML/CSS/JS, or the `dist/`/`build/` folder from Vite/Next-export/Astro/etc.). It does not cover server-side runtimes — for throwaway serverless deploys with zero account setup, use the `cloudflare-temporary-deploy` optional skill instead.
+This skill covers static sites and SPA build output (plain HTML/CSS/JS, or the `dist/`/`build/` folder from Vite/Next-export/Astro/etc.). It does not cover server-side runtimes — deploy those on the user's own infrastructure.
 
 ## When to Use
 
