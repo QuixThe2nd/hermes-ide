@@ -62,12 +62,9 @@ def _finish_session_reaping(task_id: str, owner_home: Optional[str] = None) -> N
 
 
 @contextlib.contextmanager
-def _session_owner_scope(task_id: str):
+def _session_owner_scope(session_key: tuple[str, str]):
     """Run teardown in the session owner's Hermes home and secret scope."""
-    owner_home = _bt._session_owner_homes.get(task_id)
-    if owner_home is None:
-        yield
-        return
+    owner_home = _bt._session_owner_homes.get(session_key) or session_key[0]
 
     from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
     from hermes_cli.env_loader import hydrate_profile_secret_sources
@@ -84,63 +81,72 @@ def _session_owner_scope(task_id: str):
         reset_hermes_home_override(home_token)
 
 
-def _update_session_activity(task_id: str) -> None:
+def _update_session_activity(session_key: tuple[str, str]) -> None:
     with _bt._cleanup_lock:
-        _bt._session_last_activity[task_id] = time.time()
-        _bt._session_owner_homes.setdefault(task_id, str(get_hermes_home()))
+        _bt._session_last_activity[session_key] = time.time()
+        _bt._session_owner_homes[session_key] = str(get_hermes_home())
 
 
-def _forget_session_tracking(task_id: str) -> None:
+def _forget_session_tracking(session_key: tuple[str, str]) -> None:
     with _bt._cleanup_lock:
-        _bt._active_sessions.pop(task_id, None)
-        _bt._session_last_activity.pop(task_id, None)
-        _bt._session_owner_homes.pop(task_id, None)
-        _bt._cleanup_failures.pop(task_id, None)
+        _bt._active_sessions.pop(session_key, None)
+        _bt._session_last_activity.pop(session_key, None)
+        _bt._session_owner_homes.pop(session_key, None)
+        _bt._cleanup_failures.pop(session_key, None)
 
 
-def _cleanup_single_browser_session(task_id: str) -> None:
+def _cleanup_single_browser_session(session_key: tuple[str, str]) -> None:
     from tools.browser_camofox import camofox_close, camofox_soft_cleanup
 
+    task_id = session_key[1] if isinstance(session_key, tuple) else session_key
     with _bt._cleanup_lock:
-        owner_home = _bt._session_owner_homes.get(task_id)
+        owner_home = _bt._session_owner_homes.get(session_key)
     try:
         if not camofox_soft_cleanup(task_id):
             camofox_close(task_id)
     except Exception as exc:
         _bt.logger.warning("Camofox cleanup failed for %s: %s", task_id, exc)
     finally:
-        _forget_session_tracking(task_id)
+        _forget_session_tracking(session_key)
+        if session_key != task_id:
+            _forget_session_tracking(task_id)
         release_browser_session(task_id, owner_home)
 
 
 def cleanup_browser(task_id: Optional[str] = None) -> None:
-    """Close an ephemeral Camofox session; managed profiles are only untracked."""
-    _cleanup_single_browser_session(task_id or "default")
+    """Close the current profile's ephemeral session; managed profiles are only untracked."""
+    from tools.browser_camofox import _session_key
+
+    _cleanup_single_browser_session(_session_key(task_id))
 
 
 def _cleanup_inactive_browser_sessions() -> None:
     now = time.time()
     with _bt._cleanup_lock:
         stale = [
-            (task_id, _bt._session_owner_homes.get(task_id))
-            for task_id, last_activity in list(_bt._session_last_activity.items())
+            (session_key, _bt._session_owner_homes.get(session_key))
+            for session_key, last_activity in list(_bt._session_last_activity.items())
             if now - last_activity > _bt.BROWSER_SESSION_INACTIVITY_TIMEOUT
         ]
-    for task_id, owner_home in stale:
+    for session_key, owner_home in stale:
+        task_id = session_key[1] if isinstance(session_key, tuple) else session_key
+        if owner_home is None:
+            owner_home = session_key[0] if isinstance(session_key, tuple) else hermes_home_key()
         if not _claim_inactive_session(task_id, owner_home):
             continue
         try:
             try:
-                with _session_owner_scope(task_id):
-                    _cleanup_single_browser_session(task_id)
+                scope_key = session_key if isinstance(session_key, tuple) else (hermes_home_key(owner_home), task_id)
+                with _session_owner_scope(scope_key):
+                    _cleanup_single_browser_session(session_key)
             except Exception as exc:
                 with _bt._cleanup_lock:
-                    failures = _bt._cleanup_failures[task_id] = _bt._cleanup_failures.get(task_id, 0) + 1
+                    failures = _bt._cleanup_failures[session_key] = _bt._cleanup_failures.get(session_key, 0) + 1
                     if failures >= _bt.MAX_INACTIVITY_CLEANUP_FAILURES:
-                        _bt._active_sessions.pop(task_id, None)
-                        _bt._session_last_activity.pop(task_id, None)
-                        _bt._session_owner_homes.pop(task_id, None)
-                        _bt._cleanup_failures.pop(task_id, None)
+                        _bt._active_sessions.pop(session_key, None)
+                        _bt._session_last_activity.pop(session_key, None)
+                        _bt._session_owner_homes.pop(session_key, None)
+                        _bt._cleanup_failures.pop(session_key, None)
                 _bt.logger.warning("Inactive Camofox cleanup failed for %s: %s", task_id, exc)
         finally:
             _finish_session_reaping(task_id, owner_home)
@@ -199,11 +205,12 @@ def cleanup_all_browsers() -> None:
     from tools import browser_camofox as camofox
 
     with _bt._cleanup_lock:
-        task_ids = set(_bt._active_sessions) | set(_bt._session_last_activity)
+        session_keys = set(_bt._active_sessions) | set(_bt._session_last_activity)
     with camofox._sessions_lock:
-        task_ids.update(camofox._sessions)
-    for task_id in sorted(task_ids):
-        cleanup_browser(task_id)
+        session_keys.update(camofox._sessions)
+    for session_key in sorted(session_keys):
+        with _session_owner_scope(session_key):
+            cleanup_browser(session_key[1])
     with _bt._cleanup_lock:
         _bt._active_sessions.clear()
         _bt._session_last_activity.clear()

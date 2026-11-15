@@ -407,6 +407,8 @@ DEFAULT_CONFIG = {
     "browser": {
         "inactivity_timeout": 120,
         "command_timeout": 30,  # seconds per Camofox command (screenshot, navigate, etc.)
+        # Default-on mid-task screenshot delivery; set false to opt out.
+        "progress_images": True,
         "snapshot_threshold": 15000,  # max chars before snapshot truncate-and-store (min 1000)
         "allow_private_urls": False,  # cloud metadata endpoints remain blocked even when enabled
         # restrict_evaluate: opt-in denylist blocking sensitive JS primitives (cookies/storage/

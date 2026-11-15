@@ -534,6 +534,13 @@ browser:
   # Active agent turns keep their sessions across non-browser work and long
   # model calls (default: 120 = 2 minutes).
 
+  # Automatically send sanitized Camofox screenshots to the originating
+  # Discord/Matrix conversation after meaningful page changes. Uses the same
+  # thread as tool progress. Local Tesseract OCR is required: screenshots are
+  # suppressed when privacy inspection fails or detects login, payment, OTP,
+  # vault, or similar sensitive content. Default true; set false to opt out.
+  # progress_images: false
+
   # Maximum characters of snapshot content before truncate-and-store.
   # Increase for long pages (for example, documentation or financial reports),
   # or decrease to reduce context usage. Minimum: 1000; default: 15000
