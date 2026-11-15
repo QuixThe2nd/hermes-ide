@@ -71,6 +71,58 @@ moa:
     assert calls[1]["tools"] is not None
 
 
+def test_moa_custom_litellm_astra_reaches_provider_request_verbatim(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: astra
+  presets:
+    astra:
+      reference_models: []
+      aggregator:
+        provider: custom:litellm
+        model: gpt-6-astra
+custom_providers:
+  - name: litellm
+    base_url: https://litellm.example.test/v1
+    api_key: test-key
+    api_mode: chat_completions
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from agent import auxiliary_client as ac
+    from agent import moa_loop
+
+    captured = {}
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        return _response("aggregator acted")
+
+    client = SimpleNamespace(
+        base_url="https://litellm.example.test/v1",
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+    )
+    monkeypatch.setattr(
+        ac,
+        "_get_cached_client",
+        lambda _provider, model, **_kwargs: (client, model),
+    )
+
+    facade = moa_loop.MoAChatCompletions("astra")
+    response = facade.create(
+        model="astra",
+        messages=[{"role": "user", "content": "solve this"}],
+    )
+
+    assert captured["model"] == "gpt-6-astra"
+    assert response.choices[0].message.content == "aggregator acted"
+
+
 def test_moa_runtime_provider_uses_virtual_endpoint():
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
