@@ -16,7 +16,7 @@ In the area this task touches, act as an owner, not a guest: merge duplicate cod
 
 ## Tests
 - Tests BEFORE (reproduce/fail on current code) + AFTER (pass, including adjacent tests in the same file).
-- Run with the repo venv: `.venv/bin/python -m pytest tests/<area>/... -q`.
+- Run with the canonical runner: `scripts/run_tests.sh tests/<area>/ -q`.
 - No change-detector tests (no `assert len(models) == 8`); assert relationships, not snapshots.
 - Never read source code inside tests to assert on its text.
 - Never modify an existing test to make your change pass without stating why in the PR body — tests are contracts. If the contract changed, say so explicitly.

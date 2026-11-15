@@ -52,6 +52,7 @@ _REQUIRED_CONVENTION_MARKERS = (
     "Never amend or force-push a branch another agent may have fetched.",
     "## Tests",
     "Tests BEFORE (reproduce/fail on current code) + AFTER",
+    "scripts/run_tests.sh tests/<area>/ -q",
     "No change-detector tests",
     "## Diff discipline",
     "Respect facade + siblings layout",
