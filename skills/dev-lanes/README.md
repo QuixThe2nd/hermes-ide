@@ -2,6 +2,16 @@
 
 Delegation lanes are configured specializations of Hermes' existing delegation backends. They are not standalone skills: the Markdown files under `souls/` are short system-prompt fragments consumed by the lane runner.
 
+`SOUL.md` is the canonical fork coding conventions source. Direct Claude, Cursor, and native delegation plus every configured lane harness receive it automatically exactly once, including when no skills are configured. `fork-coding-conventions/SKILL.md` is only a compatibility pointer; loading it is not required.
+
+## Parent-only compatibility migration
+
+The legacy external skill at `~/.hermes/lanes/skills/shared/fork-coding-conventions/SKILL.md` belongs to the parent lane and is not modified by this checkout. After this runtime and canonical `SOUL.md` are present in every target lane, preserve that external file's path and frontmatter and replace only its duplicated body with a pointer to the lane checkout's `skills/dev-lanes/SOUL.md`. Use `fork-coding-conventions/SKILL.md` as the pointer template; its repository-relative source reference does not depend on an adjacent copied SOUL. Do not copy the convention body into the external skill.
+
+Deploy in that order so the pointer never precedes automatic injection. Verify one real startup for each of OMP, Claude, Cursor, and lane-native delegation with `skills: []` and with the compatibility skill loaded, plus direct-native delegation without a skill (its API has no `skills` argument). Each initial payload must contain the complete SOUL exactly once and retain its existing task, context, and lane soul. The parameterized startup regression suite covers these checks with subprocess, network, and model boundaries mocked.
+
+Rollback is limited to restoring the original external `SKILL.md` body from the parent's snapshot. Keep the canonical SOUL and automatic injection installed during rollback so no coding agent loses the conventions. No persistent data or database migration is involved.
+
 ## Tools
 
 - `delegate_ui_dev` handles visual implementation, responsive behavior, accessibility, and polish.

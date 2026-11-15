@@ -724,6 +724,12 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           test "$SKILL_COUNT" -gt 0 || (echo "FAIL: no SKILL.md files found in skills directory"; exit 1)
           echo "PASS: $SKILL_COUNT bundled skills found"
 
+          test -f ${hermes-agent}/share/hermes-agent/skills/dev-lanes/SOUL.md || \
+            (echo "FAIL: canonical dev-lane SOUL missing"; exit 1)
+          test -f ${hermes-agent}/share/hermes-agent/skills/dev-lanes/fork-coding-conventions/SKILL.md || \
+            (echo "FAIL: fork conventions compatibility skill missing"; exit 1)
+          echo "PASS: dev-lane SOUL and compatibility pointer present"
+
           grep -q "HERMES_BUNDLED_SKILLS" ${hermes-agent}/bin/hermes || \
             (echo "FAIL: HERMES_BUNDLED_SKILLS not in wrapper"; exit 1)
           echo "PASS: HERMES_BUNDLED_SKILLS set in wrapper"

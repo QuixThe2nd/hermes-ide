@@ -11,11 +11,14 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
+import tempfile
 import threading
 import time
 import types
 import unittest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
@@ -32,6 +35,11 @@ from tools.delegate_tool import (
     _resolve_delegation_credentials,
 )
 from hermes_state import SessionDB
+
+
+@pytest.fixture(autouse=True)
+def _isolate_process_tempdir(tmp_path, monkeypatch):
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
 
 
 def _make_mock_parent(depth=0):

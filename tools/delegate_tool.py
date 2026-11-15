@@ -53,6 +53,7 @@ from tools.delegate_tool_toolsets import (  # noqa: F401
 from tools.delegate_tool_results import (  # noqa: F401
     _apply_summary_budget, _build_child_preserving_parent_tools, _run_child_lifecycle, _summarize_tool_arguments,
 )
+from tools.delegation_ownership import ensure_codebase_ownership
 
 _ROLES = frozenset({"leaf", "orchestrator"})
 
@@ -528,10 +529,12 @@ def delegate_task(
         return tool_error(str(exc))
     max_children = _get_max_concurrent_children()
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
-    if not err and ephemeral_system_prompt:
-        # Lane dispatch is single-task; attaching to every entry is harmless there.
+    if not err:
+        # Lane dispatch is single-task; direct batches retain per-task material.
         for t in task_list:
-            t["ephemeral_system_prompt"] = ephemeral_system_prompt
+            t["ephemeral_system_prompt"] = ensure_codebase_ownership(
+                ephemeral_system_prompt or t.get("ephemeral_system_prompt") or ""
+            )
     if not err:
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
     if not err:

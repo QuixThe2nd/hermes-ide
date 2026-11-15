@@ -227,6 +227,14 @@ if argv_out:
     with open(argv_out, "w", encoding="utf-8") as fh:
         json.dump(sys.argv, fh)
 
+system_out = os.environ.get("FAKE_OMP_SYSTEM_OUT")
+if system_out and "--append-system-prompt" in sys.argv:
+    prompt_path = sys.argv[sys.argv.index("--append-system-prompt") + 1]
+    with open(prompt_path, encoding="utf-8") as source:
+        prompt_text = source.read()
+    with open(system_out, "w", encoding="utf-8") as target:
+        target.write(prompt_text)
+
 emit({"type": "ready", "protocolVersion": 1})
 for line in sys.stdin:
     try:
@@ -236,6 +244,10 @@ for line in sys.stdin:
     if command.get("type") != "goal":
         continue
     objective = str(command.get("objective") or "")
+    objective_out = os.environ.get("FAKE_OMP_OBJECTIVE_OUT")
+    if objective_out:
+        with open(objective_out, "w", encoding="utf-8") as target:
+            target.write(objective)
     if "REFUSE" in objective:
         emit({"id": command["id"], "type": "response", "command": "goal",
               "success": False, "message": "goal mode disabled"})
@@ -650,38 +662,6 @@ def test_subagent_lane_prepends_soul_to_child_system_prompt(monkeypatch, workdir
     assert "# Lane instructions" in child_prompt
     assert "You are a focused subagent" in child_prompt
     assert child_prompt.index("RE soul rules") < child_prompt.index("You are a focused subagent")
-
-
-def test_claude_argv_includes_append_system_prompt_file(monkeypatch, tmp_path, workdir):
-    from tests.tools.test_claude_agent_tool import _write_fake_binary
-
-    import tools.claude_agent_tool as claude_tool
-    from tools.delegation_ownership import (
-        CODEBASE_OWNERSHIP_GUIDANCE,
-        CODEBASE_OWNERSHIP_SENTENCE,
-    )
-
-    soul_path = tmp_path / "soul.md"
-    soul_path.write_text(f"{CODEBASE_OWNERSHIP_GUIDANCE}\n\nHarness soul", encoding="utf-8")
-    fake_binary = _write_fake_binary(tmp_path, name="claude-fake")
-    argv_out = tmp_path / "argv.json"
-    monkeypatch.setattr(
-        "tools.claude_agent_tool.resolve_claude_binary",
-        lambda model=None: str(fake_binary),
-    )
-    monkeypatch.setenv("FAKE_CLAUDE_ARGV_OUT", str(argv_out))
-
-    result = json.loads(claude_tool.delegate_claude_agent(
-        task="do it", workdir=str(workdir), system_prompt_file=str(soul_path),
-    ))
-    assert result["success"] is True
-    argv = json.loads(argv_out.read_text(encoding="utf-8"))
-    assert argv[argv.index("--append-system-prompt-file") + 1] == str(soul_path)
-    assert "--append-system-prompt" not in argv
-    assert soul_path.read_text(encoding="utf-8").count(CODEBASE_OWNERSHIP_SENTENCE) == 1
-    later_flag = "--model" if "--model" in argv else "--permission-mode"
-    assert argv.index("--append-system-prompt-file") < argv.index(later_flag)
-    assert argv[-1] == "do it"
 
 
 # --- Reviewer pass -----------------------------------------------------------

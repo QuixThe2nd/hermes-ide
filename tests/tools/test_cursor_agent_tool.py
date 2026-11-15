@@ -1439,8 +1439,8 @@ def test_build_create_agent_prompt_has_single_ownership_guidance():
     from tools.delegation_ownership import (
         CODEBASE_OWNERSHIP_GUIDANCE,
         CODEBASE_OWNERSHIP_SENTENCE,
+        FORK_CODING_CONVENTIONS,
     )
-
     task = "fix the flaky test"
     payload = build_create_agent_payload(
         task=task,
@@ -1454,8 +1454,10 @@ def test_build_create_agent_prompt_has_single_ownership_guidance():
     assert prompt_text.endswith(task)
     assert prompt_text.count(CODEBASE_OWNERSHIP_SENTENCE) == 1
     assert prompt_text.count(CODEBASE_OWNERSHIP_GUIDANCE) == 1
+    assert prompt_text.count(FORK_CODING_CONVENTIONS) == 1
+    assert "never to analyzed target artifacts" in prompt_text
 
-    lane_task = f"{CODEBASE_OWNERSHIP_GUIDANCE}\n\n# Task\n{task}"
+    lane_task = f"{FORK_CODING_CONVENTIONS}\n\n# Task\n{task}"
     lane_payload = build_create_agent_payload(
         task=lane_task,
         repo_url="https://github.com/acme/demo",
@@ -1463,6 +1465,7 @@ def test_build_create_agent_prompt_has_single_ownership_guidance():
         agent_id="bc-bbbb",
     )
     assert lane_payload["prompt"]["text"].count(CODEBASE_OWNERSHIP_SENTENCE) == 1
+    assert lane_payload["prompt"]["text"].count(FORK_CODING_CONVENTIONS) == 1
 
 
 def test_timeout_dedupe_reuses_listed_agent(monkeypatch):
