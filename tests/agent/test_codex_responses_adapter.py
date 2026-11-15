@@ -903,6 +903,54 @@ def _final_text_response(text):
     )
 
 
+def test_normalize_codex_response_recovers_only_exact_interruption_placeholder():
+    from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+
+    placeholder, placeholder_finish = _normalize_codex_response(
+        _final_text_response(_INTERRUPTED_PLACEHOLDER), issuer_kind="codex_backend"
+    )
+    explanation, explanation_finish = _normalize_codex_response(
+        _final_text_response(f"The literal text {_INTERRUPTED_PLACEHOLDER} is reserved."),
+        issuer_kind="codex_backend",
+    )
+
+    assert placeholder_finish == "incomplete"
+    assert placeholder.content == _INTERRUPTED_PLACEHOLDER
+    assert placeholder.codex_message_items
+    assert explanation_finish == "stop"
+    assert explanation.content == f"The literal text {_INTERRUPTED_PLACEHOLDER} is reserved."
+
+
+def test_normalize_codex_response_placeholder_preserves_tool_call_precedence():
+    from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+
+    response = _final_text_response(_INTERRUPTED_PLACEHOLDER)
+    response.output.append(SimpleNamespace(
+        type="function_call", id="fc_1", call_id="call_1", name="terminal",
+        arguments="{}", status="completed",
+    ))
+
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind="codex_backend"
+    )
+
+    assert finish_reason == "tool_calls"
+    assert len(assistant_message.tool_calls) == 1
+    assert assistant_message.tool_calls[0].function.name == "terminal"
+
+
+def test_normalize_codex_response_placeholder_preserves_content_filter_precedence():
+    from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+
+    response = _final_text_response(_INTERRUPTED_PLACEHOLDER)
+    response.status = "incomplete"
+    response.incomplete_details = SimpleNamespace(reason="content_filter")
+
+    _, finish_reason = _normalize_codex_response(response, issuer_kind="codex_backend")
+
+    assert finish_reason == "content_filter"
+
+
 @pytest.mark.parametrize("text", [
     'Creating the PowerShell script now.\n{"cmd": "mkdir -p /c/Temp && cat > /c/Temp/x.ps1 <<\'EOF\'"}',
     'Sure, let me run the tests.\n{"cmd": "pytest -q", "workdir": "/repo", "timeout": 120}',
