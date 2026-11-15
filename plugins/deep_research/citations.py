@@ -293,8 +293,11 @@ def _remove_unledgered_urls(text: str, allowed: Set[str]) -> str:
                 label_start = _inline_label_start(text, match.start())
                 link_end = _inline_link_end(text, url_end)
                 if label_start >= 0:
+                    if link_end < 0:
+                        # No safe destination boundary: leave it for validation to reject.
+                        continue
                     start = label_start - 1 if text[label_start - 1:label_start] == "!" else label_start
-                    end = link_end if link_end >= 0 else url_end
+                    end = link_end
                     replacement = text[label_start + 1:match.start()]
                     if start < cursor:
                         # A URL in the label was already visited. Unlink and

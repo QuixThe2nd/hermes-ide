@@ -114,37 +114,34 @@ class TestUnledgeredUrlCleanup:
         verdict = validate_citations(cleaned, [PAREN_URL])
         assert verdict.ok, verdict.errors
 
-    def test_malformed_inline_link_preserves_following_evidence_and_prose(self) -> None:
+    def test_malformed_inline_link_fails_closed_without_losing_evidence(self) -> None:
         retained = "https://evidence.example/one"
         evidence = "https://evidence.example/two"
+        unknown = "https://unfetched.example/source"
         text = (
             "## Sources\n\n"
             f"[retained]({retained})\n"
-            "Broken [drop](https://unfetched.example/source then "
+            f"Broken [drop]({unknown} then "
             f"[evidence]({evidence}) trailing) end ."
         )
 
         cleaned = citations.remove_unledgered_urls(text, [retained, evidence])
 
-        assert cleaned == (
-            "## Sources\n\n"
-            f"[retained]({retained})\n"
-            f"Broken drop then [evidence]({evidence}) trailing) end ."
-        )
+        assert cleaned == text
         verdict = validate_citations(cleaned, [retained, evidence])
-        assert verdict.ok, verdict.errors
-        assert verdict.cited_urls == [retained, evidence]
-        assert citations.remove_unledgered_urls(cleaned, [retained, evidence]) == cleaned
+        assert verdict.ok is False
+        assert verdict.unknown_urls == [unknown]
 
-    def test_malformed_inline_link_does_not_consume_plain_prose(self) -> None:
+    def test_malformed_inline_link_with_plain_prose_fails_closed(self) -> None:
         unknown = "https://unfetched.example/source"
         text = f"## Sources\n\nBroken [drop]({unknown} ordinary prose) and [source]({PAREN_URL})."
 
         cleaned = citations.remove_unledgered_urls(text, [PAREN_URL])
 
-        assert cleaned == f"## Sources\n\nBroken drop ordinary prose) and [source]({PAREN_URL})."
+        assert cleaned == text
         verdict = validate_citations(cleaned, [PAREN_URL])
-        assert verdict.ok, verdict.errors
+        assert verdict.ok is False
+        assert verdict.unknown_urls == [unknown]
 
     def test_unledgered_url_inline_label_is_not_reintroduced(self) -> None:
         unknown = "https://example.org/not-fetched"
