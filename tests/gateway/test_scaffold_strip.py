@@ -7,7 +7,7 @@ REAL_PROSE = "Here is the answer you asked for."
 
 def test_memory_injection_card_stripped_prose_preserved():
     raw = (
-        "🧠 Injecting Memory\n"
+        "🧠 Injecting memory\n"
         "```\n"
         "MEMORY PROVIDER: Hindsight (session notes)\n"
         "§ USER PROFILE\n"
@@ -104,7 +104,7 @@ def test_unclosed_fence_untouched():
 def test_mixed_scaffold_stripped_prose_kept():
     footer = "glm-5.3-flash · 11% · ~ · 34s · 2 calls"
     raw = (
-        "🧠 Injecting Memory\n"
+        "🧠 Injecting memory\n"
         "```\n"
         "MEMORY PROVIDER: Hindsight\n"
         "§ USER PROFILE\n"
@@ -126,7 +126,7 @@ def test_mixed_scaffold_stripped_prose_kept():
 
 def test_local_surface_passes_scaffold_through():
     raw = (
-        "🧠 Injecting Memory\n"
+        "🧠 Injecting memory\n"
         "```\n"
         "MEMORY PROVIDER: Hindsight\n"
         "```\n"

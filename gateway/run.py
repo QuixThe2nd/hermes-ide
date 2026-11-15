@@ -5787,7 +5787,7 @@ def _format_context_injection_progress(
         if time_line is None:
             time_line = f"{chr(0x1F550)} Injecting time"
 
-    heading = "🧠 Injecting Memory" if "memory" in (sources or []) else "🧠 Context Injection"
+    heading = "🧠 Injecting memory" if "memory" in (sources or []) else "🧠 Context Injection"
     # A positive discrete count from the producer upgrades the memory heading
     # to the counted form. Non-int / zero / None values (plugin-only injections,
     # providers without a discrete count) keep the existing headings.
