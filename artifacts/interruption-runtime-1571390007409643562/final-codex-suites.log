@@ -1,3 +1,0 @@
-▶ pre-compiling bytecode cache
-Discovered 2 test files (~112 tests) under ['tests/agent/test_run_agent_codex_responses.py', 'tests/agent/test_codex_responses_adapter.py']; running with -j 30
-[ 39.3% |    44/~112 | ✓53 | ✗ 0] ✓ tests/agent/test_codex_responses_adapter.py (53✓, 7.2s)
