@@ -260,8 +260,8 @@ async def test_immediate_injection_during_redirect_still_orders_acceptance_first
     agent = _agent(tools=True)
     real_redirect = agent.redirect
 
-    def redirect_and_inject(text):
-        accepted = real_redirect(text)
+    def redirect_and_inject(text, **kwargs):
+        accepted = real_redirect(text, **kwargs)
         if accepted:
             _inject_post_tool(agent)
         return accepted
@@ -545,8 +545,8 @@ async def test_acceptance_send_failure_does_not_lose_truthful_delivery():
     agent = _agent(tools=True)
     real_redirect = agent.redirect
 
-    def redirect_and_inject(text):
-        accepted = real_redirect(text)
+    def redirect_and_inject(text, **kwargs):
+        accepted = real_redirect(text, **kwargs)
         if accepted:
             _inject_post_tool(agent)
         return accepted
@@ -571,3 +571,78 @@ async def test_acceptance_send_failure_does_not_lose_truthful_delivery():
     agent._notify_steer_delivery_listeners("continue")
     await asyncio.sleep(0)
     assert _contents(adapter).count(_DELIVERED) == 1
+
+
+@pytest.mark.asyncio
+async def test_tools_starting_inside_redirect_binds_steer_delivery():
+    """The core's steer decision owns the ack and listener, not the gateway's earlier phase."""
+    agent = _agent(tools=False, model=True)
+    real_redirect = agent.redirect
+
+    def redirect_as_tools_start(text, **kwargs):
+        agent._executing_tools = True
+        return real_redirect(text, **kwargs)
+
+    agent.redirect = redirect_as_tools_start
+    runner, adapter, source, session_key = _runner(agent)
+    event = _event(source, "m-tools-start", "late tool start")
+
+    assert await runner._handle_active_session_busy_message(event, session_key) is True
+
+    assert agent._pending_redirect is None
+    assert agent._pending_steer and "late tool start" in agent._pending_steer
+    assert len(agent._steer_delivery_listeners) == 1
+    assert _contents(adapter)[0].startswith("⏩ Steered into current run")
+    assert "Delivery will be confirmed" in _contents(adapter)[0]
+    adapter._add_reaction.assert_awaited_once_with(event.raw_message, "⏩")
+
+    messages = await asyncio.to_thread(_inject_post_tool, agent)
+    await _wait_for_sends(adapter, 2)
+
+    assert messages[-1]["role"] == "user"
+    assert "late tool start" in messages[-1]["content"]
+    assert _contents(adapter)[1] == _DELIVERED
+    assert adapter._send_with_retry.await_args_list[1].kwargs["reply_to"] == "m-tools-start"
+    assert agent._steer_delivery_listeners == []
+    turn = runner._session_state(session_key).turn
+    assert turn.steer_delivery_bindings == {}
+
+    agent._notify_steer_delivery_listeners(messages[-1]["content"])
+    await asyncio.sleep(0)
+    assert _contents(adapter).count(_DELIVERED) == 1
+    assert runner._release_running_agent_state(session_key) is True
+    assert turn.steer_delivery_message_ids == set()
+
+
+@pytest.mark.asyncio
+async def test_tools_ending_inside_redirect_leaves_no_steer_delivery():
+    """A model redirect must not inherit a listener bound from a stale tool-phase snapshot."""
+    agent = _agent(tools=True, model=True)
+    real_redirect = agent.redirect
+
+    def redirect_as_tools_end(text, **kwargs):
+        agent._executing_tools = False
+        return real_redirect(text, **kwargs)
+
+    agent.redirect = redirect_as_tools_end
+    runner, adapter, source, session_key = _runner(agent)
+    event = _event(source, "m-tools-end", "finish tools first")
+
+    assert await runner._handle_active_session_busy_message(event, session_key) is True
+
+    assert agent._pending_redirect and "finish tools first" in agent._pending_redirect
+    assert agent._pending_steer is None
+    assert agent._steer_delivery_listeners == []
+    turn = runner._session_state(session_key).turn
+    assert turn.steer_delivery_bindings == {}
+    assert turn.steer_delivery_message_ids == set()
+    assert len(_contents(adapter)) == 1
+    assert _contents(adapter)[0].startswith("↪ Redirected current run")
+    assert "Delivery will be confirmed" not in _contents(adapter)[0]
+    adapter._add_reaction.assert_awaited_once_with(event.raw_message, "⏩")
+
+    agent._notify_steer_delivery_listeners(agent._pending_redirect)
+    await asyncio.sleep(0)
+    assert _DELIVERED not in _contents(adapter)
+    assert runner._release_running_agent_state(session_key) is True
+    assert agent._steer_delivery_listeners == []

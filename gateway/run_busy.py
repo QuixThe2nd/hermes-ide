@@ -747,16 +747,26 @@ class GatewayBusySessionMixin:
             and hasattr(running_agent, "redirect")
         ):
             call_text = self._steer_text_with_origin((event.text or "").strip(), event)
-            tool_degraded = (
-                getattr(running_agent, "api_mode", None) != "codex_app_server"
-                and getattr(running_agent, "_executing_tools", False) is True
+            accepted_mode = None
+
+            def on_accept(mode: str) -> None:
+                nonlocal accepted_mode, steer_delivery
+                accepted_mode = mode
+                if mode != "steer":
+                    return
+                try:
+                    steer_delivery = self._bind_discord_steer_delivery(
+                        event, session_key, running_agent, call_text,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to bind Discord steer delivery for %s", session_key,
+                        exc_info=True,
+                    )
+            redirected = self._try_agent_verb(
+                running_agent, "redirect", call_text, session_key, on_accept=on_accept,
             )
-            if tool_degraded:
-                steer_delivery = self._bind_discord_steer_delivery(
-                    event, session_key, running_agent, call_text,
-                )
-            redirected = self._try_agent_verb(running_agent, "redirect", call_text, session_key)
-            steered = redirected and tool_degraded
+            steered = redirected and accepted_mode == "steer"
             if not redirected:
                 self._cancel_steer_delivery(steer_delivery)
                 steer_delivery = None
@@ -772,12 +782,16 @@ class GatewayBusySessionMixin:
         return "queue"
 
     def _try_agent_verb(
-        self, running_agent, verb: str, text: str, session_key: str, *, event: Optional[MessageEvent] = None
+        self, running_agent, verb: str, text: str, session_key: str, *,
+        event: Optional[MessageEvent] = None, on_accept=None,
     ) -> bool:
-        """Call ``running_agent.<verb>(text)`` (redirect); False + warning on failure."""
+        """Call ``running_agent.<verb>(text)`` with its optional acceptance hook."""
         try:
             call_text = self._steer_text_with_origin(text, event) if event else text
-            return bool(getattr(running_agent, verb)(call_text))
+            call = getattr(running_agent, verb)
+            if on_accept is not None:
+                return bool(call(call_text, on_accept=on_accept))
+            return bool(call(call_text))
         except Exception as exc:
             logger.warning("Gateway %s failed for session %s: %s", verb, session_key, exc)
             return False
