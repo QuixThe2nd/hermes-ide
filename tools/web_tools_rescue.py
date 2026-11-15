@@ -34,9 +34,9 @@ def _ring_vendor_keyless(name: str) -> bool:
     """Did *name*'s own provider route this call through the anonymous keyless ring?
 
     Mirrors the predicate each ring provider evaluates before calling, so eligibility reflects what
-    actually happened. Firecrawl owns extra routes that bypass the ring without a key — the managed
-    Nous Tool Gateway (persisted ``nous`` selection, or the legacy never-configured fallback when the
-    gateway is ready) and a self-hosted ``FIRECRAWL_API_URL`` — so it is asked directly.
+    actually happened. Firecrawl owns extra routes that bypass the ring without a key — a managed
+    tool gateway with an explicit token (used by the never-configured fallback) and a self-hosted
+    ``FIRECRAWL_API_URL`` — so it is asked directly.
     """
     if name == "firecrawl":
         from plugins.web.firecrawl.provider import _use_keyless_ring

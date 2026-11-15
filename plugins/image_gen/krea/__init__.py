@@ -104,11 +104,11 @@ def _resolve_model(explicit: Optional[str] = None) -> Tuple[str, Dict[str, Any]]
 
 def _resolve_managed_krea_gateway():
     """Managed gateway config on the managed path, else ``None``. Managed when the stored
-    ``image_gen`` selection is ``nous`` (or legacy ``use_gateway: true``), or never-configured with
-    no ``KREA_API_KEY``; an explicit vendor selection pins direct. Never raises (discovery scans)."""
+    ``image_gen`` selection names no vendor (never-configured) and no ``KREA_API_KEY`` is set;
+    an explicit vendor selection pins direct. Never raises (discovery scans)."""
     try:
         from tools.managed_tool_gateway import resolve_managed_tool_gateway
-        from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection
+        from tools.tool_backend_helpers import read_selection
     except Exception as exc:  # noqa: BLE001
         logger.debug("Managed Krea gateway resolution unavailable: %s", exc)
         return None
@@ -116,9 +116,9 @@ def _resolve_managed_krea_gateway():
         selected = read_selection("image_gen")
     except Exception:  # noqa: BLE001
         selected = None
-    if selected is not None and selected != NOUS_MANAGED_PROVIDER:
+    if selected is not None:
         return None
-    if selected is None and get_secret("KREA_API_KEY"):
+    if get_secret("KREA_API_KEY"):
         return None
     try:
         return resolve_managed_tool_gateway("krea")
@@ -341,15 +341,15 @@ def _submit_job(
         if failure.kind == "http":
             status, err_msg = failure.status, failure.message
             logger.error("Krea submit failed (%d): %s", status, err_msg)
-            # Managed 4xx: model not enabled/priced on the Portal, or shared-key concurrency cap (429).
+            # Managed 4xx: model not enabled/priced on the gateway, or shared-key concurrency cap (429).
             if managed and 400 <= status < 500:
                 hint = (
                     "Krea's shared-key concurrency cap was hit — retry shortly." if status == 429 else
-                    f"Model '{model_id}' may not be enabled/priced on the Nous Portal's Krea gateway. "
+                    f"Model '{model_id}' may not be enabled/priced on the managed Krea gateway. "
                     "Set KREA_API_KEY to use Krea directly, or pick a different model via "
                     "`hermes tools` → Image Generation.")
                 return None, fail(
-                    f"Nous Tool Gateway rejected Krea model '{model_id}' "
+                    f"The managed tool gateway rejected Krea model '{model_id}' "
                     f"(HTTP {status}): {err_msg}. {hint}",
                     "api_error")
             return None, fail(failure.error, "api_error")
@@ -399,11 +399,11 @@ class KreaImageGenProvider(StaticImageGenProvider):
     default_model_id = DEFAULT_MODEL
     setup = dict(
         name="Krea", badge="paid",
-        tag="Krea 2 foundation model — Medium ($0.03), Large ($0.06), Medium Turbo ($0.015). Style transfer, moodboards, reference-guided generation. Direct key or managed Nous Tool Gateway.",
+        tag="Krea 2 foundation model — Medium ($0.03), Large ($0.06), Medium Turbo ($0.015). Style transfer, moodboards, reference-guided generation. Direct key or managed tool gateway.",
         key="KREA_API_KEY", prompt="Krea API key", url="https://www.krea.ai/settings/api-tokens")
 
     def is_available(self) -> bool:
-        # Direct key OR managed Nous gateway (portal users without a Krea key).
+        # Direct key OR managed tool gateway (users without a Krea key).
         return bool(get_secret("KREA_API_KEY")) or _managed_krea_gateway_ready()
 
     def capabilities(self) -> Dict[str, Any]:
@@ -426,21 +426,19 @@ class KreaImageGenProvider(StaticImageGenProvider):
             return prompt_required_error("krea", aspect)
 
         # Managed gateway owns the shared Krea credential and meters per generation (token =
-        # Nous access token); otherwise direct Krea with a BYO ``KREA_API_KEY``.
+        # gateway bearer token); otherwise direct Krea with a BYO ``KREA_API_KEY``.
         managed = _resolve_managed_krea_gateway()
         if managed is not None:
             base_url = managed.gateway_origin.rstrip("/")
-            auth_token = managed.nous_user_token
+            auth_token = managed.gateway_token
         else:
             base_url = BASE_URL
             auth_token = get_secret("KREA_API_KEY")
             if not auth_token:
                 return error_factory("krea", aspect)(
                     "KREA_API_KEY not set. Run `hermes tools` → Image "
-                    "Generation → Krea to configure, get a key at "
-                    "https://www.krea.ai/settings/api-tokens, or sign in to "
-                    "a Nous account with the managed Krea gateway enabled "
-                    "(`hermes setup`).",
+                    "Generation → Krea to configure, or get a key at "
+                    "https://www.krea.ai/settings/api-tokens.",
                     "auth_required")
 
         model_id, meta = _resolve_model(kwargs.get("model"))
@@ -453,7 +451,7 @@ class KreaImageGenProvider(StaticImageGenProvider):
             for what, arg in _MANAGED_UNSUPPORTED:
                 if arg in payload:
                     return fail(
-                        f"Managed Krea (Nous Tool Gateway) does not support {what}. "
+                        f"Managed Krea (managed tool gateway) does not support {what}. "
                         f"Set KREA_API_KEY to use Krea directly, or omit `{arg}`.",
                         "unsupported_argument")
 
@@ -463,7 +461,7 @@ class KreaImageGenProvider(StaticImageGenProvider):
         if err is not None:
             return err
 
-        # 2. Poll — same principal as submit, so the managed path polls the gateway with the Nous token.
+        # 2. Poll — same principal as submit, so the managed path polls the gateway with its bearer token.
         poll_errors: List[Dict[str, Any]] = []
 
         def poll_error(kind: str, detail: Any) -> Dict[str, Any]:

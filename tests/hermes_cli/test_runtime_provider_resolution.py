@@ -1514,35 +1514,6 @@ def test_opencode_go_explicit_key_matches_env_key_route(monkeypatch, model):
 # fix #2562 — resolve_provider("custom") must not remap to "openrouter"
 # ------------------------------------------------------------------
 
-
-def test_auto_detected_nous_auth_failure_falls_through_to_openrouter(monkeypatch):
-    """When auto-detect picks Nous but credentials are revoked, fall through to OpenRouter."""
-    from hermes_cli.auth import AuthError
-
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
-    monkeypatch.setattr(rp, "load_config", lambda: {})
-
-    # resolve_provider returns "nous" (stale active_provider in auth.json)
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
-    # load_pool returns empty pool so we hit the direct credential resolution
-    monkeypatch.setattr(rp, "load_pool", lambda p: type("P", (), {
-        "has_credentials": lambda self: False,
-    })())
-    # Nous credential resolution fails with revoked token
-    monkeypatch.setattr(
-        rp, "resolve_nous_runtime_credentials",
-        lambda **kw: (_ for _ in ()).throw(
-            AuthError("Refresh session has been revoked",
-                      provider="nous", code="invalid_grant", relogin_required=True)
-        ),
-    )
-
-    # With requested="auto", should fall through to OpenRouter
-    resolved = rp.resolve_runtime_provider(requested="auto")
-    assert resolved["provider"] == "openrouter"
     assert resolved["api_key"] == "test-or-key"
 
 

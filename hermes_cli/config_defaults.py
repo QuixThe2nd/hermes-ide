@@ -614,7 +614,7 @@ DEFAULT_CONFIG = {
         "in_place": True,
         # Per-model threshold overrides: keys substring-match the model name (longest wins), values
         # replace the global `threshold`, e.g. {"glm-5.2": 0.40}. Prefix a key with "<provider>:" to
-        # scope it to one route ({"openai-codex:astra": 0.85} leaves Astra on OpenRouter/Nous at the
+        # scope it to one route ({"openai-codex:astra": 0.85} leaves Astra on OpenRouter at the
         # global value). The <512K floor (0.75) still applies raise-only on top.
         "model_thresholds": {},
         # Opt-in idle compaction (0 = off): a session resuming after this many idle seconds compacts
@@ -791,9 +791,6 @@ DEFAULT_CONFIG = {
         # and was never superseded by a successful write to the same path (catches "half the
         # parallel patches failed, model claims success").
         "file_mutation_verifier": True,
-        # Nous credits status-bar notices (usage bands, grant-spent, depleted/restored). False mutes
-        # them; balance data and /usage keep working.
-        "credits_notices": True,
         # Append a one-line explanation when a turn ends with no usable reply (empty after retries,
         # truncated stream, pending tool result, iteration/budget limit) instead of the bare
         # "(empty)" sentinel.
@@ -929,7 +926,7 @@ DEFAULT_CONFIG = {
     # Subagent delegation — override the provider:model used by delegate_agent
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all
-    # configured providers (OpenRouter, Nous, Z.ai, Kimi, etc.) are supported.
+    # configured providers (OpenRouter, Z.ai, Kimi, etc.) are supported.
     "delegation": {
         "model": "",  # e.g. "google/gemini-3-flash-preview" (empty = inherit parent)
         "provider": "",  # e.g. "openrouter" (empty = inherit parent provider + credentials)
@@ -1428,9 +1425,8 @@ DEFAULT_CONFIG = {
         "max_session_kernels": 4,
     },
     "tools": {
-        # Remote connector discovery/lifecycle through the Nous tool gateway.
-        # The flag is the user's off switch; availability additionally requires
-        # the portal sign-in every managed tool gates on.
+        # Remote connector discovery/lifecycle through an explicitly configured tool gateway.
+        # The flag is the user's off switch; availability additionally requires a gateway token.
         "connectors": {"enabled": True},
     },
     "logging": {  # File logging to ~/.hermes/logs/: agent.log captures INFO+, errors.log WARNING+.
@@ -1965,26 +1961,6 @@ DEFAULT_CONFIG = {
         },
     },
 
-    "nous": {
-        # Upper bound (seconds) on the Nous auth keepalive tick, which derives from the
-        # server-issued credential lifetime (raising above it has no effect). 0 disables the
-        # keepalive thread.
-        "keepalive_interval_seconds": 900,
-        # anthropic_wire: which Portal route carries anthropic/* models. "chat" =
-        # /v1/chat/completions (default for now); "native" = /v1/messages, the Anthropic
-        # Messages wire (signed thinking passthrough, native cache_control scopes); "auto" =
-        # start on chat and, per session, switch to native from the first response when the
-        # Portal upstream serving the model is one where native is known clean. Native is the
-        # better wire but on the OpenRouter-served path it re-writes the previous turn's cache on
-        # 14-20% of consecutive calls in concurrent tool loops (measured 2026-09-06;
-        # NousResearch/api#227), so chat is the default until that is fixed.
-        "anthropic_wire": "chat",
-        # Nous free tier: with no other provider configured, Hermes sets up a free Nous identity on
-        # first use (inference on nous/welcome + connectors) and offers `/login` (terminal:
-        # `hermes auth upgrade`) to sign in. false turns the free tier off entirely: nothing is set
-        # up and nothing is used.
-        "guest": True,
-    },
     # Google Vertex AI (Gemini). Auth is OAuth2 from a service-account JSON or ADC, NOT an API key;
     # the credential path lives in .env (VERTEX_CREDENTIALS_PATH / GOOGLE_APPLICATION_CREDENTIALS).
     # Bridged to VERTEX_PROJECT_ID / VERTEX_REGION.
@@ -2060,12 +2036,6 @@ def _base_url(name, prompt_name=None):
 # tools=[...] lists the model tools the key unlocks.
 OPTIONAL_ENV_VARS = {
     # ── Provider (handled in provider selection, not shown in checklists) ──
-    "NOUS_BASE_URL": _base_url("Nous Portal"),
-    "HERMES_ANON_API_SECRET": _env(
-        "Shared secret for the Nous free-tier sign-up endpoints while they are in their gated "
-        "integration phase (not needed once the gate is removed)",
-        "Nous free-tier shared secret (leave empty unless given one)", password=True,
-        category="provider", advanced=True),
     "OPENROUTER_API_KEY": _env("OpenRouter API key (for vision, web scraping helpers, and MoA)",
         "OpenRouter API key", url="https://openrouter.ai/keys", password=True, tools=["vision_analyze"],
         category="provider", advanced=True),
@@ -2174,7 +2144,7 @@ OPTIONAL_ENV_VARS = {
     "FIRECRAWL_API_URL": _tool("Firecrawl API URL for self-hosted instances (optional)",
         "Firecrawl API URL (leave empty for cloud)", None, password=False, advanced=True),
     "FIRECRAWL_GATEWAY_URL": _tool(
-        "Exact Firecrawl tool-gateway origin override for Nous Subscribers only (optional)",
+        "Exact Firecrawl tool-gateway origin override (optional)",
         "Firecrawl gateway URL (leave empty to derive from domain)", None, password=False,
         advanced=True),
     "TOOL_GATEWAY_URL": _tool(
@@ -2186,16 +2156,15 @@ OPTIONAL_ENV_VARS = {
         "Connector-gateway URL (leave empty to derive from domain)", None,
         password=False, advanced=True),
     "TOOL_GATEWAY_DOMAIN": _tool(
-        "Shared tool-gateway domain suffix for Nous Subscribers only, used to derive vendor "
-        "hosts, e.g. nousresearch.com -> firecrawl-gateway.nousresearch.com",
+        "Shared tool-gateway domain suffix used to derive vendor hosts",
         "Tool-gateway domain suffix", None, password=False, advanced=True),
     "TOOL_GATEWAY_SCHEME": _tool(
-        "Shared tool-gateway URL scheme for Nous Subscribers only, used to derive vendor hosts "
+        "Shared tool-gateway URL scheme used to derive vendor hosts "
         "(`https` by default, set `http` for local gateway testing)", "Tool-gateway URL scheme",
         None, password=False, advanced=True),
     "TOOL_GATEWAY_USER_TOKEN": _tool(
-        "Explicit Nous Subscriber access token for tool-gateway requests (optional; otherwise "
-        "read from the Hermes auth store)", "Tool-gateway user token", None, advanced=True),
+        "Explicit access token for tool-gateway requests (optional)",
+        "Tool-gateway user token", None, advanced=True),
     "TAVILY_API_KEY": _tool(
         "Tavily API key for AI-native web search and extract (optional — keyless works when "
         "Tavily is selected)", "Tavily API key", "https://app.tavily.com/home",

@@ -300,9 +300,6 @@ Yeniden eşitleme en fazla saatte bir otomatik çalışır."
     unknown_subcommand:       "Bilinmeyen /usage alt komutu: `{args}`. `/usage` veya `/usage reset [--force]` deneyin."
     reset_wrong_provider:     "Biriktirilen limit sıfırlamaları yalnızca openai-codex sağlayıcısında kullanılabilir. Önce `/model` ile geçiş yapın."
 
-  credits:
-    not_logged_in:            "Nous Portal'a giriş yapılmadı. Bakiyenizi görmek ve yükleme yapmak için giriş yapın."
-
   verbose:
     not_enabled:           "`/verbose` komutu mesajlaşma platformlarında etkin değil.\n\n`config.yaml` içinde etkinleştirin:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Araç ilerlemesi: **OFF** — araç etkinliği gösterilmez."

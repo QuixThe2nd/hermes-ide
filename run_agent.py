@@ -135,7 +135,6 @@ from agent.api_error_summary import PROVIDER_STREAM_PARSE_MARKERS, ApiErrorSumma
 from agent.interrupt_control import InterruptControlMixin
 from agent.turn_explainers import TurnExplainersMixin
 from agent.activity_tracking import ActivityTrackingMixin
-from agent.rate_limit_credits import RateLimitCreditsMixin
 from agent.session_persistence import SessionPersistenceMixin
 # Fork-local copies of persistence/flush helpers (kept in this module; they shadow the
 # compact SessionPersistenceMixin bodies in the MRO) reference these decomposed
@@ -309,7 +308,7 @@ class _StreamErrorEvent(Exception):
 
 class AIAgent(
     ClientLifecycleMixin, StreamDeliveryMixin, StatusOutputMixin, ApiRequestHooksMixin, ApiErrorSummaryMixin,
-    InterruptControlMixin, TurnExplainersMixin, ActivityTrackingMixin, RateLimitCreditsMixin,
+    InterruptControlMixin, TurnExplainersMixin, ActivityTrackingMixin,
     SessionPersistenceMixin, CompressionFacadeMixin, TurnFacadeMixin, VisionMessagePrepMixin, ReasoningParamsMixin,
 ):
     """AI Agent with tool calling capabilities."""
@@ -750,9 +749,9 @@ class AIAgent(
         """Return True when this provider/model pair should use Responses API."""
         from hermes_cli.providers import is_actual_route
         normalized_provider = (provider or "").strip().lower()
-        # Nous serves GPT-5.x via chat completions (its /v1/responses returns 404); generic custom endpoints
-        # may relay GPT-5 without full Responses semantics — only direct OpenAI/xAI URLs auto-upgrade.
-        if normalized_provider in ("nous", "custom") or is_actual_route(provider):
+        # Generic custom endpoints may relay GPT-5 without full Responses
+        # semantics — only direct OpenAI/xAI URLs auto-upgrade.
+        if normalized_provider == "custom" or is_actual_route(provider):
             return False
         if normalized_provider == "copilot":
             try:
@@ -2986,8 +2985,7 @@ class AIAgent(
         as a method so tests can patch a single seam without reaching into
         the private ``_turn_failed_file_mutations`` state dict.
 
-        The config lookup is read once per agent and cached (mirroring
-        ``_credits_notices_enabled``) — the footer gate runs at the end of
+        The config lookup is read once per agent and cached — the footer gate runs at the end of
         every turn, and a config flip applying on the next session is fine.
         The env-var override stays authoritative on every call and is never
         cached, so tests and operators can still flip it at runtime.
@@ -3096,8 +3094,7 @@ class AIAgent(
         config.  Exposed as a method so tests can patch a single seam,
         mirroring ``_file_mutation_verifier_enabled``.
 
-        The config lookup is read once per agent and cached (mirroring
-        ``_credits_notices_enabled``) — the gate runs at the end of every
+        The config lookup is read once per agent and cached — the gate runs at the end of every
         turn, and a config flip applying on the next session is fine.
         The env-var override stays authoritative on every call and is never
         cached, so tests and operators can still flip it at runtime.
@@ -3521,168 +3518,12 @@ class AIAgent(
     def _capture_anthropic_response_headers(self, http_response: Any) -> None:
         """Capture out-of-band state from Anthropic Messages response headers.
 
-        The Anthropic SDK's aggregated ``Message`` drops HTTP headers. Portal
-        (and other providers) put rate-limit and credits state there — the same
-        families the OpenAI-wire streaming path captures via
-        ``stream.response``. Fail-open: each capture swallows its own errors.
+        The Anthropic SDK's aggregated ``Message`` drops HTTP headers. Providers
+        put rate-limit state there — the same family the OpenAI-wire streaming
+        path captures via ``stream.response``. Fail-open: each capture swallows
+        its own errors.
         """
         self._capture_rate_limits(http_response)
-        self._capture_credits(http_response)
-
-    def _capture_credits(self, http_response: Any) -> None:
-        """Parse x-nous-credits-* headers, cache CreditsState, fire threshold notices.
-
-        Fail-open throughout — header issues never break the agent loop. The PARSE is
-        swallowed (any error → treated as a miss → keep last-known). The notice
-        EVALUATION/EMIT is a SEPARATE block that WARNS on failure (R1-M2): a bug in the
-        depletion-notice path must not vanish silently under the parse swallow.
-        """
-        # Dev test fixture (HERMES_DEV_CREDITS_FIXTURE): inject a chosen notice state
-        # each turn for repeatable testing, bypassing real headers. Throwaway scaffolding.
-        try:
-            from agent.credits_tracker import dev_fixture_credits_state
-            _fixture = dev_fixture_credits_state()
-        except Exception:
-            _fixture = None
-        if _fixture is not None:
-            self._credits_state = _fixture
-            if self._credits_session_start_micros is None:
-                self._credits_session_start_micros = _fixture.remaining_micros
-            _latch = getattr(self, "_credits_latch", None)
-            if isinstance(_latch, dict):
-                # Only seen_below_90 — never seen_grant_unspent (priming it would
-                # fire grant_spent on a fixture's first observation, the exact
-                # every-session nag the gate exists to prevent).
-                _latch["seen_below_90"] = True  # let warn90 fire without a real crossing
-            _used = _fixture.used_fraction
-            logger.info(
-                "credits ▸ [FIXTURE] remaining=%d (%s) · paid=%s · denom=%s · used=%s "
-                "(real headers bypassed — `echo clear` / unset HERMES_DEV_CREDITS_FIXTURE to restore)",
-                _fixture.remaining_micros,
-                _fixture.remaining_usd or "?",
-                _fixture.paid_access,
-                _fixture.denominator_kind,
-                ("%.0f%%" % (_used * 100)) if _used is not None else "n/a",
-            )
-            self._emit_credits_notices()
-            return
-        if http_response is None:
-            return
-        headers = getattr(http_response, "headers", None)
-        if not headers:
-            return
-        _dev = is_truthy_value(os.environ.get("HERMES_DEV_CREDITS"))
-
-        # ── Parse (fail-open → miss; never overwrite good state with None) ──
-        try:
-            from agent.credits_tracker import parse_credits_headers
-            state = parse_credits_headers(headers, provider=self.provider)
-        except Exception:
-            return  # parse error → treat as a miss, keep last-known
-        if state is None:
-            if _dev:
-                logger.info(
-                    "credits ▸ response had no valid x-nous-credits-* headers "
-                    "(miss — producer off / non-Nous path / >TTL stale)"
-                )
-            return
-
-        # retain-last-known: only overwrite on a fresh valid parse
-        self._credits_state = state
-        # Latch session-start remaining the first time we ever see a header
-        if self._credits_session_start_micros is None:
-            self._credits_session_start_micros = state.remaining_micros
-        if _dev:
-            # HERMES_DEV_CREDITS: stream each capture to agent.log — watch live with
-            # `hermes logs -f` (grep 'credits ▸'). Dev-only; silent for normal users.
-            spent = self.get_credits_spent_micros()
-            used = state.used_fraction
-            logger.info(
-                "credits ▸ remaining=%d (%s) · paid=%s · denom=%s · used=%s "
-                "· Δspent=%s · age=%s%s",
-                state.remaining_micros,
-                state.remaining_usd or "?",
-                state.paid_access,
-                state.denominator_kind,
-                ("%.0f%%" % (used * 100)) if used is not None else "n/a",
-                ("%.1f¢" % (spent / 10000)) if spent is not None else "n/a",
-                ("%.0fs" % state.age_seconds) if state.age_seconds != float("inf") else "n/a",
-                (" · disabled=%s" % state.disabled_reason) if state.disabled_reason else "",
-            )
-
-        # Threshold notices — shared with the cold-start seed (see _emit_credits_notices).
-        self._emit_credits_notices()
-
-    def _emit_credits_notices(self) -> None:
-        """Run the threshold policy on the current credits state and emit notices.
-
-        Shared by the warm path (_capture_credits) and the L3 cold-start seed, so a
-        session that opens already depleted warns immediately — not only after the first
-        inference header. Runs only when a notice consumer is bound (messaging binds none
-        → state still cached for /usage, no policy). WARNS on failure rather than
-        swallowing (R1-M2): a depletion-path bug must not vanish silently. Emits clears
-        FIRST, then shows (so depleted lands last in a latest-wins slot).
-        """
-        if getattr(self, "notice_callback", None) is None and getattr(self, "notice_clear_callback", None) is None:
-            return
-        if not self._credits_notices_enabled():
-            return
-        state = getattr(self, "_credits_state", None)
-        if state is None:
-            return
-        try:
-            from agent.credits_tracker import evaluate_credits_notices, is_free_tier_model, new_credits_latch
-            latch = getattr(self, "_credits_latch", None)
-            if latch is None:
-                latch = self._credits_latch = new_credits_latch()
-            # Free-model gate: a depleted account on a free model can still
-            # inference, so the depleted error banner is suppressed. Local-data
-            # only (":free" suffix, "stealth/" prefix + pricing-cache peek) —
-            # never a network call.
-            model_is_free = is_free_tier_model(
-                getattr(self, "model", "") or "",
-                getattr(self, "base_url", "") or "",
-            )
-            to_show, to_clear = evaluate_credits_notices(state, latch, model_is_free=model_is_free)
-            for key in to_clear:        # clears FIRST …
-                self._emit_notice_clear(key)
-            for notice in to_show:      # … then shows (depleted lands last in a latest-wins slot)
-                self._emit_notice(notice)
-        except Exception:
-            logger.warning("credits notice evaluation/emit failed", exc_info=True)
-
-    def _credits_notices_enabled(self) -> bool:
-        """Whether credits notices are enabled (config display.credits_notices).
-
-        Read once per agent and cached — the policy runs after every API
-        response, and the setting governs UI noise, not correctness, so a
-        config flip applying on the next session is fine.  Fail-open True
-        (preserve current behaviour) on any config error.
-        """
-        cached = getattr(self, "_credits_notices_enabled_cache", None)
-        if cached is not None:
-            return cached
-        enabled = True
-        try:
-            from hermes_cli.config import load_config as _load_config
-            _cfg = _load_config() or {}
-            _display = _cfg.get("display") if isinstance(_cfg, dict) else None
-            if isinstance(_display, dict) and "credits_notices" in _display:
-                enabled = bool(_display.get("credits_notices"))
-        except Exception:
-            enabled = True
-        self._credits_notices_enabled_cache = enabled
-        return enabled
-
-    def get_credits_state(self):
-        """Return the last captured CreditsState, or None."""
-        return self._credits_state
-
-    def get_credits_spent_micros(self):
-        """Session-cumulative micros spent = first_seen_remaining - current_remaining. None if no data."""
-        if self._credits_session_start_micros is None or self._credits_state is None:
-            return None
-        return self._credits_session_start_micros - self._credits_state.remaining_micros
 
     def _check_openrouter_cache_status(self, http_response: Any) -> None:
         """Read X-OpenRouter-Cache-Status from response headers and log it.
@@ -4244,13 +4085,13 @@ class AIAgent(
     _handle_max_iterations = _forward("agent.chat_completion_helpers", "handle_max_iterations")
 
     def _conversation_root_id(self) -> Optional[str]:
-        """Resolve the stable conversation id for Portal usage attribution.
+        """Resolve the stable conversation id for usage attribution and routing affinity.
 
         Returns the session-lineage ROOT id rather than the current segment
-        id, so one user-facing conversation keeps a single ``conversation=``
-        tag across context-compression rotation (`/new` starts a genuinely
+        id, so one user-facing conversation keeps a single conversation scope
+        across context-compression rotation (`/new` starts a genuinely
         new lineage). Delegate subagents resolve through their
-        ``_parent_session_id`` so an entire delegation tree tags as the
+        ``_parent_session_id`` so an entire delegation tree shares the
         parent conversation.
 
         Best-effort: falls back to the raw session id when the session DB
@@ -4314,7 +4155,7 @@ class AIAgent(
         )
         from agent import relay_runtime
         from agent.conversation_loop import run_conversation
-        from agent.portal_tags import (
+        from agent.conversation_scope import (
             reset_affinity_scope,
             reset_conversation_context,
             set_affinity_scope,
@@ -4783,11 +4624,11 @@ class AIAgent(
                     parent_session_id=getattr(self, "_parent_session_id", None) or "",
                 )
                 task_started = True
-            # Publish the conversation id for ambient Nous Portal tagging. Every
+            # Publish the conversation id as the ambient scope. Every
             # LLM call made inside this turn — main loop, compression, vision,
             # web_extract, session_search, MoA slots, background-review forks
             # (which copy this Context into their thread) — inherits the
-            # ``conversation=<root>`` tag with zero per-call-site plumbing.
+            # conversation scope with zero per-call-site plumbing.
             token = set_conversation_context(self._conversation_root_id())
             # Routing/affinity scope for the same turn — the conversation the
             # HOST declared, when it declared one. Providers fall back to the

@@ -876,7 +876,6 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
 from tools.environments.base import EnvironmentConnectionError
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
-from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 import sys
 
 

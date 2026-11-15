@@ -415,7 +415,7 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
 # content: Anthropic Messages (and aggregators proxying Claude — assume support), OpenAI
 # Chat/Responses. Gemini is gated on model: only 3.x supports multimodal functionResponse.
 _TOOL_RESULT_MEDIA_PROVIDERS = frozenset({
-    "openrouter", "nous", "vertex", "anthropic-vertex", "google-vertex",
+    "openrouter", "vertex", "anthropic-vertex", "google-vertex",
     "anthropic", "claude", "anthropic-direct",
     "openai", "openai-chat", "openai-codex", "azure-openai",
 })
@@ -833,7 +833,7 @@ def check_video_requirements() -> bool:
     """True when ``call_llm(task="vision")`` could resolve a client.
 
     Mirrors its fallback chain: explicit ``auxiliary.vision.provider``, then auto (main
-    provider → openrouter → nous) — without the auto step the tool would vanish whenever
+    provider → openrouter) — without the auto step the tool would vanish whenever
     the explicit name was unresolvable. Probe mode skips real SDK client construction.
 
     See #31179.

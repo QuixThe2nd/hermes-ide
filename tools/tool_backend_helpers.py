@@ -12,36 +12,6 @@ from utils import is_truthy_value
 logger = logging.getLogger(__name__)
 
 
-def managed_nous_tools_enabled(*, force_fresh: bool = False) -> bool:
-    """Coarse gate: entitled to the Nous Tool Gateway (paid Portal access OR a live free
-    pool). Fails closed on unknown/error — never blocks startup. Callers narrow per category
-    via ``tool_gateway_entitled_for``; ``force_fresh`` is for flows needing a just-bought grant."""
-    try:
-        from hermes_cli.nous_account import get_nous_portal_account_info
-        account_info = (get_nous_portal_account_info(force_fresh=True) if force_fresh
-                        else get_nous_portal_account_info())
-        return bool(account_info.logged_in) and account_info.tool_gateway_entitled
-    except Exception:
-        return False
-
-
-def nous_tool_gateway_unavailable_message(capability: str = "the Nous Tool Gateway", *,
-                                          force_fresh: bool = False) -> str:
-    """Return account-aware guidance for an unavailable Nous Tool Gateway path."""
-    try:
-        from hermes_cli.nous_account import (
-            format_nous_portal_entitlement_message, get_nous_portal_account_info)
-        message = format_nous_portal_entitlement_message(
-            get_nous_portal_account_info(force_fresh=force_fresh), capability=capability,
-            in_chat=True)
-        if message:
-            return message
-    except Exception:
-        pass
-    return (f"{capability} is unavailable. Run `hermes model` to refresh your "
-            "Nous Portal login and billing status.")
-
-
 def _scoped_credential(name: str) -> str:
     """Read a credential env var under the active profile secret scope; raw env fallback only
     if ``agent.secret_scope`` cannot import (a packaging edge must never lose the key)."""
@@ -109,9 +79,6 @@ def prefers_gateway(config_section: str) -> bool:
         return False
 
 
-# Provider value the managed "Nous Tool Gateway" picker rows write for every category;
-# any other name = that vendor direct; no key = legacy autodetect.
-NOUS_MANAGED_PROVIDER = "nous"
 # Per-capability keys that also count as "this category has been configured".
 _EXTRA_SELECTION_KEYS = {"web": ("search_backend", "extract_backend")}
 # Key(s) carrying the category's provider selection.
@@ -131,17 +98,13 @@ def _raw_section(section: str) -> Dict[str, Any] | None:
 
 
 def read_selection(section: str) -> str | None:
-    """THE single runtime read of the persisted `hermes tools` selection: ``"nous"`` (managed
-    gateway row), a vendor name (direct, own credentials), or ``None`` (never configured ->
-    legacy autodetect allowed). Reads the RAW config.yaml so key presence means "actually
-    written", not "schema default"; a raw ``local`` is therefore a real user selection.
-    Legacy shim: ``use_gateway: true`` was only ever written by the managed row, so it maps
-    to ``"nous"`` regardless of the name key. Never raises."""
+    """THE single runtime read of the persisted `hermes tools` selection: a vendor name
+    (direct, own credentials), or ``None`` (never configured -> legacy autodetect allowed).
+    Reads the RAW config.yaml so key presence means "actually written", not "schema
+    default"; a raw ``local`` is therefore a real user selection. Never raises."""
     raw = _raw_section(section)
     if raw is None:
         return None
-    if is_truthy_value(raw.get("use_gateway")):
-        return NOUS_MANAGED_PROVIDER
     for key in _SELECTION_NAME_KEYS.get(section, _DEFAULT_NAME_KEYS):
         text = str(raw.get(key)).strip().lower() if raw.get(key) is not None else ""
         if text:

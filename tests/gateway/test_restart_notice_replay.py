@@ -60,7 +60,6 @@ def boot_notice(tmp_path, monkeypatch):
     # Unrelated conversation recovery and optional account-status text are isolated.
     runner._claim_pending_obligations = AsyncMock(return_value=[])
     runner._redeliver_claimed_obligations = AsyncMock(return_value=0)
-    runner._free_tier_startup_line = Mock(return_value=None)
     # Keep the real requester-marker check; this case has only the planned marker.
     assert not (tmp_path / ".restart_notify.json").exists()
     marker = tmp_path / ".restart_pending.json"

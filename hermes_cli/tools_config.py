@@ -9,7 +9,6 @@ from typing import Dict, List, Optional, Set
 from hermes_cli.cli_output import print_info as _print_info
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import cfg_get, load_config, save_config, get_env_value
-from hermes_cli.nous_tools import MANAGED_FEATURE_COVERAGE_CATEGORY, NousToolFeatures, get_nous_tool_features  # noqa: F401
 from hermes_cli.platforms import PLATFORMS as _PLATFORMS_REGISTRY
 from hermes_cli.toolset_scope import (
     _TOOLSET_PLATFORM_RESTRICTIONS, toolset_allowed_for_platform as _toolset_allowed_for_platform)
@@ -227,7 +226,7 @@ def _key(key: str, prompt: str, url: str = "", **extra) -> dict:
 
 
 def _row(name: str, badge: str = "", tag: str = "", env_vars: list = (), **markers) -> dict:
-    """One TOOL_CATEGORIES provider row; ``markers`` are the ``*_provider`` / ``post_setup`` / Nous keys."""
+    """One TOOL_CATEGORIES provider row; ``markers`` select providers and post-setup hooks."""
     row = {"name": name}
     if badge:
         row["badge"] = badge
@@ -238,7 +237,6 @@ def _row(name: str, badge: str = "", tag: str = "", env_vars: list = (), **marke
     return row
 
 
-_NOUS = {"requires_nous_auth": True}
 _LANGFUSE_PUBLIC = ("HERMES_LANGFUSE_PUBLIC_KEY", "Langfuse public key (pk-lf-...)")
 _LANGFUSE_SECRET = ("HERMES_LANGFUSE_SECRET_KEY", "Langfuse secret key (sk-lf-...)")
 
@@ -247,12 +245,8 @@ TOOL_CATEGORIES = {
         "name": "Web Search & Extract", "setup_title": "Select Search Provider",
         "setup_note": "A free DuckDuckGo search skill is also included — skip this if you don't need a premium provider.",
         "icon": "🔍",
-        # Provider rows come from plugins.web.<vendor> via _plugin_web_search_providers(). Only the two
-        # non-provider firecrawl setup-flow rows live here: managed via the Nous Tool Gateway, and self-hosted.
+        # Plugin providers come from plugins.web.<vendor>; self-hosted Firecrawl is configured here.
         "providers": [
-            {"name": "Nous Tool Gateway", "badge": "managed", "tag": "Managed Firecrawl billed via Nous Portal",
-             "web_backend": "firecrawl", "env_vars": [], **_NOUS, "managed_nous_feature": "web",
-             "override_env_vars": ["FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"]},
             {"name": "Firecrawl Self-Hosted", "badge": "free · self-hosted", "tag": "Run your own Firecrawl instance (Docker)",
              "web_backend": "firecrawl",
              "env_vars": [_key("FIRECRAWL_API_URL", "Your Firecrawl instance URL (e.g., http://localhost:3002)")]},
@@ -260,25 +254,13 @@ TOOL_CATEGORIES = {
     },
     "image_gen": {
         "name": "Image Generation", "icon": "🎨",
-        # Provider rows (FAL, OpenAI, OpenAI Codex, xAI, Krea, …) come from plugins.image_gen.<vendor> via
-        # _plugin_image_gen_providers(). Only the managed "Nous Tool Gateway" row lives here: ONE row for the
-        # FAL, Krea and Portal gateways, whose union catalog is `imagegen_backend: "nous"`; the stored model id
-        # picks the gateway at run time (tools/image_generation_managed.py).
-        "providers": [
-            _row("Nous Tool Gateway", "managed",
-                 "Managed image generation (FAL, Krea 2, Nous Portal models) billed via Nous Portal", **_NOUS,
-                 managed_nous_feature="image_gen", override_env_vars=["FAL_KEY"], imagegen_backend="nous"),
-        ],
+        # FAL, OpenAI, OpenAI Codex, xAI, Krea, … come from plugins.image_gen.<vendor>.
+        "providers": [],
     },
     "video_gen": {
         "name": "Video Generation", "icon": "🎬",
-        # Mirrors image_gen: managed FAL video billed via the Nous Portal. Plugin-backed rows (FAL BYOK, xAI, …)
-        # are injected at runtime by ``_plugin_video_gen_providers()`` in ``_visible_providers``. Picking this row
-        # sets video_gen.provider = "fal" + use_gateway so the FAL plugin routes through the managed queue gateway.
-        "providers": [
-            _row("Nous Tool Gateway", "managed", "Managed FAL video generation billed via Nous Portal", **_NOUS,
-                 managed_nous_feature="video_gen", override_env_vars=["FAL_KEY"], video_gen_plugin_name="fal"),
-        ],
+        # FAL, xAI and other video backends come from plugins.video_gen.<vendor>.
+        "providers": [],
     },
     "x_search": {
         "name": "X (Twitter) Search", "setup_title": "Select xAI Credential Source",
@@ -779,10 +761,8 @@ def _provider_env_ready(provider: dict) -> bool:
     return all(get_env_value(e["key"]) for e in provider.get("env_vars", []))
 
 
-def _toolset_has_keys(
-    ts_key: str, config: dict = None, *, force_fresh: bool = False, features: Optional[NousToolFeatures] = None,
-) -> bool:
-    """Check if a toolset's required API keys are configured."""
+def _toolset_has_keys(ts_key: str, config: dict = None, *, force_fresh: bool = False) -> bool:
+    """Check if a toolset's required credentials or provider setup are configured."""
     if config is None:
         config = load_config()
     if ts_key == "vision":
@@ -791,16 +771,10 @@ def _toolset_has_keys(
             return resolve_vision_provider_client()[1] is not None
         except Exception:
             return False
-    if ts_key in {"web", "image_gen", "video_gen"}:
-        if features is None:
-            features = get_nous_tool_features(config, force_fresh=force_fresh)
-        feature = features.features.get(ts_key)
-        if feature and (feature.available or feature.managed_by_nous):
-            return True
     # Provider-aware categories first: a no-key provider (Camofox) counts as configured.
     cat = TOOL_CATEGORIES.get(ts_key)
     if cat:
-        return any(_provider_env_ready(p) for p in _visible_providers(cat, config, force_fresh=force_fresh, features=features))
+        return any(_provider_env_ready(p) for p in _visible_providers(cat, config, force_fresh=force_fresh))
     return all(get_env_value(var) for var, _ in TOOLSET_ENV_REQUIREMENTS.get(ts_key, []))
 
 
@@ -1142,11 +1116,8 @@ import sys  # noqa: F401,E402
 
 
 _PLUGIN_COMPAT_LAZY = {
-    'MANAGED_FEATURE_COVERAGE_CATEGORY': ('hermes_cli.nous_tools', 'MANAGED_FEATURE_COVERAGE_CATEGORY'),
-    'NOUS_MANAGED_PROVIDER': ('tools.tool_backend_helpers', 'NOUS_MANAGED_PROVIDER'),
     'base_url_hostname': ('utils', 'base_url_hostname'),
     'fal_key_is_configured': ('tools.tool_backend_helpers', 'fal_key_is_configured'),
-    'format_nous_portal_entitlement_message': ('hermes_cli.nous_account', 'format_nous_portal_entitlement_message'),
     'is_truthy_value': ('utils', 'is_truthy_value'),
     'save_env_value': ('hermes_cli.config', 'save_env_value'),
 }

@@ -264,7 +264,6 @@ from hermes_cli.subcommands.model import build_model_parser
 from hermes_cli.subcommands.setup import build_setup_parser
 
 from hermes_cli.subcommands.whatsapp import build_whatsapp_parser, build_whatsapp_cloud_parser
-from hermes_cli.subcommands.login import build_login_parser
 from hermes_cli.subcommands.logout import build_logout_parser
 from hermes_cli.subcommands.auth import build_auth_parser
 from hermes_cli.subcommands.status import build_status_parser
@@ -621,7 +620,6 @@ from hermes_cli import __version__, __release_date__
 
 from hermes_cli.model_setup_flows import (
     _model_flow_openrouter,
-    _model_flow_nous,
     _model_flow_openai_codex,
     _model_flow_xai_oauth,
     _model_flow_qwen_oauth,
@@ -840,9 +838,7 @@ def _auth_store_logged_in(auth_file: Path, registry, strict_profile_scope: bool)
 
 
 def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
-    """Check if at least one inference provider is usable. Never creates one: the Nous free tier
-    counts only once its identity exists, and the boot bootstrap (``hermes_cli.free_tier_bootstrap``)
-    is the only thing that creates it; ``cmd_chat`` runs the bootstrap before asking.
+    """Check if at least one inference provider is usable without creating credentials.
 
     ``strict_profile_scope``: the caller has bound a NAMED profile's home and
     secret scope and wants an answer for that profile only — launch-process
@@ -927,12 +923,6 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
         except Exception:
             pass
 
-    # Nothing explicit anywhere: an existing Nous free-tier identity counts while the tier is on.
-    try:
-        from hermes_cli.anon_auth import guest_enabled, has_guest
-        return guest_enabled() and has_guest()
-    except Exception as exc:
-        logger.debug("free tier check on first run skipped: %s", exc)
     return False
 
 
@@ -1585,11 +1575,7 @@ def cmd_chat(args):
 
     _warn_retired_xai_models()
 
-    # First-run guard: the free-tier bootstrap runs first (synchronously here; it is the only thing
-    # that may create the identity), then the inventory decides whether setup is needed.
-    from hermes_cli.free_tier_bootstrap import run_bootstrap
-
-    run_bootstrap(announce=False)
+    # First-run guard: inventory decides whether setup is needed.
     if not _has_any_provider_configured():
         _first_run_setup_guard(args)
         return
@@ -1685,7 +1671,6 @@ def _forward_command(name: str, module: str, attr: str, *, forward_return: bool 
 
 
 cmd_setup = _forward_command("cmd_setup", "hermes_cli.setup", "run_setup_wizard", doc='Interactive setup wizard.')
-cmd_login = _forward_command("cmd_login", "hermes_cli.auth", "login_command", doc='Authenticate Hermes CLI with a provider.')
 cmd_logout = _forward_command("cmd_logout", "hermes_cli.auth", "logout_command", doc='Clear provider authentication.')
 cmd_auth = _forward_command("cmd_auth", "hermes_cli.auth_commands", "auth_command", doc='Manage pooled credentials.')
 cmd_status = _forward_command("cmd_status", "hermes_cli.status", "show_status", doc='Show status of all components.')
@@ -1733,7 +1718,6 @@ _PROVIDER_MODEL_FLOWS = {
     "openrouter": lambda c, m, a: _model_flow_openrouter(c, m),
     "moa": lambda c, m, a: _model_flow_moa(c, m),
     "ai-gateway": lambda c, m, a: _model_flow_ai_gateway(c, m),
-    "nous": lambda c, m, a: _model_flow_nous(c, m, args=a),
     "openai-codex": lambda c, m, a: _model_flow_openai_codex(c, m),
     "xai-oauth": lambda c, m, a: _model_flow_xai_oauth(c, m, args=a),
     "qwen-oauth": lambda c, m, a: _model_flow_qwen_oauth(c, m),
@@ -1802,7 +1786,7 @@ def _resolve_active_provider(config, model_cfg, effective_provider, custom_provi
             if exc.code == "no_provider_configured":
                 # The picker that is about to open IS the fix; a warning that says
                 # "run `hermes model`" from inside `hermes model` is circular.
-                print("No provider is set up yet — pick one below. (Nous Portal works without an API key.)")
+                print("No provider is set up yet — pick one below.")
             elif effective_provider == "auto":
                 print(f"Warning: {format_auth_error(exc)} Falling back to auto provider detection.")
             active = None  # no provider yet; default to first in list
@@ -2237,7 +2221,7 @@ def _coalesce_session_name_args(argv: list) -> list:
     are collected until the next flag (``-*``) or known top-level subcommand.
     """
     _SUBCOMMANDS = {
-        "chat", "model", "gateway", "setup", "whatsapp", "whatsapp-cloud", "login", "logout",
+        "chat", "model", "gateway", "setup", "whatsapp", "whatsapp-cloud", "logout",
         "auth", "status", "cron", "doctor", "config", "pairing", "skills", "tools", "mcp",
         "sessions", "insights", "update", "uninstall", "profile",
         "plugins", "security", "webhook", "peer",
@@ -2321,9 +2305,9 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "computer-use",
         "config", "console", "cron", "curator", "debug", "doctor",
         "dump", "fallback", "gateway", "goals", "hooks", "import", "import-agent", "insights",
-        "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
+        "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
-        "model", "monitoring", "pairing", "pause", "peer", "plugins", "pm", "portal", "profile",
+        "model", "monitoring", "pairing", "pause", "peer", "plugins", "pm", "profile",
         "project", "proxy",
         "prompt-size",
         "resume",
@@ -2806,7 +2790,6 @@ def _build_cli_parser():
     from hermes_cli.send_cmd import register_send_subparser
     register_send_subparser(subparsers)
 
-    build_login_parser(subparsers, cmd_login=cmd_login)
     build_logout_parser(subparsers, cmd_logout=cmd_logout)
     build_auth_parser(subparsers, cmd_auth=cmd_auth)
     build_status_parser(subparsers, cmd_status=cmd_status)
@@ -2817,9 +2800,6 @@ def _build_cli_parser():
 
     from hermes_cli.subcommands.peer import build_peer_parser
     build_peer_parser(subparsers)
-
-    from hermes_cli.portal_cli import add_parser as _add_portal_parser
-    _add_portal_parser(subparsers)
 
     from hermes_cli.projects_cmd import build_parser as _build_project_parser
     _build_project_parser(subparsers).set_defaults(func=cmd_project)

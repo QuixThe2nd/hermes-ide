@@ -2,7 +2,6 @@
 resolved through the module object so test patches on ``hermes_cli.setup.<name>`` take effect."""
 
 import logging
-from hermes_cli import nous_tools
 
 logger = logging.getLogger("hermes_cli.setup")
 
@@ -46,7 +45,7 @@ def _first_available_plugin_provider(registry: str, skip: str = None):
     return None
 
 
-# ---- tool_status row builders: each takes (config, tool_features) and returns
+# ---- tool_status row builders: each takes (config, _) and returns
 # a (name, available, hint) row or None (row omitted). Evaluated in _TOOL_ROW_BUILDERS order.
 
 def _vision_row(config, feats):
@@ -59,18 +58,13 @@ def _vision_row(config, feats):
     return ("Vision (image analysis)", ok, None if ok else "run 'hermes setup' to configure")
 
 
-def _managed_or_provider_row(feature, name: str, managed_label: str, missing_hint: str):
-    """Row for a Nous-manageable feature: managed > available (with provider) > missing hint."""
-    if feature.managed_by_nous:
-        return (f"{name} ({managed_label})", True, None)
-    if feature.available:
-        return (f"{name} ({feature.current_provider})" if feature.current_provider else name, True, None)
-    return (name, False, missing_hint)
-
-
 def _web_row(config, feats):
-    # Web tools (Exa, Parallel, Firecrawl, Tavily, or Keenable)
-    return _managed_or_provider_row(feats.web, "Web Search & Extract", "Nous Tool Gateway", _WEB_MISSING)
+    try:
+        from hermes_cli.tools_config import _toolset_has_keys
+        configured = _toolset_has_keys("web", config)
+    except Exception:
+        configured = False
+    return ("Web Search & Extract", configured, None if configured else _WEB_MISSING)
 
 
 def _browser_row(config, feats):
@@ -80,13 +74,8 @@ def _browser_row(config, feats):
 
 
 def _image_gen_row(config, feats):
-    # FAL (direct or via Nous), or any plugin-registered provider (OpenAI, etc.)
-    if feats.image_gen.managed_by_nous:
-        return ("Image Generation (Nous Tool Gateway)", True, None)
-    if feats.image_gen.available:
-        return ("Image Generation", True, None)
-    # Probe plugin-registered providers so OpenAI-only setups don't show as "missing FAL_KEY".
-    backend = _first_available_plugin_provider("image_gen_registry", skip="fal")
+    # Include direct and plugin-registered providers so an OpenAI-only setup is reported accurately.
+    backend = _first_available_plugin_provider("image_gen_registry")
     if backend:
         return (f"Image Generation ({backend})", True, None)
     return ("Image Generation", False, "FAL_KEY or OPENAI_API_KEY")
@@ -95,8 +84,6 @@ def _image_gen_row(config, feats):
 def _video_gen_row(config, feats):
     # Opt-in via `hermes tools` → Video Generation. Only show the row when a plugin reports
     # available so we don't badger users who don't care about video gen with a "missing" line.
-    if feats.video_gen.managed_by_nous:
-        return ("Video Generation (FAL via Nous Tool Gateway)", True, None)
     backend = _first_available_plugin_provider("video_gen_registry")
     return (f"Video Generation ({backend})", True, None) if backend else None
 
@@ -143,17 +130,14 @@ def _print_setup_summary(config: dict, hermes_home):
     except Exception:
         print()
         _setup.print_warning("No inference provider is configured — Hermes cannot chat yet.")
-        _setup._info("  Finish this one step with either of:",
-              "    hermes model            (pick any provider/model)",
-              "    hermes setup --portal   (Nous Portal OAuth, no API key)")
+        _setup._info("  Finish setup with `hermes model` to pick a provider and model.")
 
     print()
     _setup.print_header("Tool Availability Summary")
 
     tool_status = []
-    tool_features = nous_tools.get_nous_tool_features(config)
     for build in _TOOL_ROW_BUILDERS:
-        row = build(config, tool_features)
+        row = build(config, None)
         tool_status.extend(row if isinstance(row, list) else [] if row is None else [row])
 
     available_count = sum(1 for _, avail, _ in tool_status if avail)

@@ -34,7 +34,6 @@ from hermes_cli.fallback_config import get_fallback_chain
 from hermes_cli.config_defaults import DEFAULT_MAX_TURNS
 from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
-from hermes_cli.cli_billing_mixin import CLIBillingMixin
 from hermes_cli.cli_loops_mixin import CLILoopsMixin
 from hermes_cli.cli_info_mixin import CLIInfoMixin
 from hermes_cli.cli_terminal_mixin import CLITerminalMixin
@@ -2488,7 +2487,7 @@ from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
 _PASTE_REF_RE = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
 
 
-class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
+class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMixin, CLITuiMixin, CLIStatusBarMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
     """Interactive REPL for the Hermes Agent."""
 
     # Seeded -q first message (see _should_seed_interactive); run() re-creates
@@ -4334,7 +4333,7 @@ def main(
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
         skills: Comma-separated or repeated list of skills to preload for the session
         model: Model to use (default: anthropic/claude-opus-4-20250514)
-        provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn")
+        provider: Inference provider ("auto", "openrouter", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn")
         reasoning: Reasoning effort for this run (none|minimal|low|medium|high|xhigh|max|ultra). Overrides agent.reasoning_effort.
         api_key: API key for authentication
         base_url: Base URL for the API

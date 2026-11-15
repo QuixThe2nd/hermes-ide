@@ -234,7 +234,6 @@ class TestCLIUsageNoAgentAccountLimits:
         from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
         cli_obj = _make_cli()
         cli_obj.provider, cli_obj.base_url, cli_obj.api_key = "openai-codex", None, None
-        cli_obj._print_nous_credits_block = lambda: False
         seen = {}
 
         def _fetch(provider, **kwargs):

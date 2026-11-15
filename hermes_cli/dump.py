@@ -184,7 +184,7 @@ def _config_overrides(config: dict) -> dict[str, str]:
 _API_KEYS = [
     ("OPENROUTER_API_KEY", "openrouter"), ("OPENAI_API_KEY", "openai"),
     ("ANTHROPIC_API_KEY", "anthropic"), ("ANTHROPIC_TOKEN", "anthropic_token"),
-    ("NOUS_API_KEY", "nous"), ("GOOGLE_API_KEY", "google/gemini"), ("GEMINI_API_KEY", "gemini"),
+    ("GOOGLE_API_KEY", "google/gemini"), ("GEMINI_API_KEY", "gemini"),
     ("GLM_API_KEY", "glm/zai"), ("ZAI_API_KEY", "zai"), ("KIMI_API_KEY", "kimi"),
     ("MINIMAX_API_KEY", "minimax"), ("DEEPSEEK_API_KEY", "deepseek"),
     ("DASHSCOPE_API_KEY", "dashscope"), ("HF_TOKEN", "huggingface"), ("NVIDIA_API_KEY", "nvidia"),

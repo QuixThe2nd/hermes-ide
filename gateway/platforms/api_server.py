@@ -2283,12 +2283,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         try:
             from hermes_cli.config import load_config
             from hermes_cli.tools_config import (
-                _get_effective_configurable_toolsets, _get_platform_tools, _toolset_has_keys,
-                get_nous_tool_features)
+                _get_effective_configurable_toolsets, _get_platform_tools, _toolset_has_keys)
             from toolsets import resolve_toolset
             config = load_config()
             enabled_toolsets = _get_platform_tools(config, "api_server", include_default_mcp_servers=False)
-            features = get_nous_tool_features(config)
             data: List[Dict[str, Any]] = []
             for name, label, desc in _get_effective_configurable_toolsets():
                 try:
@@ -2298,7 +2296,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 data.append({
                     "name": name, "label": label, "description": desc,
                     "enabled": name in enabled_toolsets,
-                    "configured": _toolset_has_keys(name, config, features=features),
+                    "configured": _toolset_has_keys(name, config),
                     "tools": tools})
         except Exception:
             logger.exception("GET /v1/toolsets failed")

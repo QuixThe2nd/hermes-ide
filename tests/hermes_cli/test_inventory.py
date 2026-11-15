@@ -98,10 +98,10 @@ def _list_auth_returning(rows: list[dict]):
     )
 
 
-def _nous_row(model: str = "openai/gpt-5.5") -> dict:
+def _aggregator_row(model: str = "openai/gpt-5.5") -> dict:
     return {
-        "slug": "nous",
-        "name": "Nous",
+        "slug": "openrouter",
+        "name": "OpenRouter",
         "models": [model],
         "total_models": 1,
         "is_current": True,
@@ -149,22 +149,22 @@ def test_cli_model_picker_forwards_force_refresh_to_probe_flags():
     assert mock_list.call_args.kwargs["probe_current_custom_provider"] is False
 
 
-def test_list_authenticated_providers_force_fresh_is_keyword_only():
-    """``force_fresh_nous_tier`` must be keyword-only on the public listing API.
+def test_list_authenticated_providers_probe_flags_are_keyword_only():
+    """The probe/refresh flags must stay keyword-only on the public listing API.
 
-    It was inserted between ``custom_providers`` and ``max_models``; making it
-    keyword-only ensures no positional caller passing ``max_models`` as the 5th
-    arg silently mis-binds it to the tier-refresh flag. Pin the contract so a
-    future signature edit that drops the ``*`` separator is caught.
+    They sit past the ``*`` separator; keeping them keyword-only ensures no
+    positional caller passing ``max_models`` as the 5th arg silently mis-binds
+    it to a probe flag. Pin the contract so a future signature edit that drops
+    the ``*`` separator is caught.
     """
     import inspect
 
     from hermes_cli.model_switch import list_authenticated_providers
 
     sig = inspect.signature(list_authenticated_providers)
-    param = sig.parameters["force_fresh_nous_tier"]
+    param = sig.parameters["probe_custom_providers"]
     assert param.kind is inspect.Parameter.KEYWORD_ONLY
-    assert param.default is False
+    assert param.default is True
 
 
 
@@ -204,9 +204,6 @@ def test_explicit_only_filters_ambient_credentials_but_keeps_current_and_custom_
          "total_models": 1, "is_current": False, "is_user_defined": False,
          "source": "built-in"},
         {"slug": "copilot", "name": "Copilot", "models": ["gpt-5.4"],
-         "total_models": 1, "is_current": False, "is_user_defined": False,
-         "source": "hermes"},
-        {"slug": "nous", "name": "Nous", "models": ["anthropic/claude-sonnet-5"],
          "total_models": 1, "is_current": False, "is_user_defined": False,
          "source": "hermes"},
         {"slug": "custom:lab", "name": "Lab", "models": ["lab-1"],
@@ -507,7 +504,7 @@ def test_user_defined_rows_carry_alias_set_for_gui_current_match():
             "source": "user-config",
             "api_url": "http://localhost:8000/v1",
         },
-        _nous_row() | {"is_current": False},
+        _aggregator_row() | {"is_current": False},
     ]
     ctx = _empty_ctx(provider="custom:myep", model="my-model")
 
@@ -520,7 +517,7 @@ def test_user_defined_rows_carry_alias_set_for_gui_current_match():
     assert "custom:myep" in aliases
     assert "myep" in aliases
     assert "custom:my-endpoint" in aliases
-    assert "aliases" not in by_slug["nous"]
+    assert "aliases" not in by_slug["openrouter"]
 
 
 def test_aggregator_dedup_removes_overlapping_models():

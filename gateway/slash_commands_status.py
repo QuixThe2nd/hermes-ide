@@ -1,4 +1,4 @@
-"""Read-only gateway introspection commands: /status, /context, /usage, /agents, /insights, /topup.
+"""Read-only gateway introspection commands: /status, /context, /usage, /agents, /insights.
 Bound onto ``GatewayRunner`` through ``GatewaySlashCommandsMixin``."""
 
 from __future__ import annotations
@@ -231,7 +231,7 @@ def _capped_rows(items: list, render) -> list[str]:
 
 
 class GatewayStatusCommandsMixin:
-    """Read-only gateway introspection commands: /status, /context, /usage, /agents, /insights, /topup."""
+    """Read-only gateway introspection commands: /status, /context, /usage, /agents, /insights."""
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
@@ -281,17 +281,6 @@ class GatewayStatusCommandsMixin:
             lines.append(t("gateway.status.model_provider", model=fields["model"], provider=fields["provider"]))
         elif fields["model"]:
             lines.append(t("gateway.status.model", model=fields["model"]))
-        try:
-            from hermes_cli.auth import resolve_provider
-            from hermes_cli.anon_auth import guest_carries_inference
-
-            free_tier_active = await self._run_in_executor_with_context(
-                lambda: resolve_provider("auto") == "nous" and guest_carries_inference()
-            )
-            if free_tier_active:
-                lines.append(t("gateway.status.free_tier"))
-        except Exception:
-            pass
         from agent.context_breakdown import context_display_source
         mark = "~" if context_display_source(getattr(status_agent, "context_compressor", None)) != "provider_usage" else ""
         if context_total:
@@ -588,19 +577,11 @@ class GatewayStatusCommandsMixin:
             render_account_usage_lines(account_snapshot, markdown=True) if account_snapshot else []
         )
 
-        # Nous credits + monthly-grant gauge (shared with CLI/TUI). Gates on "a Nous account is
-        # logged in" — NOT the inference provider — so a Nous user inferring elsewhere still sees
-        # a balance. Fail-open: never break /usage.
-        from agent.account_usage import nous_credits_lines
-        credits_lines = await _quiet(lambda: asyncio.to_thread(nous_credits_lines, markdown=True), [])
-
         def _with_account_blocks(lines: list[str]) -> str:
-            # Each block is preceded by a blank divider only when something precedes it.
-            for block in (account_lines, credits_lines):
-                if block:
-                    if lines:
-                        lines.append("")
-                    lines.extend(block)
+            if account_lines:
+                if lines:
+                    lines.append("")
+                lines.extend(account_lines)
             return "\n".join(lines)
         if agent and hasattr(agent, "session_total_tokens") and agent.session_api_calls > 0:
             lines = _usage_agent_stats_lines(agent)
@@ -625,7 +606,7 @@ class GatewayStatusCommandsMixin:
                 t("gateway.usage.label_estimated_context", count=_fmt(approx)),
                 t("gateway.usage.detailed_after_first"),
             ])
-        if account_lines or credits_lines:
+        if account_lines:
             return _with_account_blocks([])
         return t("gateway.usage.no_data")
 

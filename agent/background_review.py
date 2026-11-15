@@ -1002,7 +1002,7 @@ def build_cache_parity_fork(
         inherited_scope = resolve_prompt_cache_scope_safe(agent)
         if inherited_scope:
             review_agent._inherited_cache_scope = inherited_scope
-        # Same reason for the Portal ``conversation=`` tag: with no DB the fork's own
+        # Same reason for the conversation-affinity tag: with no DB the fork's own
         # _conversation_root_id() falls back to the parent's PHYSICAL id, so after a compression
         # rotation the review's usage was attributed to a different conversation than its parent.
         review_agent._cached_conversation_root = agent._conversation_root_id()

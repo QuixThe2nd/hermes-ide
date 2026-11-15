@@ -653,7 +653,7 @@ def _record_send_consent_change(*, enabled: bool) -> None:
 from hermes_cli.setup_terminal import setup_terminal_backend  # noqa: E402
 from hermes_cli.setup_platforms import setup_gateway  # noqa: E402
 from hermes_cli.setup_summary import _print_setup_summary  # noqa: E402,F401
-from hermes_cli.setup_quick import _run_portal_one_shot, _run_quick_setup  # noqa: E402
+from hermes_cli.setup_quick import _run_quick_setup  # noqa: E402
 
 
 # ── Main Wizard Orchestrator ──
@@ -718,15 +718,13 @@ def _run_full_setup(config: dict, hermes_home, *, is_existing: bool) -> None:
 
 # First-time mode picker: (menu label, setup_quick runner name) — None falls through to Full Setup.
 _FIRST_TIME_MODES = (
-    ("Quick Setup (Nous Portal) — free OAuth login, no API keys, model + tools (recommended)",
-     "_run_first_time_quick_setup"),
     ("Full setup — configure every provider, tool & option yourself (bring your own keys)", None),
     ("Blank Slate — everything off except the bare minimum; opt in to each capability", "_run_blank_slate_setup"),
 )
 
 
 def _run_setup_wizard_impl(args):
-    """Run the interactive setup wizard: full/quick (auto-detected), ``--portal``, or one
+    """Run the interactive setup wizard: full/quick (auto-detected), or one
     ``hermes setup <section>`` from SETUP_SECTIONS."""
     from hermes_cli.config import is_managed, managed_error
     if is_managed():
@@ -750,9 +748,6 @@ def _run_setup_wizard_impl(args):
     # Non-interactive environments (headless SSH, Docker, CI/CD)
     if getattr(args, 'non_interactive', False) or not is_interactive_stdin():
         print_noninteractive_setup_guidance("Running in a non-interactive environment (no TTY detected).")
-        return
-    if getattr(args, "portal", False):  # one-shot Nous Portal setup; skips the rest
-        _run_portal_one_shot(config)
         return
     section = getattr(args, "section", None)
     if section:
@@ -815,7 +810,6 @@ import shutil  # noqa: F401,E402
 
 _PLUGIN_COMPAT_LAZY = {
     'get_optional_skills_dir': ('hermes_constants', 'get_optional_skills_dir'),
-    'managed_nous_tools_enabled': ('tools.tool_backend_helpers', 'managed_nous_tools_enabled'),
 }
 
 
