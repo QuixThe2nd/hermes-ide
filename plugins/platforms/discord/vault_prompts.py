@@ -110,8 +110,10 @@ class DiscordVaultSaveModal(discord.ui.Modal):
         self.add_item(self.password)
 
     def _clear_fields(self) -> None:
-        self.identifier.value = ""
-        self.password.value = ""
+        for text_input in (self.identifier, self.password):
+            # discord.py exposes value read-only; _refresh_state writes this backing field.
+            text_input._value = None
+            text_input.default = None
 
     async def _ack(self, interaction, content: str) -> None:
         try:

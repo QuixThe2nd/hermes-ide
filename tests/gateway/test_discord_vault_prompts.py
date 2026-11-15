@@ -326,6 +326,13 @@ async def _open_modal(
     return interaction, interaction.response.modal
 
 
+def _populate_modal(
+    modal, identifier=_IDENTIFIER, password=_PASSWORD, interaction=None
+):
+    modal.identifier._refresh_state(interaction, {"value": identifier})
+    modal.password._refresh_state(interaction, {"value": password})
+
+
 async def _submit_modal(
     rig,
     modal,
@@ -338,8 +345,6 @@ async def _submit_modal(
     client=None,
     custom_id=None,
 ):
-    modal.identifier.value = identifier
-    modal.password.value = password
     interaction = _Interaction(
         channel or rig.channel,
         user_id,
@@ -347,6 +352,7 @@ async def _submit_modal(
         custom_id=modal.custom_id if custom_id is None else custom_id,
         client=client,
     )
+    _populate_modal(modal, identifier, password, interaction)
     await modal.on_submit(interaction)
     return interaction
 
@@ -483,8 +489,7 @@ async def test_discord_vault_cancel_wakes_worker_and_clears_modal(
     rig = discord_vault_rig
     worker, prompt_message = await _begin_prompt(rig)
     _opened, modal = await _open_modal(rig, prompt_message)
-    modal.identifier.value = _IDENTIFIER
-    modal.password.value = _PASSWORD
+    _populate_modal(modal)
     view = prompt_message.payload["view"]
     cancel = next(item for item in view.children if item.label == "Cancel")
     interaction = _Interaction(
@@ -578,8 +583,7 @@ async def test_discord_vault_timeout_expires_abandoned_modal(
     )
     worker, prompt_message = await _begin_prompt(rig)
     _opened, modal = await _open_modal(rig, prompt_message)
-    modal.identifier.value = _IDENTIFIER
-    modal.password.value = _PASSWORD
+    _populate_modal(modal)
     result = await asyncio.wait_for(worker, timeout=_REAL_TURN_TIMEOUT)
 
     payload = json.loads(result["final_response"])
@@ -598,8 +602,7 @@ async def test_discord_vault_disconnect_wakes_worker_before_client_close(
     rig = discord_vault_rig
     worker, prompt_message = await _begin_prompt(rig)
     _opened, modal = await _open_modal(rig, prompt_message)
-    modal.identifier.value = _IDENTIFIER
-    modal.password.value = _PASSWORD
+    _populate_modal(modal)
     await rig.adapter.disconnect()
     result = await asyncio.wait_for(worker, timeout=_REAL_TURN_TIMEOUT)
 
@@ -899,8 +902,7 @@ async def test_discord_vault_authorization_error_clears_pending_modal(
     rig = discord_vault_rig
     worker, prompt_message = await _begin_prompt(rig)
     _opened, modal = await _open_modal(rig, prompt_message)
-    modal.identifier.value = _IDENTIFIER
-    modal.password.value = _PASSWORD
+    _populate_modal(modal)
     binding = modal._request.binding
 
     def fail_authorization(_interaction):

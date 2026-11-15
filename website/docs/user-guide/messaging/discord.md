@@ -120,7 +120,7 @@ Prefer these local alternatives for sensitive credentials:
 
 The prompt expires after **five minutes**. **Cancel**, timeout, Discord disconnect, or a prompt failure closes it without saving. Closing Discord's native modal with its X control does not notify Hermes and the same modal cannot be reopened; use **Cancel** on the original prompt or wait for it to expire.
 
-Master-password unlock and user-entered one-time-code prompts are **not available on Discord**. Unlock the external manager from an interactive CLI/Desktop session first, or save an authenticator key so supported one-time codes can be generated automatically. Headless, cron, single-query, and API sessions never open these Discord prompts.
+Master-password unlock and manually entered one-time-code prompts are **not available on Discord**. If the manager is locked, use the local `hermes vault add` or Desktop save alternatives above instead. External-manager unlock tokens live in process memory per profile: unlocking a separate CLI/Desktop process does not unlock a separately running Discord gateway. Saving an authenticator key with the login still lets supported one-time codes be generated automatically. Headless, cron, single-query, and API sessions never open these Discord prompts.
 
 ## Step 1: Create a Discord Application
 

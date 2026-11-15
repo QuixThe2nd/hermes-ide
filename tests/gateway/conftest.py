@@ -162,11 +162,18 @@ def _ensure_discord_mock() -> None:
             self.custom_id = custom_id
             self.placeholder = placeholder
             self.default = default
-            self.value = default or ""
+            self._value = default
             self.required = required
             self.min_length = min_length
             self.max_length = max_length
             self.row = row
+
+        @property
+        def value(self):
+            return self._value or ""
+
+        def _refresh_state(self, _interaction, data):
+            self._value = data.get("value")
 
     class _FakeSelect:
         def __init__(self, *, placeholder=None, options=None, custom_id=None, **_):
