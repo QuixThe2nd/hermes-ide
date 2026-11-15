@@ -18,7 +18,7 @@ from urllib.parse import urlsplit, urlunsplit
 # ``Foo_(bar)``); the Markdown link closer is split off afterwards by paren
 # balance (:func:`_strip_prose_tail`), not by the character class.
 _URL_RE = re.compile(
-    r"""(?:\]\(\s*)?(https?://[^\s<>"'\]]+)""",
+    r"""(?:\[(?P<label>[^\]\n]*)\]\(\s*)?(?P<url>https?://[^\s<>"'\]]+)""",
     re.IGNORECASE,
 )
 
@@ -91,7 +91,7 @@ def extract_report_urls(text: str) -> List[str]:
     urls: List[str] = []
     seen: Set[str] = set()
     for match in _URL_RE.finditer(text or ""):
-        raw = _strip_prose_tail(match.group(1))
+        raw = _strip_prose_tail(match.group("url"))
         if not raw:
             continue
         normalized = normalize_url(raw)
@@ -100,6 +100,38 @@ def extract_report_urls(text: str) -> List[str]:
         seen.add(normalized)
         urls.append(normalized)
     return urls
+
+
+def remove_unledgered_urls(report_text: str, evidence_urls: Iterable[str]) -> str:
+    """Remove URL citations absent from the ledger, preserving surrounding prose.
+
+    Inline Markdown links become their labels; bare URLs are deleted without
+    consuming prose punctuation. Known URLs and all non-URL text stay intact.
+    Callers must revalidate the result, which may have no citations left.
+    """
+    text = report_text or ""
+    allowed = {normalize_url(url) for url in evidence_urls if url}
+    pieces: List[str] = []
+    cursor = 0
+    for match in _URL_RE.finditer(text):
+        raw = _strip_prose_tail(match.group("url"))
+        if normalize_url(raw) in allowed:
+            continue
+
+        start = match.start("url")
+        end = start + len(raw)
+        replacement = ""
+        label = match.group("label")
+        if label is not None and text[end:end + 1] == ")":
+            # Consume the inline-link delimiters too, but retain its label.
+            start = match.start()
+            end += 1
+            replacement = label
+        pieces.extend((text[cursor:start], replacement))
+        cursor = end
+
+    pieces.append(text[cursor:])
+    return "".join(pieces)
 
 
 def validate_citations(

@@ -429,16 +429,30 @@ class ResearchRunner:
                 f"correction writer failed: {stderr or f'exit {code}'}",
             )
             return
-        retry = citations_mod.validate_citations(corrected, evidence_urls)
+        corrected_verdict = citations_mod.validate_citations(corrected, evidence_urls)
+        cleaned = citations_mod.remove_unledgered_urls(corrected, evidence_urls)
+        retry = citations_mod.validate_citations(cleaned, evidence_urls)
+        if not cleaned.strip():
+            # Empty writer output is rejected above; cleanup can also remove the
+            # entire report, and an empty report is not evidence-backed research.
+            retry = citations_mod.CitationReport(
+                ok=False,
+                errors=["report contains no citations; a research report must cite fetched sources"],
+            )
+        citation_errors = retry.errors
+        if not retry.ok:
+            # Preserve the correction's original provenance failure alongside
+            # any post-cleanup error so failed-job diagnostics remain actionable.
+            citation_errors = list(dict.fromkeys(corrected_verdict.errors + retry.errors))
         self._record_synthesis(
-            directory, attempts=2, correction_used=True, citation_errors=retry.errors
+            directory, attempts=2, correction_used=True, citation_errors=citation_errors
         )
         if retry.ok:
-            self._publish(directory, corrected)
+            self._publish(directory, cleaned)
             return
         self._preserve_and_fail(
             directory, corrected,
-            "citation validation failed after correction pass: " + "; ".join(retry.errors),
+            "citation validation failed after correction pass: " + "; ".join(citation_errors),
         )
 
     def _write(self, directory: Path, name: str, prompt: str, profile: str, phase: str) -> Tuple[str, int, str]:

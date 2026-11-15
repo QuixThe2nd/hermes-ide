@@ -8,6 +8,7 @@ strictness.
 
 from __future__ import annotations
 
+from plugins.deep_research import citations
 from plugins.deep_research.citations import (
     extract_report_urls,
     normalize_url,
@@ -65,3 +66,44 @@ class TestParenProvenance:
         assert normalize_url(PAREN_URL) == PAREN_URL
         # An unbalanced trailing paren is prose, not URL.
         assert normalize_url("https://example.org/a)") == "https://example.org/a"
+
+
+class TestUnledgeredUrlRemoval:
+    UNKNOWN_URL = "https://example.com/not-in-the-ledger"
+
+    def test_markdown_link_drops_only_the_unledgered_link(self) -> None:
+        report = f"Keep [unledgered]({self.UNKNOWN_URL}) and [ledgered]({PAREN_URL})."
+
+        cleaned = citations.remove_unledgered_urls(report, [PAREN_URL])
+
+        assert cleaned == f"Keep unledgered and [ledgered]({PAREN_URL})."
+
+    def test_bare_urls_leave_surrounding_prose_and_punctuation_intact(self) -> None:
+        report = (
+            "Before https://example.org/invented, after; "
+            "(see https://example.net/missing). End"
+        )
+
+        cleaned = citations.remove_unledgered_urls(report, [PAREN_URL])
+
+        assert cleaned == "Before , after; (see ). End"
+
+    def test_balanced_url_parentheses_are_not_mistaken_for_prose(self) -> None:
+        unknown = "https://example.com/wiki/Foo_(bar)"
+        report = f"Drop [wiki]({unknown}) and ({unknown})."
+
+        cleaned = citations.remove_unledgered_urls(report, [PAREN_URL])
+
+        assert cleaned == "Drop wiki and ()."
+
+    def test_removing_the_only_citation_still_fails_validation(self) -> None:
+        cleaned = citations.remove_unledgered_urls(
+            f"Only [unledgered]({self.UNKNOWN_URL}).", [PAREN_URL]
+        )
+
+        verdict = validate_citations(cleaned, [PAREN_URL])
+
+        assert cleaned == "Only unledgered."
+        assert verdict.ok is False
+        assert verdict.cited_urls == []
+        assert any("no citations" in error for error in verdict.errors)

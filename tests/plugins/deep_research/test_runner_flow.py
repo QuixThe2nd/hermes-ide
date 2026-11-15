@@ -434,6 +434,25 @@ class TestCitationGating:
         draft = (directory / "report.draft.md").read_text(encoding="utf-8")
         assert INVENTED_URL in draft
 
+    def test_only_bare_unledgered_url_after_correction_fails_closed(self, home: Path) -> None:
+        job_id, directory = _make_job(home, questions=None)
+        _seed_evidence(directory, GOOD_URL)
+        spawn = FakeSpawn(
+            writers=[
+                f"Initial draft with [valid]({GOOD_URL}) and [invalid]({INVENTED_URL}).",
+                INVENTED_URL,
+            ]
+        )
+
+        state = _run(job_id, home, spawn)
+
+        assert state == "failed"
+        assert not (directory / "report.md").exists()
+        status = jobs.read_status(directory)
+        assert status["synthesis"]["attempts"] == 2
+        assert status["synthesis"]["correction_used"] is True
+        assert any("no citations" in error for error in status["synthesis"]["citation_errors"])
+
     def test_correction_using_only_allowed_urls_publishes(self, home: Path) -> None:
         job_id, directory = _make_job(home, questions=None)
         _seed_evidence(directory, GOOD_URL)
@@ -447,6 +466,54 @@ class TestCitationGating:
         assert state == "completed"
         assert "Corrected draft" in (directory / "report.md").read_text(encoding="utf-8")
         assert jobs.read_status(directory)["synthesis"]["correction_used"] is True
+
+    def test_correction_residual_unledgered_urls_are_removed_before_publish(self, home: Path) -> None:
+        job_id, directory = _make_job(home, questions=None)
+        _seed_evidence(directory, GOOD_URL, OTHER_URL)
+        residual_urls = (
+            "https://example.com/",
+            "https://example.net/research/",
+            "https://example.org/archive/",
+            "https://example.com/rows/50",
+        )
+        corrected = f"""# Runtime research
+
+The supported finding remains intact with [primary evidence]({GOOD_URL}).
+
+| Runtime | Evidence | Redundant citation |
+| --- | --- | --- |
+| Alpha | [secondary evidence]({OTHER_URL}) | [row 50]({residual_urls[3]}) |
+
+## Sources
+- [Primary]({GOOD_URL})
+- [Secondary]({OTHER_URL})
+- [Project homepage]({residual_urls[0]})
+- [Research index]({residual_urls[1]})
+- [Archive index]({residual_urls[2]})
+"""
+        spawn = FakeSpawn(
+            writers=[
+                f"Initial draft with an invented [source]({INVENTED_URL}).",
+                corrected,
+            ]
+        )
+
+        state = _run(job_id, home, spawn)
+
+        assert state == "completed"
+        report = (directory / "report.md").read_text(encoding="utf-8")
+        assert "The supported finding remains intact" in report
+        assert f"[primary evidence]({GOOD_URL})" in report
+        assert f"[secondary evidence]({OTHER_URL})" in report
+        assert "## Sources" in report
+        for url in residual_urls:
+            assert url not in report
+        synthesis = jobs.read_status(directory)["synthesis"]
+        assert synthesis["attempts"] == 2
+        assert synthesis["correction_used"] is True
+        assert synthesis["citation_errors"] == []
+        assert len(spawn.argvs) == 3  # lane, synthesis, correction; no extra model pass
+        assert not (directory / "report.draft.md").exists()
 
     def test_report_with_no_citations_fails_closed(self, home: Path) -> None:
         job_id, directory = _make_job(home, questions=None)
