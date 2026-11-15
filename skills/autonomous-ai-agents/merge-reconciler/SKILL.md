@@ -1,7 +1,8 @@
 ---
-name: agent-merge-conflict-arbiter
-description: "Neutral arbiter for merge conflicts between two agents."
-version: 1.0.0
+name: merge-reconciler
+description: "Neutral third-party resolution of agent merge conflicts."
+version: 2.0.0
+supersedes: [agent-merge-conflict-arbiter]
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +12,7 @@ metadata:
     related_skills: [hermes-agent]
 ---
 
-# Agent Merge-Conflict Arbiter
+# Merge Reconciler
 
 Resolve a git merge conflict between two AGENTS' branches as an impartial third
 party. Agents resolving conflicts against a peer's work reliably either
@@ -22,8 +23,8 @@ produces a merged result, like a merge-queue arbiter.
 
 ## When to Use
 
-- Two agent branches/worktrees collide during a parallel campaign
-  (parallel-PR wave, multi-worktree refactor, or delegated fan-out).
+- Two agent branches/worktrees collide during a parallel campaign (kanban
+  engineering pipeline, parallel-PR wave, multi-worktree refactor).
 - `git merge` or `git rebase` halts on conflicts between two agents' work and
   neither original agent should self-adjudicate.
 - Do NOT use for conflicts within a single agent's own work, or for trivial
@@ -33,7 +34,7 @@ produces a merged result, like a merge-queue arbiter.
 
 - A repo checkout containing the halted merge, or the two branch names plus
   permission to run the merge yourself.
-- Both sides' intent sources: PR bodies, task briefs, completion summaries,
+- Both sides' intent sources: task briefs, PR bodies, completion summaries,
   or at minimum each branch's commit messages.
 - The project's build/test command, if one exists.
 
@@ -43,9 +44,10 @@ produces a merged result, like a merge-queue arbiter.
 repo: load the skill, then follow the Procedure top to bottom.
 
 **Spawned neutral agent** — the preferred shape in multi-agent campaigns:
-use `delegate_agent` to spawn a subagent whose task message contains the repo
-path, both branch names, and both sides' intent summaries verbatim, plus an
-instruction to follow this skill.
+use `delegate_agent` to spawn a neutral subagent whose task message contains
+the repo path, both branch names, and both sides' intent summaries verbatim,
+plus an instruction to follow this skill. The spawned agent must NOT be
+either of the two conflicting agents.
 
 ## Quick Reference
 
@@ -96,8 +98,9 @@ explicitly in the hand-back summary.
     default" if the task required correctness). Never split the difference
     into a hybrid neither side asked for.
   - superseded → keep the surviving side; delete the dead premise.
-- Never favor the side that spawned you. If intents genuinely tie, report the
-  unresolved design decision rather than guess.
+- Never favor the side that spawned you. If intents genuinely tie, escalate
+  (report the unresolved design decision to the spawner/orchestrator) rather
+  than guess.
 - Change nothing outside conflict markers — no formatting, renames, or
   opportunistic fixes.
 - `git add` each resolved file via `terminal`.
@@ -119,14 +122,16 @@ explicitly in the hand-back summary.
   `file:lines — class — which side(s) kept — rationale`. For every
   same-question-different-answer hunk, state the design question and the
   answer you picked so a human can veto it — never bury a design call.
-- Print the completion summary.
+- Deliver the summary via the `delegate_agent` handback (the spawned agent's
+  final response) — or print it when running standalone.
 - Done when: the summary is delivered and lists all hunks.
 
 ## Pitfalls
 
 - **Self-favoring**: if you were spawned by one of the conflicting agents,
   you are structurally biased — state this and weigh the other side's intent
-  deliberately. Prefer the third-profile shape so this never arises.
+  deliberately. Prefer a spawner outside both conflicting agents so this
+  never arises.
 - **Splitting the difference** on a design collision produces a hybrid nobody
   designed; pick one answer and surface it.
 - **Per-file classification**: files usually mix hunk classes; classifying a
@@ -137,9 +142,9 @@ explicitly in the hand-back summary.
   completion summaries, or PR bodies. If neither side's intent is recoverable,
   escalate instead of guessing.
 - **Repeat offenders**: repeated conflicts on the SAME file across rounds are
-  a hotspot signal, not routine reconciliation work — flag it to the
-  orchestrator so it decomposes that file, rather than serially reconciling
-  every new collision on it.
+  a hotspot signal, not routine reconciliation work — flag it in the handback
+  summary (e.g., `hotspot: <path> — <reason>`) so the orchestrator decomposes
+  that file, rather than serially reconciling every new collision on it.
 
 ## Verification
 

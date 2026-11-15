@@ -197,37 +197,66 @@ class _LiveServer:
 
 
 @pytest.mark.asyncio
-async def test_wrong_token_subprotocol_rejected_1008():
+async def test_valid_token_selected_and_hello_returns_ready():
     async with _LiveServer() as live:
-        ws = await live.connect_client(token="wrong-token")
-        with pytest.raises(Exception) as excinfo:
-            await ws.recv()
-        closed = excinfo.value
-        assert getattr(closed, "code", getattr(getattr(closed, "rcvd", None), "code", None)) == 1008
+        ws = await live.connect_client()
+        assert ws.subprotocol == TOKEN
+        await ws.send(json.dumps({
+            "type": "hello", "client": "big-steve-extension", "version": "1.0",
+        }))
+        assert await live.recv_json(ws) == {"type": "ready"}
+        await ws.close()
 
 
 @pytest.mark.asyncio
-async def test_non_tchar_token_rejected_1008():
+async def test_wrong_token_subprotocol_rejected_during_handshake(caplog):
+    from websockets.exceptions import InvalidHandshake
+
+    async with _LiveServer() as live:
+        with caplog.at_level("INFO"):
+            with pytest.raises(InvalidHandshake) as excinfo:
+                await live.connect_client(token="wrong-token")
+        error = str(excinfo.value)
+        assert TOKEN not in error
+        assert "wrong-token" not in error
+        assert TOKEN not in caplog.text
+        assert "wrong-token" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_non_tchar_token_rejected_during_handshake(caplog):
+    from websockets.exceptions import InvalidHandshake
+
     async with _LiveServer(extra={"token": "bad token"}) as live:
-        # The client library rejects a non-tchar OFFER before any network I/O,
-        # so offer a valid subprotocol; the server's configured token is still
-        # non-tchar and must reject the handshake with 1008.
-        ws = await live.connect_client(token=TOKEN)
-        with pytest.raises(Exception) as excinfo:
-            await ws.recv()
-        closed = excinfo.value
-        assert getattr(closed, "code", getattr(getattr(closed, "rcvd", None), "code", None)) == 1008
+        with caplog.at_level("INFO"):
+            with pytest.raises(InvalidHandshake) as excinfo:
+                await live.connect_client(token=TOKEN)
+        assert "bad token" not in str(excinfo.value)
+        assert "bad token" not in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_missing_token_subprotocol_rejected_1008():
+async def test_additional_subprotocol_rejected_during_handshake():
     from websockets.asyncio.client import connect
+    from websockets.exceptions import InvalidHandshake
+
     async with _LiveServer() as live:
-        ws = await connect(f"ws://127.0.0.1:{live.port}/ws")
-        with pytest.raises(Exception) as excinfo:
-            await ws.recv()
-        closed = excinfo.value
-        assert getattr(closed, "code", getattr(getattr(closed, "rcvd", None), "code", None)) == 1008
+        with pytest.raises(InvalidHandshake):
+            await connect(
+                f"ws://127.0.0.1:{live.port}/ws",
+                subprotocols=[TOKEN, "other-protocol"],
+            )
+
+
+@pytest.mark.asyncio
+async def test_missing_token_subprotocol_rejected_during_handshake():
+    from websockets.asyncio.client import connect
+    from websockets.exceptions import InvalidHandshake
+
+    async with _LiveServer() as live:
+        with pytest.raises(InvalidHandshake) as excinfo:
+            await connect(f"ws://127.0.0.1:{live.port}/ws")
+        assert TOKEN not in str(excinfo.value)
 
 
 @pytest.mark.asyncio

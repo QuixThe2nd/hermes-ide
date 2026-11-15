@@ -156,7 +156,7 @@ TIPS = [
     # --- Skills ---
     "Over 80 bundled skills covering github, creative, productivity, research, and more.",
     "Every installed skill automatically becomes a slash command — type / to see them all.",
-    "hermes skills install official/security/1password installs optional skills from the repo.",
+    "hermes skills install official/security/oss-forensics installs optional skills from the repo.",
     "Skills can restrict to specific OS platforms — some only load on macOS or Linux.",
     "skills.external_dirs in config.yaml lets you load skills from custom directories.",
     "The agent can create its own skills as procedural memory using skill_manage.",
