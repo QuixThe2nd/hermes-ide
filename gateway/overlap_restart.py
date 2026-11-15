@@ -417,6 +417,21 @@ def _iter_adapters(runner: Any):
                 yield adapter
 
 
+def can_dispatch_cron(runner: Any) -> bool:
+    """Dispatch only from an ordinary running gateway or a hub-verified pending successor."""
+    if getattr(runner, "_draining", False) or getattr(runner, "_external_drain_active", False):
+        return False
+    if not getattr(runner, "_overlap_successor_pending", False):
+        return True
+    if not getattr(runner, "_launched_as_overlap_successor", False):
+        return False
+    return any(
+        getattr(adapter, "supports_overlap_restart", False) is True
+        and getattr(adapter, "_running", False) is True
+        for adapter in _iter_adapters(runner)
+    )
+
+
 def _overlap_successor_identity_state(runner: Any, successor_pid: int) -> str:
     """Return live, dead, or unknown without guessing on a missing fingerprint."""
     from gateway.status import _pid_exists, get_process_start_time
