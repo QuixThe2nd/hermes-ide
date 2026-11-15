@@ -6798,7 +6798,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 if not raw or str(raw).strip().lower() in {"false", "0", "no", "off"}:
                     return None
             uid = str((metadata or {}).get("mention_user_id") or "")
-            return int(uid) if uid.isdigit() else None
+            return int(uid) if uid.isascii() and uid.isdigit() else None
         except Exception:
             return None
 

@@ -196,6 +196,35 @@ async def test_clarify_non_numeric_user_id_omits_mention(monkeypatch):
     assert allowed.users == []
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "requester_id",
+    ["１２３", "١٢٣", "१२३", "𝟙𝟚𝟛", "1２3"],
+)
+async def test_clarify_non_ascii_digit_user_id_omits_mention(monkeypatch, requester_id):
+    monkeypatch.delenv("DISCORD_CLARIFY_MENTIONS", raising=False)
+    adapter = _make_adapter()
+    channel = MagicMock()
+    sent_msg = MagicMock()
+    sent_msg.id = 123456
+    channel.send = AsyncMock(return_value=sent_msg)
+    adapter._client.get_channel = MagicMock(return_value=channel)
+
+    result = await adapter.send_clarify(
+        chat_id="9001",
+        question="Pick a color",
+        choices=["red", "green"],
+        clarify_id="cidM",
+        session_key="sk-M",
+        metadata={"mention_user_id": requester_id},
+    )
+
+    assert result.success is True
+    kwargs = channel.send.call_args.kwargs
+    assert "<@" not in kwargs["content"]
+    assert kwargs["allowed_mentions"].users == []
+
+
 def test_yaml_config_seeds_clarify_mentions(monkeypatch):
     monkeypatch.delenv("DISCORD_CLARIFY_MENTIONS", raising=False)
 
