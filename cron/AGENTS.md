@@ -27,6 +27,12 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   skips past-grace misses with a logged reason. Never drop a slot silently (#107485).
 - Per-home tick lock `<home>/cron/.tick.lock` prevents duplicate ticks across processes for
   that profile's store; never a `~/.hermes/...` literal.
+- **Overlap handoff has one dispatching generation.** `_draining` and external drain always suppress
+  the built-in ticker. A pending successor may dispatch only when its one-shot launch identity and a
+  live hub-attached overlap adapter both verify it; an unattached successor stays quiescent. Only the
+  built-in ticker starts before predecessor exit — external providers and housekeeping still wait for
+  authority. Suppression (including the recheck under the tick lock) records liveness, never
+  `ticker_last_success`; the tick lock and occurrence ledger remain the duplicate-claim backstop.
 - **The ticker binds each served profile's scope for the whole tick, including pre-loop code.**
   `scheduler_provider.py::_start_multiplex` is ONE ticker iterating `profiles_to_serve()`
   sequentially under `_profile_cron_scope(home)` (home + secret scope + terminal scope) — never N
