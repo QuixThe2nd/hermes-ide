@@ -1091,7 +1091,11 @@ def test_terminal_block_message_mentions_restart_tool(monkeypatch, tmp_path):
             "local_persistent": False,
         },
     )
-    monkeypatch.setattr(tt, "_resolve_task_host_cwd", lambda config, task_id: None)
+    # The lifecycle guard resolves the command cwd through the current seam
+    # (tools/terminal_tool_guards.py → _resolve_command_cwd); pin it to the
+    # isolated tmp cwd so no host/session cwd record leaks into the scan.
+    monkeypatch.setattr(tt, "get_session_cwd", lambda _session_key: None)
+    monkeypatch.setattr(tt, "_resolve_command_cwd", lambda **_kw: str(tmp_path))
     monkeypatch.setattr(
         process_registry, "_is_supervised_gateway_process", lambda: True
     )
