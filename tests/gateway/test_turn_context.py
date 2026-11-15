@@ -790,7 +790,7 @@ class TestTurnRunner:
         assert len(messages) > 1  # 5k-ish context is split for Discord
         assert all(len(message) <= 1936 for message in messages)  # 2000 - safety margin
         rendered = "\n".join(messages)
-        assert rendered.startswith("🧠 Injecting Memory")
+        assert rendered.startswith("🧠 Injecting memory")
         assert "<memory-context>" in rendered
         assert "</memory-context>" in rendered
         assert secret not in rendered
@@ -939,9 +939,9 @@ class TestTurnRunner:
         [
             (1, "🧠 Injecting 1 memory"),
             (5, "🧠 Injecting 5 memories"),
-            (0, "🧠 Injecting Memory"),
-            (None, "🧠 Injecting Memory"),
-            (True, "🧠 Injecting Memory"),
+            (0, "🧠 Injecting memory"),
+            (None, "🧠 Injecting memory"),
+            (True, "🧠 Injecting memory"),
         ],
     )
     def test_context_injection_counted_memory_heading(self, recalled_count, expected_heading):
@@ -975,7 +975,7 @@ class TestTurnRunner:
         )
         assert messages[0].find("Injecting time") != -1
         memory_heading_idx = next(
-            i for i, message in enumerate(messages) if "🧠 Injecting Memory" in message
+            i for i, message in enumerate(messages) if "🧠 Injecting memory" in message
         )
         assert memory_heading_idx > 0
         fenced_with_memory = next(
@@ -999,7 +999,7 @@ class TestTurnRunner:
             supports_code_blocks=True,
         )
         assert "Injecting time" in messages[0]
-        assert any("🧠 Injecting Memory" in message for message in messages)
+        assert any("🧠 Injecting memory" in message for message in messages)
         fenced_with_memory = next(
             message for message in messages if "```" in message and "<memory-context>" in message
         )
@@ -1022,7 +1022,7 @@ class TestTurnRunner:
         )
         assert len(messages) == 2
         assert "Injecting time" in messages[0]
-        assert messages[1] == "🧠 Injecting Memory"
+        assert messages[1] == "🧠 Injecting memory"
 
     def test_context_injection_pure_timestamp_with_memory_source_returns_time_line_only(self):
         from gateway.run import _format_context_injection_progress
