@@ -231,9 +231,11 @@ class GatewayGoalAutoMixin:
         self: "GatewayRunner", sid: str, message: str, decision: Dict[str, Any]
     ) -> Optional[str]:
         """chase + confidence: reopen a done/paused goal inside the dedupe window and
-        append the not-done note; append to an active goal; else start one from the
-        chase text plus the last assistant message. The phase-1 papercut was already
-        logged at classification time — none here."""
+        append the not-done note; append to an active goal; start one from the chase
+        text plus the last assistant reply when there is one to quote; with no goal
+        of any status and no prior reply, start nothing — a chase alone is not an
+        objective. The phase-1 papercut was already logged at classification time —
+        none here."""
         from hermes_cli import goals
         from hermes_cli.goal_intent import CHASE_DEDUPE_WINDOW
 
@@ -253,11 +255,13 @@ class GatewayGoalAutoMixin:
             mgr.add_subgoal(note)
             return None
         last_assistant = str(decision.get("last_assistant") or "").strip()
-        goal_text = (
-            f"{message}\n\nAssistant's last reply, for context: {last_assistant}"
-            if last_assistant
-            else message
-        )
+        if not last_assistant:
+            logger.info(
+                "auto-goal: chase on session %s had no goal and no prior reply; nothing to resume",
+                sid,
+            )
+            return None
+        goal_text = f"{message}\n\nAssistant's last reply, for context: {last_assistant}"
         contract = goals.GoalContract.from_dict(decision.get("contract_draft"))
         if contract.is_empty():
             contract = self._auto_goal_draft(goal_text, decision)

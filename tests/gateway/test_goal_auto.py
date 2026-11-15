@@ -2,8 +2,9 @@
 
 Covers the auto-goal contract end to end at the gateway layer: task creates a
 goal with exactly one 🎯 line, task-while-active appends, approval resumes,
-chase reopens recent work, suppression phrases pause/opt out, and group
-threads gate non-owners. Classification is always on — the runner fixture
+chase reopens recent work, a chase with no goal and no prior reply starts
+nothing, suppression phrases pause/opt out, and group threads gate non-owners.
+Classification is always on — the runner fixture
 writes a leftover ``goals.auto`` key (from the retired mode setting) and every
 test still classifies and applies.
 """
@@ -340,6 +341,44 @@ async def test_chase_after_window_starts_goal_from_chase_text_and_last_reply(run
     # The chase goal text already quotes the reply; it is not duplicated.
     assert draft.call_args.kwargs["objective"].count("Still working") == 1
 
+
+
+@pytest.mark.asyncio
+async def test_chase_with_no_goal_and_no_last_reply_starts_nothing(runner):
+    """Regression (live 2026-11-13 Discord session): 'status?' on a thread with
+    no goal of any status, no live work and an empty last reply fabricated a
+    goal whose objective was the chase text itself, which then drove
+    continuation nudges for hours. A chase with nothing to resume against
+    starts no goal."""
+    notice = await runner._apply_auto_goal_decision(
+        _decision("chase", "status?", last_assistant=""),
+        _session_entry(),
+        _source(),
+    )
+
+    assert notice is None
+    assert _goal_state() is None
+
+
+@pytest.mark.asyncio
+async def test_chase_with_no_goal_but_a_last_reply_still_starts_goal(runner):
+    """The guarded path stays open: a chase quoting a real prior assistant
+    reply still starts a goal from the chase text plus that reply."""
+    from hermes_cli.goals import GoalContract
+
+    with patch(
+        "hermes_cli.goals.draft_contract",
+        return_value=GoalContract(outcome="the proxy fix is verified working"),
+    ):
+        notice = await runner._apply_auto_goal_decision(
+            _decision("chase", "status?", last_assistant="Still working on the proxy fix."),
+            _session_entry(),
+            _source(),
+        )
+
+    assert notice is None  # chase starts never send a 🎯 line
+    state = _goal_state()
+    assert state is not None and state.status == "active"
 
 # ── suppression ───────────────────────────────────────────────────────
 
