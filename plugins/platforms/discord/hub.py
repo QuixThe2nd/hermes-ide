@@ -354,7 +354,7 @@ def _socket_peer_pid(writer: asyncio.StreamWriter) -> Optional[int]:
 
 
 class DiscordHubServer:
-    """Host shared Discord and Matrix transports for attached gateways."""
+    """Host shared Discord, Matrix, and browser sidebar transports."""
 
     def __init__(self, socket_path: Optional[Path] = None) -> None:
         from gateway.overlap_registry import OverlapSuccessorRegistry
@@ -375,6 +375,8 @@ class DiscordHubServer:
         self._successors = OverlapSuccessorRegistry(
             state_path=self.socket_path.parent / "hub-overlap-successors.json")
         self.matrix = MatrixHub(self)
+        from plugins.platforms.browser_sidebar.hub import BrowserSidebarHub
+        self.browser_sidebar = BrowserSidebarHub()
         self._stopping = False
 
     def _router_for(self, token_key: str) -> DiscordSessionRouter:
@@ -401,7 +403,9 @@ class DiscordHubServer:
                 writer.close()
                 await writer.wait_closed()
                 raise RuntimeError(f"Discord hub is already listening on {self.socket_path}")
-        self._server = await asyncio.start_unix_server(self._serve_client, path=str(self.socket_path))
+        self._server = await asyncio.start_unix_server(
+            self._serve_client, path=str(self.socket_path), limit=2 * 1024 * 1024,
+        )
         self.socket_path.chmod(0o600)
         logger.info("Discord hub listening on %s (pid %s)", self.socket_path, os.getpid())
 
@@ -417,6 +421,7 @@ class DiscordHubServer:
         self._adapters.clear()
         self._adapter_tokens.clear()
         await self.matrix.stop()
+        await self.browser_sidebar.stop()
         self.socket_path.unlink(missing_ok=True)
 
     async def _disconnect_adapter_with_deadline(self, adapter: Any, context: str) -> None:
@@ -588,6 +593,7 @@ class DiscordHubServer:
                         client.peer_pid = peer_pid
                         if peer_pid is not None and gateway_pid and gateway_pid != peer_pid:
                             raise RuntimeError("attached gateway PID does not match the socket peer")
+                        attach_result: Dict[str, Any] = {}
                         if platform_name == "matrix":
                             token_key, router = await self.matrix.attach(
                                 config_data=config_data,
@@ -597,6 +603,12 @@ class DiscordHubServer:
                                 secret_scope=params.get("secret_scope") or {},
                             )
                             client.platform = "matrix"
+                        elif platform_name == "browser_sidebar":
+                            client.platform = "browser_sidebar"
+                            token_key, router = "", None
+                            attach_result = await self.browser_sidebar.attach(
+                                client, config_data, str(params.get("profile") or "default"),
+                            )
                         elif platform_name == "discord":
                             token_key = _token_key(str(config_data.get("token") or ""))
                             await self._attach_adapter(
@@ -617,14 +629,16 @@ class DiscordHubServer:
                         client.token_key = token_key
                         client.router = router
                         self._clients[generation] = client
-                        client.router.attach(
-                            generation, client.deliver, gateway_pid=gateway_pid,
-                        )
+                        if client.router is not None:
+                            client.router.attach(
+                                generation, client.deliver, gateway_pid=gateway_pid,
+                            )
                         await client.send({"id": request_id, "result": {
                             "generation_id": generation, "pid": os.getpid(),
-                            "token_key": token_key,
+                            "token_key": token_key, **attach_result,
                         }})
-                        await client.router.replay_undelivered()
+                        if client.router is not None:
+                            await client.router.replay_undelivered()
                         continue
                     if client is None and method not in {"sync_rpc", "overlap_successors"}:
                         raise RuntimeError("attach is required before hub RPC")
@@ -651,10 +665,13 @@ class DiscordHubServer:
             if client is not None:
                 if client.platform == "matrix":
                     self.matrix.detach(client)
+                elif client.platform == "browser_sidebar":
+                    self.browser_sidebar.detach(client)
                 else:
                     await self._reap_client_processing_reactions(client)
                 self._clients.pop(client.generation_id, None)
-                (client.router or self.router).detach(client.generation_id)
+                if client.router is not None:
+                    client.router.detach(client.generation_id)
                 for future in client.controls.values():
                     if not future.done():
                         future.cancel()
@@ -689,6 +706,10 @@ class DiscordHubServer:
     async def _dispatch(self, client: _Client, method: str, params: Dict[str, Any]) -> Any:
         if method == "overlap_successors":
             return {"successors": self._successors.snapshot()}
+        if method == "browser_send":
+            if client is None or client.platform != "browser_sidebar":
+                raise ValueError("an attached browser sidebar generation is required")
+            return await self.browser_sidebar.send(client, params.get("frame"))
         if method == "register_matrix_prompt":
             if client is None or client.platform != "matrix":
                 raise ValueError("an attached Matrix generation is required")

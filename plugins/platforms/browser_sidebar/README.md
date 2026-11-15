@@ -1,6 +1,7 @@
 # Browser sidebar platform
 
-The Brave extension sidebar talks to this Hermes profile over a WebSocket.
+The Brave extension sidebar talks to the installation-wide Discord hub over a WebSocket.
+The hub routes its frames to the currently attached gateway for this Hermes profile.
 The extension offers the configured token as its sole subprotocol, and the
 server authenticates and selects it during the handshake. There is no
 allow-all switch.
@@ -8,8 +9,25 @@ allow-all switch.
 Put `BROWSER_SIDEBAR_TOKEN` in `/root/.hermes/secrets/browser-sidebar.env`.
 Do not commit the token.
 
-The adapter listens on port **8796**, path `/ws`. Point the extension at
+The hub listens on port **8796**, path `/ws`. Point the extension at
 `ws://server.tailea4ecb.ts.net:8796/ws`.
+
+## Hub lifecycle and deployment
+
+`hermes-discord-hub` owns the authenticated extension socket; gateway processes attach
+over the hub's same-user Unix socket. Gateway replacement changes the current routing
+generation without closing the extension connection. Detached or superseded gateways
+cannot send frames or reclaim ownership by reconnecting.
+
+The attaching profile resolves `BROWSER_SIDEBAR_TOKEN` in its own secret scope and passes
+the resolved value only in the local attach request. The hub does not read another
+profile's environment.
+
+On upgrade, stop the old gateway-owned sidebar listener, deploy and start the updated hub,
+then restart the gateways. Starting updated gateways against an old hub is not supported:
+they intentionally do not fall back to a process-local listener. The listener and token
+lock remain hub-owned during gateway restart gaps. Changing the configured host or port
+requires a hub restart.
 
 ## Protocol (JSON text frames, single socket)
 
