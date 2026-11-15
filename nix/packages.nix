@@ -52,19 +52,12 @@
         extraDependencyGroups = [
           "anthropic"
           "azure-identity"
-          "daytona"
-          "edge-tts"
           "exa"
           "fal"
-          "feishu"
           "firecrawl"
           "hindsight"
           "messaging"
-          "modal"
           "parallel-web"
-          "tts-premium"
-          "vercel"
-          "voice"
         ]
         # matrix is Linux-only (oqs/liboqs lacks aarch64-darwin wheels).
         ++ lib.optionals pkgs.stdenv.isLinux [ "matrix" ];
