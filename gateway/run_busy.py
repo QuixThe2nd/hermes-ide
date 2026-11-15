@@ -14,6 +14,7 @@ import contextlib
 import json
 import os
 import time
+import threading
 from agent.i18n import t
 from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
@@ -70,6 +71,79 @@ def _same_chat_key_slots(
         if tail is not None:
             return chat_type, tail
     return None
+
+
+class _SteerDeliveryBinding:
+    """One accepted Discord message's listener and delayed, one-shot receipt."""
+
+    def __init__(
+        self, runner: Any, turn: Any, agent: Any, event: MessageEvent,
+        adapter: Any, message_id: str, expected_text: str,
+    ) -> None:
+        self.runner = runner
+        self.turn = turn
+        self.agent = agent
+        self.source = event.source
+        self.adapter = adapter
+        self.message_id = message_id
+        self.expected_text = expected_text
+        self.callback = self._on_delivered
+        self._lock = threading.Lock()
+        self._cancelled = False
+        self._injected = False
+        self._acceptance_finished = False
+        self._send_scheduled = False
+
+    def _matches(self, delivered_text: str) -> bool:
+        """Match a complete steer() batch component, including its origin JSON."""
+        expected = self.expected_text
+        return (
+            delivered_text == expected
+            or delivered_text.startswith(expected + "\n")
+            or delivered_text.endswith("\n" + expected)
+            or "\n" + expected + "\n" in delivered_text
+        )
+
+    def _unregister(self) -> None:
+        try:
+            self.agent.unregister_steer_delivery_listener(self.callback)
+        except Exception:
+            logger.debug("Failed to unregister Discord steer delivery listener", exc_info=True)
+
+    def cancel(self) -> None:
+        """Invalidate a refused or turn-ending binding; safe to call repeatedly."""
+        with self._lock:
+            self._cancelled = True
+        self._unregister()
+
+    def _on_delivered(self, delivered_text: str) -> None:
+        if not isinstance(delivered_text, str) or not self._matches(delivered_text):
+            return
+        # Map identity fences a listener snapshot from an earlier turn or a replayed ID.
+        with self.turn.steer_delivery_lock:
+            if self.turn.steer_delivery_bindings.get(self.message_id) is not self:
+                return
+            self.turn.steer_delivery_bindings.pop(self.message_id, None)
+        self._unregister()
+        with self._lock:
+            if self._cancelled:
+                return
+            self._injected = True
+            if not self._acceptance_finished or self._send_scheduled:
+                return
+            self._send_scheduled = True
+        self.runner._schedule_steer_delivery_receipt(self)
+
+    def finish_acceptance(self) -> None:
+        """Release an immediate callback only after its acceptance send has finished."""
+        with self._lock:
+            if self._cancelled:
+                return
+            self._acceptance_finished = True
+            if not self._injected or self._send_scheduled:
+                return
+            self._send_scheduled = True
+        self.runner._schedule_steer_delivery_receipt(self)
 
 
 class GatewayBusySessionMixin:
@@ -556,6 +630,90 @@ class GatewayBusySessionMixin:
             f"{text}"
         )
 
+    def _bind_discord_steer_delivery(
+        self, event: MessageEvent, session_key: str, running_agent: Any,
+        expected_text: str,
+    ) -> Optional[_SteerDeliveryBinding]:
+        """Bind one human Discord message ID before redirect() can inject it."""
+        source = event.source
+        if (
+            source.platform != Platform.DISCORD
+            or getattr(source, "is_bot", False)
+            or getattr(event, "internal", False)
+            or not expected_text.strip()
+            or os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() != "true"
+            or os.environ.get("HERMES_GATEWAY_BUSY_STEER_DELIVERED_ACK_ENABLED", "true").lower() != "true"
+        ):
+            return None
+        message_id = str(event.message_id or source.message_id or "").strip()
+        register = getattr(running_agent, "register_steer_delivery_listener", None)
+        adapter = self._delivery_adapter_for(source)
+        if not message_id or not callable(register) or adapter is None:
+            return None
+
+        turn = self._session_state(session_key).turn
+        binding = _SteerDeliveryBinding(
+            self, turn, running_agent, event, adapter, message_id, expected_text,
+        )
+        with turn.steer_delivery_lock:
+            # Adapter admission normally rejects replays first. This per-turn fence also
+            # covers a duplicate that races that boundary or a manually replayed listener.
+            if message_id in turn.steer_delivery_message_ids:
+                return None
+            if register(binding.callback) is not True:
+                return None
+            turn.steer_delivery_bindings[message_id] = binding
+            turn.steer_delivery_message_ids.add(message_id)
+        return binding
+
+    @staticmethod
+    def _cancel_steer_delivery(binding: Optional[_SteerDeliveryBinding]) -> None:
+        if binding is None:
+            return
+        with binding.turn.steer_delivery_lock:
+            if binding.turn.steer_delivery_bindings.get(binding.message_id) is binding:
+                binding.turn.steer_delivery_bindings.pop(binding.message_id, None)
+            binding.turn.steer_delivery_message_ids.discard(binding.message_id)
+        binding.cancel()
+
+    def _schedule_steer_delivery_receipt(self, binding: _SteerDeliveryBinding) -> None:
+        from agent.async_utils import safe_schedule_threadsafe
+
+        safe_schedule_threadsafe(
+            self._send_steer_delivery_receipt(binding),
+            getattr(self, "_gateway_loop", None),
+            logger=logger,
+            log_message="Failed to schedule Discord steer delivery receipt",
+        )
+
+    async def _send_steer_delivery_receipt(self, binding: _SteerDeliveryBinding) -> None:
+        """Best-effort send in the accepted source's own profile and thread."""
+        source = binding.source
+        try:
+            if getattr(getattr(self, "config", None), "multiplex_profiles", False) is True:
+                from gateway.run import _async_profile_runtime_scope
+
+                async with _async_profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+                    await self._send_steer_delivery_receipt_in_scope(binding)
+            else:
+                with self._standalone_launch_scope():
+                    await self._send_steer_delivery_receipt_in_scope(binding)
+        except Exception as exc:
+            logger.debug(
+                "Failed to send Discord steer delivery receipt for %s: %s",
+                binding.message_id, exc,
+            )
+
+    async def _send_steer_delivery_receipt_in_scope(self, binding: _SteerDeliveryBinding) -> None:
+        metadata = dict(self._thread_metadata_for_source(binding.source, binding.message_id) or {})
+        metadata["_interim_send"] = True
+        await binding.adapter._send_with_retry(
+            chat_id=binding.source.chat_id,
+            content="✅ Steer delivered — your message is now in the model’s context.",
+            reply_to=binding.message_id,
+            metadata=metadata,
+        )
+
     async def _resolve_busy_steer_or_redirect(
         self, event: MessageEvent, session_key: str, running_agent: Any
     ) -> "GatewayRunner._BusySteerOutcome":
@@ -577,6 +735,8 @@ class GatewayBusySessionMixin:
         else:
             effective_mode = "interrupt"
         redirected = False
+        steered = False
+        steer_delivery = None
         agent_live = running_agent is not None and running_agent is not _AGENT_PENDING_SENTINEL
         plain_text = (
             event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
@@ -586,12 +746,24 @@ class GatewayBusySessionMixin:
             and getattr(running_agent, "_supports_active_turn_redirect", False) is True
             and hasattr(running_agent, "redirect")
         ):
-            redirected = self._try_agent_verb(
-                running_agent, "redirect", (event.text or "").strip(), session_key, event=event
+            call_text = self._steer_text_with_origin((event.text or "").strip(), event)
+            tool_degraded = (
+                getattr(running_agent, "api_mode", None) != "codex_app_server"
+                and getattr(running_agent, "_executing_tools", False) is True
             )
+            if tool_degraded:
+                steer_delivery = self._bind_discord_steer_delivery(
+                    event, session_key, running_agent, call_text,
+                )
+            redirected = self._try_agent_verb(running_agent, "redirect", call_text, session_key)
+            steered = redirected and tool_degraded
+            if not redirected:
+                self._cancel_steer_delivery(steer_delivery)
+                steer_delivery = None
         return self._BusySteerOutcome(
             effective_mode=effective_mode, demoted_for_subagents=demoted_for_subagents,
             demoted_for_compression=demoted_for_compression, redirected=redirected,
+            steered=steered, steer_delivery=steer_delivery,
         )
 
     @staticmethod
@@ -637,6 +809,17 @@ class GatewayBusySessionMixin:
             logger.debug("Discord redirect reaction failed for %s: %s", session_key, exc)
 
     async def _send_busy_ack(
+        self, event: MessageEvent, adapter: Any, session_key: str,
+        running_agent: Any, outcome: Any,
+    ) -> None:
+        try:
+            await self._send_busy_ack_message(event, adapter, session_key, running_agent, outcome)
+        finally:
+            binding = getattr(outcome, "steer_delivery", None)
+            if binding is not None:
+                binding.finish_acceptance()
+
+    async def _send_busy_ack_message(
         self, event: MessageEvent, adapter: Any, session_key: str,
         running_agent: Any, outcome: Any,
     ) -> None:
@@ -701,7 +884,13 @@ class GatewayBusySessionMixin:
                 pass
 
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
-        if is_redirect_mode:
+        if is_redirect_mode and getattr(outcome, "steered", False):
+            message = f"⏩ Steered into current run{status_detail}."
+            if getattr(outcome, "steer_delivery", None) is not None:
+                message += " Delivery will be confirmed once your message is in the model’s context."
+            else:
+                message += " Your message will be injected at a safe point in this run."
+        elif is_redirect_mode:
             message = (
                 f"↪ Redirected current run{status_detail}. "
                 f"I'll adjust using your correction."
@@ -728,7 +917,8 @@ class GatewayBusySessionMixin:
             )
 
         reply_anchor = self._reply_anchor_for_event(event)
-        thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+        thread_meta = dict(self._thread_metadata_for_source(event.source, reply_anchor) or {})
+        thread_meta["_interim_send"] = True
         try:
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,

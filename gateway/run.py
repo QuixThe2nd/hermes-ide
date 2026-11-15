@@ -6965,6 +6965,8 @@ class GatewayRunner(
         demoted_for_subagents: bool
         demoted_for_compression: bool
         redirected: bool
+        steered: bool = False  # redirect() degraded to pending-steer delivery during tools
+        steer_delivery: Any = dataclasses.field(default=None, repr=False, compare=False)
 
     # Upper bound on off-loop agent-resource cleanup invoked from coroutines
     # running on the gateway's event loop (session-expiry sweep, in-turn

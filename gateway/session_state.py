@@ -6,6 +6,7 @@ was CLEARED: ``turn`` at the end of every turn; ``conversation`` at conversation
 from __future__ import annotations
 
 from collections.abc import MutableMapping
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Tuple
 
@@ -31,13 +32,19 @@ class TurnState:
     # token for their own generation, so a displaced turn's unwind frees only its own lease and
     # never a successor's (an evicted turn and its replacement may both hold one briefly).
     lease_tokens: Dict[int, Any] = field(default_factory=dict)
+    # Accepted Discord steers own one callback and one delivery receipt per message ID.
+    # The seen-ID set survives individual callback completion until this turn ends.
+    steer_delivery_bindings: Dict[str, Any] = field(default_factory=dict)
+    steer_delivery_message_ids: set = field(default_factory=set)
+    steer_delivery_lock: Any = field(default_factory=threading.Lock, repr=False)
     def clear(self) -> None:
-        """Reset the per-turn slot (agent / start ts / lease / busy-ack).
-
-        Mirrors the exact clear set of the old _release_running_agent_state:
-        _running_agents, _running_agents_ts, _active_session_leases (popped
-        by the caller so it can call ``lease.release()``), _busy_ack_ts.
-        """
+        """Reset the turn slot and detach callbacks before a cached agent can be reused."""
+        with self.steer_delivery_lock:
+            bindings = list(self.steer_delivery_bindings.values())
+            self.steer_delivery_bindings.clear()
+            self.steer_delivery_message_ids.clear()
+        for binding in bindings:
+            binding.cancel()
         self.agent = None
         self.started_ts = 0.0
         self.lease = None
