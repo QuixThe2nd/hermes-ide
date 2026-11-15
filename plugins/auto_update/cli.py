@@ -125,11 +125,13 @@ def cmd_enable(*, takeover: bool = False) -> int:
     return 0
 
 
-def cmd_disable() -> int:
+def cmd_disable(*, takeover: bool = False) -> int:
     _save_enabled_flag(False)
-    result = reconcile_scheduler_on_load()
+    result = reconcile_scheduler_on_load(takeover=takeover)
     if result is None:
-        result = reconcile_units(load_auto_update_config(), enabled=False)
+        result = reconcile_units(
+            load_auto_update_config(), enabled=False, takeover=takeover
+        )
     if result is not None and _management_failed(result, want_enabled=False):
         print(format_status(result))
         return 1
@@ -252,7 +254,14 @@ def register_management_cli(subparser: argparse.ArgumentParser):
         action="store_true",
         help="Allow a disposable HERMES_HOME and explicitly transfer ownership",
     )
-    subs.add_parser("disable", help="Disable unattended updates and stop the timer")
+    disable_parser = subs.add_parser(
+        "disable", help="Disable unattended updates and stop the timer"
+    )
+    disable_parser.add_argument(
+        "--takeover",
+        action="store_true",
+        help="Explicitly stop and disable a foreign or disposable-home scheduler",
+    )
     reconcile_parser = subs.add_parser(
         "reconcile",
         help="Rewrite systemd units idempotently (respects explicit disable)",
@@ -286,7 +295,7 @@ def auto_update_command(args: argparse.Namespace) -> int:
     if sub == "enable":
         return cmd_enable(takeover=bool(getattr(args, "takeover", False)))
     if sub == "disable":
-        return cmd_disable()
+        return cmd_disable(takeover=bool(getattr(args, "takeover", False)))
     if sub == "reconcile":
         return cmd_reconcile(takeover=bool(getattr(args, "takeover", False)))
     if sub == "run":
@@ -308,7 +317,7 @@ def management_auto_update_command(args: argparse.Namespace) -> int:
     if sub == "enable":
         return cmd_enable(takeover=bool(getattr(args, "takeover", False)))
     if sub == "disable":
-        return cmd_disable()
+        return cmd_disable(takeover=bool(getattr(args, "takeover", False)))
     if sub == "reconcile":
         return cmd_reconcile(takeover=bool(getattr(args, "takeover", False)))
     print("usage: hermes auto_update {status,enable,disable,reconcile}")

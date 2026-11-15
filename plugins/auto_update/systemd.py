@@ -719,15 +719,6 @@ def reconcile_units(
             warnings=("systemd user manager unavailable for this install",),
         )
 
-    if not enabled:
-        return _reconcile_units_in_scope(
-            cfg,
-            enabled=False,
-            run_systemctl=run_systemctl,
-            scope=selected,
-            write_stamp=write_stamp,
-            takeover=takeover,
-        )
     with _scheduler_reconcile_lock(selected) as lock_error:
         if lock_error is not None:
             return ReconcileResult(
@@ -743,7 +734,7 @@ def reconcile_units(
             )
         return _reconcile_units_in_scope(
             cfg,
-            enabled=True,
+            enabled=enabled,
             run_systemctl=run_systemctl,
             scope=selected,
             write_stamp=write_stamp,
@@ -762,27 +753,6 @@ def _reconcile_units_in_scope(
 ) -> ReconcileResult:
     runner = _resolve_systemctl_runner(run_systemctl)
     selected = scope
-    if not enabled:
-        disable_warnings = disable_timer(selected, run_systemctl=runner)
-        warnings = list(disable_warnings)
-        enabled_probe = probe_timer_is_enabled(selected, run_systemctl=runner)
-        active_probe = probe_timer_is_active(selected, run_systemctl=runner)
-        enabled_state, active_state, enabled_known, active_known = _reconcile_probe_fields(
-            enabled_probe,
-            active_probe,
-            warnings,
-        )
-        return ReconcileResult(
-            supported=True,
-            scope=selected,
-            changed=False,
-            enabled=enabled_state,
-            timer_active=active_state,
-            legacy=(),
-            warnings=tuple(warnings),
-            enabled_known=enabled_known,
-            timer_active_known=active_known,
-        )
 
     refusal: str | None = None
     try:
@@ -804,6 +774,27 @@ def _reconcile_units_in_scope(
             enabled_known=False,
             timer_active_known=False,
         )
+    if not enabled:
+        disable_warnings = disable_timer(selected, run_systemctl=runner)
+        warnings = list(disable_warnings)
+        enabled_probe = probe_timer_is_enabled(selected, run_systemctl=runner)
+        active_probe = probe_timer_is_active(selected, run_systemctl=runner)
+        enabled_state, active_state, enabled_known, active_known = _reconcile_probe_fields(
+            enabled_probe,
+            active_probe,
+            warnings,
+        )
+        return ReconcileResult(
+            supported=True,
+            scope=selected,
+            changed=False,
+            enabled=enabled_state,
+            timer_active=active_state,
+            legacy=(),
+            warnings=tuple(warnings),
+            enabled_known=enabled_known,
+            timer_active_known=active_known,
+        )
     hermes_home = str(current_home)
     service_body = render_service_unit(
         hermes_home=hermes_home,
@@ -819,8 +810,10 @@ def _reconcile_units_in_scope(
     )
 
     unit_paths = (service_unit_path(selected), timer_unit_path(selected))
+    # Owner publication is part of the transaction even though it is not a unit.
     previous_units = tuple(
-        (path, path.read_bytes() if path.is_file() else None) for path in unit_paths
+        (path, path.read_bytes() if path.is_file() else None)
+        for path in (*unit_paths, scheduler_owner_path(selected))
     )
     warnings: list[str] = []
     try:

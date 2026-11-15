@@ -262,6 +262,35 @@ def test_disposable_gateway_home_preserves_production_scheduler(
     assert not any(mutations.intersection(call) for call in calls)
 
 
+def test_disabled_lifecycle_from_disposable_home_preserves_scheduler(
+    user_scope, cfg, monkeypatch
+):
+    calls: list[list[str]] = []
+    runner = _patch_reconcile(monkeypatch, user_scope, STABLE_HOME, calls)
+    reconcile_units(cfg, enabled=True, scope=user_scope, run_systemctl=runner)
+    paths = (service_unit_path(user_scope), timer_unit_path(user_scope), _owner_path(user_scope))
+    before = tuple(path.read_bytes() for path in paths)
+
+    _set_home(monkeypatch, Path("/tmp/hermes-disabled-lifecycle"))
+    _patch_lifecycle(monkeypatch, cfg)
+    monkeypatch.setattr(
+        "plugins.auto_update.lifecycle.plugin_explicitly_disabled", lambda: True
+    )
+    monkeypatch.setattr(
+        "plugins.auto_update.lifecycle.load_auto_update_config",
+        lambda: {**cfg, "enabled": False},
+    )
+    calls.clear()
+
+    result = reconcile_scheduler_on_load(scope=user_scope, run_systemctl=runner)
+
+    assert result is not None
+    assert result.enabled_known is False
+    assert calls == []
+    assert tuple(path.read_bytes() for path in paths) == before
+    assert "--takeover" in "\n".join(result.warnings)
+
+
 @pytest.mark.parametrize(
     "home",
     [
@@ -499,7 +528,10 @@ def test_failed_takeover_daemon_reload_restores_previous_units_and_owner(
     _assert_final_mutation_is_reload(calls)
 
 
-def test_owner_write_failure_retains_previous_owner(user_scope, cfg, monkeypatch):
+@pytest.mark.parametrize("publish_before_failure", [False, True])
+def test_owner_write_failure_retains_previous_owner(
+    publish_before_failure, user_scope, cfg, monkeypatch
+):
     from plugins.auto_update import systemd
 
     calls: list[list[str]] = []
@@ -512,6 +544,8 @@ def test_owner_write_failure_retains_previous_owner(user_scope, cfg, monkeypatch
 
     def fail_owner_write(path, content):
         if path == _owner_path(user_scope):
+            if publish_before_failure:
+                original_atomic_write(path, content)
             raise OSError("owner write denied")
         return original_atomic_write(path, content)
 
@@ -534,8 +568,9 @@ def test_owner_write_failure_retains_previous_owner(user_scope, cfg, monkeypatch
     _assert_final_mutation_is_reload(calls)
 
 
+@pytest.mark.parametrize("publish_before_failure", [False, True])
 def test_fresh_owner_write_failure_leaves_no_unowned_units(
-    user_scope, cfg, monkeypatch
+    publish_before_failure, user_scope, cfg, monkeypatch
 ):
     from plugins.auto_update import systemd
 
@@ -545,6 +580,8 @@ def test_fresh_owner_write_failure_leaves_no_unowned_units(
 
     def fail_owner_write(path, content):
         if path == _owner_path(user_scope):
+            if publish_before_failure:
+                original_atomic_write(path, content)
             raise OSError("owner write denied")
         return original_atomic_write(path, content)
 
@@ -575,8 +612,11 @@ def test_failed_first_install_leaves_no_owner_and_same_home_can_retry(
     assert _owner_data(user_scope)["hermes_home"] == str(STABLE_HOME)
 
 
-def test_disable_from_disposable_home_preserves_units_and_owner(
-    user_scope, cfg, monkeypatch
+@pytest.mark.parametrize(
+    "current_home", [ALTERNATE_HOME, Path("/tmp/hermes-disable-disposable")]
+)
+def test_disable_from_foreign_or_disposable_home_preserves_units_and_owner(
+    current_home, user_scope, cfg, monkeypatch
 ):
     calls: list[list[str]] = []
     runner = _patch_reconcile(monkeypatch, user_scope, STABLE_HOME, calls)
@@ -584,7 +624,24 @@ def test_disable_from_disposable_home_preserves_units_and_owner(
     paths = (service_unit_path(user_scope), timer_unit_path(user_scope), _owner_path(user_scope))
     before = tuple(path.read_bytes() for path in paths)
 
-    _set_home(monkeypatch, Path("/tmp/hermes-disable-disposable"))
+    _set_home(monkeypatch, current_home)
+    calls.clear()
+
+    result = reconcile_units(cfg, enabled=False, scope=user_scope, run_systemctl=runner)
+
+    assert result.enabled_known is False
+    assert calls == []
+    assert tuple(path.read_bytes() for path in paths) == before
+    assert "--takeover" in "\n".join(result.warnings)
+
+
+def test_takeover_deliberately_disables_foreign_scheduler(user_scope, cfg, monkeypatch):
+    calls: list[list[str]] = []
+    runner = _patch_reconcile(monkeypatch, user_scope, STABLE_HOME, calls)
+    reconcile_units(cfg, enabled=True, scope=user_scope, run_systemctl=runner)
+    paths = (service_unit_path(user_scope), timer_unit_path(user_scope), _owner_path(user_scope))
+    before = tuple(path.read_bytes() for path in paths)
+    _set_home(monkeypatch, ALTERNATE_HOME)
     calls.clear()
 
     def disabled_runner(args):
@@ -595,17 +652,18 @@ def test_disable_from_disposable_home_preserves_units_and_owner(
         return runner(args)
 
     result = reconcile_units(
-        cfg, enabled=False, scope=user_scope, run_systemctl=disabled_runner
+        cfg, enabled=False, takeover=True, scope=user_scope, run_systemctl=disabled_runner
     )
 
     assert result.enabled is False
+    assert result.timer_active is False
     assert any("disable" in call and TIMER_NAME in call for call in calls)
     assert any("stop" in call and TIMER_NAME in call for call in calls)
     assert not any("enable" in call or "daemon-reload" in call for call in calls)
     assert tuple(path.read_bytes() for path in paths) == before
 
 
-@pytest.mark.parametrize("command", ["enable", "reconcile"])
+@pytest.mark.parametrize("command", ["enable", "disable", "reconcile"])
 def test_management_parser_accepts_takeover(command):
     root = argparse.ArgumentParser()
     top = root.add_subparsers(dest="top")
@@ -618,7 +676,7 @@ def test_management_parser_accepts_takeover(command):
 
 
 @pytest.mark.parametrize("handler", [auto_update_command, management_auto_update_command])
-@pytest.mark.parametrize("command", ["enable", "reconcile"])
+@pytest.mark.parametrize("command", ["enable", "disable", "reconcile"])
 def test_cli_takeover_reaches_lifecycle_for_enabled_and_disabled_management(
     handler, command, user_scope, monkeypatch
 ):
@@ -632,8 +690,8 @@ def test_cli_takeover_reaches_lifecycle_for_enabled_and_disabled_management(
             supported=True,
             scope=user_scope,
             changed=False,
-            enabled=True,
-            timer_active=True,
+            enabled=command != "disable",
+            timer_active=command != "disable",
             legacy=(),
             warnings=(),
         )
@@ -916,3 +974,46 @@ def test_overlapping_foreign_reconcile_cannot_both_claim_scheduler(
     assert f"Environment=HERMES_HOME={STABLE_HOME}" in service_unit_path(
         user_scope
     ).read_text(encoding="utf-8")
+
+
+def test_overlapping_disable_holds_scope_lock_against_enable(
+    user_scope, cfg, monkeypatch
+):
+    from plugins.auto_update import systemd
+
+    calls: list[list[str]] = []
+    _patch_reconcile(monkeypatch, user_scope, STABLE_HOME, calls)
+    runner, state = _stateful_systemctl(calls)
+    reconcile_units(cfg, enabled=True, scope=user_scope, run_systemctl=runner)
+    original_disable_timer = systemd.disable_timer
+    nested: list = []
+    started = False
+
+    def overlapping_disable(*args, **kwargs):
+        nonlocal started
+        if not started:
+            started = True
+            nested.append(
+                reconcile_units(
+                    cfg,
+                    enabled=True,
+                    scope=user_scope,
+                    run_systemctl=runner,
+                )
+            )
+        return original_disable_timer(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "plugins.auto_update.systemd.disable_timer", overlapping_disable
+    )
+    outer = reconcile_units(
+        cfg, enabled=False, scope=user_scope, run_systemctl=runner
+    )
+
+    assert outer.enabled is False
+    assert outer.timer_active is False
+    assert state == {"enabled": False, "active": False}
+    assert len(nested) == 1
+    assert nested[0].enabled_known is False
+    assert "already in progress" in "\n".join(nested[0].warnings)
+    assert _owner_data(user_scope)["hermes_home"] == str(STABLE_HOME)

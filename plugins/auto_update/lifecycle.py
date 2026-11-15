@@ -121,7 +121,7 @@ def reconcile_scheduler_on_load(
     if takeover:
         kwargs["takeover"] = True
     try:
-        if enabled and not takeover:
+        if not takeover:
             refusal = _disposable_home_refusal(scope)
             if refusal is not None:
                 return refusal
