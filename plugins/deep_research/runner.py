@@ -10,9 +10,9 @@ job's evidence-ledger env so the plugin's ``post_tool_call`` hook records the
 sources it actually fetched. Synthesis is a second one-shot with
 ``--toolsets file_readonly`` — the writer has no retrieval tools at all.
 
-Fail-closed by design: a lane failure, a writer failure, a citation
-validation failure after the single correction pass, or an exhausted job
-budget marks the job ``failed`` with every artifact preserved and no
+Fail-closed by design: a lane failure, a writer failure, an unrecoverable
+citation validation failure after the single correction pass, or an exhausted
+job budget marks the job ``failed`` with every artifact preserved and no
 ``report.md`` published.
 """
 
@@ -435,6 +435,11 @@ class ResearchRunner:
         )
         if retry.ok:
             self._publish(directory, corrected)
+            return
+        reconciled = citations_mod.remove_unledgered_urls(corrected, evidence_urls)
+        cleaned = citations_mod.validate_citations(reconciled, evidence_urls)
+        if cleaned.ok:
+            self._publish(directory, reconciled)
             return
         self._preserve_and_fail(
             directory, corrected,

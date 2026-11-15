@@ -1,4 +1,4 @@
-"""Citation extraction and provenance validation.
+"""Citation extraction, deterministic cleanup, and provenance validation.
 
 Validation proves **URL provenance only**: every source URL emitted in the
 report must exist in the job's evidence ledger. It does NOT prove that the
@@ -100,6 +100,32 @@ def extract_report_urls(text: str) -> List[str]:
         seen.add(normalized)
         urls.append(normalized)
     return urls
+
+
+def remove_unledgered_urls(report_text: str, evidence_urls: Iterable[str]) -> str:
+    """Remove only URL tokens absent from the evidence ledger.
+
+    Match spans come from the same parser as validation, so Markdown closers,
+    prose punctuation, and evidence-backed URLs remain byte-identical.
+    """
+    text = report_text or ""
+    allowed = {normalize_url(url) for url in evidence_urls if url}
+    removals = []
+    for match in _URL_RE.finditer(text):
+        token = _strip_prose_tail(match.group(1))
+        if token and normalize_url(token) not in allowed:
+            start = match.start(1)
+            removals.append((start, start + len(token)))
+
+    if not removals:
+        return text
+    pieces = []
+    cursor = 0
+    for start, end in removals:
+        pieces.append(text[cursor:start])
+        cursor = end
+    pieces.append(text[cursor:])
+    return "".join(pieces)
 
 
 def validate_citations(

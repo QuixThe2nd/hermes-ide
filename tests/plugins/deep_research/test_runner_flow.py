@@ -448,6 +448,44 @@ class TestCitationGating:
         assert "Corrected draft" in (directory / "report.md").read_text(encoding="utf-8")
         assert jobs.read_status(directory)["synthesis"]["correction_used"] is True
 
+    def test_correction_reconciles_unledgered_links_without_another_writer(self, home: Path) -> None:
+        job_id, directory = _make_job(home, questions=None)
+        _seed_evidence(directory, GOOD_URL, OTHER_URL)
+        unledgered = [
+            "https://unledgered.example/row",
+            "https://unledgered.example/home",
+            "https://unledgered.example/index",
+            "https://unledgered.example/other",
+        ]
+        corrected = (
+            "| Runtime | Evidence |\n"
+            "| --- | --- |\n"
+            f"| Alpha | [primary]({GOOD_URL}) [duplicate]({unledgered[0]}) |\n"
+            f"| Beta | [secondary]({OTHER_URL}) |\n\n"
+            "## Sources\n"
+            f"- [Alpha homepage]({unledgered[1]})\n"
+            f"- [Research index]({unledgered[2]})\n"
+            f"- {unledgered[3]}\n"
+        )
+        spawn = FakeSpawn(
+            writers=[f"Bad draft citing [x]({INVENTED_URL}).", corrected]
+        )
+
+        state = _run(job_id, home, spawn)
+
+        assert state == "completed"
+        report = (directory / "report.md").read_text(encoding="utf-8")
+        expected = corrected
+        for url in unledgered:
+            expected = expected.replace(url, "")
+        assert report == expected
+        assert f"[primary]({GOOD_URL})" in report
+        assert f"[secondary]({OTHER_URL})" in report
+        # One lane + initial synthesis + the one permitted correction writer.
+        assert len(spawn.argvs) == 3
+        synthesis = jobs.read_status(directory)["synthesis"]
+        assert synthesis["attempts"] == 2 and synthesis["correction_used"] is True
+
     def test_report_with_no_citations_fails_closed(self, home: Path) -> None:
         job_id, directory = _make_job(home, questions=None)
         _seed_evidence(directory, GOOD_URL)

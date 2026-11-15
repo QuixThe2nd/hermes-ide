@@ -11,6 +11,7 @@ from __future__ import annotations
 from plugins.deep_research.citations import (
     extract_report_urls,
     normalize_url,
+    remove_unledgered_urls,
     validate_citations,
 )
 
@@ -65,3 +66,35 @@ class TestParenProvenance:
         assert normalize_url(PAREN_URL) == PAREN_URL
         # An unbalanced trailing paren is prose, not URL.
         assert normalize_url("https://example.org/a)") == "https://example.org/a"
+
+
+class TestUnledgeredUrlRemoval:
+    def test_markdown_and_bare_url_tokens_are_removed_without_deleting_prose(self) -> None:
+        markdown_url = "https://unledgered.example/home"
+        bare_url = "https://unledgered.example/index"
+        text = (
+            f"Keep [primary]({PAREN_URL}).\n"
+            f"Drop [homepage]({markdown_url}), then {bare_url}.\n"
+        )
+
+        cleaned = remove_unledgered_urls(text, [PAREN_URL])
+
+        assert cleaned == (
+            f"Keep [primary]({PAREN_URL}).\n"
+            "Drop [homepage](), then .\n"
+        )
+
+    def test_cleanup_cannot_make_an_unledgered_only_report_valid(self) -> None:
+        cleaned = remove_unledgered_urls(
+            "Only [an invented source](https://unledgered.example/source).",
+            [PAREN_URL],
+        )
+
+        verdict = validate_citations(cleaned, [PAREN_URL])
+
+        assert cleaned == "Only [an invented source]()."
+        assert verdict.ok is False
+        assert verdict.cited_urls == []
+        assert verdict.errors == [
+            "report contains no citations; a research report must cite fetched sources"
+        ]
