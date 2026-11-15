@@ -254,11 +254,13 @@ class GatewayBusySessionMixin:
                 from gateway.platforms.event import transfer_replay_completion
 
                 return transfer_replay_completion(queued_copy, queued_event)
-        if session_key in pending_slot or getattr(queued_event, "internal", False):
-            # Internal events (resume wakes, background completions) never take the
-            # human head slot: the slot's text-merge semantics would collapse a wake
-            # into the next user message (mirrors the adapter-side rule that a wake
-            # must not merge into an occupied human slot).
+        if session_key in pending_slot or (
+            getattr(queued_event, "internal", False)
+            and not self._is_goal_continuation_event(queued_event)
+        ):
+            # Overflow preserves FIFO when the head is occupied. Other internal
+            # events always use overflow so text merging cannot collapse them
+            # into a human turn; goal continuations retain their pending-slot drain.
             self._session_state(session_key).conversation.queued_events.append(queued_event)
         else:
             pending_slot[session_key] = queued_event
