@@ -87,6 +87,12 @@ def _get_independent_completions() -> bool:
     completion messages that land as each finishes. Off = one consolidated message when the whole call is done."""
     return is_truthy_value(_cfg().get("independent_completions", False))
 
+def _get_cursor_timeout_fallback() -> bool:
+    """delegation.cursor_timeout_fallback (bool, default False): on a Cursor Cloud
+    run-poll timeout, retry the same task once on the local Claude CLI — only when
+    the local workdir shows no writes (clean git status)."""
+    return bool(is_truthy_value(_cfg().get("cursor_timeout_fallback", False)))
+
 def _get_worktree_isolation() -> bool:
     """delegation.worktree_isolation (bool, default False): each child gets its own
     git worktree off the parent's HEAD so parallel children never contend for one

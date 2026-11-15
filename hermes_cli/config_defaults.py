@@ -1009,6 +1009,10 @@ DEFAULT_CONFIG = {
         # Each child re-pays a cold system prompt and re-explores the repo, and one-shot spawns are mostly
         # "review my own work" rather than parallel work (agent/oneshot_footprint.py).
         "oneshot_max_children": 2,
+        # On a Cursor Cloud run-poll timeout, hand the same task to the local
+        # Claude CLI instead of failing, when the local workdir shows no writes.
+        # Default off.
+        "cursor_timeout_fallback": False,
         # Subagent background processes (task_id "sa-...") route notify_on_complete / watch_pattern
         # notifications to the PARENT; false suppresses them (the child's result is the
         # deliverable). Async-delegation results are NEVER suppressed.

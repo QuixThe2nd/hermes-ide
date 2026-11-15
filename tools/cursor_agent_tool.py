@@ -34,6 +34,14 @@ polls the run until a terminal Cloud Agent status. ``force`` does not
 enable pushes or PRs. ``startingRef`` is sent only when that branch exists
 on the origin remote.
 
+Timeouts
+--------
+On a Cloud run-poll timeout the error reports the local workdir disk state
+(``git status --porcelain``: clean/dirty/unknown) — a Cloud timeout leaves
+the scratch clone untouched. Only when ``delegation.cursor_timeout_fallback``
+is enabled AND the workdir is clean is the task retried once on the local
+Claude CLI (an explicit opt-in, never a silent fallback).
+
 Authority and no-push
 ---------------------
 Workdir authority matches the existing local executor: a same-user coding
@@ -88,7 +96,7 @@ from tools.cursor_run_receipts import (
     validate_receipt_binding,
 )
 from tools.delegate_evidence_gate import apply_evidence_gate
-from tools.delegate_tool_config import _cfg
+from tools.delegate_tool_config import _cfg, _get_cursor_timeout_fallback
 from tools.delegation_ownership import ensure_codebase_ownership
 from tools.environments.local import build_subprocess_env
 from tools.registry import registry
@@ -1130,6 +1138,28 @@ def cancel_cloud_run(agent_id: str, run_id: str, api_key: str) -> None:
         logger.debug("Cursor Cloud Agent cancel failed", exc_info=True)
 
 
+def _workdir_disk_state(workdir: str) -> str:
+    """git-status snapshot of the local workdir: "clean", "dirty", or "unknown".
+
+    Never raises: a nonzero git exit, a timeout, an OSError, or a missing
+    directory all mean we cannot tell, which is "unknown".
+    """
+    try:
+        if not Path(workdir).is_dir():
+            return "unknown"
+        proc = subprocess.run(
+            ["git", "-C", str(workdir), "status", "--porcelain=v1"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return "unknown"
+    if proc.returncode != 0:
+        return "unknown"
+    return "dirty" if proc.stdout.strip() else "clean"
+
+
 def poll_cloud_run(
     *,
     agent_id: str,
@@ -1137,6 +1167,7 @@ def poll_cloud_run(
     api_key: str,
     timeout_seconds: int,
     started_mono: float,
+    workdir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Poll GET /v1/agents/{id}/runs/{runId} until a terminal status."""
     last: Dict[str, Any] = {"id": run_id, "agentId": agent_id, "status": "CREATING"}
@@ -1145,11 +1176,15 @@ def poll_cloud_run(
             cancel_cloud_run(agent_id, run_id, api_key)
             last["status"] = "CANCELLED"
             last["_local_error"] = "interrupted"
+            if workdir:
+                last["_workdir_disk_state"] = _workdir_disk_state(workdir)
             return last
         if timeout_seconds > 0 and (time.monotonic() - started_mono) >= timeout_seconds:
             cancel_cloud_run(agent_id, run_id, api_key)
             last["status"] = last.get("status") or "CANCELLED"
             last["_local_error"] = "timeout"
+            if workdir:
+                last["_workdir_disk_state"] = _workdir_disk_state(workdir)
             return last
 
         try:
@@ -1534,10 +1569,29 @@ def _build_cloud_tool_result_from_run(
     cloud_status = fields.get("cloud_status")
     outcome = _cloud_outcome_from_run(local_error=local_error, cloud_status=cloud_status)
     if local_error:
+        error = str(local_error)
+        if local_error == "timeout":
+            state = run.get("_workdir_disk_state")
+            if isinstance(state, str):
+                if state == "dirty":
+                    error = (
+                        "Cursor Cloud Agent run timed out after the wall-clock cap; "
+                        "local workdir disk state: dirty "
+                        "(uncommitted changes — inspect git status before retrying)"
+                    )
+                else:
+                    error = (
+                        "Cursor Cloud Agent run timed out after the wall-clock cap; "
+                        f"local workdir disk state: {state} — a Cloud timeout leaves "
+                        "the scratch clone untouched"
+                    )
+            fallback_note = run.get("_fallback_note")
+            if isinstance(fallback_note, str) and fallback_note:
+                error = f"{error}{fallback_note}"
         return (
             _make_cloud_tool_result(
                 success=False,
-                error=str(local_error),
+                error=error,
                 attempt_id=attempt_id,
                 **fields,
             ),
@@ -1798,6 +1852,7 @@ def _execute_cloud_delegation(
                 api_key=api_key,
                 timeout_seconds=clamped_timeout,
                 started_mono=started_mono,
+                workdir=str(workdir_path),
             )
         except CursorCloudError as exc:
             result_json = _make_result(success=False, error=str(exc))
@@ -1810,6 +1865,55 @@ def _execute_cloud_delegation(
                 cloud_run_id=cloud_run_id,
             )
             return result_json
+
+    # Opt-in local retry: a Cloud run-poll timeout with a still-clean local
+    # workdir means zero work happened anywhere; delegation.cursor_timeout_
+    # fallback hands the same task to the local Claude CLI exactly once.
+    if (
+        run_obj.get("_local_error") == "timeout"
+        and _get_cursor_timeout_fallback() is True
+        and _workdir_disk_state(str(workdir_path)) == "clean"
+    ):
+        fallback_payload: Optional[Dict[str, Any]] = None
+        try:
+            from tools.claude_agent_tool import delegate_claude_agent
+
+            fallback_raw = delegate_claude_agent(
+                task=task,
+                workdir=str(workdir_path),
+                timeout_seconds=clamped_timeout,
+                permission_mode="acceptEdits",
+                background=False,
+            )
+            parsed = json.loads(fallback_raw)
+            if isinstance(parsed, dict):
+                fallback_payload = parsed
+        except Exception as exc:
+            logger.debug("cursor timeout local Claude fallback failed: %s", exc)
+            run_obj["_fallback_note"] = f"; local Claude fallback also failed: {str(exc)[:200]}"
+        else:
+            if fallback_payload is None or fallback_payload.get("success") is not True:
+                short = "unspecified failure"
+                if isinstance(fallback_payload, dict):
+                    short = str(fallback_payload.get("error") or short)
+                run_obj["_fallback_note"] = f"; local Claude fallback also failed: {short[:200]}"
+            else:
+                fallback_payload["fallback"] = "claude_local"
+                fallback_payload["cloud_timeout_fallback"] = True
+                if cloud_agent_id and not fallback_payload.get("agent_id"):
+                    fallback_payload["agent_id"] = cloud_agent_id
+                if cloud_run_id and not fallback_payload.get("run_id"):
+                    fallback_payload["run_id"] = cloud_run_id
+                result_json = json.dumps(fallback_payload, ensure_ascii=False)
+                finalize_receipt(
+                    receipt_path,
+                    outcome="success",
+                    terminal_result={"result_json": result_json},
+                    log_path=str(log_path),
+                    cloud_agent_id=cloud_agent_id,
+                    cloud_run_id=cloud_run_id,
+                )
+                return result_json
 
     result_json, _success, outcome, _cloud_status = _build_cloud_tool_result_from_run(
         agent=agent_obj,
