@@ -205,3 +205,59 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(hermes_
     assert adapter._pending_messages[adapter_key].text.startswith(
         "[Continuing toward your standing goal]"
     )
+
+
+@pytest.mark.asyncio
+async def test_goal_continuation_event_is_internal(hermes_home):
+    """Synthetic continuations must bypass inbound auto-goal classification."""
+    from unittest.mock import MagicMock, patch
+    from datetime import datetime
+    import uuid
+
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionEntry
+    from hermes_cli.goals import GoalManager
+
+    src = _slack_thread_source()
+    adapter_key = build_session_key(src)
+
+    runner = object.__new__(GatewayRunner)
+    from gateway.config import GatewayConfig
+
+    runner.config = GatewayConfig(
+        platforms={Platform.SLACK: PlatformConfig(enabled=True, token="x")},
+    )
+    runner._queued_events = {}
+    session_entry = SessionEntry(
+        session_key=adapter_key,
+        session_id=f"goal-sess-{uuid.uuid4().hex[:8]}",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.SLACK,
+        chat_type="channel",
+    )
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = session_entry
+    runner.session_store._generate_session_key.return_value = adapter_key
+
+    adapter = _DrainProbeAdapter()
+    runner.adapters = {Platform.SLACK: adapter}
+
+    GoalManager(session_entry.session_id).set("ship it")
+    with patch(
+        "hermes_cli.goals.judge_goal",
+        return_value=("continue", "still needs work", False, None, False),
+    ):
+        await runner._post_turn_goal_continuation(
+            session_entry=session_entry,
+            source=src,
+            final_response="partial progress",
+        )
+        await asyncio.sleep(0.05)
+
+    cont_event = adapter._pending_messages[adapter_key]
+    assert cont_event.internal is True
+
+    from gateway.response_filters import display_kind_for_event
+
+    assert display_kind_for_event(cont_event) == "internal_notification"
