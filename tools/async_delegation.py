@@ -1576,7 +1576,8 @@ def build_background_acceptance_envelope(
     observe or steer the work. Tool-specific keys (``subagent_ids``,
     ``live_transcripts``) are added only when meaningful; ``tool`` and
     ``result_kind`` are always present so UIs can label the unit without
-    sniffing the id format.
+    sniffing the id format. CLI/cloud coding runs additionally carry a
+    ``control`` block naming the delegate_agent actions that reach the run.
     """
     payload: Dict[str, Any] = {
         "status": "dispatched",
@@ -1592,10 +1593,30 @@ def build_background_acceptance_envelope(
         payload["note"] = note
     if subagent_ids:
         payload["subagent_ids"] = list(subagent_ids)
-    if control_hint:
-        payload["control_hint"] = control_hint
     if live_transcripts:
         payload["live_transcripts"] = list(live_transcripts)
+    if result_kind in (RESULT_KIND_CLI_AGENT, RESULT_KIND_CLOUD_AGENT):
+        # CLI/cloud coding runs are controllable only through delegate_agent by
+        # their deleg_* id (list/stop; steer is impossible — stdin is closed
+        # for the CLI run and a cloud run has none). Stream the handle here:
+        # the caller usually has nothing else to quote back to the model.
+        payload["control"] = {
+            "tool": "delegate_agent",
+            "delegation_id": delegation_id,
+            "subagent_id": delegation_id,
+            "actions": ["list", "stop"],
+            "accepting_steer": False,
+        }
+        handle = (
+            f"Control this run via delegate_agent with its id "
+            f"'{delegation_id}': action='stop' ends it (it cannot be steered "
+            "mid-run — the Claude CLI runs with stdin closed and a Cursor "
+            "cloud run has no stdin); re-delegate a new run with the course "
+            "correction."
+        )
+        payload["control_hint"] = f"{control_hint} {handle}".strip() if control_hint else handle
+    elif control_hint:
+        payload["control_hint"] = control_hint
     return payload
 
 
