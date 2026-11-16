@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.tools.fixtures.fake_cursor_cloud import FakeCursorCloud
+from tests.tools.fixtures.fake_cursor_cloud import FakeCursorCloud, complete_stream_body
 from tools import async_delegation as ad
 from tools import cursor_agent_tool
 from tools.cursor_run_receipts import (
@@ -39,6 +39,9 @@ def cloud_env(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     cloud = FakeCursorCloud()
+    # Verified-artifact FINISHED runs: the fake cloud serves a complete run
+    # stream so egress succeeds and the delivery rail is what's under test.
+    cloud.stream_body = complete_stream_body()
     cloud.install(monkeypatch, cursor_agent_tool, tmp_path=tmp_path)
 
     # The real helper shells out to git; the fake cloud pins the origin
@@ -46,7 +49,10 @@ def cloud_env(monkeypatch, tmp_path):
     monkeypatch.setattr(
         cursor_agent_tool, "detect_unpushed_head_commits", lambda workdir: None
     )
-
+    # Same treatment for the dispatch-time source-base probe.
+    monkeypatch.setattr(
+        cursor_agent_tool, "_resolve_source_base_sha", lambda workdir, ref: None
+    )
     ad._reset_for_tests()
     while not process_registry.completion_queue.empty():
         process_registry.completion_queue.get_nowait()

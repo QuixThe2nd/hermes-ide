@@ -136,6 +136,8 @@ DEFAULT_ORCHESTRATION_PROMPT = (
 POST_TIMEOUT_SECONDS = 30.0
 HTTP_TIMEOUT_SECONDS = 30.0
 POLL_INTERVAL_SECONDS = 2.0
+SOURCE_BASE_PROBE_SECONDS = 15
+_FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 WORKER_LOG_MAX_BYTES = 256 * 1024
 WORKER_READY_ATTEMPTS = 5
 WORKER_READY_DELAY_SECONDS = 0.5
@@ -1621,6 +1623,29 @@ def _build_cloud_tool_result_from_run(
     )
 
 
+def _resolve_source_base_sha(workdir: str, starting_ref: Optional[str]) -> Optional[str]:
+    """SHA the cloud run starts from: the starting ref when set, else HEAD.
+
+    15 s cap; any failure resolves to None so dispatch never raises on a
+    git probe and egress fails closed instead.
+    """
+    target = starting_ref or "HEAD"
+    try:
+        proc = subprocess.run(
+            ["git", "-C", workdir, "rev-parse", target],
+            capture_output=True,
+            text=True,
+            timeout=SOURCE_BASE_PROBE_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    sha = (proc.stdout or "").strip()
+    return sha if _FULL_SHA_RE.fullmatch(sha) else None
+
+
 def _execute_cloud_delegation(
     *,
     task: str,
@@ -1642,6 +1667,14 @@ def _execute_cloud_delegation(
     starting_ref = resolve_workdir_starting_ref(str(workdir_path))
     model_name = str(model or receipt.get("model") or "").strip() or None
     force_enabled = is_truthy_value(force, default=True)
+    # Artifact egress matches the worker checkout against the SHA that was
+    # actually dispatched. Persist it before create; a failed probe stores
+    # null and egress later fails closed rather than raising out of dispatch.
+    source_base_sha = _resolve_source_base_sha(str(workdir_path), starting_ref)
+    try:
+        receipt = update_receipt(receipt_path, source_base_sha=source_base_sha) or receipt
+    except Exception:  # noqa: BLE001 - a receipt write must not kill dispatch
+        pass
 
     log_path = Path(str(receipt.get("log_path") or ""))
     log_dir = log_path.parent
@@ -2836,7 +2869,7 @@ CURSOR_AGENT_SCHEMA = {
         "the local branch as startingRef when that branch exists on origin). "
         "Unpushed commits and dirty working-tree changes are invisible to the "
         "run; the tool refuses to start when local HEAD is ahead of origin. "
-        "Nothing runs on this host. Does not open a PR or request reviewers. "
+        "The run is routed to the My Machines worker on this host. Success requires a hash-verified artifact from that worker checkout or a complete stream snapshot, not the agent's writeup. Does not push, open a PR, or request reviewers. "
         "Available only when the Cursor Agent CLI binary is installed."
     ),
     "parameters": {

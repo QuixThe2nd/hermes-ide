@@ -179,7 +179,8 @@ def test_receipt_created_before_cloud_create(cloud_env):
 
     with patch.object(cursor_agent_tool, "create_receipt", side_effect=_wrapped_create):
         result = _delegate(cloud, workdir, session_id="sess-order", tool_call_id="call-order")
-    assert result["success"] is True
+    assert result["success"] is False
+    assert "missing artifact egress" in result["error"]
     receipt = read_receipt(
         receipt_path_for_binding("sess-order", "call-order")
     )
@@ -1081,7 +1082,8 @@ def test_repeat_invoke_forged_cached_terminal_not_returned(cloud_env):
     result = _delegate(cloud, workdir, session_id=session_id, tool_call_id=tool_call_id)
 
     assert FORGED_MARKER not in json.dumps(result)
-    assert result["success"] is True
+    assert result["success"] is False
+    assert "missing artifact egress" in result["error"]
     assert result["final_report"] == "real cloud report"
     assert cloud.create_calls == 0
     assert cloud.get_run_calls == 1
@@ -1107,7 +1109,8 @@ def test_repeat_invoke_terminal_receipt_cloud_running_resumes_poll(cloud_env):
     result = _delegate(cloud, workdir, session_id=session_id, tool_call_id=tool_call_id)
 
     assert FORGED_MARKER not in json.dumps(result)
-    assert result["success"] is True
+    assert result["success"] is False
+    assert "missing artifact egress" in result["error"]
     assert cloud.create_calls == 0
     assert cloud.get_run_calls == 2
     assert cloud.get_agent_calls == 1
