@@ -46,6 +46,15 @@ Two invariants shape almost every design decision and are the lens for reviewing
   plugin itself can and often should live in this tree (see the fork note at
   the top).
 
+## Go-only feature implementation
+
+Every coding agent and subagent implementing a new hermes-ide feature writes
+the new functionality in Go — never production Python. Existing Python may be
+migrated or deleted while moving toward a 100% Go codebase; do not grow it.
+`.github/workflows/go-line-balance.yml` enforces this mechanically: every PR
+must keep `python added lines <= go added lines`, and a violating diff cannot
+merge (the check is required via "All required checks pass").
+
 ## Contribution Rubric — What We Want / What We Don't
 
 The project's intent layer. It serves humans aiming a contribution AND the automated triage
