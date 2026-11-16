@@ -153,6 +153,46 @@ def test_failed_local_privacy_inspection_fails_closed(capture_harness, monkeypat
     assert capture_harness.events == []
     assert _cache_files(capture_harness.home) == []
 
+
+def _wide_frame_png(width: int, height: int) -> bytes:
+    output = io.BytesIO()
+    Image.new("RGB", (width, height), (9, 18, 27)).save(output, format="PNG")
+    return output.getvalue()
+
+
+def test_ocr_completes_on_full_frame_within_budget_and_publishes_original(
+    capture_harness, monkeypatch,
+):
+    """Regression: deployed tesseract needed 8.65s on a 1536x735 Camofox PNG
+    and the old 5s full-image ceiling suppressed every public page."""
+    monkeypatch.setattr(browser_camofox, "_get_raw", lambda *args, **kwargs: SimpleNamespace(
+        content=_wide_frame_png(1536, 735),
+    ))
+    seen = {}
+
+    def fake_ocr(image_path, *, timeout, extra_env=None):
+        seen["path"] = str(image_path)
+        seen["timeout"] = timeout
+        seen["env"] = dict(extra_env or {})
+        return LocalOCRResult(True, "Public documentation")
+
+    monkeypatch.setattr("tools.vision_ocr.run_local_ocr_checked", fake_ocr)
+    assert capture_harness.capture() is True
+
+    # OCR inspects the full-resolution published frame itself: any
+    # downscaled copy garbles small marker text ("Sign in" -> "Sign ino")
+    # that full-size tesseract reads, weakening suppression.
+    assert seen["path"] == capture_harness.events[-1]["path"]
+    with Image.open(seen["path"]) as image:
+        assert image.size == (1536, 735)
+    # The ceiling must stay well above the measured 8.65s full-image run,
+    # and the subprocess must run single-threaded: OpenMP contention
+    # measured 16-25s under load with byte-identical output.
+    assert seen["timeout"] >= 3 * 8.65
+    assert seen["env"].get("OMP_THREAD_LIMIT") == "1"
+
+
+
 def test_unlabeled_password_field_suppresses_before_screenshot(capture_harness, monkeypatch):
     requests = []
 
