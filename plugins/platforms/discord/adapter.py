@@ -7049,6 +7049,40 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             ),
         )
 
+    async def vault_save_login_prompt(
+        self,
+        *,
+        source: Dict[str, Any],
+        identity: Dict[str, Any],
+        session_key: str,
+        chat_id=None,
+        metadata: Optional[Dict[str, Any]] = None,
+        origin: str = "",
+        host: str = "",
+    ) -> Dict[str, Any]:
+        """Hub RPC: run the DiscordAdapter modal path for a hub-client gateway turn.
+
+        The hub process owns discord.py, so a ``DiscordHubClientAdapter`` turn relays
+        its validated owner fields here and this coroutine runs the existing
+        button/modal transport unchanged (same disclosure, owner checks, and
+        fail-closed states as the in-process binding).
+        """
+        from plugins.platforms.discord.vault_prompts import run_hub_vault_prompt
+
+        return await run_hub_vault_prompt(
+            self,
+            source=source,
+            identity=identity,
+            session_key=session_key,
+            chat_id=chat_id,
+            metadata=metadata,
+            origin=origin,
+            host=host,
+            authorize=lambda interaction: _component_check_auth(
+                interaction, self._allowed_user_ids, self._allowed_role_ids
+            ),
+        )
+
 
     async def send_model_picker(
         self, chat_id: str, providers: list, current_model: str, current_provider: str,

@@ -113,6 +113,8 @@ In an interactive Discord session, the browser save-login tool can post a one-ti
 Discord text inputs are **unmasked**, and Discord processes the submitted username and password. Hermes sends the submission directly to its existing vault-save callback, not through Discord message ingestion, the model, or session history. The values are not posted as chat messages. Use this transport only when that disclosure is acceptable for the credential.
 :::
 
+When Discord runs through the shared hub transport (`hermes-discord-hub.service`), the prompt works the same way: the gateway relays the request to the hub process, which hosts the button and modal on the Discord connection, and the submission returns only to the session that requested it. Everything else on this page — ownership, expiry, disclosure warning, and the locked/OTP restrictions — applies unchanged.
+
 Prefer these local alternatives for sensitive credentials:
 
 - `hermes vault add`
