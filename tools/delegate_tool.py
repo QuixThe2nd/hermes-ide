@@ -837,7 +837,13 @@ DELEGATE_TASK_SCHEMA = {
                 "course-correction text into one child (subagent_id + "
                 "message) without stopping it; 'stop' = end one child "
                 "early (subagent_id; partial result still returns). "
-                "Control actions return immediately; goal/tasks are ignored unless spawning.",
+                "Background CLI coding runs (delegate_claude_agent / "
+                "delegate_cursor_agent) appear in 'list' under their "
+                "deleg_* id with accepting_steer=false: they cannot be "
+                "steered mid-run (Claude stdin closed; Cursor is a cloud "
+                "run) — stop that deleg_* id, then re-delegate a corrected "
+                "run. Control actions return immediately; goal/tasks are "
+                "ignored unless spawning.",
                 enum=["spawn", "list", "steer", "stop"],
             ),
             "subagent_id": _p("string", "Target for action='steer'/'stop' (ids from the spawn response or action='list')."),

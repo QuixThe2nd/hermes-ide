@@ -470,3 +470,71 @@ def test_native_subagent_still_listed_and_steerable():
         assert child.steered == ["tighten scope"]
     finally:
         _unregister_subagent("sid-native-regression")
+
+# ---------------------------------------------------------------------------
+# Pin 7: the background acceptance envelope streams a concrete control handle
+# ---------------------------------------------------------------------------
+
+
+def test_envelope_streams_control_handle_for_claude_run():
+    payload = ad.build_background_acceptance_envelope(
+        tool="delegate_claude_agent",
+        result_kind="cli_agent",
+        delegation_id="deleg_5c686284",
+    )
+    assert payload["control"] == {
+        "tool": "delegate_agent",
+        "delegation_id": "deleg_5c686284",
+        "subagent_id": "deleg_5c686284",
+        "actions": ["list", "stop"],
+        "accepting_steer": False,
+    }
+    hint = str(payload.get("control_hint", ""))
+    low = hint.lower()
+    assert "delegate_agent" in hint, hint
+    assert "deleg_5c686284" in hint, hint
+    assert "stop" in low, hint
+    assert (
+        "cannot be steered" in low
+        or "not steerable" in low
+        or "cannot accept" in low
+    ), hint
+    assert "redelegate" in low or "re-delegate" in low, hint
+
+
+def test_envelope_streams_control_handle_for_cursor_run_and_keeps_caller_hint():
+    payload = ad.build_background_acceptance_envelope(
+        tool="delegate_cursor_agent",
+        result_kind="cloud_agent",
+        delegation_id="deleg_9d13aa02",
+        control_hint="The run's live progress page URL is delivered with the result.",
+    )
+    control = payload["control"]
+    assert control["tool"] == "delegate_agent"
+    assert control["delegation_id"] == "deleg_9d13aa02"
+    assert control["subagent_id"] == "deleg_9d13aa02"
+    assert control["actions"] == ["list", "stop"]
+    assert control["accepting_steer"] is False
+    hint = str(payload.get("control_hint", ""))
+    # The caller-supplied hint text survives; the handle sentence is appended.
+    assert "live progress page URL" in hint, hint
+    assert "delegate_agent" in hint, hint
+    assert "deleg_9d13aa02" in hint, hint
+    low = hint.lower()
+    assert "stop" in low, hint
+    assert (
+        "cannot be steered" in low
+        or "not steerable" in low
+        or "cannot accept" in low
+    ), hint
+    assert "redelegate" in low or "re-delegate" in low, hint
+
+
+def test_envelope_subagent_batch_gains_no_control_handle():
+    payload = ad.build_background_acceptance_envelope(
+        tool="delegate_agent",
+        result_kind="subagent_batch",
+        delegation_id="deleg_7cc20003",
+    )
+    assert "control" not in payload
+    assert "control" not in payload.get("note", "")

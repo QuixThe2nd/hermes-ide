@@ -229,6 +229,133 @@ def _owns_subagent_record(record: Dict[str, Any], parent_agent: Any) -> bool:
     # Compression rotation on either side: compare lineage tips.
     return _resolve_session_lineage(owner_sid, parent_agent) in {parent_sid, _resolve_session_lineage(parent_sid, parent_agent)}
 
+# Live CLI/cloud coding runs (delegate_claude_agent / delegate_cursor_agent)
+# register ONLY in tools.async_delegation._records under a deleg_* id — there
+# is no _active_subagents entry, which is why steer/stop used to miss them.
+_CODING_RUN_KINDS = frozenset({"cli_agent", "cloud_agent"})
+# "finalizing" is already delivering its terminal result — not controllable.
+_CODING_RUN_LIVE_STATES = frozenset({"running", "stalling"})
+_STEER_MESSAGE_REQUIRED = (
+    "action='steer' requires a non-empty 'message' describing the course correction."
+)
+
+
+def _current_conversation_session_key() -> str:
+    """Routing session key of the calling conversation; "" when none is bound."""
+    try:
+        from tools.session_context import get_current_session_key
+
+        return str(get_current_session_key("") or "")
+    except Exception:
+        return ""
+
+
+def _owns_coding_run_record(record: Dict[str, Any], parent_agent: Any) -> bool:
+    """Durable ownership for an async-delegation coding-run record.
+
+    Same tiers as :func:`_owns_subagent_record`, on the record's own spine
+    fields, fail closed on every empty selector: both session ids set ->
+    equal, or equal after compression-lineage resolution; a spineless caller
+    matches only by routing session key AND only when the record carries no
+    parent session id (a foreign session id never falls through to a key
+    match). Every other shape refuses.
+    """
+    parent_sid = str(getattr(parent_agent, "session_id", "") or "")
+    record_sid = str(record.get("parent_session_id") or "")
+    if parent_sid and record_sid:
+        if parent_sid == record_sid:
+            return True
+        return _resolve_session_lineage(record_sid, parent_agent) in {
+            parent_sid,
+            _resolve_session_lineage(parent_sid, parent_agent),
+        }
+    if not parent_sid and not record_sid:
+        key = _current_conversation_session_key()
+        return bool(key) and key == str(record.get("session_key") or "")
+    return False
+
+
+def _owned_live_coding_run(sid: str, parent_agent: Any) -> Optional[Dict[str, Any]]:
+    """Owned LIVE coding-run record for a deleg_* id, snapshotted under
+    ``async_delegation._records_lock``. Ownership is resolved OUTSIDE the lock
+    (it may hit the parent's SessionDB) and interrupting happens outside it
+    too, so an ``interrupt_fn`` that re-enters the registry cannot deadlock.
+    None when absent, not a coding run, no longer live, or not owned."""
+    from tools.async_delegation import _records, _records_lock
+
+    with _records_lock:
+        record = _records.get(sid)
+        if record is None:
+            return None
+        if record.get("result_kind") not in _CODING_RUN_KINDS:
+            return None
+        if record.get("status") not in _CODING_RUN_LIVE_STATES:
+            return None
+        snapshot = dict(record)
+    if not _owns_coding_run_record(snapshot, parent_agent):
+        return None
+    return snapshot
+
+
+def _coding_run_list_entries(parent_agent: Any) -> List[Dict[str, Any]]:
+    """list entries for owned live coding runs. The deleg_* id doubles as the
+    subagent_id the model steers/stops with; steer is never accepted."""
+    from tools.async_delegation import _records, _records_lock
+
+    with _records_lock:
+        candidates = [
+            dict(r) for r in _records.values()
+            if r.get("result_kind") in _CODING_RUN_KINDS
+            and r.get("status") in _CODING_RUN_LIVE_STATES
+        ]
+    entries: List[Dict[str, Any]] = []
+    for record in candidates:
+        if not _owns_coding_run_record(record, parent_agent):
+            continue
+        dispatched = record.get("dispatched_at")
+        entries.append({
+            "subagent_id": record.get("delegation_id"),
+            "tool": record.get("tool"),
+            "goal": record.get("goal"),
+            "status": record.get("status"),
+            "running_seconds": (
+                round(time.time() - dispatched, 1) if isinstance(dispatched, (int, float)) else None
+            ),
+            "accepting_steer": False,
+        })
+    return entries
+
+
+def _coding_run_steer_reply(sid: str) -> str:
+    """Honest steer answer for a live owned coding run: no error — the run IS
+    live and owned — but no text can be injected (Claude runs with stdin
+    closed, Cursor is a cloud run), so the reply says how to act instead."""
+    note = (
+        f"Live coding run '{sid}' cannot accept mid-run text: a Claude CLI "
+        "run's stdin is closed and a Cursor cloud run has none. To change "
+        f"course, stop it first (action='stop', subagent_id='{sid}' — the "
+        "same id), then re-delegate a new run carrying the course correction."
+    )
+    return json.dumps(
+        {"action": "steer", "subagent_id": sid, "status": "not_steerable", "note": note},
+        ensure_ascii=False,
+    )
+
+
+def _coding_run_stop_reply(sid: str, snapshot: Dict[str, Any]) -> str:
+    """Stop an owned live coding run: signal the runner exactly once (worker
+    thread bit + interrupt_fn) via async_delegation, outside _records_lock;
+    the runner's own finalize path still delivers the partial result."""
+    from tools.async_delegation import _signal_runner_interrupt
+
+    status, note, failure = _CONTROL_OUTCOMES["stop"]
+    if _signal_runner_interrupt(snapshot, f"delegate_agent stop {sid}"):
+        return json.dumps(
+            {"action": "stop", "subagent_id": sid, "status": status, "note": note},
+            ensure_ascii=False,
+        )
+    return tool_error(failure.format(sid=sid))
+
 def _list_payload(parent_agent: Any) -> Dict[str, Any]:
     with _active_subagents_lock:
         records = list(_active_subagents.values())
@@ -275,6 +402,9 @@ def _list_payload(parent_agent: Any) -> Dict[str, Any]:
                     )
                     entry["stalled"] = idle_seconds > ceiling_cycles * _HEARTBEAT_INTERVAL
         entries.append(entry)
+    # Owned live deleg_* coding runs (async registry) join the same listing;
+    # with any live child present the empty-registry note stays suppressed.
+    entries.extend(_coding_run_list_entries(parent_agent))
     payload: Dict[str, Any] = {"action": "list", "count": len(entries), "subagents": entries}
     if not entries:
         payload["note"] = (
@@ -297,13 +427,24 @@ def _handle_control_action(action: str, subagent_id: Optional[str], message: Opt
     with _active_subagents_lock:
         record = _active_subagents.get(sid)
     if record is None or not _owns_subagent_record(record, parent_agent):
+        # deleg_* CLI/cloud coding runs live only in the async-delegation
+        # registry: steer must answer honestly (never "No live subagent"),
+        # stop must reach the runner's interrupt channel.
+        coding_run = _owned_live_coding_run(sid, parent_agent)
+        if coding_run is not None:
+            if action == "steer":
+                if not (message or "").strip():
+                    return tool_error(_STEER_MESSAGE_REQUIRED)
+                return _coding_run_steer_reply(sid)
+            if action == "stop":
+                return _coding_run_stop_reply(sid, coding_run)
         return tool_error(
             f"No live subagent '{sid}' in this conversation's spawn tree. It "
             "may have already finished (its result arrives as a normal "
             "completion message). Use action='list' to see live children."
         )
     if action == "steer" and not (message or "").strip():
-        return tool_error("action='steer' requires a non-empty 'message' describing the course correction.")
+        return tool_error(_STEER_MESSAGE_REQUIRED)
     outcome = _CONTROL_OUTCOMES.get(action)
     if outcome is None:
         return tool_error(f"Unknown action '{action}'. Use spawn, list, steer, or stop.")
