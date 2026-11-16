@@ -312,10 +312,17 @@ def _format_async_delegation(evt: dict) -> str:
             lines[-1] = f"Model: {model}"
         else:
             lines.pop()
-    lines += _notice_lines([evt]) + [
+    status_line = (
         f"Status: {status}   API calls: {evt.get('api_calls', 0)}   Duration: {evt.get('duration_seconds', '?')}s"
-        + (" [TRUNCATED: hit max_iterations — work may be incomplete]" if truncated else ""),
-        "--- RESULT ---"]
+        + (" [TRUNCATED: hit max_iterations — work may be incomplete]" if truncated else ""))
+    # The run log pointer is echoed exactly when the event carries one; an
+    # unknown outcome with no recorded path says so instead of inventing one.
+    log_path = str(evt.get("log_path") or "").strip()
+    log_line = (
+        f"Log: {log_path}" if log_path
+        else ("no log was recorded" if status == "unknown" else ""))
+    lines += _notice_lines([evt]) + [
+        line for line in (status_line, log_line, "--- RESULT ---") if line]
     if status in _DONE and summary:
         if truncated:
             lines.append(_TRUNCATED_SUMMARY_NOTE)

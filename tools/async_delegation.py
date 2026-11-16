@@ -317,6 +317,34 @@ def record_unit_child(delegation_id: str, entry: Dict[str, Any]) -> None:
         logger.warning("Async delegation %s: could not record finished child %s", delegation_id, entry.get("task_index"), exc_info=True)
 
 
+def record_spawn_log_path(delegation_id: str, log_path: str) -> None:
+    """Merge a spawn-time run log path into the running row's task_json.
+
+    The owner-exit recovery reads exactly this key, so an abandoned run can
+    still point at the jsonl it was writing instead of saying no log was
+    recorded. No-op when the id or path is empty or the row is gone (never
+    starts one); a failed write costs only that pointer, never the run.
+    """
+    if not delegation_id or not str(log_path or "").strip():
+        return
+    try:
+        with _DB_LOCK, _transaction() as conn:
+            row = conn.execute(
+                "SELECT task_json FROM async_delegations WHERE delegation_id=? AND state='running'",
+                (delegation_id,)).fetchone()
+            if row is None:
+                return
+            task = json.loads(row[0] or "{}")
+            if not isinstance(task, dict) or task.get("log_path"):
+                return
+            task["log_path"] = log_path
+            conn.execute(
+                "UPDATE async_delegations SET task_json=?, updated_at=? WHERE delegation_id=? AND state='running'",
+                (json.dumps(task), time.time(), delegation_id))
+    except Exception:  # noqa: BLE001 — spawn bookkeeping must never fail the run
+        logger.warning("Async delegation %s: could not record spawn log path", delegation_id, exc_info=True)
+
+
 def _recovered_results(task: Dict[str, Any], result_json: Optional[str], error: str) -> Optional[List[Dict[str, Any]]]:
     """Per-task results for an abandoned unit: recorded children as they finished, the rest ``unknown``."""
     partial = json.loads(result_json or "{}") or {}
@@ -362,6 +390,13 @@ def recover_abandoned_delegations() -> int:
                 done = sum(1 for r in recovered_results if r.get("status") != "unknown")
                 error = (f"Delegation owner exited before the unit finished; {done}/{len(recovered_results)} child "
                          "results were recorded and are included below, the rest are unknown.")
+            # A run log path spawn already merged into the running row's
+            # task_json is the only one recoverable — never glob or
+            # reconstruct one. Absent means saying so, not guessing.
+            saved_log_path = task.get("log_path")
+            if not (isinstance(saved_log_path, str) and saved_log_path.strip()):
+                saved_log_path = None
+                error = f"{error} no log was recorded."
             event = {
                 "type": "async_delegation", "delegation_id": delegation_id, "session_key": session_key,
                 "origin_ui_session_id": origin_ui, "origin_session_id": origin_sid or "",
@@ -370,6 +405,7 @@ def recover_abandoned_delegations() -> int:
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
                 "status": "unknown", "summary": None, "error": error,
                 **({"results": recovered_results} if recovered_results else {}),
+                **({"log_path": saved_log_path} if saved_log_path else {}),
                 "dispatched_at": dispatched_at, "completed_at": now,
             }
             # Tool provenance (see _stamp_event_provenance) so a recovered
@@ -1126,7 +1162,7 @@ def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], statu
     # (the run log, the child session id, cost) ride along additively so the
     # completion block can point the caller at them. Absent on subagent
     # results, which is fine — consumers key off presence.
-    for _k in ("log_path", "child_session_id", "cost_usd", "warnings", "models_used"):
+    for _k in ("log_path", "child_session_id", "cost_usd", "warnings", "models_used", "terminal_status"):
         if result.get(_k):
             evt[_k] = result[_k]
     _stamp_event_provenance(evt, record)
