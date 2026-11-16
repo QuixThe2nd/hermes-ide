@@ -72,15 +72,27 @@ moa:
 
 
 def test_moa_custom_litellm_astra_reaches_provider_request_verbatim(monkeypatch, tmp_path):
+    """A config-defined LiteLLM model ID survives the real MoA provider path."""
     home = tmp_path / ".hermes"
     home.mkdir()
     (home / "config.yaml").write_text(
         """
+model:
+  provider: custom:litellm
+  default: gpt-6-astra
 moa:
   default_preset: astra
   presets:
     astra:
-      reference_models: []
+      reference_models:
+        - provider: custom:litellm
+          model: glm-5.3
+        - provider: custom:litellm
+          model: grok-4.6
+        - provider: custom:litellm
+          model: kimi-k3.1-pro
+        - provider: custom:litellm
+          model: claude-opus-5-5
       aggregator:
         provider: custom:litellm
         model: gpt-6-astra
@@ -89,6 +101,13 @@ custom_providers:
     base_url: https://litellm.example.test/v1
     api_key: test-key
     api_mode: chat_completions
+    discover_models: false
+    models:
+      glm-5.3: {}
+      grok-4.6: {}
+      kimi-k3.1-pro: {}
+      claude-opus-5-5: {}
+      gpt-6-astra: {}
 """.strip(),
         encoding="utf-8",
     )
@@ -97,21 +116,26 @@ custom_providers:
     from agent import auxiliary_client as ac
     from agent import moa_loop
 
-    captured = {}
+    requests = []
+    constructed = []
 
     def create(**kwargs):
-        captured.update(kwargs)
-        return _response("aggregator acted")
+        requests.append(kwargs)
+        content = "aggregator acted" if kwargs["model"] == "gpt-6-astra" else "reference advice"
+        return _response(content)
 
-    client = SimpleNamespace(
-        base_url="https://litellm.example.test/v1",
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
-    )
-    monkeypatch.setattr(
-        ac,
-        "_get_cached_client",
-        lambda _provider, model, **_kwargs: (client, model),
-    )
+    def create_client(**kwargs):
+        constructed.append(kwargs)
+        return SimpleNamespace(
+            base_url=kwargs["base_url"],
+            api_key=kwargs["api_key"],
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+        )
+
+    # Keep preset, slot, runtime-provider, and auxiliary model resolution real.
+    # Only SDK construction and its network transport are replaced.
+    monkeypatch.setattr(ac, "_client_cache", {})
+    monkeypatch.setattr(ac, "_create_openai_client", create_client)
 
     facade = moa_loop.MoAChatCompletions("astra")
     response = facade.create(
@@ -119,7 +143,14 @@ custom_providers:
         messages=[{"role": "user", "content": "solve this"}],
     )
 
-    assert captured["model"] == "gpt-6-astra"
+    expected_models = {"glm-5.3", "grok-4.6", "kimi-k3.1-pro", "claude-opus-5-5", "gpt-6-astra"}
+    assert len(requests) == len(expected_models)
+    assert {call["model"] for call in requests} == expected_models
+    assert requests[-1]["model"] == "gpt-6-astra"
+    assert len(constructed) == len(expected_models)
+    assert {(call["base_url"], call["api_key"]) for call in constructed} == {
+        ("https://litellm.example.test/v1", "test-key")
+    }
     assert response.choices[0].message.content == "aggregator acted"
 
 
