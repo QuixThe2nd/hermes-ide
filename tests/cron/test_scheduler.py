@@ -2,6 +2,7 @@
 
 import contextlib
 import contextvars
+from datetime import datetime, timedelta, timezone
 import itertools
 import json
 import logging
@@ -2933,3 +2934,157 @@ class TestFailureStreakNudge:
         from cron.scheduler import _failure_streak_nudge
         with patch("cron.scheduler.load_config", side_effect=RuntimeError("boom")):
             assert "failed 3 runs" in _failure_streak_nudge(self._job(2))
+
+
+class TestRunJobUnreachableRetryRecognition:
+    """The Cowork-style unreachable re-run ladder (cron/unreachable_retry.py) was dead in
+    the field: ``run_job``'s failure path classifies ``RuntimeError(<agent error text>)``
+    — the shape ``_final_response_from_result`` raises — but the recognizer only matched
+    raw transport exception types and DNS needles. These tests pin recognition on the
+    shapes the scheduler actually raises: the agent result's structured verdict
+    (``failure_reason`` / ``failure_retryable``) carried into the failure handler, with
+    the wrapped error text as fallback. The zero-completed-API-calls guard
+    (``agent.session_api_calls``) stays absolute either way.
+    """
+
+    # Real shape from the 2026-11-11/12 field failures: retries exhausted on an
+    # APIConnectionError, transport-classified. ``api_calls`` counts ATTEMPTS (failed
+    # ones included); completed responses are agent.session_api_calls.
+    _TRANSPORT_EXHAUSTED_RESULT = {
+        "final_response": "OpenAI didn't answer after 3 attempts",
+        "messages": [],
+        "api_calls": 3,
+        "completed": False,
+        "failed": True,
+        "error": "Connection error.",
+        "failure_reason": "timeout",
+        "failure_retryable": True,
+        "turn_exit_reason": "all_retries_exhausted_no_response",
+    }
+
+    _run_job_patches = TestRunJobSessionPersistence._run_job_patches
+
+    def _failing_transport_agent(self, agent_cls, *, session_api_calls):
+        agent = agent_cls.return_value
+        agent.session_api_calls = session_api_calls
+        agent.run_conversation.return_value = dict(self._TRANSPORT_EXHAUSTED_RESULT)
+
+    def test_run_job_flags_transport_exhausted_result_at_zero_calls(self, tmp_path):
+        """A failed result whose verdict is a transient transport reason and whose
+        agent completed zero API calls is flagged for the automatic re-run."""
+        job = {"id": "unreachable-zero", "name": "test", "prompt": "hello"}
+        with self._run_job_patches(tmp_path) as (_db, agent_cls):
+            self._failing_transport_agent(agent_cls, session_api_calls=0)
+            success, _output, _final, error = run_job(job)
+
+        assert success is False
+        assert error == "RuntimeError: Connection error."
+        assert job["_model_unreachable"] is True
+
+    def test_run_job_does_not_flag_after_the_model_was_reached(self, tmp_path):
+        """Same failure, but calls completed: possible partial work and side effects,
+        so no automatic re-run (the guard, not the verdict, decides)."""
+        job = {"id": "unreachable-reached", "name": "test", "prompt": "hello"}
+        with self._run_job_patches(tmp_path) as (_db, agent_cls):
+            self._failing_transport_agent(agent_cls, session_api_calls=2)
+            success, *_ = run_job(job)
+
+        assert success is False
+        assert "_model_unreachable" not in job
+
+    @contextlib.contextmanager
+    def _run_one_job_delivery_env(self, tmp_path, monkeypatch, send_calls):
+        """Real ``run_one_job`` against a temp jobs store: REAL ``run_job`` (mocked
+        AIAgent), REAL ``mark_job_run`` (so ``plan_retry`` executes and persists),
+        delivery captured at the platform-sender seam; execution ledger, dispatch claim
+        and incident store stubbed. Mirrors test_cron_failure_deliver.run_env."""
+        home = tmp_path / "cron-home"
+        (home / "cron" / "output").mkdir(parents=True)
+        # A token on the platform block is what the pre-dispatch delivery preflight and
+        # the gateway config both read as "connected" (no env credentials in tests).
+        (home / "config.yaml").write_text(
+            "platforms:\n  discord:\n    enabled: true\n    token: dummy-token\n")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        import cron.jobs as jobs_mod
+        monkeypatch.setattr(jobs_mod, "HERMES_DIR", home)
+        monkeypatch.setattr(jobs_mod, "CRON_DIR", home / "cron")
+        monkeypatch.setattr(jobs_mod, "JOBS_FILE", home / "cron" / "jobs.json")
+        monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", home / "cron" / "output")
+
+        import gateway.platform_registry as reg
+        import hermes_cli.plugins as hp
+        # Discord ships in-tree (plugins/platforms/discord), so the registry entry is
+        # present in every checkout — and the field failures this regression tracks
+        # delivered to Discord.
+        entry = reg.platform_registry.get("discord")
+        if entry is None:
+            hp.discover_plugins()
+            entry = reg.platform_registry.get("discord")
+        if entry is None:
+            pytest.skip("discord platform entry not registered")
+
+        async def fake_sender(pconfig, chat_id, message, *, thread_id=None,
+                              media_files=None, force_document=False, caption=None):
+            send_calls.append({"chat_id": chat_id, "message": message})
+            return {"success": True, "chat_id": chat_id, "message_id": "1.2"}
+
+        monkeypatch.setattr(entry, "standalone_sender_fn", fake_sender)
+        monkeypatch.setattr(hp, "discover_plugins", lambda *a, **k: None)
+
+        extra = (
+            patch("cron.scheduler.create_execution", lambda *a, **k: {"id": "exec-t"}),
+            patch("cron.scheduler.claim_dispatch", lambda *_a, **_k: True),
+            patch("cron.scheduler.mark_execution_running", lambda *_a, **_k: {}),
+            patch("cron.scheduler.finish_execution", lambda *_a, **_k: None),
+            patch("cron.scheduler._upsert_incident_for_failure", lambda *_a, **_k: (False, None)),
+            patch("cron.scheduler.load_config", lambda: {}),
+        )
+        with self._run_job_patches(tmp_path, extra=extra) as (_db, agent_cls):
+            yield agent_cls
+
+    def test_run_one_job_schedules_retry_and_holds_the_failure_notice(
+            self, tmp_path, monkeypatch):
+        """End-to-end through the REAL run_job classification → delivery decision →
+        mark_job_run: a transport-exhausted failure at zero completed API calls gets
+        the first ladder rung (next_run_at pulled to ~5 min, attempt=1) and the
+        interim failure notice is held."""
+        from cron import unreachable_retry as ur
+        from cron.jobs import create_job, get_job
+
+        send_calls = []
+        with self._run_one_job_delivery_env(tmp_path, monkeypatch, send_calls) as agent_cls:
+            self._failing_transport_agent(agent_cls, session_api_calls=0)
+            job = create_job("brief me", "every 24h", name="nightly", deliver="discord:123456")
+            import cron.scheduler as s
+
+            assert s.run_one_job(get_job(job["id"])) is True
+
+        after = get_job(job["id"])
+        assert after[ur.STATE_KEY]["attempt"] == 1
+        nxt = datetime.fromisoformat(after["next_run_at"])
+        assert timedelta(0) < nxt - datetime.now(timezone.utc) <= timedelta(
+            seconds=ur.RETRY_DELAYS_SECONDS[0] + 120)
+        assert send_calls == []
+
+    def test_run_one_job_after_reaching_the_model_delivers_and_stays_on_schedule(
+            self, tmp_path, monkeypatch):
+        """The same failed result with completed model calls: no ladder state, the
+        natural schedule stands, and the failure notice goes out immediately."""
+        from cron import unreachable_retry as ur
+        from cron.jobs import create_job, get_job
+
+        send_calls = []
+        with self._run_one_job_delivery_env(tmp_path, monkeypatch, send_calls) as agent_cls:
+            self._failing_transport_agent(agent_cls, session_api_calls=2)
+            job = create_job("brief me too", "every 24h", name="nightly2", deliver="discord:123456")
+            import cron.scheduler as s
+
+            assert s.run_one_job(get_job(job["id"])) is True
+
+        after = get_job(job["id"])
+        assert after.get(ur.STATE_KEY) is None
+        nxt = datetime.fromisoformat(after["next_run_at"])
+        assert nxt - datetime.now(timezone.utc) > timedelta(hours=1)
+        assert len(send_calls) == 1
+        assert "failed" in send_calls[0]["message"].lower()
