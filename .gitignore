@@ -92,6 +92,8 @@
 .gemini/
 .hermes/
 .hermes-bootstrap-complete
+.hermes-harness.*
+.hermes-lane/
 .hermes-docker/
 .hermes-sandbox/
 .hermes-sandbox-e2e*/
