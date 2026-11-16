@@ -2474,6 +2474,70 @@ async def test_discord_stage_embed_renders_per_slot_roster():
 
 
 @pytest.mark.asyncio
+async def test_discord_roster_puts_successes_first_with_stable_status_groups():
+    adapter, sent, _, _ = _make_discord_stage_adapter()
+    slots = [
+        {"index": 0, "provider": "prov", "model": "failed-first", "status": "failed"},
+        {"index": 1, "provider": "prov", "model": "success-first", "status": "responded"},
+        {"index": 2, "provider": "prov", "model": "waiting", "status": "waiting"},
+        {"index": 3, "provider": "prov", "model": "success-second", "status": "responded"},
+        {"index": 4, "provider": "prov", "model": "skipped", "status": "skipped"},
+        {"index": 5, "provider": "prov", "model": "failed-second", "status": "failed"},
+        {"index": 6, "provider": "prov", "model": "empty", "status": "empty"},
+        {"index": 7, "provider": "prov", "model": "unparsed", "status": "unparsed"},
+        {"index": 8, "provider": "prov", "model": "unknown", "status": "future-status"},
+    ]
+    original_slots = [dict(row) for row in slots]
+    event = _stage_event(
+        "moa_ask", "inv-status-order", "complete", "partial",
+        advisors=len(slots), slots=slots,
+    )
+
+    result = await adapter.send_tool_stage_embed("555", event)
+
+    assert result.success is True
+    assert sent["embed"].description.splitlines()[1:] == [
+        "✅ prov:success-first",
+        "✅ prov:success-second",
+        "❌ prov:failed-first",
+        "⏳ prov:waiting",
+        "⏭️ prov:skipped",
+        "❌ prov:failed-second",
+        "◌ prov:empty",
+        "⚠️ prov:unparsed",
+        "❔ prov:unknown",
+    ]
+    # Display ordering must not reorder the structured event or its slot rows.
+    assert event["slots"] == original_slots
+
+
+@pytest.mark.asyncio
+async def test_discord_roster_orders_successes_before_applying_row_cap():
+    adapter, sent, _, _ = _make_discord_stage_adapter()
+    slots = [
+        {"index": i, "provider": "prov", "model": f"model-{i}", "status": "failed"}
+        for i in range(24)
+    ] + [
+        {"index": i, "provider": "prov", "model": f"model-{i}", "status": "responded"}
+        for i in range(24, 30)
+    ]
+    event = _stage_event(
+        "moa_ask", "inv-ordered-cap", "complete", "partial",
+        advisors=len(slots), slots=slots,
+    )
+
+    result = await adapter.send_tool_stage_embed("555", event)
+
+    assert result.success is True
+    lines = sent["embed"].description.splitlines()
+    roster_lines = [line for line in lines if line.startswith(("✅", "❌"))]
+    assert len(roster_lines) == 24
+    assert roster_lines[:6] == [f"✅ prov:model-{i}" for i in range(24, 30)]
+    assert roster_lines[6:] == [f"❌ prov:model-{i}" for i in range(18)]
+    assert lines[-1] == "… +6 more omitted"
+
+
+@pytest.mark.asyncio
 async def test_discord_roster_groups_rounds_and_keeps_duplicate_rows_distinct():
     adapter, sent, _, _ = _make_discord_stage_adapter()
 
