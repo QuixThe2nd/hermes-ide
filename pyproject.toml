@@ -549,6 +549,7 @@ markers = [
     "real_retry_backoff: opt out of the tests/agent autouse stub that zeroes jittered_backoff",
     "requires_wal: needs the runtime to actually enable SQLite WAL mode (skipped where Hermes falls back to journal_mode=DELETE)",
     "no_isolate: opt out of per-file subprocess isolation (tests share mutable module-level state)",
+    "allow_real_home_io: opt out of the real-home I/O tripwire",
     "ssh: marks tests requiring a reachable SSH server (skipped in normal CI)",
     "linux_only: exercises Linux-specific behaviour; skipped on other hosts",
     "require_symlinks: test needs symlink creation (unsupported on Windows hosts)",

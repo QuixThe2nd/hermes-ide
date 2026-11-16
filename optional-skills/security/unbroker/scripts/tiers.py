@@ -2,7 +2,7 @@
 
 Tiers:
   T0  fully automated, no verification loop
-  T1  automated submit + automated verification (programmatic/alias email)
+  T1  automated submit + automated verification (programmatic email)
   T2  automated submit, verification needs a human (hard captcha / phone callback / account)
   T3  human-required end-to-end (gov ID, fax, mail, voice-only phone)
 """
@@ -29,7 +29,7 @@ def select_tier(broker: dict, email_mode: str = "draft_only") -> str:
         return "T2"
 
     if req.get("email_verification"):
-        return "T1" if email_mode in ("programmatic", "alias") else "T2"
+        return "T1" if email_mode == "programmatic" else "T2"
 
     return "T0"
 

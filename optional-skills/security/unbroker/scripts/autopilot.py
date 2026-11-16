@@ -128,10 +128,10 @@ def _optout_action(row: dict, playbook: dict[str, dict], subject_id: str, dossie
     deletion = row.get("deletion") or {}
 
     # 1) The autonomous EMAIL LANE (right-to-delete by email + confirm the reply).
-    # Autonomous when SMTP is configured (programmatic/alias) OR in browser mode (agent sends via
+    # Autonomous when SMTP is configured (programmatic) OR in browser mode (agent sends via
     # the operator's logged-in webmail; no password needed).
     email_addr, lane_why = _email_lane(row)
-    can_email = (email_mode in ("programmatic", "alias") and smtp_ok) or email_mode == "browser"
+    can_email = (email_mode == "programmatic" and smtp_ok) or email_mode == "browser"
     if email_addr and can_email:
         kind = request_kind(dossier, deletion.get("kinds"))
         via = "browser" if email_mode == "browser" else "smtp"
@@ -339,7 +339,7 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
                           "confirm the success state, screenshot into evidence/"],
                 "after": f"python3 scripts/pdd.py record {subject_id} {bid} submitted --channel web_form",
             })
-        elif (email_mode in ("programmatic", "alias") and mail["smtp"]) or email_mode == "browser":
+        elif (email_mode == "programmatic" and mail["smtp"]) or email_mode == "browser":
             actions.append({
                 "type": "indirect_email_send",
                 "broker_id": bid, "confirm_first": confirm_first,
