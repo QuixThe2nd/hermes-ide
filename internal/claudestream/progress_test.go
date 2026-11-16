@@ -318,9 +318,9 @@ func TestLastReasonIsNilWithoutPairedResult(t *testing.T) {
 func TestReasonTextIsCappedAtTwoHundredChars(t *testing.T) {
 	long := strings.Repeat("x", 500)
 	log := strings.Join([]string{
-		pair("m1", "c1", "TaskCreate", map[string]any{"subject": long}, long, nil),
-		pair("m2", "c2", "TaskCreate", map[string]any{"subject": long}, long, nil),
-		pair("m3", "c3", "TaskCreate", map[string]any{"subject": long}, long, nil),
+		pair("m1", "c1", "TaskCreate", map[string]any{"subject": long}, long, true),
+		pair("m2", "c2", "TaskCreate", map[string]any{"subject": long}, long, true),
+		pair("m3", "c3", "TaskCreate", map[string]any{"subject": long}, long, true),
 	}, "\n")
 	s := Summarize(log)
 	if !s.Abort {
@@ -329,5 +329,172 @@ func TestReasonTextIsCappedAtTwoHundredChars(t *testing.T) {
 	want := "reason " + long[:200]
 	if !strings.Contains(s.Blocker, want) {
 		t.Errorf("blocker must carry the reason capped at 200 chars: %q…", s.Blocker[:80])
+	}
+}
+
+func TestFiveIdenticalRejectionsAbortWinsOverTail(t *testing.T) {
+	s := Summarize(rejectedTaskCreatePairs(5, "fix login"))
+	if !s.Abort {
+		t.Fatalf("Abort = false, want true: the rejection rule wins")
+	}
+	if !strings.Contains(s.Blocker, "repeated identical TaskCreate attempts") {
+		t.Errorf("both rules matched: the identical-rejection sentence must win, got %q", s.Blocker)
+	}
+}
+
+func TestBashReadonlyPrefixIsWordBounded(t *testing.T) {
+	cases := []struct {
+		command  string
+		progress bool
+	}{
+		{"git status", false},
+		{"git diff HEAD~1", false},
+		{"ls -la", false},
+		{"cat notes.txt", false},
+		{"echo hi", false},
+		{"  git status  ", false},
+		{"git statusx", true},
+		{"catalog file.py", true},
+		{"rg pattern src/", false},
+		{"rgen something", true},
+	}
+	for _, tc := range cases {
+		log := strings.Join([]string{
+			pair("msg_b", "b1", "Bash", map[string]any{"command": tc.command},
+				"output", nil),
+			readPairs(5, 1),
+		}, "\n")
+		got := Summarize(log).Blocker != ""
+		if got != !tc.progress {
+			t.Errorf("command %q: tail blocker=%v, want progress=%v",
+				tc.command, got, tc.progress)
+		}
+	}
+}
+
+func TestToolResultContentBlocksAreJoined(t *testing.T) {
+	blockContent, _ := json.Marshal([]any{
+		map[string]any{"type": "text", "text": "first part "},
+		map[string]any{"type": "text", "text": "second part"},
+	})
+	line, _ := json.Marshal(map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"role": "user",
+			"content": []any{map[string]any{
+				"type": "tool_result", "tool_use_id": "c1",
+				"content": json.RawMessage(blockContent),
+			}},
+		},
+	})
+	log := assistant("m1", use("c1", "Read", map[string]any{"file_path": "a.py"})) +
+		"\n" + string(line)
+	s := Summarize(log)
+	if s.LastReason == nil || *s.LastReason != "first part second part" {
+		t.Errorf("LastReason = %v, want the joined block text", s.LastReason)
+	}
+}
+
+func TestMultipleToolUsesInOneAssistantEvent(t *testing.T) {
+	log := strings.Join([]string{
+		assistant("msg_one",
+			use("c1", "Read", map[string]any{"file_path": "a.py"}),
+			use("c2", "TaskCreate", map[string]any{"subject": "s"})),
+		toolResult("c1", "contents", nil),
+		toolResult("c2", "Task #1 created successfully: s", nil),
+	}, "\n")
+	s := Summarize(log)
+	if s.APICalls != 1 {
+		t.Errorf("APICalls = %d, want 1 (one message id, two tool uses)", s.APICalls)
+	}
+	if s.LastTool != "TaskCreate" {
+		t.Errorf("LastTool = %q, want the second block's tool", s.LastTool)
+	}
+}
+
+func TestUnpairedToolUseIsNotARejection(t *testing.T) {
+	log := strings.Join([]string{
+		pair("m1", "c1", "TaskCreate", map[string]any{"subject": "s"},
+			"rejected: tool not allowed", true),
+		pair("m2", "c2", "TaskCreate", map[string]any{"subject": "s"},
+			"rejected: tool not allowed", true),
+		assistant("m3", use("c3", "TaskCreate", map[string]any{"subject": "s"})),
+	}, "\n")
+	s := Summarize(log)
+	if s.Abort {
+		t.Errorf("the unpaired third attempt carries no rejection evidence")
+	}
+	if s.LastReason != nil {
+		t.Errorf("LastReason = %v, want nil for the unpaired attempt", *s.LastReason)
+	}
+}
+
+func TestAllRejectionMarkersHeuristicallyReject(t *testing.T) {
+	for _, marker := range []string{
+		"rejected", "not allowed", "permission denied", "unknown tool",
+		"tool not found", "invalid tool", "denied by",
+	} {
+		var b strings.Builder
+		for i := 1; i <= 3; i++ {
+			fmt.Fprintf(&b, "%s\n", pair(fmt.Sprintf("msg_%d", i), fmt.Sprintf("call_%d", i),
+				"TaskCreate", map[string]any{"subject": "s"}, marker, nil))
+		}
+		if s := Summarize(strings.TrimSuffix(b.String(), "\n")); !s.Abort {
+			t.Errorf("marker %q: is_error-unset short result must reject", marker)
+		}
+	}
+}
+
+func TestHeuristicRejectionIsCaseInsensitive(t *testing.T) {
+	log := strings.Join([]string{
+		pair("m1", "c1", "TaskCreate", map[string]any{"subject": "s"},
+			"REJECTED: Tool Not Allowed", nil),
+		pair("m2", "c2", "TaskCreate", map[string]any{"subject": "s"},
+			"REJECTED: Tool Not Allowed", nil),
+		pair("m3", "c3", "TaskCreate", map[string]any{"subject": "s"},
+			"REJECTED: Tool Not Allowed", nil),
+	}, "\n")
+	if s := Summarize(log); !s.Abort {
+		t.Error("uppercase markers must still reject")
+	}
+}
+
+func TestUnicodeReasonCappedAtTwoHundredRunes(t *testing.T) {
+	long := strings.Repeat("世", 300)
+	log := strings.Join([]string{
+		pair("m1", "c1", "TaskCreate", map[string]any{"subject": "s"}, long, true),
+		pair("m2", "c2", "TaskCreate", map[string]any{"subject": "s"}, long, true),
+		pair("m3", "c3", "TaskCreate", map[string]any{"subject": "s"}, long, true),
+	}, "\n")
+	s := Summarize(log)
+	want := "reason " + strings.Repeat("世", 200)
+	if !strings.HasSuffix(s.Blocker, want) {
+		t.Error("blocker reason must cap at 200 runes, not bytes")
+	}
+	if strings.Contains(s.Blocker, "reason "+strings.Repeat("世", 201)) {
+		t.Error("blocker reason exceeded the 200-rune cap")
+	}
+}
+
+func TestSignatureDifferenceInInputOnlyStillAborts(t *testing.T) {
+	log := strings.Join([]string{
+		pair("m1", "c1", "TaskCreate", map[string]any{"subject": "same"}, "no", true),
+		pair("m2", "c2", "TaskCreate", map[string]any{"subject": "same"}, "no", true),
+		pair("m3", "c3", "TaskCreate", map[string]any{"subject": "different"}, "no", true),
+	}, "\n")
+	s := Summarize(log)
+	if !s.Abort {
+		t.Fatal("three same-name rejections must abort")
+	}
+	if strings.Contains(s.Blocker, "identical") {
+		t.Errorf("one differing input must drop the identical claim: %q", s.Blocker)
+	}
+}
+
+func TestEmptyLogSummaryIsFullyZero(t *testing.T) {
+	s := Summarize("")
+	if s.AssistantRecords != 0 || s.APICalls != 0 || s.LastTool != "" ||
+		s.LastReason != nil || s.Blocker != "" || s.Abort {
+		t.Errorf("empty log must give the zero summary, got %+v", s)
 	}
 }
