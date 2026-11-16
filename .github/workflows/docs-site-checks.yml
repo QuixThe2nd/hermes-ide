@@ -1,0 +1,20 @@
+name: Docs Site
+
+# Restores the workflow referenced by ci.yaml. The previous file was removed
+# while its caller remained, which made GitHub reject the CI workflow before
+# any job could start.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  docs-site:
+    name: Docs site checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: No docs-site checks configured
+        run: echo "Docs-site checks are not configured."
