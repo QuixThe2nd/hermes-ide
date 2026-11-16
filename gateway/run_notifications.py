@@ -840,26 +840,6 @@ class GatewayNotificationsMixin:
             logger.warning(failure_fmt, platform.value, channel.chat_id, exc)
             return False
 
-    def _free_tier_startup_line(self) -> Optional[str]:
-        """Extra startup line when the gateway's inference is carried by the Nous free tier; None otherwise.
-
-        Best-effort: a resolution failure (no provider, auth error) must not block the online notice."""
-        try:
-            # Persisted state only. The free-tier check reads auth.json; it runs FIRST so the resolver
-            # is only consulted when a free-tier identity already exists and its own free-tier rung
-            # (which may mint on a fresh install, NS-829) answers from that identity without a network
-            # call. No token refresh at boot either way.
-            from hermes_cli.auth import resolve_provider
-            from hermes_cli.anon_auth import guest_carries_inference
-            if not guest_carries_inference():
-                return None
-            if resolve_provider("auto") != "nous":
-                return None
-        except Exception as exc:
-            logger.debug("Free tier startup line skipped: %s", exc)
-            return None
-        return "Inference: Nous free tier (nous/welcome). Sign in for more: /login"
-
     _planned_restart_notice_lock: Optional[asyncio.Lock] = None
 
     async def _replay_pending_planned_restart_notification(self) -> set[tuple[str, str, Optional[str]]]:
@@ -930,9 +910,6 @@ class GatewayNotificationsMixin:
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
         message = "♻️ Gateway online — Hermes is back and ready."
-        free_tier_line = self._free_tier_startup_line()
-        if free_tier_line:
-            message = f"{message}\n{free_tier_line}"
         any_channel = any(
             (cfg.notification_channel and cfg.notification_channel.chat_id)
             for cfg in self.config.platforms.values()

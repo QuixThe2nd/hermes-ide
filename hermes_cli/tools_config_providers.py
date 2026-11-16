@@ -13,9 +13,7 @@ from hermes_cli.cli_output import (
 )
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import cfg_get, get_env_value, load_config, save_config, save_env_value
-from hermes_cli.nous_account import format_nous_portal_entitlement_message
-from hermes_cli.nous_tools import MANAGED_FEATURE_COVERAGE_CATEGORY, NousToolFeatures
-from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, fal_key_is_configured
+from tools.tool_backend_helpers import fal_key_is_configured
 from utils import base_url_hostname, is_truthy_value
 
 logger = logging.getLogger("hermes_cli.tools_config")
@@ -125,32 +123,9 @@ _PLUGIN_ROW_BUILDERS = {
     "Web Search & Extract": _plugin_web_search_providers}
 
 
-def _visible_providers(
-    cat: dict, config: dict, *, force_fresh: bool = False, features: Optional[NousToolFeatures] = None,
-) -> list[dict]:
-    """Provider entries visible for the current auth/config state.
-    Nous-managed rows (``managed_nous_feature``) are always shown, even logged-out/unentitled, to
-    advertise the capability."""
-    from hermes_cli.tools_config import get_nous_tool_features
-
-    if features is None:
-        features = get_nous_tool_features(config, force_fresh=force_fresh)
-    acct = features.account_info
-    # Pool-only users (free tool pool, no paid access) get image gen but NOT video gen — the pool doesn't
-    # fund `fal-video`, so hide the managed video row rather than advertise a denial.
-    pool_only = bool(acct and acct.logged_in and acct.paid_service_access is not True and acct.tool_gateway_entitled)
-    visible = []
-    for provider in cat.get("providers", []):
-        managed = provider.get("managed_nous_feature")
-        # Managed rows stay visible regardless of auth (selecting one drives an inline Portal login); a
-        # `requires_nous_auth` row without a managed feature hides until logged in.
-        if provider.get("requires_nous_auth") and not managed and not features.nous_auth_present:
-            continue
-        if pool_only and managed == "video_gen" and not (acct and acct.tool_gateway_entitled_for("fal-video")):
-            continue
-        visible.append(provider)
-
-    # Plugin-registered rows render BELOW the hardcoded rows (for web/browser they are the only real provider rows).
+def _visible_providers(cat: dict, config: dict, *, force_fresh: bool = False) -> list[dict]:
+    """Provider entries for the current configuration, including plugin-registered providers."""
+    visible = list(cat.get("providers", []))
     builder = _PLUGIN_ROW_BUILDERS.get(cat.get("name"))
     if builder is not None:
         visible.extend(builder())
@@ -206,29 +181,12 @@ def _resolve_row_proxy_lane(provider: dict, config: dict) -> tuple[str, Optional
 
 def provider_readiness_status(provider: dict, config: dict, *, features=None, is_active: Optional[bool] = None) -> str:
     """Honest readiness state for a provider picker row.
-    ``features`` avoids re-fetching portal state per row. ``is_active`` is the completed-setup fallback
-    for post_setup hooks with no registered installed-check (selecting a row runs its hook)."""
-    from hermes_cli.tools_config import _POST_SETUP_READY, _provider_env_ready, get_nous_tool_features
+    ``is_active`` is the completed-setup fallback for post_setup hooks with no registered installed-check."""
+    from hermes_cli.tools_config import _POST_SETUP_READY, _provider_env_ready
     from hermes_cli.tools_config_post_setup import _POST_SETUP_AUTH_READY
 
     if provider.get("env_vars", []):
         return "ready" if _provider_env_ready(provider) else "needs_keys"
-
-    managed_feature = provider.get("managed_nous_feature")
-    if provider.get("requires_nous_auth") or managed_feature:
-        if features is None:
-            features = get_nous_tool_features(config)
-        if not features.nous_auth_present:
-            return "needs_auth"
-        if managed_feature:
-            # Same per-category entitlement gate the CLI applies at selection time.
-            acct = features.account_info
-            category = MANAGED_FEATURE_COVERAGE_CATEGORY.get(managed_feature)
-            entitled = bool(acct and acct.logged_in and (
-                acct.tool_gateway_entitled_for(category) if category else acct.tool_gateway_entitled))
-            if not entitled:
-                return "needs_auth"
-        # Signed in and entitled — fall through: a managed row may still carry a local install hook.
 
     post_setup = provider.get("post_setup")
     if post_setup:
@@ -300,9 +258,8 @@ def _any_plugin_provider_available(registry_module: str) -> bool:
 
 def _configure_tool_category(ts_key: str, cat: dict, config: dict, *, force_fresh: bool = True, reconfigure: bool = False):
     """Provider selection for a tool category, then API-key setup for the chosen row.
-    ``reconfigure`` ("Reconfigure an existing tool"): no setup note / skip row / Nous marker, and the
-    chosen provider goes through the key-update prompts instead of the new-enable prompts."""
-    from hermes_cli.tools_config import _prompt_choice, _provider_env_ready, get_nous_tool_features
+    ``reconfigure`` re-prompts for credentials instead of using the new-enable flow."""
+    from hermes_cli.tools_config import _prompt_choice, _provider_env_ready
 
     name = cat["name"]
     providers = _visible_providers(cat, config, force_fresh=force_fresh)
@@ -321,14 +278,6 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict, *, force_fres
         return
     print()
 
-    # Logged-in Nous users get a marker on rows included in their subscription (cost-extra vs. included).
-    _nous_logged_in = False
-    if not reconfigure:
-        try:
-            _nous_logged_in = bool(get_nous_tool_features(config, force_fresh=force_fresh).nous_auth_present)
-        except Exception:
-            pass
-
     provider_choices = []  # plain text labels only (no ANSI codes in menu items)
     for p in providers:
         badge = f" [{p['badge']}]" if p.get("badge") else ""
@@ -339,11 +288,7 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict, *, force_fres
                 configured = " [active]"
             elif p.get("env_vars", []):
                 configured = " [configured]"
-        # Subscribers get the "included" star; everyone else a hint that selecting triggers a Portal login.
-        sub_marker = ""
-        if not reconfigure and p.get("managed_nous_feature"):
-            sub_marker = "  ★ Included with your Nous Tool Gateway" if _nous_logged_in else "  ★ via Nous Portal (login on select)"
-        provider_choices.append(f"{p['name']}{badge}{tag}{configured}{sub_marker}")
+        provider_choices.append(f"{p['name']}{badge}{tag}{configured}")
 
     if not reconfigure:
         provider_choices.append("Skip — keep defaults / configure later")
@@ -382,45 +327,11 @@ def _web_tier_matches(provider: dict, config: dict) -> bool:
     return row_tier == ("paid" if has_key else "free")
 
 
-# Managed-row marker -> (config section, key) the pick writes, in check order.
-_MANAGED_SELECTION_KEYS: tuple[tuple[str, str, str], ...] = (
-    ("web_backend", "web", "backend"),)
-
 def _has_marker(provider: dict, marker: str) -> bool:
     return bool(provider.get(marker))
 
 
-def _managed_provider_active(provider: dict, config: dict, managed_feature: str, force_fresh: bool) -> bool:
-    """Active check for a Nous-managed row: the feature must be managed AND the category's selected
-    provider must be the row's vendor or ``nous``."""
-    from hermes_cli.tools_config import get_nous_tool_features
-
-    feature = get_nous_tool_features(config, force_fresh=force_fresh).features.get(managed_feature)
-    if feature is None:
-        return False
-    if managed_feature in ("image_gen", "video_gen"):
-        gen_cfg = config.get(managed_feature, {})
-        if isinstance(gen_cfg, dict):
-            configured_provider = gen_cfg.get("provider")
-            if configured_provider not in {None, "", "fal", NOUS_MANAGED_PROVIDER}:
-                return False
-            if (
-                configured_provider != NOUS_MANAGED_PROVIDER
-                and gen_cfg.get("use_gateway") is not None
-                and not is_truthy_value(gen_cfg.get("use_gateway"), default=False)):
-                return False
-        return feature.managed_by_nous
-    for marker, section, key in _MANAGED_SELECTION_KEYS:
-        if _has_marker(provider, marker):
-            current = cfg_get(config, section, key)
-            selected = current in {provider[marker], NOUS_MANAGED_PROVIDER}
-            if marker == "web_backend":
-                selected = selected and _web_tier_matches(provider, config)
-            return feature.managed_by_nous and selected
-    return feature.managed_by_nous
-
-
-
+# Active checks, evaluated in order; the first marker the row carries decides (see ``_has_marker``).
 def _imagegen_backend_active(provider: dict, config: dict) -> bool:
     image_cfg = config.get("image_gen", {})
     return (
@@ -439,20 +350,13 @@ _ACTIVE_CHECKS: tuple[tuple[str, Callable[[dict, dict], bool]], ...] = (
 
 def _is_provider_active(provider: dict, config: dict, *, force_fresh: bool = False) -> bool:
     """Check if a provider entry matches the currently active config."""
-    managed_feature = provider.get("managed_nous_feature")
-    # Managed entries fall through to the managed branch, which also checks use_gateway — otherwise a
-    # managed FAL pick and a direct-key FAL pick would both report active.
     for section in ("image_gen", "video_gen"):
         plugin_name = provider.get(f"{section}_plugin_name")
-        if plugin_name and not managed_feature:
+        if plugin_name:
             gen_cfg = config.get(section, {})
             if not (isinstance(gen_cfg, dict) and gen_cfg.get("provider") == plugin_name):
                 return False
-            # A direct-key image gen entry is only active when the managed route is OFF.
             return section == "video_gen" or not is_truthy_value(gen_cfg.get("use_gateway"), default=False)
-
-    if managed_feature:
-        return _managed_provider_active(provider, config, managed_feature, force_fresh)
 
     for marker, check in _ACTIVE_CHECKS:
         if _has_marker(provider, marker):
@@ -478,26 +382,11 @@ def _fal_model_catalog(config: dict):
     return FAL_MODELS, DEFAULT_MODEL
 
 
-def _managed_image_catalog(config: dict):
-    """The managed row's union catalog (FAL + Krea + Portal), minus the gateways this account cannot use.
-
-    A free-pool account is funded for FAL only, so its picker never offers a Krea or Portal model it
-    would be denied at generation time; a logged-out or paid account sees everything."""
-    from hermes_cli.tools_config import get_nous_tool_features
-    from tools.image_generation_managed import managed_image_catalog
-
-    acct = get_nous_tool_features(config).account_info
-    pool_only = bool(acct and acct.logged_in and acct.paid_service_access is not True)
-    return managed_image_catalog(
-        include_krea=not pool_only or acct.tool_gateway_entitled_for("krea"), include_portal=not pool_only)
-
-
 # Per-backend model catalog (config_key = top-level config.yaml section, catalog_fn(config) -> ({model_id:
-# metadata}, default_model)); a TOOL_CATEGORIES row tagged `imagegen_backend: "<name>"` selects the catalog at
-# picker time. "nous" is the single managed row: one catalog spanning the FAL, Krea and Portal gateways.
+# metadata}, default_model)); a TOOL_CATEGORIES row tagged `imagegen_backend: "<name>"` selects the catalog.
 IMAGEGEN_BACKENDS = {
     "fal": {"display": "FAL.ai", "config_key": "image_gen", "catalog_fn": _fal_model_catalog},
-    "nous": {"display": "Nous Tool Gateway", "config_key": "image_gen", "catalog_fn": _managed_image_catalog}}
+}
 
 
 def _plugin_model_catalog(registry_module: str, plugin_name: str):
@@ -605,21 +494,19 @@ def _configure_xai_imagine_storage(section_name: str, config: dict) -> None:
                    else "  xAI stored public URLs enabled without automatic expiry")
 
 
-def _select_into(config: dict, section: str, key: str, vendor, managed) -> dict:
-    """Write ``config[section][key] = vendor`` (``nous`` for a managed pick) and drop any legacy ``use_gateway``
-    key so the old read-time shim cannot override the new choice. Returns the section dict."""
+def _select_into(config: dict, section: str, key: str, vendor) -> dict:
+    """Write ``config[section][key] = vendor`` and drop any legacy ``use_gateway`` key."""
     from hermes_cli.tools_config import _cfg_section
 
     cfg = _cfg_section(config, section)
-    cfg[key] = NOUS_MANAGED_PROVIDER if managed else vendor
+    cfg[key] = vendor
     cfg.pop("use_gateway", None)
     return cfg
 
 
-def _select_plugin_gen_provider(section: str, plugin_name: str, config: dict, *, use_gateway: bool = False) -> None:
-    """Persist a plugin-backed image/video gen provider selection (``nous`` for a Nous-managed pick, else the
-    plugin name) and run its model picker."""
-    cfg = _select_into(config, section, "provider", plugin_name, use_gateway)
+def _select_plugin_gen_provider(section: str, plugin_name: str, config: dict) -> None:
+    """Persist a plugin-backed image/video gen provider selection and run its model picker."""
+    cfg = _select_into(config, section, "provider", plugin_name)
     _print_success(f"  {section}.provider set to: {cfg['provider']}")
     _configure_gen_model_for_plugin(section, plugin_name, config)
     if plugin_name == "xai":
@@ -636,16 +523,12 @@ _PROVIDER_MARKER_SECTIONS = {
 }
 
 
-def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> None:
-    """Persist the provider/backend config keys for a selected provider.
-    Pure, non-interactive core of :func:`_configure_provider` (no env prompts, post-setup hooks, Nous
-    auth gating or model pickers) shared by the CLI and the GUI ``PUT .../provider`` endpoint. Each pick
-    writes exactly ONE provider string per category (``nous`` for managed rows) and removes any legacy
-    ``use_gateway`` key so the read-time shim cannot override the new choice."""
+def _write_provider_config(provider: dict, config: dict) -> None:
+    """Persist provider/backend config keys for a selected provider, without prompts or model pickers."""
     from hermes_cli.tools_config import TOOL_CATEGORIES
 
     if provider.get("web_backend"):
-        web_cfg = _select_into(config, "web", "backend", provider["web_backend"], managed_feature)
+        web_cfg = _select_into(config, "web", "backend", provider["web_backend"])
         tier = provider.get("web_tier")
         tiers = web_cfg.setdefault("provider_tier", {}) if tier else web_cfg.get("provider_tier")
         if isinstance(tiers, dict):
@@ -657,23 +540,14 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
     if provider.get("computer_use_backend"):
         config.setdefault("computer_use", {})["backend"] = provider["computer_use_backend"]
 
-    if managed_feature and managed_feature not in {"web", "browser"}:
-        # Managed rows without a marker above (image_gen/video_gen "Nous Tool Gateway" rows carry only
-        # managed_nous_feature) still persist the "nous" selection.
-        section = config.setdefault(managed_feature, {})
-        if isinstance(section, dict):
-            section["provider"] = NOUS_MANAGED_PROVIDER
-            section.pop("use_gateway", None)
-    elif not managed_feature:
-        # Non-gateway pick — clear any stale legacy use_gateway key on the category. Resolve the category from
-        # the row's own markers first (plugin-injected rows are NOT in TOOL_CATEGORIES' hardcoded lists), then
-        # fall back to the category-membership walk.
-        sections = [section_key for marker, section_key in _PROVIDER_MARKER_SECTIONS.items() if marker in provider]
-        if not sections:
-            sections = [cat_key for cat_key, cat in TOOL_CATEGORIES.items() if provider in cat.get("providers", [])][:1]
-        for section_key in sections:
-            if isinstance(config.get(section_key), dict):
-                config[section_key].pop("use_gateway", None)
+    # Clear any stale legacy use_gateway key on the selected category. Resolve the category from
+    # the row's own markers first (plugin-injected rows are not in TOOL_CATEGORIES' hardcoded lists).
+    sections = [section_key for marker, section_key in _PROVIDER_MARKER_SECTIONS.items() if marker in provider]
+    if not sections:
+        sections = [cat_key for cat_key, cat in TOOL_CATEGORIES.items() if provider in cat.get("providers", [])][:1]
+    for section_key in sections:
+        if isinstance(config.get(section_key), dict):
+            config[section_key].pop("use_gateway", None)
 
 
 def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> None:
@@ -691,81 +565,39 @@ def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> N
     if provider is None:
         raise KeyError(f"Unknown provider {provider_name!r} for toolset {ts_key!r}")
 
-    managed_feature = provider.get("managed_nous_feature")
-    _write_provider_config(provider, config, managed_feature=managed_feature)
+    _write_provider_config(provider, config)
 
     # Plugin image/video gen backends record the provider name in their own section (model choice is a separate
-    # GUI flow); managed picks store "nous". The in-tree FAL BYOK row always persists an explicit
-    # ``image_gen.provider: fal`` so a deliberate pick is distinguishable from a never-configured install.
+    # GUI flow). The in-tree FAL row always persists an explicit ``image_gen.provider: fal``.
     selections = [
         ("image_gen", provider.get("image_gen_plugin_name")),
         ("video_gen", provider.get("video_gen_plugin_name")),
-        ("image_gen", "fal" if provider.get("imagegen_backend") and not managed_feature else None)]
+        ("image_gen", "fal" if provider.get("imagegen_backend") else None)]
     for section_key, vendor in selections:
         if vendor:
-            _select_into(config, section_key, "provider", vendor, managed_feature)
+            _select_into(config, section_key, "provider", vendor)
 
 
-def _nous_provider_gate(provider: dict, config: dict, managed_feature, *, force_fresh: bool) -> bool:
-    """Return False (after printing why) when a Nous-gated row cannot be selected.
-    Managed Tool Gateway rows need no gate here — the runtime gateway enforces its own access.
-    Pure pre-auth UX rows (``requires_nous_auth`` without a managed feature) keep the logged-in +
-    entitled gate."""
-    if managed_feature:
-        return True
-
-    if provider.get("requires_nous_auth"):
-        from hermes_cli.tools_config import get_nous_tool_features
-
-        features = get_nous_tool_features(config, force_fresh=force_fresh)
-        entitled = bool(features.account_info and features.account_info.paid_service_access is True)
-        if not features.nous_auth_present or not entitled:
-            message = format_nous_portal_entitlement_message(
-                features.account_info, capability=f"{provider.get('name', 'Nous Tool Gateway')}")
-            _print_warning(f"  {message or 'This backend is only available after logging into Nous Portal.'}")
-            return False
-    return True
-
-
-def _finish_provider_selection(provider: dict, config: dict, managed_feature) -> None:
+def _finish_provider_selection(provider: dict, config: dict) -> None:
     """Model pickers that follow a provider pick: plugin image/video gen, in-tree FAL."""
     for section in ("image_gen", "video_gen"):
         plugin_name = provider.get(f"{section}_plugin_name")
         if plugin_name:
-            _select_plugin_gen_provider(section, plugin_name, config, use_gateway=bool(managed_feature))
+            _select_plugin_gen_provider(section, plugin_name, config)
             return
     backend = provider.get("imagegen_backend")
     if backend:
         _configure_imagegen_model(backend, config)
-        # "nous" for the managed row (the picked model id chooses the FAL / Krea / Portal gateway at run time),
-        # "fal" for BYOK, drop legacy use_gateway — never clobber a managed pick back onto direct keys.
-        _select_into(config, "image_gen", "provider", "fal", managed_feature)
+        _select_into(config, "image_gen", "provider", "fal")
 
 
-def _print_provider_selection(provider: dict, managed_feature, *, reconfigure: bool) -> None:
+def _print_provider_selection(provider: dict, *, reconfigure: bool) -> None:
     """Status lines announcing which backend/provider keys a pick writes."""
     if provider.get("web_backend"):
         tier = f" ({provider['web_tier']} tier)" if reconfigure and provider.get("web_tier") else ""
         _print_success(f"  Web backend set to: {provider['web_backend']}{tier}")
     if reconfigure and provider.get("computer_use_backend"):
         _print_success(f"  Computer Use backend set to: {provider['computer_use_backend']}")
-
-
-def _show_portal_hint(provider: dict, config: dict, managed_feature, force_fresh: bool) -> bool:
-    """True when a BYOK row shares its category with a Nous-managed sibling and the user is not authed to
-    Nous — a single dim hint tells them the key is avoidable via a Portal subscription."""
-    from hermes_cli.tools_config import TOOL_CATEGORIES, get_nous_tool_features
-
-    if managed_feature or provider.get("requires_nous_auth"):
-        return False
-    try:
-        for _cat in TOOL_CATEGORIES.values():
-            _providers = _cat.get("providers", [])
-            if provider in _providers and any(sib.get("managed_nous_feature") for sib in _providers):
-                return not get_nous_tool_features(config, force_fresh=force_fresh).nous_auth_present
-    except Exception:
-        pass
-    return False
 
 
 def _prompt_secret(
@@ -822,14 +654,10 @@ def _configure_provider(provider: dict, config: dict, *, force_fresh: bool = Tru
     from hermes_cli.tools_config import _run_post_setup
 
     env_vars = provider.get("env_vars", [])
-    managed_feature = provider.get("managed_nous_feature")
 
-    if not _nous_provider_gate(provider, config, managed_feature, force_fresh=force_fresh):
-        return
-
-    _print_provider_selection(provider, managed_feature, reconfigure=reconfigure)
+    _print_provider_selection(provider, reconfigure=reconfigure)
     # Shared with the GUI provider-select endpoint (apply_provider_selection): one source of truth for config writes.
-    _write_provider_config(provider, config, managed_feature=managed_feature)
+    _write_provider_config(provider, config)
 
     if not env_vars:
         if provider.get("post_setup"):
@@ -852,13 +680,8 @@ def _configure_provider(provider: dict, config: dict, *, force_fresh: bool = Tru
             else:
                 _run_post_setup(provider["post_setup"])
         _print_success(f"  {provider['name']} - no configuration needed!")
-        if managed_feature:
-            _print_info("  Requests for this tool will be billed via Nous Portal.")
-        _finish_provider_selection(provider, config, managed_feature)
+        _finish_provider_selection(provider, config)
         return
-
-    if not reconfigure and _show_portal_hint(provider, config, managed_feature, force_fresh):
-        _print_info("  Available through the Nous Tool Gateway.")
 
     all_configured = _prompt_env_vars(env_vars, reconfigure=reconfigure)
     if provider.get("post_setup") and all_configured:
@@ -866,7 +689,7 @@ def _configure_provider(provider: dict, config: dict, *, force_fresh: bool = Tru
     if all_configured:
         if not reconfigure:
             _print_success(f"  {provider['name']} configured!")
-        _finish_provider_selection(provider, config, managed_feature)
+        _finish_provider_selection(provider, config)
 
 
 def _reconfigure_provider(provider: dict, config: dict, *, force_fresh: bool = True):

@@ -1,8 +1,4 @@
-"""`/login` and `/topup` are removed from the chat slash surface.
-
-The Nous sign-in (`hermes login`, `hermes auth`) and billing (`/subscription`,
-portal) surfaces stay; only the chat slash commands are gone.
-"""
+"""Nous account login and top-up commands are absent from the chat surface."""
 
 from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, COMMAND_REGISTRY, resolve_command
 

@@ -63,9 +63,9 @@ class CLIStreamMixin:
     def _on_notice(self, notice) -> None:
         """Queue an out-of-band AgentNotice for rendering at the next clean boundary.
 
-        Notices fire mid-turn (cold-start seed, per-turn _capture_credits); printing immediately
-        races the stream and buries the line behind the prompt. Flushed by _flush_credit_notices()
-        after run_conversation returns. Fail-soft.
+        Notices fire mid-turn (cold-start seed, runtime diagnostics); printing immediately
+        races the stream and buries the line behind the prompt. Flushed after run_conversation
+        returns. Fail-soft.
         """
         try:
             text = getattr(notice, "text", "") or ""

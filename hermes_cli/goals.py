@@ -860,7 +860,7 @@ def judge_goal(
     try:
         raw = _call_goal_judge_llm(call_llm, JUDGE_SYSTEM_PROMPT, prompt, timeout)
     except AuxiliaryClientUnavailable as exc:
-        # No client at all (e.g. a dead Nous refresh token): name the cause so the user is sent to
+        # No client at all (e.g. an expired OAuth token): name the cause so the user is sent to
         # re-authenticate, not to context-length / model debugging (#42177). Still fails open.
         logger.info("goal judge: auxiliary client unavailable (%s) — falling through to continue", exc)
         return "continue", f"goal_judge auxiliary client unavailable: {exc}", False, None, True

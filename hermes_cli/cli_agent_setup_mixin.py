@@ -234,8 +234,8 @@ class CLIAgentSetupMixin:
         runtime = None
         _model_at_entry = self.model
         try:
-            # target_model: the ladder's model-keyed rungs (Zen/Go api_mode, Copilot/Nous
-            # api_mode) must see the model this CLI will actually send, not config's `default`,
+            # target_model: the ladder's model-keyed rungs (Zen/Go and Copilot api_mode)
+            # must see the model this CLI will actually send, not config's `default`,
             # or `hermes -m mimo-v2.5 --provider opencode-go` resolves an api_mode/base_url the
             # sent model cannot use (#112600).
             runtime = resolve_runtime_provider(
@@ -254,11 +254,6 @@ class CLIAgentSetupMixin:
         api_key = runtime.get("api_key")
         base_url = runtime.get("base_url")
         resolved_provider = runtime.get("provider", "openrouter")
-        if resolved_provider != "nous":
-            # An explicit provider carries inference. The free-tier identity (for connectors) was
-            # created by the boot bootstrap before this point, never here; this prints the one-time
-            # "free tier is here" notice the first time an identity is seen beside an own key.
-            self._maybe_print_free_tier_available_notice()
         resolved_routing = (
             resolved_provider, runtime.get("api_mode", self.api_mode), runtime.get("command"),
             list(runtime.get("args") or []))
@@ -334,20 +329,6 @@ class CLIAgentSetupMixin:
             _retire_agent(self)
             self._active_agent_route_signature = None
         return True
-
-    def _maybe_print_free_tier_available_notice(self) -> None:
-        """One-time notice for installs whose inference is carried by an explicit provider: the free
-        tier (inference + connectors) now exists. Printed the first time an identity is present, then
-        flagged on that identity so it never repeats. Never blocks or raises."""
-        from cli import logger
-        try:
-            from hermes_cli import anon_auth
-            if not anon_auth.guest_notice_pending():
-                return
-            self._console_print(f"[dim]{anon_auth.FREE_TIER_AVAILABLE_NOTICE}[/]")
-            anon_auth.mark_guest_notice_shown()
-        except Exception as exc:
-            logger.debug("free tier availability notice skipped: %s", exc)
 
     def _resolve_fallback_runtime(self, primary_exc):
         """Primary provider resolution failed: on an AuthError try each fallback entry in
@@ -460,8 +441,7 @@ class CLIAgentSetupMixin:
         from cli import _cprint, logger
         _cprint("")
         _cprint("☤ No inference provider is configured yet — let's fix that.")
-        _cprint("  You'll pick a provider (Nous Portal OAuth is the fastest; "
-                "no API key needed) and a model.")
+        _cprint("  You'll pick a provider and a model.")
         try:
             answer = input("  Set up a provider now? [Y/n]: ").strip().lower()
         except (KeyboardInterrupt, EOFError):
@@ -698,13 +678,6 @@ class CLIAgentSetupMixin:
             # patch_stdout's StdoutProxy (#2262), holding lines while a response box streams so a
             # subagent/background completion notice never splits the reply mid-paragraph.
             self.agent._print_fn = self._agent_status_print
-            # Hydrate credits notices at session OPEN (parity with the TUI) so a depletion
-            # warning shows before the first message. Idempotent + fail-open in the helper.
-            try:
-                from agent.credits_tracker import seed_credits_at_session_start
-                seed_credits_at_session_start(self.agent)
-            except Exception:
-                pass
             self._active_agent_route_signature = _route_signature(effective_model, runtime)
 
             # Force-create DB row on /title intent, then apply title.

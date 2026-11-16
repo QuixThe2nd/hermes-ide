@@ -2088,11 +2088,11 @@ class GatewayTurnMixin:
 
         return response
 
-    # Chat-side next steps keyed by HTTP status; Hermes commands only (/login is the gateway's own
-    # sign-in, `{relogin}` the profile-aware host equivalent, filled from the turn's agent provider).
+    # Chat-side next steps keyed by HTTP status; `{relogin}` is the profile-aware host command,
+    # filled from the turn's agent provider.
     _STATUS_HINTS = {
         401: (" Your sign-in to the AI model service has expired or the API key is wrong. "
-              "Use /login here, or run `{relogin}` on the host."),
+              "Run `{relogin}` on the host, or use /model to switch models."),
         402: " Your AI model service balance or quota is used up. Top it up on the service's website, or use /model to switch models.",
         529: " The AI model service is temporarily overloaded. Wait a moment, then use /retry.",
     }

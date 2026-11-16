@@ -1,9 +1,8 @@
 """Contract: the Nous plan /subscription surface is gone.
 
-The /subscription (alias /upgrade) slash command, the plan/subscription
-modules, and their setup prompts were removed. The Nous Tool Gateway
-itself survives (``hermes_cli.nous_tools``); these tests pin that no
-slash-command or import path resurrects the subscription surface.
+The /subscription (alias /upgrade) slash command and its plan/subscription
+modules were removed. These tests pin that no slash-command or import path
+resurrects the subscription surface.
 """
 
 import subprocess

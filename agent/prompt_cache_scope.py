@@ -2,7 +2,7 @@
 
 Legacy compression rotation mints a new physical ``session_id`` mid-conversation, moving it
 into a fresh cache bucket. ``resolve_prompt_cache_scope()`` maps the physical id to the ROOT
-of its compression lineage — NOT ``get_conversation_root`` (the Portal-attribution walk),
+of its compression lineage — NOT ``get_conversation_root`` (the conversation-affinity walk),
 which would collapse /branch children and delegate trees into one id. ``/new`` starts a
 fresh scope; fork children (branch, delegate, tool-tagged) are isolated. Hosts minting one id
 per RESPONSE declare the conversation via ``gateway_session_key``, which wins over the lineage

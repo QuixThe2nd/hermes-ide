@@ -907,8 +907,8 @@ def _redact_gateway_user_facing_secrets(text: str) -> str:
 # names the slash command the chat user can run; raw provider text stays in the gateway log.
 _PROVIDER_ERROR_REPLIES = (
     (_GATEWAY_RATE_LIMIT_RE, "⏱️ The AI model service is rate-limiting requests. Wait a moment, then use /retry."),
-    (_GATEWAY_AUTH_ERROR_RE, "⚠️ Sign-in to the AI model service failed. Use /login to sign in again, "
-                             "or ask whoever runs this bot to run `hermes doctor` on the host."),
+    (_GATEWAY_AUTH_ERROR_RE, "⚠️ Sign-in to the AI model service failed. Ask whoever runs this bot "
+                             "to reconnect the provider with `hermes auth` or run `hermes doctor` on the host."),
     (_GATEWAY_PROVIDER_POLICY_RE, "⚠️ The AI model service rejected this request. Try rephrasing your "
                                   "message, or use /model to switch models."),
     (_GATEWAY_CONNECTION_ERROR_RE, "⚠️ The AI model service isn't reachable right now — the configured model "
@@ -7815,13 +7815,6 @@ class GatewayRunner(
         except Exception as e:
             logger.debug("Stuck-loop detection failed: %s", e)
 
-        # The gateway is a boot owner of the Nous free tier: every demand-time site (provider
-        # resolution, /login, the connector token) is a read that needs the identity to already
-        # exist. Blocking here, before any adapter connects, is what keeps a fast first DM from
-        # arriving with nothing to resolve. With the launch gate unset this is a local
-        # inventory and no network.
-        await asyncio.get_running_loop().run_in_executor(None, self._start_free_tier_bootstrap)
-
         # Serialize startup restore against inbound dispatch.  Platform
         # adapters can begin receiving messages as soon as they connect, but
         # restart-interrupted sessions are not auto-resumed until all startup
@@ -11604,12 +11597,6 @@ async def _start_gateway_shutdown_tail(
         except Exception:
             logger.debug("Control socket stop failed (non-fatal)", exc_info=True)
 
-    def _stop_keepalive() -> None:
-        from hermes_cli.nous_auth_keepalive import stop_nous_auth_keepalive
-        stop_nous_auth_keepalive()
-
-    _best_effort(_stop_keepalive)
-
     # Never join(): an in-flight cron delivery is a coroutine on THIS loop; a sync join would drop it.
     # Stop cron scheduler + housekeeping cleanly. These MUST be awaited cooperatively, not join()ed. A cron
     # delivery in flight when the gateway restarts is a coroutine scheduled onto THIS event loop
@@ -11759,13 +11746,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         from gateway.lifecycle_ledger import record_startup
         record_startup()
 
-    def _start_keepalive() -> None:
-        from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
-        start_nous_auth_keepalive()
-
     if not runner._overlap_successor_pending:
         _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
-    _best_effort(_start_keepalive, "Nous auth keepalive did not start: %s")
     _ensure_windows_gateway_venv_imports()
 
     # discover_mcp_tools() blocks up to 120s; on the loop thread it would freeze platform heartbeats.

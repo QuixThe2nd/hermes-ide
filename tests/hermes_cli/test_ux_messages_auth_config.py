@@ -103,31 +103,10 @@ def test_no_provider_configured_points_at_model_login_and_auth_add(monkeypatch, 
     assert "inference provider" not in msg
 
 
-# ── cli-07: Nous device-code sign-in failures ────────────────────────────────────────────────
+# ── cli-07: device-code sign-in failures ────────────────────────────────────────────────────
 
 
 class TestSignInFailureCopy:
-    @pytest.mark.parametrize("code, pointer", [
-        ("expired_token", "`hermes portal`"),
-        ("access_denied", "`hermes model`"),
-    ])
-    def test_poll_error_codes_map_to_plain_copy(self, code, pointer):
-        from hermes_cli import auth_device_flow
-
-        class _Client:
-            def post(self, url, data=None):
-                request = httpx.Request("POST", url)
-                return httpx.Response(400, json={"error": code, "error_description": "server text"}, request=request)
-
-        with pytest.raises(RuntimeError) as excinfo:
-            auth_device_flow._poll_for_token(
-                client=_Client(), portal_base_url="https://portal.nousresearch.com", client_id="hermes-cli",
-                device_code="device", expires_in=5, poll_interval=1)
-
-        msg = str(excinfo.value)
-        assert not msg.startswith(code)
-        assert "`hermes portal`" in msg and pointer in msg
-
     def test_network_failure_names_host_and_retry_command(self):
         from hermes_cli.auth_error_copy import sign_in_failure_lines
 
@@ -149,26 +128,6 @@ class TestSignInFailureCopy:
         out = capsys.readouterr().out
         assert "Could not sign in" in out
         assert not out.lstrip().startswith("Login failed:")
-
-    def test_login_nous_prints_plain_copy(self, monkeypatch, capsys):
-        from hermes_cli import auth_nous
-
-        def _boom(**_k):
-            raise httpx.ConnectError("[Errno -2] Name or service not known")
-
-        monkeypatch.setattr(auth_nous, "_offer_shared_nous_import", lambda *_a, **_k: None, raising=False)
-        monkeypatch.setattr("hermes_cli.auth._nous_device_code_login", _boom)
-        args = SimpleNamespace(timeout=1.0, portal_url=None, inference_url=None, client_id=None, scope=None,
-                               no_browser=True, insecure=False, ca_bundle=None)
-        from hermes_cli.auth import PROVIDER_REGISTRY
-
-        with pytest.raises(SystemExit) as excinfo:
-            auth_nous._login_nous(args, PROVIDER_REGISTRY["nous"])
-
-        assert excinfo.value.code == 1
-        out = capsys.readouterr().out
-        assert "Could not sign in" in out and "`hermes portal`" in out
-        assert "Login failed:" not in out
 
 
 # ── cli-25: auth refresh / unknown provider ──────────────────────────────────────────────────
@@ -284,17 +243,6 @@ class TestRunLoginProviderAwareCopy:
         assert "hermes auth add minimax-oauth" in out
         assert "hermes portal" not in out and "portal.nousresearch.com" not in out
         assert "hermes login" not in out
-
-    def test_nous_failure_keeps_portal_retry(self, capsys):
-        from hermes_cli.auth import PROVIDER_REGISTRY
-        from hermes_cli.model_setup_flows_common import _run_login
-
-        def _boom(*_a, **_k):
-            raise httpx.ConnectError("boom")
-
-        assert _run_login(_boom, SimpleNamespace(), PROVIDER_REGISTRY["nous"]) is False
-        out = capsys.readouterr().out
-        assert "hermes portal" in out and "portal.nousresearch.com" in out
 
     def test_silent_nonzero_system_exit_still_tells_user_how_to_retry(self, capsys):
         from hermes_cli.auth import PROVIDER_REGISTRY

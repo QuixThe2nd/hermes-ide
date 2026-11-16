@@ -1,9 +1,8 @@
 """Per-model reasoning capabilities from OpenRouter-schema ``/v1/models`` catalogs.
 
-Split out of ``hermes_cli.models``. OpenRouter and
-Nous Portal share one implementation parametrized by :class:`_CapsSource`; the per-source module
-globals (``_openrouter_reasoning_caps_cache``, ``_nous_caps_disk_checked``, ...) stay defined on
-``hermes_cli.models`` — tests reset them there — and are read/written by attribute name.
+Split out of ``hermes_cli.models``. The per-source module globals
+(``_openrouter_reasoning_caps_cache``, ...) stay defined on ``hermes_cli.models`` — tests reset
+them there — and are read/written by attribute name.
 
 Tri-state contract for callers deciding whether to emit reasoning controls: a dict with
 ``supports_reasoning: True`` (+ ``supported_efforts``, ``mandatory``) — the route advertises
@@ -64,9 +63,7 @@ def parse_openrouter_reasoning_capabilities(item: Any) -> Optional[dict[str, Any
 #
 # In-process caches are always cold in a short-lived process, and every consumer is on a hot path
 # that must never block on HTTP — so without a disk copy, `hermes -p`, a cron job, or a freshly
-# booted gateway answers "capability unknown" for its whole first turn. One file holds every
-# catalog keyed by URL: OpenRouter and the Portal list different models, and a staging Portal must
-# not answer for production.
+# booted gateway answers "capability unknown" for its whole first turn. The mirror is keyed by URL.
 _REASONING_CAPS_DISK_TTL_SECONDS = 24 * 3600
 
 
@@ -110,7 +107,7 @@ def _warm_reasoning_caps_async(refresh) -> None:
     Callers own the once-per-process guard; the fetch keeps its own failure TTL."""
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return
-    # copy_context: the Portal URL and disk mirror are the calling profile's, not the launch home's.
+    # copy_context: keep the caller's ambient context when warming the cache.
     threading.Thread(target=contextvars.copy_context().run, args=(refresh,), name="reasoning-caps-warm", daemon=True).start()
 
 
@@ -145,7 +142,7 @@ def _seed_reasoning_caps(url: str, items: Any) -> Optional[Caps]:
 
 def _fetch_reasoning_caps_catalog(url: str, timeout: float) -> Optional[Caps]:
     """Fetch one OpenRouter-shaped ``/v1/models`` catalog → per-model caps; None when unreachable or
-    empty so callers remember the failure. Sends a User-Agent: the Portal 403s anonymous reads."""
+    empty so callers remember the failure."""
     m = _origin()
     try:
         req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": m._HERMES_USER_AGENT})
@@ -156,7 +153,7 @@ def _fetch_reasoning_caps_catalog(url: str, timeout: float) -> Optional[Caps]:
     return _seed_reasoning_caps(url, payload.get("data"))
 
 
-# ── Per-source cache (OpenRouter, Nous Portal) ─────────────────────────
+# ── OpenRouter source cache ────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class _CapsSource:
@@ -211,8 +208,7 @@ def _fetch_caps(src: _CapsSource, timeout: float = 6.0, *, force: bool = False) 
 def _caps_cached(src: _CapsSource) -> Optional[Caps]:
     """Cache-only caps: memory, else the disk mirror. Never HTTP.
 
-    One disk attempt per process: for the Portal, naming the catalog means resolving credentials,
-    which can itself reach the network to refresh a token — too expensive for a per-turn caller.
+    One disk attempt per process; callers may warm the network copy separately in the background.
     """
     if src.get("cache") is None and not src.get("disk_checked"):
         src.set("disk_checked", True)
@@ -245,8 +241,7 @@ def refresh_reasoning_caps_async(provider: Optional[str]) -> None:
     rejects. Called from the conversation loop's reasoning_mandatory recovery so the profile guard
     is right again on the next request; no-op for providers without a catalog.
     """
-    src = {"nous": _NOUS_CAPS, "nous-portal": _NOUS_CAPS, "nousresearch": _NOUS_CAPS,
-           "openrouter": _OPENROUTER_CAPS}.get(str(provider or "").strip().lower())
+    src = _OPENROUTER_CAPS if str(provider or "").strip().lower() == "openrouter" else None
     if src is not None:
         _warm_reasoning_caps_async(lambda: _fetch_caps(src, force=True))
 
@@ -258,22 +253,6 @@ _OPENROUTER_CAPS = _CapsSource(
     "_openrouter_caps_disk_checked", "_openrouter_caps_warm_started",
     lambda: _OPENROUTER_CATALOG_URL,
 )
-# Nous Portal serves OpenRouter's catalog schema, so the same parser and contract apply. Its own
-# cache because the two catalogs list different models (and different capabilities for shared ids).
-_NOUS_CAPS = _CapsSource(
-    "_nous_reasoning_caps_cache", "_nous_reasoning_caps_failed_at",
-    "_nous_caps_disk_checked", "_nous_caps_warm_started",
-    lambda: nous_catalog_url(), per_profile=True,
-)
-
-
-def nous_catalog_url() -> str:
-    """The Portal ``/v1/models`` URL for the endpoint we actually talk to (``NOUS_INFERENCE_BASE_URL``
-    → resolved credential base → prod), so a staging profile reads staging's capabilities."""
-    from hermes_cli.models_pricing import _resolve_nous_pricing_credentials
-    return f"{_resolve_nous_pricing_credentials()[1]}/v1/models"
-
-
 # Live-catalog metadata first (ported from PrimeIntellect-ai/prime-agent#1258): OpenRouter's /v1/models
 # entries advertise reasoning support via supported_parameters + a reasoning object, which covers every
 # routed vendor without a hand-maintained prefix list. The static prefix allowlist repeatedly went
@@ -288,19 +267,6 @@ def openrouter_model_reasoning_capabilities(
     return _model_caps(_OPENROUTER_CAPS, model_id, timeout=timeout, allow_fetch=allow_fetch)
 
 
-def nous_model_reasoning_capabilities(
-    model_id: Optional[str], *, timeout: float = 6.0, allow_fetch: bool = False,
-) -> Optional[dict[str, Any]]:
-    """Nous Portal counterpart of :func:`openrouter_model_reasoning_capabilities`; warm the cache
-    with :func:`warm_nous_reasoning_caps_async` from hot paths."""
-    return _model_caps(_NOUS_CAPS, model_id, timeout=timeout, allow_fetch=allow_fetch)
-
-
 def warm_openrouter_reasoning_caps_async() -> None:
     """Warm the OpenRouter reasoning-capability cache in the background."""
     _warm_caps_async(_OPENROUTER_CAPS)
-
-
-def warm_nous_reasoning_caps_async() -> None:
-    """Nous Portal counterpart of :func:`warm_openrouter_reasoning_caps_async`."""
-    _warm_caps_async(_NOUS_CAPS)

@@ -7,8 +7,6 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.nous_account import NousPortalAccountInfo, NousToolAccessInfo
-from hermes_cli.nous_tools import NousToolFeatures
 from hermes_cli.tools_config import (
     _DEFAULT_OFF_TOOLSETS,
     _RECENTLY_SHIPPED_TOOLSETS,
@@ -704,130 +702,8 @@ def test_vision_picker_custom_endpoint(tmp_path, monkeypatch):
 # ─── provider_readiness_status ────────────────────────────────────────────────
 #
 # Server-side truth for the GUI "Ready" pill (issue: Capabilities tab showed
-# Ready for every zero-env-var provider row, including logged-out Nous
-# Subscription rows and never-installed KittenTTS/Piper).
-
-
-def _fake_features(*, logged_in: bool, paid: bool = True):
-    account = (
-        NousPortalAccountInfo(
-            logged_in=True, source="jwt", fresh=False, paid_service_access=paid
-        )
-        if logged_in
-        else NousPortalAccountInfo(
-            logged_in=False, source="none", fresh=False, paid_service_access=None
-        )
-    )
-    return SimpleNamespace(nous_auth_present=logged_in, account_info=account)
-
-
-def test_visible_providers_reuses_logged_out_feature_snapshot(monkeypatch):
-    import hermes_cli.tools_config as tools_config
-
-    account = NousPortalAccountInfo(
-        logged_in=False,
-        source="none",
-        fresh=False,
-        paid_service_access=None,
-    )
-    features = NousToolFeatures(
-        nous_auth_present=False,
-        provider_is_nous=False,
-        features={},
-        account_info=account,
-    )
-    monkeypatch.setattr(
-        tools_config,
-        "get_nous_tool_features",
-        lambda *args, **kwargs: pytest.fail("feature snapshot was resolved again"),
-    )
-
-    providers = _visible_providers(
-        TOOL_CATEGORIES["image_gen"], {}, features=features
-    )
-
-    assert any(
-        provider.get("managed_nous_feature") == "image_gen"
-        for provider in providers
-    )
-
-
-def test_visible_providers_reuses_pool_video_feature_snapshot(monkeypatch):
-    import hermes_cli.tools_config as tools_config
-
-    account = NousPortalAccountInfo(
-        logged_in=True,
-        source="jwt",
-        fresh=False,
-        paid_service_access=False,
-        tool_access=NousToolAccessInfo(
-            enabled=True,
-            coverage={"fal-video": False},
-        ),
-    )
-    features = NousToolFeatures(
-        nous_auth_present=True,
-        provider_is_nous=False,
-        features={},
-        account_info=account,
-    )
-    monkeypatch.setattr(
-        tools_config,
-        "get_nous_tool_features",
-        lambda *args, **kwargs: pytest.fail("feature snapshot was resolved again"),
-    )
-
-    providers = _visible_providers(
-        TOOL_CATEGORIES["video_gen"], {}, features=features
-    )
-
-    assert not any(
-        provider.get("managed_nous_feature") == "video_gen"
-        for provider in providers
-    )
-
-
-
-
-# ── One managed image row ─────────────────────────────────────────────────────
-#
-# FAL, Krea and Portal models all live behind the single "Nous Subscription" row; the stored
-# model id picks the gateway. Before, the Portal plugin rendered its own row that also wrote
-# `provider: nous`, so two rows read active at once and the Portal pick generated on FAL.
-
-
-def _managed_image_row() -> dict:
-    return next(p for p in TOOL_CATEGORIES["image_gen"]["providers"] if p.get("managed_nous_feature") == "image_gen")
-
-
-def test_exactly_one_image_row_is_active_for_a_managed_selection(monkeypatch):
-    import hermes_cli.tools_config as tools_config
-    from hermes_cli.tools_config_providers import _plugin_image_gen_providers
-
-    monkeypatch.setattr(
-        tools_config, "get_nous_tool_features",
-        lambda config, **kwargs: SimpleNamespace(features={"image_gen": SimpleNamespace(managed_by_nous=True)}),
-    )
-    rows = TOOL_CATEGORIES["image_gen"]["providers"] + _plugin_image_gen_providers()
-    for model in ("fal-ai/flux-2/klein/9b", "krea-2-medium", "google/gemini-3-pro-image"):
-        config = {"image_gen": {"provider": "nous", "model": model}}
-        active = [r["name"] for r in rows if tools_config._is_provider_active(r, config)]
-        assert active == [_managed_image_row()["name"]], (model, active)
-
-
-def test_pool_only_account_is_offered_fal_models_only(monkeypatch):
-    import hermes_cli.tools_config as tools_config
-    from hermes_cli.tools_config_providers import _managed_image_catalog
-
-    pool = NousPortalAccountInfo(
-        logged_in=True, source="jwt", fresh=False, paid_service_access=False,
-        tool_access=NousToolAccessInfo(enabled=True, coverage={"fal": True, "krea": False}))
-    monkeypatch.setattr(
-        tools_config, "get_nous_tool_features",
-        lambda *args, **kwargs: SimpleNamespace(features={}, account_info=pool))
-    catalog, _ = _managed_image_catalog({})
-
-    assert catalog and {meta["backend"] for meta in catalog.values()} == {"fal"}
+# Ready for every zero-env-var provider row, including never-installed
+# KittenTTS/Piper).
 
 
 # ── Windows console-flash guard for post-setup subprocess spawns ──────────────

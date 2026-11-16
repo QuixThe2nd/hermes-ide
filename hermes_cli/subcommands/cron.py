@@ -68,7 +68,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "agent's cronjob tool cannot set this). Omit to follow "
             "cron.model / model.default from config.yaml.")
     cron_create.add_argument("--provider", dest="model_provider",
-        help="Inference provider paired with --model (e.g. 'openrouter', 'nous').")
+        help="Inference provider paired with --model (e.g. 'openrouter', 'openai-codex').")
     cron_create.add_argument("--reasoning-effort", dest="reasoning_effort",
         help="Pin this job's reasoning (thinking) effort: none, minimal, low, "
             "medium, high, xhigh, max, or ultra. Overrides agent.reasoning_effort "

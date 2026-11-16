@@ -659,29 +659,22 @@ class CLIInfoMixin:
         print()
 
     def _show_usage(self):
-        """Rate limits + session token usage (when a live agent exists) + Nous credits.
-
-        The Nous credits block is agent-independent (portal fetch), so it runs even with no live
-        agent — the TUI's /usage slash-worker resumes the session WITHOUT building an agent.
-        """
+        """Rate limits + session token usage and provider account limits."""
         from cli import datetime, format_duration_compact
 
-        def _credits_or(fallback: str) -> None:
-            # Account limits (e.g. Codex subscription windows) need only the configured provider
-            # plus on-disk credentials, so they render without a live agent too (#42904).
-            shown = self._print_account_limits()
-            if self._print_nous_credits_block():
-                self._print_usage_cta()
-            elif not shown:
+        def _limits_or(fallback: str) -> None:
+            # Account limits need only the configured provider and on-disk credentials,
+            # so they render without a live agent too (#42904).
+            if not self._print_account_limits():
                 print(fallback)
 
         if not self.agent:
-            _credits_or("(._.) No active agent -- send a message first.")
+            _limits_or("(._.) No active agent -- send a message first.")
             return
         agent = self.agent
         calls = agent.session_api_calls
         if calls == 0:
-            _credits_or("(._.) No API calls made yet in this session.")
+            _limits_or("(._.) No API calls made yet in this session.")
             return
 
         rl_state = agent.get_rate_limit_state()
@@ -722,9 +715,6 @@ class CLIInfoMixin:
         print(f"  Compressions:     {compressor.compression_count}")
 
         self._print_account_limits()
-
-        if self._print_nous_credits_block():
-            self._print_usage_cta()
 
         if self.verbose:
             logging.getLogger().setLevel(logging.DEBUG)

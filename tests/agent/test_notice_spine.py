@@ -8,9 +8,8 @@ Covers:
 from __future__ import annotations
 
 import inspect
-import pytest
+from types import SimpleNamespace
 
-from agent.credits_tracker import AgentNotice
 from run_agent import AIAgent
 
 
@@ -33,14 +32,7 @@ class TestEmitNotice:
     def test_emit_notice_calls_callback_with_exact_notice(self):
         agent = _bare_agent()
         received = []
-        notice = AgentNotice(
-            text="credits 90% used",
-            level="warn",
-            kind="sticky",
-            ttl_ms=None,
-            key="credits.warn90",
-            id="n1",
-        )
+        notice = SimpleNamespace(text="context 90% used", level="warn", key="context.warn90")
         agent.notice_callback = received.append
         agent._emit_notice(notice)
         assert received == [notice]

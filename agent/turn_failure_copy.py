@@ -55,7 +55,7 @@ def failed_turn_notice(turn_messages: Any) -> str:
 
 
 def provider_label_for(provider: Any) -> str:
-    """Human-friendly provider name for chat copy (``"OpenRouter"``, ``"Nous Portal"``…)."""
+    """Human-friendly provider name for chat copy (``"OpenRouter"``, ``"Anthropic"``…)."""
     from hermes_cli.models import provider_label
 
     return provider_label(str(provider or ""))
@@ -293,10 +293,6 @@ _ONE_OFF_COPY: Dict[str, str] = {
         "I ran out of steps for this turn ({limit} tool calls) before finishing, and couldn't "
         "produce a summary. Send `continue` to keep going, or raise `max_iterations` in your config."
     ),
-    "nous_rate_limit": (
-        "Wait for the reset and send /retry, or switch models with /model. To avoid waits, add "
-        "a backup provider with `hermes fallback add`."
-    ),
 }
 _SITE_COPY: Dict[str, str] = {**_FAILURE_CODE_COPY, **_ONE_OFF_COPY}
 
@@ -331,8 +327,6 @@ def oauth_relogin_command(provider: Any) -> str:
     from hermes_constants import profile_cli_selector
 
     slug = str(provider or "").strip().lower()
-    if slug == "nous":
-        return f"hermes {profile_cli_selector()}portal"
     return f"hermes {profile_cli_selector()}auth add {slug} --type oauth"
 
 

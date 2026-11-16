@@ -1,8 +1,7 @@
-"""Streamlined setup flows: the Nous Portal one-shot (`hermes portal`), first-time quick setup,
-Blank Slate setup and the `--quick` missing-items pass. Names from setup.py are imported lazily
-per function so test patches on ``hermes_cli.setup`` take effect."""
+"""Streamlined setup flows: Blank Slate setup and the ``--quick`` missing-items pass.
+Names from setup.py are imported lazily per function so test patches on ``hermes_cli.setup``
+take effect."""
 
-import contextlib
 import logging
 import os
 import sys
@@ -33,108 +32,6 @@ def _reload_config_into(config: dict, *, dict_only: bool = False) -> None:
     if not dict_only or isinstance(refreshed, dict):
         config.clear()
         config.update(refreshed)
-
-
-def _run_nous_flow(config: dict, *, context: str, cancel_exc: tuple, cancel_lines: tuple, print_error) -> bool:
-    """Run ``_model_flow_nous`` (login, model pick, provider switch, Tool Gateway opt-in) — the
-    single source of truth shared with ``hermes model``. False when cancelled or failed (the
-    message is already printed)."""
-    from hermes_cli.setup import _info
-    try:
-        from hermes_cli.model_setup_flows import _model_flow_nous
-        _model_flow_nous(config)
-        return True
-    except cancel_exc:
-        # _login_nous raises SystemExit(130)/(1) on cancel/failure; the expired-session re-login
-        # path inside _model_flow_nous only catches Exception, so SystemExit would kill the CLI.
-        _info(*cancel_lines)
-    except Exception as exc:
-        logger.debug("_model_flow_nous error during %s: %s", context, exc)
-        print_error(exc)
-    return False
-
-
-def _run_portal_one_shot(config: dict) -> None:
-    """One-shot Nous Portal setup (``hermes setup --portal`` / ``hermes portal``)."""
-    from hermes_cli.setup import _info, _print_banner, print_error, print_info, print_success
-    _print_banner("│     ☤ Hermes Setup — Nous Portal (one-shot)             │")
-    _info(None, "  One subscription, 300+ models, plus the Tool Gateway:",
-          "    web search, image generation, browser automation",
-          "    — all routed through your Nous Portal sub.", None,
-          "  Sign up: https://portal.nousresearch.com/manage-subscription", None)
-
-    def _on_error(exc: Exception) -> None:
-        from hermes_cli.auth_error_copy import provider_setup_failure_lines
-        print()
-        lead, *rest = provider_setup_failure_lines(exc, retry_command="hermes portal")
-        print_error(f"  {lead}")
-        for line in rest:
-            print_info(f"  {line}")
-
-    if not _run_nous_flow(config, context="`hermes portal`", cancel_exc=(KeyboardInterrupt, EOFError, SystemExit),
-                          cancel_lines=(None, "  Setup cancelled.", "  You can retry later with `hermes portal`."),
-                          print_error=_on_error):
-        return
-
-    # Re-sync from disk so a caller's later save_config(config) can't clobber the login save.
-    with contextlib.suppress(Exception):
-        _reload_config_into(config, dict_only=True)
-    print()
-    print_success("Portal setup complete.")
-    _info("  Run `hermes portal info` to inspect routing.", "  Run `hermes` to start chatting.")
-
-
-def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
-    """Streamlined first-time setup via Nous Portal: OAuth, model, terminal & messaging;
-    everything else gets defaults."""
-    from hermes_cli.setup import (
-        _apply_default_agent_settings, _info, print_header, print_info, _print_setup_summary, print_success,
-        print_warning, prompt_choice, save_config, setup_gateway, setup_terminal_backend
-    )
-    # Step 1: Nous Portal — OAuth login + model selection (provider set to "nous" by the save).
-    print_header("Nous Portal", gap=True)
-    _info("One subscription, 300+ models, plus the Tool Gateway:",
-          "  web search, image generation, browser automation.",
-          "Sign up: https://portal.nousresearch.com/manage-subscription", None)
-
-    def _on_error(exc: Exception) -> None:
-        from hermes_cli.auth_error_copy import provider_setup_failure_lines
-        lead, *rest = provider_setup_failure_lines(exc, retry_command="hermes model")
-        print_warning(lead)
-        for line in rest:
-            print_info(line)
-
-    _run_nous_flow(config, context="quick setup", cancel_exc=(KeyboardInterrupt, EOFError),
-                   cancel_lines=(None, "Nous Portal setup cancelled."), print_error=_on_error)
-    # The wizard's later save_config(config) must not clobber the login/model save.
-    _reload_config_into(config)
-
-    # Step 2: Terminal Backend; Step 3: defaults for everything else.
-    setup_terminal_backend(config)
-    _apply_default_agent_settings(config)
-    save_config(config)
-
-    # Step 4: Offer messaging gateway setup
-    print()
-    gateway_choice = prompt_choice("Connect a messaging platform? (Telegram, Discord, etc.)", [
-        "Set up messaging now (recommended)", "Skip — set up later with 'hermes setup gateway'",
-    ], 0)
-    if gateway_choice == 0:
-        setup_gateway(config)
-        save_config(config)
-    else:
-        # Messaging skipped — still install/start the gateway service so cron jobs run and
-        # platforms come alive as soon as tokens are added later (e.g. via `hermes import`).
-        from hermes_cli.gateway import ensure_gateway_service
-        ensure_gateway_service(context="setup")
-    print()
-    print_success("Setup complete! You're ready to go.")
-    _info(None, "  Configure all settings:    hermes setup")
-    if gateway_choice != 0:
-        print_info("  Connect Telegram/Discord:  hermes setup gateway")
-    _print_macos_fda_tip()
-    print()
-    _print_setup_summary(config, hermes_home)
 
 
 def _print_macos_fda_tip() -> None:

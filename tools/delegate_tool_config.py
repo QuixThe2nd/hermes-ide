@@ -342,7 +342,7 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
             f"Cannot resolve delegation provider '{configured_provider}': {exc}. "
             f"Check that the provider is configured (API key set, valid provider name), "
             f"or set delegation.base_url/delegation.api_key for a direct endpoint. "
-            f"Available providers: openrouter, nous, zai, kimi-coding, minimax."
+            f"Available providers: openrouter, zai, kimi-coding, minimax."
         ) from exc
 
     api_key = runtime.get("api_key", "")
@@ -425,8 +425,6 @@ _ROUTING_FILTER_DEFAULTS = (
     ("provider_require_parameters", False), ("provider_data_collection", ""),
 )
 
-_NOUS_PROVIDERS = frozenset({"nous", "nous-portal", "nousresearch"})
-
 
 def _resolve_child_fallback_chain(parent_agent, routing_cfg: Any, pinned: bool) -> Optional[List[Dict[str, Any]]]:
     """Fallback chain for a child, owned by the same config block as its route.
@@ -455,8 +453,8 @@ def _resolve_child_runtime(
     routing_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
-    are easy to break: api_mode is re-derived (not inherited) when the child's provider differs from the parent's
-    or is Nous Portal (dual-wire); a pinned ``delegation.command`` must exist on PATH or the spawn fails loudly;
+    are easy to break: api_mode is re-derived (not inherited) when the child's provider differs from the parent's;
+    a pinned ``delegation.command`` must exist on PATH or the spawn fails loudly;
     ``override_provider`` clears the parent's ACP transport, fallback chain and OpenRouter routing filters so the
     pinned provider is actually honoured."""
     effective_model = model or parent_agent.model
@@ -475,20 +473,11 @@ def _resolve_child_runtime(
         effective_provider = getattr(parent_agent, "provider", None)
         effective_base_url, parent_api_key = _inherit_parent_endpoint(parent_agent, parent_agent.base_url, parent_api_key)
     # api_mode: each provider has its own wire, so a different provider re-derives (None) instead of inheriting (404s
-    # otherwise). Nous Portal is dual-wire within one provider (anthropic/* → Messages, else chat_completions), so
-    # same-provider inheritance would pin the child on the wrong wire — re-derive.
-    # Bug #20558 / PR #20563: api_mode must NOT be inherited when the child uses a different provider than
-    # the parent — each provider has its own API surface (e.g. MiniMax uses anthropic_messages, DeepSeek
-    # uses chat_completions). Inheriting the parent's mode causes 404 errors when the child routes to the
-    # wrong endpoint. Derive the mode from the target provider when it differs. Same-provider inheritance
-    # would pin a child Hermes/Qwen subagent onto the parent's Claude Messages wire (or the reverse).
-    # agent_init honors an explicit api_mode above its nous branch, so re-derive here before construction.
+    # otherwise). Bug #20558 / PR #20563: inheriting the parent's mode can route a child to the wrong endpoint
+    # (e.g. MiniMax uses anthropic_messages, DeepSeek uses chat_completions).
     _parent_provider = getattr(parent_agent, "provider", None) or ""
     if override_api_mode is not None:
         effective_api_mode = override_api_mode
-    elif (effective_provider or "").strip().lower() in _NOUS_PROVIDERS:
-        from hermes_cli.providers import nous_api_mode
-        effective_api_mode = nous_api_mode(effective_model)
     elif effective_provider != _parent_provider:
         effective_api_mode = None  # force re-derivation from provider's defaults
     else:

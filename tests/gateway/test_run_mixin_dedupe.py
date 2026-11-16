@@ -30,7 +30,6 @@ CONSOLIDATED_MIXIN_METHODS = (
     ("_session_has_compression_in_flight", GatewayBusySessionMixin),
     ("_hm_text_only", GatewayInboundMixin),
     ("_clear_plugin_message_injector", GatewayInboundMixin),
-    ("_start_free_tier_bootstrap", GatewayStartupMixin),
     ("_stop_systemd_watchdog", GatewayShutdownMixin),
     ("wait_for_shutdown", GatewayShutdownMixin),
     ("_telegram_topic_root_lobby_message", GatewayTopicThreadsMixin),

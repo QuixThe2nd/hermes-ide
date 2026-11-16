@@ -20,8 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Optional
 from urllib.parse import parse_qs, urlparse
 from hermes_cli.auth_constants import (
-    AuthError, DEFAULT_NOUS_PORTAL_URL, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS,
-    DEVICE_CODE_GRANT_TYPE, OAUTH_OVER_SSH_DOCS_URL, httpx)
+    AuthError, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS, OAUTH_OVER_SSH_DOCS_URL, httpx)
 from utils import is_truthy_value
 
 # Log-record parity with the origin module (caplog tests pin "hermes_cli.auth").
@@ -239,41 +238,6 @@ def _resolve_verify(
     )
 
 
-def _request_device_code(
-    client: httpx.Client, portal_base_url: str, client_id: str, scope: Optional[str],
-) -> Dict[str, Any]:
-    """POST to the device code endpoint. Returns device_code, user_code, etc."""
-    response = client.post(
-        f"{portal_base_url}/api/oauth/device/code",
-        data={"client_id": client_id, **({"scope": scope} if scope else {})})
-    response.raise_for_status()
-    data = response.json()
-    required_fields = [
-        "device_code", "user_code", "verification_uri", "verification_uri_complete", "expires_in",
-        "interval"]
-    missing = [f for f in required_fields if f not in data]
-    if missing:
-        raise ValueError(f"Device code response missing fields: {', '.join(missing)}")
-    return data
-
-
-def _nous_device_auth_timeout_message(portal_base_url: str) -> str:
-    """Actionable timeout text: the usual cause is Portal sign-in failing in the browser tab.
-
-    A bare "Timed out waiting for device authorization" gives the user nothing to act on. The most common
-    cause is Portal sign-in failing in the opened browser tab (including the server-side CAPTCHA loop from
-    20605), so point at the Portal login page and the retry command. See #20605.
-    """
-    portal = (portal_base_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
-    return (
-        "Timed out waiting for device authorization.\n"
-        "  Portal sign-in is required before the device code can be approved.\n"
-        "  If the browser showed a CAPTCHA / 'You did not pass CAPTCHA' error,\n"
-        "  finish signing in at the Portal in a normal browser tab, then retry:\n"
-        "    hermes portal\n"
-        f"  Portal login: {portal}/login")
-
-
 def _print_device_code_instructions(
     verification_url: str, user_code: str, *, open_browser: bool, failure_dash: str = "--",
     swallow_open_errors: bool = False) -> None:
@@ -306,7 +270,7 @@ def _poll_device_token_generic(
     on_non_json_error: Callable[["httpx.Response"], Exception],
     on_error: Callable[["httpx.Response", Dict[str, Any]], Exception],
     on_timeout: Callable[[], Exception]) -> Dict[str, Any]:
-    """RFC 8628 device-code polling loop shared by the Nous and xAI flows.
+    """RFC 8628 device-code polling loop shared by the OAuth device-code flows.
 
     ``authorization_pending`` sleeps and retries; ``slow_down`` grows the interval by 1s (cap 30s).
     Every other error, a non-JSON error body, and the deadline become provider-specific exceptions
@@ -335,37 +299,6 @@ def _poll_device_token_generic(
             continue
         raise on_error(response, error_payload)
     raise on_timeout()
-
-
-def _poll_for_token(
-    client: httpx.Client, portal_base_url: str, client_id: str, device_code: str,
-    expires_in: int, poll_interval: int) -> Dict[str, Any]:
-    """Poll the Nous token endpoint until the user approves or the code expires."""
-    def _validate(payload: Dict[str, Any]) -> None:
-        if "access_token" not in payload:
-            raise ValueError("Token response did not include access_token")
-
-    def _error(_response, error_payload) -> Exception:
-        # Plain copy per OAuth error code; the raw ``code: description`` stays on a Details line.
-        from hermes_cli.auth_error_copy import device_flow_error
-        return device_flow_error(
-            str(error_payload.get("error", "") or ""),
-            str(error_payload.get("error_description") or "Unknown authentication error"))
-
-    return _poll_device_token_generic(
-        lambda: client.post(
-            f"{portal_base_url}/api/oauth/token",
-            data={
-                "grant_type": DEVICE_CODE_GRANT_TYPE, "client_id": client_id,
-                "device_code": device_code}),
-        expires_in=expires_in,
-        poll_interval=max(1, min(poll_interval, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS)),
-        validate_success=_validate, on_error=_error,
-        on_non_json_error=lambda _r: RuntimeError(
-            "Token endpoint returned a non-JSON error response"),
-        # Enriched at the SOURCE so the CLI login and the dashboard/desktop poller
-        # (UI promotion pollers surface it) both inherit the guidance.
-        on_timeout=lambda: TimeoutError(_nous_device_auth_timeout_message(portal_base_url)))
 
 
 def _prompt_yes_no(prompt: str, *, default: str) -> bool:

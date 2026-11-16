@@ -12,7 +12,7 @@ class UpstreamCredential:
     """A resolved bearer + base URL ready to forward to."""
 
     bearer: str  # token only, no ``Bearer`` prefix
-    base_url: str  # e.g. ``https://inference-api.nousresearch.com/v1``
+    base_url: str  # e.g. ``https://openrouter.ai/api/v1``
     token_type: str = "Bearer"
     expires_at: Optional[str] = None  # ISO-8601, informational
 
@@ -23,7 +23,7 @@ class UpstreamAdapter(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """Adapter key used on the CLI (e.g. ``"nous"``)."""
+        """Adapter key used on the CLI (e.g. ``"xai"``)."""
 
     @property
     @abstractmethod

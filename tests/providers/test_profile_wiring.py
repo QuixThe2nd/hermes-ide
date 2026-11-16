@@ -95,19 +95,6 @@ class TestOpenRouterProfileParity:
 
 
 
-class TestNousProfileParity:
-    def test_tags(self, transport):
-        legacy = transport.build_kwargs(
-            model="hermes-3", messages=_msgs(), tools=None, provider_profile=get_provider_profile("nous"),
-        )
-        profile = transport.build_kwargs(
-            model="hermes-3", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("nous"),
-        )
-        assert profile["extra_body"]["tags"] == legacy["extra_body"]["tags"]
-
-
-
 class TestQwenProfileParity:
 
     def test_vl_high_resolution(self, transport):

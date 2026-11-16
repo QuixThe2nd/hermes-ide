@@ -10,7 +10,6 @@ Full docs: https://hermes-agent.nousresearch.com/docs/integrations/providers
 |----------|------|----------------|
 | openrouter | API key | `OPENROUTER_API_KEY` |
 | anthropic | API key | `ANTHROPIC_API_KEY` (also `CLAUDE_CODE_OAUTH_TOKEN`) |
-| nous | OAuth device code | `hermes auth add nous` (or `NOUS_API_KEY`) |
 | openai-codex | OAuth | `hermes auth add openai-codex` |
 | qwen-oauth | OAuth | `hermes auth add qwen-oauth` |
 | minimax-oauth | OAuth | `hermes auth add minimax-oauth` |

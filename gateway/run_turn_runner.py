@@ -2335,7 +2335,7 @@ class TurnRunner(_TurnRunnerCore):
             logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc)
             from hermes_cli.auth import is_rate_limited_auth_error
             if is_rate_limited_auth_error(exc.__cause__):
-                # Quota cap with valid credentials: /login cannot help; name the reset window (#89401).
+                # Quota cap with valid credentials: re-authentication cannot help; name the reset window (#89401).
                 from gateway.run import _gateway_provider_error_reply
                 return {"final_response": _gateway_provider_error_reply(str(exc)),
                         "messages": [], "api_calls": 0, "tools": [],
@@ -2343,8 +2343,8 @@ class TurnRunner(_TurnRunnerCore):
             return {
                 "final_response": (
                     "⚠️ I couldn't connect to the AI model service, so this message wasn't processed. "
-                    "Use /login to sign in again, or /model to pick a different model. If it keeps "
-                    "failing, run `hermes doctor` on the host."),
+                    "Ask whoever runs this bot to reconnect the provider with `hermes auth`, or use "
+                    "/model to pick a different model. If it keeps failing, run `hermes doctor` on the host."),
                 "messages": [], "api_calls": 0, "tools": [],
                 "served_model": None, "requested_model": None,
             }
