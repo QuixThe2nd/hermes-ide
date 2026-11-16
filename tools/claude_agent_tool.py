@@ -324,6 +324,23 @@ def extract_log_warnings(log_text: str) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
+# Terminal-status classification
+# ---------------------------------------------------------------------------
+
+def classify_claude_terminal_status(
+    *,
+    terminal_reason: Optional[str],
+    texts: List[str],
+    existing_status: str,
+) -> str:
+    """Classify a finished Claude Code run's terminal status.
+
+    Stub for the red contract run: returns ``existing_status`` unchanged.
+    """
+    return existing_status
+
+
+# ---------------------------------------------------------------------------
 # Subprocess helpers
 # ---------------------------------------------------------------------------
 
@@ -803,6 +820,30 @@ def _run_claude_agent_sync(
     return json.dumps(gated, ensure_ascii=False)
 
 
+def _claude_background_status(payload: Dict[str, Any]) -> str:
+    """Collapse a finished sync payload into the shared delegation status.
+
+    Success reads ``completed``, anything else ``error``; the run's own
+    ``interrupted``/``timeout`` verdict and the worker thread's interrupt
+    bit keep precedence over every other classification.
+    """
+    status = "completed" if payload.get("success") else "error"
+    if payload.get("error") in ("interrupted", "timeout"):
+        status = payload["error"]
+    try:
+        from tools.interrupt import is_interrupted
+
+        if is_interrupted():
+            # This thread's interrupt bit is only ever set by
+            # `_signal_runner_interrupt`, so a run that ended because of a
+            # stop request reports `interrupted` even when the direct
+            # process kill won the race against the cooperative poll.
+            status = "interrupted"
+    except Exception:
+        pass
+    return status
+
+
 def _dispatch_claude_background(
     cmd: List[str],
     *,
@@ -859,20 +900,7 @@ def _dispatch_claude_background(
             task_text=task_text,
         )
         payload = json.loads(out)
-        status = "completed" if payload.get("success") else "error"
-        if payload.get("error") in ("interrupted", "timeout"):
-            status = payload["error"]
-        try:
-            from tools.interrupt import is_interrupted
-
-            if is_interrupted():
-                # This thread's interrupt bit is only ever set by
-                # `_signal_runner_interrupt`, so a run that ended because of
-                # a stop request reports `interrupted` even when the direct
-                # process kill won the race against the cooperative poll.
-                status = "interrupted"
-        except Exception:
-            pass
+        status = _claude_background_status(payload)
         # Same vocabulary `_run_single_child` produces, so the shared
         # completion block renders a claude run exactly like any other
         # delegation; the run artifacts ride along additively.
