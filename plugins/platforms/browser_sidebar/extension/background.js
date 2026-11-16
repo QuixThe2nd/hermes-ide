@@ -75,10 +75,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'get_status':
       sendResponse({ connected, error: fatalConnectError || connectError });
       return;
-    case 'open_sidebar': // content script saw Command/Ctrl+B
-      openSidePanel(lastFocusedNormalWindowId);
-      sendResponse({ ok: true });
-      return;
     case 'send_chat':
       sendChat(msg.text).then(sendResponse, (err) =>
         sendResponse({ ok: false, error: String((err && err.message) || err) }),

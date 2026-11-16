@@ -10,6 +10,7 @@ const BAD_TOKEN_CHARS = /[\/+=]/;
 
 const statusEl = document.getElementById('status');
 const errorEl = document.getElementById('error');
+const openSidebarEl = document.getElementById('open-sidebar');
 const formEl = document.getElementById('token-form');
 const tokenEl = document.getElementById('token');
 
@@ -32,6 +33,17 @@ function showFormError(message) {
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg && msg.kind === 'status') applyStatus(msg);
+});
+
+// Opens the side panel from the popup's own click gesture — calling
+// sidePanel.open() from the service worker after a runtime.sendMessage
+// round trip loses the user-gesture context Chrome requires.
+openSidebarEl.addEventListener('click', () => {
+  chrome.windows
+    .getCurrent()
+    .then((win) => chrome.sidePanel.open({ windowId: win.id }))
+    .then(() => window.close())
+    .catch((err) => showFormError('Could not open sidebar: ' + String((err && err.message) || err)));
 });
 
 formEl.addEventListener('submit', (event) => {
