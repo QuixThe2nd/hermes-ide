@@ -21,27 +21,29 @@ import (
 const MissingArtifactEgress = "missing artifact egress"
 
 // Manifest is the verified-artifact record attached to a successful result.
+// The json tags mirror the wire object tools/cursor_agent_tool.py attaches
+// as artifact_manifest, so VerifyResultJSON can unmarshal it directly.
 type Manifest struct {
 	// CheckoutPath is the worker checkout root for disk verification, or
 	// empty when the manifest was rebuilt from a stream snapshot.
-	CheckoutPath string
+	CheckoutPath string `json:"checkout_path"`
 	// SourceBase is the dispatched source_base_sha. Never a branch name.
-	SourceBase string
+	SourceBase string `json:"source_base"`
 	// HeadSHA is the worker checkout HEAD for disk verification.
-	HeadSHA string
+	HeadSHA string `json:"head_sha"`
 	// TreeSHA is git HEAD^{tree} for disk verification, or the canonical
 	// hash of the sorted file list for stream verification.
-	TreeSHA string
+	TreeSHA string `json:"tree_sha"`
 	// Files carries one recomputed sha256 per changed file.
-	Files []ManifestFile
+	Files []ManifestFile `json:"files"`
 	// Source is "disk" or "stream".
-	Source string
+	Source string `json:"source"`
 }
 
 // ManifestFile is a single path plus the sha256 of its bytes.
 type ManifestFile struct {
-	Path   string
-	SHA256 string
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
 }
 
 // Result reports whether a FINISHED run may be surfaced as success.
@@ -49,6 +51,62 @@ type Result struct {
 	Success  bool
 	Error    string
 	Manifest *Manifest
+}
+
+// MissingTestEvidence is the error the evidence gate writes when it
+// downgrades an unproven success; the manifest stays attached.
+const MissingTestEvidence = "missing_test_evidence"
+
+// ResultPayload is the FINISHED wire contract of the tool-result JSON
+// tools/cursor_agent_tool.py returns. Unknown keys are ignored; only the
+// success-carrying contract is restated here.
+type ResultPayload struct {
+	Success          bool      `json:"success"`
+	Error            string    `json:"error"`
+	ArtifactManifest *Manifest `json:"artifact_manifest"`
+}
+
+// VerifyResultJSON restates the FINISHED result-assembly contract: the
+// serialized payload is the product the caller inspects, so success is
+// legitimate only when the hash-verified manifest rides the JSON itself.
+// A dump taken before the manifest is attached — success=true with no
+// artifact_manifest — is that regression, not success. The evidence-gate
+// downgrade flips success off but keeps the manifest; a downgrade that
+// lost it is the same regression.
+func VerifyResultJSON(resultJSON []byte) Result {
+	var payload ResultPayload
+	if err := json.Unmarshal(resultJSON, &payload); err != nil {
+		return Result{
+			Success: false,
+			Error: fmt.Sprintf(
+				"%s: result payload is not valid JSON: %v",
+				MissingArtifactEgress, err,
+			),
+		}
+	}
+	manifest := payload.ArtifactManifest
+	if payload.Success {
+		if manifest == nil {
+			return Result{
+				Success: false,
+				Error: fmt.Sprintf(
+					"%s: success payload carries no artifact_manifest (dump taken before the manifest was attached)",
+					MissingArtifactEgress,
+				),
+			}
+		}
+		return VerifyFinished(manifest, nil)
+	}
+	if payload.Error == MissingTestEvidence && manifest == nil {
+		return Result{
+			Success: false,
+			Error: fmt.Sprintf(
+				"%s: %s downgrade lost the artifact_manifest",
+				MissingArtifactEgress, MissingTestEvidence,
+			),
+		}
+	}
+	return Result{Success: false, Error: payload.Error}
 }
 
 // SnapshotEvent mirrors the run-stream event shapes that can carry a full

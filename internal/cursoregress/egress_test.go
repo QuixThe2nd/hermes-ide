@@ -271,3 +271,82 @@ func TestStreamFramingRules(t *testing.T) {
 		t.Fatalf("error %q must contain %q", result.Error, MissingArtifactEgress)
 	}
 }
+
+func resultJSON(success bool, errText string, withManifest bool) []byte {
+	payload := map[string]any{
+		"success":      success,
+		"error":        errText,
+		"final_report": "worker writeup",
+		"cloud_status": "FINISHED",
+	}
+	if withManifest {
+		payload["artifact_manifest"] = map[string]any{
+			"checkout_path": "/srv/worker/checkout",
+			"source_base":   testSourceBase,
+			"head_sha":      "1111111111111111111111111111111111111112",
+			"tree_sha":      "1111111111111111111111111111111111111113",
+			"source":        "disk",
+			"files": []map[string]any{
+				{"path": "src/main.py", "sha256": shaOf("print('worker result')\n")},
+			},
+		}
+	}
+	raw, _ := json.Marshal(payload)
+	return raw
+}
+
+// The success payload must carry the manifest: a dump taken before the
+// manifest is attached is not success.
+func TestResultJSONSuccessRequiresManifest(t *testing.T) {
+	verified := VerifyResultJSON(resultJSON(true, "", true))
+	if !verified.Success {
+		t.Fatalf("success payload with a valid manifest must verify: %+v", verified)
+	}
+	if verified.Manifest == nil || verified.Manifest.Source != "disk" {
+		t.Fatalf("verified result must carry the disk manifest: %+v", verified.Manifest)
+	}
+
+	preManifestDump := VerifyResultJSON(resultJSON(true, "", false))
+	if preManifestDump.Success {
+		t.Fatalf("success=true without artifact_manifest is the pre-manifest dump, not success")
+	}
+	if !strings.Contains(preManifestDump.Error, MissingArtifactEgress) {
+		t.Fatalf("error %q must contain %q", preManifestDump.Error, MissingArtifactEgress)
+	}
+
+	// A manifest object that does not validate never launders success.
+	raw, _ := json.Marshal(map[string]any{"success": true, "artifact_manifest": map[string]any{}})
+	if hollow := VerifyResultJSON(raw); hollow.Success {
+		t.Fatalf("success with an empty manifest must not verify: %+v", hollow)
+	}
+
+	if broken := VerifyResultJSON([]byte("not-json")); broken.Success {
+		t.Fatalf("unparseable payload must not verify")
+	}
+}
+
+// The evidence-gate downgrade keeps the manifest while flipping success
+// off; losing it is the same regression.
+func TestResultJSONGateDowngradeKeepsManifest(t *testing.T) {
+	downgraded := VerifyResultJSON(resultJSON(false, MissingTestEvidence, true))
+	if downgraded.Success {
+		t.Fatalf("missing_test_evidence must stay downgraded")
+	}
+	if downgraded.Error != MissingTestEvidence {
+		t.Fatalf("error %q must be %q", downgraded.Error, MissingTestEvidence)
+	}
+
+	stripped := VerifyResultJSON(resultJSON(false, MissingTestEvidence, false))
+	if stripped.Success {
+		t.Fatalf("downgrade without a manifest must not verify")
+	}
+	if !strings.Contains(stripped.Error, MissingArtifactEgress) {
+		t.Fatalf("error %q must flag the lost manifest with %q", stripped.Error, MissingArtifactEgress)
+	}
+
+	// Plain egress failure carries no manifest and stays a failure.
+	failed := VerifyResultJSON(resultJSON(false, MissingArtifactEgress, false))
+	if failed.Success || !strings.Contains(failed.Error, MissingArtifactEgress) {
+		t.Fatalf("egress failure must pass through: %+v", failed)
+	}
+}
