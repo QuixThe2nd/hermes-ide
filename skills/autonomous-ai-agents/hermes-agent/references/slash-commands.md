@@ -76,7 +76,6 @@ it. New commands land often; `/help` in-session is always authoritative.
 ### Info
 ```
 /help                    Show commands
-/usage [reset]           Token usage and rate limits
 /insights [days]         Usage analytics
 /whoami                  Slash-command access level (admin/user)
 /profile                 Active profile info

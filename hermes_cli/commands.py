@@ -212,8 +212,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, busy_policy="dispatch"),
     CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True, busy_policy="dispatch", desktop="terminal"),
-    CommandDef("usage", "Show token usage and rate limits; `reset` redeems a banked Codex limit reset", "Info",
-               args_hint="[reset [--force]]"),
     CommandDef("insights", "Show usage insights and analytics", "Info",
                args_hint="[days]", desktop="advanced"),
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",
@@ -339,7 +337,7 @@ def should_bypass_active_session(command_name: str | None) -> bool:
     """True for any resolvable slash command: every recognized command is dispatched mid-run
     (Guard-2 handler or the "busy" catch-all), never queued — gateway.run's safety net discards
     command text reaching the pending queue, so a queued mid-run /model (or /reasoning,
-    /insights, /title, /resume, /retry, /undo, /compress, /usage, /reload-mcp, /reset)
+    /insights, /title, /resume, /retry, /undo, /compress, /reload-mcp, /reset)
     would silently interrupt the agent AND get discarded — a zero-char response. See issue
     #5057 / PRs #6252, #10370, #4665. ACTIVE_SESSION_BYPASS_COMMANDS remains the subset with
     explicit Level-2 handlers; the rest fall through to the catch-all.

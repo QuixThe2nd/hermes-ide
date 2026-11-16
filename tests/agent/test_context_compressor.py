@@ -1259,7 +1259,7 @@ class TestSummaryFallbackToMainModel:
         assert "model" not in mock_call.call_args_list[1].kwargs
         assert result is not None
         assert "summary via main model" in result
-        # Aux-model failure recorded so /usage / gateway warnings can surface it
+        # Aux-model failure recorded so gateway warnings can surface it
         assert c._last_aux_model_failure_model == "aux-via-broken-proxy"
         assert c._last_aux_model_failure_error is not None
         # The 220-char cap is shared with other fallback branches

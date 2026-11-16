@@ -303,7 +303,6 @@ _NATIVE_SLASH_COMMANDS: tuple = (
     ("resume", "Resume a previously-named session",
      (("name", str, "", "Session name to resume. Leave empty to list sessions.", None),),
      "/resume {name}", None),
-    ("usage", "Show token usage for this session", (), "/usage", None),
     ("help", "Show available commands", (), "/help", None),
     ("insights", "Show usage insights and analytics",
      (("days", int, 7, "Number of days to analyze (default: 7)", None),),

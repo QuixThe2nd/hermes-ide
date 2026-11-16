@@ -2467,9 +2467,6 @@ class GatewayInboundMixin:
         if canonical == "compress":
             return await self._handle_compress_command(event)
 
-        if canonical == "usage":
-            return await self._handle_usage_command(event)
-
         if canonical == "insights":
             return await self._handle_insights_command(event)
 

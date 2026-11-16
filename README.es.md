@@ -95,7 +95,7 @@ Hermes tiene dos puntos de entrada: inicia la interfaz de terminal con `hermes`,
 | Cambiar modelo                      | `/model [proveedor:modelo]`                   | `/model [proveedor:modelo]`                                                       |
 | Establecer personalidad             | `/personality [nombre]`                       | `/personality [nombre]`                                                           |
 | Reintentar o deshacer último turno  | `/retry`, `/undo`                             | `/retry`, `/undo`                                                                 |
-| Comprimir contexto / ver uso        | `/compress`, `/usage`, `/insights [--days N]` | `/compress`, `/usage`, `/insights [days]`                                         |
+| Comprimir contexto / ver uso        | `/compress`, `/insights [--days N]`           | `/compress`, `/insights [days]`                                                   |
 | Explorar habilidades                | `/skills` o `/<nombre-habilidad>`             | `/<nombre-habilidad>`                                                             |
 | Interrumpir trabajo actual          | `Ctrl+C` o enviar un nuevo mensaje            | `/stop` o enviar un nuevo mensaje                                                 |
 | Estado específico de plataforma     | `/platforms`                                  | `/status`, `/platform`                                                           |

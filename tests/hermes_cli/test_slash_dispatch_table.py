@@ -17,7 +17,7 @@ OLD_CHAIN_COMMANDS = [
     "prompt", "undo", "branch", "worktree", "save", "cron", "suggestions",
     "blueprint", "skills", "learn", "init", "memory",
     "platforms", "status", "context", "statusbar", "diff", "battery",
-    "timestamps", "verbose", "focus", "compress", "usage", "subscription", "insights", "copy",
+    "timestamps", "verbose", "focus", "compress", "subscription", "insights", "copy",
     "debug", "update", "version", "paste", "image", "reload", "reload-mcp",
     "reload-skills", "browser", "plugins", "rollback", "snapshot",
     "export", "import", "stop", "agents", "journey", "bg", "btw", "queue",

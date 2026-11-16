@@ -1103,7 +1103,7 @@ class GatewayBusySessionMixin:
     _IDLE_COMMANDS = (
         "topic", "whoami", "platform", "stop", "memory", "skills",
         "codex-runtime", "suggestions", "save", "retry",
-        "setnotify", "clearnotify", "compress", "usage", "insights", "reload-mcp", "reload-skills",
+        "setnotify", "clearnotify", "compress", "insights", "reload-mcp", "reload-skills",
         "debug", "title", "resume", "sessions", "branch", "rollback", "diff",
         "loop", "refine", "review",
     )
@@ -1146,7 +1146,7 @@ class GatewayBusySessionMixin:
         Order: ``busy_handler`` (mid-run variant) → ``busy_policy == "dispatch"`` (normal handler)
         → catch-all reject text. Rejecting is required rather than falling through to
         interrupt + discard: commands like /insights, /title,
-        /resume, /retry, /undo, /compress, /usage, /reload-mcp, /setnotify (all
+        /resume, /retry, /undo, /compress, /reload-mcp, /setnotify (all
         registered as Discord slash commands) would interrupt the agent AND get silently
         discarded by the slash-command safety net, producing a zero-char response.
         See #5057, #6252, #10370.

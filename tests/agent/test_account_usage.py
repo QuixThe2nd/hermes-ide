@@ -256,7 +256,7 @@ def test_codex_usage_retries_401_with_forced_refresh(monkeypatch, codex_usage_pa
     assert request_calls == ["Bearer revoked-token", "Bearer fresh-token"]
 
 
-# ── Banked rate-limit reset credits (`/usage reset`) ─────────────────────────
+# ── Banked rate-limit reset credits ─────────────────────────────────────────
 
 
 class _FakeResetClient:

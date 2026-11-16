@@ -551,7 +551,7 @@ _TURN_STATE: Dict[str, Any] = {
     # Registry generation of the tool snapshot (set in _load_tools): a late refresh rejects
     # a stale rebuild instead of clobbering a newer one.
     "_tool_snapshot_generation": 0,
-    "_rate_limit_state": None,  # from x-ratelimit-* headers; read by /usage
+    "_rate_limit_state": None,  # captured from x-ratelimit-* response headers
     "_or_cache_hits": 0,  # X-OpenRouter-Cache-Status: HIT count
 }
 
