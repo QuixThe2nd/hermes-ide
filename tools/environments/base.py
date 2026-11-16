@@ -309,6 +309,52 @@ class BaseEnvironment(ABC):
         except Exception as probe_exc:
             return False, f"{detail}; non-login probe: {probe_exc}"
 
+    # --- Shell identity (delegate children share this environment) ---
+
+    _IDENTITY_OP_TIMEOUT_S = 30
+
+    def capture_shell_identity(self, names: Iterable[str]) -> dict[str, str | None]:
+        """Probe the live shell for each name in *names*: its exact value when
+        the name is exported there, ``None`` when it is absent (a set-but-empty
+        value stays ``""``, distinct from unset). Each answer is fenced by NUL
+        delimiters — env values cannot contain NUL — so values with spaces,
+        single quotes or newlines round-trip exactly, with no marker-line
+        parsing for shell noise to corrupt. Raises when the probe fails so the
+        caller can fall back to the process environment."""
+        safe_names = [str(name) for name in names if _SHELL_ENV_NAME_RE.fullmatch(str(name))]
+        if not safe_names:
+            return {}
+        probes = "; ".join(
+            f'printf \'%s\\0%s\\0\' "${{{name}+s}}" "${{{name}-}}"' for name in safe_names)
+        result = self.execute(probes, timeout=self._IDENTITY_OP_TIMEOUT_S, rewrite_compound_background=False)
+        if int(result.get("returncode") or 0) != 0:
+            raise RuntimeError(f"shell identity probe failed with exit code {result.get('returncode')}")
+        chunks = (result.get("output") or "").split("\0")
+        if len(chunks) < 2 * len(safe_names):
+            raise RuntimeError(f"shell identity probe output was truncated: {result.get('output')!r}")
+        return {
+            name: (chunks[2 * i + 1] if chunks[2 * i] == "s" else None)
+            for i, name in enumerate(safe_names)}
+
+    def restore_shell_identity(self, captured: dict[str, str | None]) -> None:
+        """Run ONE shell command that exports every present name in *captured*
+        with POSIX-safe quoting and unsets every absent name, then return —
+        ``execute``'s per-command env re-dump persists the values into the
+        shared snapshot, so the file is never written by hand. Names outside
+        *captured* are never touched."""
+        statements: list[str] = []
+        for name in sorted(captured):
+            if not _SHELL_ENV_NAME_RE.fullmatch(str(name)):
+                raise ValueError(f"refusing to restore malformed shell variable name {name!r}")
+            value = captured[name]
+            statements.append(f"unset {name}" if value is None else f"export {name}={shlex.quote(value)}")
+        if not statements:
+            return
+        result = self.execute(
+            "; ".join(statements), timeout=self._IDENTITY_OP_TIMEOUT_S, rewrite_compound_background=False)
+        if int(result.get("returncode") or 0) != 0:
+            raise RuntimeError(f"shell identity restore failed with exit code {result.get('returncode')}")
+
     # --- Command wrapping ---
     @staticmethod
     def _quote_cwd_for_cd(cwd: str) -> str:
