@@ -150,6 +150,15 @@ jobs:
     needs: detect
     uses: ./.github/workflows/case-collision-check.yml
 
+  # Required line-balance gate: a diff may not add more Python lines than
+  # Go lines. Unconditional (no classifier gate) — it must measure every
+  # PR and every push to main, and a missing/skipped result must fail
+  # `all-checks-pass`, not silently satisfy it.
+  go-line-balance:
+    name: Go line balance
+    needs: detect
+    uses: ./.github/workflows/go-line-balance.yml
+
   lazy-deps-guard:
     name: No imports of deleted tools.lazy_deps
     needs: detect
@@ -212,6 +221,7 @@ jobs:
       - contributor-check
       - uv-lockfile
       - case-collision-check
+      - go-line-balance
       - lazy-deps-guard
       - lockfile-diff
       - docker-lint
