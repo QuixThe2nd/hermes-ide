@@ -67,6 +67,7 @@ from tools.agent_cli_runner import (
     _clamp_timeout_seconds as _clamp_timeout_seconds_impl,
     _terminate_process,
 )
+from tools.cursor_artifact_egress import verify_finished_egress
 from tools.cursor_run_receipts import (
     ReceiptValidationError,
     MAX_RECOVERY_ATTEMPTS,
@@ -135,6 +136,8 @@ DEFAULT_ORCHESTRATION_PROMPT = (
 POST_TIMEOUT_SECONDS = 30.0
 HTTP_TIMEOUT_SECONDS = 30.0
 POLL_INTERVAL_SECONDS = 2.0
+SOURCE_BASE_PROBE_SECONDS = 15
+_FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 WORKER_LOG_MAX_BYTES = 256 * 1024
 WORKER_READY_ATTEMPTS = 5
 WORKER_READY_DELAY_SECONDS = 0.5
@@ -1368,6 +1371,8 @@ def _authoritative_terminal_reconcile(
         log_path=str(receipt.get("log_path") or ""),
         attempt_id=str(receipt.get("attempt_id") or ""),
         task_text=str(receipt.get("task") or ""),
+        receipt=receipt,
+        api_key=api_key,
     )
     finalize_receipt(
         receipt_path,
@@ -1522,6 +1527,8 @@ def _build_cloud_tool_result_from_run(
     progress_url: Optional[str] = None,
     attempt_id: Optional[str] = None,
     task_text: str = "",
+    receipt: Optional[Dict[str, Any]] = None,
+    api_key: str = "",
 ) -> Tuple[str, bool, str, Optional[str]]:
     fields = _cloud_result_fields(
         agent=agent,
@@ -1546,13 +1553,38 @@ def _build_cloud_tool_result_from_run(
             cloud_status,
         )
     if cloud_status == "FINISHED":
-        result_json = _make_cloud_tool_result(
-            success=True, error=None, attempt_id=attempt_id, **fields
+        # FINISHED alone is the agent's own writeup; success needs a
+        # hash-verified artifact manifest from this host's worker
+        # checkout or a complete run stream.
+        egress = verify_finished_egress(
+            receipt if isinstance(receipt, dict) else {},
+            api_key=api_key,
+            machine_name=CURSOR_MACHINE_NAME,
+            api_base=CURSOR_API_BASE,
         )
-        payload = json.loads(result_json)
+        payload = json.loads(
+            _make_cloud_tool_result(
+                success=True, error=None, attempt_id=attempt_id, **fields
+            )
+        )
+        if egress.get("success") is not True:
+            payload["success"] = False
+            payload["error"] = str(egress.get("error") or "missing artifact egress")
+            return (
+                json.dumps(payload, ensure_ascii=False),
+                False,
+                "failed",
+                cloud_status,
+            )
+        manifest = egress.get("manifest")
+        if isinstance(manifest, dict):
+            payload["artifact_manifest"] = manifest
+        # Serialize AFTER the manifest is attached: the returned string is
+        # what the caller inspects, so a pre-manifest dump must never be
+        # the returned success payload even when the gate passes the
+        # payload object through unchanged.
         gated = apply_evidence_gate(payload, task_text=task_text, config=_cfg())
-        if gated is not payload:
-            result_json = json.dumps(gated, ensure_ascii=False)
+        result_json = json.dumps(gated, ensure_ascii=False)
         success = gated.get("success") is True
         return (
             result_json,
@@ -1595,6 +1627,29 @@ def _build_cloud_tool_result_from_run(
     )
 
 
+def _resolve_source_base_sha(workdir: str, starting_ref: Optional[str]) -> Optional[str]:
+    """SHA the cloud run starts from: the starting ref when set, else HEAD.
+
+    15 s cap; any failure resolves to None so dispatch never raises on a
+    git probe and egress fails closed instead.
+    """
+    target = starting_ref or "HEAD"
+    try:
+        proc = subprocess.run(
+            ["git", "-C", workdir, "rev-parse", target],
+            capture_output=True,
+            text=True,
+            timeout=SOURCE_BASE_PROBE_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    sha = (proc.stdout or "").strip()
+    return sha if _FULL_SHA_RE.fullmatch(sha) else None
+
+
 def _execute_cloud_delegation(
     *,
     task: str,
@@ -1616,6 +1671,14 @@ def _execute_cloud_delegation(
     starting_ref = resolve_workdir_starting_ref(str(workdir_path))
     model_name = str(model or receipt.get("model") or "").strip() or None
     force_enabled = is_truthy_value(force, default=True)
+    # Artifact egress matches the worker checkout against the SHA that was
+    # actually dispatched. Persist it before create; a failed probe stores
+    # null and egress later fails closed rather than raising out of dispatch.
+    source_base_sha = _resolve_source_base_sha(str(workdir_path), starting_ref)
+    try:
+        receipt = update_receipt(receipt_path, source_base_sha=source_base_sha) or receipt
+    except Exception:  # noqa: BLE001 - a receipt write must not kill dispatch
+        pass
 
     log_path = Path(str(receipt.get("log_path") or ""))
     log_dir = log_path.parent
@@ -1644,6 +1707,8 @@ def _execute_cloud_delegation(
                 log_path=str(log_path),
                 attempt_id=str(receipt.get("attempt_id") or ""),
                 task_text=task,
+                receipt=receipt,
+                api_key=api_key,
             )
             finalize_receipt(
                 receipt_path,
@@ -1681,6 +1746,8 @@ def _execute_cloud_delegation(
                     log_path=str(log_path),
                     attempt_id=str(receipt.get("attempt_id") or ""),
                     task_text=task,
+                    receipt=receipt,
+                    api_key=api_key,
                 )
                 finalize_receipt(
                     receipt_path,
@@ -1819,6 +1886,8 @@ def _execute_cloud_delegation(
         progress_url=progress_url,
         attempt_id=str(receipt.get("attempt_id") or ""),
         task_text=task,
+        receipt=receipt,
+        api_key=api_key,
     )
     finalize_receipt(
         receipt_path,
@@ -2804,7 +2873,7 @@ CURSOR_AGENT_SCHEMA = {
         "the local branch as startingRef when that branch exists on origin). "
         "Unpushed commits and dirty working-tree changes are invisible to the "
         "run; the tool refuses to start when local HEAD is ahead of origin. "
-        "Nothing runs on this host. Does not open a PR or request reviewers. "
+        "The run is routed to the My Machines worker on this host. Success requires a hash-verified artifact from that worker checkout or a complete stream snapshot, not the agent's writeup. Does not push, open a PR, or request reviewers. "
         "Available only when the Cursor Agent CLI binary is installed."
     ),
     "parameters": {

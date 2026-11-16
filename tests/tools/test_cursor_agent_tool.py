@@ -463,6 +463,16 @@ def _install_cloud_happy_path(
     monkeypatch.setattr(cursor_agent_tool, "WORKER_READY_ATTEMPTS", 1)
     monkeypatch.setattr(cursor_agent_tool, "WORKER_READY_DELAY_SECONDS", 0)
     monkeypatch.setattr(cursor_agent_tool, "POLL_INTERVAL_SECONDS", 0)
+    from tools import cursor_artifact_egress
+
+    monkeypatch.setattr(
+        cursor_artifact_egress, "discover_checkout_roots", lambda *a, **k: []
+    )
+    monkeypatch.setattr(
+        cursor_artifact_egress,
+        "_http_get_stream",
+        lambda url, *, api_key, timeout: b"",
+    )
     notices: list[str] = []
     if stub_progress_notice:
         monkeypatch.setattr(cursor_agent_tool, "_emit_progress_notice", lambda message: notices.append(message))
@@ -513,12 +523,15 @@ def test_happy_path_e2e(monkeypatch, tmp_path):
         )
     )
 
-    assert result["success"] is True
+    # No verified artifact here (no worker checkout, empty stream) → FINISHED
+    # must be reported as failure.
+    assert result["success"] is False
+    assert "missing artifact egress" in result["error"]
     assert result["final_report"] == "Final implementation report."
     assert result["delegations"] == []
     client_id = _default_client_agent_id()
     assert result["session_id"] == client_id
-    assert result["error"] is None
+    assert "missing artifact egress" in result["error"]
     assert result["agent_id"] == client_id
     assert result["run_id"] == "run-aaaa"
     assert result["cloud_status"] == "FINISHED"
@@ -1227,7 +1240,8 @@ def test_child_env_guarantees_home_and_local_bin(monkeypatch, tmp_path):
         )
     )
 
-    assert result["success"] is True, result.get("error")
+    assert result["success"] is False, result.get("error")
+    assert "missing artifact egress" in result["error"]
     dumped = json.dumps(captured.get("payload", {}))
     assert "test-secret-key" not in dumped
     assert "CURSOR_API_KEY" not in dumped
@@ -1546,7 +1560,7 @@ def test_timeout_dedupe_retries_when_unlisted(monkeypatch):
 @pytest.mark.parametrize(
     "status,expect_success,expect_error",
     [
-        ("FINISHED", True, None),
+        ("FINISHED", False, "missing artifact egress"),
         ("ERROR", False, "boom"),
         ("CANCELLED", False, "cancelled"),
         ("EXPIRED", False, "expired"),
@@ -1575,7 +1589,7 @@ def test_poll_statuses_map_to_final_json(monkeypatch, tmp_path, status, expect_s
         assert result["error"] is None
         assert result["final_report"] == "done"
     else:
-        assert result["error"] == expect_error
+        assert expect_error in result["error"]
 
 
 @pytest.mark.parametrize(
@@ -1975,7 +1989,8 @@ def test_local_only_branch_omits_starting_ref(monkeypatch, tmp_path):
             workdir=str(repo.resolve()),
         )
     )
-    assert result["success"] is True
+    assert result["success"] is False
+    assert "missing artifact egress" in result["error"]
     assert "startingRef" not in captured["payload"]["repos"][0]
 
 
@@ -2019,7 +2034,8 @@ def _run_no_push_delegate(monkeypatch, tmp_path, *, mutate):
 
 def test_no_push_restored_on_success(monkeypatch, tmp_path):
     result, captured = _run_no_push_delegate(monkeypatch, tmp_path, mutate=lambda *_: None)
-    assert result["success"] is True, result.get("error")
+    assert result["success"] is False, result.get("error")
+    assert "missing artifact egress" in result["error"]
     # no local process runs git on the caller's behalf anymore
     assert "GH_TOKEN" not in json.dumps(captured["payload"])
 
@@ -2117,7 +2133,8 @@ def test_progress_url_emitted_once_before_poll_via_handle_function_call(monkeypa
         )
 
     result = json.loads(raw)
-    assert result["success"] is True
+    assert result["success"] is False
+    assert "missing artifact egress" in result["error"]
     assert result["progress_url"] == expected
     assert received == [f"Cursor Cloud Agent: {expected}"]
     assert poll_saw == [1]
@@ -2176,7 +2193,8 @@ def test_progress_notice_is_noop_without_tool_status_context(monkeypatch, tmp_pa
         skip_tool_execution_middleware=True,
     )
     result = json.loads(raw)
-    assert result["success"] is True
+    assert result["success"] is False
+    assert "missing artifact egress" in result["error"]
     assert result["progress_url"] == expected
     assert poll_saw == [0]
 
