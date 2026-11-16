@@ -2304,6 +2304,9 @@ def run_job(
 
     agent = None
     model = ""
+    # The agent result dict survives into the except handler so the unreachable-model
+    # classifier can read the structured verdict instead of pattern-matching prose.
+    result: Optional[dict] = None
     _session_db = None
     _audit: Optional[_FireAudit] = None
     _worker_state: dict = {}
@@ -2353,7 +2356,7 @@ def run_job(
         # tail can schedule a bounded automatic re-run instead of waiting a full period.
         try:
             from cron.unreachable_retry import is_model_unreachable_failure
-            if is_model_unreachable_failure(e, agent):
+            if is_model_unreachable_failure(e, agent, result=result):
                 job["_model_unreachable"] = True
             # Provider usage window closed for a known duration (cron/quota_hold.py): flag it so the
             # bookkeeping tail parks the job past the window instead of re-firing into it (#89376).
