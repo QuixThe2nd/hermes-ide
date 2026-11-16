@@ -214,8 +214,44 @@ def test_claude_success_with_evidence_passes_through(monkeypatch, tmp_path):
 
 
 def _run_cursor_delegate(monkeypatch, tmp_path: Path, *, evidence):
-    from tools import cursor_agent_tool
+    import subprocess
+
+    from tools import cursor_agent_tool, cursor_artifact_egress
     from tools.cursor_run_receipts import deterministic_client_agent_id
+
+    # A matching on-disk worker checkout so egress verifies from disk and
+    # the gate under test (test evidence) is the only failure mode left.
+    repo = tmp_path / "worker-checkout"
+    repo.mkdir(parents=True)
+
+    def _git(*args: str) -> str:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return proc.stdout.strip()
+
+    _git("init", "-q", "-b", "main")
+    _git("config", "user.email", "worker@example.invalid")
+    _git("config", "user.name", "Worker")
+    rel = "src/main.py"
+    (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+    (repo / rel).write_text("print('base')\n", encoding="utf-8")
+    _git("add", "-A")
+    _git("commit", "-q", "-m", "base")
+    base_sha = _git("rev-parse", "HEAD")
+    (repo / rel).write_text("print('worker result')\n", encoding="utf-8")
+    _git("add", "-A")
+    _git("commit", "-q", "-m", "worker changes")
+
+    monkeypatch.setattr(
+        cursor_agent_tool, "_resolve_source_base_sha", lambda workdir, ref: base_sha
+    )
+    monkeypatch.setattr(
+        cursor_artifact_egress, "discover_checkout_roots", lambda *a, **k: [str(repo)]
+    )
 
     workdir = tmp_path / "repo"
     workdir.mkdir()

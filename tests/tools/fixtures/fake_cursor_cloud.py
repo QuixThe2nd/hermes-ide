@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from typing import Any, Callable, Dict, Optional, Tuple
+
+from tools import cursor_artifact_egress
 
 
 def _noop_popen(*args, **kwargs):
@@ -17,8 +20,22 @@ def _noop_popen(*args, **kwargs):
         def wait(self, timeout=None):
             return 0
 
-    return _Proc()
 
+def complete_stream_body(rel: str = "src/app.py", content: str = "x = 1\n") -> bytes:
+    """A complete SSE run stream: one full-file snapshot plus turn-ended."""
+    edit_event = {
+        "callId": "call-1",
+        "name": "edit_file",
+        "status": "completed",
+        "args": {"path": f"/workspace/{rel}"},
+        "result": {
+            "success": {"path": f"/workspace/{rel}", "afterFullFileContent": content}
+        },
+    }
+    return (
+        f"data: {json.dumps(edit_event)}\n\n"
+        f'data: {json.dumps({"type": "turn-ended"})}\n\n'
+    ).encode("utf-8")
 
 class FakeCursorCloud:
     def __init__(self) -> None:
@@ -36,6 +53,8 @@ class FakeCursorCloud:
         self.terminal_status = "FINISHED"
         self.result_text = "cloud done"
         self.on_create: Optional[Callable[[Dict[str, Any]], None]] = None
+        self.stream_body = b""
+        self.stream_get_calls = 0
 
     def reset_counters(self) -> None:
         self.create_calls = 0
@@ -181,3 +200,15 @@ class FakeCursorCloud:
         monkeypatch.setattr(cursor_agent_tool, "create_agent_with_timeout_dedupe", _create_agent_with_timeout_dedupe)
         monkeypatch.setattr(cursor_agent_tool, "poll_cloud_run", _poll_cloud_run)
         monkeypatch.setattr(cursor_agent_tool, "_http_request", _http_request)
+
+        def _stream_fetch(url, *, api_key, timeout):
+            del api_key, timeout
+            cloud.stream_get_calls += 1
+            if not url.endswith("/stream"):
+                raise AssertionError(f"unexpected fake stream url: {url}")
+            return cloud.stream_body
+
+        monkeypatch.setattr(cursor_artifact_egress, "_http_get_stream", _stream_fetch)
+        monkeypatch.setattr(
+            cursor_artifact_egress, "discover_checkout_roots", lambda *a, **k: []
+        )
