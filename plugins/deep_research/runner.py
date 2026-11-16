@@ -430,11 +430,20 @@ class ResearchRunner:
             )
             return
         retry = citations_mod.validate_citations(corrected, evidence_urls)
+        final_text = corrected
+        if not retry.ok:
+            # Safe leftovers (unledgered-only Sources items, unledgered URLs
+            # riding beside ledgered ones) strip mechanically; a body line
+            # whose only URL is unledgered survives the strip and fails below.
+            stripped = citations_mod.strip_safe_unledgered_urls(corrected, evidence_urls)
+            retry = citations_mod.validate_citations(stripped, evidence_urls)
+            if retry.ok:
+                final_text = stripped
         self._record_synthesis(
             directory, attempts=2, correction_used=True, citation_errors=retry.errors
         )
         if retry.ok:
-            self._publish(directory, corrected)
+            self._publish(directory, final_text)
             return
         self._preserve_and_fail(
             directory, corrected,
