@@ -2598,3 +2598,241 @@ def test_delegate_refuses_unpushed_workdir(monkeypatch, tmp_path):
     assert result["success"] is False
     assert "unpushed commit" in result["error"]
     assert called == []
+
+
+_BRANCH_VERIFY_400 = (
+    "Cursor Cloud Agent API error (POST /v1/agents): HTTP 400: "
+    '{"code":"validation_error","message":"Failed to verify existence of '
+    "branch 'feature/DEV-029' in repository filnos/monolith.\"}"
+)
+_MODEL_ID_400 = (
+    "Cursor Cloud Agent API error (POST /v1/agents): HTTP 400: "
+    '{"code":"validation_error","message":"model id is invalid"}'
+)
+
+
+def _refusal_message(
+    *,
+    branch="'feature/DEV-029'",
+    repo="filnos/monolith.",
+    status="HTTP 400",
+    code="validation_error",
+    verb="POST /v1/agents",
+):
+    return (
+        f"Cursor Cloud Agent API error ({verb}): {status}: "
+        f'{{"code":"{code}","message":"Failed to verify existence of '
+        f'branch {branch} in repository {repo}"}}'
+    )
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        (_BRANCH_VERIFY_400, True),
+        (_refusal_message(), True),
+        (_refusal_message(branch="'release/2.0-hotfix'"), True),
+        (_refusal_message(branch='"feature/DEV-029"'), True),
+        (_refusal_message(repo="filnos/monolith"), True),
+        (_refusal_message(repo="acme.dev/mono_lith-2"), True),
+        (_refusal_message(branch="''"), False),
+        (_refusal_message(branch="'feature/DEV-029\""), False),
+        (_MODEL_ID_400, False),
+        (_refusal_message(status="HTTP 500"), False),
+        (_refusal_message(status="HTTP 409"), False),
+        (_refusal_message(code="internal_error"), False),
+        (_refusal_message(verb="GET /v1/agents"), False),
+        ("", False),
+    ],
+)
+def test_private_org_branch_verify_matcher_contract(message, expected):
+    from tools.cursor_agent_private_org import is_private_org_branch_verify_refusal
+
+    assert is_private_org_branch_verify_refusal(message) is expected
+
+
+def _install_private_org_refusal(monkeypatch, tmp_path, *, cursor_body, claude):
+    """Wire a delegate_cursor_agent run whose POST /v1/agents 400s once.
+
+    ``claude`` receives the recorded delegate_claude_agent call and returns
+    its JSON text, or raises to model an unavailable Claude. Returns the
+    recorded HTTP calls and Claude calls. No live HTTP leaves the process.
+    """
+    from tools import cursor_agent_tool
+
+    secret = tmp_path / "cursor-cloud.env"
+    secret.write_text("CURSOR_API_KEY=test-secret-key\n", encoding="utf-8")
+    monkeypatch.setattr(cursor_agent_tool, "CURSOR_CLOUD_ENV_PATH", secret)
+    monkeypatch.setattr(cursor_agent_tool, "resolve_cursor_agent_binary", lambda: "/usr/bin/agent")
+    monkeypatch.setattr(
+        cursor_agent_tool,
+        "resolve_workdir_origin",
+        lambda workdir: "https://github.com/filnos/monolith",
+    )
+    monkeypatch.setattr(
+        cursor_agent_tool,
+        "resolve_workdir_starting_ref",
+        lambda workdir: "feature/DEV-029",
+    )
+    http_calls: list[dict] = []
+
+    def _http(method, path, *, api_key, json_body=None, **kwargs):
+        http_calls.append({"method": method, "path": path, "json_body": json_body})
+        raise cursor_agent_tool.CursorCloudError(cursor_body)
+
+    monkeypatch.setattr(cursor_agent_tool, "_http_request", _http)
+
+    claude_calls: list[dict] = []
+
+    def _claude(task, workdir, **kwargs):
+        call = {"task": task, "workdir": workdir, **kwargs}
+        claude_calls.append(call)
+        return claude(call)
+
+    monkeypatch.setattr("tools.claude_agent_tool.delegate_claude_agent", _claude)
+    return http_calls, claude_calls
+
+
+def _private_org_workdir(tmp_path):
+    workdir = tmp_path / "repo"
+    workdir.mkdir()
+    return workdir
+
+
+def test_branch_verify_400_fails_over_to_claude(monkeypatch, tmp_path):
+    def _claude(_call):
+        return json.dumps(
+            {"success": True, "error": None, "final_report": "landed the fix"}
+        )
+
+    http_calls, claude_calls = _install_private_org_refusal(
+        monkeypatch, tmp_path, cursor_body=_BRANCH_VERIFY_400, claude=_claude
+    )
+    workdir = _private_org_workdir(tmp_path)
+    task = "land the DEV-029 fix"
+
+    raw = _delegate(task=task, workdir=str(workdir.resolve()))
+    result = json.loads(raw)
+
+    assert len(http_calls) == 1  # one POST /v1/agents, no retry, no GET
+    post = http_calls[0]
+    assert (post["method"], post["path"]) == ("POST", "/v1/agents")
+    assert post["json_body"]["repos"][0]["startingRef"] == "feature/DEV-029"
+
+    assert len(claude_calls) == 1
+    call = claude_calls[0]
+    assert call["task"] == task
+    assert call["workdir"] == str(workdir.resolve())
+    assert call["background"] is False
+    assert call["permission_mode"] == "acceptEdits"
+    assert call.get("model") is None
+
+    assert result["success"] is True
+    assert result.get("fallback") == "claude_local"
+    assert (
+        result.get("fallback_note") == "Cursor refused the private-org branch and Claude ran"
+    )
+    assert result.get("claude_success") is True
+    assert result.get("claude_error") is None
+    assert (
+        "Failed to verify existence of branch 'feature/DEV-029'" in result.get("cursor_error", "")
+    )
+    assert result["final_report"] == "landed the fix"
+    assert "cloud_agent_id" not in result
+
+
+def test_branch_verify_400_claude_failed_run_reports_claude(monkeypatch, tmp_path):
+    def _claude(_call):
+        return json.dumps({"success": False, "error": "tests failed", "final_report": ""})
+
+    http_calls, claude_calls = _install_private_org_refusal(
+        monkeypatch, tmp_path, cursor_body=_BRANCH_VERIFY_400, claude=_claude
+    )
+    workdir = _private_org_workdir(tmp_path)
+
+    result = json.loads(_delegate(task="fix the bug", workdir=str(workdir.resolve())))
+
+    assert result["success"] is False
+    assert result.get("fallback") == "claude_local"
+    assert (
+        result.get("fallback_note") == "Cursor refused the private-org branch and Claude ran"
+    )
+    assert result.get("claude_success") is False
+    assert result.get("claude_error") == "tests failed"
+    assert len(http_calls) == 1
+    assert len(claude_calls) == 1
+
+
+def test_branch_verify_400_claude_raise_says_do_not_retry(monkeypatch, tmp_path):
+    def _claude(_call):
+        raise RuntimeError("claude binary missing")
+
+    http_calls, claude_calls = _install_private_org_refusal(
+        monkeypatch, tmp_path, cursor_body=_BRANCH_VERIFY_400, claude=_claude
+    )
+    workdir = _private_org_workdir(tmp_path)
+
+    raw = _delegate(task="fix the bug", workdir=str(workdir.resolve()))
+    result = json.loads(raw)
+
+    assert len(claude_calls) == 1
+    assert len(http_calls) == 1
+    assert result["success"] is False
+    error = result["error"]
+    assert "Failed to verify existence of branch 'feature/DEV-029'" in error
+    assert "do not retry this startingRef" in error
+    assert error.count("do not retry this startingRef") == 1
+    assert "Claude ran" not in raw
+    assert result.get("fallback") != "claude_local"
+
+
+def test_branch_verify_400_claude_wrapper_missing_says_do_not_retry(monkeypatch, tmp_path):
+    def _claude(_call):
+        return json.dumps(
+            {
+                "success": False,
+                "error": "Claude Code (GLM) wrapper binary not found. Install the wrapper.",
+                "final_report": "",
+            }
+        )
+
+    http_calls, claude_calls = _install_private_org_refusal(
+        monkeypatch, tmp_path, cursor_body=_BRANCH_VERIFY_400, claude=_claude
+    )
+    workdir = _private_org_workdir(tmp_path)
+
+    raw = _delegate(task="fix the bug", workdir=str(workdir.resolve()))
+    result = json.loads(raw)
+
+    assert len(claude_calls) == 1
+    assert len(http_calls) == 1
+    assert result["success"] is False
+    error = result["error"]
+    assert "Failed to verify existence of branch 'feature/DEV-029'" in error
+    assert "do not retry this startingRef" in error
+    assert error.count("do not retry this startingRef") == 1
+    assert "Claude ran" not in raw
+    assert result.get("fallback") != "claude_local"
+
+
+def test_other_400_keeps_hard_failure_without_claude(monkeypatch, tmp_path):
+    def _claude(_call):
+        return json.dumps({"success": True, "error": None, "final_report": "should not run"})
+
+    http_calls, claude_calls = _install_private_org_refusal(
+        monkeypatch, tmp_path, cursor_body=_MODEL_ID_400, claude=_claude
+    )
+    workdir = _private_org_workdir(tmp_path)
+
+    raw = _delegate(task="fix the bug", workdir=str(workdir.resolve()))
+    result = json.loads(raw)
+
+    assert claude_calls == []
+    assert result["success"] is False
+    assert result["error"] == _MODEL_ID_400
+    assert "Claude ran" not in raw
+    assert "do not retry this startingRef" not in raw
+    assert len(http_calls) == 1
+    post = http_calls[0]
+    assert (post["method"], post["path"]) == ("POST", "/v1/agents")
+    assert post["json_body"]["repos"][0]["startingRef"] == "feature/DEV-029"
