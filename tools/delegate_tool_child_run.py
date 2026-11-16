@@ -683,6 +683,7 @@ class _ChildRun:
     parent_task_id: Optional[str] = None
     wall_start: float = 0.0
     parent_reads_snapshot: list = field(default_factory=list)
+    shell_identity_guard: Any = None
 
     def elapsed(self) -> float:
         return round(time.monotonic() - self.child_start, 2)
@@ -794,6 +795,9 @@ class _ChildRun:
             finally:
                 # The adopting runner owns teardown: the blocking path skipped both the
                 # deferred close and the stop, so close the child once its worker settled.
+                # Release the identity guard before the close — by runner-settle time the
+                # worker's with-block has exited, so this is the idempotent second call.
+                self.shell_identity_guard.release()
                 _close_child(child, "Failed to close adopted child after worker exit")
 
         handle = async_delegation.dispatch_background_delegation(
@@ -835,10 +839,18 @@ class _ChildRun:
         _images = list(getattr(child, "_delegate_images", None) or [])
         user_message: Any = _build_child_goal_message(self.goal, _images, child) if _images else self.goal
 
+        # The child shares the parent's shell (container alias), so its exports land in
+        # the shared bash snapshot; the refcounted guard restores the parent identity
+        # when the LAST child exits. Created before submit: both release paths (the
+        # worker's with-block finally and the adopted-runner finally) share this one
+        # instance, whose release is idempotent.
+        from tools.shell_identity_guard import ShellIdentityGuard
+        self.shell_identity_guard = ShellIdentityGuard(self.child_task_id)
+
         def _run_with_thread_capture():
             worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
-            with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+            with delegated_child_context(str(getattr(child, "session_id", "") or "")), self.shell_identity_guard:
                 return child.run_conversation(
                     user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
                 )
