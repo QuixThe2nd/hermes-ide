@@ -67,6 +67,10 @@ from tools.agent_cli_runner import (
     _clamp_timeout_seconds as _clamp_timeout_seconds_impl,
     _terminate_process,
 )
+from tools.cursor_agent_private_org import (
+    claude_failover_result,
+    is_private_org_branch_verify_refusal,
+)
 from tools.cursor_run_receipts import (
     ReceiptValidationError,
     MAX_RECOVERY_ATTEMPTS,
@@ -1723,6 +1727,22 @@ def _execute_cloud_delegation(
             )
             return result_json
         except CursorCloudError as exc:
+            if is_private_org_branch_verify_refusal(str(exc)):
+                # Cursor cannot see branches in private-org repositories;
+                # retrying Cursor (same or dropped startingRef) can never
+                # produce a cloud run, so the task moves to Claude locally.
+                result_json, outcome = claude_failover_result(
+                    task=str(task),
+                    workdir=str(workdir_path),
+                    cursor_error=str(exc),
+                )
+                finalize_receipt(
+                    receipt_path,
+                    outcome=outcome,
+                    terminal_result={"result_json": result_json},
+                    log_path=str(log_path),
+                )
+                return result_json
             result_json = _make_result(success=False, error=str(exc))
             finalize_receipt(
                 receipt_path,
