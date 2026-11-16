@@ -2281,6 +2281,18 @@ class BasePlatformAdapter(ABC):
         """
         return SendResult(success=False, error="Not supported")
 
+    def create_vault_save_login_binding(
+        self, *, source, identity, session_key: str, loop, chat_id=None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        """Return a turn-scoped ``prompt(origin, host)`` / ``close()`` binding, or None.
+
+        The gateway installs only the save-login callback for this binding; unlock and OTP
+        remain unavailable unless a surface separately implements their masked-input contracts.
+        """
+        return None
+
+
     async def send_clarify(
         self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
         session_key: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:

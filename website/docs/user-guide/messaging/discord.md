@@ -105,6 +105,23 @@ Any knob at `0` disables the whole WebSocket liveness probe. Values that fail to
 
 `websocket_event_max_silence_seconds` is the exception: it guards a single dimension (event dispatch), so `0` opts out of **that check only** — ready/ACK/latency keep guarding. A socket can stay ESTABLISHED and keep ACKing heartbeats while delivering zero Gateway events; heartbeat ACKs are frames without an event type, so no transport-side check can see that state. The default (4 hours) matches the outage window operators have observed in the field; a quiet guild can legitimately go hours without a single Gateway event, so keep this bound generous unless you know your traffic.
 
+## Saving Browser Logins from Discord
+
+In an interactive Discord session, the browser save-login tool can post a one-time **Open unmasked modal** button in the requesting channel or thread. Only the user who requested the save can open or cancel that prompt. A submitted modal is consumed once; replays and new save requests do not reuse it.
+
+:::warning[Discord input is not a masked password prompt]
+Discord text inputs are **unmasked**, and Discord processes the submitted username and password. Hermes sends the submission directly to its existing vault-save callback, not through Discord message ingestion, the model, or session history. The values are not posted as chat messages. Use this transport only when that disclosure is acceptable for the credential.
+:::
+
+Prefer these local alternatives for sensitive credentials:
+
+- `hermes vault add`
+- **Desktop → Settings → Passwords & Logins**
+
+The prompt expires after **five minutes**. **Cancel**, timeout, Discord disconnect, or a prompt failure closes it without saving. Closing Discord's native modal with its X control does not notify Hermes and the same modal cannot be reopened; use **Cancel** on the original prompt or wait for it to expire.
+
+Master-password unlock and manually entered one-time-code prompts are **not available on Discord**. If the manager is locked, use the local `hermes vault add` or Desktop save alternatives above instead. External-manager unlock tokens live in process memory per profile: unlocking a separate CLI/Desktop process does not unlock a separately running Discord gateway. Saving an authenticator key with the login still lets supported one-time codes be generated automatically. Headless, cron, single-query, and API sessions never open these Discord prompts.
+
 ## Step 1: Create a Discord Application
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) and sign in with your Discord account.
