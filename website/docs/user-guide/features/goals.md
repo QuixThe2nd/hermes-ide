@@ -82,7 +82,7 @@ confidence are always logged (see the intent report below).
 | a task-like message (no active goal) | Starts a goal + one `🎯 Done when:` line. |
 | a task-like message (goal active) | Appended to the active goal as an extra criterion. No second goal. |
 | "yeah", "merge", "go ahead" (goal paused) | Resumes the paused goal (budget reset). No papercut. With nothing paused, it starts a goal from the approval — contract drafted like any other start. |
-| "status?", "so u done?", "it didnt work" | **Chase.** Reopens a goal that finished or paused within the last 30 minutes and appends `user says not done: <message>`; with no recent goal, starts one from the chase text plus the last assistant message. |
+| "status?", "so u done?", "it didnt work" | **Chase.** Reopens a goal that finished or paused within the last 30 minutes and appends `user says not done: <message>`; with no recent or active goal, the chase starts nothing — the normal reply answers it. |
 | "stop" | Pauses the active goal immediately and keeps the turn goal-free. |
 | "just answer" (anywhere in the message) | Skips goal machinery for that turn entirely. |
 | `done when: <condition>` (a line in your message) | Overrides the completion condition verbatim. |
@@ -125,7 +125,7 @@ not a loose "looks done" claim.
 ### Two ways a contract gets set
 
 **1. Automatically.** Whenever a message starts a goal — from any label
-(task, an approval with nothing paused, a chase with no recent goal) — the
+(task, an approval with nothing paused) — the
 `goal_judge` auxiliary model drafts a contract from the message (plus the
 assistant's last reply as context when there is one). If drafting is
 unavailable, the goal is set free-form and no `🎯` line is posted — drafting

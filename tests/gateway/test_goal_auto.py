@@ -317,7 +317,10 @@ async def test_chase_reopens_recently_done_goal_with_not_done_note(runner):
 
 
 @pytest.mark.asyncio
-async def test_chase_after_window_starts_goal_from_chase_text_and_last_reply(runner):
+async def test_chase_with_last_reply_and_no_goal_starts_nothing(runner):
+    """A chase carrying the assistant's last reply still must not mint a goal
+    when there is nothing to resume — the ordinary reply answers a "status?"
+    against an empty session."""
     from hermes_cli.goals import GoalContract
 
     with patch(
@@ -330,15 +333,63 @@ async def test_chase_after_window_starts_goal_from_chase_text_and_last_reply(run
             _source(),
         )
 
-    assert notice is None  # chase starts never send a 🎯 line
+    assert notice is None
+    assert _goal_state() is None
+    draft.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_chase_with_no_last_reply_and_no_goal_starts_nothing(runner):
+    """The empty-session case: no goal, no last assistant reply — same rule."""
+    from hermes_cli.goals import GoalContract
+
+    with patch(
+        "hermes_cli.goals.draft_contract",
+        return_value=GoalContract(outcome="a goal nobody asked for"),
+    ) as draft:
+        notice = await runner._apply_auto_goal_decision(
+            _decision("chase", "youve been restarted"),
+            _session_entry(),
+            _source(),
+        )
+
+    assert notice is None
+    assert _goal_state() is None
+    draft.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_chase_after_window_leaves_stale_done_goal_untouched(runner):
+    """A done goal outside the dedupe window is neither reopened, replaced by
+    a fresh goal, nor given the not-done note — a chase never restarts work."""
+    from hermes_cli.goals import GoalContract, GoalManager
+    from hermes_cli.goal_intent import CHASE_DEDUPE_WINDOW
+
+    mgr = GoalManager(session_id=SID)
+    mgr.set("fix the proxy")
+    mgr.add_subgoal("verify the health endpoint")
+    state = mgr.state
+    state.status = "done"
+    state.last_turn_at = time.time() - CHASE_DEDUPE_WINDOW.total_seconds() - 60.0
+    mgr._save()
+
+    with patch(
+        "hermes_cli.goals.draft_contract",
+        return_value=GoalContract(outcome="a fresh goal drafted from the chase"),
+    ) as draft:
+        notice = await runner._apply_auto_goal_decision(
+            _decision("chase", "status?", last_assistant="The proxy fix landed."),
+            _session_entry(),
+            _source(),
+        )
+
+    assert notice is None
     state = _goal_state()
-    assert state is not None and state.status == "active"
-    assert state.goal.startswith("status?")
-    assert "Still working on the proxy fix." in state.goal
-    # The started goal carries a drafted contract too — any label's start does.
-    assert state.contract.outcome == "the proxy fix is verified working"
-    # The chase goal text already quotes the reply; it is not duplicated.
-    assert draft.call_args.kwargs["objective"].count("Still working") == 1
+    assert state is not None
+    assert state.status == "done"  # not reopened
+    assert state.goal == "fix the proxy"  # not replaced by a goal named after the chase
+    assert state.subgoals == ["verify the health endpoint"]  # no not-done note
+    draft.assert_not_called()
 
 
 # ── suppression ───────────────────────────────────────────────────────
