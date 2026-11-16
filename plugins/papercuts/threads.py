@@ -214,14 +214,6 @@ def archive(thread_id: str, evidence: str) -> bool:
         return posted
 
 
-def format_sighting(item: Dict[str, object], observed: str) -> str:
-    occurrences = int(item.get("occurrences") or 1)
-    text = f"seen again ×{occurrences}"
-    if observed:
-        text += f"\n> {observed}"
-    return text
-
-
 def steer_notes_block(notes: Optional[List[Dict[str, object]]]) -> str:
     notes = notes or []
     if not notes:

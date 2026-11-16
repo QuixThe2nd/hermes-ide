@@ -203,7 +203,7 @@ def checked_capabilities(client: "SyncClient") -> Tuple[Dict[str, Any], int]:
 
 
 class SyncClient:
-    """Sync client bound to a base URL + Nous bearer. Org refs/objects live behind SEPARATE ``org/``
+    """Sync client bound to a base URL + gateway bearer. Org refs/objects live behind SEPARATE ``org/``
     routes: the personal routes are hard-scoped to the token's owner and would silently answer an
     org query with personal data, so org readers MUST pass ``org_scope=True`` on every hop."""
 

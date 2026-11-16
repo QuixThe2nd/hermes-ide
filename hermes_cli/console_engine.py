@@ -306,7 +306,6 @@ _CLI_FAMILIES: dict[str, tuple[_CliSurface, str]] = {
         "list, show, info, *create, *use, *describe, *rename, *delete, *export, *import, "
         "*install, *update"),
     "cron": (_sub("cron", "build_cron_parser", "cmd_cron"), "*create, *edit, *remove, *tick"),
-    "portal": (_CliSurface("adder", "hermes_cli.portal_cli", "add_parser"), "info, tools"),
     "project": (
         _CliSurface("builder", "hermes_cli.projects_cmd", "build_parser", "cmd_project"),
         "list, show, *create, *add-folder, *remove-folder, *rename, *set-primary, *use, "
@@ -352,8 +351,6 @@ _BLOCKED_PAIRS = {
     ("profile", "alias"): "`profile alias` creates shell wrappers and is not available in Hermes Console.",
     ("skills", "config"): "`skills config` is interactive and is not available in Hermes Console.",
     ("skills", "publish"): "`skills publish` is not available in Hermes Console.",
-    ("portal", "login"): "`portal login` is interactive and is not available in Hermes Console.",
-    ("portal", "open"): "`portal open` opens a browser and is not available in Hermes Console.",
     ("sessions", "delete"): "`sessions delete` and `sessions prune` are not available in Hermes Console.",
     ("sessions", "prune"): "`sessions delete` and `sessions prune` are not available in Hermes Console.",
 }

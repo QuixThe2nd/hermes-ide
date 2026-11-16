@@ -69,7 +69,7 @@ LANE1_NAMES = {
         "_deliver_platform_notice", "_deliver_queued_first_response",
         "_drain_watch_notifications", "_enqueue_process_completion_notification",
         "_enrich_async_delegation_routing", "_flush_process_completion_batch",
-        "_format_coalesced_process_completions", "_free_tier_startup_line",
+        "_format_coalesced_process_completions",
         "_inject_watch_notification", "_record_coalesced_completion_siblings",
         "_resolve_async_delegation_session", "_run_process_watcher",
         "_schedule_update_notification_watch",

@@ -9,8 +9,9 @@ tools):
   identifier — it is NOT a secret; the agent types it itself). Passwords are
   never returned.
 - ``browser_vault_fill``  → server-side fill of the CURRENT page from a vault
-  handle: the password field for logins, card fields for payment items (after
-  the user confirms), address fields for address items. The secret is
+  handle: the current-password field for logins, explicitly marked new/confirmation
+  fields when ``purpose=password_reset``, card fields for payment items (after
+  the user confirms), and address fields for address items. The secret is
   resolved locally, the page origin must EXACTLY match the item's bound
   origin (pre-checked AND re-asserted synchronously inside the fill script),
   the field is chosen by the ported login-control classifier, injection runs
@@ -81,6 +82,8 @@ def _eval_js_camofox(task_id: str, expression: str, *, secret: bool = False) -> 
                         {"expression": expression, "userId": session["user_id"]})
     except Exception as exc:
         return {"success": False, "error": f"camofox evaluate failed: {exc}"[:300]}
+    if isinstance(resp, dict) and resp.get("success") is False:
+        return resp
     raw = resp.get("result") if isinstance(resp, dict) else resp
     return {"success": True, "result": _parse_json_result(raw) if isinstance(raw, str) else raw}
 
@@ -310,29 +313,34 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
                        "next": "Submit the form (many sites auto-submit when the last digit lands)."})
 
 
-def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
-    """Fill the current page's password field from a vault handle.
+def browser_vault_fill(handle: str, task_id: Optional[str] = None, purpose: str = "login") -> str:
+    """Fill a vault secret into the current page without exposing it to the model.
 
-    Password-only: the identifier is agent-visible metadata (see
-    browser_vault_list) and is typed by the agent via normal input tools.
-    The password is resolved server-side and injected via in-page JS over
-    Camofox REST; the result reports only counts/metadata.
+    Login identifiers remain agent-visible metadata and are typed separately. Login secrets
+    target the current password by default; ``password_reset`` opts into explicitly marked
+    new-password controls and an unambiguous same-form confirmation.
     """
     from agent.redact import register_vault_redaction_value
     from agent.vault_login_classifier import (
+        AmbiguousPasswordResetError,
         ClassifiedLoginControl,
         LoginControl,
         build_fill_js,
         build_inspection_js,
         classify_checkout_control,
         classify_login_control,
+        classify_password_reset_control,
         select_checkout_fills,
         select_password_fill,
+        select_password_reset_fills,
     )
     from agent.vault_backends import UnlockRequired, backend_for_handle
     from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, scrub_secret_from_text
 
     effective_task_id = task_id or "default"
+    if purpose not in ("login", "password_reset"):
+        return json.dumps({"success": False, "error_type": "invalid_purpose",
+                           "error": "purpose must be 'login' or 'password_reset'."})
     backend = backend_for_handle(handle)
     if backend is not None and backend.needs_unlock and not backend.is_unlocked():
         unlocked = json.loads(browser_vault_unlock(backend.name))
@@ -355,6 +363,9 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
                 ),
             }
         )
+    if purpose == "password_reset" and meta.kind != "login":
+        return json.dumps({"success": False, "error_type": "invalid_purpose",
+                           "error": "password_reset purpose is valid only for login items."})
     if meta.kind != "login" and not meta.origin:
         return json.dumps({"success": False, "error_type": "no_origin",
                            "error": f"Vault item {handle!r} has no bound origin; {meta.kind} items are filled only on the site they were saved for."})
@@ -390,16 +401,20 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     nonce = secrets.token_hex(8)  # binds this fill to THIS inspection's stamps
     inspect = _eval_js(effective_task_id, build_inspection_js(nonce))
     if not inspect.get("success"):
-        return json.dumps(
-            {"success": False, "error": f"Could not inspect page inputs: {inspect.get('error', 'eval failed')}"}
-        )
+        out = {"success": False, "error": f"Could not inspect page inputs: {inspect.get('error', 'eval failed')}"}
+        if inspect.get("error_type"):
+            out["error_type"] = inspect["error_type"]
+        return json.dumps(out)
     raw_controls = _parse_json_result(inspect.get("result"))
     if isinstance(raw_controls, str):
         raw_controls = _parse_json_result(raw_controls)
     if not isinstance(raw_controls, list):
         return json.dumps({"success": False, "error": "Page input inspection returned no usable controls."})
 
-    classify = classify_login_control if meta.kind == "login" else classify_checkout_control
+    if meta.kind == "login":
+        classify = classify_password_reset_control if purpose == "password_reset" else classify_login_control
+    else:
+        classify = classify_checkout_control
     classified: list[ClassifiedLoginControl] = []
     for raw in raw_controls:
         if not isinstance(raw, dict):
@@ -408,22 +423,29 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         if result is not None:
             classified.append(result)
     if not classified:
-        return json.dumps({"success": False, "error": f"No {meta.kind} form fields were found on the current page."})
+        kind = "password-reset" if purpose == "password_reset" else meta.kind
+        return json.dumps({"success": False, "error": f"No {kind} form fields were found on the current page."})
 
     # ── Resolve secret and fill (secret never enters any logged string) ─────
     try:
         if meta.kind == "login":
             secret = {"password": backend.resolve_password(handle)}
-            fills = select_password_fill(classified, secret["password"])
+            if purpose == "password_reset":
+                fills = select_password_reset_fills(classified, secret["password"])
+            else:
+                fills = select_password_fill(classified, secret["password"])
         else:
             secret = backend.resolve_secret(handle)
             fills = select_checkout_fills(classified, secret, PAYMENT_FIELDS if meta.kind == "payment" else ADDRESS_FIELDS)
+    except AmbiguousPasswordResetError:
+        return json.dumps({"success": False, "error_type": "ambiguous_password_reset",
+                           "error": "Refused: the page has multiple possible new-password targets or an unclear confirmation field."})
     except UnlockRequired:
         return json.dumps({"success": False, "error_type": "unlock_required",
                            "error": f"{backend.display_name} locked again; call browser_vault_unlock."})
     if not fills:
         return json.dumps(
-            {"success": False, "error": f"No fillable {meta.kind} field matched the saved item on this page."}
+            {"success": False, "error": f"No fillable {'password-reset' if purpose == 'password_reset' else meta.kind} field matched the saved item on this page."}
         )
 
     # Register the secret bytes with the model-egress redaction boundary
@@ -526,13 +548,14 @@ BROWSER_VAULT_UNLOCK_SCHEMA = {
 BROWSER_VAULT_FILL_SCHEMA = {
     "name": "browser_vault_fill",
     "description": (
-        "Fill the CURRENT browser page from a vault handle (see browser_vault_list): a login item fills ONLY "
-        "the password field (type the identifier/username yourself first with the browser's input tool); a "
-        "payment item fills card number/name/expiry/CVC after the user confirms in their UI; an address item "
-        "fills the address fields. Values are resolved server-side and never appear in the conversation. "
-        "Refused unless the page origin exactly matches the item's bound origin (re-checked atomically at "
-        "fill time). If a password manager is locked the user is prompted to unlock first. Never retry a "
-        "payment_declined result."
+        "Fill the CURRENT browser page from a vault handle (see browser_vault_list): by default a login item fills "
+        "ONLY the current-password field (type the identifier/username yourself first with the browser's input tool). "
+        "When the user explicitly requests a password reset, purpose=password_reset instead fills one clearly marked "
+        "new-password control and its unambiguous same-form confirmation, if present; ambiguous targets are refused. "
+        "A payment item fills card number/name/expiry/CVC after the user confirms in their UI; an address item fills "
+        "the address fields. Values are resolved server-side and never appear in the conversation. Refused unless "
+        "the page origin exactly matches the item's bound origin (re-checked atomically at fill time). If a password "
+        "manager is locked the user is prompted to unlock first. Never retry a payment_declined result."
     ),
     "parameters": {
         "type": "object",
@@ -540,7 +563,13 @@ BROWSER_VAULT_FILL_SCHEMA = {
             "handle": {
                 "type": "string",
                 "description": "Handle from browser_vault_list (vault_… local, op:… 1Password, bw:… Bitwarden)",
-            }
+            },
+            "purpose": {
+                "type": "string",
+                "enum": ["login", "password_reset"],
+                "default": "login",
+                "description": "Use password_reset only when the user explicitly requested a password reset.",
+            },
         },
         "required": ["handle"],
     },
@@ -621,7 +650,10 @@ def _handle_vault_unlock(args: Dict[str, Any], **kwargs) -> str:
 
 def _handle_vault_fill(args: Dict[str, Any], **kwargs) -> str:
     tid = kwargs.get("task_id")
-    return _fenced_page_op(tid, lambda: browser_vault_fill(handle=str(args.get("handle") or ""), task_id=tid))
+    purpose = str(args.get("purpose") or "login")
+    return _fenced_page_op(tid, lambda: browser_vault_fill(
+        handle=str(args.get("handle") or ""), task_id=tid, purpose=purpose,
+    ))
 
 
 from tools.registry import no_cache_check_fn, registry  # noqa: E402

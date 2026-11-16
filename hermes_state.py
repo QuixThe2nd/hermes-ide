@@ -15098,7 +15098,7 @@ class SessionDB(
         ``parent_session_id``, and delegate subagents hang off their
         parent the same way. Walking to the root gives every segment of
         one user-facing conversation (and its delegation tree) a single
-        identifier — used for Nous Portal ``conversation=`` usage tagging.
+        identifier — used for conversation-scoped usage tagging.
         Returns *session_id* unchanged when it has no recorded parent.
         """
         chain = self._session_lineage_root_to_tip(session_id)

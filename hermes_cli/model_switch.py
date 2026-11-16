@@ -799,11 +799,11 @@ def get_authenticated_provider_slugs(
 
 def _resolve_alias_fallback(
     raw_input: str, authenticated_providers: list[str] = ()) -> Optional[tuple[str, str, str]]:
-    """Resolve an alias on the user's authenticated providers (``("openrouter", "nous")`` when none given).
+    """Resolve an alias on the user's authenticated providers (``("openrouter",)`` when none given).
 
     AmbiguousAliasError propagates: the alias exists on this provider, the user just has to
     choose — trying the next provider would silently switch them somewhere they didn't ask for."""
-    results = (resolve_alias(raw_input, p) for p in authenticated_providers or ("openrouter", "nous"))
+    results = (resolve_alias(raw_input, p) for p in authenticated_providers or ("openrouter",))
     return next((r for r in results if r is not None), None)
 
 
@@ -1323,14 +1323,6 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
     # Steps d.5 / e only apply while the request is still unrouted on the current provider.
     if st.resolved_alias or resolved_in_current_catalog or st.target_provider != current_provider:
         return None
-    if current_provider == "nous":
-        # The welcome host serves nous/welcome only; a model outside it needs an account or a key.
-        # Never hop to another provider on the user's behalf here (there is no key to hop to).
-        from hermes_cli.anon_auth import GUEST_MODEL, route_is_welcome_host
-        if route_is_welcome_host(st.current_base_url) and st.new_model != GUEST_MODEL:
-            return st.fail(
-                f"{st.new_model} needs a Nous account or an API key. "
-                "Use /login to sign in, or /model to pick another provider.")
     config_routed = _route_configured_provider(st)  # d.5 — deliberately NOT gated on ``not is_custom``
     if isinstance(config_routed, ModelSwitchResult):
         return config_routed
@@ -1593,25 +1585,16 @@ def _opencode_api_mode(provider: str, model: str, api_key: str) -> str:
     return opencode_model_api_mode(provider, model)
 
 
-def _nous_api_mode(provider: str, model: str, api_key: str) -> str:
-    # Portal serves anthropic/* on /v1/messages and everything else on /chat/completions;
-    # re-derive from the FINAL model so alias clears / empty fallbacks cannot leave Claude on the
-    # OpenAI wire.
-    from hermes_cli.providers import nous_api_mode
-    return nous_api_mode(model)
-
-
 # Per-provider api_mode overrides applied after validation, keyed on the final target provider
 # (the key sets are disjoint, so exactly one — or none — fires).
 _PROVIDER_API_MODE_OVERRIDES: dict[str, Any] = {
     **dict.fromkeys(("copilot", "github-copilot"), _copilot_api_mode),
-    **dict.fromkeys(("opencode-zen", "opencode-go", "opencode"), _opencode_api_mode),
-    **dict.fromkeys(("nous", "nous-portal", "nousresearch"), _nous_api_mode)}
+    **dict.fromkeys(("opencode-zen", "opencode-go", "opencode"), _opencode_api_mode)}
 
 
 def model_derived_api_mode(provider: str, model: str, api_key: str = "") -> Optional[str]:
     """api_mode re-derived from the FINAL model for providers that serve several wire formats behind one
-    endpoint (OpenCode Zen/Go and custom providers extending a family slug, Copilot, Nous); None when the
+    endpoint (OpenCode Zen/Go and custom providers extending a family slug, Copilot); None when the
     provider's wire is fixed by its endpoint. A persisted api_mode from an earlier model of such a provider
     is never authoritative — resume paths must call this instead of honoring the row (#96066)."""
     from hermes_cli.models import opencode_provider_family

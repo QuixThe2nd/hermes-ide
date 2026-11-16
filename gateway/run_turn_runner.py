@@ -1909,9 +1909,15 @@ class TurnRunner(_TurnRunnerCore):
         session_key = ctx.session_key or ""
         clarify_id = uuid.uuid4().hex[:10]
         choices = list(choices) if choices else None
+        metadata = ctx._status_thread_metadata
+        requester_id = str(getattr(getattr(ctx, "source", None), "user_id", "") or "").strip()
+        if requester_id:
+            # Keep recipient identity turn-scoped; concurrent chats share adapters, not metadata.
+            metadata = dict(metadata or {})
+            metadata["mention_user_id"] = requester_id
         send_kwargs = dict(
             chat_id=ctx._status_chat_id, question=question, choices=choices, clarify_id=clarify_id,
-            session_key=session_key, metadata=ctx._status_thread_metadata,
+            session_key=session_key, metadata=metadata,
         )
 
         def _text_fallback():
@@ -2335,7 +2341,7 @@ class TurnRunner(_TurnRunnerCore):
             logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc)
             from hermes_cli.auth import is_rate_limited_auth_error
             if is_rate_limited_auth_error(exc.__cause__):
-                # Quota cap with valid credentials: /login cannot help; name the reset window (#89401).
+                # Quota cap with valid credentials: re-authentication cannot help; name the reset window (#89401).
                 from gateway.run import _gateway_provider_error_reply
                 return {"final_response": _gateway_provider_error_reply(str(exc)),
                         "messages": [], "api_calls": 0, "tools": [],
@@ -2343,8 +2349,8 @@ class TurnRunner(_TurnRunnerCore):
             return {
                 "final_response": (
                     "⚠️ I couldn't connect to the AI model service, so this message wasn't processed. "
-                    "Use /login to sign in again, or /model to pick a different model. If it keeps "
-                    "failing, run `hermes doctor` on the host."),
+                    "Ask whoever runs this bot to reconnect the provider with `hermes auth`, or use "
+                    "/model to pick a different model. If it keeps failing, run `hermes doctor` on the host."),
                 "messages": [], "api_calls": 0, "tools": [],
                 "served_model": None, "requested_model": None,
             }
@@ -2438,35 +2444,73 @@ class TurnRunner(_TurnRunnerCore):
             "agent_persisted": result.get("agent_persisted", True),
         }
 
-    # --- Tool-stage embed delivery (Discord) -------------------------------
-    # Moved verbatim from gateway/run.py TurnRunner: run_turn._run_agent_inner
-    # (kept by #569) subscribes turn_runner.tool_stage_event_callback and
-    # drains send_tool_stage_embeds(), but builds this TurnRunner.
+    # --- Tool-stage event delivery (MoA embeds and browser images) -----------
+    # run_turn._run_agent_inner subscribes turn_runner.tool_stage_event_callback
+    # and drains send_tool_stage_embeds(), but builds this TurnRunner.
 
-    def tool_stage_event_callback(self, event: dict) -> None:
-        """Bus subscriber: enqueue one stage event from a tool worker thread."""
+    def tool_stage_event_callback(self, event: dict) -> bool:
+        """Bus subscriber: enqueue one event, reporting queue/turn rejection."""
         ctx = self._ctx
         if not ctx.stage_event_queue or not ctx._run_still_current():
-            return
+            return False
         try:
             ctx.stage_event_queue.put_nowait(event)
+            return True
         except Exception:
             logger.debug("tool stage event enqueue failed", exc_info=True)
+            return False
+
+    _STAGE_FLUSH_TIMEOUT = 21.0
+
+    async def flush_tool_stage_events(self, stage_task) -> None:
+        """Deliver events already queued by a normally finishing browser-enabled turn."""
+        ctx = self._ctx
+        if (
+            not ctx.stage_event_queue
+            or not ctx._browser_progress_enabled
+            or stage_task.done()
+            or not ctx._run_still_current()
+        ):
+            return
+        flushed = asyncio.Event()
+        marker = {"type": "browser.flush", "done": flushed}
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._STAGE_FLUSH_TIMEOUT
+        while True:
+            try:
+                ctx.stage_event_queue.put_nowait(marker)
+                break
+            except queue.Full:
+                if stage_task.done() or not ctx._run_still_current() or loop.time() >= deadline:
+                    return
+                await asyncio.sleep(0.01)
+        waiter = asyncio.ensure_future(flushed.wait())
+        try:
+            await asyncio.wait(
+                {waiter, stage_task},
+                timeout=max(0.0, deadline - loop.time()),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            waiter.cancel()
 
     def _collect_final_stage_events(self) -> list:
         """Drain the stage queue; one event per invocation (terminal preferred)."""
         ctx = self._ctx
         by_invocation: Dict[str, list] = {}
+        to_deliver: list = []
         while not ctx.stage_event_queue.empty():
             try:
                 event = ctx.stage_event_queue.get_nowait()
             except Exception:
                 break
+            if event.get("type") == "browser.screenshot":
+                to_deliver.append(event)
+                continue
             invocation = str(event.get("invocation_id") or "")
             if not invocation:
                 continue
             by_invocation.setdefault(invocation, []).append(event)
-        to_deliver: list = []
         for events in by_invocation.values():
             terminal = next((e for e in reversed(events) if e.get("terminal")), None)
             to_deliver.append(terminal if terminal is not None else events[-1])
@@ -2710,6 +2754,20 @@ class TurnRunner(_TurnRunnerCore):
         records: Dict[str, dict],
         parked: Optional[Dict[str, list]] = None,
     ) -> None:
+        event_type = event.get("type")
+        if event_type == "browser.flush":
+            set_done = getattr(event.get("done"), "set", None)
+            if callable(set_done):
+                set_done()
+            return
+        if event_type == "browser.screenshot":
+            if not self._ctx._browser_progress_enabled:
+                return
+            from gateway.browser_progress import deliver_browser_progress
+            await deliver_browser_progress(self, event)
+            return
+        if self._ctx._stage_embed_adapter is None:
+            return
         invocation = str(event.get("invocation_id") or "")
         if (
             parked is not None
@@ -2787,7 +2845,7 @@ class TurnRunner(_TurnRunnerCore):
         ctx = self._ctx
         if not ctx.stage_event_queue:
             return
-        if ctx._stage_embed_adapter is None:
+        if ctx._stage_embed_adapter is None and not ctx._browser_progress_enabled:
             return
 
         # invocation_id -> embed message id. Concurrent invocations of the

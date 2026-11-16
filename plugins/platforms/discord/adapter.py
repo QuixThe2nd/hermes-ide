@@ -6781,8 +6781,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return f"{prefix}{body}{suffix}"
 
 
-    def _clarify_mention_content(self) -> Optional[str]:
-        """Return a requester mention for clarify prompts when enabled.
+    def _clarify_mention_user_id(self, metadata: Optional[dict]) -> Optional[int]:
+        """Return this prompt's requester ID when clarify mentions are enabled.
 
         Default-on (unlike approval mentions) because a clarify prompt
         blocks the agent turn until answered. Opt out via
@@ -6797,11 +6797,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 raw = extra.get("clarify_mentions")
                 if not raw or str(raw).strip().lower() in {"false", "0", "no", "off"}:
                     return None
-            pending = getattr(self, "_pending_clarify_metadata", None) or {}
-            uid = str((pending or {}).get("mention_user_id") or "")
-            if not uid.isdigit():
-                return None
-            return f"<@{uid}>"
+            uid = str((metadata or {}).get("mention_user_id") or "")
+            return int(uid) if uid.isascii() and uid.isdigit() else None
         except Exception:
             return None
 
@@ -6872,11 +6869,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            try:
-                self._pending_clarify_metadata = metadata or {}
-            except Exception:
-                pass
-
             target_id = chat_id
             if metadata and metadata.get("thread_id"):
                 target_id = metadata["thread_id"]
@@ -6970,19 +6962,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 "❓ **Hermes needs your input**", prompt_body,
                 tail=f"\n\n{reply_hint}",
             )
-            mention = self._clarify_mention_content()
-            if mention:
-                content = f"{mention}\n{content}"
+            mention_user_id = self._clarify_mention_user_id(metadata)
+            if mention_user_id is not None:
+                content = f"<@{mention_user_id}>\n{content}"
             send_kwargs: Dict[str, Any] = {"content": content, "embed": embed}
-            if mention:
-                allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
-                if allowed_mentions_cls is not None:
-                    send_kwargs["allowed_mentions"] = allowed_mentions_cls(
-                        users=True,
-                        roles=False,
-                        everyone=False,
-                        replied_user=False,
-                    )
+            allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
+            if allowed_mentions_cls is not None:
+                send_kwargs["allowed_mentions"] = allowed_mentions_cls(
+                    users=([discord.Object(id=mention_user_id)]
+                           if mention_user_id is not None else []),
+                    roles=False,
+                    everyone=False,
+                    replied_user=False,
+                )
             msg = await channel.send(**send_kwargs)
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:

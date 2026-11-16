@@ -191,7 +191,7 @@ class ConnectorClient:
             headers = dict(self._header_provider(url))
             if not headers:
                 raise GatewayAuthError(
-                    "no portal access token available", code="NO_TOKEN", status=401
+                    "no tool-gateway user token is configured", code="NO_TOKEN", status=401
                 )
             headers["Content-Type"] = "application/json"
             if idempotency_key:

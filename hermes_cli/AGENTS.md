@@ -6,7 +6,7 @@ Applies on top of the root `AGENTS.md`.
 
 `cli.py` holds `HermesCLI` (REPL loop, config, slash dispatch); behaviour lives in mixins
 `hermes_cli/cli_commands_mixin.py`, `cli_stream_mixin.py`, `cli_status_bar_mixin.py`,
-`cli_billing_mixin.py`, `cli_tui_mixin.py`, ... **Rich** renders banner/panels; **prompt_toolkit**
+`cli_tui_mixin.py`, ... **Rich** renders banner/panels; **prompt_toolkit**
 handles input + autocomplete; `KawaiiSpinner` (`agent/display.py`) animates API calls and prints
 the `┊` activity feed. `load_cli_config()` in `cli.py` merges CLI defaults + user YAML.
 `process_command()` resolves the canonical name via `resolve_command()` then dispatches through
@@ -220,32 +220,3 @@ empty environment, so the env override that makes `-p` work interactively does n
 change to install/restart/status regenerates and diffs every kind; both user and system units are
 recorded when both exist. Process liveness is `(pid, start_time)` or the canonical matchers
 (`gateway.status.live_gateway_pid_for_home`), never bare PID existence.
-
-## Nous free tier (`hermes_cli/anon_auth.py`)
-
-Sign-in completion is one function, `settle_after_upgrade`, called by every caller that persists an
-account over a free-tier identity (CLI `upgrade_guest`, the desktop poller): it moves a config on the
-welcome route to the account's host and the tier's recommended default
-(`models.recommended_nous_default_model`, shared with `GET /api/model/recommended-default`).
-
-The shared flow, states, and copy live in `anon_sign_in.py`; CLI rendering lives in
-`anon_sign_in_cli.py`. `anon_auth.py` keeps identity, promotion polling, and settlement, and
-re-exports the existing sign-in API. The flow resolves identity and persistence collaborators
-through `anon_auth` at call time to preserve module-attribute monkeypatch seams.
-
-The sign-in itself is one composition: `anon_auth.run_sign_in()` yields `SignInState`s (`Code`,
-`Waiting`, `Completed`, `Declined`, `Superseded`, `TimedOut`, `Retired`, `Failed`,
-`AlreadySignedIn`, `Unavailable`). It reads the current state itself, holds one absolute deadline
-across both waits, persists only after a completed promotion **and** a token grant, runs
-`settle_after_upgrade` exactly once per completion, and never lets a persist or settle failure
-escape as an exception — it becomes `Failed`. Every state carries its own `.copy` (the chat form,
-which never contains a raw exception, a URL or a `hermes` verb) and `.copy_terminal`, so no caller
-maps a reason to a string. `cancelled()` stops an attempt; `cancel_wins_after_promotion` decides
-what happens when the server had already completed the transfer — the desktop keeps `True` (a
-DELETE means "not on this machine"), the gateway passes `False` (a supersede must not discard a
-transfer the user actually approved). `scope` is entered only around the precondition and persist
-blocks, never across a `yield` or a network wait, because `run_in_executor` does not carry
-contextvars. `upgrade_guest` (`hermes auth upgrade`), the CLI `/login` handler and the desktop
-promotion poller are renderers over it; a surface that needs the cancel check and the save to be
-atomic passes `persist_guard`. The desktop's plain "connect another Nous account" device-code login
-is a separate path (`_nous_plain_poller`) and must stay one.

@@ -40,12 +40,11 @@ class TurnContext:
     tool_progress_enabled: bool = False
     progress_queue: Any = None
     log_queue: Any = None
-    # Structured tool-stage events (moa_ask / moa_debate round
-    # transitions) for surfaces that render one self-editing card per tool
-    # invocation. None on every platform except Discord-with-embeds, so the
-    # agent.moa_loop stage bus simply has no subscriber elsewhere.
+    # Structured tool-stage events (MoA cards and automatic browser images).
+    # The bus has a subscriber only while this turn owns a queue.
     stage_event_queue: Any = None
     _stage_embed_adapter: Any = None
+    _browser_progress_enabled: bool = False
 
     # --- mutable single-element containers (shared with the outer body) --
     # Monotonic timestamp of this turn's last USER-VISIBLE progress (a delivered

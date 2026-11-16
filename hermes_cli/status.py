@@ -15,7 +15,7 @@ from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load
 from hermes_cli.models import provider_label
 from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_cli.status_auth import (  # renderers wired into _SECTIONS below
-    _render_api_keys, _render_apikey_providers, _render_auth_providers, _render_nous_gateway)
+    _render_api_keys, _render_apikey_providers, _render_auth_providers)
 from hermes_constants import OPENROUTER_MODELS_URL
 from hermes_constants import is_termux as _is_termux
 
@@ -335,17 +335,14 @@ def _render_footer(ctx):
 
 # Print order of `hermes status`; each renderer takes the shared _StatusContext.
 _SECTIONS = (
-    _render_header, _render_environment, _render_api_keys, _render_auth_providers, _render_nous_gateway,
+    _render_header, _render_environment, _render_api_keys, _render_auth_providers,
     _render_apikey_providers, _render_terminal, _render_platforms, _render_gateway, _render_cron,
     _render_sessions, _render_deep, _render_footer)
 
 
 def show_status(args):
     """Show status of all Hermes Agent components."""
-    # Shared by section renderers: config, --deep, and the Nous login facts Auth Providers derives
-    # for the later Nous Tool Gateway section.
-    ctx = SimpleNamespace(deep=getattr(args, 'deep', False), config={}, nous_logged_in=False,
-                          nous_inference_present=False, nous_account_info=None)
+    ctx = SimpleNamespace(deep=getattr(args, 'deep', False), config={})
     for render in _SECTIONS:
         render(ctx)
 
@@ -358,9 +355,6 @@ import subprocess  # noqa: F401,E402
 
 
 _PLUGIN_COMPAT_LAZY = {
-    'format_nous_portal_entitlement_message': ('hermes_cli.nous_account', 'format_nous_portal_entitlement_message'),
-    'get_nous_portal_account_info': ('hermes_cli.nous_account', 'get_nous_portal_account_info'),
-    'managed_nous_tools_enabled': ('tools.tool_backend_helpers', 'managed_nous_tools_enabled'),
     'redact_key': ('hermes_cli.config', 'redact_key'),
 }
 

@@ -765,6 +765,10 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             (echo "FAIL: packaged plugin manifests differ from source"; exit 1)
           echo "PASS: $SOURCE_PLUGIN_COUNT source plugin manifests packaged"
 
+          test -f ${hermes-agent}/share/hermes-agent/plugins/memory/hindsight/plugin.yaml || \
+            (echo "FAIL: hindsight plugin manifest missing"; exit 1)
+          echo "PASS: hindsight plugin manifest present"
+
           grep -q "HERMES_BUNDLED_PLUGINS" ${hermes-agent}/bin/hermes || \
             (echo "FAIL: HERMES_BUNDLED_PLUGINS not in wrapper"; exit 1)
           echo "PASS: HERMES_BUNDLED_PLUGINS set in wrapper"

@@ -60,6 +60,34 @@ def _add_login(store, origin="https://example.com", password="s3cret-pw"):
     )
 
 
+def _fill_login_controls(store, controls, *, purpose=None, page_origin="https://example.com/login",
+                         fill_result=None):
+    """Drive the registered vault-fill handler with a controlled page inspection."""
+    from tools import browser_vault_tool
+
+    meta = _add_login(store)
+    secret_exprs = []
+
+    def fake_eval(task_id, expression):
+        if "location.href" in expression:
+            return {"success": True, "result": page_origin}
+        return {"success": True, "result": json.dumps(controls)}
+
+    def fake_eval_secret(task_id, expression):
+        secret_exprs.append(expression)
+        return {"success": True, "result": json.dumps(fill_result or {"filled": 1})}
+
+    args = {"handle": meta.id}
+    if purpose is not None:
+        args["purpose"] = purpose
+    with patch("agent.vault_store.get_vault_store", return_value=store), \
+         patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+         patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+        raw = browser_vault_tool.registry.dispatch("browser_vault_fill", args, task_id=None)
+    assert isinstance(raw, str)
+    return json.loads(raw), raw, secret_exprs
+
+
 # ---------------------------------------------------------------------------
 # VaultStore
 # ---------------------------------------------------------------------------
@@ -241,7 +269,8 @@ class TestClassifier:
         assert "data-vault-secret" not in js
         assert "elements[f.index]" not in js
         assert "[data-hermes-vault-slot=" in js and "nonce + ':' + f.index" in js
-        assert 'f.token === "current-password" && el.type !== "password"' in js  # a password fill never lands in a text box
+        assert 'const passwordTokens = ["current-password", "new-password", "confirm-password"]' in js
+        assert "passwordTokens.includes(f.token) && el.type !== \"password\"" in js
         assert js.index('removeAttribute("data-hermes-vault-slot")') > js.index("setter.set.call")
 
     def test_build_fill_js_asserts_origin_before_any_write(self):
@@ -465,6 +494,148 @@ class TestBrowserVaultTools:
         assert '"index": 0' not in secret_exprs[0]
         assert "user@example.com" not in secret_exprs[0]
 
+    def test_password_reset_dispatch_fills_id_only_new_password(self, store):
+        # Inspection joins empty DOM name + id=newPassword, preserving the separator.
+        controls = [
+            {"autocomplete": "", "formIndex": 0, "index": 0, "label": "",
+             "name": " newPassword", "type": "password"},
+        ]
+
+        out, raw, secret_exprs = _fill_login_controls(
+            store, controls, purpose="password_reset",
+        )
+
+        assert out["success"] is True, out
+        assert out["filled_fields"] == 1
+        assert len(secret_exprs) == 1
+        assert '"index": 0' in secret_exprs[0]
+        assert '"token": "new-password"' in secret_exprs[0]
+        assert "s3cret-pw" not in raw
+
+    def test_password_reset_default_login_still_refuses_new_password(self, store):
+        controls = [
+            {"autocomplete": "", "formIndex": 0, "index": 0, "label": "",
+             "name": " newPassword", "type": "password"},
+        ]
+
+        out, raw, secret_exprs = _fill_login_controls(store, controls)
+
+        assert out["success"] is False
+        assert "No login form fields" in out["error"]
+        assert secret_exprs == []
+        assert "s3cret-pw" not in raw
+
+    def test_password_reset_fills_unambiguous_confirmation_pair(self, store):
+        controls = [
+            {"autocomplete": "new-password", "formIndex": 0, "index": 0,
+             "label": "New password", "name": "newPassword", "type": "password"},
+            {"autocomplete": "new-password", "formIndex": 0, "index": 1,
+             "label": "Confirm password", "name": "confirmPassword", "type": "password"},
+        ]
+
+        out, raw, secret_exprs = _fill_login_controls(
+            store, controls, purpose="password_reset", fill_result={"filled": 2},
+        )
+
+        assert out["success"] is True, out
+        assert out["filled_fields"] == 2
+        assert len(secret_exprs) == 1
+        assert '"index": 0' in secret_exprs[0] and '"index": 1' in secret_exprs[0]
+        assert '"token": "confirm-password"' in secret_exprs[0]
+        assert "s3cret-pw" not in raw
+
+    def test_password_reset_refuses_ambiguous_targets_before_secret_transport(self, store):
+        controls = [
+            {"autocomplete": "new-password", "formIndex": 0, "index": 0,
+             "label": "New password", "name": "firstNewPassword", "type": "password"},
+            {"autocomplete": "new-password", "formIndex": 1, "index": 1,
+             "label": "New password", "name": "secondNewPassword", "type": "password"},
+        ]
+
+        out, raw, secret_exprs = _fill_login_controls(
+            store, controls, purpose="password_reset",
+        )
+
+        assert out["success"] is False
+        assert out["error_type"] == "ambiguous_password_reset"
+        assert secret_exprs == []
+        assert "s3cret-pw" not in raw
+
+    def test_password_reset_never_targets_current_password_challenge(self, store):
+        controls = [
+            {"autocomplete": "current-password", "formIndex": 0, "index": 0,
+             "label": "Current password", "name": "currentPassword", "type": "password"},
+            {"autocomplete": "new-password", "formIndex": 0, "index": 1,
+             "label": "New password", "name": "newPassword", "type": "password"},
+        ]
+
+        out, raw, secret_exprs = _fill_login_controls(
+            store, controls, purpose="password_reset",
+        )
+
+        assert out["success"] is True, out
+        assert len(secret_exprs) == 1
+        assert '"index": 1' in secret_exprs[0] and '"index": 0' not in secret_exprs[0]
+        assert "s3cret-pw" not in raw
+
+    def test_password_reset_refuses_cross_form_confirmation(self, store):
+        controls = [
+            {"autocomplete": "new-password", "formIndex": 0, "index": 0,
+             "label": "New password", "name": "newPassword", "type": "password"},
+            {"autocomplete": "new-password", "formIndex": 1, "index": 1,
+             "label": "Confirm password", "name": "confirmPassword", "type": "password"},
+        ]
+
+        out, raw, secret_exprs = _fill_login_controls(
+            store, controls, purpose="password_reset",
+        )
+
+        assert out["success"] is False
+        assert out["error_type"] == "ambiguous_password_reset"
+        assert secret_exprs == []
+        assert "s3cret-pw" not in raw
+
+    def test_password_reset_preserves_atomic_origin_refusal(self, store):
+        controls = [
+            {"autocomplete": "new-password", "formIndex": 0, "index": 0,
+             "label": "New password", "name": "newPassword", "type": "password"},
+        ]
+
+        out, raw, secret_exprs = _fill_login_controls(
+            store, controls, purpose="password_reset",
+            fill_result={"refused": "origin_changed", "found": "https://evil.example"},
+        )
+
+        assert out["success"] is False
+        assert out["error_type"] == "origin_changed"
+        assert out.get("filled_fields", 0) == 0
+        assert "s3cret-pw" not in raw
+        assert len(secret_exprs) == 1
+        assert "window.location.origin" in secret_exprs[0]
+
+    def test_password_reset_rejects_unknown_purpose(self, store):
+        out, raw, secret_exprs = _fill_login_controls(store, [], purpose="signup")
+
+        assert out["success"] is False
+        assert out["error_type"] == "invalid_purpose"
+        assert secret_exprs == []
+        assert "s3cret-pw" not in raw
+
+    def test_password_reset_origin_mismatch_sends_no_secret(self, store):
+        controls = [
+            {"autocomplete": "new-password", "formIndex": 0, "index": 0,
+             "label": "New password", "name": "newPassword", "type": "password"},
+        ]
+
+        out, raw, secret_exprs = _fill_login_controls(
+            store, controls, purpose="password_reset", page_origin="https://evil.example/reset",
+        )
+
+        assert out["success"] is False
+        assert out["error_type"] == "origin_mismatch"
+        assert secret_exprs == []
+        assert "s3cret-pw" not in raw
+
     def test_fill_toctou_navigation_writes_nothing(self, store):
         """P1-2 schedule regression: inspection passes on the allowed origin,
         the page navigates before the fill script runs, the in-script origin
@@ -671,6 +842,13 @@ class TestVaultHardening:
 
 
 class TestVaultSchemaCrossToolset:
+    def test_password_reset_purpose_is_explicit_and_defaults_to_login(self):
+        from tools.browser_vault_tool import BROWSER_VAULT_FILL_SCHEMA
+
+        purpose = BROWSER_VAULT_FILL_SCHEMA["parameters"]["properties"]["purpose"]
+        assert purpose["enum"] == ["login", "password_reset"]
+        assert purpose["default"] == "login"
+
     def test_vault_schema_names_browser_type_only_when_available(self):
         """The identifier hint resolves only to a tool present in the session."""
         import model_tools

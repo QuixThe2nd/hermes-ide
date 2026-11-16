@@ -114,6 +114,13 @@ class ClientLifecycleMixin:
                         process["session_id"], source="agent_close", consume_output=True,
                     )
 
+        def release_browser_turns() -> None:
+            from tools.browser_tool_lifecycle import release_browser_session
+
+            owners = {task_id, *getattr(self, "_process_owner_task_ids", ())}
+            for owner in owners:
+                release_browser_session(owner)
+
         def release_computer_use() -> None:
             from tools.computer_use.tool import release_computer_use_session
             release_computer_use_session(task_id)
@@ -127,7 +134,7 @@ class ClientLifecycleMixin:
                 if owner and owner != task_id:
                     clear_file_ops_cache(owner)
 
-        for step in (kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id),
+        for step in (release_browser_turns, kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id),
                      release_computer_use, forget_file_state):
             _quietly(step)
 
@@ -589,81 +596,6 @@ class ClientLifecycleMixin:
             return False
         return self._adopt_openai_credentials(api_key, base_url, reason=f"{self.provider}_credential_refresh")
 
-    def _try_refresh_nous_client_credentials(self, *, force: bool = True, require_account: str | None = None) -> bool:
-        # Portal serves anthropic/* on the native Messages route, so either client kind may hold the expiring JWT.
-        if self.provider != "nous" or self.api_mode not in ("chat_completions", "anthropic_messages"):
-            return False
-        try:
-            from hermes_cli.auth import resolve_nous_runtime_credentials
-            timeout = env_float("HERMES_NOUS_TIMEOUT_SECONDS", 15)
-            # Pass the bearer that just 401'd so a refresh already done by a sibling process is
-            # adopted instead of rotating the grant again.
-            creds = resolve_nous_runtime_credentials(
-                timeout_seconds=timeout, force_refresh=force, stale_access_token=self.api_key or None,
-            )
-        except Exception as exc:
-            logger.debug("Nous credential refresh failed: %s", exc)
-            return False
-        api_key, base_url = creds.get("api_key"), creds.get("base_url")
-        if not _valid_credential_pair(api_key, base_url):
-            return False
-        if (str(api_key).strip() == str(self.api_key or "").strip()
-                and str(base_url).strip().rstrip("/") == str(self.base_url or "").strip().rstrip("/")):
-            return False  # store holds the same key on the same route: nothing to adopt, no client rebuild
-        if require_account is not None:
-            try:
-                from hermes_cli.auth_constants import _decode_jwt_claims
-                new_account = _decode_jwt_claims(str(api_key)).get("sub")
-            except Exception:
-                new_account = None
-            if str(new_account or "") != require_account:
-                logger.info(
-                    "Nous pre-expiry adoption skipped: the store's key belongs to a different account "
-                    "than the one in hand; keeping the current credential."
-                )
-                return False
-        if self.api_mode == "anthropic_messages":
-            self.api_key, self.base_url = api_key.strip(), base_url.strip().rstrip("/")
-            self._anthropic_api_key, self._anthropic_base_url = self.api_key, self.base_url
-            self._rebuild_anthropic_client()
-            return True
-        # Nous requests should not inherit OpenRouter-only attribution headers.
-        self._client_kwargs.pop("default_headers", None)
-        return self._adopt_openai_credentials(api_key, base_url, reason="nous_credential_refresh")
-
-    # Adopt a fresh key this many seconds before the one in hand expires. Wider than the store's
-    # own refresh skew (120 s) so the keepalive has normally already minted the replacement.
-    _NOUS_KEY_ADOPT_SKEW_S = 180
-
-    def _adopt_nous_key_before_expiry(self) -> bool:
-        """Swap in a fresh Nous agent key BEFORE the one in hand expires, so the request never 401s.
-
-        The agent key is a JWT; its ``exp`` is read locally (no network). Inside the skew the store
-        is re-read under the auth-store lock: the keepalive thread normally holds a fresh key already
-        (adopt, no POST), otherwise ONE refresh runs and every peer adopts its result. Before this,
-        every agent in a process learned about the hourly expiry from its own 401, all in the same
-        minute (620 in one 200-subagent run), and the pool benched the sole credential for all of
-        them. Returns True when a new key was adopted.
-
-        Identity guard: the replacement must belong to the SAME account (``sub`` claim) as the key
-        in hand. The store holds the logged-in singleton; an agent running on an explicitly supplied
-        or pool-selected key for a different account must never be silently moved onto it (that
-        changes who is billed). When either side lacks a ``sub`` nothing is adopted here; the
-        reactive 401 path is unchanged.
-        """
-        if getattr(self, "provider", "") != "nous" or not getattr(self, "api_key", None):
-            return False
-        try:
-            from hermes_cli.auth_constants import _decode_jwt_claims
-            claims = _decode_jwt_claims(self.api_key)
-        except Exception:
-            return False
-        exp, account = claims.get("exp"), claims.get("sub")
-        if not account or not isinstance(exp, (int, float)) or exp - time.time() > self._NOUS_KEY_ADOPT_SKEW_S:
-            return False
-        return self._try_refresh_nous_client_credentials(force=False, require_account=str(account))
-
-
     def _resolve_env_credentials(self) -> Optional[tuple]:
         """Current ``.env``-sourced ``(api_key, base_url, default_base)`` for this provider, or ``None``.
 
@@ -936,11 +868,6 @@ class ClientLifecycleMixin:
             from hermes_cli.auth import normalize_actual_base_url
             runtime_base = normalize_actual_base_url(runtime_base)
         stripped_base = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
-        # Refuse BEFORE any state changes below: a refused swap must leave the agent exactly as it was.
-        from hermes_cli.anon_auth import route_can_serve_model
-        if not route_can_serve_model(getattr(self, "provider", None), stripped_base, getattr(self, "model", None)):
-            logger.info("Credential %s skipped: its route cannot serve model %s", getattr(entry, "id", "?"), self.model)
-            return False
         if actual_route:
             self.api_mode = "chat_completions"
             if hasattr(self, "_transport_cache"):

@@ -42,7 +42,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         ("--model", dict(help="Only match sessions whose model name contains this substring "
             "(e.g. 'sonnet', 'gpt-5', 'hermes')")),
         ("--provider", dict(help="Only match sessions billed through this provider "
-            "(e.g. openrouter, anthropic, nous)")),
+            "(e.g. openrouter, anthropic, openai-codex)")),
         ("--user", dict(help="Only match sessions from this user ID")),
         ("--chat-id", dict(help="Only match sessions from this chat/channel ID")),
         ("--chat-type", dict(help="Only match sessions with this chat type (e.g. dm, group)")),

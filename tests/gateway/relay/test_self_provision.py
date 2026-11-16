@@ -54,15 +54,15 @@ def _stub_post(captured: dict):
     return _fake
 
 
-def _arm(monkeypatch, *, url="wss://connector.example/relay", token="nas-token"):
-    """Arm the real trigger: a relay URL + a resolvable NAS token.
+def _arm(monkeypatch, *, url="wss://connector.example/relay", token="idp-token"):
+    """Arm the real trigger: a relay URL + a resolvable identity token.
 
     Note there is intentionally no `managed` knob — self-provision no longer
-    consults is_managed(). A test that wants the "no NAS identity" branch
-    monkeypatches resolve_nous_access_token to raise instead.
+    consults is_managed(). A test that wants the "no identity" branch
+    monkeypatches _resolve_relay_identity_token to raise instead.
     """
     monkeypatch.setattr(relay, "relay_url", lambda: url)
-    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: token)
+    monkeypatch.setattr(relay, "_resolve_relay_identity_token", lambda: token)
 
 
 # ─────────────────────────── config readers ───────────────────────────
@@ -225,16 +225,16 @@ def test_wake_url_absent_forwards_none(monkeypatch):
 
 # ─────────────────────────── fail-soft ───────────────────────────
 
-def test_no_nas_token_is_non_fatal(monkeypatch):
-    """A self-hosted box with a relay URL but no resolvable NAS identity skips
+def test_no_identity_token_is_non_fatal(monkeypatch):
+    """A self-hosted box with a relay URL but no resolvable identity token skips
     quietly (this is the branch that replaces the old is_managed() gate for the
-    non-NAS case)."""
+    unauthenticated case)."""
     monkeypatch.setattr(relay, "relay_url", lambda: "wss://connector.example/relay")
 
     def _boom():
         raise RuntimeError("no token")
 
-    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", _boom)
+    monkeypatch.setattr(relay, "_resolve_relay_identity_token", _boom)
     # Must not raise; returns False; no creds set.
     assert relay.self_provision_relay() is False
     assert relay.relay_connection_auth() == (None, None)

@@ -534,6 +534,8 @@ def _bind_turn_identity(
     # (concurrent turns interleave transcript writes). Cleared in _persist_session.
     from agent.agent_runtime_helpers import note_turn_start
     note_turn_start(agent, turn_id)
+    from tools.browser_tool_lifecycle import retain_browser_session
+    retain_browser_session(effective_task_id)
     return effective_task_id, turn_id
 
 

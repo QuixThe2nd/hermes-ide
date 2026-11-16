@@ -81,8 +81,8 @@ def _post_enroll(
             pass
         if exc.code == 401:
             message = (
-                "Connector rejected the caller identity (401). Your Nous Portal "
-                "token could not be verified — try `hermes auth add nous` and retry."
+                "Connector rejected the caller identity (401). Check the configured "
+                "gateway.idp credentials or ambient token endpoint and retry."
             )
         elif exc.code == 403:
             message = detail or "Enrollment token invalid, expired, already used, or tenant mismatch (403)."
@@ -107,7 +107,6 @@ def _fail(*lines: str) -> None:
 
 def cmd_gateway_enroll(args) -> None:
     """Enroll this gateway with a relay connector; persist the auth creds to .env."""
-    from hermes_cli.auth import AuthError
     from hermes_cli.config import is_managed, save_env_value
 
     # Managed installs get GATEWAY_RELAY_* stamped in by the orchestrator; save_env_value refuses
@@ -137,19 +136,12 @@ def cmd_gateway_enroll(args) -> None:
     gateway_id = (getattr(args, "gateway_id", None) or _default_gateway_id()).strip()
 
     # Caller-identity token (proves the tenant). ``gateway.relay`` owns the ONE resolver shared with
-    # the runtime self-provision path: generic OIDC client-credentials when ``gateway.idp.token_url``
-    # is set (air-gapped / self-hosted IdP), otherwise Nous Portal.
+    # the runtime self-provision path: generic OIDC client-credentials or an ambient token endpoint
+    # when ``gateway.idp.token_url`` is set (air-gapped / self-hosted IdP).
     try:
         from gateway.relay import _resolve_relay_identity_token
 
         access_token = _resolve_relay_identity_token()
-    except AuthError as exc:
-        if getattr(exc, "relogin_required", False):
-            _fail(
-                "✗ You're not logged into Nous Portal.",
-                "  Run `hermes setup` (or `hermes auth add nous`) first, then retry.",
-            )
-        _fail(f"✗ Could not resolve a Nous Portal access token: {exc}")
     except Exception as exc:
         _fail(f"✗ Could not resolve a caller-identity token: {exc}")
 

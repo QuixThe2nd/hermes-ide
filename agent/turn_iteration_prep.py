@@ -87,12 +87,6 @@ def prepare_iteration(
         _INTERRUPT_SCAFFOLD_MARKER, _maybe_inject_run_budget_wrapup
     )
 
-    # nous.anthropic_wire=auto: a wire switch decided from the previous response lands here,
-    # before this iteration's request is built and with nothing in flight.
-    if getattr(agent, "_nous_wire_pending", None):
-        from agent.nous_wire import apply_pending_wire_switch
-        apply_pending_wire_switch(agent)
-
     # Fire step_callback for gateway hooks (agent:step event).
     if agent.step_callback is not None:
         try:
@@ -103,15 +97,6 @@ def prepare_iteration(
     # Tool-calling iterations for the skill nudge; resets whenever skill_manage is used.
     if agent._skill_nudge_interval > 0 and "skill_manage" in agent.valid_tool_names:
         agent._iters_since_skill += 1
-
-    # Nous agent keys live ~1 h and a single turn can run for hours: adopt the keepalive's fresh
-    # key before the one in hand expires (local JWT exp read; no network unless inside the skew)
-    # instead of letting this iteration's request 401. With many agents sharing the hour that
-    # 401 was a storm, and the pool benched the sole credential for all of them.
-    try:
-        agent._adopt_nous_key_before_expiry()
-    except Exception:
-        logger.debug("Nous key pre-expiry adoption failed", exc_info=True)
 
     # Drain a /steer sent during the last API call so it lands THIS iteration. Delivered as a
     # standalone user row after the newest tool result (never smeared onto the tool row: that
@@ -223,6 +208,7 @@ def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text
             from agent.prompt_builder import steer_user_row
             messages.insert(_si + 1, steer_user_row(steer_text))
             logger.debug("Pre-API-call steer drain: appended user row after tool msg at index %d", _si)
+            agent._notify_steer_delivery_listeners(steer_text)
             return
     from agent.agent_runtime_helpers import _requeue_pending_steer
     _requeue_pending_steer(agent, steer_text)

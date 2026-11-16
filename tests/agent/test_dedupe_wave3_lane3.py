@@ -8,7 +8,6 @@ was already live. The copied release-checksum parser also has one canonical owne
 from agent.activity_tracking import ActivityTrackingMixin
 from agent.api_request_hooks import ApiRequestHooksMixin
 from agent.interrupt_control import InterruptControlMixin
-from agent.rate_limit_credits import RateLimitCreditsMixin
 from agent.secret_sources import bitwarden
 from agent.session_persistence import SessionPersistenceMixin
 from agent.turn_explainers import TurnExplainersMixin
@@ -31,10 +30,6 @@ _CONSOLIDATED = (
     (AIAgent, InterruptControlMixin, (
         "_drain_pending_redirect", "_drain_pending_steer", "_has_pending_redirect",
         "clear_interrupt", "hard_interrupt", "interrupt", "redirect", "steer",
-    )),
-    (AIAgent, RateLimitCreditsMixin, (
-        "_capture_credits", "_capture_rate_limits", "_check_openrouter_cache_status",
-        "_credits_notices_enabled", "_emit_credits_notices",
     )),
     (AIAgent, SessionPersistenceMixin, (
         "_apply_persist_user_message_override", "_convert_to_trajectory_format",

@@ -1148,8 +1148,7 @@ async def test_start_gateway_attaches_before_deferred_authority_claim(monkeypatc
     monkeypatch.setattr(gateway_run, "_enable_multiplex_log_routing", lambda config: None)
     monkeypatch.setattr(gateway_run, "_start_gateway_claim_pid_file", lambda: GATEWAY_CLAIM_SUCCESSOR_PENDING)
     monkeypatch.setattr(gateway_run, "_discover_gateway_mcp_tools", AsyncMock())
-    monkeypatch.setattr(gateway_run, "_ensure_windows_gateway_venv_imports", lambda: None)
-    monkeypatch.setattr("hermes_cli.nous_auth_keepalive.start_nous_auth_keepalive", lambda: None)
+    monkeypatch.setattr("gateway.run._ensure_windows_gateway_venv_imports", lambda: None)
     monkeypatch.setattr("gateway.shutdown_flush.recover_pending_to_db", lambda **kwargs: 0)
     replace = AsyncMock()
     monkeypatch.setattr(gateway_run, "_start_gateway_replace_existing_instance", replace)
@@ -1172,6 +1171,11 @@ async def test_start_gateway_attaches_before_deferred_authority_claim(monkeypatc
             assert self._launched_as_overlap_successor is True
             assert OVERLAP_SUCCESSOR_ENV not in os.environ
             assert OVERLAP_PREDECESSOR_PID_ENV not in os.environ
+            self.adapters = {
+                Platform.DISCORD: SimpleNamespace(
+                    supports_overlap_restart=True, _running=True,
+                ),
+            }
             events.append("hub-adapter-start")
             return True
 
@@ -1191,24 +1195,41 @@ async def test_start_gateway_attaches_before_deferred_authority_claim(monkeypatc
         events.append("control-socket")
         return control
 
-    def start_cron(runner):
+    cron_calls = []
+
+    def start_cron(runner, **kwargs):
+        cron_calls.append(kwargs)
         events.append("cron")
         return threading_event, cron_provider, None, None
 
+    def start_housekeeping(*args):
+        events.append("housekeeping")
+        return None
+
     import threading
     threading_event = threading.Event()
-    deferred = AsyncMock(side_effect=lambda: events.append("deferred-adapters"))
+    deferred = AsyncMock(side_effect=lambda _runner: events.append("deferred-adapters"))
     monkeypatch.setattr(gateway_run, "GatewayRunner", FakeRunner)
     monkeypatch.setattr(gateway_run, "_start_gateway_start_control_socket", start_control)
     monkeypatch.setattr(gateway_run, "_start_gateway_start_cron_and_housekeeping", start_cron)
+    monkeypatch.setattr(gateway_run, "_start_gateway_start_housekeeping", start_housekeeping)
     monkeypatch.setattr("gateway.overlap_restart.start_deferred_adapters", deferred)
 
+    claimed_predecessor = []
+    claim_errors = []
+
     async def fake_claim(runner, predecessor_pid, on_authoritative, **kwargs):
-        assert predecessor_pid == 4242
-        assert "control-socket" not in events and "cron" not in events
+        from gateway.overlap_restart import forget_pending_predecessor
+
+        claimed_predecessor.append(predecessor_pid)
+        forget_pending_predecessor()
         events.append("predecessor-exited")
-        await on_authoritative()
-        runner._shutdown_event.set()
+        try:
+            await on_authoritative()
+        except BaseException as exc:
+            claim_errors.append(exc)
+        finally:
+            runner._shutdown_event.set()
         return True
 
     monkeypatch.setattr("gateway.overlap_restart.claim_when_predecessor_exits", fake_claim)
@@ -1224,14 +1245,146 @@ async def test_start_gateway_attaches_before_deferred_authority_claim(monkeypatc
     monkeypatch.setattr(gateway_run, "_start_gateway_shutdown_tail", fake_tail)
     monkeypatch.setattr("gateway.lifecycle_ledger.record_startup", lambda: events.append("lifecycle"))
 
-    assert await gateway_run.start_gateway(config=GatewayConfig(), verbosity=None)
+    assert await asyncio.wait_for(
+        gateway_run.start_gateway(config=GatewayConfig(), verbosity=None), timeout=10,
+    )
+    assert claimed_predecessor == [4242]
+    assert claim_errors == []
     replace.assert_not_awaited()
     assert events == [
-        "hub-adapter-start", "predecessor-exited", "control-socket", "lifecycle",
-        "deferred-adapters", "restart-notification", "cron", "systemd-watchdog",
+        "hub-adapter-start", "cron", "predecessor-exited", "control-socket", "lifecycle",
+        "deferred-adapters", "restart-notification", "housekeeping", "systemd-watchdog",
     ]
+    assert cron_calls == [{"in_process_only": True, "with_housekeeping": False}]
     deferred.assert_awaited_once()
     assert tail == {"control": control, "cron_provider": cron_provider}
+
+
+def test_overlap_cron_dispatch_requires_a_verified_successor():
+    from gateway.overlap_restart import can_dispatch_cron
+
+    runner = SimpleNamespace(
+        _draining=False,
+        _external_drain_active=False,
+        _overlap_successor_pending=True,
+        _launched_as_overlap_successor=True,
+        adapters={},
+        _profile_adapters={},
+    )
+    assert not can_dispatch_cron(runner), "an unattached successor must not claim due jobs"
+
+    runner.adapters = {
+        Platform.DISCORD: SimpleNamespace(supports_overlap_restart=True, _running=True),
+    }
+    assert can_dispatch_cron(runner)
+
+    runner._external_drain_active = True
+    assert not can_dispatch_cron(runner), "external quiesce remains authoritative"
+    runner._external_drain_active = False
+    runner.adapters[Platform.DISCORD]._running = False
+    assert not can_dispatch_cron(runner), "a detached successor must stop claiming due jobs"
+
+    runner._overlap_successor_pending = False
+    runner._draining = True
+    assert not can_dispatch_cron(runner), "a predecessor must not claim new work while draining"
+    runner._draining = False
+    assert can_dispatch_cron(runner), "an ordinary running gateway dispatches cron"
+
+
+@pytest.mark.asyncio
+async def test_pending_overlap_defers_external_cron_provider(monkeypatch):
+    import threading
+    from gateway import run as gateway_run
+    from gateway.config import GatewayConfig
+
+    started = threading.Event()
+
+    class ExternalProvider:
+        name = "external-test"
+
+        def start(self, stop_event, **kwargs):
+            started.set()
+            stop_event.wait(timeout=5)
+
+    provider = ExternalProvider()
+    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: provider)
+    monkeypatch.setattr(gateway_run, "_start_gateway_housekeeping", lambda *args, **kwargs: None)
+    runner = SimpleNamespace(
+        config=GatewayConfig(), adapters={}, _profile_adapters={}, _primary_profile_name=None,
+    )
+
+    early = gateway_run._start_gateway_start_cron_and_housekeeping(
+        runner, in_process_only=True, with_housekeeping=False)
+    early[0].set()
+    assert early[1:] == (None, None, None)
+    assert not started.is_set(), "external provider started before gateway authority"
+
+    handles = gateway_run._start_gateway_start_cron_and_housekeeping(runner)
+    try:
+        assert handles[1] is provider
+        assert await asyncio.to_thread(started.wait, 5), "authoritative provider never started"
+    finally:
+        handles[0].set()
+        for thread in handles[2:]:
+            thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in handles[2:])
+
+
+@pytest.mark.asyncio
+async def test_verified_successor_ticks_while_predecessor_drains_indefinitely(monkeypatch, tmp_path):
+    import threading
+    from cron.scheduler_provider import InProcessCronScheduler
+    from gateway import run as gateway_run
+    from gateway.config import GatewayConfig
+    from gateway.overlap_restart import can_dispatch_cron
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", InProcessCronScheduler)
+    monkeypatch.setattr(InProcessCronScheduler, "recover_interrupted", lambda self: 0)
+    monkeypatch.setattr("cron.jobs.record_ticker_heartbeat", lambda **kwargs: None)
+    monkeypatch.setattr(gateway_run, "_start_gateway_housekeeping", lambda *args, **kwargs: None)
+
+    ticked = threading.Event()
+    tick_calls = []
+
+    def fake_tick(*args, **kwargs):
+        tick_calls.append(kwargs)
+        ticked.set()
+        return 0
+
+    monkeypatch.setattr("cron.scheduler.tick", fake_tick)
+    predecessor_hub = SimpleNamespace(supports_overlap_restart=True, _running=True)
+    successor_hub = SimpleNamespace(supports_overlap_restart=True, _running=True)
+    predecessor = SimpleNamespace(
+        config=GatewayConfig(), adapters={Platform.DISCORD: predecessor_hub}, _profile_adapters={},
+        _draining=True, _external_drain_active=False,
+        _overlap_successor_pending=False, _launched_as_overlap_successor=False,
+    )
+    successor = SimpleNamespace(
+        config=GatewayConfig(), adapters={Platform.DISCORD: successor_hub}, _profile_adapters={},
+        _draining=False, _external_drain_active=False,
+        _overlap_successor_pending=True, _launched_as_overlap_successor=True,
+    )
+
+    handles = [gateway_run._start_gateway_start_cron_and_housekeeping(predecessor)]
+    try:
+        handles.append(gateway_run._start_gateway_start_cron_and_housekeeping(successor))
+        assert await asyncio.to_thread(ticked.wait, 10), "successor never ticked"
+        assert predecessor._draining, "the test must not rely on the predecessor exiting"
+        assert not can_dispatch_cron(predecessor)
+        assert can_dispatch_cron(successor)
+    finally:
+        for cron_stop, _provider, cron_thread, housekeeping in handles:
+            cron_stop.set()
+            cron_thread.join(timeout=5)
+            housekeeping.join(timeout=5)
+
+    assert tick_calls, "neither generation dispatched cron"
+    assert all(call["can_dispatch"]() for call in tick_calls)
+    assert all(call["adapters"] is successor.adapters for call in tick_calls), (
+        "the draining predecessor dispatched alongside its successor")
+    assert all(not thread.is_alive() for _stop, _provider, thread, _hk in handles)
 
 
 @pytest.mark.asyncio

@@ -156,7 +156,7 @@ TIPS = [
     # --- Skills ---
     "Over 80 bundled skills covering github, creative, productivity, research, and more.",
     "Every installed skill automatically becomes a slash command — type / to see them all.",
-    "hermes skills install official/security/1password installs optional skills from the repo.",
+    "hermes skills install official/security/oss-forensics installs optional skills from the repo.",
     "Skills can restrict to specific OS platforms — some only load on macOS or Linux.",
     "skills.external_dirs in config.yaml lets you load skills from custom directories.",
     "The agent can create its own skills as procedural memory using skill_manage.",
@@ -224,7 +224,7 @@ TIPS = [
     "Custom providers: save named endpoints in config.yaml under custom_providers.",
     "HERMES_EPHEMERAL_SYSTEM_PROMPT injects a system prompt that's never persisted to history.",
     "credential_pool_strategies supports fill_first, round_robin, least_used, and random rotation.",
-    "hermes auth add nous or hermes auth add openai-codex sets up OAuth-based providers.",
+    "hermes auth add anthropic or hermes auth add openai-codex sets up OAuth-based providers.",
     "The API server supports both Chat Completions and Responses API with server-side state.",
     "tool_preview_length: 0 in config shows full file paths in the spinner's activity feed.",
     "hermes status --deep runs deeper diagnostic checks across all components.",
@@ -316,7 +316,7 @@ TIPS = [
     # --- Credential Pools & Routing ---
     'hermes auth reset <provider> [target] clears cooldowns and exhaustion flags on a whole credential pool, or on one credential by index, id, or label.',
     'credential_pool_strategies.<provider>: round_robin cycles keys evenly instead of the fill_first default.',
-    'use_gateway: true per-tool routes web, image, or speech tools through the Nous Tool Gateway — no extra keys.',
+    'use_gateway: true per-tool routes web, image, or speech tools through the configured tool gateway (TOOL_GATEWAY_USER_TOKEN).',
     'provider_routing.data_collection: deny excludes data-storing providers on OpenRouter.',
     'provider_routing.require_parameters: true only routes to providers that support every param in your request.',
     # --- TUI & Dashboard ---

@@ -2,7 +2,7 @@
 
 A host that mints one physical ``session_id`` per RESPONSE re-keys every
 conversation-affinity hint Hermes sends — ``prompt_cache_key`` on both
-OpenAI-wire transports, the OpenRouter/Nous sticky ``session_id``, and xAI's
+OpenAI-wire transports, the OpenRouter sticky ``session_id``, and xAI's
 ``x-grok-conv-id`` — so the conversation never lands back on the routing
 bucket it warmed. Hermes cannot infer the logical conversation from the id's
 syntax (#79017's failure class), but it does not have to: the host declares
@@ -21,7 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.portal_tags import (
+from agent.conversation_scope import (
     get_affinity_scope,
     reset_affinity_scope,
     reset_conversation_context,
@@ -422,19 +422,6 @@ class TestProviderStickyKeys:
             reset_affinity_scope(token)
 
         assert headers["x-grok-conv-id"] == headers_next["x-grok-conv-id"] == scope
-
-    def test_nous_sticky_key_follows_the_declared_scope(self):
-        from providers import get_provider_profile
-
-        scope = declared_conversation_scope(_agent(RUN_1, None, CHAT_KEY))
-        token = set_affinity_scope(scope)
-        try:
-            body = get_provider_profile("nous").build_extra_body(session_id=RUN_1)
-            body_next = get_provider_profile("nous").build_extra_body(session_id=RUN_2)
-        finally:
-            reset_affinity_scope(token)
-
-        assert body["session_id"] == body_next["session_id"] == scope
 
 
 class TestConversationGenerationRotates:

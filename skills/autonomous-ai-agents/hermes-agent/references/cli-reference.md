@@ -43,7 +43,7 @@ hermes setup [section]      Wizard (model|terminal|gateway|tools|agent)
 hermes model                Interactive model/provider picker
 hermes fallback [add|remove|list]  Fallback provider chain
 hermes config [show|edit|get|set|unset|path|env-path|check|migrate]
-hermes login / logout       OAuth sign-in / clear stored auth
+hermes logout               Clear stored auth
 hermes doctor [--fix]       Check dependencies and config
 hermes status [--all]       Component status
 ```
@@ -107,7 +107,7 @@ hermes profile migrate-identity A B   Retry a completed rename's session/routing
 
 ```
 hermes auth                 Interactive credential manager
-hermes auth add [PROVIDER]  Add OAuth or API-key credential (nous, openai-codex, qwen-oauth, …)
+hermes auth add [PROVIDER]  Add OAuth or API-key credential (openai-codex, qwen-oauth, …)
 hermes auth list|remove P IDX|reset PROVIDER|status
 ```
 Multiple credentials per provider form a pool that rotates automatically and skips exhausted keys.
@@ -116,7 +116,6 @@ Multiple credentials per provider form a pool that rotates automatically and ski
 
 ```
 hermes proxy                OpenAI-compatible local proxy backed by an OAuth provider
-hermes portal               Quick setup / sign in via Nous Portal
 hermes project              Named multi-folder workspaces
 hermes skin list|use|set    Switch/tweak skins (see references/themes.md)
 hermes memory setup|status|off|reset   Memory provider

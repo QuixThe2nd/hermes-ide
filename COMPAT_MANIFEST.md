@@ -110,7 +110,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 
 | name | kind | new location |
 |---|---|---|
-| `NOUS_EXTRA_BODY` | restored-def | `(deleted; BASE body restored)` |
 | `Path` | import | `pathlib` |
 | `copy` | import | `copy` |
 | `get_async_text_auxiliary_client` | restored-def | `(deleted; BASE body restored)` |
@@ -302,13 +301,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | name | kind | new location |
 |---|---|---|
 | `re` | import | `re` |
-
-### `agent.nous_rate_guard`
-
-| name | kind | new location |
-|---|---|---|
-| `atomic_replace` | moved-lazy | `utils` |
-| `tempfile` | import | `tempfile` |
 
 ### `agent.outbound_webhooks`
 
@@ -986,8 +978,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS` | moved-lazy | `hermes_cli.auth_constants` |
 | `HTTPServer` | import | `http.server` |
 | `MINIMAX_OAUTH_GRANT_TYPE` | moved-lazy | `hermes_cli.auth_constants` |
-| `NOUS_INFERENCE_INVOKE_SCOPE` | moved-lazy | `hermes_cli.auth_constants` |
-| `NOUS_SHARED_STORE_FILENAME` | moved-lazy | `hermes_cli.auth_nous` |
 | `OAUTH_OVER_SSH_DOCS_URL` | moved-lazy | `hermes_cli.auth_constants` |
 | `QWEN_OAUTH_CLIENT_ID` | moved-lazy | `hermes_cli.auth_constants` |
 | `QWEN_OAUTH_TOKEN_URL` | moved-lazy | `hermes_cli.auth_constants` |
@@ -1001,7 +991,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `base64` | import | `base64` |
 | `hashlib` | import | `hashlib` |
 | `parse_qs` | import | `urllib.parse` |
-| `refresh_nous_oauth_pure` | moved-lazy | `hermes_cli.auth_nous` |
 | `ssl` | import | `ssl` |
 | `subprocess` | import | `subprocess` |
 | `sys` | import | `sys` |
@@ -1276,22 +1265,16 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `ProviderEntry` | moved-lazy | `hermes_cli.models_catalog_static` |
 | `atomic_json_write` | moved-lazy | `utils` |
 | `base_url_host_matches` | moved-lazy | `utils` |
-| `compute_sale_discount` | moved-lazy | `hermes_cli.models_pricing` |
 | `ensure_lmstudio_model_loaded` | moved-lazy | `hermes_cli.models_local` |
 | `fetch_ai_gateway_pricing` | moved-lazy | `hermes_cli.models_pricing` |
 | `fetch_lmstudio_models` | moved-lazy | `hermes_cli.models_local` |
 | `fetch_models_with_pricing` | moved-lazy | `hermes_cli.models_pricing` |
 | `fetch_ollama_local_models` | moved-lazy | `hermes_cli.models_local` |
-| `get_cached_nous_inference_base_url` | moved-lazy | `hermes_cli.models_pricing` |
 | `get_close_matches` | import | `difflib` |
 | `get_pricing_for_provider` | moved-lazy | `hermes_cli.models_pricing` |
 | `group_providers` | moved-lazy | `hermes_cli.models_catalog_static` |
 | `http` | import | `http.client` |
-| `is_nous_free_tier` | restored-def | `(deleted; BASE body restored)` |
 | `lmstudio_model_reasoning_options` | moved-lazy | `hermes_cli.models_local` |
-| `nous_catalog_url` | moved-lazy | `hermes_cli.models_reasoning_caps` |
-| `nous_model_reasoning_capabilities` | moved-lazy | `hermes_cli.models_reasoning_caps` |
-| `nous_policy_allowed_ids` | moved-lazy | `hermes_cli.models_pricing` |
 | `ollama_model_supports_thinking` | moved-lazy | `hermes_cli.models_local` |
 | `openrouter_model_reasoning_capabilities` | moved-lazy | `hermes_cli.models_reasoning_caps` |
 | `parse_openrouter_reasoning_capabilities` | moved-lazy | `hermes_cli.models_reasoning_caps` |
@@ -1301,11 +1284,9 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `probe_ollama_local_models` | moved-lazy | `hermes_cli.models_local` |
 | `provider_group_for_slug` | moved-lazy | `hermes_cli.models_catalog_static` |
 | `refresh_reasoning_caps_async` | moved-lazy | `hermes_cli.models_reasoning_caps` |
-| `restrict_to_nous_policy` | moved-lazy | `hermes_cli.models_pricing` |
 | `should_use_ollama_native_catalog` | moved-lazy | `hermes_cli.models_local` |
 | `url_origin` | moved-lazy | `hermes_cli.urllib_security` |
 | `validate_requested_model` | moved-lazy | `hermes_cli.models_validate` |
-| `warm_nous_reasoning_caps_async` | moved-lazy | `hermes_cli.models_reasoning_caps` |
 | `warm_openrouter_reasoning_caps_async` | moved-lazy | `hermes_cli.models_reasoning_caps` |
 
 ### `hermes_cli.observability.relay_runtime`
@@ -1425,7 +1406,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `Optional` | import | `typing` |
 | `get_optional_skills_dir` | moved-lazy | `hermes_constants` |
 | `json` | import | `json` |
-| `managed_nous_tools_enabled` | moved-lazy | `tools.tool_backend_helpers` |
 | `shutil` | import | `shutil` |
 
 ### `hermes_cli.slack_cli`
@@ -1444,9 +1424,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 
 | name | kind | new location |
 |---|---|---|
-| `format_nous_portal_entitlement_message` | moved-lazy | `hermes_cli.nous_account` |
-| `get_nous_portal_account_info` | moved-lazy | `hermes_cli.nous_account` |
-| `managed_nous_tools_enabled` | moved-lazy | `tools.tool_backend_helpers` |
 | `redact_key` | moved-lazy | `hermes_cli.config` |
 | `subprocess` | import | `subprocess` |
 
@@ -1473,10 +1450,8 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 
 | name | kind | new location |
 |---|---|---|
-| `NOUS_MANAGED_PROVIDER` | moved-lazy | `tools.tool_backend_helpers` |
 | `base_url_hostname` | moved-lazy | `utils` |
 | `fal_key_is_configured` | moved-lazy | `tools.tool_backend_helpers` |
-| `format_nous_portal_entitlement_message` | moved-lazy | `hermes_cli.nous_account` |
 | `is_truthy_value` | moved-lazy | `utils` |
 | `save_env_value` | moved-lazy | `hermes_cli.config` |
 | `shutil` | import | `shutil` |
@@ -3071,7 +3046,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `is_interrupted` | moved-lazy | `tools.interrupt` |
 | `is_managed_tool_gateway_ready` | moved-lazy | `tools.managed_tool_gateway` |
 | `is_persistent_env` | moved-lazy | `tools.terminal_tool_lifecycle` |
-| `nous_tool_gateway_unavailable_message` | moved-lazy | `tools.tool_backend_helpers` |
 | `platform` | import | `platform` |
 | `re` | import | `re` |
 | `resolve_modal_backend_state` | moved-lazy | `tools.tool_backend_helpers` |
@@ -3108,8 +3082,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `OPENAI_MODELS` | moved-lazy | `tools.transcription_common` |
 | `SUPPORTED_FORMATS` | moved-lazy | `tools.transcription_common` |
 | `XAI_STT_BASE_URL` | moved-lazy | `tools.transcription_common` |
-| `managed_nous_tools_enabled` | moved-lazy | `tools.tool_backend_helpers` |
-| `nous_tool_gateway_unavailable_message` | moved-lazy | `tools.tool_backend_helpers` |
 | `platform` | import | `platform` |
 | `queue` | import | `queue` |
 | `re` | import | `re` |
@@ -3183,8 +3155,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `dataclass` | import | `dataclasses` |
 | `field` | import | `dataclasses` |
 | `hermes_xai_user_agent` | moved-lazy | `tools.xai_http` |
-| `managed_nous_tools_enabled` | moved-lazy | `tools.tool_backend_helpers` |
-| `nous_tool_gateway_unavailable_message` | moved-lazy | `tools.tool_backend_helpers` |
 | `platform` | import | `platform` |
 | `queue` | import | `queue` |
 | `re` | import | `re` |
@@ -3255,9 +3225,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `asyncio` | import | `asyncio` |
 | `build_vendor_gateway_url` | moved-lazy | `tools.managed_tool_gateway` |
 | `httpx` | import | `httpx` |
-| `managed_nous_tools_enabled` | moved-lazy | `tools.tool_backend_helpers` |
 | `normalize_url_for_request` | moved-lazy | `tools.url_safety` |
-| `nous_tool_gateway_unavailable_message` | moved-lazy | `tools.tool_backend_helpers` |
 | `prefers_gateway` | moved-lazy | `tools.tool_backend_helpers` |
 | `re` | import | `re` |
 | `resolve_managed_tool_gateway` | moved-lazy | `tools.managed_tool_gateway` |

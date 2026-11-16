@@ -563,18 +563,13 @@ class CLIChatTurnMixin:
                     width=self._scrollback_box_width(),
                 ))
 
-            # Billing CTA pins the single action (Nous → portal billing page, others → billing page) so it
+            # Billing CTA pins the single action (the provider's billing page) so it
             # stays visible instead of scrolling away inside the response prose.
             if turn.result and turn.result.get("failure_reason") == "billing":
                 _bb = turn.result.get("billing_block") or {}
-                if _bb.get("is_nous"):
-                    _url = _bb.get("billing_url")
-                    _cta_lines = ["Add credits via the Nous Portal"
-                                  + (f": [bold]{_url}[/]" if _url else " (`hermes portal`).")]
-                else:
-                    _url = _bb.get("billing_url")
-                    _cta_lines = [f"Add credits with {_bb.get('provider_label') or 'your provider'}"
-                                  + (f": [bold]{_url}[/]" if _url else ".")]
+                _url = _bb.get("billing_url")
+                _cta_lines = [f"Add credits with {_bb.get('provider_label') or 'your provider'}"
+                              + (f": [bold]{_url}[/]" if _url else ".")]
                 _cta_lines.append("Or switch providers with [bold]/model <model> --provider <provider>[/].")
                 try:
                     ChatConsole().print(Panel(
