@@ -225,8 +225,11 @@ def test_disk_dirty_worktree_fails_closed(tmp_path, monkeypatch):
 
 def test_disk_ambiguous_roots_fail_closed(tmp_path):
     repo_a, base_sha, *_ = _make_worker_checkout(tmp_path / "a")
-    (tmp_path / "a").mkdir(exist_ok=True)
-    repo_b, *_ = _make_worker_checkout(tmp_path / "b")
+    # A clone carries repo_a's exact commits, so both roots share base_sha
+    # however the commit timestamps land.
+    repo_b = tmp_path / "b" / "worker-checkout"
+    (tmp_path / "b").mkdir(parents=True)
+    _run_git(tmp_path / "b", "clone", "-q", str(repo_a), str(repo_b))
 
     result = verify_finished_egress(
         _receipt(source_base_sha=base_sha),
