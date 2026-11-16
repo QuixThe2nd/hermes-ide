@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import secrets
 import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, Optional
 
 import discord
@@ -571,3 +573,75 @@ def close_all_vault_prompts(adapter) -> None:
         adapter._vault_prompt_bindings.clear()
         adapter._vault_prompt_requests.clear()
         adapter._vault_prompt_sessions.clear()
+
+def _hub_identity_from_rpc(identity: Any) -> SimpleNamespace:
+    """Rebuild the binding's identity fields from RPC data (plain strings).
+
+    The gateway resolved the owning profile under its own runtime scope and sends
+    the result; the hub must NOT re-resolve identity from its own environment.
+    Blank fields fall back inside ``DiscordVaultPromptBinding`` to this process's
+    home/profile — the gateway always sends resolved values, so a blank field is a
+    malformed request, not a licence to borrow another profile's secrets.
+    """
+    data = identity if isinstance(identity, dict) else {}
+
+    def _field(name: str) -> Optional[str]:
+        return str(data.get(name) or "").strip() or None
+
+    return SimpleNamespace(
+        runtime_profile=_field("runtime_profile"),
+        runtime_home=_field("runtime_home"),
+        transport_profile=_field("transport_profile"),
+        authorization_home=_field("authorization_home"),
+    )
+
+
+async def run_hub_vault_prompt(
+    adapter, *, source: Any, identity: Any, session_key: str,
+    chat_id=None, metadata: Optional[Dict[str, Any]] = None,
+    origin: str = "", host: str = "", authorize: Optional[Callable] = None,
+) -> Dict[str, Any]:
+    """Run one save-login modal on this hub's transport for a gateway-side turn.
+
+    The gateway's ``DiscordHubClientAdapter.create_vault_save_login_binding``
+    validated the turn's source/session/loop before relaying here. This half pins
+    the same owner fields onto the hub-owned ``DiscordVaultPromptBinding`` (exact
+    user, runtime profile/home, session key, channel/thread and adapter/client are
+    enforced by its ``authorize`` on every interaction) and blocks a hub worker
+    thread on the modal so the hub loop stays live. The submission dict travels
+    ONLY in the RPC result to that waiting gateway worker — never into chat,
+    model context, history, or logs.
+    """
+    from gateway.session import SessionSource
+
+    try:
+        source_obj = SessionSource.from_dict(dict(source or {}))
+    except Exception:
+        source_obj = None
+    if (
+        source_obj is None
+        or not str(getattr(source_obj, "user_id", "") or "")
+        or not str(getattr(source_obj, "chat_id", "") or "")
+        or not str(session_key or "").strip()
+    ):
+        return {"state": "failed", "answer": None}
+
+    binding = DiscordVaultPromptBinding(
+        adapter,
+        source=source_obj,
+        identity=_hub_identity_from_rpc(identity),
+        session_key=str(session_key),
+        loop=asyncio.get_running_loop(),
+        chat_id=chat_id,
+        metadata=metadata,
+        authorize=authorize or (lambda _interaction: False),
+    )
+    answer: Optional[Dict[str, str]] = None
+    try:
+        answer = await asyncio.to_thread(binding.prompt, str(origin or ""), str(host or ""))
+    except Exception:
+        answer = None
+    finally:
+        with contextlib.suppress(Exception):
+            binding.close()
+    return {"state": "submitted" if answer else "unavailable", "answer": answer}

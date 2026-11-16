@@ -675,6 +675,42 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
             "send_choice_picker", "on_choice_selected", on_choice_selected,
             chat_id, title, choices, session_key, metadata=metadata)
 
+    def create_vault_save_login_binding(
+        self,
+        *,
+        source,
+        identity,
+        session_key: str,
+        loop,
+        chat_id=None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        """Create the save-login binding that relays the modal over the hub RPC lane.
+
+        Same owner contract as ``DiscordAdapter.create_vault_save_login_binding``
+        (the live turn's source/session), but the button/modal transport runs in
+        the hub process — see ``hub_vault_prompts``.
+        """
+        if (
+            loop is None
+            or not source.user_id
+            or not source.chat_id
+            or not session_key
+            or self._source_session_key(source) != session_key
+        ):
+            return None
+        from plugins.platforms.discord.hub_vault_prompts import DiscordHubVaultPromptBinding
+
+        return DiscordHubVaultPromptBinding(
+            self,
+            source=source,
+            identity=identity,
+            session_key=session_key,
+            loop=loop,
+            chat_id=chat_id,
+            metadata=metadata,
+        )
+
     async def send_multiple_images(self, chat_id: str, images: list, metadata: Optional[dict] = None,
                                    reply_to: Optional[str] = None) -> SendResult:
         return self._send_result(await self._rpc(
