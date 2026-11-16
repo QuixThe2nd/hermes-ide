@@ -196,6 +196,29 @@ class TestChildSystemPrompt(unittest.TestCase):
         self.assertIn("focused subagent", prompt)
         self.assertNotIn("CONTEXT", prompt)
 
+    def test_contains_decision_brief_rule(self):
+        # Every child prompt carries the shared 1-3-1 decision-brief rule:
+        # one problem sentence, three options with trade-offs, one recommendation
+        # with DoD + plan — and the carve-outs for simple/debug/decided work.
+        for role in ("leaf", "orchestrator"):
+            prompt = _build_child_system_prompt("Fix the tests", role=role)
+            self.assertIn("Decision Briefs (1-3-1)", prompt)
+            self.assertIn("exactly one sentence", prompt)
+            self.assertIn("exactly three genuinely different", prompt)
+            self.assertIn("definition of done", prompt)
+            self.assertIn("implementation plan", prompt)
+            self.assertIn("decisions already made", prompt)
+
+    def test_lane_souls_carry_decision_brief_rule(self):
+        # Souls are standalone harness prompts on the omp/claude/cursor backends,
+        # so each must carry the same 1-3-1 rule the builder injects.
+        from tools.delegate_lane_specs import LANE_NAMES, read_soul, resolve_lane_spec
+
+        for name in LANE_NAMES:
+            text = read_soul(resolve_lane_spec(name)["soul"])
+            self.assertIn("Decision Briefs (1-3-1)", text)
+            self.assertIn("exactly three genuinely different options", text)
+
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):
         result = _strip_blocked_tools(["terminal", "file", "delegation", "clarify", "memory", "code_execution"])
