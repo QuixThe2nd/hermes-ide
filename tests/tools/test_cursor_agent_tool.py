@@ -1546,7 +1546,7 @@ def test_timeout_dedupe_retries_when_unlisted(monkeypatch):
 @pytest.mark.parametrize(
     "status,expect_success,expect_error",
     [
-        ("FINISHED", True, None),
+        ("FINISHED", False, "missing artifact egress"),
         ("ERROR", False, "boom"),
         ("CANCELLED", False, "cancelled"),
         ("EXPIRED", False, "expired"),
@@ -1575,7 +1575,7 @@ def test_poll_statuses_map_to_final_json(monkeypatch, tmp_path, status, expect_s
         assert result["error"] is None
         assert result["final_report"] == "done"
     else:
-        assert result["error"] == expect_error
+        assert expect_error in result["error"]
 
 
 @pytest.mark.parametrize(

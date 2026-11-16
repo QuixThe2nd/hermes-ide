@@ -67,6 +67,7 @@ from tools.agent_cli_runner import (
     _clamp_timeout_seconds as _clamp_timeout_seconds_impl,
     _terminate_process,
 )
+from tools.cursor_artifact_egress import verify_finished_egress
 from tools.cursor_run_receipts import (
     ReceiptValidationError,
     MAX_RECOVERY_ATTEMPTS,
@@ -1368,6 +1369,8 @@ def _authoritative_terminal_reconcile(
         log_path=str(receipt.get("log_path") or ""),
         attempt_id=str(receipt.get("attempt_id") or ""),
         task_text=str(receipt.get("task") or ""),
+        receipt=receipt,
+        api_key=api_key,
     )
     finalize_receipt(
         receipt_path,
@@ -1522,6 +1525,8 @@ def _build_cloud_tool_result_from_run(
     progress_url: Optional[str] = None,
     attempt_id: Optional[str] = None,
     task_text: str = "",
+    receipt: Optional[Dict[str, Any]] = None,
+    api_key: str = "",
 ) -> Tuple[str, bool, str, Optional[str]]:
     fields = _cloud_result_fields(
         agent=agent,
@@ -1546,10 +1551,31 @@ def _build_cloud_tool_result_from_run(
             cloud_status,
         )
     if cloud_status == "FINISHED":
+        # FINISHED alone is the agent's own writeup; success needs a
+        # hash-verified artifact manifest from this host's worker
+        # checkout or a complete run stream.
+        egress = verify_finished_egress(
+            receipt if isinstance(receipt, dict) else {},
+            api_key=api_key,
+            machine_name=CURSOR_MACHINE_NAME,
+            api_base=CURSOR_API_BASE,
+        )
         result_json = _make_cloud_tool_result(
             success=True, error=None, attempt_id=attempt_id, **fields
         )
         payload = json.loads(result_json)
+        if egress.get("success") is not True:
+            payload["success"] = False
+            payload["error"] = str(egress.get("error") or "missing artifact egress")
+            return (
+                json.dumps(payload, ensure_ascii=False),
+                False,
+                "failed",
+                cloud_status,
+            )
+        manifest = egress.get("manifest")
+        if isinstance(manifest, dict):
+            payload["artifact_manifest"] = manifest
         gated = apply_evidence_gate(payload, task_text=task_text, config=_cfg())
         if gated is not payload:
             result_json = json.dumps(gated, ensure_ascii=False)
@@ -1644,6 +1670,8 @@ def _execute_cloud_delegation(
                 log_path=str(log_path),
                 attempt_id=str(receipt.get("attempt_id") or ""),
                 task_text=task,
+                receipt=receipt,
+                api_key=api_key,
             )
             finalize_receipt(
                 receipt_path,
@@ -1681,6 +1709,8 @@ def _execute_cloud_delegation(
                     log_path=str(log_path),
                     attempt_id=str(receipt.get("attempt_id") or ""),
                     task_text=task,
+                    receipt=receipt,
+                    api_key=api_key,
                 )
                 finalize_receipt(
                     receipt_path,
@@ -1819,6 +1849,8 @@ def _execute_cloud_delegation(
         progress_url=progress_url,
         attempt_id=str(receipt.get("attempt_id") or ""),
         task_text=task,
+        receipt=receipt,
+        api_key=api_key,
     )
     finalize_receipt(
         receipt_path,
