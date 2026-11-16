@@ -899,6 +899,14 @@ def _tool_stage_slot_roster(slots: Any, budget: int) -> Optional[str]:
     rows: List[Tuple[str, str]] = []  # (round header, rendered row)
     omitted = 0
     duplicates: Dict[Tuple[str, str], int] = {}
+    # Visual-only ordering: successful advisors read first while every status
+    # group keeps its configured relative order. The event payload is untouched.
+    slots = sorted(
+        slots,
+        key=lambda entry: 0
+        if isinstance(entry, dict) and str(entry.get("status") or "") == "responded"
+        else 1,
+    )
     for entry in slots:
         if not isinstance(entry, dict):
             omitted += 1
