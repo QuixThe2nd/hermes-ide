@@ -28,7 +28,17 @@ CAPTURE_AFTER_TOOLS = frozenset({
 })
 _NON_CHANGING_KEYS = frozenset({"Shift", "Control", "Alt", "Meta", "Tab", "CapsLock"})
 _CAPTURE_TIMEOUT_SECONDS = 5
-_OCR_TIMEOUT_SECONDS = 5
+# Privacy-OCR budget. A deployed tesseract needed 8.65s for a full 1536x735
+# Camofox PNG, so the old 5s ceiling suppressed every public page. The fix is
+# single-threaded execution plus headroom, NOT a downscaled OCR copy: every
+# downscale factor tested (1024-1408) garbled small marker text that
+# full-resolution tesseract reads ("Sign in" -> "Sign ino"), silently
+# weakening suppression, while OMP_THREAD_LIMIT=1 alone took a dense
+# full-size page from 16-25s under load to 0.65s with byte-identical output.
+# 30s keeps >3x margin over the measured 8.65s full-image run while a hung
+# tesseract still fails closed and suppresses the image.
+_OCR_TIMEOUT_SECONDS = 30
+_OCR_ENV = {"OMP_THREAD_LIMIT": "1"}
 _MIN_INTERVAL_SECONDS = 1.0
 _MAX_IMAGES_PER_TURN = 6
 _MAX_IMAGE_BYTES = 9 * 1024 * 1024
@@ -264,7 +274,9 @@ def capture_browser_progress(
             if image.format != "PNG" or image.width * image.height > _MAX_IMAGE_PIXELS:
                 return False
             image.verify()
-        ocr = run_local_ocr_checked(screenshot_path, timeout=_OCR_TIMEOUT_SECONDS)
+        ocr = run_local_ocr_checked(
+            screenshot_path, timeout=_OCR_TIMEOUT_SECONDS, extra_env=_OCR_ENV,
+        )
         if not ocr.success:
             logger.info("Browser progress image suppressed: local privacy inspection unavailable")
             return False

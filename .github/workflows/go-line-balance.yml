@@ -44,6 +44,16 @@ jobs:
         working-directory: scripts/go-line-balance
         run: go test ./...
 
+      - name: Test internal Go packages
+        # Every module under internal/ must actually run here: Go added in a
+        # diff only counts toward the balance when its tests execute in CI.
+        # (Verified locally for all current modules before this step shipped.)
+        run: |
+          set -eu
+          for mod in $(git ls-files 'internal/*/go.mod'); do
+            (cd "$(dirname "$mod")" && go test ./...)
+          done
+
       - name: Compare added Go vs Python lines
         env:
           EVENT_NAME: ${{ github.event_name }}

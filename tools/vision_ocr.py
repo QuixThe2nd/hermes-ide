@@ -40,17 +40,21 @@ class LocalOCRResult:
     text: str = ""
 
 
-def run_local_ocr_checked(image_path: Any, *, timeout: float = _OCR_TIMEOUT_SECONDS) -> LocalOCRResult:
+def run_local_ocr_checked(
+    image_path: Any, *, timeout: float = _OCR_TIMEOUT_SECONDS,
+    extra_env: Optional[dict[str, str]] = None,
+) -> LocalOCRResult:
     """Distinguish a successful empty OCR read from unavailable/failed inspection."""
     binary = shutil.which("tesseract")
     if not binary:
         return LocalOCRResult(False)
     try:
         from tools.environments.local import build_subprocess_env
+        env = {**build_subprocess_env(), **(extra_env or {})}
         completed = subprocess.run(
             [binary, str(image_path), "stdout", "-l", "eng", "--psm", "6"],
             capture_output=True, text=True, timeout=timeout,
-            env=build_subprocess_env(), shell=False, check=False)
+            env=env, shell=False, check=False)
     except Exception as exc:
         logger.info("Local OCR unavailable: %s", exc)
         return LocalOCRResult(False)
