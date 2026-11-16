@@ -260,7 +260,7 @@ def _fetch_codex_account_usage(
     details: list[str] = []
     count = _codex_banked_resets(payload)
     if count > 0:
-        details.append(f"You have {count} reset{_plural(count)} banked - use /usage reset to activate")
+        details.append(f"You have {count} banked rate-limit reset{_plural(count)}")
     credits, balance = payload.get("credits") or {}, (payload.get("credits") or {}).get("balance")
     if credits.get("has_credits") and _is_num(balance):
         details.append(f"Credits balance: ${float(balance):.2f}")
@@ -272,7 +272,7 @@ def _fetch_codex_account_usage(
 
 @dataclass(frozen=True)
 class CodexResetRedeemResult:
-    """Outcome of a `/usage reset` attempt against the Codex backend."""
+    """Outcome of a banked Codex rate-limit reset redemption attempt against the Codex backend."""
 
     status: str  # reset|nothing_to_reset|no_credit|already_redeemed|not_exhausted|no_credits_banked|unavailable
     message: str
@@ -309,7 +309,7 @@ def _codex_reset_guard(payload: dict, available: int, force: bool) -> Optional[C
         status="not_exhausted", available_count=available,
         message=(f"⚠️ Not redeeming: {usage_note}. A banked reset restores your FULL 5h + weekly limits, so spending it "
                  f"now would waste most of it. You have {available} reset{_plural(available)} banked. "
-                 f"Use `/usage reset --force` to redeem anyway."),
+                 f"Pass force=True to redeem anyway."),
     )
 
 
@@ -344,7 +344,7 @@ def _codex_reset_outcome(body: dict, available: int) -> CodexResetRedeemResult:
 def redeem_codex_reset_credit(
     *, base_url: Optional[str] = None, api_key: Optional[str] = None, force: bool = False,
 ) -> CodexResetRedeemResult:
-    """Redeem one banked Codex rate-limit reset credit (`/usage reset`), mirroring the Codex CLI picker: GET usage →
+    """Redeem one banked Codex rate-limit reset credit, mirroring the Codex CLI picker: GET usage →
     guard (a reset restores the WHOLE 5h + weekly allowance, and the backend's own ``nothing_to_reset`` guard is
     less clear) → POST consume with a fresh UUID ``redeem_request_id`` and no ``credit_id`` (the backend picks the
     next credit). Never raises: every failure returns a result."""

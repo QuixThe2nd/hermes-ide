@@ -315,7 +315,7 @@ class SessionSessionsMixin:
         """Most recently used main-loop model route as one coherent per-call tuple
         (``session_model_usage`` keeps model+provider together; ``sessions`` mixes route changes).
         Recency, not lifetime call count: on a long session a route retired weeks ago can hold the
-        highest ``api_call_count`` forever, and /status and /usage would keep calling it current.
+        highest ``api_call_count`` forever, and /status would keep calling it current.
         ``rowid DESC`` breaks same-timestamp ties toward the route that first appeared later; without
         it SQLite's temp-sort order is unspecified and the retired route can win."""
         self.flush_token_counts()

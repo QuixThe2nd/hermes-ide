@@ -11318,9 +11318,9 @@ class SessionDB(
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a session by ID."""
-        # Cost/usage readers (/status, /usage, gateway endpoints) reach the
-        # row through here; drain queued token deltas so they see exact
-        # totals. No-op attribute check when nothing is queued.
+        # Cost/usage readers (/status, gateway endpoints) reach the row
+        # through here; drain queued token deltas so they see exact totals.
+        # No-op attribute check when nothing is queued.
         self.flush_token_counts()
         with self._read_ctx() as conn:
             cursor = conn.execute(

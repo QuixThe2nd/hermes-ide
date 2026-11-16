@@ -35,7 +35,6 @@ TIPS = [
     "/plugins lists installed plugins and their status.",
     "/cron manages scheduled tasks — set up recurring prompts with delivery to any platform.",
     "/reload-mcp hot-reloads MCP server configuration without restarting.",
-    "/usage shows token usage, cost breakdown, and session duration.",
     "/insights shows usage analytics for the last 30 days.",
     "/paste checks your clipboard for an image and attaches it to your next message.",
     "/profile shows which profile is active and its home directory.",

@@ -1,4 +1,4 @@
-"""Read-only gateway introspection commands: /status, /context, /usage, /agents, /insights.
+"""Read-only gateway introspection commands: /status, /context, /agents, /insights.
 Bound onto ``GatewayRunner`` through ``GatewaySlashCommandsMixin``."""
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ import re
 import time
 from typing import Any
 
-from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
@@ -71,14 +70,6 @@ async def _quiet(call, default=None):
 HISTORY_UNREADABLE = ("⚠️ I can't read this conversation's history right now (your earlier messages "
                       "exist but cannot be loaded). Run `hermes doctor --fix` on the host, or use /new "
                       "to start fresh.")
-
-
-def _configured_provider() -> str:
-    """``model.provider`` from the gateway config ("" when unset)."""
-    from gateway.run import _load_gateway_config
-    user_config = _load_gateway_config()
-    model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
-    return _clean_str(model_cfg.get("provider")) if isinstance(model_cfg, dict) else ""
 
 
 def _quiet_sync(call, default=None):
@@ -192,34 +183,6 @@ def _agents_delegation_lines(d: dict) -> list[str]:
     return lines
 
 
-def _usage_agent_stats_lines(agent) -> list[str]:
-    """/usage session block for a live agent: rate limits, token breakdown (matches the CLI),
-    context window and compression count."""
-    lines: list[str] = []
-    rl_state = agent.get_rate_limit_state()
-    if rl_state and rl_state.has_data:
-        from agent.rate_limit_tracker import format_rate_limit_compact
-        lines += [t("gateway.usage.rate_limits", state=format_rate_limit_compact(rl_state)), ""]
-    lines += [
-        t("gateway.usage.header_session"),
-        t("gateway.usage.label_model", model=agent.model),
-        t("gateway.usage.label_input_tokens", count=_fmt(_n(agent, "session_input_tokens"))),
-        t("gateway.usage.label_output_tokens", count=_fmt(_n(agent, "session_output_tokens"))),
-        t("gateway.usage.label_total", count=_fmt(agent.session_total_tokens)),
-        t("gateway.usage.label_api_calls", count=agent.session_api_calls),
-    ]
-    ctx = agent.context_compressor
-    if ctx.last_prompt_tokens > 0:
-        pct = _pct(ctx.last_prompt_tokens, ctx.context_length)
-        from agent.context_breakdown import context_display_source
-        mark = "~" if context_display_source(ctx) != "provider_usage" else ""
-        lines.append(t("gateway.usage.label_context", used=mark + _fmt(ctx.last_prompt_tokens),
-                       total=_fmt(ctx.context_length), pct=f"{mark}{pct:.0f}"))
-    if ctx.compression_count:
-        lines.append(t("gateway.usage.label_compressions", count=ctx.compression_count))
-    return lines
-
-
 def _capped_rows(items: list, render) -> list[str]:
     """Render up to ``_LIST_CAP`` items via *render* (list of lines each) plus an overflow line."""
     lines: list[str] = []
@@ -231,7 +194,7 @@ def _capped_rows(items: list, render) -> list[str]:
 
 
 class GatewayStatusCommandsMixin:
-    """Read-only gateway introspection commands: /status, /context, /usage, /agents, /insights."""
+    """Read-only gateway introspection commands: /status, /context, /agents, /insights."""
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
@@ -370,7 +333,7 @@ class GatewayStatusCommandsMixin:
             lines += _context_compressor_lines(agent, ctx, used) if ctx is not None else [
                 t("gateway.context.detail_after_first")]
             # Per-category estimated breakdown (+ optional expanded listings). Same chars/4 engine
-            # the desktop popover and /usage use; plain text (monospace isn't guaranteed on
+            # the desktop popover uses; plain text (monospace isn't guaranteed on
             # messaging platforms). Fail-open: rendering errors never break /context.
             breakdown = await asyncio.to_thread(self._context_breakdown_block, agent, source, expanded) if agent else []
             return "\n".join(lines + ([""] + breakdown if breakdown else []))
@@ -477,8 +440,8 @@ class GatewayStatusCommandsMixin:
         return "\n".join(lines)
 
     def _context_breakdown_block(self, agent, source, expanded: bool) -> list[str]:
-        """/context per-category block (plain text, chars/4 estimate, same engine as /usage).
-        Runs in a thread; returns [] and never raises."""
+        """/context per-category block (plain text, chars/4 estimate, same engine as the
+        desktop popover). Runs in a thread; returns [] and never raises."""
         try:
             from agent.context_breakdown import compute_context_details, render_context_breakdown_lines
             try:
@@ -506,120 +469,6 @@ class GatewayStatusCommandsMixin:
         except Exception:
             history = []
         return compute_session_context_breakdown(agent, history)
-
-    def _context_breakdown_lines(self, agent, source) -> list[str]:
-        """/usage per-category context breakdown (chars/4 estimate). Returns [] and never raises."""
-        try:
-            try:
-                payload = self._session_context_breakdown(agent, source)
-            except TranscriptReadError:
-                return [HISTORY_UNREADABLE]
-            categories = payload.get("categories") or []
-            if not categories:
-                return []
-            total = payload.get("estimated_total") or 0
-            out = [t("gateway.usage.breakdown_header")]
-            for cat in categories:
-                tokens = int(cat.get("tokens") or 0)
-                if tokens <= 0:
-                    continue
-                cat_id = str(cat.get("id") or "")
-                label = t(f"gateway.usage.breakdown_cat_{cat_id}")
-                if label.endswith(f"breakdown_cat_{cat_id}"):  # missing key: t() echoes it back
-                    label = str(cat.get("label") or cat_id)
-                pct = round(tokens / total * 100) if total else 0
-                out.append(t("gateway.usage.breakdown_line", label=label, count=_fmt(tokens), pct=f"~{pct}"))
-            return out if len(out) > 1 else []
-        except Exception:
-            return []
-
-    async def _handle_usage_command(self, event: MessageEvent) -> str:
-        """Handle /usage -- token usage for the current session (live or cached agent) plus
-        account/credit blocks; ``/usage reset [--force]`` redeems a banked Codex reset credit."""
-        source = event.source
-        session_key = self._session_key_for_source(source)
-        raw_args = event.get_command_args().strip()
-        args = [a.lower() for a in raw_args.split()] if raw_args else []
-        wants_reset = bool(args) and args[0] == "reset"
-        if args and not wants_reset:
-            return t("gateway.usage.unknown_subcommand", args=raw_args)
-
-        # Running agent first (mid-turn), then cached agent (between turns).
-        agent = self._resident_agent_for(session_key)
-
-        # Provider/base_url/api_key for the account-usage fetch: live agent first, else persisted
-        # billing data on the SessionDB row so `/usage` still returns account info between turns.
-        provider, base_url, api_key = (
-            getattr(agent, k, None) if agent else None for k in ("provider", "base_url", "api_key")
-        )
-        if not provider and getattr(self, "_session_db", None) is not None:
-            provider, base_url = await self._persisted_billing_route(source)
-        if not provider:
-            # Fresh or evicted session with no persisted route (e.g. /usage right after login):
-            # fall back to the configured provider, as /status does, so account limits such as
-            # Codex subscription windows still render from on-disk credentials (#15167).
-            provider = await _quiet(lambda: asyncio.to_thread(_configured_provider)) or None
-        if wants_reset:
-            if str(provider or "").strip().lower() != "openai-codex":
-                return t("gateway.usage.reset_wrong_provider")
-            from agent.account_usage import redeem_codex_reset_credit
-            result = await asyncio.to_thread(
-                redeem_codex_reset_credit, base_url=base_url, api_key=api_key, force="--force" in args[1:],
-            )
-            return result.message
-
-        # Account usage off the event loop so slow provider APIs don't block the gateway;
-        # failures are non-fatal (account_lines stays []).
-        account_snapshot = provider and await _quiet(
-            lambda: asyncio.to_thread(fetch_account_usage, provider, base_url=base_url, api_key=api_key)
-        )
-        account_lines = (
-            render_account_usage_lines(account_snapshot, markdown=True) if account_snapshot else []
-        )
-
-        def _with_account_blocks(lines: list[str]) -> str:
-            if account_lines:
-                if lines:
-                    lines.append("")
-                lines.extend(account_lines)
-            return "\n".join(lines)
-        if agent and hasattr(agent, "session_total_tokens") and agent.session_api_calls > 0:
-            lines = _usage_agent_stats_lines(agent)
-            # Per-category breakdown (chars/4 estimate, same engine as the desktop popover): prompt
-            # / tools / skills / memory off the live agent, conversation from the transcript.
-            breakdown_lines = await asyncio.to_thread(self._context_breakdown_lines, agent, source)
-            if breakdown_lines:
-                lines += [""] + breakdown_lines
-            return _with_account_blocks(lines)
-
-        # No agent at all -- rough count from session history
-        session_entry = await self.async_session_store.get_or_create_session(source)
-        try:
-            history = await self.async_session_store.load_transcript(session_entry.session_id)
-        except TranscriptReadError:
-            return HISTORY_UNREADABLE
-        if history:
-            approx, count = _transcript_estimate(history)
-            return _with_account_blocks([
-                t("gateway.usage.header_session_info"),
-                t("gateway.usage.label_messages", count=count),
-                t("gateway.usage.label_estimated_context", count=_fmt(approx)),
-                t("gateway.usage.detailed_after_first"),
-            ])
-        if account_lines:
-            return _with_account_blocks([])
-        return t("gateway.usage.no_data")
-
-    async def _persisted_billing_route(self, source):
-        """``(provider, base_url)`` from the SessionDB row / most recent route when no agent is resident."""
-        async def _rows():
-            entry = await self.async_session_store.get_or_create_session(source)
-            persisted = await self._session_db.get_session(entry.session_id) or {}
-            route = await self._session_db.get_recent_session_model_route(entry.session_id)
-            return persisted, route if isinstance(route, dict) else {}
-        persisted, recent = await _quiet(_rows, ({}, {}))
-        row = recent if recent.get("billing_provider") else persisted
-        return row.get("billing_provider"), row.get("billing_base_url")
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:
         """Handle /insights [N | --days N] [--source S] -- usage insights and analytics."""

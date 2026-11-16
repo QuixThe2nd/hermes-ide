@@ -112,7 +112,7 @@ hermes doctor       # کسی بھی مسئلے کی تشخیص کریں
 | ماڈل تبدیل کریں                         | `/model [provider:model]`                     | `/model [provider:model]`                                                        |
 | پرسنلٹی (Personality) سیٹ کریں           | `/personality [name]`                         | `/personality [name]`                                                            |
 | پچھلی باری کو دوبارہ یا منسوخ (undo) کریں | `/retry`، `/undo`                             | `/retry`، `/undo`                                                                |
-| کانٹیکسٹ (context) کمپریس کریں / استعمال چیک کریں | `/compress`، `/usage`، `/insights [--days N]` | `/compress`، `/usage`، `/insights [days]`                                        |
+| کانٹیکسٹ (context) کمپریس کریں / استعمال چیک کریں | `/compress`، `/insights [--days N]`            | `/compress`، `/insights [days]`                                                   |
 | مہارتیں (Skills) براؤز کریں             | `/skills` یا `/<skill-name>`                  | `/<skill-name>`                                                                  |
 | موجودہ کام کو روکیں                     | `Ctrl+C` دبائیں یا نیا میسج بھیجیں            | `/stop` یا نیا میسج بھیجیں                                                       |
 | پلیٹ فارم کے لحاظ سے سٹیٹس              | `/platforms`                                  | `/status`، `/platform`                                                            |

@@ -55,7 +55,6 @@ def build_relay_command_manifest() -> List[Dict[str, Any]]:
              _opt("text", "New title. Leave empty to show.")),
         _cmd("resume", "Resume a previously-named session",
              _opt("name", "Session title or id")),
-        _cmd("usage", "Show token usage for this session"),
         _cmd("help", "Show available commands"),
         _cmd("insights", "Show usage insights and analytics"),
         _cmd("reload-mcp", "Reload MCP servers from config"),

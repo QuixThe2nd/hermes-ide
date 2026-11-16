@@ -166,8 +166,8 @@ class GatewayTopicThreadsMixin:
             "2. Tap All Messages at the top of the bot and send any message.\n"
             "   Telegram creates a new topic for that message; each topic is\n"
             "   an independent Hermes session (fresh history, fresh context).\n"
-            "3. The root DM becomes a system lobby — send /topic, /status,\n"
-            "   /help, /usage there. Normal prompts go in a topic.\n"
+            "3. The root DM becomes a system lobby — send /topic, /status\n"
+            "   or /help there. Normal prompts go in a topic.\n"
             "4. /new inside a topic resets just that topic's session.\n"
             "5. /topic <id> inside a topic restores an old session into it."
         )

@@ -56,7 +56,7 @@ class TestSourceLinesAreClamped:
             return f.read()
 
     def test_gateway_run_clamped(self):
-        # The /usage stats handler was extracted from gateway/run.py into
+        # The gateway context/status gauges were extracted from gateway/run.py into
         # gateway/slash_commands.py and then gateway/slash_commands_status.py.
         # Assert the clamp intent behaviourally: the shared ``_pct`` helper every
         # gateway context gauge goes through clamps at 100 and guards a zero window.
