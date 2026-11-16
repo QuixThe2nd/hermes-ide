@@ -1562,10 +1562,11 @@ def _build_cloud_tool_result_from_run(
             machine_name=CURSOR_MACHINE_NAME,
             api_base=CURSOR_API_BASE,
         )
-        result_json = _make_cloud_tool_result(
-            success=True, error=None, attempt_id=attempt_id, **fields
+        payload = json.loads(
+            _make_cloud_tool_result(
+                success=True, error=None, attempt_id=attempt_id, **fields
+            )
         )
-        payload = json.loads(result_json)
         if egress.get("success") is not True:
             payload["success"] = False
             payload["error"] = str(egress.get("error") or "missing artifact egress")
@@ -1578,9 +1579,12 @@ def _build_cloud_tool_result_from_run(
         manifest = egress.get("manifest")
         if isinstance(manifest, dict):
             payload["artifact_manifest"] = manifest
+        # Serialize AFTER the manifest is attached: the returned string is
+        # what the caller inspects, so a pre-manifest dump must never be
+        # the returned success payload even when the gate passes the
+        # payload object through unchanged.
         gated = apply_evidence_gate(payload, task_text=task_text, config=_cfg())
-        if gated is not payload:
-            result_json = json.dumps(gated, ensure_ascii=False)
+        result_json = json.dumps(gated, ensure_ascii=False)
         success = gated.get("success") is True
         return (
             result_json,

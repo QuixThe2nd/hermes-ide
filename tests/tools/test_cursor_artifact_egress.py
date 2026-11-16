@@ -471,3 +471,90 @@ def test_incomplete_bodies_are_never_success(monkeypatch, body):
 
     assert result["success"] is False
     assert "missing artifact egress" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# 6. Result assembly: the returned JSON itself must carry the manifest
+# ---------------------------------------------------------------------------
+
+
+def _finished_run() -> dict:
+    return {
+        "id": RUN_ID,
+        "agentId": AGENT_ID,
+        "status": "FINISHED",
+        "result": "worker writeup",
+    }
+
+
+def test_success_json_carries_disk_manifest(monkeypatch, tmp_path):
+    """A verified FINISHED run must return JSON that includes the manifest.
+
+    Regression: the result string was dumped before artifact_manifest was
+    attached and only re-dumped when the evidence gate mutated the payload,
+    so with the gate off (the default) the caller saw success with no
+    artifact bytes to inspect.
+    """
+    from tools import cursor_agent_tool
+
+    repo, base_sha, _head, _tree, rel, content = _make_worker_checkout(tmp_path)
+    spy = _FetchSpy(b"")
+    monkeypatch.setattr(cursor_artifact_egress, "_http_get_stream", spy)
+    monkeypatch.setattr(
+        cursor_artifact_egress, "discover_checkout_roots", lambda *a, **k: [str(repo)]
+    )
+
+    result_json, success, outcome, _status = (
+        cursor_agent_tool._build_cloud_tool_result_from_run(
+            agent={"id": AGENT_ID},
+            run=_finished_run(),
+            duration_seconds=1.0,
+            log_path=None,
+            receipt=_receipt(source_base_sha=base_sha),
+            api_key="key",
+            task_text="write a report",
+        )
+    )
+
+    payload = json.loads(result_json)
+    assert success is True, payload.get("error")
+    assert outcome == "success"
+    manifest = payload["artifact_manifest"]
+    assert manifest["checkout_path"] == str(repo.resolve())
+    assert manifest["source"] == "disk"
+    assert manifest["files"] == [
+        {"path": rel, "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest()}
+    ]
+    # The manifest rides the returned string; disk verification never fetches.
+    assert spy.calls == []
+
+
+def test_evidence_gate_downgrade_keeps_manifest(monkeypatch, tmp_path):
+    """missing_test_evidence flips success off but never drops the manifest."""
+    from tools import cursor_agent_tool
+
+    repo, base_sha, *_rest = _make_worker_checkout(tmp_path)
+    monkeypatch.setattr(
+        cursor_artifact_egress, "discover_checkout_roots", lambda *a, **k: [str(repo)]
+    )
+    monkeypatch.setattr(
+        cursor_agent_tool, "_cfg", lambda: {"require_test_evidence": True}
+    )
+
+    result_json, success, outcome, _status = (
+        cursor_agent_tool._build_cloud_tool_result_from_run(
+            agent={"id": AGENT_ID},
+            run=_finished_run(),
+            duration_seconds=1.0,
+            log_path=None,
+            receipt=_receipt(source_base_sha=base_sha),
+            api_key="key",
+            task_text="implement the fix and add tests",
+        )
+    )
+
+    payload = json.loads(result_json)
+    assert success is False
+    assert outcome == "failed"
+    assert payload["error"] == "missing_test_evidence"
+    assert payload["artifact_manifest"]["source"] == "disk"
