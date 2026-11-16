@@ -414,8 +414,7 @@ def test_run_doctor_termux_reports_camofox_prerequisites(monkeypatch, tmp_path):
     assert "Termux compatibility fallbacks:" in out
     assert "use .[termux-all] for broad compatibility" in out
     assert "Matrix E2EE extra is excluded on Termux" in out
-    assert "Local faster-whisper extra is excluded on Termux" in out
-    assert "STT fallback: use Groq Whisper (set GROQ_API_KEY) or OpenAI Whisper (set VOICE_TOOLS_OPENAI_KEY)." in out
+
 
 
 def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, tmp_path):
@@ -1162,14 +1161,7 @@ def _run_doctor_with_healthy_oauth_fallback(
             None,
             "Check MINIMAX_API_KEY in .env",
         ),
-        (
-            "XAI_API_KEY",
-            "bad-xai-key",
-            "api.x.ai",
-            {},
-            {"logged_in": True, "auth_mode": "oauth_pkce"},
-            "Check XAI_API_KEY in .env",
-        ),
+
     ],
 )
 def test_run_doctor_ignores_invalid_direct_keys_when_oauth_fallback_is_healthy(

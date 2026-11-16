@@ -421,9 +421,9 @@ def test_current_generation_is_independent_for_each_bot_token(tmp_path):
 
 
 @pytest.mark.platforms("posix")
-def test_unix_hub_supports_two_clients_rpc_and_detach(tmp_path):
+def test_unix_hub_supports_two_clients_rpc_and_detach(short_af_unix_path):
     async def scenario():
-        server = DiscordHubServer(tmp_path / "discord-hub.sock")
+        server = DiscordHubServer(short_af_unix_path)
 
         class FakeDiscordConnection:
             def __init__(self):
@@ -492,9 +492,9 @@ def test_unix_hub_supports_two_clients_rpc_and_detach(tmp_path):
 
 
 @pytest.mark.platforms("posix")
-def test_overlap_admission_opens_only_after_successor_attaches(tmp_path):
+def test_overlap_admission_opens_only_after_successor_attaches(short_af_unix_path):
     async def scenario():
-        server = DiscordHubServer(tmp_path / "discord-hub.sock")
+        server = DiscordHubServer(short_af_unix_path)
 
         class FakeDiscordConnection:
             async def disconnect(self):
@@ -771,10 +771,10 @@ def test_overlap_spawn_supervisor_env_is_scoped_to_launcher(monkeypatch, tmp_pat
     assert captured[-1]["PATH"].endswith(supervisor_env["PATH"])
 
 
-@pytest.mark.platforms("posix")
-def test_hub_registers_local_successor_for_the_attached_predecessor(tmp_path):
-    async def scenario(socket_dir):
-        server = DiscordHubServer(Path(socket_dir) / "hub.sock")
+@pytest.mark.platforms("linux")
+def test_hub_registers_local_successor_for_the_attached_predecessor(tmp_path, short_af_unix_path):
+    async def scenario():
+        server = DiscordHubServer(short_af_unix_path)
 
         class FakeDiscordConnection:
             async def disconnect(self):
@@ -801,10 +801,7 @@ def test_hub_registers_local_successor_for_the_attached_predecessor(tmp_path):
             await client.disconnect()
             await server.stop()
 
-    import os
-    import tempfile
-    with tempfile.TemporaryDirectory(dir="/tmp", prefix="h-") as socket_dir:
-        run(scenario(socket_dir))
+    run(scenario())
 
 
 def test_hub_rejects_local_successor_registration_from_another_peer(tmp_path):
@@ -1489,9 +1486,9 @@ def test_hub_client_exposes_the_gateway_discord_adapter_surface():
 
 
 @pytest.mark.platforms("posix")
-def test_picker_callbacks_round_trip_to_the_attached_gateway(tmp_path):
+def test_picker_callbacks_round_trip_to_the_attached_gateway(short_af_unix_path):
     async def scenario():
-        server = DiscordHubServer(tmp_path / "discord-hub.sock")
+        server = DiscordHubServer(short_af_unix_path)
 
         class FakeDiscordConnection:
             def __init__(self):
@@ -1568,11 +1565,11 @@ def test_send_multiple_images_forwards_reply_to():
 
 
 @pytest.mark.platforms("posix")
-def test_sync_queries_use_the_hub(tmp_path):
+def test_sync_queries_use_the_hub(short_af_unix_path):
     async def scenario():
         from agent.display import ToolPreview
 
-        server = DiscordHubServer(tmp_path / "discord-hub.sock")
+        server = DiscordHubServer(short_af_unix_path)
 
         class FakeDiscordConnection:
             def __init__(self):
@@ -1701,7 +1698,7 @@ class TestHubGateCredentialHandoff:
 
 
 @pytest.mark.platforms("posix")
-def test_unix_attach_round_trips_the_gate_credential(tmp_path, monkeypatch):
+def test_unix_attach_round_trips_the_gate_credential(short_af_unix_path, monkeypatch):
     """End to end over the socket: scoped key → attach payload → hub-side adapter."""
     import plugins.platforms.discord.adapter as adapter_module
 
@@ -1719,7 +1716,7 @@ def test_unix_attach_round_trips_the_gate_credential(tmp_path, monkeypatch):
             pass
 
     async def scenario():
-        server = DiscordHubServer(tmp_path / "hub.sock")
+        server = DiscordHubServer(short_af_unix_path)
         monkeypatch.setattr(adapter_module, "DiscordAdapter", StubAdapter)
         await server.start()
         client = DiscordHubClientAdapter(PlatformConfig(token="fake-token"))
@@ -1788,3 +1785,37 @@ class TestHubAdapterCredentialCapture:
             "no LITELLM_API_KEY" in record.message and record.levelno == logging.ERROR
             for record in caplog.records
         )
+
+
+@pytest.mark.platforms("posix")
+def test_default_socket_path_binds_when_hermes_root_exceeds_sun_path(tmp_path, monkeypatch):
+    """default_socket_path() must stay bindable when the hermes root pushes the
+    naive ``<root>/gateway/discord-hub.sock`` past the tightest AF_UNIX
+    ``sun_path`` limit (104 bytes on macOS): the endpoint falls back to a short
+    hashed name under the process temp dir — still one deterministic endpoint
+    per installation — and a real hub binds and accepts a connection on it."""
+    from hermes_constants import get_default_hermes_root
+    from plugins.platforms.discord.hub import default_socket_path
+
+    deep = tmp_path
+    while len(str(deep).encode()) <= 120:
+        deep = deep / "a-very-long-hermes-home-segment"
+    deep.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(deep))
+    assert len(str(get_default_hermes_root() / "gateway" / "discord-hub.sock").encode()) > 104
+
+    endpoint = default_socket_path()
+    assert len(str(endpoint).encode()) <= 103
+    assert endpoint == default_socket_path()  # one stable installation-wide endpoint
+
+    async def scenario():
+        server = DiscordHubServer(endpoint)
+        await server.start()
+        try:
+            reader, writer = await asyncio.open_unix_connection(str(server.socket_path))
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    run(scenario())

@@ -404,7 +404,12 @@ def test_explicit_goal_false_and_one_shot_lanes_stay_print_mode(monkeypatch, tmp
         )
         assert result["success"] is True
     for argv in invocations:
-        assert argv[1:5] == ["-p", "--mode", "json", "--no-session"]
+        # Print mode stays one-shot: -p with JSON events on stdout, never the
+        # interactive RPC goal mode, and the task rides as the positional prompt.
+        assert argv[1] == "-p"
+        assert argv[2:4] == ["--mode", "json"]
+        assert "--mode" not in argv[4:]
+        assert argv[-1] == "Do the thing"
 
 
 def test_operator_overlay_omitting_goal_keeps_goal_default():

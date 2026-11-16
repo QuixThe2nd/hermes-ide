@@ -48,9 +48,9 @@ class _Gateway:
 
 
 class _HubSidebar:
-    def __init__(self, tmp_path):
+    def __init__(self, socket_path):
         self.port = _free_port()
-        self.server = DiscordHubServer(tmp_path / "hub.sock")
+        self.server = DiscordHubServer(socket_path)
         self.gateways = []
 
     async def __aenter__(self):
@@ -88,8 +88,8 @@ async def _chat(ws, text="hello", message_id="m1") -> None:
     }))
 
 
-async def test_attach_replacement_routes_all_traffic_only_to_current_gateway(tmp_path):
-    async with _HubSidebar(tmp_path) as hub:
+async def test_attach_replacement_routes_all_traffic_only_to_current_gateway(short_af_unix_path):
+    async with _HubSidebar(short_af_unix_path) as hub:
         old = hub.add_gateway("old")
         await old.connect()
         ws = await hub.connect_extension()
@@ -112,8 +112,8 @@ async def test_attach_replacement_routes_all_traffic_only_to_current_gateway(tmp
         await ws.close()
 
 
-async def test_gateway_disconnect_and_successor_do_not_drop_extension_socket(tmp_path):
-    async with _HubSidebar(tmp_path) as hub:
+async def test_gateway_disconnect_and_successor_do_not_drop_extension_socket(short_af_unix_path):
+    async with _HubSidebar(short_af_unix_path) as hub:
         old = hub.add_gateway("old")
         await old.connect()
         ws = await hub.connect_extension()
@@ -132,8 +132,8 @@ async def test_gateway_disconnect_and_successor_do_not_drop_extension_socket(tmp
         await ws.close()
 
 
-async def test_tool_result_from_hub_socket_reaches_current_gateway(tmp_path):
-    async with _HubSidebar(tmp_path) as hub:
+async def test_tool_result_from_hub_socket_reaches_current_gateway(short_af_unix_path):
+    async with _HubSidebar(short_af_unix_path) as hub:
         old = hub.add_gateway("old")
         await old.connect()
         ws = await hub.connect_extension()
@@ -153,18 +153,18 @@ async def test_tool_result_from_hub_socket_reaches_current_gateway(tmp_path):
         await ws.close()
 
 
-async def test_unauthorized_websocket_is_rejected_by_hub(tmp_path):
+async def test_unauthorized_websocket_is_rejected_by_hub(short_af_unix_path):
     from websockets.exceptions import InvalidHandshake
 
-    async with _HubSidebar(tmp_path) as hub:
+    async with _HubSidebar(short_af_unix_path) as hub:
         gateway = hub.add_gateway("gateway")
         await gateway.connect()
         with pytest.raises(InvalidHandshake):
             await hub.connect_extension(token="wrong-token")
 
 
-async def test_extension_reconnect_remains_on_current_gateway(tmp_path):
-    async with _HubSidebar(tmp_path) as hub:
+async def test_extension_reconnect_remains_on_current_gateway(short_af_unix_path):
+    async with _HubSidebar(short_af_unix_path) as hub:
         gateway = hub.add_gateway("gateway")
         await gateway.connect()
         first = await hub.connect_extension()

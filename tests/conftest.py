@@ -934,6 +934,18 @@ def _pinned_mcp_sdk_version() -> str:
 
 
 @pytest.fixture
+def short_af_unix_path():
+    """A short-lived AF_UNIX socket path that fits every host's bind limit.
+
+    pytest basetemps can exceed macOS's 104-byte ``sun_path`` limit, and binding
+    directly under the system temp root would make the hub chmod a directory the
+    test cannot own. A unique owned directory keeps the path short and cleanup
+    automatic.
+    """
+    with tempfile.TemporaryDirectory(prefix="hermes-afunix-", dir="/tmp") as raw:
+        yield Path(raw) / "hub.sock"
+
+@pytest.fixture
 def require_mcp_2_sdk():
     """Skip tests that pin mcp 2.0-only behaviour when an older SDK is installed.
 
@@ -1724,6 +1736,19 @@ def _capture_real_hermes_root() -> list[Path]:
 
 _REAL_HERMES_ROOT_CANDIDATES = _capture_real_hermes_root()
 
+# Subtrees that resolve inside a guarded root but are never operator state:
+# the checkout itself (default install layout ~/.hermes/hermes-agent, harness
+# workspaces under ~/.hermes/cache — pytest's assertion rewriter writes .pyc
+# under its venv during the guarded fixture window) and the process temp dir
+# (TEMP lives under the home on Windows; harnesses set TMPDIR under it).
+# Production state (config.yaml, .env, state.db, sessions) lives directly
+# under the root, never in these subtrees — guarding them is a false positive
+# that fails test setup, not a leak.
+_GUARD_EXEMPT_SUBTREES = (
+    Path(__file__).resolve().parent.parent,  # repo root
+    Path(tempfile.gettempdir()).resolve(),   # process temp dir
+)
+
 
 def _path_hits_real_home(candidate) -> bool:
     """True when candidate resolves under any guarded real root."""
@@ -1755,9 +1780,15 @@ def _path_hits_real_home(candidate) -> bool:
     for root in _REAL_HERMES_ROOT_CANDIDATES:
         try:
             resolved.relative_to(root)
-            return True
         except ValueError:
             continue
+        for exempt in _GUARD_EXEMPT_SUBTREES:
+            try:
+                resolved.relative_to(exempt)
+                return False  # checkout / process-temp subtree, not operator state
+            except ValueError:
+                continue
+        return True
     return False
 
 
