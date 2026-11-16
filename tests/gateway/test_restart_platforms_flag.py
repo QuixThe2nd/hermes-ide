@@ -94,7 +94,8 @@ async def test_queue_user_restart_default_resolves_from_runner_config(
 
 
 @pytest.mark.asyncio
-async def test_request_restart_stores_and_passes_false_platforms(monkeypatch):
+async def test_request_restart_stores_and_passes_false_platforms(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     runner, _adapter = make_restart_runner()
     spawn = AsyncMock(return_value=None)
     # request_restart imports spawn_successor from gateway.overlap_restart
