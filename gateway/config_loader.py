@@ -25,7 +25,7 @@ def load_legacy_gateway_json(home: Path) -> Any:
     if not path.exists():
         return {}
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             data = json.load(f) or {}
         logger.info("Loaded legacy %s — consider moving settings to config.yaml", path)
         return data

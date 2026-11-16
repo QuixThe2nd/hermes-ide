@@ -551,7 +551,7 @@ def delegate_claude_agent(
                 error=f"system_prompt_file does not exist: {system_prompt_file}",
             )
         try:
-            system_prompt_material = prompt_path.read_text(encoding="utf-8")
+            system_prompt_material = prompt_path.read_text(encoding="utf-8-sig")
         except OSError as exc:
             return _make_result(
                 success=False,

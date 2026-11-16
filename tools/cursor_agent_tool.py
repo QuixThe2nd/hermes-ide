@@ -476,7 +476,7 @@ def load_cursor_api_key(path: Optional[Path] = None) -> str:
             "CURSOR_API_KEY=<key> (no silent fallback)."
         )
     try:
-        raw_text = env_path.read_text(encoding="utf-8")
+        raw_text = env_path.read_text(encoding="utf-8-sig")
     except OSError as exc:
         raise CursorApiKeyError(
             f"CURSOR_API_KEY could not be read from {env_path}"

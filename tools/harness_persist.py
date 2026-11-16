@@ -23,7 +23,7 @@ def caller_killed_service_cgroup() -> Optional[str]:
     if not os.environ.get("INVOCATION_ID"):
         return None
     try:
-        text = Path("/proc/self/cgroup").read_text(encoding="utf-8")
+        text = Path("/proc/self/cgroup").read_text(encoding="utf-8-sig")
     except OSError:
         return None
     match = re.search(r"^0::(.+)$", text, re.MULTILINE)
@@ -39,6 +39,7 @@ def _systemctl_show(unit: str, prop: str) -> str:
             result = subprocess.run(
                 ["systemctl", *prefix, "show", unit, "-p", prop, "--value"],
                 capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL,
+                encoding="utf-8", errors="replace",
             )
         except (OSError, subprocess.TimeoutExpired):
             continue
@@ -71,8 +72,8 @@ def launch_detached_service(
     """Start argv in its own system service. The returned pid is not in the caller cgroup."""
     unit_name = unit or f"hermes-harness-{uuid.uuid4().hex[:12]}.service"
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
-    stdout_path.write_text("")
-    stderr_path.write_text("")
+    stdout_path.write_text("", encoding="utf-8")
+    stderr_path.write_text("", encoding="utf-8")
     code_path = stdout_path.with_name(stdout_path.name + ".code")
     if code_path.exists():
         code_path.unlink()
@@ -82,7 +83,8 @@ def launch_detached_service(
         "from pathlib import Path\n"
         "proc = subprocess.run(sys.argv[2:])\n"
         "Path(sys.argv[1]).write_text(str(proc.returncode))\n"
-        "raise SystemExit(proc.returncode)\n"
+        "raise SystemExit(proc.returncode)\n",
+        encoding="utf-8",
     )
     argv = [sys.executable, str(runner), str(code_path), *argv]
     cmd = [
@@ -98,7 +100,8 @@ def launch_detached_service(
         cmd.append(f"--setenv={key}={value}")
     cmd.append("--")
     cmd.extend(str(part) for part in argv)
-    subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+    subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                   timeout=30)
     deadline = time.time() + 15
     pid = None
     while time.time() < deadline:
@@ -116,7 +119,7 @@ def launch_detached_service(
     if pid is None and state not in ("inactive", "failed"):
         raise RuntimeError(f"harness unit {unit_name} did not report a main pid")
     try:
-        cgroup = Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8").strip()
+        cgroup = Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8-sig").strip()
     except OSError:
         cgroup = "exited"
     return {

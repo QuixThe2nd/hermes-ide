@@ -316,7 +316,7 @@ def _npm_lockfile_owners(repo_root: Path) -> set[Path]:
     owners = {Path(".")}
     try:
         import json
-        package = json.loads((repo_root / "package.json").read_text(encoding="utf-8"))
+        package = json.loads((repo_root / "package.json").read_text(encoding="utf-8-sig"))
         workspaces = package.get("workspaces", [])
         if isinstance(workspaces, dict):
             workspaces = workspaces.get("packages", [])

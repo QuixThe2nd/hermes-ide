@@ -117,7 +117,7 @@ def state_path() -> Path:
 
 def _read_env_key(path: Path, key: str) -> str:
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
             line = line.strip()
             if line.startswith(f"{key}="):
                 return line.split("=", 1)[1].strip().strip('"').strip("'")
@@ -141,7 +141,7 @@ def zai_api_key() -> str:
 def cursor_access_token() -> str:
     cursor_auth = Path.home() / ".config" / "cursor" / "auth.json"
     try:
-        token = json.loads(cursor_auth.read_text(encoding="utf-8")).get("accessToken")
+        token = json.loads(cursor_auth.read_text(encoding="utf-8-sig")).get("accessToken")
     except (OSError, json.JSONDecodeError) as exc:
         raise QuotaChannelsError(f"cannot read {cursor_auth}: {exc}") from exc
     if not token:
@@ -152,7 +152,7 @@ def cursor_access_token() -> str:
 def load_store() -> dict:
     auth_path = _hermes_home() / "auth.json"
     try:
-        return json.loads(auth_path.read_text(encoding="utf-8"))
+        return json.loads(auth_path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         raise QuotaChannelsError(f"cannot read {auth_path}: {exc}") from exc
 
@@ -173,7 +173,7 @@ def save_store(store: dict) -> None:
 def load_state() -> dict:
     path = state_path()
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -1089,7 +1089,7 @@ def load_quota_config(
         import yaml
 
         try:
-            raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+            raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8-sig")) or {}
         except OSError as exc:
             raise QuotaChannelsError(f"cannot read {config_path}: {exc}") from exc
         except Exception as exc:

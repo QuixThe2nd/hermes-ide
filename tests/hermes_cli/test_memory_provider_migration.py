@@ -29,7 +29,7 @@ def test_missing_provider_installs_its_catalog_plugin_and_keeps_config(home, mon
     assert mig.migrate_home(home, install=fake_install, say=said.append) == "hindsight"
     assert calls == ["hindsight"]
     assert "settings and data are unchanged" in said[0]
-    assert "workspace: keep-me" in (home / "config.yaml").read_text()
+    assert "bank: keep-me" in (home / "config.yaml").read_text(encoding="utf-8-sig")
     # present now → nothing to do, nothing said
     assert mig.migrate_home(home, install=fake_install, say=said.append) is None
     assert calls == ["hindsight"]
@@ -56,3 +56,22 @@ def test_provider_unknown_to_catalog_is_reported_not_installed(home, monkeypatch
     said: list[str] = []
     assert mig.migrate_home(home, install=lambda n: pytest.fail("must not install"), say=said.append) is None
     assert "not in the plugin catalog" in said[0] and "memory.provider" in said[0]
+
+
+def test_recover_at_startup_uses_pm_lazy_install_policy(home, monkeypatch):
+    """Startup recovery installs code, so it must obey PM's install policy exactly."""
+    monkeypatch.setattr(mig, "_attempted", set())
+    monkeypatch.setattr("pm.lazy_installs_allowed", lambda: False)
+    monkeypatch.setattr(
+        mig, "migrate_home",
+        lambda *args, **kwargs: pytest.fail("policy is off — migration must not run"))
+    assert mig.recover_at_startup("hindsight") is False
+
+    monkeypatch.setattr("pm.lazy_installs_allowed", lambda: True)
+    mig._attempted.clear()
+    calls: list[object] = []
+    monkeypatch.setattr(
+        mig, "migrate_home",
+        lambda home, **kwargs: calls.append(home) or "hindsight")
+    assert mig.recover_at_startup("hindsight") is True
+    assert calls == [home]

@@ -163,7 +163,7 @@ def _empty_state() -> Dict[str, Any]:
 
 def _load_state() -> Dict[str, Any]:
     try:
-        with _state_path().open("r", encoding="utf-8") as fh:
+        with _state_path().open("r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
         if not isinstance(data, dict):
             raise ValueError("state is not an object")

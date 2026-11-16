@@ -104,7 +104,7 @@ def remove_path_from_shell_configs():
     removed_from = []
     for config_path in (c for c in (Path.home() / n for n in _SHELL_RC_NAMES) if c.exists()):
         try:
-            content = config_path.read_text(encoding="utf-8")
+            content = config_path.read_text(encoding="utf-8-sig")
             new_content = _strip_hermes_path_lines(content)
             if new_content != content:
                 from utils import atomic_write_text
@@ -122,7 +122,7 @@ def remove_wrapper_script():
     """Remove the hermes wrapper script if it exists."""
     def _unlink_ours(wrapper: Path) -> bool:
         # Only our wrapper (contains a hermes_cli / hermes-agent reference).
-        content = wrapper.read_text(encoding="utf-8")
+        content = wrapper.read_text(encoding="utf-8-sig")
         return _unlink_if('hermes_cli' in content or 'hermes-agent' in content, wrapper)
 
     candidates = (

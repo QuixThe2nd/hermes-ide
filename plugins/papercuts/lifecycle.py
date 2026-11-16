@@ -13,6 +13,7 @@ tick re-derives it from the journal.
 from __future__ import annotations
 
 import os
+import psutil
 import re
 import subprocess
 import time
@@ -98,19 +99,13 @@ def _pidfile(item_id: str, stage: str) -> Path:
 
 
 def _pid_exists(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except OSError:  # permission = alive but not ours
-        return True
-    return True
+    return psutil.pid_exists(pid)
 
 
 def _run_alive(item: Dict[str, Any]) -> bool:
     pid_path = _pidfile(str(item.get("id") or ""), str(item.get("stage") or ""))
     try:
-        pid = int(pid_path.read_text(encoding="utf-8").strip())
+        pid = int(pid_path.read_text(encoding="utf-8-sig").strip())
     except (OSError, ValueError):
         return False
     return _pid_exists(pid)
@@ -145,7 +140,7 @@ def _launch_run(item: Dict[str, Any], stage: str, prompt_text: str) -> Optional[
 
 
 def _render_template(name: str) -> str:
-    text = _TEMPLATE_PATH.read_text(encoding="utf-8")
+    text = _TEMPLATE_PATH.read_text(encoding="utf-8-sig")
     markers = list(_TEMPLATE_RE.finditer(text))
     for marker, nxt in zip(markers, markers[1:] + [None]):
         if marker.group(1) == name:

@@ -22,6 +22,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional
+import psutil
 
 from agent.async_utils import consume_detached_task_result
 from hermes_constants import get_default_hermes_root
@@ -36,15 +37,14 @@ def _pid_gone(pid: Optional[int]) -> bool:
     if not pid or pid <= 0:
         return False
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+        process = psutil.Process(pid)
+    except psutil.NoSuchProcess:
         return True
-    except OSError:
+    except psutil.Error:
         return False
     try:
-        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
-            return handle.read().rsplit(")", 1)[1].split()[0] == "Z"
-    except OSError:
+        return process.status() == psutil.STATUS_ZOMBIE
+    except psutil.Error:
         return False
 
 
@@ -85,7 +85,7 @@ class DiscordSessionRouter:
             return
         self._store_path = Path(path)
         try:
-            rows = json.loads(self._store_path.read_text(encoding="utf-8"))
+            rows = json.loads(self._store_path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             rows = []
         if isinstance(rows, list):

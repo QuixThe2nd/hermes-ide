@@ -284,7 +284,7 @@ def repair_broken_shallow_boundaries(repo_root: Path) -> int:
         if probe.returncode == 0:
             return 0
         with _ShallowLock(shallow_path):
-            original = shallow_path.read_text(encoding="utf-8")
+            original = shallow_path.read_text(encoding="utf-8-sig")
             existing = {line for line in original.splitlines() if line}
             if not existing:
                 return 0
@@ -344,7 +344,7 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
         if shallow_path is None:
             return 0
         with _ShallowLock(shallow_path):
-            lines = [line for line in shallow_path.read_text(encoding="utf-8").splitlines() if line]
+            lines = [line for line in shallow_path.read_text(encoding="utf-8-sig").splitlines() if line]
             if not lines:
                 return 0
             keep = set(lines) & {
@@ -354,7 +354,7 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
             }
             if len(keep) == len(lines):
                 return 0
-            original = shallow_path.read_text(encoding="utf-8")
+            original = shallow_path.read_text(encoding="utf-8-sig")
             _write_shallow(shallow_path, "\n".join(sorted(keep)) + "\n", suffix=".hermes-prune")
             # Fail-safe: if any reachable walk now crosses a boundary we wrongly
             # removed, put the grafts back — a growing file beats a broken repo.

@@ -180,4 +180,4 @@ def soul_path(soul: str) -> Optional[Path]:
 def read_soul(soul: str) -> str:
     """Load a path-backed soul or return its literal text unchanged."""
     path = soul_path(soul)
-    return path.read_text(encoding="utf-8") if path is not None else soul
+    return path.read_text(encoding="utf-8-sig") if path is not None else soul

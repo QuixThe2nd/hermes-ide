@@ -100,7 +100,7 @@ def load_frozen_request(directory: Path) -> Dict[str, Any]:
     """
     path = directory / "request.json"
     try:
-        with open(path, "r", encoding="utf-8") as handle:
+        with open(path, "r", encoding="utf-8-sig") as handle:
             request = json.load(handle)
     except (OSError, ValueError) as exc:
         raise InvalidFrozenRequest(f"request.json missing or unreadable: {exc}") from exc

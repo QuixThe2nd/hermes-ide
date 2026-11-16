@@ -143,7 +143,7 @@ def consume_chained_restart() -> Optional[dict[str, Any]]:
     """Read and unlink the marker before any restart action can occur."""
     path = _restart_chain_path()
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return None
     except OSError as exc:

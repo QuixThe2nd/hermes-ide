@@ -12,7 +12,7 @@ _CONVENTIONS_PATH = (
 
 
 def _read_conventions(path: Path) -> tuple[str, str]:
-    conventions = path.read_text(encoding="utf-8").strip()
+    conventions = path.read_text(encoding="utf-8-sig").strip()
     _prefix, ownership_heading, remainder = conventions.partition("\n## Ownership\n")
     guidance, following_heading, _suffix = remainder.partition("\n## ")
     if not ownership_heading or not following_heading or not guidance.strip():

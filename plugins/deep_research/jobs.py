@@ -221,7 +221,7 @@ def _read_json(path: Path) -> Dict[str, Any]:
     try:
         import json
 
-        with open(path, "r", encoding="utf-8") as handle:
+        with open(path, "r", encoding="utf-8-sig") as handle:
             data = json.load(handle)
     except (OSError, ValueError):
         return {}
@@ -230,7 +230,7 @@ def _read_json(path: Path) -> Dict[str, Any]:
 
 def read_report(directory: Path) -> str:
     try:
-        return (directory / "report.md").read_text(encoding="utf-8")
+        return (directory / "report.md").read_text(encoding="utf-8-sig")
     except OSError:
         return ""
 
@@ -244,7 +244,7 @@ def read_evidence_urls(directory: Path) -> List[str]:
     seen: Dict[str, None] = {}
     path = evidence_path(directory)
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
     except OSError:
         return []
     import json
@@ -752,7 +752,7 @@ def write_lane_report(directory: Path, index: int, text: str) -> Path:
 
 def read_lane_report(directory: Path, index: int) -> str:
     try:
-        return (directory / "lanes" / f"{index}.md").read_text(encoding="utf-8")
+        return (directory / "lanes" / f"{index}.md").read_text(encoding="utf-8-sig")
     except OSError:
         return ""
 

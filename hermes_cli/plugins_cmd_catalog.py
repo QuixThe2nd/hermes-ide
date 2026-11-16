@@ -80,7 +80,7 @@ def read_catalog_sidecar(plugin_dir) -> Optional[dict]:
     if path is None or not path.is_file():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
     return data if isinstance(data, dict) and data.get("catalog_name") else None

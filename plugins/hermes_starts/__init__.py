@@ -229,7 +229,7 @@ def _parse_token_line(line: str) -> str:
 
 def _read_discord_token() -> str:
     try:
-        with _env_path().open("r", encoding="utf-8") as fh:
+        with _env_path().open("r", encoding="utf-8-sig") as fh:
             for line in fh:
                 if line.startswith("DISCORD_BOT_TOKEN="):
                     return _parse_token_line(line)
@@ -263,7 +263,7 @@ def _load_state(strict: bool = False) -> Dict[str, Any]:
     twice. A missing file alone is a fresh install in both modes.
     """
     try:
-        with _state_path().open("r", encoding="utf-8") as fh:
+        with _state_path().open("r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
     except FileNotFoundError:
         return _empty_state()
@@ -337,7 +337,7 @@ def _home_server_inbox() -> Dict[str, str]:
     """
     try:
         path = get_hermes_home() / "home_server" / "state.json"
-        with path.open("r", encoding="utf-8") as fh:
+        with path.open("r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return {}
@@ -1454,7 +1454,7 @@ def _mark_participated_thread(thread_id: str) -> None:
     path = get_hermes_home() / "discord_threads.json"
     threads: List[str] = []
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
         if isinstance(raw, list):
             threads = [str(item) for item in raw]
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
@@ -1842,7 +1842,7 @@ def check_requirements() -> bool:
         path = _env_path()
         if not path.is_file():
             return False
-        with path.open("r", encoding="utf-8") as fh:
+        with path.open("r", encoding="utf-8-sig") as fh:
             for line in fh:
                 if line.startswith("DISCORD_BOT_TOKEN="):
                     return bool(_parse_token_line(line))

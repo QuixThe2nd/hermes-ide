@@ -55,7 +55,7 @@ def wallet_display_label(ordinal: int) -> str:
 
 def _read_env_key(path, key: str) -> Optional[str]:
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
             line = line.strip()
             if line.startswith(f"{key}="):
                 return line.split("=", 1)[1].strip().strip('"').strip("'")
@@ -114,7 +114,7 @@ def read_zai_pool_raw(hermes_home) -> Tuple[Optional[List[Mapping[str, Any]]], b
     if not auth_path.exists():
         return None, True
     try:
-        raw = json.loads(auth_path.read_text(encoding="utf-8"))
+        raw = json.loads(auth_path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return None, True
     if not isinstance(raw, dict):

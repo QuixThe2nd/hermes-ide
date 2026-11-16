@@ -38,7 +38,7 @@ def write_restart_drain_status(
 def read_restart_drain_status(home: Optional[Path] = None) -> Optional[dict[str, Any]]:
     """Read a drain snapshot; corruption is treated as absent, never as drained."""
     try:
-        payload = json.loads(_path(home).read_text(encoding="utf-8"))
+        payload = json.loads(_path(home).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError, TypeError):
         return None
     return payload if isinstance(payload, dict) else None

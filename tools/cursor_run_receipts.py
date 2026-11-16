@@ -7,7 +7,8 @@ runs or resume polling the same agent/run after interruption.
 
 from __future__ import annotations
 
-import fcntl
+
+
 import hashlib
 import json
 import logging
@@ -61,7 +62,7 @@ def get_boot_id() -> str:
     boot_path = Path("/proc/sys/kernel/random/boot_id")
     try:
         if boot_path.is_file():
-            value = boot_path.read_text(encoding="utf-8").strip()
+            value = boot_path.read_text(encoding="utf-8-sig").strip()
             if value:
                 return value
     except OSError:
@@ -173,7 +174,7 @@ def _load_receipt_candidate(path: Path) -> Dict[str, Any]:
         raise ReceiptValidationError("non-regular receipt file")
     _assert_receipt_permissions(path)
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8-sig")
     except OSError as exc:
         raise ReceiptValidationError("unreadable receipt") from exc
     try:
@@ -223,7 +224,7 @@ def read_receipt(path: Path | str) -> Optional[Dict[str, Any]]:
         logger.debug("receipt permission/ownership rejected: %s", receipt_path)
         return None
     try:
-        data = json.loads(receipt_path.read_text(encoding="utf-8"))
+        data = json.loads(receipt_path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
@@ -477,6 +478,10 @@ def receipt_matches_binding(
 @contextmanager
 def binding_run_lock(hermes_session_id: str, tool_call_id: Optional[str]) -> Iterator[bool]:
     """Acquire an exclusive OS file lock for a canonical binding."""
+    try:
+        import fcntl
+    except ImportError:
+        fcntl = None
     lock_path = lock_path_for_binding(hermes_session_id, tool_call_id or "")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     _assert_path_within_runs_dir(lock_path)

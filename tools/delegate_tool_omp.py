@@ -574,7 +574,7 @@ def _descendant_pids(pid: Optional[int]) -> list[int]:
         if not entry.name.isdigit():
             continue
         try:
-            stat = (entry / "stat").read_text(encoding="utf-8", errors="replace")
+            stat = (entry / "stat").read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
             continue
         rparen = stat.rfind(")")
@@ -588,7 +588,7 @@ def _descendant_pids(pid: Optional[int]) -> list[int]:
 
 def _diagnostic_line(path: Path) -> Optional[str]:
     try:
-        lines = [line.strip() for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+        lines = [line.strip() for line in path.read_text(encoding="utf-8-sig", errors="replace").splitlines() if line.strip()]
     except OSError:
         return None
     if not lines:
@@ -667,13 +667,13 @@ def _run_omp_process(argv, directory: Path, env: dict, *, timeout_seconds: int):
     code_path = Path(str(stdout_path) + ".code")
     if code_path.exists():
         try:
-            code = int(code_path.read_text(encoding="utf-8").strip())
+            code = int(code_path.read_text(encoding="utf-8-sig").strip())
         except ValueError:
             code = 1
     return _Completed(
         code,
-        stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.exists() else "",
-        stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.exists() else "",
+        stdout_path.read_text(encoding="utf-8-sig", errors="replace") if stdout_path.exists() else "",
+        stderr_path.read_text(encoding="utf-8-sig", errors="replace") if stderr_path.exists() else "",
         pid=wrapper_pid,
         pids=descendants,
     )

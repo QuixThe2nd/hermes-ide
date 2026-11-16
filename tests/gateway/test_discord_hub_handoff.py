@@ -1568,20 +1568,15 @@ def test_send_multiple_images_forwards_reply_to():
 
 
 @pytest.mark.platforms("posix")
-def test_sync_queries_and_voice_channel_handles_use_the_hub(tmp_path):
+def test_sync_queries_use_the_hub(tmp_path):
     async def scenario():
         from agent.display import ToolPreview
 
         server = DiscordHubServer(tmp_path / "discord-hub.sock")
-        voice_channel = SimpleNamespace(id=99, name="stage", guild=SimpleNamespace(id=77))
 
         class FakeDiscordConnection:
             def __init__(self):
-                self._client = SimpleNamespace(get_channel=lambda channel_id: (
-                    voice_channel if channel_id == voice_channel.id else None
-                ))
                 self.claims = []
-                self.joins = []
 
             async def disconnect(self):
                 pass
@@ -1602,24 +1597,6 @@ def test_sync_queries_and_voice_channel_handles_use_the_hub(tmp_path):
             def claim_startup_resume_inbound(self, message_id, source):
                 self.claims.append((message_id, source.chat_id))
 
-            def voice_mixer_active(self, guild_id):
-                return guild_id == 77
-
-            def is_in_voice_channel(self, guild_id):
-                return guild_id == 77
-
-            def get_voice_channel_info(self, guild_id):
-                return {"channel_name": "stage", "member_count": 1}
-
-            def get_voice_channel_context(self, guild_id):
-                return "[Voice channel: #stage — 1 participant(s)]"
-
-            async def get_user_voice_channel(self, guild_id, user_id):
-                return voice_channel
-
-            async def join_voice_channel(self, channel, *, text_channel_id=None, source=None):
-                self.joins.append((channel, text_channel_id, source))
-                return True
 
         connection = FakeDiscordConnection()
 
@@ -1640,20 +1617,12 @@ def test_sync_queries_and_voice_channel_handles_use_the_hub(tmp_path):
                 assert client.prefers_fresh_final_streaming("answer")
                 assert client.format_tool_preview(ToolPreview(text="docs", url="https://example.com")) == "linked:docs"
                 client.claim_startup_resume_inbound("message-1", source)
-                assert client.voice_mixer_active(77)
-                assert client.is_in_voice_channel(77)
-                assert client.get_voice_channel_info(77)["channel_name"] == "stage"
-                assert "stage" in client.get_voice_channel_context(77)
+
 
             # The test hub shares this loop; production hub queries block only the caller,
             # never the separate hub process's event loop.
             await asyncio.to_thread(check_sync_surface)
             assert connection.claims == [("message-1", "42")]
-
-            handle = await client.get_user_voice_channel(77, "7")
-            assert handle.id == 99 and handle.name == "stage" and handle.guild_id == 77
-            assert await client.join_voice_channel(handle, text_channel_id=42, source=source.to_dict())
-            assert connection.joins == [(voice_channel, 42, source.to_dict())]
         finally:
             await client.disconnect()
             await server.stop()

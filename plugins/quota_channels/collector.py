@@ -71,7 +71,7 @@ def collector_state_path() -> Path:
 def _load_collector_state_raw() -> Tuple[Dict[str, Any], Optional[str]]:
     path = collector_state_path()
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return {}, None
     except (OSError, json.JSONDecodeError) as exc:

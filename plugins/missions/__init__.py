@@ -224,7 +224,7 @@ def _outcome_journal_path() -> Path:
 def _load_mission(mission_id: str) -> Optional[Dict[str, Any]]:
     path = _mission_path(mission_id)
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return None
     except (OSError, json.JSONDecodeError) as exc:
@@ -254,7 +254,7 @@ def list_active_missions() -> List[Dict[str, Any]]:
         return []
     for p in paths:
         try:
-            m = json.loads(p.read_text(encoding="utf-8"))
+            m = json.loads(p.read_text(encoding="utf-8-sig"))
             if isinstance(m, dict) and m.get("status") == "active":
                 out.append(m)
         except (OSError, json.JSONDecodeError):
@@ -420,7 +420,7 @@ def _append_outcome(entry: Dict[str, Any]) -> None:
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, sort_keys=True) + "\n")
         # Bound the journal.
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
         if len(lines) > _OUTCOME_JOURNAL_MAX:
             path.write_text("\n".join(lines[-_OUTCOME_JOURNAL_MAX:]) + "\n", encoding="utf-8")
     except OSError as exc:
@@ -954,7 +954,7 @@ def _handle_status(args: Dict[str, Any], **kwargs: Any) -> str:
     recent: List[Dict[str, Any]] = []
     journal = _outcome_journal_path()
     try:
-        for line in journal.read_text(encoding="utf-8").splitlines()[-10:]:
+        for line in journal.read_text(encoding="utf-8-sig").splitlines()[-10:]:
             try:
                 recent.append(json.loads(line))
             except json.JSONDecodeError:

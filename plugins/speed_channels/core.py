@@ -97,7 +97,7 @@ def _secret_env(name: str) -> Path:
 
 def _read_env_key(path: Path, key: str) -> str:
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
             line = line.strip()
             if line.startswith(f"{key}="):
                 return line.split("=", 1)[1].strip().strip('"').strip("'")
@@ -119,7 +119,7 @@ def discord_token() -> str:
 
 def load_state() -> dict:
     try:
-        data = json.loads(state_path().read_text(encoding="utf-8"))
+        data = json.loads(state_path().read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -202,7 +202,7 @@ def load_speed_config(config_path: Optional[Path] = None) -> dict:
         import yaml
 
         try:
-            raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+            raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8-sig")) or {}
         except OSError as exc:
             raise SpeedChannelsError(f"cannot read {config_path}: {exc}") from exc
         except Exception as exc:

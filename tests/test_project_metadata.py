@@ -61,7 +61,6 @@ def test_lazy_installable_extras_excluded_from_all():
         "anthropic",
         "exa", "firecrawl", "parallel-web",
         "fal",
-        "modal", "daytona", "vercel",
         "messaging", "matrix",
         "discord",
         "hindsight",
@@ -74,7 +73,7 @@ def test_lazy_installable_extras_excluded_from_all():
             if f"hermes-agent[{extra}]" in spec
         ]
         assert not offending, (
-            f"[{extra}] is in [all] but also in LAZY_DEPS. "
+            f"[{extra}] is in [all] but is a PM on-demand extra. "
             f"Remove it from [all] in pyproject.toml — it lazy-installs "
             f"at first use. Found in [all]: {offending}"
         )

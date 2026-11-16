@@ -104,7 +104,8 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
             return False
         kwargs["start_new_session"] = True
         try:
-            subprocess.Popen(
+            await asyncio.to_thread(
+                subprocess.Popen,
                 [sys.executable, "-m", "plugins.platforms.discord.hub"], **kwargs)
         except OSError:
             logger.exception("Could not start Discord hub")

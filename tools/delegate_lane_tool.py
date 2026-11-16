@@ -34,7 +34,7 @@ def _soul_material(spec: Mapping[str, Any]) -> str:
             # The canonical conventions are injected below; this compatibility
             # skill may otherwise contribute an older full copy.
             continue
-        sections.append(f"# Injected skill: {skill_dir}\n" + skill_file.read_text(encoding="utf-8"))
+        sections.append(f"# Injected skill: {skill_dir}\n" + skill_file.read_text(encoding="utf-8-sig"))
     return ensure_codebase_ownership("\n\n".join(sections))
 
 

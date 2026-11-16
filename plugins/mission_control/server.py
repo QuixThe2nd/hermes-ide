@@ -1981,7 +1981,7 @@ def load_env_value(env_path, name):
     value survives; surrounding quotes are stripped. The value is never
     written anywhere."""
     try:
-        with open(env_path, "r", encoding="utf-8", errors="replace") as fh:
+        with open(env_path, "r", encoding="utf-8-sig", errors="replace") as fh:
             for line in fh:
                 line = line.strip()
                 if not line or line.startswith("#") or "=" not in line:

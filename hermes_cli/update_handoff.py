@@ -69,7 +69,7 @@ def write_handoff(payload: dict[str, Any]) -> Path:
 
 
 def read_handoff(path: str | Path) -> dict[str, Any]:
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    payload = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     if not isinstance(payload, dict):
         raise ValueError(f"post-swap hand-off {path} is not a JSON object")
     return payload
