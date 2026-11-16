@@ -430,12 +430,35 @@ class ResearchRunner:
             )
             return
         retry = citations_mod.validate_citations(corrected, evidence_urls)
-        self._record_synthesis(
-            directory, attempts=2, correction_used=True, citation_errors=retry.errors
-        )
         if retry.ok:
+            self._record_synthesis(directory, attempts=2, correction_used=True, citation_errors=[])
             self._publish(directory, corrected)
             return
+
+        # Mechanical salvage: the correction pass often leaves a few unledgered
+        # URLs behind (homepage links in a Sources list, a redundant extra
+        # citation). Strip exactly those — no third writer call — and publish
+        # only if what remains still validates.
+        stripped, stripped_urls = citations_mod.strip_unledgered_urls(corrected, evidence_urls)
+        if stripped_urls:
+            self.log.warning(
+                "stripped %d unledgered URL(s) left after the correction pass: %s",
+                len(stripped_urls), ", ".join(stripped_urls[:5]),
+            )
+        after_strip = citations_mod.validate_citations(stripped, evidence_urls)
+        if after_strip.ok:
+            self._record_synthesis(
+                directory, attempts=2, correction_used=True, citation_errors=[],
+                stripped_urls=stripped_urls,
+            )
+            self._publish(directory, stripped)
+            return
+        # Still not defensible (e.g. no ledgered citation survives): fail on
+        # the original post-correction errors and preserve the unstripped text.
+        self._record_synthesis(
+            directory, attempts=2, correction_used=True, citation_errors=retry.errors,
+            stripped_urls=stripped_urls,
+        )
         self._preserve_and_fail(
             directory, corrected,
             "citation validation failed after correction pass: " + "; ".join(retry.errors),
@@ -496,13 +519,15 @@ class ResearchRunner:
             raise JobAborted(f"job state is {state}")
 
     def _record_synthesis(
-        self, directory: Path, *, attempts: int, correction_used: bool, citation_errors: List[str]
+        self, directory: Path, *, attempts: int, correction_used: bool,
+        citation_errors: List[str], stripped_urls: Optional[List[str]] = None,
     ) -> None:
         def mutate(status: Dict[str, Any]) -> None:
             status["synthesis"] = {
                 "attempts": attempts,
                 "correction_used": correction_used,
                 "citation_errors": list(citation_errors),
+                "stripped_urls": list(stripped_urls or []),
             }
 
         jobs.update_status(directory, mutate=mutate)

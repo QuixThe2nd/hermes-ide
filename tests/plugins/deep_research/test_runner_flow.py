@@ -15,11 +15,14 @@ from pathlib import Path
 import pytest
 
 from plugins.deep_research import jobs, runner
+from plugins.deep_research.citations import normalize_url
 from plugins.deep_research.config import DeepResearchConfig, load_deep_research_config
 
 GOOD_URL = "https://example.org/primary"
 OTHER_URL = "https://example.net/secondary"
 INVENTED_URL = "https://example.com/i-made-this-up"
+HOMEPAGE_URL = "https://example.com/homepage"
+INDEX_URL = "https://example.com/index"
 
 
 def _config(**overrides) -> DeepResearchConfig:
@@ -447,6 +450,83 @@ class TestCitationGating:
         assert state == "completed"
         assert "Corrected draft" in (directory / "report.md").read_text(encoding="utf-8")
         assert jobs.read_status(directory)["synthesis"]["correction_used"] is True
+
+    def test_stray_unledgered_urls_after_correction_are_stripped_and_published(
+        self, home: Path
+    ) -> None:
+        """Regression: the correction pass can leave stray unledgered links —
+        homepage/index entries in a Sources list plus a redundant extra
+        citation in a table row that already cites a ledgered source. The
+        complete report must still publish, mechanically stripped."""
+        job_id, directory = _make_job(home, questions=None)
+        _seed_evidence(directory, GOOD_URL, OTHER_URL)
+        corrected = (
+            "# Widget runtimes\n\n"
+            "| Claim | Source |\n"
+            "| --- | --- |\n"
+            f"| widgets are fast | [a]({GOOD_URL}) [dup]({INVENTED_URL}) |\n"
+            f"| gizmos ship weekly | [b]({OTHER_URL}) |\n"
+            "\n"
+            "## Sources\n"
+            f"- {GOOD_URL}\n"
+            f"- [Home page]({HOMEPAGE_URL})\n"
+            f"- {INDEX_URL}\n"
+        )
+        spawn = FakeSpawn(writers=[f"Draft citing [x]({INVENTED_URL}).", corrected])
+        state = _run(job_id, home, spawn)
+        assert state == "completed"
+        report = (directory / "report.md").read_text(encoding="utf-8")
+        for unledgered in (INVENTED_URL, HOMEPAGE_URL, INDEX_URL):
+            assert unledgered not in report
+        for ledgered in (GOOD_URL, OTHER_URL):
+            assert ledgered in report
+        rows = [line for line in report.splitlines() if line.lstrip().startswith("|")]
+        assert len(rows) == 4  # header + rule + both data rows survive stripping
+        assert "widgets are fast" in report and "gizmos ship weekly" in report
+        # Labels survive as plain text; the link syntax does not.
+        assert "[dup](" not in report and "[Home page](" not in report
+        assert " dup |" in rows[2]
+        # Exactly the same writer spawns as today: lane + synthesis + correction.
+        assert len(spawn.argvs) == 3
+        assert not (directory / "report.draft.md").exists()
+        synthesis = jobs.read_status(directory)["synthesis"]
+        assert synthesis["attempts"] == 2 and synthesis["correction_used"] is True
+        assert synthesis["citation_errors"] == []
+        assert sorted(synthesis["stripped_urls"]) == sorted(
+            normalize_url(u) for u in (INVENTED_URL, HOMEPAGE_URL, INDEX_URL)
+        )
+        log = (directory / "runner.log").read_text(encoding="utf-8")
+        assert "stripped 3 unledgered" in log
+
+    def test_correction_citing_only_unledgered_urls_still_fails_closed(
+        self, home: Path
+    ) -> None:
+        """Stripping is not a licence to publish citation-free prose: when the
+        corrected report's only citations are invented, removal leaves nothing
+        defensible and the job fails exactly as before."""
+        job_id, directory = _make_job(home, questions=None)
+        _seed_evidence(directory, GOOD_URL)
+        spawn = FakeSpawn(
+            writers=[
+                f"Bad draft citing [x]({INVENTED_URL}).",
+                f"Only [a]({INVENTED_URL}) and [b]({HOMEPAGE_URL}).",
+            ]
+        )
+        state = _run(job_id, home, spawn)
+        assert state == "failed"
+        status = jobs.read_status(directory)
+        synthesis = status["synthesis"]
+        assert synthesis["attempts"] == 2 and synthesis["correction_used"] is True
+        assert any(INVENTED_URL in e for e in synthesis["citation_errors"])
+        assert "correction pass" in (status["error"] or "")
+        assert not (directory / "report.md").exists()
+        # The UNSTRIPPED corrected text is preserved for inspection.
+        draft = (directory / "report.draft.md").read_text(encoding="utf-8")
+        assert INVENTED_URL in draft and HOMEPAGE_URL in draft
+        # The strip history is still recorded.
+        assert sorted(synthesis["stripped_urls"]) == sorted(
+            normalize_url(u) for u in (INVENTED_URL, HOMEPAGE_URL)
+        )
 
     def test_report_with_no_citations_fails_closed(self, home: Path) -> None:
         job_id, directory = _make_job(home, questions=None)

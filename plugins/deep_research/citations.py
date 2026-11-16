@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Iterable, List, Set
+from typing import Iterable, List, NamedTuple, Set, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
 # Markdown links ``[label](https://…)``, reference links, and bare http(s)
@@ -27,6 +27,14 @@ _URL_RE = re.compile(
 _TRAILING_PUNCT = ".,;:!?]}'\">’”》"
 
 _SCHEME_HTTP = re.compile(r"^https?://", re.IGNORECASE)
+
+# A reference-definition line ``[id]: url`` — the URL is the line's payload.
+_REF_DEF_BEFORE_RE = re.compile(r"^\s{0,3}\[[^\]]*\]:\s*$")
+# Only punctuation/whitespace may follow the URL of a reference definition.
+_NOISE_TAIL_RE = re.compile(r"^[\s.,;:!?)\]}'\"’”》]*$")
+# Residue that carries no content once its URL(s) are stripped: list bullets,
+# numbering, and punctuation.
+_ITEM_RESIDUE_RE = re.compile(r"^[\s\-*+•·>0-9.,;:!?()\[\]{}>'\"’”》_#&]*$")
 
 
 def _strip_unbalanced_parens(url: str) -> str:
@@ -136,3 +144,149 @@ def validate_citations(
         unknown_urls=unknown,
         errors=errors,
     )
+
+
+# -- mechanical strip of unledgered URLs ---------------------------------
+
+
+class _Edit(NamedTuple):
+    """One span rewrite: ``line[start:end]`` becomes ``replacement``."""
+
+    start: int
+    end: int
+    replacement: str
+    url: str  # normalized, for the caller's audit trail
+
+
+def strip_unledgered_urls(
+    report_text: str, evidence_urls: Iterable[str]
+) -> Tuple[str, List[str]]:
+    """Mechanically remove URLs that :func:`validate_citations` would reject.
+
+    The salvage step after the correction pass: same extraction and
+    normalization as validation, so the returned text re-validates with zero
+    unknown URLs. Unledgered inline links keep their label as plain text;
+    autolinks and bare URLs are deleted; a reference-definition line whose
+    payload URL is unledgered loses the whole line, as does a list item left
+    holding only bullets, numbering, or punctuation. Markdown table rows are
+    never deleted — only the URL spans inside them — so cell counts hold.
+    Ledgered URLs are left byte-identical, including paren-bearing and
+    normalize-equal spellings. Returns ``(new_text, removed)`` with ``removed``
+    the normalized URLs in order of first appearance.
+    """
+    allowed = {normalize_url(url) for url in evidence_urls if url}
+    text = report_text or ""
+    removed: List[str] = []
+    while True:
+        # A label can itself contain a URL, so stripping can expose new
+        # unledgered matches; repeat until a pass removes nothing.
+        text, pass_removed = _strip_pass(text, allowed)
+        if not pass_removed:
+            return text, removed
+        for url in pass_removed:
+            if url not in removed:
+                removed.append(url)
+
+
+def _strip_pass(text: str, allowed: Set[str]) -> Tuple[str, List[str]]:
+    """One line-by-line removal pass."""
+    kept: List[str] = []
+    removed: List[str] = []
+    for raw_line in text.splitlines(keepends=True):
+        line, ending = _split_ending(raw_line)
+        edits = _unledgered_edits(line, allowed)
+        if not edits:
+            kept.append(raw_line)
+            continue
+        removed.extend(edit.url for edit in edits)
+        if not _is_table_row(line) and _line_reduced_to_residue(line, edits):
+            # Dropping the line takes its own newline with it; the final line
+            # has none, so it swallows the previous line's instead.
+            if not ending and kept and kept[-1].endswith("\n"):
+                kept[-1] = kept[-1][:-1]
+            continue
+        kept.append(_apply_edits(line, edits) + ending)
+    return "".join(kept), removed
+
+
+def _unledgered_edits(line: str, allowed: Set[str]) -> List[_Edit]:
+    """Non-overlapping rewrite spans for the line's unledgered URL matches."""
+    edits: List[_Edit] = []
+    covered_until = 0
+    for match in _URL_RE.finditer(line):
+        url = _strip_prose_tail(match.group(1))
+        if not url:
+            continue
+        edit = _removal_span(line, match, url)
+        if edit.url in allowed:
+            continue
+        if edit.start < covered_until:
+            continue  # swallowed by an earlier edit; the next pass takes it
+        covered_until = edit.end
+        edits.append(edit)
+    return edits
+
+
+def _removal_span(line: str, match: "re.Match", url: str) -> _Edit:
+    """What to remove for one URL occurrence, keeping any label text."""
+    url_start = match.start(1)
+    url_end = url_start + len(url)
+    normalized = normalize_url(url)
+    if line[match.start() : url_start].startswith("]("):
+        # Inline Markdown link ``[label](url)``: the label stays as text.
+        open_bracket = line.rfind("[", 0, match.start())
+        if open_bracket != -1:
+            return _Edit(
+                open_bracket,
+                _link_closer(line, url_start, url_end),
+                line[open_bracket + 1 : match.start()],
+                normalized,
+            )
+    if line[url_start - 1 : url_start] == "<" and line[url_end : url_end + 1] == ">":
+        return _Edit(url_start - 1, url_end + 1, "", normalized)  # autolink
+    return _Edit(url_start, url_end, "", normalized)  # bare URL
+
+
+def _link_closer(line: str, url_start: int, url_end: int) -> int:
+    """Index just past the ``)`` closing the inline link's destination."""
+    depth = 1  # the ``(`` immediately before the destination
+    for index in range(url_start, len(line)):
+        if line[index] == "(":
+            depth += 1
+        elif line[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return url_end  # unclosed destination: bound the edit at the URL
+
+
+def _line_reduced_to_residue(line: str, edits: List[_Edit]) -> bool:
+    """True when the line carries no content once its URL removals apply."""
+    start, end = edits[0].start, edits[0].end
+    if _REF_DEF_BEFORE_RE.match(line[:start]) and _NOISE_TAIL_RE.match(line[end:]):
+        return True  # ``[id]: unledgered-url`` — the URL was the payload
+    return _ITEM_RESIDUE_RE.match(_apply_edits(line, edits)) is not None
+
+
+def _is_table_row(line: str) -> bool:
+    return line.lstrip().startswith("|")
+
+
+def _split_ending(raw_line: str) -> Tuple[str, str]:
+    """Split a ``splitlines(keepends=True)`` piece into content and ending."""
+    if raw_line.endswith("\r\n"):
+        return raw_line[:-2], "\r\n"
+    if raw_line.endswith("\n"):
+        return raw_line[:-1], "\n"
+    return raw_line, ""
+
+
+def _apply_edits(line: str, edits: List[_Edit]) -> str:
+    parts: List[str] = []
+    cursor = 0
+    for edit in edits:
+        parts.append(line[cursor : edit.start])
+        parts.append(edit.replacement)
+        cursor = edit.end
+    parts.append(line[cursor:])
+    return "".join(parts)

@@ -470,6 +470,7 @@ def _action_result(args: Dict[str, Any]) -> str:
         citation_check={
             "validated": "url-provenance",
             "correction_pass_used": bool((status.get("synthesis") or {}).get("correction_used")),
+            "stripped_urls": list((status.get("synthesis") or {}).get("stripped_urls") or []),
             "limitation": PROVENANCE_NOTE,
         },
         brief=_bounded(request.get("brief"), 400),

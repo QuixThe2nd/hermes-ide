@@ -309,7 +309,26 @@ class TestResultGating:
         assert result["evidence_path"] == str(directory / "evidence.jsonl")
         caveat = result["citation_check"]
         assert caveat["validated"] == "url-provenance"
+        assert caveat["stripped_urls"] == []
         assert "does not prove" in caveat["limitation"]
+
+    def test_result_exposes_stripped_urls_history(
+        self, profile_home: Path, launcher_stub
+    ) -> None:
+        job_id, directory = self._job(profile_home, launcher_stub)
+        jobs.publish_report(directory, "# Answer\n\nSee [s](https://example.org/x).\n")
+
+        def _mutate(status: dict) -> None:
+            status["synthesis"].update(
+                {"correction_used": True, "stripped_urls": ["https://example.com/homepage"]}
+            )
+
+        jobs.update_status(directory, mutate=_mutate)
+        jobs.finish_job(directory, jobs.STATE_COMPLETED)
+        result = _call({"action": "result", "job_id": job_id})
+        caveat = result["citation_check"]
+        assert caveat["correction_pass_used"] is True
+        assert caveat["stripped_urls"] == ["https://example.com/homepage"]
 
     def test_status_is_bounded_and_honest(self, profile_home: Path, launcher_stub) -> None:
         job_id, directory = self._job(profile_home, launcher_stub)

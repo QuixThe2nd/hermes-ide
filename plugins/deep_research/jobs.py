@@ -192,7 +192,7 @@ def create_job(
         "timeout_minutes": timeout_minutes,
         "max_parallel": max_parallel,
         "worker_profile": worker_profile,
-        "synthesis": {"attempts": 0, "correction_used": False, "citation_errors": []},
+        "synthesis": {"attempts": 0, "correction_used": False, "citation_errors": [], "stripped_urls": []},
         "notified": False,
     }
     _write_private_json(directory / "status.json", status)
