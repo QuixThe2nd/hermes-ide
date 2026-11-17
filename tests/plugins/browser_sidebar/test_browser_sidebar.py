@@ -340,6 +340,45 @@ async def test_draft_streaming_sends_suffix_only_then_final():
 
 
 @pytest.mark.asyncio
+async def test_send_typing_and_stop_typing_frames_and_noop_when_disconnected():
+    async with _LiveServer() as live:
+        ws = await live.connect_client()
+        await ws.send(json.dumps({"type": "chat", "id": "m4", "text": "q",
+                                  "tab": {"id": "t", "url": "u", "title": "T"}}))
+        for _ in range(50):
+            if live.events:
+                break
+            await asyncio.sleep(0.05)
+
+        # No typing was ever started: stop_typing must not emit a frame.
+        await live.adapter.stop_typing("brave")
+        with pytest.raises(asyncio.TimeoutError):
+            await live.recv_json(ws, timeout=0.2)
+
+        await live.adapter.send_typing("brave")
+        assert await live.recv_json(ws) == {"type": "typing", "active": True}
+
+        await live.adapter.stop_typing("brave")
+        assert await live.recv_json(ws) == {"type": "typing", "active": False}
+
+        # Already stopped: a second stop_typing is a noop, no frame sent.
+        await live.adapter.stop_typing("brave")
+        with pytest.raises(asyncio.TimeoutError):
+            await live.recv_json(ws, timeout=0.2)
+
+        await ws.close()
+        for _ in range(50):
+            if not live.adapter._browser_connected:
+                break
+            await asyncio.sleep(0.05)
+        assert not live.adapter._browser_connected
+
+        # Typing is best-effort: neither raises when the browser is gone.
+        await live.adapter.send_typing("brave")
+        await live.adapter.stop_typing("brave")
+
+
+@pytest.mark.asyncio
 async def test_run_tab_js_round_trip():
     async with _LiveServer() as live:
         ws = await live.connect_client()

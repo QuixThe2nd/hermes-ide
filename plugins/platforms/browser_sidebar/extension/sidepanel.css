@@ -78,6 +78,41 @@ h1 {
   color: #9ad;
 }
 
+.bubble.typing .dots {
+  display: flex;
+  gap: 4px;
+  padding: 2px 0;
+}
+
+.bubble.typing .dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #9ad;
+  animation: bs-typing-bounce 1.2s infinite ease-in-out;
+}
+
+.bubble.typing .dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.bubble.typing .dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes bs-typing-bounce {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.5; }
+  40% { transform: scale(1); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bubble.typing .dots span {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
 .composer {
   padding: 10px;
   border-top: 1px solid #2c2c2c;

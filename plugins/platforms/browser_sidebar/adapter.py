@@ -143,6 +143,7 @@ class BrowserSidebarAdapter(BasePlatformAdapter):
         self._generation_id = f"{os.getpid()}-{uuid.uuid4().hex}"
         self._socket_path = default_socket_path()
         self._browser_connected = False
+        self._typing_active = False
         self.hub_pid: Optional[int] = None
         global _ACTIVE_ADAPTER
         _ACTIVE_ADAPTER = self
@@ -374,6 +375,9 @@ class BrowserSidebarAdapter(BasePlatformAdapter):
         # The final seals the stream: draft state resets so the next turn
         # streams from scratch (prefix-stable deltas per the streaming contract).
         self._draft_prev.clear()
+        # The panel already hides the typing dots on a final; drop our
+        # tracking so a later stop_typing doesn't send a redundant frame.
+        self._typing_active = False
         return SendResult(success=True)
 
     async def send_draft(self, chat_id: str, draft_id: int, content: str,
@@ -392,6 +396,26 @@ class BrowserSidebarAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc), retryable=True)
         self._draft_prev[draft_id] = content
         return SendResult(success=True)
+
+    async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+        # Best-effort: typing is cosmetic and must never raise into _keep_typing.
+        if not self._browser_connected:
+            return
+        with contextlib.suppress(Exception):
+            await self._send_browser_frame({"type": "typing", "active": True})
+            self._typing_active = True
+
+    async def stop_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+        # The gateway calls this after every handled message; only emit a
+        # frame if we actually told the panel typing was active, otherwise
+        # this is an unsolicited frame that breaks ordering-sensitive sends.
+        if not self._typing_active:
+            return
+        self._typing_active = False
+        if not self._browser_connected:
+            return
+        with contextlib.suppress(Exception):
+            await self._send_browser_frame({"type": "typing", "active": False})
 
 
 def register(ctx) -> None:
