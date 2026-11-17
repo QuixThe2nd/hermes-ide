@@ -33,6 +33,14 @@ if argv_out:
     with open(argv_out, "w", encoding="utf-8") as fh:
         json.dump(sys.argv, fh)
 
+
+system_out = os.environ.get("FAKE_CLAUDE_SYSTEM_OUT")
+if system_out and "--append-system-prompt-file" in sys.argv:
+    prompt_path = sys.argv[sys.argv.index("--append-system-prompt-file") + 1]
+    with open(prompt_path, encoding="utf-8") as source:
+        prompt_text = source.read()
+    with open(system_out, "w", encoding="utf-8") as target:
+        target.write(prompt_text)
 env_out = os.environ.get("FAKE_CLAUDE_ENV_OUT")
 if env_out:
     with open(env_out, "w", encoding="utf-8") as fh:
@@ -581,6 +589,7 @@ def test_plain_task_receives_ownership_in_system_prompt(
     from tools.delegation_ownership import (
         CODEBASE_OWNERSHIP_GUIDANCE,
         CODEBASE_OWNERSHIP_SENTENCE,
+        FORK_CODING_CONVENTIONS,
     )
 
     _patch_binary(monkeypatch, fake_binary)
@@ -597,6 +606,8 @@ def test_plain_task_receives_ownership_in_system_prompt(
     system_prompt = argv[argv.index("--append-system-prompt") + 1]
     assert system_prompt.count(CODEBASE_OWNERSHIP_SENTENCE) == 1
     assert system_prompt.count(CODEBASE_OWNERSHIP_GUIDANCE) == 1
+    assert system_prompt.count(FORK_CODING_CONVENTIONS) == 1
+    assert "never to analyzed target artifacts" in system_prompt
 
 
 @_REAL_SUBPROC
@@ -608,12 +619,13 @@ def test_system_prompt_file_has_single_ownership_guidance(
     from tools.delegation_ownership import (
         CODEBASE_OWNERSHIP_GUIDANCE,
         CODEBASE_OWNERSHIP_SENTENCE,
+        FORK_CODING_CONVENTIONS,
     )
 
     _patch_binary(monkeypatch, fake_binary)
     prompt_material = "Lane soul instructions"
     if include_ownership:
-        prompt_material = f"{CODEBASE_OWNERSHIP_GUIDANCE}\n\n{prompt_material}"
+        prompt_material = f"{FORK_CODING_CONVENTIONS}\n\n{prompt_material}"
     soul_path = tmp_path / "soul.md"
     soul_path.write_text(prompt_material, encoding="utf-8")
     argv_out = tmp_path / "argv.json"
@@ -640,6 +652,7 @@ def test_system_prompt_file_has_single_ownership_guidance(
         system_prompt = prompt_value
     assert system_prompt.count(CODEBASE_OWNERSHIP_SENTENCE) == 1
     assert system_prompt.count(CODEBASE_OWNERSHIP_GUIDANCE) == 1
+    assert system_prompt.count(FORK_CODING_CONVENTIONS) == 1
     assert "Lane soul instructions" in system_prompt
     if include_ownership:
         assert prompt_flag == "--append-system-prompt-file"

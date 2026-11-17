@@ -532,7 +532,7 @@ def whatsapp_session_is_paired(session_path) -> bool:
     if not creds_path.exists():
         return False
     try:
-        payload = json.loads(creds_path.read_text(encoding="utf-8"))
+        payload = json.loads(creds_path.read_text(encoding="utf-8-sig"))
     except OSError:
         # Presence was the old signal. Callers (and tests) that stub
         # Path.exists without a readable file should still proceed.

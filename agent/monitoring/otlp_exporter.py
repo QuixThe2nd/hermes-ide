@@ -50,14 +50,15 @@ _SPAN_SDK = ("TracerProvider", "BatchSpanProcessor", "Resource", "OTLPSpanExport
 def _require_sdk(names: Iterable[str] = _SPAN_SDK, *, auto_install: bool = True, prompt: bool = True) -> Dict[str, Any]:
     """Import the named OTel SDK symbols, lazily installing the extra on first use.
 
-    Routes through tools.lazy_deps (feature 'export.otlp') — gated by security.allow_lazy_installs
-    and TTY-prompted (``prompt=False`` from non-interactive contexts).  Any lazy-install failure
-    falls through to the import attempt, which raises OTLPUnavailable with a manual install hint.
+    Routes through pm (feature/extra 'otlp') — gated by security.allow_lazy_installs.
+    PM installs are non-interactive, so ``prompt`` is retained only for callers compiled
+    against the old lazy-deps signature and is intentionally ignored. Any install failure
+    falls through to the import attempt, which raises OTLPUnavailable with a manual hint.
     """
     if auto_install:
         with suppress(Exception):
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("export.otlp", prompt=prompt)
+            from pm import ensure_import as _lazy_ensure
+            _lazy_ensure("otlp")
     try:
         return {name: getattr(importlib.import_module(_SDK_SYMBOLS[name]), name) for name in names}
     except Exception as e:  # ImportError or partial install

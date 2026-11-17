@@ -476,7 +476,7 @@ def amend_receipt_outcome(
     returns whether the rewrite landed.
     """
     try:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        payload = json.loads(Path(path).read_text(encoding="utf-8-sig"))
         if not isinstance(payload, dict):
             return False
         payload["outcome"] = str(outcome)
@@ -493,7 +493,7 @@ def amend_receipt_outcome(
         # a later update has already replaced it, leave that newer record be.
         latest = _receipt_dir() / "latest.json"
         try:
-            current = json.loads(latest.read_text(encoding="utf-8"))
+            current = json.loads(latest.read_text(encoding="utf-8-sig"))
         except Exception:
             current = None
         if isinstance(current, dict) and (

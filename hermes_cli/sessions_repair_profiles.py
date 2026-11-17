@@ -298,7 +298,7 @@ class RepairPlan:
         from hermes_state_profile_repair import session_key_profile
         path = store.home / "sessions" / "sessions.json"
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return
         if not isinstance(data, dict):
@@ -389,7 +389,7 @@ def _parents_first(payloads: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def _drop_sessions_json_entry(path: Path, key: str) -> Dict[str, int]:
     from utils import atomic_json_write
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
     if key not in data:
         return {}
     del data[key]

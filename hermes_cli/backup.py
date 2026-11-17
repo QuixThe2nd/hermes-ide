@@ -1424,7 +1424,7 @@ def _create_quick_snapshot_locked(
             if other == snap_dir or not other.is_dir():
                 continue
             try:
-                with open(other / "manifest.json", encoding="utf-8") as f:
+                with open(other / "manifest.json", encoding="utf-8-sig") as f:
                     other_files = json.load(f).get("files")
             except (OSError, ValueError, AttributeError):
                 continue
@@ -2069,7 +2069,7 @@ def _load_db_verdicts(root: Path) -> dict:
     try:
         if _is_non_regular_path(path):
             return {}
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
     except (OSError, ValueError):
         return {}
@@ -2236,7 +2236,7 @@ def _snapshot_db_coverage(
 
     db_rels: Optional[Iterable[str]] = None
     try:
-        with open(snap_dir / "manifest.json", encoding="utf-8") as f:
+        with open(snap_dir / "manifest.json", encoding="utf-8-sig") as f:
             files = json.load(f).get("files")
         if isinstance(files, dict):
             db_rels = [rel for rel in files if isinstance(rel, str)]

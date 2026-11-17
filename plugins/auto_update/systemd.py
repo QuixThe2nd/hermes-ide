@@ -201,7 +201,7 @@ def write_units_if_changed(
         (service_unit_path(scope, service_name), service_body),
         (timer_unit_path(scope, timer_name), timer_body),
     ):
-        existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+        existing = path.read_text(encoding="utf-8-sig") if path.is_file() else ""
         if existing == body:
             continue
         atomic_write(path, body)

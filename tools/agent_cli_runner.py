@@ -137,7 +137,7 @@ def _terminate_process(proc: subprocess.Popen, pgid: Optional[int] = None) -> No
 def _read_log_text(log_path: Path) -> str:
     if not log_path.is_file():
         return ""
-    return log_path.read_text(encoding="utf-8", errors="replace")
+    return log_path.read_text(encoding="utf-8-sig", errors="replace")
 
 
 def _default_subprocess_env() -> dict:
@@ -198,7 +198,7 @@ class _ServiceProc:
         path = Path(str(self.stdout._fh.name) + ".code")
         if not path.exists():
             return None
-        raw = path.read_text(encoding="utf-8").strip()
+        raw = path.read_text(encoding="utf-8-sig").strip()
         try:
             return int(raw)
         except ValueError:

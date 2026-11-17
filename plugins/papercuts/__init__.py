@@ -270,7 +270,7 @@ def _metadata(kwargs: Dict[str, Any]) -> Dict[str, Any]:
 
 def _read_events_unlocked() -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
-    with _events_path().open("r", encoding="utf-8") as fh:
+    with _events_path().open("r", encoding="utf-8-sig") as fh:
         for line_no, line in enumerate(fh, 1):
             line = line.strip()
             if not line:

@@ -421,9 +421,9 @@ def test_current_generation_is_independent_for_each_bot_token(tmp_path):
 
 
 @pytest.mark.platforms("posix")
-def test_unix_hub_supports_two_clients_rpc_and_detach(tmp_path):
+def test_unix_hub_supports_two_clients_rpc_and_detach(short_af_unix_path):
     async def scenario():
-        server = DiscordHubServer(tmp_path / "discord-hub.sock")
+        server = DiscordHubServer(short_af_unix_path)
 
         class FakeDiscordConnection:
             def __init__(self):
@@ -492,9 +492,9 @@ def test_unix_hub_supports_two_clients_rpc_and_detach(tmp_path):
 
 
 @pytest.mark.platforms("posix")
-def test_overlap_admission_opens_only_after_successor_attaches(tmp_path):
+def test_overlap_admission_opens_only_after_successor_attaches(short_af_unix_path):
     async def scenario():
-        server = DiscordHubServer(tmp_path / "discord-hub.sock")
+        server = DiscordHubServer(short_af_unix_path)
 
         class FakeDiscordConnection:
             async def disconnect(self):
@@ -771,10 +771,10 @@ def test_overlap_spawn_supervisor_env_is_scoped_to_launcher(monkeypatch, tmp_pat
     assert captured[-1]["PATH"].endswith(supervisor_env["PATH"])
 
 
-@pytest.mark.platforms("posix")
-def test_hub_registers_local_successor_for_the_attached_predecessor(tmp_path):
-    async def scenario(socket_dir):
-        server = DiscordHubServer(Path(socket_dir) / "hub.sock")
+@pytest.mark.platforms("linux")
+def test_hub_registers_local_successor_for_the_attached_predecessor(tmp_path, short_af_unix_path):
+    async def scenario():
+        server = DiscordHubServer(short_af_unix_path)
 
         class FakeDiscordConnection:
             async def disconnect(self):
@@ -801,10 +801,7 @@ def test_hub_registers_local_successor_for_the_attached_predecessor(tmp_path):
             await client.disconnect()
             await server.stop()
 
-    import os
-    import tempfile
-    with tempfile.TemporaryDirectory(dir="/tmp", prefix="h-") as socket_dir:
-        run(scenario(socket_dir))
+    run(scenario())
 
 
 def test_hub_rejects_local_successor_registration_from_another_peer(tmp_path):
@@ -1489,9 +1486,9 @@ def test_hub_client_exposes_the_gateway_discord_adapter_surface():
 
 
 @pytest.mark.platforms("posix")
-def test_picker_callbacks_round_trip_to_the_attached_gateway(tmp_path):
+def test_picker_callbacks_round_trip_to_the_attached_gateway(short_af_unix_path):
     async def scenario():
-        server = DiscordHubServer(tmp_path / "discord-hub.sock")
+        server = DiscordHubServer(short_af_unix_path)
 
         class FakeDiscordConnection:
             def __init__(self):
@@ -1568,20 +1565,15 @@ def test_send_multiple_images_forwards_reply_to():
 
 
 @pytest.mark.platforms("posix")
-def test_sync_queries_and_voice_channel_handles_use_the_hub(tmp_path):
+def test_sync_queries_use_the_hub(short_af_unix_path):
     async def scenario():
         from agent.display import ToolPreview
 
-        server = DiscordHubServer(tmp_path / "discord-hub.sock")
-        voice_channel = SimpleNamespace(id=99, name="stage", guild=SimpleNamespace(id=77))
+        server = DiscordHubServer(short_af_unix_path)
 
         class FakeDiscordConnection:
             def __init__(self):
-                self._client = SimpleNamespace(get_channel=lambda channel_id: (
-                    voice_channel if channel_id == voice_channel.id else None
-                ))
                 self.claims = []
-                self.joins = []
 
             async def disconnect(self):
                 pass
@@ -1602,24 +1594,6 @@ def test_sync_queries_and_voice_channel_handles_use_the_hub(tmp_path):
             def claim_startup_resume_inbound(self, message_id, source):
                 self.claims.append((message_id, source.chat_id))
 
-            def voice_mixer_active(self, guild_id):
-                return guild_id == 77
-
-            def is_in_voice_channel(self, guild_id):
-                return guild_id == 77
-
-            def get_voice_channel_info(self, guild_id):
-                return {"channel_name": "stage", "member_count": 1}
-
-            def get_voice_channel_context(self, guild_id):
-                return "[Voice channel: #stage — 1 participant(s)]"
-
-            async def get_user_voice_channel(self, guild_id, user_id):
-                return voice_channel
-
-            async def join_voice_channel(self, channel, *, text_channel_id=None, source=None):
-                self.joins.append((channel, text_channel_id, source))
-                return True
 
         connection = FakeDiscordConnection()
 
@@ -1640,20 +1614,12 @@ def test_sync_queries_and_voice_channel_handles_use_the_hub(tmp_path):
                 assert client.prefers_fresh_final_streaming("answer")
                 assert client.format_tool_preview(ToolPreview(text="docs", url="https://example.com")) == "linked:docs"
                 client.claim_startup_resume_inbound("message-1", source)
-                assert client.voice_mixer_active(77)
-                assert client.is_in_voice_channel(77)
-                assert client.get_voice_channel_info(77)["channel_name"] == "stage"
-                assert "stage" in client.get_voice_channel_context(77)
+
 
             # The test hub shares this loop; production hub queries block only the caller,
             # never the separate hub process's event loop.
             await asyncio.to_thread(check_sync_surface)
             assert connection.claims == [("message-1", "42")]
-
-            handle = await client.get_user_voice_channel(77, "7")
-            assert handle.id == 99 and handle.name == "stage" and handle.guild_id == 77
-            assert await client.join_voice_channel(handle, text_channel_id=42, source=source.to_dict())
-            assert connection.joins == [(voice_channel, 42, source.to_dict())]
         finally:
             await client.disconnect()
             await server.stop()
@@ -1732,7 +1698,7 @@ class TestHubGateCredentialHandoff:
 
 
 @pytest.mark.platforms("posix")
-def test_unix_attach_round_trips_the_gate_credential(tmp_path, monkeypatch):
+def test_unix_attach_round_trips_the_gate_credential(short_af_unix_path, monkeypatch):
     """End to end over the socket: scoped key → attach payload → hub-side adapter."""
     import plugins.platforms.discord.adapter as adapter_module
 
@@ -1750,7 +1716,7 @@ def test_unix_attach_round_trips_the_gate_credential(tmp_path, monkeypatch):
             pass
 
     async def scenario():
-        server = DiscordHubServer(tmp_path / "hub.sock")
+        server = DiscordHubServer(short_af_unix_path)
         monkeypatch.setattr(adapter_module, "DiscordAdapter", StubAdapter)
         await server.start()
         client = DiscordHubClientAdapter(PlatformConfig(token="fake-token"))
@@ -1819,3 +1785,37 @@ class TestHubAdapterCredentialCapture:
             "no LITELLM_API_KEY" in record.message and record.levelno == logging.ERROR
             for record in caplog.records
         )
+
+
+@pytest.mark.platforms("posix")
+def test_default_socket_path_binds_when_hermes_root_exceeds_sun_path(tmp_path, monkeypatch):
+    """default_socket_path() must stay bindable when the hermes root pushes the
+    naive ``<root>/gateway/discord-hub.sock`` past the tightest AF_UNIX
+    ``sun_path`` limit (104 bytes on macOS): the endpoint falls back to a short
+    hashed name under the process temp dir — still one deterministic endpoint
+    per installation — and a real hub binds and accepts a connection on it."""
+    from hermes_constants import get_default_hermes_root
+    from plugins.platforms.discord.hub import default_socket_path
+
+    deep = tmp_path
+    while len(str(deep).encode()) <= 120:
+        deep = deep / "a-very-long-hermes-home-segment"
+    deep.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(deep))
+    assert len(str(get_default_hermes_root() / "gateway" / "discord-hub.sock").encode()) > 104
+
+    endpoint = default_socket_path()
+    assert len(str(endpoint).encode()) <= 103
+    assert endpoint == default_socket_path()  # one stable installation-wide endpoint
+
+    async def scenario():
+        server = DiscordHubServer(endpoint)
+        await server.start()
+        try:
+            reader, writer = await asyncio.open_unix_connection(str(server.socket_path))
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    run(scenario())

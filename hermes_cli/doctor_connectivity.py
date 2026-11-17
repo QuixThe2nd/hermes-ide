@@ -349,6 +349,11 @@ def run_probes(probes: list) -> list:
     Probes are independent HTTP calls; parallel collapses the section to roughly the slowest
     single probe without changing the output.
     """
+    # Disable the EC2 instance-metadata probe (169.254.169.254, multi-second timeout
+    # off-cloud) for the duration of the probe run. Set on the parent thread before
+    # submitting so it never races a worker; restored below.
+    _imds_prev = os.environ.get("AWS_EC2_METADATA_DISABLED")
+    os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
     try:
         # 8 workers is plenty — each probe is one HTTP call plus a TLS handshake.
         with concurrent.futures.ThreadPoolExecutor(max_workers=8, thread_name_prefix="doctor-probe") as ex:

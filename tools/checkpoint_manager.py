@@ -202,7 +202,7 @@ def _project_meta_path(store: Path, dir_hash: str) -> Path:
 def _read_json_dict(path: Path) -> Optional[Dict]:
     """Parse ``path`` as a JSON object; None when missing, unreadable or not a dict."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None

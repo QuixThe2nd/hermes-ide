@@ -355,13 +355,13 @@ class TickTests(ThreadsTestCase):
 
     def test_dry_run_has_no_side_effects(self):
         self.seed(5)
-        events_before = (Path(self.tmp.name) / "events.jsonl").read_text(encoding="utf-8")
+        events_before = (Path(self.tmp.name) / "events.jsonl").read_text(encoding="utf-8-sig")
         rc = lifecycle.tick(dry_run=True)
         self.assertEqual(rc, 0)
         self.assertEqual(self.discord.calls, [])
         self.assertEqual(self.launches, [])
         self.assertEqual(
-            (Path(self.tmp.name) / "events.jsonl").read_text(encoding="utf-8"), events_before
+            (Path(self.tmp.name) / "events.jsonl").read_text(encoding="utf-8-sig"), events_before
         )
 
 
@@ -517,10 +517,10 @@ class LifecycleRegressionTests(ThreadsTestCase):
         args = {"action": "advance", "id": item_id, "to_stage": "closed", "note": "fixed"}
         closed = self.call(args)
         self.assertEqual(closed["item"]["status"], "resolved")
-        before = Path(self.tmp.name, "events.jsonl").read_text(encoding="utf-8")
+        before = Path(self.tmp.name, "events.jsonl").read_text(encoding="utf-8-sig")
         duplicate = self.call(args)
         self.assertFalse(duplicate["changed"])
-        self.assertEqual(Path(self.tmp.name, "events.jsonl").read_text(encoding="utf-8"), before)
+        self.assertEqual(Path(self.tmp.name, "events.jsonl").read_text(encoding="utf-8-sig"), before)
 
     def test_verifying_requires_pr_url(self):
         item_id, _thread_id = self.threaded_item()

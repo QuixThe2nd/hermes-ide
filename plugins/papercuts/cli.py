@@ -62,7 +62,7 @@ def render_template(values: Dict[str, Any]) -> str:
     missing = [key for key in _PLACEHOLDERS if key not in values]
     if missing:
         raise ValueError(f"missing template values: {', '.join(sorted(missing))}")
-    template = _TEMPLATE_PATH.read_text(encoding="utf-8")
+    template = _TEMPLATE_PATH.read_text(encoding="utf-8-sig")
     rendered = template.format(**values)
     if "{" in rendered:
         raise ValueError("template rendering left unresolved placeholders")

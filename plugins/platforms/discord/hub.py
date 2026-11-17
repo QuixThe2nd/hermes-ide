@@ -17,11 +17,13 @@ import logging
 import os
 import socket
 import struct
+import tempfile
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional
+import psutil
 
 from agent.async_utils import consume_detached_task_result
 from hermes_constants import get_default_hermes_root
@@ -36,15 +38,14 @@ def _pid_gone(pid: Optional[int]) -> bool:
     if not pid or pid <= 0:
         return False
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+        process = psutil.Process(pid)
+    except psutil.NoSuchProcess:
         return True
-    except OSError:
+    except psutil.Error:
         return False
     try:
-        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
-            return handle.read().rsplit(")", 1)[1].split()[0] == "Z"
-    except OSError:
+        return process.status() == psutil.STATUS_ZOMBIE
+    except psutil.Error:
         return False
 
 
@@ -85,7 +86,7 @@ class DiscordSessionRouter:
             return
         self._store_path = Path(path)
         try:
-            rows = json.loads(self._store_path.read_text(encoding="utf-8"))
+            rows = json.loads(self._store_path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             rows = []
         if isinstance(rows, list):
@@ -270,9 +271,31 @@ class DiscordSessionRouter:
         return delivered
 
 
+# Tightest AF_UNIX bind limit on supported platforms: macOS's sun_path holds
+# 104 bytes including the NUL terminator (Linux allows 108), so a path of at
+# most 103 bytes binds everywhere.
+_MAX_UNIX_SOCKET_PATH = 103
+
+
 def default_socket_path() -> Path:
-    """One installation-wide endpoint, shared by every profile and generation."""
-    return get_default_hermes_root() / "gateway" / "discord-hub.sock"
+    """One installation-wide endpoint, shared by every profile and generation.
+
+    Prefers ``<hermes root>/gateway/discord-hub.sock``. Long hermes roots (CI
+    runners, deep custom HERMES_HOMEs) can push that past the AF_UNIX
+    ``sun_path`` limit, where every bind fails with ``OSError: AF_UNIX path
+    too long``. Then the endpoint moves into a deterministic hashed directory
+    under the process temp dir (``tempfile.gettempdir()``; Hermes sets TMPDIR)
+    — hashed on the hermes root, so every profile and generation still
+    converges on the one shared endpoint, and the hub's 0o700 parent-dir
+    chmod lands on a directory this installation owns, never the shared
+    temp root.
+    """
+    root = get_default_hermes_root()
+    candidate = root / "gateway" / "discord-hub.sock"
+    if len(str(candidate).encode("utf-8")) <= _MAX_UNIX_SOCKET_PATH:
+        return candidate
+    digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / f"hermes-discord-hub-{digest}" / "discord-hub.sock"
 
 
 def _token_key(token: str) -> str:

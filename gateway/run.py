@@ -10078,7 +10078,7 @@ class GatewayRunner(
         delivered: set[tuple[str, str, Optional[str]]] = set()
         try:
             try:
-                data = json.loads(marker.read_text(encoding="utf-8"))
+                data = json.loads(marker.read_text(encoding="utf-8-sig"))
             except Exception as e:
                 logger.warning("Shutdown comeback marker unreadable, discarding: %s", e)
                 return set()

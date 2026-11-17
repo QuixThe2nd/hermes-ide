@@ -288,10 +288,10 @@ def test_denial_audit_is_redacted_hmac_jsonl_and_mode_0600(tmp_path):
     path = tmp_path / "logs" / "access-denied.jsonl"
     key = b"a" * 32
     append_denial_event("not_owner", platform_present=True, presented_user_id="12345678901234567", audit_hmac_key=key, path=path)
-    event = json.loads(path.read_text(encoding="utf-8"))
+    event = json.loads(path.read_text(encoding="utf-8-sig"))
     assert event["reason"] == "not_owner"
     assert event["user_id_hmac"] == hmac.new(key, b"12345678901234567", hashlib.sha256).hexdigest()
-    assert "12345678901234567" not in path.read_text(encoding="utf-8")
+    assert "12345678901234567" not in path.read_text(encoding="utf-8-sig")
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
@@ -342,12 +342,13 @@ def test_denial_rotation_advances_archives_and_tolerates_unlock_error(tmp_path, 
     first = tmp_path / "access-denied.jsonl.1"
     first.write_bytes(b"previous"); first.chmod(0o600)
     monkeypatch.setattr("discord_history.audit.DENIAL_MAX_BYTES", 100)
-    real_flock = __import__("fcntl").flock
+    fcntl_module = __import__("fcntl")
+    real_flock = fcntl_module.flock
     def flock(fd, operation):
-        if operation == __import__("fcntl").LOCK_UN:
+        if operation == fcntl_module.LOCK_UN:
             raise OSError("unlock failed")
         return real_flock(fd, operation)
-    monkeypatch.setattr("discord_history.audit.fcntl.flock", flock)
+    monkeypatch.setattr(fcntl_module, "flock", flock)
     append_denial_event("x", platform_present=False, presented_user_id=None,
                         audit_hmac_key=b"k" * 32, path=path)
     assert (tmp_path / "access-denied.jsonl.2").read_bytes() == b"previous"

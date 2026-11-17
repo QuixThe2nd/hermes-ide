@@ -86,7 +86,7 @@ from tools.claude_viewer_url import watch_url
 from tools.delegate_evidence_gate import apply_evidence_gate
 from tools.delegate_tool_config import _cfg
 from tools.delegation_ownership import (
-    CODEBASE_OWNERSHIP_GUIDANCE,
+    FORK_CODING_CONVENTIONS,
     ensure_codebase_ownership,
 )
 from tools.registry import registry
@@ -585,7 +585,7 @@ def delegate_claude_agent(
                 error=f"system_prompt_file does not exist: {system_prompt_file}",
             )
         try:
-            system_prompt_material = prompt_path.read_text(encoding="utf-8")
+            system_prompt_material = prompt_path.read_text(encoding="utf-8-sig")
         except OSError as exc:
             return _make_result(
                 success=False,
@@ -663,19 +663,19 @@ def delegate_claude_agent(
         "-p",
     ]
     if system_prompt_file is not None:
-        if CODEBASE_OWNERSHIP_GUIDANCE in (system_prompt_material or ""):
-            # Lane soul material already includes ownership. Pin it at the
-            # harness level without adding a second system-prompt source.
+        if FORK_CODING_CONVENTIONS in (system_prompt_material or ""):
+            # Lane soul material already includes the complete conventions. Pin
+            # it at the harness level without adding a second prompt source.
             cmd.extend(["--append-system-prompt-file", str(system_prompt_file)])
         else:
-            # Custom files get the same guidance through one inline flag;
-            # never rely on combining both append-system-prompt forms.
+            # Custom or legacy ownership-only files get the complete document
+            # through one inline flag; never combine both append forms.
             cmd.extend([
                 "--append-system-prompt",
                 ensure_codebase_ownership(system_prompt_material or ""),
             ])
     else:
-        cmd.extend(["--append-system-prompt", CODEBASE_OWNERSHIP_GUIDANCE])
+        cmd.extend(["--append-system-prompt", FORK_CODING_CONVENTIONS])
     if model_name:
         cmd.extend(["--model", model_name])
     cmd.extend(

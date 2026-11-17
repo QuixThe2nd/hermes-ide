@@ -33,7 +33,7 @@ def test_normalizes_dce_variants_and_related_records():
 
 
 def test_normalization_is_deterministic_with_missing_related_ids():
-    doc = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    doc = json.loads(FIXTURE.read_text(encoding="utf-8-sig"))
     doc["messages"][0]["embeds"][0].pop("id", None)
     first = normalize_export(doc)[2][0]
     second = normalize_export(doc)[2][0]
@@ -58,11 +58,11 @@ def test_streaming_decoder_crosses_tiny_chunks_and_rejects_bad_documents(tmp_pat
 
 
 def test_rejects_cross_channel_and_duplicate_messages():
-    doc = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    doc = json.loads(FIXTURE.read_text(encoding="utf-8-sig"))
     doc["messages"][0]["channelId"] = "999"
     with pytest.raises(ValueError, match="another channel"):
         normalize_export(doc)
-    doc = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    doc = json.loads(FIXTURE.read_text(encoding="utf-8-sig"))
     doc["messages"].append(dict(doc["messages"][0]))
     with pytest.raises(ValueError, match="duplicate"):
         normalize_export(doc)
@@ -111,7 +111,7 @@ def test_file_import_decodes_each_message_once(monkeypatch):
 
 
 def test_stream_accepts_and_validates_dce_trailing_message_count(tmp_path):
-    document = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    document = json.loads(FIXTURE.read_text(encoding="utf-8-sig"))
     document["messageCount"] = 1
     path = tmp_path / "with-count.json"
     path.write_text(json.dumps(document), encoding="utf-8")
@@ -128,7 +128,7 @@ def test_stream_accepts_and_validates_dce_trailing_message_count(tmp_path):
 
 
 def test_complete_reconcile_requires_and_uses_source_cutoff():
-    document = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    document = json.loads(FIXTURE.read_text(encoding="utf-8-sig"))
     inventory_run_id = uuid4()
     with pytest.raises(ValueError, match="complete_reconcile_requires_cutoff"):
         import_export(FakeConn(), document, mode="reconcile", complete=True,
@@ -145,14 +145,14 @@ def test_complete_reconcile_requires_and_uses_source_cutoff():
 
 
 def test_migration_is_one_transaction_and_contains_contract(tmp_path):
-    source = (Path(__file__).parents[1] / "migrations" / "001_initial.sql").read_text(encoding="utf-8")
+    source = (Path(__file__).parents[1] / "migrations" / "001_initial.sql").read_text(encoding="utf-8-sig")
     required = ["schema_migrations", "ingest_run_scope", "inventory_endpoint_manifests",
                 "inventory_pages", "inventory_parent_unions", "message_revisions",
                 "attachments", "embeds", "message_mentions", "message_references",
                 "ingest_cursors", "content_tsv", "pg_trgm"]
     assert all(name in source for name in required)
-    assert "unaccent" in (Path(__file__).parents[1] / "migrations" / "002_unaccent.sql").read_text(encoding="utf-8")
-    hardening = (Path(__file__).parents[1] / "migrations" / "004_harden_search_audit.sql").read_text(encoding="utf-8")
+    assert "unaccent" in (Path(__file__).parents[1] / "migrations" / "002_unaccent.sql").read_text(encoding="utf-8-sig")
+    hardening = (Path(__file__).parents[1] / "migrations" / "004_harden_search_audit.sql").read_text(encoding="utf-8-sig")
     assert "principal_user_hmac" in hardening and "DROP COLUMN IF EXISTS principal_user_id" in hardening
     assert "search_audit_append_only" in hardening
     migration = tmp_path / "001_initial.sql"; migration.write_text(source, encoding="utf-8")

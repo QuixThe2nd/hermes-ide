@@ -65,15 +65,7 @@ PLACEHOLDER = f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024
 '''
 
 # (relpath, kind, arg)
-TARGETS: list[tuple[str, str, object]] = [
-    ("website/static/img/logo.png", "logo", None),
-    ("website/static/img/nous-logo.png", "png_white", 150),
-    ("website/static/img/favicon-16x16.png", "png", 16),
-    ("website/static/img/favicon-32x32.png", "png", 32),
-    ("website/static/img/apple-touch-icon.png", "png", 180),
-    ("website/static/img/favicon.ico", "ico", [16, 32, 48]),
-    ("website/static/img/favicon.svg", "svg_copy", None),
-]
+TARGETS: list[tuple[str, str, object]] = []
 
 
 def ensure_master(check: bool = False) -> Path:

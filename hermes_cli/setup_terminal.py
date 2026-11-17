@@ -41,8 +41,7 @@ def _setup_backend_ssh(config: dict) -> None:
         import subprocess
         ssh_cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", *(["-i", ssh_key] if ssh_key else []),
                    *(["-p", port] if port and port != "22" else []), f"{user}@{host}" if user else host, "echo ok"]
-        result = subprocess.run(ssh_cmd, timeout=10, capture_output=True, text=True,
-                                encoding="utf-8", errors="replace")
+        result = subprocess.run(ssh_cmd, timeout=10, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if result.returncode == 0:
             _setup.print_success("  SSH connection successful!")
         else:

@@ -89,7 +89,7 @@ def find_unmarked_fakes(root: Path, repo_root: Path) -> dict[str, list[tuple[int
                 continue
             path = Path(dirpath) / fname
             try:
-                text = path.read_text(encoding="utf-8", errors="replace")
+                text = path.read_text(encoding="utf-8-sig", errors="replace")
             except OSError:
                 continue
             if marker_pat.search(text):

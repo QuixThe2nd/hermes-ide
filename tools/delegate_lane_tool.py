@@ -30,7 +30,11 @@ def _soul_material(spec: Mapping[str, Any]) -> str:
         skill_file = directory / "SKILL.md"
         if not skill_file.is_file():
             raise FileNotFoundError(f"lane skill file does not exist: {skill_file}")
-        sections.append(f"# Injected skill: {skill_dir}\n" + skill_file.read_text(encoding="utf-8"))
+        if directory.name == "fork-coding-conventions":
+            # The canonical conventions are injected below; this compatibility
+            # skill may otherwise contribute an older full copy.
+            continue
+        sections.append(f"# Injected skill: {skill_dir}\n" + skill_file.read_text(encoding="utf-8-sig"))
     return ensure_codebase_ownership("\n\n".join(sections))
 
 

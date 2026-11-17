@@ -50,9 +50,8 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_
     # python_prod tracks python except for tests-only diffs; default it to
     # python so the majority of cases don't need to spell it out.
     #
-    # docker and nix are derived: both build the product, so both ride on
-    # python_prod and frontend. The image ships the built web assets, and the
-    # flake bundles the compiled ui-tui. Pass either explicitly to override.
+    # docker and nix are derived: product Python and JS workspace changes
+    # keep both build lanes enabled. Pass either explicitly to override.
     _python_prod = python if python_prod is None else python_prod
     _product = _python_prod or frontend
     return {
@@ -79,47 +78,14 @@ CASES = {
     # pyproject.toml declares the pytest markers the OS lanes select on.
     "dep manifest → python": (["pyproject.toml"], _lanes(python=True, scan=True, deps=True, uv_lock=True)),
     "uv.lock → python": (["uv.lock"], _lanes(python=True, uv_lock=True)),
-    "ts package → frontend": (["apps/shared/src/index.ts"], _lanes(frontend=True)),
-    "ui-tui → frontend": (["ui-tui/src/entry.ts"], _lanes(frontend=True)),
     # Lockfile bump shifts every TS package's tree, but not the Python suite.
     "root lockfile → frontend, not python": (["package-lock.json"], _lanes(frontend=True, npm_lock=True)),
-    "nested lockfile → npm_lock": (["website/package-lock.json"], _lanes(site=True, npm_lock=True)),
-    # A website file the Python suite cannot read stays site-only.
-    "website config → site": (["website/docusaurus.config.ts"], _lanes(site=True)),
-    # uv lock --check re-resolves against PyPI, so it must stay off for any
-    # diff that can't desync the lockfile — a registry blip on a docs PR
-    # otherwise shows up as a blocking "uv.lock out of sync" red X.
-    "docs → no uv_lock": (
-        ["website/docs/developer-guide/plugins/index.md"],
-        _lanes(python=True, site=True),
-    ),
-    "frontend → no uv_lock": (["web/src/App.tsx"], _lanes(frontend=True)),
-    # Cross-language contract JSON under apps/: the pytest that pins it against
-    # the Python side must run even when nothing else in the PR is Python.
-    "generated gateway contract → python + frontend": (
-        ["apps/shared/src/gateway-contract.generated.ts"],
-        _lanes(python=True, frontend=True),
-    ),
-    "gateway OpenRPC document → python + frontend": (
-        ["apps/shared/src/gateway-contract.openrpc.json"],
-        _lanes(python=True, frontend=True),
-    ),
+    "root JS tests → frontend": (["tests-js/package-json-lazy-deps.test.ts"], _lanes(frontend=True)),
     # The published CIMD document is asserted about by the Python suite, so a
     # lone edit there must not skip the lane that would catch a bad edit.
-    "cimd document → python + site": (
-        ["website/static/oauth/client-metadata.json"],
-        _lanes(python=True, site=True),
-    ),
-    # A new docs page must reach llms.txt, and the generator that puts it there
-    # has its own tests. Skipping Python on either is how the index drifted to
-    # 53% coverage while every PR stayed green.
-    "docs page → python + site": (
-        ["website/docs/user-guide/bot-mode.md"],
-        _lanes(python=True, site=True),
-    ),
-    "docs generator → python + site": (
-        ["website/scripts/generate-llms-txt.py"],
-        _lanes(python=True, scan=True, site=True),
+    "cimd document → python": (
+        ["assets/oauth/client-metadata.json"],
+        _lanes(python=True),
     ),
     # SKILL.md reads like docs, but the skill-doc tests read skills/, so a
     # skill edit must still run Python.
@@ -153,7 +119,6 @@ CASES = {
     # Unknown top-level file keeps Python on rather than risk a silent skip.
     "unknown toplevel → python": (["Makefile"], _lanes(python=True)),
     "mixed docs+python → python": (["README.md", "agent/x.py"], _lanes(python=True, scan=True)),
-    "mixed docs+frontend → frontend": (["README.md", "ui-tui/src/entry.ts"], _lanes(frontend=True)),
     # tests-only diffs: pytest lanes stay ON, product jobs (the Docker image)
     # gate on python_prod and skip.
     "tests-only → python without python_prod": (
@@ -190,24 +155,12 @@ CASES = {
     ),
     # CI-sensitive files require explicit review label.
     "nested eslint config → ci_review": (
-        ["apps/shared/src/eslint.config.mjs"],
+        ["tests-js/eslint.config.mjs"],
         _lanes(frontend=True, ci_review=True),
     ),
     "shared eslint config → ci_review": (
         ["eslint.config.shared.mjs"],
         _lanes(python=True, ci_review=True),
-    ),
-    "ui-tui eslint config → ci_review": (
-        ["ui-tui/eslint.config.mjs"],
-        _lanes(frontend=True, ci_review=True),
-    ),
-    "web eslint config → ci_review": (
-        ["web/eslint.config.js"],
-        _lanes(frontend=True, ci_review=True),
-    ),
-    "shared package eslint config → ci_review": (
-        ["apps/shared/eslint.config.mjs"],
-        _lanes(frontend=True, ci_review=True),
     ),
     "prettier config → ci_review": (
         [".prettierrc"],
@@ -230,11 +183,6 @@ CASES = {
     "composite action → ci_review (also fail-open all)": (
         [".github/actions/retry/action.yml"],
         DEFAULT,
-    ),
-    # Normal shared-package source doesn't trigger ci_review.
-    "shared src → no ci_review": (
-        ["apps/shared/src/index.ts"],
-        _lanes(frontend=True),
     ),
     # Fail open: CI-config / empty / blank diffs run everything.
     ".github change → all": ([".github/workflows/tests.yml"], DEFAULT),
@@ -296,6 +244,35 @@ def _iter_if_expressions(job: object):
     for step in job.get("steps", []) or []:
         if isinstance(step, dict) and isinstance(cond := step.get("if"), str):
             yield cond
+
+
+def test_every_local_reusable_workflow_reference_resolves():
+    """A missing called workflow fails the caller before it creates any jobs."""
+    workflow_paths = sorted((_REPO / ".github" / "workflows").glob("*.y*ml"))
+    assert workflow_paths, "found no workflows — the walk is broken, not the references"
+
+    missing = []
+    for workflow_path in workflow_paths:
+        workflow = _yaml(workflow_path.relative_to(_REPO).as_posix())
+        for job_name, job in (workflow.get("jobs") or {}).items():
+            uses = job.get("uses", "")
+            if uses.startswith("./.github/workflows/") and not (_REPO / uses[2:]).is_file():
+                missing.append(f"{workflow_path.relative_to(_REPO)}:{job_name}: {uses}")
+
+    assert missing == [], "local reusable workflow reference(s) do not resolve"
+
+
+def test_aggregate_gate_waits_for_every_called_lane():
+    """The aggregate check must not report success before a called lane ends."""
+    ci = _yaml(".github/workflows/ci.yaml")
+    callers = {
+        job_name
+        for job_name, job in ci["jobs"].items()
+        if str(job.get("uses", "")).startswith("./.github/workflows/")
+    }
+    gated = set(ci["jobs"]["all-checks-pass"]["needs"])
+    assert callers, "found no called lanes — the walk is broken, not the gate"
+    assert callers - gated == set(), "called lane(s) missing from the aggregate gate"
 
 
 def test_ci_review_files_returns_only_sensitive_paths_sorted_and_unique():

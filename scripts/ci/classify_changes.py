@@ -16,8 +16,8 @@ Lanes:
 * ``docker_meta`` — Dockerfiles etc.
 * ``docker`` — any product change + docker meta
 * ``nix``         — ``nix flake check``: the flake inputs and any product change.
-* ``frontend``    — TS checks (no TS packages remain in this fork).
-* ``site``        — Docusaurus + generated skill docs.
+* ``frontend``    — JS/TS checks for the remaining tests-js workspace.
+* ``site``        — generated skill documentation inputs.
 * ``scan``        — supply-chain scan (Python files, .pth, setup hooks).
 * ``deps``        — pyproject.toml dependency bounds check.
 * ``uv_lock``     — ``uv lock --check``. Re-resolves the whole graph against
@@ -51,7 +51,7 @@ import os
 import subprocess
 import sys
 
-_FRONTEND = ()  # TS typecheck-matrix packages (none remain)
+_FRONTEND = ("tests-js/",)  # Root JS/TS test workspace.
 _ROOT_NPM = {"package.json", "package-lock.json"}  # shifts every package's tree
 _DOCKER_META = ("docker/", ".hadolint.yml", "Dockerfile") # docker setup
 _NIX_PATHS = ("nix/",) # nix files

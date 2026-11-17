@@ -54,7 +54,7 @@ def _cua_no_overlay() -> bool:
     if val is not None or sys.platform != "linux":
         return bool(val) if val is not None else sys.platform == "darwin"
     wsl = False
-    with contextlib.suppress(Exception), open("/proc/version", encoding="utf-8") as f:
+    with contextlib.suppress(Exception), open("/proc/version", encoding="utf-8-sig") as f:
         wsl = "microsoft" in f.read().lower()
     return wsl or not os.environ.get("DISPLAY") or (
         # Linux/X11: the cursor overlay is a fullscreen, always-on-top, all-workspaces X11 window

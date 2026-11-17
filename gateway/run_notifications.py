@@ -864,7 +864,7 @@ class GatewayNotificationsMixin:
             if not path.exists():
                 return
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
                 delivered = {tuple(target) for target in data.get("delivered_targets", [])}
                 # Resolve obligations from configuration, never from the currently live transports.
                 # Removed homes and explicit notification opt-outs no longer owe a notice.

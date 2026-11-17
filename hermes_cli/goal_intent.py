@@ -634,7 +634,7 @@ def build_intent_report(since: str = "7d", examples: int = 3) -> Dict[str, Any]:
 
     path = _shadow_path()
     if path.exists():
-        with path.open("r", encoding="utf-8") as handle:
+        with path.open("r", encoding="utf-8-sig") as handle:
             for line in handle:
                 line = line.strip()
                 if not line:

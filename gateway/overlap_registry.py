@@ -58,7 +58,7 @@ class OverlapSuccessorRegistry:
         if self._state_path is None:
             return
         try:
-            rows = json.loads(self._state_path.read_text(encoding="utf-8"))
+            rows = json.loads(self._state_path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             return
         now_mono, now_wall = time.monotonic(), time.time()

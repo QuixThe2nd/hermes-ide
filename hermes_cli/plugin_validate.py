@@ -495,7 +495,7 @@ def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
 
     try:
         manifest = yaml.safe_load(
-            manifest_file.read_text(encoding="utf-8")
+            manifest_file.read_text(encoding="utf-8-sig")
         )
     except Exception as exc:
         report.add("manifest", False, f"plugin.yaml failed to parse: {exc}")
@@ -561,8 +561,8 @@ def _check_python_dependencies(report: ValidationReport, plugin_dir: Path) -> No
 
 
 def _spec_is_safe(spec: str) -> bool:
-    from tools.lazy_deps import _spec_is_safe as safe
-    return safe(spec)
+    from pm.python_requirements import spec_is_safe
+    return spec_is_safe(spec)
 
 
 def _check_security_scan(report: ValidationReport, plugin_dir: Path) -> None:

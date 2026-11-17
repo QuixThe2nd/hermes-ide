@@ -176,7 +176,7 @@ def _read_prompt(path):
     read on the DB side, so a multibyte prompt is judged by its true
     length. An empty prompt matches nothing either."""
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8-sig") as fh:
             text = fh.read(LINEAGE_PROMPT_MAX_CHARS + 1)
     except (OSError, UnicodeDecodeError):
         return None

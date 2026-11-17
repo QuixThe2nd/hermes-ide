@@ -11,11 +11,14 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
+import tempfile
 import threading
 import time
 import types
 import unittest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
@@ -32,6 +35,11 @@ from tools.delegate_tool import (
     _resolve_delegation_credentials,
 )
 from hermes_state import SessionDB
+
+
+@pytest.fixture(autouse=True)
+def _isolate_process_tempdir(tmp_path, monkeypatch):
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
 
 
 def _make_mock_parent(depth=0):
@@ -491,60 +499,40 @@ class TestDelegateTask(unittest.TestCase):
                     child_db.close()
                 parent_db.close()
 
-    def test_nous_child_rederives_api_mode_from_model(self):
-        """Portal is dual-wire — same provider + different model prefix must
-        not inherit the parent's Messages/chat_completions mode verbatim.
-        Native wire selected (opt-in since 2026-09-06, ``nous.anthropic_wire``)."""
-        with patch("hermes_cli.providers._nous_anthropic_wire", return_value="native"):
-            self._nous_child_rederives_api_mode_from_model()
-
-    def _nous_child_rederives_api_mode_from_model(self):
+    def test_child_rederives_api_mode_when_provider_differs(self):
+        """A child on a different provider must not inherit the parent's wire:
+        api_mode is re-derived (None) from the child's own provider/endpoint,
+        so a MiniMax parent on Messages cannot pin a DeepSeek child there
+        (bug #20558 / PR #20563). Replaces the Nous Portal dual-wire test —
+        per-model wire selection left with the removed provider (#763)."""
         parent = _make_mock_parent(depth=0)
-        parent.base_url = "https://inference-api.nousresearch.com/v1"
-        parent.api_key = "portal-jwt"
-        parent.provider = "nous"
+        parent.provider = "minimax"
+        parent.base_url = "https://api.minimax.io/v1"
         parent.api_mode = "anthropic_messages"
-        parent.model = "anthropic/claude-opus-4.8"
 
         with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            MockAgent.return_value = mock_child
+            MockAgent.return_value = MagicMock()
 
             _build_child_agent(
                 task_index=0,
-                goal="Stay on chat completions",
+                goal="Different provider, different wire",
                 context=None,
                 toolsets=None,
-                model="hermes-4-405b",
+                model="deepseek-chat",
                 max_iterations=10,
                 parent_agent=parent,
                 task_count=1,
+                override_provider="deepseek",
             )
 
             _, kwargs = MockAgent.call_args
-            self.assertEqual(kwargs["provider"], "nous")
-            self.assertEqual(kwargs["model"], "hermes-4-405b")
-            self.assertEqual(kwargs["api_mode"], "chat_completions")
+            self.assertEqual(kwargs["provider"], "deepseek")
+            self.assertIsNone(kwargs["api_mode"])  # re-derived downstream, never inherited
 
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            MockAgent.return_value = mock_child
-            parent.api_mode = "chat_completions"
-            parent.model = "hermes-4-405b"
-
-            _build_child_agent(
-                task_index=0,
-                goal="Move onto Messages",
-                context=None,
-                toolsets=None,
-                model="anthropic/claude-opus-4.8",
-                max_iterations=10,
-                parent_agent=parent,
-                task_count=1,
-            )
-
-            _, kwargs = MockAgent.call_args
-            self.assertEqual(kwargs["api_mode"], "anthropic_messages")
+        # The re-derivation lands each provider on its own wire.
+        from hermes_cli.providers import determine_api_mode
+        self.assertEqual(determine_api_mode("minimax"), "anthropic_messages")
+        self.assertEqual(determine_api_mode("deepseek"), "chat_completions")
 
 class TestToolNamePreservation(unittest.TestCase):
     """Verify _last_resolved_tool_names is restored after subagent runs."""

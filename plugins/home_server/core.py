@@ -252,7 +252,7 @@ def state_path() -> Path:
 
 def _read_env_key(path: Path, key: str) -> str:
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
             line = line.strip()
             if line.startswith(f"{key}="):
                 return line.split("=", 1)[1].strip().strip('"').strip("'")
@@ -277,7 +277,7 @@ def _env_path() -> Path:
 
 def load_state() -> Dict[str, Any]:
     try:
-        data = json.loads(state_path().read_text(encoding="utf-8"))
+        data = json.loads(state_path().read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -328,7 +328,7 @@ def load_home_server_config(
         import yaml
 
         try:
-            raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+            raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8-sig")) or {}
         except OSError as exc:
             raise HomeServerError(f"cannot read {config_path}: {exc}") from exc
         except Exception as exc:
@@ -552,7 +552,7 @@ def _existing_env_values(path: Path, keys: Sequence[str]) -> Dict[str, str]:
     """Return the currently-set non-empty values for ``keys`` (never logged)."""
     found: Dict[str, str] = {}
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
     except OSError:
         return found
     for line in lines:
@@ -593,7 +593,7 @@ def merge_env_secrets(values: Mapping[str, str]) -> Dict[str, str]:
         return outcome
 
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
     except OSError:
         lines = []
 

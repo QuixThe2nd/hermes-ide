@@ -78,7 +78,7 @@ def log_path() -> Path:
 
 def _read_env_key(path: Path, key: str) -> Optional[str]:
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
             line = line.strip()
             if line.startswith(f"{key}="):
                 return line.split("=", 1)[1].strip().strip('"').strip("'")
@@ -118,7 +118,7 @@ def load_config_section(config_path: Optional[Path] = None) -> dict:
         import yaml
 
         try:
-            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8-sig")) or {}
         except OSError as exc:
             raise FallbackWatchError(f"cannot read {config_path}: {exc}") from exc
         except Exception as exc:
@@ -182,7 +182,7 @@ def load_config(config_path: Optional[Path] = None) -> WatchConfig:
 
 def load_state() -> dict:
     try:
-        return json.loads(state_path().read_text(encoding="utf-8"))
+        return json.loads(state_path().read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return {}
 

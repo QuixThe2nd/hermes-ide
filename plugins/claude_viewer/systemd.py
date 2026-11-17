@@ -206,7 +206,7 @@ StandardError=journal
 
 def write_unit_if_changed(scope: InstallScope, *, body: str) -> bool:
     path = service_unit_path(scope)
-    existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+    existing = path.read_text(encoding="utf-8-sig") if path.is_file() else ""
     if existing == body:
         return False
     atomic_write(path, body)
