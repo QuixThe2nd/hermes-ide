@@ -1,7 +1,7 @@
 // Big Steve — service worker.
 //
 // Owns the WebSocket to Hermes (token as the sole subprotocol), the side
-// panel open paths, and the run_tab_js tool bridge. Chat frames in:
+// panel toggle paths, and the run_tab_js tool bridge. Chat frames in:
 //   {type:"chat", id, text, tab:{id,url,title}}
 // Frames out: ready / delta{id,text} (suffix-only append) / final{id,text} /
 // error{message} / tool{request_id,name,run_tab_js,args:{code}}.
@@ -28,9 +28,43 @@ let reconnectTimer = null;
 // requirement means open() must be called before any await in the handlers.
 let lastFocusedNormalWindowId = null;
 
-// ─── Side panel opening ─────────────────────────────────────────────────────
+// ─── Side panel toggling ────────────────────────────────────────────────────
 
-function openSidePanel(windowId) {
+// windowId -> the sidepanel.js port for that window's open side panel.
+// Populated by chrome.runtime.onConnect, emptied by that port's onDisconnect.
+const openSidePanels = new Map();
+
+// Registered synchronously at worker start so a connecting side panel is
+// never missed.
+chrome.runtime.onConnect.addListener((port) => {
+  if (typeof port.name !== 'string' || !port.name.startsWith('sidepanel:')) return;
+  const windowId = parseInt(port.name.slice('sidepanel:'.length), 10);
+  if (!Number.isInteger(windowId)) return;
+  openSidePanels.set(windowId, port);
+  port.onDisconnect.addListener(() => {
+    // Only clear the entry if it still points at this port: a newer
+    // connection for the same window may have already replaced it.
+    if (openSidePanels.get(windowId) === port) openSidePanels.delete(windowId);
+  });
+});
+
+function toggleSidePanel(windowId) {
+  if (typeof windowId === 'number' && openSidePanels.has(windowId)) {
+    const port = openSidePanels.get(windowId);
+    try {
+      if (typeof chrome.sidePanel.close === 'function') {
+        const maybePromise = chrome.sidePanel.close({ windowId });
+        if (maybePromise && typeof maybePromise.catch === 'function') {
+          maybePromise.catch(() => port.postMessage({ kind: 'close' }));
+        }
+      } else {
+        port.postMessage({ kind: 'close' });
+      }
+    } catch (err) {
+      port.postMessage({ kind: 'close' });
+    }
+    return;
+  }
   if (typeof windowId === 'number') {
     chrome.sidePanel.open({ windowId }).catch((err) => {
       console.error('sidePanel.open failed:', err);
@@ -50,11 +84,11 @@ function openSidePanel(windowId) {
 // Registered synchronously at worker start so events always have listeners.
 chrome.commands.onCommand.addListener((command, tab) => {
   if (command !== 'open-sidebar') return;
-  openSidePanel(tab && typeof tab.windowId === 'number' ? tab.windowId : lastFocusedNormalWindowId);
+  toggleSidePanel(tab && typeof tab.windowId === 'number' ? tab.windowId : lastFocusedNormalWindowId);
 });
 
 chrome.action.onClicked.addListener((tab) => {
-  openSidePanel(tab && typeof tab.windowId === 'number' ? tab.windowId : lastFocusedNormalWindowId);
+  toggleSidePanel(tab && typeof tab.windowId === 'number' ? tab.windowId : lastFocusedNormalWindowId);
 });
 
 chrome.windows.onFocusChanged.addListener((windowId) => {

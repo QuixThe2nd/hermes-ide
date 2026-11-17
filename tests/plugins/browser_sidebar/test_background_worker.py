@@ -39,6 +39,7 @@ global.chrome = {
   },
   commands: { onCommand: event },
   runtime: {
+    onConnect: event,
     onMessage: event,
     sendMessage() { return Promise.resolve(); },
   },
