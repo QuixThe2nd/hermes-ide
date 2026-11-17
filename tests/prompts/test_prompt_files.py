@@ -29,7 +29,6 @@ PROMPT_CASES = [
     ("title_generator_system.txt", "agent.title_generator", "_TITLE_PROMPT_TEMPLATE"),
     ("trajectory_system.txt", "agent.agent_runtime_helpers", "_TRAJECTORY_SYSTEM_PROMPT"),
     ("memory_query_rewrite_system.txt", "plugins.memory.query_rewrite", "_SYSTEM_PROMPT"),
-    ("papercuts_opening_system.txt", "plugins.papercuts.threads", "_OPENING_SYSTEM_PROMPT"),
     ("hermes_starts_dedup_system.txt", "plugins.hermes_starts", "_DEDUP_SYSTEM_PROMPT"),
     ("mini_swe_bash_agent_system.txt", "mini_swe_runner", "SYSTEM_PROMPT"),
     ("micro_compaction_summarization_system.txt", "agent.micro_compaction", "_SUMMARY_SYSTEM_PROMPT"),
