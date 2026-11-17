@@ -42,6 +42,7 @@ from .embedded import (
     _may_rewrite_profile_env,
 )
 from .embedded_runtime import ensure_daemon_and_url as _start_sideenv_daemon
+from .retain_backlog import RetainBacklog, classify_exception, format_retry_at
 from .settings import (
     _DEFAULT_API_URL, _DEFAULT_IDLE_TIMEOUT, _DEFAULT_LOCAL_URL, _DEFAULT_RETAIN_SOURCE,
     _DEFAULT_TIMEOUT, _HINDSIGHT_GLYPH, _MIN_CLIENT_VERSION, _MIN_VERSION_FOR_UPDATE_MODE_APPEND,
@@ -859,6 +860,11 @@ class HindsightMemoryProvider(MemoryProvider):
         self._sync_thread = None  # legacy alias external callers may join; points at the writer
         self._shutting_down = threading.Event()
         self._atexit_registered = False
+        # Durable backlog for provider-rate-limited retains (retain_backlog.py);
+        # ``may_exist`` gates every hot-path check so a normal retain never pays
+        # file I/O. One drain pass may be queued at a time.
+        self._retain_backlog = RetainBacklog(lambda: get_hermes_home())
+        self._backlog_drain_queued = False
         self._retain_tags: List[str] = []
         self._tags: list[str] | None = None
         self._retain_source = _DEFAULT_RETAIN_SOURCE
@@ -2145,15 +2151,28 @@ class HindsightMemoryProvider(MemoryProvider):
             self._atexit_registered = True
             atexit.register(self._atexit_shutdown)
 
+    # Periodic retain-backlog check cadence while the writer is alive. The
+    # check itself is an in-memory flag test; file I/O only when a backlog
+    # may exist.
+    _BACKLOG_DRAIN_INTERVAL_S = 300.0
+
     def _writer_loop(self) -> None:
         """Drain the retain queue serially until the sentinel. A failing job can't
-        kill the writer; task_done() always fires so queue.join() works."""
+        kill the writer; task_done() always fires so queue.join() works.
+        While idle it also nudges the rate-limit backlog every
+        _BACKLOG_DRAIN_INTERVAL_S (cheap flag check; see retain_backlog.py)."""
+        last_backlog_check = time.monotonic()
         while True:
             try:
                 job = self._retain_queue.get(timeout=1.0)
             except queue.Empty:
                 if self._shutting_down.is_set():
                     return
+                now = time.monotonic()
+                if now - last_backlog_check >= self._BACKLOG_DRAIN_INTERVAL_S:
+                    last_backlog_check = now
+                    if self._retain_backlog.may_exist:
+                        self._queue_backlog_drain()
                 continue
             try:
                 if job is _WRITER_SENTINEL:
@@ -2365,6 +2384,19 @@ class HindsightMemoryProvider(MemoryProvider):
 
         if self._mode == "local_embedded":
             self._start_embedded_daemon()
+        # One stat decides whether a rate-limit retain backlog may exist for
+        # this profile; when it does, a background pass drains it once due
+        # (tools-only setups never start the writer, so initialize() is their
+        # only automatic trigger short of the next rate-limited retain).
+        if self._retain_backlog.refresh_may_exist():
+            spawn_context_thread(self._backlog_startup_drain, name="hindsight-backlog-drain").start()
+
+    def _backlog_startup_drain(self) -> None:
+        """Background drain of a pre-existing backlog at provider initialize()."""
+        try:
+            self._drain_retain_backlog()
+        except Exception as exc:
+            logger.warning("Hindsight retain-backlog startup drain failed: %s", exc, exc_info=True)
 
     def _apply_connection_settings(self, cfg: dict) -> None:
         """Endpoint, bank and mode selectors from *cfg* (env fallbacks where documented)."""
@@ -2670,7 +2702,17 @@ class HindsightMemoryProvider(MemoryProvider):
                                              tags=tags, update_mode=update_mode)
             logger.debug("Hindsight %s: bank=%s, doc=%s, mode=%s, async=%s, content_len=%d, num_turns=%d",
                          label, bank_id, document_id, update_mode, retain_async, len(content), len(turns))
-            resp = self._retain_batch(item, bank_id=bank_id, document_id=document_id, retain_async=retain_async)
+            try:
+                resp = self._retain_batch(item, bank_id=bank_id, document_id=document_id, retain_async=retain_async)
+            except Exception as exc:
+                retry_at = classify_exception(exc)
+                if retry_at is None:
+                    raise
+                # Provider rate limit: persist the turn instead of losing it;
+                # the backlog drains automatically once the limit resets.
+                self._enqueue_backlog_entry(item, bank_id=bank_id, retry_after=retry_at,
+                                            document_id=document_id, retain_async=retain_async)
+                return
             # Async retains are only *accepted* here; track the op id(s) so the
             # next-turn prefetch can wait for true server-side completion.
             if retain_async and track_ops:
@@ -2733,6 +2775,47 @@ class HindsightMemoryProvider(MemoryProvider):
         self._register_atexit()
         self._retain_queue.put(job)
 
+    # -- retain backlog (provider rate limits) -----------------------------------
+
+    def _enqueue_backlog_entry(self, item: dict, *, bank_id: str, retry_after, document_id=None,
+                               retain_async=None) -> str:
+        """Persist a rate-limited retain and schedule a (due-gated) drain pass."""
+        entry_id = self._retain_backlog.enqueue(
+            bank_id=bank_id, item=item, retry_after=retry_after,
+            document_id=document_id, retain_async=retain_async,
+        )
+        logger.info("Hindsight retain deferred by provider rate limit; backlog entry %s "
+                    "(retry after %s)", entry_id, format_retry_at(retry_after))
+        self._queue_backlog_drain()
+        return entry_id
+
+    def _queue_backlog_drain(self) -> None:
+        """Queue one drain pass on the writer (self-deduping). The pass itself
+        re-checks due-ness, so queueing early is always safe."""
+        if self._backlog_drain_queued or self._shutting_down.is_set():
+            return
+        self._backlog_drain_queued = True
+        self._enqueue_retain(self._backlog_drain_job)
+
+    def _backlog_drain_job(self) -> None:
+        self._backlog_drain_queued = False
+        try:
+            self._drain_retain_backlog()
+        except Exception as exc:
+            logger.warning("Hindsight retain-backlog drain failed: %s", exc, exc_info=True)
+
+    def _drain_retain_backlog(self) -> None:
+        """Ship due backlog entries FIFO via the normal retain path."""
+        if not self._retain_backlog.may_exist:
+            return
+
+        def _retain_entry(entry: dict) -> None:
+            self._retain_batch(entry["item"], bank_id=entry["bank_id"],
+                               document_id=entry.get("document_id"),
+                               retain_async=entry.get("retain_async"))
+
+        self._retain_backlog.drain(_retain_entry)
+
     # -- tools -------------------------------------------------------------------
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
@@ -2744,7 +2827,17 @@ class HindsightMemoryProvider(MemoryProvider):
                                          occurred_at=args.get("occurred_at"))
         logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
                      self._bank_id, len(content), context)
-        self._retain_batch(item, bank_id=self._bank_id)
+        try:
+            self._retain_batch(item, bank_id=self._bank_id)
+        except Exception as exc:
+            retry_at = classify_exception(exc)
+            if retry_at is None:
+                raise
+            # Success, not an error: the memory IS persisted, just deferred —
+            # the backlog drains automatically once the provider limit resets.
+            self._enqueue_backlog_entry(item, bank_id=self._bank_id, retry_after=retry_at)
+            return (f"Memory queued: provider rate limit; will be stored "
+                    f"automatically after {format_retry_at(retry_at)}.")
         logger.debug("Tool hindsight_retain: success")
         return "Memory stored successfully."
 
