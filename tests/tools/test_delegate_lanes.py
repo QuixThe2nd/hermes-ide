@@ -36,7 +36,7 @@ def _configure(monkeypatch, lanes, omp_config=None, **delegation):
 @pytest.mark.parametrize("lane_name,harness", [
     ("ui_dev", "omp"),
     ("client_dev", "claude"),
-    ("backend_dev", "cursor"),
+    ("backend_dev", "omp"),
     ("reverse_engineer", "subagent"),
 ])
 def test_each_lane_resolves_harness_and_ordered_models(lane_name, harness):
@@ -444,14 +444,14 @@ def test_conditional_registration_uses_real_profile_config():
     assert names <= {item["function"]["name"] for item in exposed}
 
 
-@pytest.mark.parametrize("lane_name,harness", [("client_dev", "claude"), ("backend_dev", "cursor")])
+@pytest.mark.parametrize("lane_name,harness", [("client_dev", "claude"), ("backend_dev", "claude")])
 def test_existing_harnesses_use_shared_dispatch_and_inject_prompt_material(
     monkeypatch, tmp_path, workdir, lane_name, harness
 ):
     skill = tmp_path / "skill"
     skill.mkdir()
     (skill / "SKILL.md").write_text("Complete skill instructions", encoding="utf-8")
-    tools = ["Read", "Bash"] if harness == "claude" else []
+    tools = ["Read", "Bash"]
     _configure(monkeypatch, {lane_name: {
         "harness": harness, "models": ["provider/model"], "soul": "Lane instructions",
         "skills": [str(skill)], "tools_allowlist": tools,
@@ -475,20 +475,15 @@ def test_existing_harnesses_use_shared_dispatch_and_inject_prompt_material(
     assert captured["model"] == "provider/model"
     assert captured["background"] is False
     assert captured.get("allowed_tools") == (",".join(tools) if tools else None)
-    if harness == "claude":
-        # Soul material is pinned at the harness level via a system prompt
-        # file (deleted after the run), not concatenated into the goal.
-        soul_path = captured.get("system_prompt_file")
-        assert soul_path
-        assert "Lane instructions" in captured["_soul_text"]
-        assert "Complete skill instructions" in captured["_soul_text"]
-        assert "# Task" in captured["goal"]
-        assert "Lane instructions" not in captured["goal"]
-        assert not Path(soul_path).exists()
-    else:
-        # Cursor cannot take an appended system prompt; soul stays in the goal.
-        assert "Lane instructions" in captured["goal"]
-        assert "Complete skill instructions" in captured["goal"]
+    # Soul material is pinned at the harness level via a system prompt
+    # file (deleted after the run), not concatenated into the goal.
+    soul_path = captured.get("system_prompt_file")
+    assert soul_path
+    assert "Lane instructions" in captured["_soul_text"]
+    assert "Complete skill instructions" in captured["_soul_text"]
+    assert "# Task" in captured["goal"]
+    assert "Lane instructions" not in captured["goal"]
+    assert not Path(soul_path).exists()
 
 
 def test_subagent_lane_uses_native_dispatch_and_routing_config(monkeypatch, workdir):
