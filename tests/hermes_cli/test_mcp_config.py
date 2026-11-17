@@ -381,8 +381,8 @@ class TestMcpTest:
 class TestEnvVarInterpolation:
 
 
-    def test_interpolate_cursor_env_prefix(self, monkeypatch):
-        """Cursor-style ${env:VAR} resolves the same secret as ${VAR}."""
+    def test_interpolate_env_colon_prefix(self, monkeypatch):
+        """Editor-style ${env:VAR} resolves the same secret as ${VAR}."""
         monkeypatch.setenv("MY_KEY", "secret123")
         from tools.mcp_tool_config import _interpolate_env_vars
 
