@@ -4,6 +4,11 @@
 // assistant deltas into a live bubble (deltas are suffix-only appends), swaps
 // in the final text, and shows a banner while the worker's socket is down.
 // All socket I/O lives in background.js; this page only exchanges messages.
+//
+// Also keeps a long-lived 'sidepanel:<windowId>' port open to background.js
+// so it can track which windows have an open panel for the toggle command,
+// and closes itself on a {kind:'close'} reply (chrome.sidePanel.close() may
+// not exist, so this is the fallback close path).
 
 'use strict';
 
@@ -151,4 +156,18 @@ chrome.storage.local
 chrome.runtime
   .sendMessage({ kind: 'get_status' })
   .then(applyStatus)
+  .catch(() => {});
+
+// Held for the life of the page: background.js maps this port's name to a
+// windowId to know whether that window's panel is open.
+let sidePanelPort = null;
+
+chrome.windows
+  .getCurrent()
+  .then((win) => {
+    sidePanelPort = chrome.runtime.connect({ name: 'sidepanel:' + win.id });
+    sidePanelPort.onMessage.addListener((msg) => {
+      if (msg && msg.kind === 'close') window.close();
+    });
+  })
   .catch(() => {});
