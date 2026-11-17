@@ -1404,11 +1404,28 @@ class _CodexCompletionsAdapter:
             current_issuer_kind=_classify_responses_issuer(base_url=host, **route._asdict()),
             current_issuer_model=wire_model, native_compaction_eligible=False,
         )
+        # Same gate as agent/transports/codex.py::build_kwargs: on bridged (non-OpenAI-native)
+        # endpoints the system prompt rides as the leading input item so the bridge's
+        # cache_control injection (message-role system) can cache it. No preflight runs here,
+        # so ``instructions`` is omitted outright — exactly one system row on the wire.
+        from agent.transports.codex import _system_prompt_as_input_item_route
+
+        system_prompt_as_item = _system_prompt_as_input_item_route({
+            "provider": getattr(self._client, "_hermes_aux_effective_provider", "") or None,
+            "base_url": host,
+            "is_codex_backend": route.is_codex_backend,
+            "is_xai_responses": is_xai,
+            "is_github_responses": is_github,
+        })
+        if system_prompt_as_item:
+            input_items = [{"role": "system", "content": instructions}, *(input_items or [])]
         resp_kwargs: Dict[str, Any] = {
             # Codex only knows the base slug; strip the Hermes ``-900k`` picker suffix.
-            "model": wire_model, "instructions": instructions,
+            "model": wire_model,
             "input": input_items or [{"role": "user", "content": ""}], "store": False,
         }
+        if not system_prompt_as_item:
+            resp_kwargs["instructions"] = instructions
         # Forward the chat.completions timeout; otherwise a Codex stream can sit behind a
         # dead-looking CLI until the user force-interrupts.
         timeout = kwargs.get("timeout")
@@ -1459,7 +1476,7 @@ class _CodexCompletionsAdapter:
                 scope = _cache_scope_from_session_id(
                     _runtime_main_value("cache_scope") or _runtime_main_value("session_id")
                 )
-                cache_key = _content_cache_key(resp_kwargs["instructions"], resp_kwargs.get("tools"), scope)
+                cache_key = _content_cache_key(instructions, resp_kwargs.get("tools"), scope)
                 if cache_key:
                     resp_kwargs["prompt_cache_key"] = cache_key
             if "prompt_cache_retention" not in resp_kwargs:

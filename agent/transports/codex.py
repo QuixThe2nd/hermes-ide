@@ -472,6 +472,36 @@ def _is_azure_responses(params: dict[str, Any]) -> bool:
     return base_url_host_matches(base_url, "openai.azure.com") or base_url_host_matches(base_url, "services.ai.azure.com")
 
 
+def _system_prompt_as_input_item_route(params: dict[str, Any]) -> bool:
+    """True when the system prompt must ride as a leading ``role: "system"`` input item.
+
+    Non-OpenAI-native Responses endpoints — LiteLLM gateways bridging /v1/responses to
+    Anthropic — never cache an ``instructions`` payload: the bridge's ``cache_control``
+    injection points match message-role system rows, and instructions maps to a shape they
+    never touch (measured 0/0 cached tokens; the identical prompt as a leading system input
+    item cached in full). Official/first-party origins keep the historical ``instructions``
+    wire byte-for-byte: no base_url means the SDK default origin (api.openai.com), and every
+    host Hermes knows by name (OpenAI, ChatGPT Codex, xAI, GitHub, Azure, OpenCode,
+    Perplexity, Meta) carries its own contract.
+    """
+    from utils import base_url_hostname
+
+    base_url = str(params.get("base_url") or "").strip()
+    if not base_url:
+        return False
+    if (
+        params.get("is_codex_backend") is True
+        or params.get("is_xai_responses") is True
+        or params.get("is_github_responses") is True
+        or _is_azure_responses(params)
+        or _is_opencode_responses_backend(params)
+        or _is_perplexity_responses_backend(params)
+    ):
+        return False
+    hostname = base_url_hostname(base_url)
+    return hostname not in _OPENAI_RESPONSES_HOSTS and hostname != "api.meta.ai"
+
+
 def _newest_reasoning_only(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Copy of ``messages`` keeping ``codex_reasoning_items`` only on the newest assistant row that has any.
     Foundry rejects a request that replays encrypted reasoning from more than one prior response (HTTP 400
@@ -625,6 +655,13 @@ class ResponsesApiTransport(ProviderTransport):
             instructions = str(messages[0].get("content") or "").strip()
             payload_messages = messages[1:]
         instructions = instructions or DEFAULT_AGENT_IDENTITY
+        # Bridged (non-OpenAI-native) routes: the system prompt rides as a LEADING input item
+        # and ``instructions`` goes empty (preflight drops it) so the bridge sees exactly one
+        # system row — the shape its cache_control injection point matches. The plan-identity
+        # route relocates system content itself and keeps the historical wire.
+        system_prompt_as_item = (
+            _system_prompt_as_input_item_route(params) and not params.get("claude_code_plan_identity")
+        )
         if params.get("claude_code_plan_identity"):
             from agent.claude_code_plan_identity import split_claude_code_plan_identity_instructions
 
@@ -690,15 +727,18 @@ class ResponsesApiTransport(ProviderTransport):
         request_overrides = params.get("request_overrides") or {}
         # An override may rewrite the wire model; provenance must be stamped with what actually goes out.
         wire_model = _strip_ctx_variant(request_overrides.get("model", model))
+        input_items = self.convert_messages(
+            payload_messages, is_xai_responses=is_xai_responses, is_github_responses=is_github_responses,
+            replay_encrypted_reasoning=replay_encrypted_reasoning, base_url=params.get("base_url"),
+            is_codex_backend=is_codex_backend, context_management=context_management, model=wire_model,
+        )
+        if system_prompt_as_item:
+            input_items = [{"role": "system", "content": instructions}, *input_items]
         kwargs = {
             # ``-900k`` picker variants are Hermes-side aliases; the backend knows only the base slug.
             "model": wire_model,
-            "instructions": instructions,
-            "input": self.convert_messages(
-                payload_messages, is_xai_responses=is_xai_responses, is_github_responses=is_github_responses,
-                replay_encrypted_reasoning=replay_encrypted_reasoning, base_url=params.get("base_url"),
-                is_codex_backend=is_codex_backend, context_management=context_management, model=wire_model,
-            ),
+            "instructions": "" if system_prompt_as_item else instructions,
+            "input": input_items,
             "store": False,
         }
         # ``tools`` MUST be omitted when empty: the openai SDK iterates it without a None guard.

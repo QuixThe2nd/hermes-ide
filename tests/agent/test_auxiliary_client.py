@@ -3316,6 +3316,37 @@ class TestCodexAdapterPromptCacheKey:
         ])
         assert "prompt_cache_retention" not in captured
 
+    def test_litellm_route_sends_system_prompt_as_leading_input_item(self):
+        """Auxiliary Responses calls against a bridged (non-OpenAI-native) endpoint must
+        carry the system prompt as a leading system input item, matching the main
+        transport: LiteLLM's Anthropic bridge only injects cache_control on message-role
+        system rows, so an ``instructions`` payload stays cache-cold."""
+        adapter, captured = self._build_adapter(
+            base_url="http://192.168.30.21:4000/v1",
+            model="hermes",
+        )
+        adapter.create(messages=[
+            {"role": "system", "content": "Summarize faithfully."},
+            {"role": "user", "content": "hi"},
+        ])
+        assert "instructions" not in captured
+        assert captured["input"][0] == {"role": "system", "content": "Summarize faithfully."}
+        assert captured["input"][1] == {"role": "user", "content": "hi"}
+        # The cache key stays content-addressed over the real system text.
+        assert captured.get("prompt_cache_key", "").startswith("pck_")
+
+    def test_official_openai_route_keeps_instructions_wire(self):
+        adapter, captured = self._build_adapter(
+            base_url="https://api.openai.com/v1",
+            model="gpt-5.5",
+        )
+        adapter.create(messages=[
+            {"role": "system", "content": "Summarize faithfully."},
+            {"role": "user", "content": "hi"},
+        ])
+        assert captured["instructions"] == "Summarize faithfully."
+        assert not any(item.get("role") == "system" for item in captured["input"])
+
 
 
 class TestCodexAdapterGithubResponsesMessageIdDrop:

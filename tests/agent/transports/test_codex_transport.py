@@ -1911,3 +1911,87 @@ def test_text_verbosity_reaches_responses_body_only_when_configured(transport):
     )
     chat = get_transport("chat_completions").build_kwargs(model="gpt-5.1", messages=msgs, text_verbosity="low")
     assert "text" not in chat and "text" not in (chat.get("extra_body") or {})
+
+
+class TestBridgedResponsesSystemPromptAsInputItem:
+    """Non-OpenAI-native Responses routes (LiteLLM fronting Anthropic) cache the system
+    prompt only when it rides as a leading ``role: "system"`` input item.
+
+    Measured against a LiteLLM deployment with
+    ``cache_control_injection_points=[{location: message, role: system}]``: the same
+    ~3.6k-token prompt as ``instructions`` cached 0/0 tokens; as a leading system input
+    item it cached in full (3626/3626). OpenAI-native routes keep the historical
+    ``instructions`` wire byte-for-byte.
+    """
+
+    LITELLM = "http://192.168.30.21:4000/v1"
+    SYSTEM = "You are Hermes Agent. Use the terminal tool."
+    MESSAGES = [
+        {"role": "system", "content": SYSTEM},
+        {"role": "user", "content": "Ping"},
+    ]
+
+    def _litellm_kwargs(self, transport, messages=None, **extra):
+        kw = transport.build_kwargs(
+            model="hermes", messages=list(messages or self.MESSAGES), tools=[],
+            provider="custom:litellm", base_url=self.LITELLM, **extra,
+        )
+        return transport.preflight_kwargs(kw)
+
+    def test_litellm_route_sends_system_prompt_as_leading_input_item(self, transport):
+        kw = self._litellm_kwargs(transport)
+        assert "instructions" not in kw
+        assert kw["input"][0] == {"role": "system", "content": self.SYSTEM}
+        assert kw["input"][1] == {"role": "user", "content": "Ping"}
+
+    def test_litellm_route_prompt_prefix_byte_stable_across_turns(self, transport):
+        """No per-turn content may land ahead of the system item: turn 2's payload must
+        start with exactly turn 1's system item so the bridged cache prefix stays warm."""
+        first = self._litellm_kwargs(transport)
+        history = self.MESSAGES + [
+            {"role": "assistant", "content": "Pong"},
+            {"role": "user", "content": "Again"},
+        ]
+        second = self._litellm_kwargs(transport, history)
+        assert second["input"][0] == first["input"][0]
+        assert second["input"][1] == {"role": "user", "content": "Ping"}
+
+    def test_litellm_route_without_system_message_keeps_identity_in_item(self, transport):
+        kw = self._litellm_kwargs(transport, messages=[{"role": "user", "content": "Hi"}])
+        assert "instructions" not in kw
+        assert kw["input"][0]["role"] == "system"
+        assert kw["input"][0]["content"].strip()
+
+    def test_plan_identity_route_keeps_instructions_wire(self, transport):
+        """The Claude Code plan-identity route relocates parts of the system prompt into the
+        first user message; it must not get a second transformation stacked on top."""
+        kw = self._litellm_kwargs(transport, claude_code_plan_identity=True)
+        assert kw["instructions"].strip()
+        assert not any(item.get("role") == "system" for item in kw["input"])
+
+    @pytest.mark.parametrize(
+        "base_url,extra",
+        [
+            ("https://api.openai.com/v1", {}),
+            ("https://chatgpt.com/backend-api/codex", {"is_codex_backend": True}),
+            ("https://api.x.ai/v1", {"is_xai_responses": True}),
+            ("https://models.github.ai/v1", {"is_github_responses": True}),
+            ("https://my-resource.openai.azure.com/openai", {}),
+            ("https://opencode.ai/v1", {}),
+            ("https://api.perplexity.ai/v1", {}),
+            ("https://api.meta.ai/v1", {}),
+            (None, {}),
+        ],
+    )
+    def test_native_routes_keep_instructions_wire(self, transport, base_url, extra):
+        """First-party/official Responses origins are byte-identical to today: the system
+        prompt rides in ``instructions`` and no system input item is emitted."""
+        kw = transport.build_kwargs(
+            model="gpt-5.5", messages=list(self.MESSAGES), tools=[],
+            base_url=base_url, **extra,
+        )
+        assert kw["instructions"] == self.SYSTEM
+        assert not any(item.get("role") == "system" for item in kw["input"])
+        normalized = transport.preflight_kwargs(kw)
+        assert normalized["instructions"] == self.SYSTEM
+        assert not any(item.get("role") == "system" for item in normalized["input"])

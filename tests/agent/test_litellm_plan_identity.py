@@ -227,8 +227,13 @@ def test_marked_route_renames_replayed_assistant_tool_calls():
 def test_unmarked_model_has_no_plan_prefix():
     agent = _codex_agent(model="hermes", plan_identity=False)
     kwargs = build_api_kwargs(agent, list(_MESSAGES), tools_for_api=agent.tools)
-    assert not kwargs["instructions"].startswith(_CLAUDE_CODE_SYSTEM_PREFIX)
-    assert kwargs["instructions"] == _SYSTEM
+    # Unmarked LiteLLM route: the system prompt rides as the leading input item (prompt
+    # caching on bridged Responses endpoints); the plan prefix must appear nowhere.
+    system_item = kwargs["input"][0]
+    assert system_item["role"] == "system"
+    assert system_item["content"] == _SYSTEM
+    assert not system_item["content"].startswith(_CLAUDE_CODE_SYSTEM_PREFIX)
+    assert not kwargs.get("instructions")
 
 
 def test_unmarked_model_kwargs_match_without_plan_identity_flag():
