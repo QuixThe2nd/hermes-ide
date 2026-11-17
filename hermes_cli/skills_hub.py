@@ -385,7 +385,7 @@ def _render_browse_page(c: Console, deduped, page_items, page: int, total_pages:
     c.print(f"\n[bold]Skills Hub — Browse — {source if source != 'all' else 'all sources'}[/]"
             f"  [dim]({loaded_label}, page {page}/{total_pages})[/]")
     if official_count > 0 and page == 1:
-        c.print(f"[bright_cyan]★ {official_count} official optional skill(s) from Nous Research[/]")
+        c.print(f"[bright_cyan]★ {official_count} official optional skill(s) from this repo[/]")
     c.print()
 
     table = _table(("#", {"style": "dim", "width": 4, "justify": "right"}),
@@ -646,7 +646,7 @@ def _scan_quarantined(c: Console, q_path: Path, bundle, meta, identifier: str):
 
 _INSTALL_PANELS = {
     "official": (
-        "[bold bright_cyan]This is an official optional skill maintained by Nous Research.[/]\n\n"
+        "[bold bright_cyan]This is an official optional skill from this repo's catalog.[/]\n\n"
         "It ships with hermes-agent but is not activated by default.\n"
         "Installing will copy it to your skills directory where the agent can use it.\n\n",
         "Official Skill", "bright_cyan"),
