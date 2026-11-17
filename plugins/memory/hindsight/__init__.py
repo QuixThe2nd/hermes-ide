@@ -23,6 +23,7 @@ import queue
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -42,7 +43,9 @@ from .embedded import (
     _may_rewrite_profile_env,
 )
 from .embedded_runtime import ensure_daemon_and_url as _start_sideenv_daemon
-from .retain_backlog import RetainBacklog, classify_exception, format_retry_at
+from .retain_backlog import (
+    BacklogRuntimeUnavailable, RetainBacklog, classify_exception, format_retry_at,
+)
 from .settings import (
     _DEFAULT_API_URL, _DEFAULT_IDLE_TIMEOUT, _DEFAULT_LOCAL_URL, _DEFAULT_RETAIN_SOURCE,
     _DEFAULT_TIMEOUT, _HINDSIGHT_GLYPH, _MIN_CLIENT_VERSION, _MIN_VERSION_FOR_UPDATE_MODE_APPEND,
@@ -2721,8 +2724,14 @@ class HindsightMemoryProvider(MemoryProvider):
                     raise
                 # Provider rate limit: persist the turn instead of losing it;
                 # the backlog drains automatically once the limit resets.
-                self._enqueue_backlog_entry(item, bank_id=bank_id, retry_after=retry_at,
-                                            document_id=document_id, retain_async=retain_async)
+                # Replay is always async (operation id is the replay key).
+                try:
+                    self._enqueue_backlog_entry(item, bank_id=bank_id,
+                                                retry_after=retry_at, document_id=document_id)
+                except BacklogRuntimeUnavailable as unavailable:
+                    logger.warning("Hindsight retain-backlog runtime unavailable; "
+                                   "rate-limited retain not queued: %s", unavailable)
+                    raise exc from unavailable
                 return
             # Async retains are only *accepted* here; track the op id(s) so the
             # next-turn prefetch can wait for true server-side completion.
@@ -2788,28 +2797,26 @@ class HindsightMemoryProvider(MemoryProvider):
 
     # -- retain backlog (provider rate limits) -----------------------------------
 
-    # Server-side operation states that prove the memory is durably the
-    # server's: the op row holds it (completed), is actively working it
-    # (processing), or its own retry machinery owns finishing it (pending —
-    # quota deferrals park server-side as pending ops with next_retry_at).
-    _BACKLOG_SETTLED_OP_STATUSES = frozenset({"pending", "processing", "completed"})
-    # Terminal but stored nothing: a failed/cancelled batch_retain parent
-    # commits none of its (single) item. The row still blocks id reuse —
-    # delete it before resubmitting the same id (retry_operation refuses
-    # batch_retain parents, so delete+resubmit is the only fresh-start path).
-    _BACKLOG_TERMINAL_UNSTORED_STATUSES = frozenset({"failed", "cancelled"})
+    # The reconcile table lives in the Go runtime (internal/retainbacklog):
+    # an entry is removed ONLY on observed server-side "completed";
+    # pending/processing poll; failed/cancelled re-queue via the server's
+    # own retry_operation (never delete+resubmit); not_found/unknown submit
+    # idempotently by the persisted operation id. This provider supplies
+    # only the network half (BacklogRemote below).
+
     # Floor for wakeup delays: an earliest-retry in the past (entry kept after
     # a non-rate-limit settle failure) must not arm an immediately-due timer
     # and hot-loop; the writer's interval pass backstops that case.
     _BACKLOG_WAKEUP_MIN_S = 1.0
 
-    def _enqueue_backlog_entry(self, item: dict, *, bank_id: str, retry_after, document_id=None,
-                               retain_async=None) -> str:
-        """Persist a rate-limited retain, schedule a (due-gated) drain pass and
-        arm the exact wakeup so the entry drains even with no further chat."""
+    def _enqueue_backlog_entry(self, item: dict, *, bank_id: str, retry_after,
+                               document_id=None) -> str:
+        """Persist a rate-limited retain via the Go runtime, schedule a
+        (due-gated) drain pass and arm the exact wakeup so the entry drains
+        even with no further chat."""
         entry_id = self._retain_backlog.enqueue(
             bank_id=bank_id, item=item, retry_after=retry_after,
-            document_id=document_id, retain_async=retain_async,
+            document_id=document_id,
         )
         logger.info("Hindsight retain deferred by provider rate limit; backlog entry %s "
                     "(retry after %s)", entry_id, format_retry_at(retry_after))
@@ -2846,41 +2853,57 @@ class HindsightMemoryProvider(MemoryProvider):
             return "not_found"
         return str(getattr(resp, "status", "") or "").lower()
 
-    def _settle_backlog_entry(self, entry: dict) -> None:
-        """Reconcile one backlog entry against server-side operation state;
-        return (removing the entry) only when the memory is durably the
-        server's, submit otherwise. The entry id IS the operation id
-        (generated at enqueue, persisted before any submission), and every
-        submission carries it async — the server replays a repeated id as a
-        no-op, which is what makes both the crash window (ack then crash
-        before local removal) and an uninterpretable status safe to resolve by
-        resubmitting."""
-        bank_id, op_id = entry["bank_id"], entry["id"]
-        status = self._backlog_operation_status(bank_id, op_id)
-        if status in self._BACKLOG_SETTLED_OP_STATUSES:
-            logger.info("Hindsight retain-backlog: operation %s is %s server-side; "
-                        "entry settled without resubmit", op_id, status)
-            return
-        if status in self._BACKLOG_TERMINAL_UNSTORED_STATUSES:
-            self._run_hindsight_operation(
-                lambda client: client.operations.delete_operation(
-                    bank_id=bank_id, operation_id=op_id)
-            )
-            logger.info("Hindsight retain-backlog: operation %s %s server-side; "
-                        "deleted row, resubmitting same id", op_id, status)
-        # Unknown / not_found / just-deleted row: submit (or safely replay)
-        # the same id. Async is REQUIRED for the id to act as a replay key.
-        resp = self._retain_batch(entry["item"], bank_id=bank_id,
-                                  document_id=entry.get("document_id"),
-                                  retain_async=True, operation_id=op_id)
-        self._track_retain_ops(resp, bank_id)
+    class _BacklogRemoteAdapter:
+        """BacklogRemote (retain_backlog.py) backed by the provider's SDK
+        scope. Every call runs inside the credential/scope wrapper so a
+        multiplexed process keys network calls by the live profile."""
+
+        def __init__(self, provider: "HindsightMemoryProvider"):
+            self._provider = provider
+
+        def status(self, bank_id: str, op_id: str) -> str:
+            return self._provider._backlog_operation_status(bank_id, op_id)
+
+        def retry_operation(self, bank_id: str, op_id: str) -> str:
+            """Re-queue a failed/cancelled row via the server's own retry;
+            never delete+resubmit. Batch-parent rows retry too (verified:
+            retry_operation accepts any terminal op)."""
+            from hindsight_client_api.exceptions import ApiException, NotFoundException
+
+            try:
+                self._provider._run_hindsight_operation(
+                    lambda client: client.operations.retry_operation(
+                        bank_id=bank_id, operation_id=op_id)
+                )
+                return "ok"
+            except NotFoundException:
+                return "gone"
+            except ApiException as exc:
+                if getattr(exc, "status", None) == 404:
+                    return "gone"
+                if getattr(exc, "status", None) == 409:
+                    return "conflict"
+                raise
+
+        def submit(self, entry: dict) -> None:
+            """Replay the entry as an async retain under its persisted
+            operation id — idempotent server-side. Same document id as the
+            original attempt, so partially-committed chunks are recovered,
+            not duplicated. No completion tracking: the drain owns polling."""
+            self._provider._retain_batch(
+                entry["item"], bank_id=entry["bank_id"],
+                document_id=entry.get("document_id"),
+                retain_async=True, operation_id=entry["id"])
+
+    def _backlog_remote(self) -> "_BacklogRemoteAdapter":
+        return self._BacklogRemoteAdapter(self)
 
     def _drain_retain_backlog(self) -> None:
-        """Reconcile due backlog entries FIFO; arm an exact wakeup when the
-        earliest remaining entry is still in the future."""
+        """One FIFO settle pass in the Go runtime (cross-process flock held
+        there); arm an exact wakeup when entries remain."""
         if not self._retain_backlog.may_exist:
             return
-        next_retry = self._retain_backlog.drain(self._settle_backlog_entry)
+        next_retry = self._retain_backlog.drain(self._backlog_remote())
         if next_retry is not None:
             self._arm_backlog_wakeup(next_retry)
 
@@ -2916,21 +2939,33 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def _backlog_wakeup_loop(self) -> None:
         """Wait out the armed deadline, then queue one drain pass and clear the
-        slot. A re-arm wake is picked up by re-reading the shared deadline."""
-        while not self._shutting_down.is_set():
-            with self._backlog_wakeup_lock:
-                deadline = self._backlog_wakeup_deadline
-            remaining = None if deadline is None else deadline - time.monotonic()
-            if remaining is not None and remaining > 0:
-                self._backlog_wakeup_event.wait(timeout=remaining)
-                self._backlog_wakeup_event.clear()
-                if self._shutting_down.is_set():
+        slot. A re-arm wake is picked up by re-reading the shared deadline.
+        Exit path re-checks the slot under the lock so a wakeup armed while
+        we were draining is not lost, and clears the thread slot so a later
+        arm spawns a fresh waiter."""
+        try:
+            while not self._shutting_down.is_set():
+                with self._backlog_wakeup_lock:
+                    deadline = self._backlog_wakeup_deadline
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining > 0:
+                    self._backlog_wakeup_event.wait(timeout=remaining)
+                    self._backlog_wakeup_event.clear()
+                    if self._shutting_down.is_set():
+                        return
+                    continue  # re-arm (earlier) or spurious wake: re-read deadline
+                with self._backlog_wakeup_lock:
+                    self._backlog_wakeup_deadline = None
+                self._queue_backlog_drain()
+                with self._backlog_wakeup_lock:
+                    if (self._backlog_wakeup_deadline is not None
+                            and not self._shutting_down.is_set()):
+                        continue  # re-armed while draining: wait it out, don't exit
                     return
-                continue  # re-arm (earlier) or spurious wake: re-read deadline
+        finally:
             with self._backlog_wakeup_lock:
-                self._backlog_wakeup_deadline = None
-            self._queue_backlog_drain()
-            return
+                if self._backlog_wakeup_thread is threading.current_thread():
+                    self._backlog_wakeup_thread = None
 
     # -- tools -------------------------------------------------------------------
 
@@ -2941,17 +2976,29 @@ class HindsightMemoryProvider(MemoryProvider):
         content, context = args["content"], args.get("context")
         item = self._build_retain_kwargs(content, context=context, tags=args.get("tags"),
                                          occurred_at=args.get("occurred_at"))
+        # Stable document id, minted BEFORE the original call: server-side
+        # chunk-hash recovery keys on (document_id, content hash), and a
+        # backlog replay without it would mint a fresh id and duplicate every
+        # chunk the original attempt already committed. The backlog entry
+        # persists this same id.
+        document_id = f"hindsight-retain-{uuid.uuid4()}"
         logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
                      self._bank_id, len(content), context)
         try:
-            self._retain_batch(item, bank_id=self._bank_id)
+            self._retain_batch(item, bank_id=self._bank_id, document_id=document_id)
         except Exception as exc:
             retry_at = classify_exception(exc)
             if retry_at is None:
                 raise
             # Success, not an error: the memory IS persisted, just deferred —
             # the backlog drains automatically once the provider limit resets.
-            self._enqueue_backlog_entry(item, bank_id=self._bank_id, retry_after=retry_at)
+            try:
+                self._enqueue_backlog_entry(item, bank_id=self._bank_id,
+                                            retry_after=retry_at, document_id=document_id)
+            except BacklogRuntimeUnavailable as unavailable:
+                logger.warning("Hindsight retain-backlog runtime unavailable; "
+                               "rate-limited retain not queued: %s", unavailable)
+                raise exc from unavailable
             return (f"Memory queued: provider rate limit; will be stored "
                     f"automatically after {format_retry_at(retry_at)}.")
         logger.debug("Tool hindsight_retain: success")
