@@ -9,14 +9,19 @@ non-rate-limited failures and successes.
 """
 
 import json
+import re
+import threading
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from hermes_constants import get_hermes_home
 from plugins.memory.hindsight import HindsightMemoryProvider
 from plugins.memory.hindsight.retain_backlog import (
     BACKLOG_FILENAME,
@@ -103,12 +108,25 @@ def _flip_retry_after(home: Path, retry_after: str) -> None:
     _write_backlog(home, entries)
 
 
-def _fake_client(outcomes: list | None = None, sink: list | None = None):
+def _fake_client(
+    outcomes: list | None = None,
+    sink: list | None = None,
+    *,
+    op_status="not_found",
+    op_sink: list | None = None,
+    delete_sink: list | None = None,
+    delete_error: Exception | None = None,
+):
     """MagicMock Hindsight client; ``aretain_batch`` records kwargs into *sink*.
 
     ``outcomes`` pop per call: an Exception is raised, anything else returns ok.
-    Exhausted outcomes (or None) mean success.
+    Exhausted outcomes (or None) mean success. ``op_status`` drives the
+    operations API double: a constant status string, a callable op_id ->
+    status, ``"raise"`` (probe transport failure), or ``"NotFound"`` (SDK
+    NotFoundException). Unknown statuses exercise the submit fallback.
     """
+    from hindsight_client_api.exceptions import NotFoundException
+
     sink = sink if sink is not None else []
     outcomes = list(outcomes or [])
 
@@ -118,10 +136,30 @@ def _fake_client(outcomes: list | None = None, sink: list | None = None):
             outcome = outcomes.pop(0)
             if isinstance(outcome, Exception):
                 raise outcome
-        return SimpleNamespace(ok=True, operation_id=None)
+        return SimpleNamespace(ok=True, operation_id=kwargs.get("operation_id"))
+
+    async def _get_status(**kwargs):
+        if op_sink is not None:
+            op_sink.append((kwargs.get("bank_id"), kwargs.get("operation_id")))
+        status = op_status(kwargs.get("operation_id")) if callable(op_status) else op_status
+        if status == "raise":
+            raise RuntimeError("status endpoint down")
+        if status == "NotFound":
+            raise NotFoundException(status=404, body='{"detail": "not found"}')
+        return SimpleNamespace(status=status)
+
+    async def _delete_op(**kwargs):
+        if delete_sink is not None:
+            delete_sink.append((kwargs.get("bank_id"), kwargs.get("operation_id")))
+        if delete_error is not None:
+            raise delete_error
+        return SimpleNamespace(success=True)
 
     client = MagicMock()
     client.aretain_batch = AsyncMock(side_effect=_aretain_batch)
+    client.operations = MagicMock()
+    client.operations.get_operation_status = AsyncMock(side_effect=_get_status)
+    client.operations.delete_operation = AsyncMock(side_effect=_delete_op)
     client.aclose = AsyncMock()
     return client, sink
 
@@ -427,3 +465,482 @@ class TestWriterPath:
         assert entries[0]["bank_id"] == "test-bank"
         assert "hello" in entries[0]["item"]["content"]
         assert entries[0]["retain_async"] is False
+
+
+# ---------------------------------------------------------------------------
+# Operation identity: entry id is the server-side idempotency key
+# ---------------------------------------------------------------------------
+
+
+class TestOperationIdentity:
+    def test_entry_id_is_uuid_operation_identity(self, tmp_path):
+        backlog = RetainBacklog(lambda: tmp_path)
+        entry_id = backlog.enqueue(
+            bank_id="b", item={"content": "x"},
+            retry_after=datetime.now(UTC) - timedelta(minutes=1),
+        )
+        # The persisted id must parse as the UUID the server validates
+        # RetainRequest.operation_id against — it is generated at enqueue,
+        # before any remote submission, and never regenerated later.
+        assert uuid.UUID(entry_id)
+        assert backlog.entries()[0]["id"] == entry_id
+
+    def test_drain_replays_async_with_persisted_operation_id(self, tmp_path):
+        client, sink = _fake_client(
+            outcomes=[_FakeApiError(500, _quota_body(_future_iso()))]
+        )
+        provider = _make_provider(tmp_path, client=client)
+        _retain(provider, "idempotent replay")
+        provider._retain_queue.join()
+        entry = _read_backlog(tmp_path)[0]
+
+        _flip_retry_after(tmp_path, _past_iso())
+        provider._drain_retain_backlog()
+
+        submit = sink[-1]
+        assert submit["retain_async"] is True
+        assert submit["operation_id"] == entry["id"]
+        assert uuid.UUID(submit["operation_id"])
+
+
+# ---------------------------------------------------------------------------
+# Reconcile against server-side operation state before submitting
+# ---------------------------------------------------------------------------
+
+
+class TestReconcileBeforeSubmit:
+    def test_pending_server_op_settles_without_resubmit(self, tmp_path):
+        client, sink = _fake_client(op_status="pending")
+        provider = _make_provider(tmp_path, client=client)
+        _write_backlog(tmp_path, [{
+            "id": str(uuid.uuid4()), "bank_id": "test-bank",
+            "item": {"content": "server owns it"}, "queued_at": _past_iso(),
+            "retry_after": _past_iso(),
+        }])
+        provider._retain_backlog.refresh_may_exist()
+
+        provider._drain_retain_backlog()
+
+        assert _read_backlog(tmp_path) == []
+        assert client.aretain_batch.call_count == 0
+
+    def test_completed_server_op_settles_without_resubmit(self, tmp_path):
+        client, sink = _fake_client(op_status="completed")
+        provider = _make_provider(tmp_path, client=client)
+        _write_backlog(tmp_path, [{
+            "id": str(uuid.uuid4()), "bank_id": "test-bank",
+            "item": {"content": "already stored"}, "queued_at": _past_iso(),
+            "retry_after": _past_iso(),
+        }])
+        provider._retain_backlog.refresh_may_exist()
+
+        provider._drain_retain_backlog()
+
+        assert _read_backlog(tmp_path) == []
+        assert client.aretain_batch.call_count == 0
+
+    @pytest.mark.parametrize("terminal", ["failed", "cancelled"])
+    def test_terminal_op_deletes_row_then_resubmits_same_id(self, tmp_path, terminal):
+        client, sink = _fake_client(op_status=terminal)
+        provider = _make_provider(tmp_path, client=client)
+        op_id = str(uuid.uuid4())
+        _write_backlog(tmp_path, [{
+            "id": op_id, "bank_id": "test-bank",
+            "item": {"content": "fresh chance"}, "queued_at": _past_iso(),
+            "retry_after": _past_iso(),
+        }])
+        provider._retain_backlog.refresh_may_exist()
+        delete_sink = []
+        # Re-bind the delete double so this test can observe the call.
+        provider._client.operations.delete_operation.side_effect = (
+            lambda **kw: delete_sink.append((kw.get("bank_id"), kw.get("operation_id")))
+            or SimpleNamespace(success=True)
+        )
+
+        provider._drain_retain_backlog()
+
+        assert delete_sink == [("test-bank", op_id)]
+        assert sink[-1]["operation_id"] == op_id
+        assert sink[-1]["retain_async"] is True
+        assert _read_backlog(tmp_path) == []
+
+    def test_not_found_exception_maps_to_submit(self, tmp_path):
+        client, sink = _fake_client(op_status="NotFound")
+        provider = _make_provider(tmp_path, client=client)
+        op_id = str(uuid.uuid4())
+        _write_backlog(tmp_path, [{
+            "id": op_id, "bank_id": "test-bank",
+            "item": {"content": "never submitted"}, "queued_at": _past_iso(),
+            "retry_after": _past_iso(),
+        }])
+        provider._retain_backlog.refresh_may_exist()
+
+        provider._drain_retain_backlog()
+
+        assert sink[-1]["operation_id"] == op_id
+        assert _read_backlog(tmp_path) == []
+
+    def test_status_probe_failure_keeps_entry(self, tmp_path):
+        client, _ = _fake_client(op_status="raise")
+        provider = _make_provider(tmp_path, client=client)
+        _write_backlog(tmp_path, [{
+            "id": str(uuid.uuid4()), "bank_id": "test-bank",
+            "item": {"content": "keep me"}, "queued_at": _past_iso(),
+            "retry_after": _past_iso(),
+        }])
+        provider._retain_backlog.refresh_may_exist()
+
+        provider._drain_retain_backlog()  # must not raise
+
+        assert len(_read_backlog(tmp_path)) == 1
+
+
+# ---------------------------------------------------------------------------
+# Crash window: submit acked, local removal lost
+# ---------------------------------------------------------------------------
+
+
+class TestCrashWindowNoDuplicate:
+    def test_crash_after_submit_before_remove_resolves_without_duplicate(self, tmp_path):
+        client, sink = _fake_client()
+        provider = _make_provider(tmp_path, client=client)
+        op_id = str(uuid.uuid4())
+        _write_backlog(tmp_path, [{
+            "id": op_id, "bank_id": "test-bank",
+            "item": {"content": "crash window"}, "queued_at": _past_iso(),
+            "retry_after": _past_iso(),
+        }])
+        provider._retain_backlog.refresh_may_exist()
+
+        # Phase 1: settle reaches the server (submit acked) then the process
+        # "crashes" before the local removal can run.
+        real_settle = provider._settle_backlog_entry
+
+        def _crash_after_ack(entry):
+            real_settle(entry)
+            raise SystemExit("crash between ack and removal")
+
+        with pytest.raises(SystemExit):
+            provider._retain_backlog.drain(_crash_after_ack)
+        assert len(_read_backlog(tmp_path)) == 1
+        submits_after_crash = [k for k in sink if k.get("operation_id") == op_id]
+        assert len(submits_after_crash) == 1
+
+        # Phase 2: restart. The server holds the operation (pending: quota
+        # deferrals park server-side), so reconcile settles without a second
+        # submission — no duplicate.
+        client2, sink2 = _fake_client(op_status="pending")
+        provider2 = _make_provider(tmp_path, client=client2)
+        provider2._drain_retain_backlog()
+
+        assert _read_backlog(tmp_path) == []
+        assert client2.aretain_batch.call_count == 0
+        # Exactly one submission of this operation id ever reached the
+        # server across the crash — reconcile, not duplicate.
+        assert len([k for k in sink2 if k.get("operation_id") == op_id]) == 0
+
+
+# ---------------------------------------------------------------------------
+# Corrupt lines are quarantined, never silently dropped
+# ---------------------------------------------------------------------------
+
+
+class TestCorruptLines:
+    def _corrupt_mixture(self, home: Path) -> str:
+        good_id = str(uuid.uuid4())
+        good = json.dumps({
+            "id": good_id, "bank_id": "b", "item": {"content": "good"},
+            "queued_at": _past_iso(), "retry_after": _past_iso(),
+        })
+        bad_lines = [
+            '{"id": "%s", "bank_id"' % good_id,  # torn/truncated JSON
+            '{"id": "not-a-uuid", "bank_id": "b", "item": {}}',  # unusable op key
+            '{"bank_id": "b"}',  # no id at all
+            'just garbage',
+        ]
+        path = _backlog_path(home)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(good + "\n" + "\n".join(bad_lines) + "\n")
+        return good_id
+
+    def test_corrupt_lines_quarantined_not_silently_dropped(self, tmp_path):
+        good_id = self._corrupt_mixture(tmp_path)
+        backlog = RetainBacklog(lambda: tmp_path)
+
+        entries = backlog.entries()
+
+        assert [e["id"] for e in entries] == [good_id]
+        corrupt = Path(str(_backlog_path(tmp_path)) + ".corrupt").read_text()
+        assert "not-a-uuid" in corrupt
+        assert "just garbage" in corrupt
+        assert '"id": "b"' not in corrupt  # the good line is never quarantined
+
+    def test_quarantine_survives_rewrite_without_duplicates(self, tmp_path):
+        self._corrupt_mixture(tmp_path)
+        backlog = RetainBacklog(lambda: tmp_path)
+        backlog.entries()
+        backlog.enqueue(
+            bank_id="b", item={"content": "new"},
+            retry_after=datetime.now(UTC) + timedelta(hours=1),
+        )
+        # A second load must not re-append the already-quarantined lines.
+        backlog.entries()
+
+        corrupt = Path(str(_backlog_path(tmp_path)) + ".corrupt").read_text()
+        assert corrupt.count("not-a-uuid") == 1
+        assert corrupt.count("just garbage") == 1
+        assert len(_read_backlog(tmp_path)) == 2  # good + new entry only
+
+
+# ---------------------------------------------------------------------------
+# Wakeup timer: future-due entries drain without new chat
+# ---------------------------------------------------------------------------
+
+
+class TestWakeupTimer:
+    def test_future_entry_arms_wakeup_and_drains_when_due(self, tmp_path):
+        client, sink = _fake_client()
+        provider = _make_provider(tmp_path, client=client)
+        _write_backlog(tmp_path, [{
+            "id": str(uuid.uuid4()), "bank_id": "test-bank",
+            "item": {"content": "wake me"}, "queued_at": _past_iso(),
+            "retry_after": datetime.now(UTC).isoformat(),  # due almost now
+        }])
+        provider._retain_backlog.refresh_may_exist()
+
+        provider._arm_backlog_wakeup(datetime.now(UTC))
+        assert _wait_until(lambda: not _backlog_path(tmp_path).exists()), (
+            "wakeup drain did not empty the backlog without incoming chat"
+        )
+        assert len([k for k in sink if k.get("operation_id")]) == 1
+
+    def test_wakeup_rearms_for_earlier_deadline(self, tmp_path):
+        client, _ = _fake_client()
+        provider = _make_provider(tmp_path, client=client)
+
+        provider._arm_backlog_wakeup(datetime.now(UTC) + timedelta(hours=1))
+        late = provider._backlog_wakeup_deadline
+        provider._arm_backlog_wakeup(datetime.now(UTC) + timedelta(minutes=1))
+        early = provider._backlog_wakeup_deadline
+
+        assert early < late
+        assert early - time.monotonic() <= 70.0
+
+    def test_initialize_with_future_entry_arms_wakeup(self, tmp_path):
+        client, _ = _fake_client()
+        _write_backlog(tmp_path, [{
+            "id": str(uuid.uuid4()), "bank_id": "test-bank",
+            "item": {"content": "future"}, "queued_at": _past_iso(),
+            "retry_after": _future_iso(hours=2),
+        }])
+
+        provider = _make_provider(tmp_path, client=client)
+
+        assert _wait_until(
+            lambda: provider._backlog_wakeup_deadline is not None
+        ), "initialize did not arm a wakeup for a future-dated backlog entry"
+
+
+# ---------------------------------------------------------------------------
+# Per-profile isolation: the backlog follows the live home
+# ---------------------------------------------------------------------------
+
+
+class TestProfileIsolation:
+    def test_backlog_follows_live_home_across_profiles(self, tmp_path, monkeypatch):
+        home_a, home_b = tmp_path / "a", tmp_path / "b"
+        home_a.mkdir(); home_b.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home_a))
+        backlog = RetainBacklog(get_hermes_home)
+        backlog.enqueue(
+            bank_id="b", item={"content": "profile a memory"},
+            retry_after=datetime.now(UTC) + timedelta(hours=1),
+        )
+        assert _backlog_path(home_a).exists()
+
+        monkeypatch.setenv("HERMES_HOME", str(home_b))
+        assert not _backlog_path(home_b).exists()
+        assert backlog.refresh_may_exist() is False
+        assert backlog.entries() == []
+
+        monkeypatch.setenv("HERMES_HOME", str(home_a))
+        assert backlog.refresh_may_exist() is True
+        assert [e["item"]["content"] for e in backlog.entries()] == ["profile a memory"]
+
+
+# ---------------------------------------------------------------------------
+# Concurrency: one settle per entry, always
+# ---------------------------------------------------------------------------
+
+
+class TestConcurrentDrain:
+    def test_concurrent_drains_settle_each_entry_once(self, tmp_path):
+        backlog = RetainBacklog(lambda: tmp_path)
+        ids = [
+            backlog.enqueue(
+                bank_id="b", item={"content": f"m{i}"},
+                retry_after=datetime.now(UTC) - timedelta(minutes=1),
+            )
+            for i in range(3)
+        ]
+        settled: list[str] = []
+        settled_lock = threading.Lock()
+
+        def _slow_settle(entry):
+            time.sleep(0.05)
+            with settled_lock:
+                settled.append(entry["id"])
+
+        threads = [
+            threading.Thread(target=backlog.drain, args=(_slow_settle,))
+            for _ in range(3)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert sorted(settled) == sorted(ids)
+        assert backlog.entries() == []
+
+
+# ---------------------------------------------------------------------------
+# Real HTTP contract: the actual SDK client against a server-shaped stub
+# ---------------------------------------------------------------------------
+
+
+class _HindsightStubHandler(BaseHTTPRequestHandler):
+    """Implements the observed live-server contract for the three calls the
+    backlog makes: idempotent async retain (client operation_id), operation
+    status, terminal-operation delete. Records every creation in
+    ``server.created`` (op_id list) — duplicates would show up here."""
+
+    def log_message(self, *args):  # silence
+        pass
+
+    def _json(self, code, payload):
+        body = json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        m = re.match(r"^/v1/default/banks/([^/]+)/operations/([^/]+)$", self.path)
+        if not m:
+            return self._json(404, {"detail": "not found"})
+        _, op_id = m.groups()
+        server = self.server
+        with server.lock:
+            status = server.ops.get(op_id)
+        if status is None:
+            return self._json(404, {"detail": f"Operation {op_id} not found"})
+        return self._json(200, {"operation_id": op_id, "status": status})
+
+    def do_DELETE(self):
+        m = re.match(r"^/v1/default/banks/([^/]+)/operations/([^/]+)/delete$", self.path)
+        if not m:
+            return self._json(404, {"detail": "not found"})
+        _, op_id = m.groups()
+        server = self.server
+        with server.lock:
+            if server.ops.pop(op_id, None) is None:
+                return self._json(404, {"detail": f"Operation {op_id} not found"})
+        return self._json(200, {"success": True, "message": "deleted", "operation_id": op_id})
+
+    def do_POST(self):
+        m = re.match(r"^/v1/default/banks/([^/]+)/memories$", self.path)
+        if not m:
+            return self._json(404, {"detail": "not found"})
+        bank_id = m.group(1)
+        length = int(self.headers.get("Content-Length") or 0)
+        request = json.loads(self.rfile.read(length) or b"{}")
+        server = self.server
+        if not request.get("async"):
+            if server.quota_mode:
+                return self._json(500, {"detail": (
+                    "Fact extraction deferred by provider quota: 1/1 chunks failed. "
+                    "First failures: chunk 0: ProviderRateLimitResetError: quota; "
+                    f"retry at {_future_iso()}: HTTP 429: quota exceeded"
+                )})
+            return self._json(200, {
+                "success": True, "bank_id": bank_id,
+                "items_count": len(request.get("items") or []), "async": False,
+            })
+        op_id = request.get("operation_id")
+        with server.lock:
+            if op_id in server.ops:
+                # Replay: return the original operation, create no new work.
+                return self._json(200, {
+                    "success": True, "bank_id": bank_id, "async": True,
+                    "items_count": 1, "operation_id": op_id,
+                })
+            server.ops[op_id] = "pending"
+            server.created.append(op_id)
+        return self._json(200, {
+            "success": True, "bank_id": bank_id, "async": True,
+            "items_count": 1, "operation_id": op_id,
+        })
+
+
+class _HindsightStubServer(ThreadingHTTPServer):
+    def __init__(self):
+        super().__init__(("127.0.0.1", 0), _HindsightStubHandler)
+        self.ops: dict[str, str] = {}
+        self.created: list[str] = []
+        self.lock = threading.Lock()
+        self.quota_mode = False
+
+
+class TestRealHttpContract:
+    def test_replay_and_reconcile_over_real_http(self, tmp_path):
+        from hindsight_client import Hindsight
+
+        stub = _HindsightStubServer()
+        thread = threading.Thread(target=stub.serve_forever, daemon=True)
+        thread.start()
+        try:
+            client = Hindsight(base_url=f"http://127.0.0.1:{stub.server_port}", api_key="k")
+            stub.quota_mode = True
+            provider = _make_provider(tmp_path, client=client)
+
+            # Sync tool retain hits the quota 500 and queues durably.
+            payload = _retain(provider, "real http contract memory")
+            assert payload["result"].startswith("Memory queued")
+            provider._retain_queue.join()
+            entry = _read_backlog(tmp_path)[0]
+            op_id = entry["id"]
+
+            # Limit clears; drain reconciles: op unknown server-side -> one
+            # async submission carrying the persisted operation_id.
+            stub.quota_mode = False
+            _flip_retry_after(tmp_path, _past_iso())
+            provider._drain_retain_backlog()
+            assert _read_backlog(tmp_path) == []
+            assert stub.created == [op_id]
+            assert stub.ops[op_id] == "pending"
+
+            # Crash window: the entry file is restored to its pre-removal
+            # state (submit acked, local removal lost; retry was due). Restart
+            # + drain must reconcile against the pending op — no second
+            # submission.
+            crashed_entry = dict(entry, retry_after=_past_iso())
+            _write_backlog(tmp_path, [crashed_entry])
+            provider2 = _make_provider(tmp_path, client=client)
+            provider2._retain_backlog.refresh_may_exist()
+            provider2._drain_retain_backlog()
+            assert _read_backlog(tmp_path) == []
+            assert stub.created == [op_id], "reconcile re-submitted a live op"
+
+            # Replay-by-id (same payload, same id) creates no new work even
+            # on a raw resubmission — the server contract's own guarantee.
+            # Routed through the provider's shared loop: the client's aiohttp
+            # session is bound to it.
+            provider2._run_hindsight_operation(lambda c: c.aretain_batch(
+                bank_id="test-bank", items=[entry["item"]],
+                retain_async=True, operation_id=op_id))
+            assert stub.created == [op_id]
+        finally:
+            stub.shutdown()
+            stub.server_close()

@@ -865,6 +865,13 @@ class HindsightMemoryProvider(MemoryProvider):
         # file I/O. One drain pass may be queued at a time.
         self._retain_backlog = RetainBacklog(lambda: get_hermes_home())
         self._backlog_drain_queued = False
+        # Exact wakeup for future-due backlog entries (see _arm_backlog_wakeup):
+        # one re-armable slot so entries drain without waiting for chat input
+        # or the writer's interval backstop.
+        self._backlog_wakeup_deadline: float | None = None
+        self._backlog_wakeup_event = threading.Event()
+        self._backlog_wakeup_thread: threading.Thread | None = None
+        self._backlog_wakeup_lock = threading.Lock()
         self._retain_tags: List[str] = []
         self._tags: list[str] | None = None
         self._retain_source = _DEFAULT_RETAIN_SOURCE
@@ -2680,10 +2687,14 @@ class HindsightMemoryProvider(MemoryProvider):
         return item
 
     def _retain_batch(self, item: dict, *, bank_id: str, document_id: str | None = None,
-                      retain_async: bool | None = None):
+                      retain_async: bool | None = None, operation_id: str | None = None):
         """Dispatch one item via aretain_batch (bank_id/document_id/retain_async are
-        call-level args, never item keys)."""
-        kwargs: Dict[str, Any] = {"bank_id": bank_id, "items": [item], "document_id": document_id, "retain_async": retain_async}
+        call-level args, never item keys). operation_id is the backlog replay key:
+        sent only when set, the server treats a repeated id as a replay of the
+        original operation (idempotency requires async; the backlog drain always
+        replays with retain_async=True)."""
+        kwargs: Dict[str, Any] = {"bank_id": bank_id, "items": [item], "document_id": document_id,
+                                  "retain_async": retain_async, "operation_id": operation_id}
         kwargs = {k: v for k, v in kwargs.items() if v is not None}
         return self._run_hindsight_operation(lambda client: client.aretain_batch(**kwargs))
 
@@ -2777,15 +2788,32 @@ class HindsightMemoryProvider(MemoryProvider):
 
     # -- retain backlog (provider rate limits) -----------------------------------
 
+    # Server-side operation states that prove the memory is durably the
+    # server's: the op row holds it (completed), is actively working it
+    # (processing), or its own retry machinery owns finishing it (pending —
+    # quota deferrals park server-side as pending ops with next_retry_at).
+    _BACKLOG_SETTLED_OP_STATUSES = frozenset({"pending", "processing", "completed"})
+    # Terminal but stored nothing: a failed/cancelled batch_retain parent
+    # commits none of its (single) item. The row still blocks id reuse —
+    # delete it before resubmitting the same id (retry_operation refuses
+    # batch_retain parents, so delete+resubmit is the only fresh-start path).
+    _BACKLOG_TERMINAL_UNSTORED_STATUSES = frozenset({"failed", "cancelled"})
+    # Floor for wakeup delays: an earliest-retry in the past (entry kept after
+    # a non-rate-limit settle failure) must not arm an immediately-due timer
+    # and hot-loop; the writer's interval pass backstops that case.
+    _BACKLOG_WAKEUP_MIN_S = 1.0
+
     def _enqueue_backlog_entry(self, item: dict, *, bank_id: str, retry_after, document_id=None,
                                retain_async=None) -> str:
-        """Persist a rate-limited retain and schedule a (due-gated) drain pass."""
+        """Persist a rate-limited retain, schedule a (due-gated) drain pass and
+        arm the exact wakeup so the entry drains even with no further chat."""
         entry_id = self._retain_backlog.enqueue(
             bank_id=bank_id, item=item, retry_after=retry_after,
             document_id=document_id, retain_async=retain_async,
         )
         logger.info("Hindsight retain deferred by provider rate limit; backlog entry %s "
                     "(retry after %s)", entry_id, format_retry_at(retry_after))
+        self._arm_backlog_wakeup(retry_after)
         self._queue_backlog_drain()
         return entry_id
 
@@ -2804,17 +2832,105 @@ class HindsightMemoryProvider(MemoryProvider):
         except Exception as exc:
             logger.warning("Hindsight retain-backlog drain failed: %s", exc, exc_info=True)
 
+    def _backlog_operation_status(self, bank_id: str, op_id: str) -> str:
+        """Lowercase server-side operation status; "not_found" on 404.
+        Transport errors propagate (the drain keeps the entry)."""
+        from hindsight_client_api.exceptions import NotFoundException
+
+        try:
+            resp = self._run_hindsight_operation(
+                lambda client: client.operations.get_operation_status(
+                    bank_id=bank_id, operation_id=op_id)
+            )
+        except NotFoundException:
+            return "not_found"
+        return str(getattr(resp, "status", "") or "").lower()
+
+    def _settle_backlog_entry(self, entry: dict) -> None:
+        """Reconcile one backlog entry against server-side operation state;
+        return (removing the entry) only when the memory is durably the
+        server's, submit otherwise. The entry id IS the operation id
+        (generated at enqueue, persisted before any submission), and every
+        submission carries it async — the server replays a repeated id as a
+        no-op, which is what makes both the crash window (ack then crash
+        before local removal) and an uninterpretable status safe to resolve by
+        resubmitting."""
+        bank_id, op_id = entry["bank_id"], entry["id"]
+        status = self._backlog_operation_status(bank_id, op_id)
+        if status in self._BACKLOG_SETTLED_OP_STATUSES:
+            logger.info("Hindsight retain-backlog: operation %s is %s server-side; "
+                        "entry settled without resubmit", op_id, status)
+            return
+        if status in self._BACKLOG_TERMINAL_UNSTORED_STATUSES:
+            self._run_hindsight_operation(
+                lambda client: client.operations.delete_operation(
+                    bank_id=bank_id, operation_id=op_id)
+            )
+            logger.info("Hindsight retain-backlog: operation %s %s server-side; "
+                        "deleted row, resubmitting same id", op_id, status)
+        # Unknown / not_found / just-deleted row: submit (or safely replay)
+        # the same id. Async is REQUIRED for the id to act as a replay key.
+        resp = self._retain_batch(entry["item"], bank_id=bank_id,
+                                  document_id=entry.get("document_id"),
+                                  retain_async=True, operation_id=op_id)
+        self._track_retain_ops(resp, bank_id)
+
     def _drain_retain_backlog(self) -> None:
-        """Ship due backlog entries FIFO via the normal retain path."""
+        """Reconcile due backlog entries FIFO; arm an exact wakeup when the
+        earliest remaining entry is still in the future."""
         if not self._retain_backlog.may_exist:
             return
+        next_retry = self._retain_backlog.drain(self._settle_backlog_entry)
+        if next_retry is not None:
+            self._arm_backlog_wakeup(next_retry)
 
-        def _retain_entry(entry: dict) -> None:
-            self._retain_batch(entry["item"], bank_id=entry["bank_id"],
-                               document_id=entry.get("document_id"),
-                               retain_async=entry.get("retain_async"))
+    def _arm_backlog_wakeup(self, due_at: datetime) -> None:
+        """(Re)arm the single wakeup slot for the earliest future-due backlog
+        entry, so it drains without incoming chat or the writer's interval.
+        Earlier deadlines re-arm the waiting thread; later deadlines are
+        ignored (the thread re-checks the shared deadline after every wake).
+        Delay is floored at _BACKLOG_WAKEUP_MIN_S (see above)."""
+        if self._shutting_down.is_set():
+            return
+        try:
+            due_at = due_at.astimezone(timezone.utc)
+        except (ValueError, OSError, TypeError):
+            return
+        delay = max(
+            (due_at - datetime.now(timezone.utc)).total_seconds(),
+            self._BACKLOG_WAKEUP_MIN_S,
+        )
+        deadline = time.monotonic() + delay
+        with self._backlog_wakeup_lock:
+            current = self._backlog_wakeup_deadline
+            if current is not None and current <= deadline:
+                return
+            self._backlog_wakeup_deadline = deadline
+            thread = self._backlog_wakeup_thread
+            if thread is None or not thread.is_alive():
+                self._backlog_wakeup_thread = spawn_context_thread(
+                    self._backlog_wakeup_loop, name="hindsight-backlog-wakeup")
+                self._backlog_wakeup_thread.start()
+            else:
+                self._backlog_wakeup_event.set()
 
-        self._retain_backlog.drain(_retain_entry)
+    def _backlog_wakeup_loop(self) -> None:
+        """Wait out the armed deadline, then queue one drain pass and clear the
+        slot. A re-arm wake is picked up by re-reading the shared deadline."""
+        while not self._shutting_down.is_set():
+            with self._backlog_wakeup_lock:
+                deadline = self._backlog_wakeup_deadline
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining > 0:
+                self._backlog_wakeup_event.wait(timeout=remaining)
+                self._backlog_wakeup_event.clear()
+                if self._shutting_down.is_set():
+                    return
+                continue  # re-arm (earlier) or spurious wake: re-read deadline
+            with self._backlog_wakeup_lock:
+                self._backlog_wakeup_deadline = None
+            self._queue_backlog_drain()
+            return
 
     # -- tools -------------------------------------------------------------------
 
@@ -2941,6 +3057,10 @@ class HindsightMemoryProvider(MemoryProvider):
         logger.debug("Hindsight shutdown: mode=%s, stopping writer + waiting for background threads", self._mode)
         # Stop accepting retain jobs first so late sync_turn() calls are dropped.
         self._shutting_down.set()
+        # Release the backlog wakeup waiter so it exits with the writer.
+        with self._backlog_wakeup_lock:
+            self._backlog_wakeup_deadline = None
+        self._backlog_wakeup_event.set()
         # The writer finishes in-flight work then exits on the sentinel; the
         # bounded join keeps shutdown predictable even if the daemon is wedged.
         if (writer := self._writer_thread) is not None and writer.is_alive():
