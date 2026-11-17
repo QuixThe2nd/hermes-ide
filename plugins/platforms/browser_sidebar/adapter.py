@@ -15,7 +15,8 @@ import json
 import logging
 import os
 import uuid
-from typing import Any, Dict, Optional
+import weakref
+from typing import Any, Dict, List, Optional
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms._shared import (
@@ -67,9 +68,20 @@ RUN_TAB_JS_SCHEMA = {
     },
 }
 
-# Session-active adapter the run_tab_js tool handler routes to (set on
-# construction, cleared on disconnect). One sidebar serves one profile.
-_ACTIVE_ADAPTER: Optional["BrowserSidebarAdapter"] = None
+# Live adapters the run_tab_js tool handler can route to (registered on
+# construction, discarded on disconnect). The gateway constructs one adapter
+# per profile in the same process, so run_tab_js must pick the one that is
+# actually connected rather than assuming there is only one.
+_ADAPTERS: List["weakref.ref[BrowserSidebarAdapter]"] = []
+
+
+def _connected_adapter() -> Optional["BrowserSidebarAdapter"]:
+    """Most recently registered adapter with a live browser connection."""
+    for ref in reversed(_ADAPTERS):
+        adapter = ref()
+        if adapter is not None and adapter._browser_connected:
+            return adapter
+    return None
 
 
 def _check_requirements() -> bool:
@@ -92,10 +104,9 @@ async def run_tab_js(args: Optional[dict], **_kw) -> str:
 
 
 async def _run_tab_js_entry(args: dict) -> str:
-    adapter = _ACTIVE_ADAPTER
-    connected = adapter._browser_connected if adapter is not None else False
+    adapter = _connected_adapter()
     code = str((args or {}).get("code") or "")
-    if adapter is None or not connected:
+    if adapter is None:
         return json.dumps({"success": False, "error": "browser sidebar is not connected"})
 
     request_id = uuid.uuid4().hex
@@ -145,8 +156,7 @@ class BrowserSidebarAdapter(BasePlatformAdapter):
         self._browser_connected = False
         self._typing_active = False
         self.hub_pid: Optional[int] = None
-        global _ACTIVE_ADAPTER
-        _ACTIVE_ADAPTER = self
+        _ADAPTERS.append(weakref.ref(self))
 
     # ── identity / surface ──────────────────────────────────────────────────
 
@@ -214,9 +224,7 @@ class BrowserSidebarAdapter(BasePlatformAdapter):
         self._running = False
         await self._close_socket()
         self._draft_prev.clear()
-        global _ACTIVE_ADAPTER
-        if _ACTIVE_ADAPTER is self:
-            _ACTIVE_ADAPTER = None
+        _ADAPTERS[:] = [ref for ref in _ADAPTERS if ref() not in (None, self)]
 
     async def _close_socket(self) -> None:
         task, self._read_task = self._read_task, None

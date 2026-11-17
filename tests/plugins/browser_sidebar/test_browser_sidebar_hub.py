@@ -61,7 +61,7 @@ class _HubSidebar:
         for gateway in reversed(self.gateways):
             await gateway.disconnect()
         await self.server.stop()
-        bs._ACTIVE_ADAPTER = None
+        bs._ADAPTERS.clear()
 
     def add_gateway(self, name: str) -> _Gateway:
         gateway = _Gateway(self, name)
