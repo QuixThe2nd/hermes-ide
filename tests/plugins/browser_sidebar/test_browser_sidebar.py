@@ -415,6 +415,33 @@ async def test_run_tab_js_error_result():
 
 
 @pytest.mark.asyncio
+async def test_run_tab_js_routes_to_connected_adapter_not_last_constructed():
+    # The gateway constructs one adapter per profile in the same process.
+    # A secondary profile's adapter that never connects must not shadow the
+    # primary, already-connected adapter when routing run_tab_js.
+    async with _LiveServer() as live:
+        ws = await live.connect_client()
+
+        secondary = bs.BrowserSidebarAdapter(_config({"token": TOKEN}))
+        assert secondary._browser_connected is False
+
+        async def call():
+            return await bs._run_tab_js_entry({"code": "document.title"})
+
+        task = asyncio.create_task(call())
+        frame = await live.recv_json(ws)
+        assert frame["type"] == "tool"
+        assert frame["name"] == "run_tab_js"
+        request_id = frame["request_id"]
+        await ws.send(json.dumps({"type": "tool_result", "request_id": request_id,
+                                  "ok": True, "result": "Example Page"}))
+        payload = json.loads(await asyncio.wait_for(task, 5))
+        assert payload["success"] is True
+        assert payload["result"] == "Example Page"
+        await ws.close()
+
+
+@pytest.mark.asyncio
 async def test_run_tab_js_result_truncated_to_100000():
     async with _LiveServer() as live:
         ws = await live.connect_client()
