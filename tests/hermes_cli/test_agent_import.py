@@ -188,7 +188,7 @@ class TestDetection:
 
     def test_unsupported_agent_raises(self, hermes_home, tmp_path):
         with pytest.raises(ValueError):
-            AgentImporter("cursor", tmp_path, hermes_home)
+            AgentImporter("unknown-agent", tmp_path, hermes_home)
 
 
 
@@ -673,7 +673,7 @@ class TestCliWiring:
         subparsers = parser.add_subparsers(dest="command")
         build_import_agent_parser(subparsers, cmd_import_agent=lambda a: None)
         with pytest.raises(SystemExit):
-            parser.parse_args(["import-agent", "cursor"])
+            parser.parse_args(["import-agent", "unknown-agent"])
 
     def test_command_dry_run_via_cli_writes_nothing(
             self, claude_tree, hermes_home, capsys):
