@@ -73,7 +73,7 @@ def test_stale_confirmation_text_is_stripped_on_resume():
         assistant_action_at=assistant_action_at,
     )
 
-    agent_history, _, _ = _build_gateway_agent_history(history)
+    agent_history, _ = _build_gateway_agent_history(history)
 
     # The stale confirmation text should be gone
     confirmation_present = any(
@@ -97,7 +97,7 @@ def test_non_confirmation_text_is_preserved():
         {"role": "assistant", "content": "Sure, what do you need?", "timestamp": confirmation_at},
     ]
 
-    agent_history, _, _ = _build_gateway_agent_history(history)
+    agent_history, _ = _build_gateway_agent_history(history)
 
     # Both messages should still be there
     user_msgs = [m for m in agent_history if m.get("role") == "user"]

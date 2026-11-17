@@ -100,7 +100,6 @@ def _run_subagent(spec, task, workdir, model, _timeout_seconds, context):
 _RUNNERS = {
     "omp": _run_omp,
     "claude": _run_external,
-    "cursor": _run_external,
     "subagent": _run_subagent,
 }
 
@@ -222,8 +221,6 @@ def delegate_lane(
     try:
         soul_material = _soul_material(spec)
         if spec["harness"] == "omp":
-            prompt = _prompt(spec, task, context, with_soul=True)
-        elif spec["harness"] == "cursor":
             prompt = _prompt(spec, task, context, with_soul=True)
         else:
             prompt = _task_prompt(task, context)

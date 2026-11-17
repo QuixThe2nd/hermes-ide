@@ -1713,7 +1713,7 @@ async def _retain_undelivered_status_notice(
 
 
 # FIFO marker for a branded agent-viewer status line (``Claude Code Agent:
-# <url>`` / ``Cursor Cloud Agent: <url>``) routed through the tool-progress
+# <url>``) routed through the tool-progress
 # queue instead of the independently scheduled status coro. The delegation
 # tools emit the line from inside the tool call, i.e. from the same worker
 # thread that already enqueued the ``tool.started`` row — putting the marker
@@ -2535,8 +2535,7 @@ def _build_gateway_agent_history(
     *,
     channel_prompt: Optional[str] = None,
     inject_timestamps: bool = False,
-    hermes_session_id: Optional[str] = None,
-) -> tuple[List[Dict[str, Any]], Optional[str], Optional[str]]:
+) -> tuple[List[Dict[str, Any]], Optional[str]]:
     """Convert stored gateway transcript rows into agent replay messages.
 
     Observed group-context rows are returned as API-only context for the
@@ -2614,45 +2613,19 @@ def _build_gateway_agent_history(
 
     # Replay cleanup runs in the canonicalizer's fixed order (interrupted-block,
     # dangling-tail, stale-confirmation) so gateway resume stays byte-identical to the
-    # TUI resume and send paths. Two fork deltas interleave with it:
-    # 1. delegate-cursor recovery (#49201-adjacent) binds a receipt for a dangling
-    #    delegate_cursor_agent call BEFORE cleanup; an UNBOUND dangling cursor tail is
-    #    preserved through the dangling-tail strip — orphan synthesis would mask
-    #    fail-closed binding. Stripped tail cleanup otherwise prevents the model
-    #    re-issuing an unanswered call after a SIGKILL mid-tool (restart loop).
-    # 2. stale dangerous-confirmation text (#59607) older than the expiry window is
-    #    dropped so a follow-up message can't be read as a fresh confirmation.
+    # TUI resume and send paths. Stripped tail cleanup prevents the model
+    # re-issuing an unanswered call after a SIGKILL mid-tool (restart loop).
+    # Stale dangerous-confirmation text (#59607) older than the expiry window is
+    # dropped so a follow-up message can't be read as a fresh confirmation.
     agent_history = strip_interrupted_tool_tails(agent_history)
-
-    cursor_recovery_note: Optional[str] = None
-    if hermes_session_id:
-        try:
-            from tools.cursor_agent_tool import recover_delegate_cursor_agent_history
-
-            agent_history, cursor_recovery_note = recover_delegate_cursor_agent_history(
-                agent_history,
-                hermes_session_id=hermes_session_id,
-            )
-        except Exception as exc:
-            logger.debug("delegate_cursor_agent recovery failed: %s", exc)
-
-    try:
-        from tools.cursor_agent_tool import _find_dangling_delegate_cursor_call
-
-        _preserve_cursor_dangling = (
-            _find_dangling_delegate_cursor_call(agent_history) is not None
-        )
-    except Exception:
-        _preserve_cursor_dangling = False
-    if not _preserve_cursor_dangling:
-        agent_history = strip_dangling_tool_call_tail(agent_history)
+    agent_history = strip_dangling_tool_call_tail(agent_history)
 
     agent_history = strip_stale_dangerous_confirmations(
         agent_history, now=time.time()
     )
 
     observed_context = "\n".join(observed_group_context).strip() or None
-    return agent_history, observed_context, cursor_recovery_note
+    return agent_history, observed_context
 
 
 def _select_cached_agent_history(
@@ -2753,8 +2726,8 @@ _AUTO_APPEND_MEDIA_TOOL_NAMES = {
 # Replay-tail sanitization lives in agent/replay_cleanup.py so every resume
 # surface (this messaging gateway AND the TUI/WebUI gateway) shares one
 # implementation. The gateway resume path interleaves the individual strips
-# with fork delegate-cursor recovery (see the resume-history cleanup above),
-# so it imports them directly instead of canonicalize_replay_history().
+# (see the resume-history cleanup above), so it imports them directly
+# instead of canonicalize_replay_history().
 from agent.replay_cleanup import (  # noqa: E402
     strip_interrupted_tool_tails,
     strip_dangling_tool_call_tail,

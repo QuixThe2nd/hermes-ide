@@ -1,6 +1,6 @@
 # quota_channels
 
-Discord voice-channel model quota display for **Codex**, **Kimi**, **z.ai**, **Cursor**, and **Grok** under a **Models** category. Renames configured voice channels with remaining quota percentages, a granular time-until-reset countdown (days at 2+ days out, then hours, then minutes), rolling 7-day consumed tokens for Codex, z.ai, and Cursor, and pending usage-limit resets for Codex, Grok, and z.ai — all in the channel name. Codex, Kimi, Cursor, and Grok each have one voice row; **z.ai has one row per credential-pool wallet** (`z.ai 1`, `z.ai 2`, …) keyed by the immutable pool entry id. Channels are ordered by this plugin's spendability score (see below), and the category label stays fresh between cron ticks.
+Discord voice-channel model quota display for **Codex**, **Kimi**, **z.ai**, and **Grok** under a **Models** category. Renames configured voice channels with remaining quota percentages, a granular time-until-reset countdown (days at 2+ days out, then hours, then minutes), rolling 7-day consumed tokens for Codex and z.ai, and pending usage-limit resets for Codex, Grok, and z.ai — all in the channel name. Codex, Kimi, and Grok each have one voice row; **z.ai has one row per credential-pool wallet** (`z.ai 1`, `z.ai 2`, …) keyed by the immutable pool entry id. Channels are ordered by this plugin's spendability score (see below), and the category label stays fresh between cron ticks.
 
 ## What it does
 
@@ -34,13 +34,11 @@ quota_channels:
     codex: "VOICE_CHANNEL_ID"
     kimi: "VOICE_CHANNEL_ID"
     zai: "VOICE_CHANNEL_ID"
-    cursor: "VOICE_CHANNEL_ID"
     grok: "VOICE_CHANNEL_ID"
   enabled_providers:             # optional; default = every wired row
     codex: true
     kimi: true
     zai: true
-    cursor: true
     grok: true
 ```
 
@@ -48,19 +46,18 @@ quota_channels:
 
 **Upgrade note:** a config that still carries a `channel_ids.openrouter` entry (the retired virtual row) keeps validating and running unchanged; the leftover key activates nothing and can be deleted whenever convenient.
 
-**Upgrade note:** Updating the plugin automatically enriches existing quota channels for Codex, z.ai, and Cursor with a `<compact> tok/7d` segment — no config changes required.
+**Upgrade note:** Updating the plugin automatically enriches existing quota channels for Codex and z.ai with a `<compact> tok/7d` segment — no config changes required.
 
 **Upgrade note (1.4.0):** Multiple Z.AI credentials in `auth.json` `credential_pool.zai` each get their own numbered voice row. On first run with extra wallets, the legacy `channel_ids.zai` channel binds to the first wallet (stable pool order after in-memory key dedupe); additional wallets get new voice channels under `category_id`. Ordinal numbers bind once to entry ids in `quota_channels_state.json` and are never reclaimed. `readings.zai` remains a single alias for the best currently spendable wallet so consumers that need one z.ai reading can use that wallet directly.
 
 ## Rolling 7-day token enrichment
 
-Codex, Kimi, Cursor, and Grok each have **one** voice row. For Codex, z.ai, and Cursor the channel name includes quota fields plus a rolling 7-day token total between the percentage segment and the reset countdown, e.g. `Codex: 99% • 2.2B tok/7d • 7d left` and `z.ai 2: 74% • 250.0M tok/7d • 4d left`. Kimi and Grok have no account-wide consumed-token API; their channels stay quota-only and make **no** token-related HTTP request.
+Codex, Kimi, and Grok each have **one** voice row. For Codex and z.ai the channel name includes quota fields plus a rolling 7-day token total between the percentage segment and the reset countdown, e.g. `Codex: 99% • 2.2B tok/7d • 7d left` and `z.ai 2: 74% • 250.0M tok/7d • 4d left`. Kimi and Grok have no account-wide consumed-token API; their channels stay quota-only and make **no** token-related HTTP request.
 
 | Provider | Source | Notes |
 |----------|--------|-------|
 | Codex | `GET …/wham/profiles/me` → sum latest 7 calendar-day `stats.daily_usage_buckets` | Stats may lag ~1 day (`stats_as_of`); OAuth refresh on 401 |
 | z.ai | `GET …/model-usage` with UTC `startTime`/`endTime` as `yyyy-MM-dd HH:mm:ss` | HTTP 200 with empty body is an error, not zero |
-| Cursor | `POST …/GetAggregatedUsageEvents` (epoch-ms strings, now−7d..now) | Total = input + output only; cache tokens excluded |
 | Kimi, Grok | — | Quota-only channel names; no token HTTP call |
 
 If a token fetch fails, the channel is still renamed with fresh quota data. When the current name already contains a parseable `tok/7d` segment, that segment is preserved; otherwise the name is quota-only. Token failures never block other providers, sorting, or the category update. Quota fetch failures leave that channel completely unchanged.
@@ -94,7 +91,6 @@ A failed or unparseable resets lookup never fails the provider's tick: Codex kee
 | z.ai | `HERMES_HOME/secrets/zai.env` **or** `HERMES_HOME/auth.json` `credential_pool.zai[]` | `ZAI_API_KEY=` (raw Authorization header) when the pool is empty; one wallet row per pool entry (immutable `id`) when the pool is populated. Duplicate exact runtime keys are deduped in memory only (first id wins). |
 | Codex | `HERMES_HOME/auth.json` | `providers.openai-codex.tokens` (OAuth refresh on 401) |
 | Grok | `HERMES_HOME/auth.json` | `providers.xai-oauth.tokens` (OAuth refresh once on 401) |
-| Cursor | `~/.config/cursor/auth.json` | `accessToken` JWT (re-run `agent login` on 401) |
 
 ## Cron setup
 
@@ -134,7 +130,7 @@ Collection is interval-gated by the same `quota_interval_seconds` (`--force-quot
 The snapshot (also returned by `plugins.quota_channels.collector.read_snapshot(config)`, schema version 1) is the read contract for display consumers:
 
 - `providers.<key>` and `wallets[]` entries carry `status` (`fresh` / `stale` / `error` / `unknown` / `disabled`), `collected_at`, `attempted_at`, `age_seconds`, `stale`, a sanitized `error`, and last-good `data`.
-- `data` holds `pct`, `reset_seconds`, absolute `reset_at`, optional `reset_count`, `reset_expiry_seconds`, per-credit `reset_expiry_horizons` plus absolute `reset_expiry_at`, `tokens_7d`, and Cursor's `cursor_auto_pct` / `cursor_api_pct`.
+- `data` holds `pct`, `reset_seconds`, absolute `reset_at`, optional `reset_count`, `reset_expiry_seconds`, per-credit `reset_expiry_horizons` plus absolute `reset_expiry_at`, and `tokens_7d`.
 - A failed refresh reports `error` and retains the previous reading with its age — a failure is never persisted as zero quota. Readings older than `stale_after_seconds` (2× the interval) report `stale`; providers never successfully collected report `unknown`.
 - Top-level `last_collect_attempt` / `last_collect_success` / `next_collect_due_at`, `zai_pool_unreadable`, and a sanitized `state_error` cover the file itself. No credentials ever appear in the state file or snapshot.
 

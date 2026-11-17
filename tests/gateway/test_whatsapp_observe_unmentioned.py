@@ -436,9 +436,7 @@ def test_gateway_replay_separates_observed_whatsapp_group_context():
         {"role": "assistant", "content": "earlier answer"},
         {"role": "user", "content": "current addressed question"},
     ]
-    agent_history, observed_context, _ = _build_gateway_agent_history(
-        history, channel_prompt=channel_prompt
-    )
+    agent_history, observed_context = _build_gateway_agent_history(history, channel_prompt=channel_prompt)
 
     assert observed_context == f"[Alice Example|{SENDER}]\nside chatter"
     assert [m["content"] for m in agent_history if m.get("role") == "user"] == [

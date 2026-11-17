@@ -378,13 +378,8 @@ def test_owner_exit_notice_names_saved_log_or_says_none_recorded(monkeypatch):
 # Lane workdir: git-free directories
 # ---------------------------------------------------------------------------
 
-def test_omp_lane_accepts_git_free_workdir_and_cursor_rejects(
-        monkeypatch, tmp_path):
+def test_omp_lane_accepts_git_free_workdir(monkeypatch, tmp_path):
     from tools import delegate_lane_tool as lane_tool
-    from tools.cursor_agent_tool import (
-        UnsupportedOriginError,
-        resolve_workdir_origin,
-    )
     from tools.delegate_lane_specs import resolve_lane_spec
 
     directory = tmp_path / "plain"
@@ -411,8 +406,3 @@ def test_omp_lane_accepts_git_free_workdir_and_cursor_rejects(
         "a git-free existing absolute directory must reach the OMP runner"
     )
     assert result["success"] is True
-
-    # The same directory is still unusable as a Cursor Cloud repo URL.
-    with pytest.raises(UnsupportedOriginError) as excinfo:
-        resolve_workdir_origin(str(directory))
-    assert "no usable git origin" in str(excinfo.value)

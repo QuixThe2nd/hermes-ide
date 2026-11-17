@@ -37,7 +37,7 @@ PUBLIC_AND_JUNK_HOSTS = [
     "172.32.0.1",
     "192.169.0.1",
     "example.com",
-    "cursor.com",
+    "public.example",
 ]
 
 

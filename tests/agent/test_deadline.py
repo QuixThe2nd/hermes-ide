@@ -609,7 +609,7 @@ class TestResolveNameList:
     def test_non_list_falls_back_to_default(self, monkeypatch):
         monkeypatch.setattr(
             "agent.deadline._timeouts_section",
-            lambda: {"tools": {"unbounded_tools": "delegate_cursor_agent"}},
+            lambda: {"tools": {"unbounded_tools": "delegate_claude_agent"}},
         )
         assert self._resolve() == frozenset({"a", "b"})
 
@@ -629,7 +629,6 @@ class TestUnboundedToolsResolver:
 
         monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
         names = tool_executor._resolve_unbounded_tools()
-        assert "delegate_cursor_agent" in names
         assert "delegate_claude_agent" in names
         assert "restart" in names
 
@@ -660,8 +659,7 @@ class TestUnboundedToolsResolver:
 
         monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
         names = tool_executor._resolve_unbounded_tools()
-        assert {"delegate_agent", "delegate_claude_agent"} <= names
-        assert {"delegate_cursor_agent", "delegate_assistant"} <= names
+        assert {"delegate_agent", "delegate_claude_agent", "delegate_assistant"} <= names
         assert "delegate_task" in names
         assert {
             "delegate_ui_dev",
@@ -694,10 +692,10 @@ class TestUnboundedToolsResolver:
 
         monkeypatch.setattr(
             "agent.deadline._timeouts_section",
-            lambda: {"tools": {"unbounded_tools": ["delegate_cursor_agent"]}},
+            lambda: {"tools": {"unbounded_tools": ["delegate_claude_agent"]}},
         )
         assert tool_executor._resolve_unbounded_tools() == frozenset(
-            {"delegate_cursor_agent"}
+            {"delegate_claude_agent"}
         )
 
     def test_default_contains_lane_tools(self, monkeypatch):

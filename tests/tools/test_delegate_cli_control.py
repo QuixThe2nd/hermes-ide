@@ -1,8 +1,7 @@
 """delegate_agent(action=...) must control conversation-owned live CLI coding runs.
 
 Pin (branch fix/cli-delegation-control, Nov 2026): a live Claude Code run
-(``delegate_claude_agent`` / result_kind ``cli_agent``) or Cursor cloud run
-(``delegate_cursor_agent`` / result_kind ``cloud_agent``) is registered only in
+(``delegate_claude_agent`` / result_kind ``cli_agent``) is registered only in
 ``tools.async_delegation._records`` under a ``deleg_*`` id with an
 ``interrupt_fn``. ``_handle_control_action`` consulted only
 ``_active_subagents``, so ``list`` omitted the run and ``steer``/``stop`` with
@@ -11,7 +10,7 @@ its ``deleg_*`` id answered "No live subagent" without ever firing
 
 Contract (triage-decided): list and stop must see conversation-owned live
 ``deleg_*`` coding runs, and stop must actually interrupt. steer cannot type
-into Claude (stdin closed) or Cursor (cloud run), so steer must answer an
+into Claude (stdin closed), so steer must answer an
 honest not_steerable / stop-and-redelegate response — never "No live subagent".
 
 The pins below FAIL on unfixed HEAD; that failure is the point. The native
@@ -72,8 +71,8 @@ def _seed_cli_record(
     goal: str = "Fix the flaky integration test",
 ):
     """Insert a live coding-run record shaped exactly as
-    ``dispatch_background_delegation`` writes it (claude_agent_tool.py /
-    cursor_agent_tool.py): no runner, no durable-ledger write, unmonitored
+    ``dispatch_background_delegation`` writes it (claude_agent_tool.py):
+    no runner, no durable-ledger write, unmonitored
     (``progress_fn=None``) so the stale-monitor thread ignores the seed."""
     record = {
         "delegation_id": delegation_id,
@@ -160,45 +159,6 @@ def test_steer_owned_live_claude_run_is_not_steerable():
 
 
 # ---------------------------------------------------------------------------
-# Pin 2: same contract for an owned live Cursor cloud run
-# ---------------------------------------------------------------------------
-
-
-def test_steer_owned_live_cursor_run_is_not_steerable():
-    fn, calls = _interrupt_spy()
-    rec = _seed_cli_record(
-        "deleg_9d13aa02",
-        tool="delegate_cursor_agent",
-        result_kind="cloud_agent",
-        parent_session_id="sess-cli-steer-2",
-    )
-    rec["interrupt_fn"] = fn
-    parent = _StubParent(session_id="sess-cli-steer-2")
-    try:
-        out = _handle_control_action(
-            "steer", "deleg_9d13aa02", "Use the staging project", parent
-        )
-        assert "No live subagent" not in out, out
-        payload = json.loads(out)
-        assert "error" not in payload, payload
-        assert payload["action"] == "steer"
-        assert payload["subagent_id"] == "deleg_9d13aa02"
-        assert payload["status"] == "not_steerable"
-        note = str(payload.get("note", "")).lower()
-        assert (
-            "mid-run" in note
-            or "cannot accept" in note
-            or "cannot be steered" in note
-            or "not steerable" in note
-        )
-        assert "stop" in note
-        assert "redelegate" in note or "re-delegate" in note
-        assert calls == []
-    finally:
-        _drop_records("deleg_9d13aa02")
-
-
-# ---------------------------------------------------------------------------
 # Pin 3: list shows exactly the owned live coding runs
 # ---------------------------------------------------------------------------
 
@@ -207,7 +167,7 @@ def test_list_shows_owned_live_coding_runs_and_excludes_the_rest():
     parent = _StubParent(session_id="sess-cli-list-1")
     ids = (
         "deleg_3aa10001",  # owned live claude run -> listed
-        "deleg_3aa10002",  # owned live cursor run -> listed
+        "deleg_3aa10002",  # second owned live claude run -> listed
         "deleg_3aa10003",  # foreign parent session -> hidden
         "deleg_3aa10004",  # owned but completed -> hidden
         "deleg_3aa10005",  # owned running subagent_batch -> not a coding run
@@ -221,10 +181,10 @@ def test_list_shows_owned_live_coding_runs_and_excludes_the_rest():
     )
     _seed_cli_record(
         "deleg_3aa10002",
-        tool="delegate_cursor_agent",
-        result_kind="cloud_agent",
+        tool="delegate_claude_agent",
+        result_kind="cli_agent",
         parent_session_id="sess-cli-list-1",
-        goal="Cursor: migrate the endpoint",
+        goal="Claude: migrate the endpoint",
     )
     _seed_cli_record(
         "deleg_3aa10003",
@@ -235,8 +195,8 @@ def test_list_shows_owned_live_coding_runs_and_excludes_the_rest():
     )
     _seed_cli_record(
         "deleg_3aa10004",
-        tool="delegate_cursor_agent",
-        result_kind="cloud_agent",
+        tool="delegate_claude_agent",
+        result_kind="cli_agent",
         parent_session_id="sess-cli-list-1",
         status="completed",
         goal="Already finished",
@@ -259,10 +219,10 @@ def test_list_shows_owned_live_coding_runs_and_excludes_the_rest():
         assert claude["status"] == "running"
         assert claude["goal"]
 
-        cursor = listed["deleg_3aa10002"]
-        assert cursor["tool"] == "delegate_cursor_agent"
-        assert cursor["accepting_steer"] is False
-        assert cursor["goal"] and cursor["status"]
+        second = listed["deleg_3aa10002"]
+        assert second["tool"] == "delegate_claude_agent"
+        assert second["accepting_steer"] is False
+        assert second["goal"] and second["status"]
 
         # With an owned coding run live, the empty-registry note must be gone.
         assert "No live subagents right now" not in json.dumps(out)
@@ -302,8 +262,8 @@ def test_stop_foreign_coding_run_is_refused_without_interrupt():
     fn, calls = _interrupt_spy()
     rec = _seed_cli_record(
         "deleg_4bb10002",
-        tool="delegate_cursor_agent",
-        result_kind="cloud_agent",
+        tool="delegate_claude_agent",
+        result_kind="cli_agent",
         parent_session_id="sess-someone-else-2",
     )
     rec["interrupt_fn"] = fn
@@ -375,8 +335,8 @@ def test_steer_ownership_via_current_session_key():
     fn, calls = _interrupt_spy()
     rec = _seed_cli_record(
         "deleg_5dd10002",
-        tool="delegate_cursor_agent",
-        result_kind="cloud_agent",
+        tool="delegate_claude_agent",
+        result_kind="cli_agent",
         parent_session_id="",
         session_key="discord:4242:curator",
     )
@@ -409,7 +369,7 @@ def test_delegate_schema_documents_cli_coding_run_controls():
     props = cast(Dict[str, Any], params["properties"])
     action_prop = cast(Dict[str, Any], props["action"])
     desc = str(action_prop.get("description", "")).lower()
-    # deleg_* ids from Claude/Cursor coding runs show up in list...
+    # deleg_* ids from Claude coding runs show up in list...
     assert "deleg_" in desc, desc
     assert "list" in desc
     # ...can be stopped...
@@ -502,10 +462,10 @@ def test_envelope_streams_control_handle_for_claude_run():
     assert "redelegate" in low or "re-delegate" in low, hint
 
 
-def test_envelope_streams_control_handle_for_cursor_run_and_keeps_caller_hint():
+def test_envelope_streams_control_handle_and_keeps_caller_hint():
     payload = ad.build_background_acceptance_envelope(
-        tool="delegate_cursor_agent",
-        result_kind="cloud_agent",
+        tool="delegate_claude_agent",
+        result_kind="cli_agent",
         delegation_id="deleg_9d13aa02",
         control_hint="The run's live progress page URL is delivered with the result.",
     )

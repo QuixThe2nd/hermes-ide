@@ -1125,8 +1125,8 @@ def _coerce_str(value: Any) -> str:
 DELEGATE_CLAUDE_AGENT_SCHEMA = {
     "name": "delegate_claude_agent",
     "description": (
-        "Lane rule: use for MEDIUM TO LARGE jobs; small to medium goes to "
-        "delegate_cursor_agent. Default the task to /goal <observable done "
+        "Lane rule: use for MEDIUM TO LARGE jobs. "
+        "Default the task to /goal <observable done "
         "condition> — goal mode auto-continues until done; a one-shot prompt "
         "is the exception. "
         "Delegate a software development task to the Claude Code CLI running "

@@ -283,8 +283,7 @@ strip, which the client swaps in (or removes) on every poll while
 the feed cursor keeps its existing behavior.
 
 Inline dispatch cards: the real spawn-shaped delegate tool call
-(delegate_agent, delegate_task, delegate_claude_agent,
-delegate_cursor_agent) is the chronological authority — one
+(delegate_agent, delegate_task, delegate_claude_agent) is the chronological authority — one
 Discord-style dispatch card renders at the call carrier's position
 in the transcript (a batch call contributes one card per task, in
 order), and exactly the matching generic delegate_* tool result row

@@ -258,14 +258,6 @@ def _async_delegation_header(evt: dict) -> "tuple[str, str]":
             "is below so you can act on the result or re-dispatch if things "
             "have changed.",
         )
-    if kind == "cloud_agent" or tool == "delegate_cursor_agent":
-        return (
-            "ASYNC CURSOR CLOUD RUN COMPLETE",
-            "A background Cursor cloud run you dispatched earlier has finished. "
-            "You may have moved on since dispatching it; the full task source "
-            "is below so you can act on the result or re-dispatch if things "
-            "have changed.",
-        )
     if kind == "mission" or tool == "delegate_assistant":
         return (
             "ASSISTANT MISSION COMPLETE",
@@ -287,7 +279,7 @@ def _format_async_delegation(evt: dict) -> str:
     and result, so an agent deep in unrelated context can act on it or re-dispatch.
 
     ``result_kind`` (uniform delegation lifecycle) widens the vocabulary: a claude-code
-    run, a Cursor cloud run, or an assistant mission renders with its own header and
+    run or an assistant mission renders with its own header and
     lead sentence instead of subagent phrasing. Absent on legacy events, which degrade
     to the original subagent wording."""
     deleg_id = evt.get("delegation_id", "unknown")

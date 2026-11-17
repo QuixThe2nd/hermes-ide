@@ -68,10 +68,9 @@ _HERMES_CORE_TOOLS = [
     # Clarifying questions
     "clarify",
     # Code execution + delegation. delegate_agent is the ONE delegation
-    # dispatch surface: backend=claude (Claude Code CLI) and backend=cursor
-    # (Cursor My Machines cloud) route inside it with a per-backend
-    # prerequisite check; the old delegate_claude_agent /
-    # delegate_cursor_agent names are hidden dispatchable aliases.
+    # dispatch surface: backend=claude (Claude Code CLI) routes inside it
+    # with a prerequisite check; the old delegate_claude_agent name is a
+    # hidden dispatchable alias.
     "execute_code", "delegate_agent",
     # MoA consultation (gated via check_fn on the default MoA preset)
     "moa_ask", "moa_debate",
@@ -317,7 +316,7 @@ TOOLSETS = {
     },
 
     "quota_channels": {
-        "description": "Discord voice-channel quota display for Codex, Kimi, z.ai, Cursor, and Grok",
+        "description": "Discord voice-channel quota display for Codex, Kimi, z.ai, and Grok",
         "tools": ["quota_channels_tick"],
         "includes": [],
     },

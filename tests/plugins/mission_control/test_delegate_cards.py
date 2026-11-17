@@ -69,7 +69,7 @@ BASE_TS = time.time() - 86400.0
 
 GOAL_CLAUDE = "Harden the deployment pipeline and verify the rollout"
 GOAL_AGENT = "Investigate the flaky scheduler test and report findings"
-GOAL_CURSOR = "Rename the config module and update every import site"
+GOAL_OTHER = "Rename the config module and update every import site"
 
 
 def load_server(tmp, db_path):
@@ -269,7 +269,7 @@ class TestDispatchCardBasics(DispatchCase):
         super().setUp()
         self.add_session(self.SID)
 
-    def test_all_four_delegate_tools_render_one_card_each(self):
+    def test_all_three_delegate_tools_render_one_card_each(self):
         self.add_carrier(self.SID, "call-a", "delegate_agent",
                          GOAL_AGENT, BASE_TS)
         self.add_carrier(self.SID, "call-t", "delegate_task",
@@ -277,15 +277,13 @@ class TestDispatchCardBasics(DispatchCase):
                          BASE_TS + 10)
         self.add_carrier(self.SID, "call-c", "delegate_claude_agent",
                          GOAL_CLAUDE, BASE_TS + 20)
-        self.add_carrier(self.SID, "call-x", "delegate_cursor_agent",
-                         GOAL_CURSOR, BASE_TS + 30)
         body = self.page(self.SID)
         self.assertEqual(self.delegate_keys_in_order(body), [
             self.card_key("call-a"), self.card_key("call-t"),
-            self.card_key("call-c"), self.card_key("call-x")])
+            self.card_key("call-c")])
         # the exact tool name rides along as the mono chip
         for tool in ("delegate_agent", "delegate_task",
-                     "delegate_claude_agent", "delegate_cursor_agent"):
+                     "delegate_claude_agent"):
             self.assertIn('<span class="dlg-tool">%s</span>' % tool, body)
 
     def test_control_calls_render_no_card_and_keep_their_tool_row(self):
@@ -314,7 +312,7 @@ class TestDispatchCardBasics(DispatchCase):
         self.add_carrier(self.SID, "call-u", "delegate_agent",
                          GOAL_AGENT, BASE_TS)
         # same window, DIFFERENT task: time alone never fabricates a link
-        self.add_child(self.SID, "child-u", GOAL_CURSOR, BASE_TS + 5)
+        self.add_child(self.SID, "child-u", GOAL_OTHER, BASE_TS + 5)
         body = self.page(self.SID)
         card = self.card_in_page(body, self.card_key("call-u"))
         self.assertIn("dlg-static", card)
@@ -504,16 +502,6 @@ class TestClaudeWatchLinks(DispatchCase):
         self.assertNotIn("href=", card)
         self.assertNotIn("Watch", card)
 
-    def test_cursor_card_is_never_a_viewer_anchor(self):
-        # a receipt keyed to a delegate_cursor_agent call exists, but the
-        # viewer link is a Claude-card behavior only
-        plant_receipt(self.home, self.SID, "call-cursor-1")
-        self.add_carrier(self.SID, "call-cursor-1", "delegate_cursor_agent",
-                         GOAL_CURSOR, BASE_TS + 10)
-        body = self.page(self.SID)
-        card = self.card_in_page(body, self.card_key("call-cursor-1"))
-        self.assertNotIn("href=", card)
-        self.assertIn("dlg-static", card)
 
     def test_malformed_or_unsafe_receipts_fail_closed(self):
         """Every receipt that is not exactly this dispatch's own valid

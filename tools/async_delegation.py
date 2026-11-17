@@ -118,12 +118,10 @@ DELIVERY_MODE_EVENT = "event"
 DELIVERY_MODE_INLINE = "inline"
 
 # What kind of work a delegation wraps. Used by the acceptance envelope
-# (``result_kind``) and by the completion formatter so a claude-code run, a
-# Cursor cloud run, or an assistant mission does not render with subagent
-# phrasing.
+# (``result_kind``) and by the completion formatter so a claude-code run or
+# an assistant mission does not render with subagent phrasing.
 RESULT_KIND_SUBAGENT = "subagent_batch"
 RESULT_KIND_CLI_AGENT = "cli_agent"
-RESULT_KIND_CLOUD_AGENT = "cloud_agent"
 RESULT_KIND_MISSION = "mission"
 
 # ---------------------------------------------------------------------------
@@ -409,7 +407,7 @@ def recover_abandoned_delegations() -> int:
                 "dispatched_at": dispatched_at, "completed_at": now,
             }
             # Tool provenance (see _stamp_event_provenance) so a recovered
-            # claude/cursor/mission event still labels itself correctly.
+            # claude/mission event still labels itself correctly.
             for _k in ("tool", "result_kind"):
                 if task.get(_k):
                     event[_k] = task[_k]
@@ -898,9 +896,8 @@ def _dispatch_admitted(
         if existing is not None and existing.get("status") in (
             "running", "stalling", "finalizing"
         ):
-            # Idempotent re-arm: the caller passed a pre-minted id (the
-            # Cursor receipt spine re-arms a background poll after a
-            # restart) and this unit is already live — never start a second
+            # Idempotent re-arm: the caller passed a pre-minted id and this
+            # unit is already live — never start a second
             # runner for the same handle.
             return {"status": "duplicate", "delegation_id": delegation_id}
         active_slots = {r.get("slot_key") or r["delegation_id"] for r in _records.values() if r.get("status") in _ACTIVE_STATES}
@@ -982,7 +979,7 @@ def dispatch_async_delegation(
     """Spawn ``runner`` on the daemon executor and return a handle immediately.
     ``session_key``/``parent_session_id`` are captured on the parent thread (the worker carries
     no contextvars) and route the completion back to the spawning session. A caller-minted
-    ``delegation_id`` (the Cursor receipt spine re-arms under the SAME id) is honored as-is;
+    ``delegation_id`` is honored as-is;
     ``tool``/``result_kind`` stamp the record for delivery routing.
     ``progress_fn() -> (token, in_tool)`` enables stale monitoring; omitted = unmonitored.
     Returns ``{"status": "dispatched", "delegation_id"}`` or ``{"status": "rejected", "error"}``."""
@@ -1158,7 +1155,7 @@ def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], statu
         **({} if is_batch else {"exit_reason": result.get("exit_reason")}),
         **{k: record[k] for k in _ROUTING_KEYS if record.get(k)},
         **{k: result[k] for k in _STALL_META_KEYS if k in result}}
-    # Uniform lifecycle: run artifacts a cli/cloud delegation finishes with
+    # Uniform lifecycle: run artifacts a cli delegation finishes with
     # (the run log, the child session id, cost) ride along additively so the
     # completion block can point the caller at them. Absent on subagent
     # results, which is fine — consumers key off presence.
@@ -1490,10 +1487,10 @@ def _signal_runner_interrupt(record: Dict[str, Any], reason: str) -> bool:
 
     - ``runner_tid``: set the per-thread interrupt bit on the worker thread
       so cooperative ``_check_interrupted()`` hooks INSIDE the runner (the
-      claude/cursor subprocess poll loops) unwind on ``/stop`` and gateway
+      claude subprocess poll loops) unwind on ``/stop`` and gateway
       shutdown, not just the injected ``interrupt_fn``.
     - ``interrupt_fn``: the tool-specific cancellation (hard child-agent
-      interrupt, cloud-run cancel, process-group kill).
+      interrupt, process-group kill).
     """
     signalled = False
     runner_tid = record.get("runner_tid")
@@ -1576,7 +1573,7 @@ def build_background_acceptance_envelope(
     observe or steer the work. Tool-specific keys (``subagent_ids``,
     ``live_transcripts``) are added only when meaningful; ``tool`` and
     ``result_kind`` are always present so UIs can label the unit without
-    sniffing the id format. CLI/cloud coding runs additionally carry a
+    sniffing the id format. CLI coding runs additionally carry a
     ``control`` block naming the delegate_agent actions that reach the run.
     """
     payload: Dict[str, Any] = {
@@ -1595,11 +1592,11 @@ def build_background_acceptance_envelope(
         payload["subagent_ids"] = list(subagent_ids)
     if live_transcripts:
         payload["live_transcripts"] = list(live_transcripts)
-    if result_kind in (RESULT_KIND_CLI_AGENT, RESULT_KIND_CLOUD_AGENT):
-        # CLI/cloud coding runs are controllable only through delegate_agent by
+    if result_kind == RESULT_KIND_CLI_AGENT:
+        # CLI coding runs are controllable only through delegate_agent by
         # their deleg_* id (list/stop; steer is impossible — stdin is closed
-        # for the CLI run and a cloud run has none). Stream the handle here:
-        # the caller usually has nothing else to quote back to the model.
+        # for the CLI run). Stream the handle here: the caller usually has
+        # nothing else to quote back to the model.
         payload["control"] = {
             "tool": "delegate_agent",
             "delegation_id": delegation_id,
@@ -1610,9 +1607,8 @@ def build_background_acceptance_envelope(
         handle = (
             f"Control this run via delegate_agent with its id "
             f"'{delegation_id}': action='stop' ends it (it cannot be steered "
-            "mid-run — the Claude CLI runs with stdin closed and a Cursor "
-            "cloud run has no stdin); re-delegate a new run with the course "
-            "correction."
+            "mid-run — the Claude CLI runs with stdin closed); re-delegate a "
+            "new run with the course correction."
         )
         payload["control_hint"] = f"{control_hint} {handle}".strip() if control_hint else handle
     elif control_hint:
