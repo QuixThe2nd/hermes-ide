@@ -76,7 +76,7 @@ _EMOJI_RE = re.compile(
     flags=re.UNICODE,
 )
 
-_ALLOWED_ACTIONS = {"start", "setup"}
+_ALLOWED_ACTIONS = {"start", "setup", "recover"}
 _ALLOWED_KINDS = {
     "observation",
     "advice",
@@ -1832,9 +1832,17 @@ def handle_start_conversation(args: dict, **kwargs: Any) -> str:
 
         if action == "setup":
             return _handle_setup(args, token)
+        if action == "recover":
+            return _handle_recover(args, token)
         return _handle_start(args, token)
     except Exception as exc:
         return json.dumps({"success": False, "error": str(exc)})
+
+
+def _handle_recover(args: Dict[str, Any], token: str) -> str:
+    # Stub: the recovery implementation lands with the bounded-send fix; the
+    # behavioral pins for it fail against this placeholder on purpose.
+    return json.dumps({"success": False, "error": "not implemented"})
 
 
 def check_requirements() -> bool:

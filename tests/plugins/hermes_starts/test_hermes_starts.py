@@ -6,8 +6,10 @@ import importlib
 import importlib.util
 import json
 import re
+import socket
 import stat
 import sys
+import time
 import urllib.error
 from io import BytesIO
 from pathlib import Path
@@ -101,21 +103,49 @@ class MockDiscordRouter:
         self.fail_thread_create = False
         self.fail_thread_member = False
         self.thread_returns_no_id = False
+        # Anchor messages that already exist, by message id; a payload may
+        # carry "thread": {"id": ...} when the anchor already has its thread.
+        self.messages: Dict[str, Dict[str, Any]] = {}
+        # Messages already inside a thread, by thread id.
+        self.thread_messages: Dict[str, List[Dict[str, Any]]] = {}
+        # When set, any call whose URL contains this substring raises
+        # socket.timeout, the way a bounded urlopen does on a stuck peer.
+        self.hang_on = ""
 
-    def __call__(self, request):
+    def __call__(self, request, timeout=None):
         self.calls.append(
             {
                 "method": request.method,
                 "url": request.full_url,
                 "headers": dict(request.header_items()),
                 "body": request.data.decode("utf-8") if request.data else None,
+                "timeout": timeout,
             }
         )
         url = request.full_url
         method = request.method
+        if self.hang_on and self.hang_on in url:
+            raise socket.timeout("simulated hung Discord call")
 
         if method == "GET" and url.endswith("/users/@me/guilds"):
             return self._response(self.guilds)
+
+        if method == "GET" and "/messages/" in url.split("?")[0]:
+            message_id = url.split("?")[0].rstrip("/").rsplit("/", 1)[-1]
+            message = self.messages.get(message_id)
+            if message is None:
+                raise urllib.error.HTTPError(
+                    url,
+                    404,
+                    "Not Found",
+                    hdrs=None,
+                    fp=BytesIO(b'{"message": "Unknown Message"}'),
+                )
+            return self._response(message)
+
+        if method == "GET" and "/channels/" in url and url.split("?")[0].endswith("/messages"):
+            channel_id = url.split("?")[0][len(_API_BASE):].split("/")[2]
+            return self._response(list(self.thread_messages.get(channel_id, [])))
 
         if method == "POST" and "/guilds/" in url and url.endswith("/channels"):
             self.channel_counter += 1
@@ -356,7 +386,7 @@ class TestHttpErrors:
     ):
         _write_state(_isolate_env)
 
-        def _raise_http(request):
+        def _raise_http(request, timeout=None):
             raise urllib.error.HTTPError(
                 request.full_url, 500, "Server Error", hdrs=None, fp=BytesIO(b"{}")
             )
@@ -1232,3 +1262,441 @@ class TestPublicInboxThreads:
         )
         with pytest.raises(RuntimeError, match="provisioned inbox"):
             hermes_starts_module.open_inbox_thread("title", "body")
+
+# -- bounded sends + anchor recovery (pc_c965dac61862) ------------------------
+#
+# A start_conversation call timed out at the tool level while its worker
+# thread held the state lock across an unbounded Discord POST: the opening
+# existed in #inbox, but no thread, listener mark, seed or history did, the
+# lock stayed pinned by the abandoned worker, and no supported path could
+# reconcile from the known anchor id without reposting. The pins below hold
+# both halves of the fix: every REST call is bounded, and a posted anchor
+# stays recoverable.
+
+_RECOVERY_MESSAGE = "A" * 1200 + "\n\n" + "B" * 1200
+_RECOVERY_NEXT_MOVE = "C" * 100
+_THREE_PART_TEXT = "A" * 1200 + "\n\n" + "B" * 1200 + "\n\n" + "C" * 1200
+
+
+def _composed_recovery_text() -> str:
+    return _RECOVERY_MESSAGE + "\n\n*Where I'd take this:* " + _RECOVERY_NEXT_MOVE
+
+
+def _enable_dedup_gate(home: Path, mod, monkeypatch) -> None:
+    """Turn the gate on and stub its comparison: these pins exercise the
+    lock/reservation machinery, not the LLM verdict."""
+    _write_plugin_settings(home, {"dedup_enabled": True, "mention_user_id": _MENTION_UID})
+    monkeypatch.setattr(mod, "_dedup_check", lambda *args, **kwargs: ("allow", None, None))
+
+
+def _read_state_json(home: Path) -> Dict[str, Any]:
+    return json.loads((home / "hermes_starts" / "state.json").read_text(encoding="utf-8"))
+
+
+def _write_reservation(home: Path, number: int, text: str, **fields: Any) -> None:
+    state_path = home / "hermes_starts" / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    row: Dict[str, Any] = {
+        "number": number,
+        "kind": "feedback",
+        "text": text,
+        "ts": time.time(),
+        "stage": fields.pop("stage", "pending"),
+    }
+    row.update(fields)
+    reservations = state.get("pending_start")
+    reservations = list(reservations) if isinstance(reservations, list) else []
+    reservations.append(row)
+    state["pending_start"] = reservations
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+
+def _arrange_recoverable_anchor(
+    home: Path,
+    mod,
+    router: MockDiscordRouter,
+    number: int = 5,
+    text: str = None,
+    stage: str = "anchor_posted",
+    anchor_id: str = "msg-A",
+    content: str = None,
+) -> List[str]:
+    """Provision state, a reservation, and the anchor message in the inbox.
+
+    Returns the delivery parts of the reserved opening; the anchor message
+    carries the first part unless ``content`` overrides it.
+    """
+    _write_state(home, counter=number - 1)
+    _write_plugin_settings(home, {"mention_user_id": _MENTION_UID})
+    composed = text if text is not None else _composed_recovery_text()
+    parts = mod._split_delivery(composed, _MENTION_UID)
+    reservation: Dict[str, Any] = {"stage": stage}
+    if anchor_id and stage != "pending":
+        # "pending" is the milestone BEFORE the anchor id was recorded.
+        reservation["anchor_id"] = anchor_id
+    _write_reservation(home, number, composed, **reservation)
+    router.messages[anchor_id or "msg-A"] = {
+        "id": anchor_id or "msg-A",
+        "channel_id": "channel-existing",
+        "content": content if content is not None else parts[0],
+    }
+    return parts
+
+
+def _thread_create_calls(router: MockDiscordRouter) -> List[Dict[str, Any]]:
+    return [c for c in router.calls if c["method"] == "POST" and c["url"].endswith("/threads")]
+
+
+def _new_opening_posts(router: MockDiscordRouter, channel_id: str) -> List[Dict[str, Any]]:
+    """POSTs that would create a NEW opening message in the inbox channel."""
+    url = f"{_API_BASE}/channels/{channel_id}/messages"
+    return [c for c in router.calls if c["method"] == "POST" and c["url"] == url]
+
+
+class TestBoundedDiscordSends:
+    def test_every_rest_call_passes_a_finite_timeout(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(_isolate_env)
+
+        result = _call(
+            hermes_starts_module,
+            {"kind": "idea", "message": "Hello.", "next_move": "Stay bounded."},
+        )
+
+        assert result["success"] is True
+        assert discord_router.calls
+        for call in discord_router.calls:
+            recorded = call["timeout"]
+            assert (
+                isinstance(recorded, (int, float))
+                and not isinstance(recorded, bool)
+                and 0 < recorded <= 60
+            ), f"urlopen without a finite timeout: {call['method']} {call['url']}"
+
+
+class TestHungSendReleasesLock:
+    def test_hung_thread_create_returns_handle_and_keeps_reservation(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env, monkeypatch
+    ):
+        _write_state(_isolate_env)
+        _enable_dedup_gate(_isolate_env, hermes_starts_module, monkeypatch)
+        discord_router.hang_on = "/threads"
+
+        result = _call(
+            hermes_starts_module,
+            {
+                "kind": "feedback",
+                "message": _RECOVERY_MESSAGE,
+                "next_move": _RECOVERY_NEXT_MOVE,
+            },
+        )
+
+        assert result["success"] is False
+        assert result["pending_start"] == [
+            {"number": 1, "stage": "anchor_posted", "anchor_id": "msg-1"}
+        ]
+        assert "action='recover'" in result["recover_hint"]
+        assert "msg-1" in result["recover_hint"]
+
+        # The abandoned worker must not still pin the state lock.
+        with hermes_starts_module._state_lock(timeout=0.5):
+            pass
+
+        state = _read_state_json(_isolate_env)
+        assert state["pending_start"][0]["stage"] == "anchor_posted"
+        assert state["pending_start"][0]["anchor_id"] == "msg-1"
+        # The opening was posted exactly once — no blind retry.
+        assert len(_new_opening_posts(discord_router, "channel-existing")) == 1
+
+
+class TestLockBusyExposesPending:
+    @pytest.mark.platforms("posix")
+    def test_deferred_start_lists_pending_reservations(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env, monkeypatch
+    ):
+        import fcntl
+
+        _write_state(_isolate_env)
+        _enable_dedup_gate(_isolate_env, hermes_starts_module, monkeypatch)
+        _write_reservation(
+            _isolate_env, 3, _composed_recovery_text(), stage="anchor_posted", anchor_id="msg-77"
+        )
+
+        real_lock = hermes_starts_module._state_lock
+        monkeypatch.setattr(
+            hermes_starts_module, "_state_lock", lambda timeout=60.0: real_lock(timeout=0.3)
+        )
+
+        lock_path = _isolate_env / "hermes_starts" / ".state.json.lock"
+        holder = open(lock_path, "a+b")
+        try:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = _call(
+                hermes_starts_module, {"kind": "idea", "message": "While locked."}
+            )
+        finally:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+            holder.close()
+
+        assert result["success"] is False
+        assert result["dedup_deferred"] is True
+        assert result["pending_start"] == [
+            {"number": 3, "stage": "anchor_posted", "anchor_id": "msg-77"}
+        ]
+        assert "action='recover'" in result["recover_hint"]
+        assert "msg-77" in result["recover_hint"]
+        assert not discord_router.calls
+
+
+class TestRecoverHappyPath:
+    def test_recover_creates_thread_and_finishes_bookkeeping(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        parts = _arrange_recoverable_anchor(
+            _isolate_env, hermes_starts_module, discord_router, number=5
+        )
+
+        result = _call(hermes_starts_module, {"action": "recover", "anchor_id": "msg-A"})
+
+        assert result["success"] is True
+        assert result["recovered"] is True
+        assert result["start_number"] == 5
+        assert result["thread_id"] == "thread-1"
+        assert result["channel_message_id"] == "msg-A"
+
+        # The thread is created on the existing anchor — never a new opening.
+        creates = _thread_create_calls(discord_router)
+        assert len(creates) == 1
+        assert creates[0]["url"] == (
+            f"{_API_BASE}/channels/channel-existing/messages/msg-A/threads"
+        )
+        assert json.loads(creates[0]["body"])["name"] == "Start #5 — feedback"
+        assert _new_opening_posts(discord_router, "channel-existing") == []
+
+        # Mention configured: the owner is added to the recovered thread.
+        assert (
+            "PUT",
+            f"/channels/thread-1/thread-members/{_MENTION_UID}",
+        ) in _endpoints(discord_router)
+
+        # Only the missing tail part lands in the thread.
+        tail_posts = [
+            c
+            for c in discord_router.calls
+            if c["method"] == "POST"
+            and c["url"] == f"{_API_BASE}/channels/thread-1/messages"
+        ]
+        assert [json.loads(c["body"])["content"] for c in tail_posts] == [parts[1]]
+        assert len(result["thread_message_ids"]) == 1
+
+        # Listener mark and session seed landed for the recovered thread.
+        tracked = json.loads(
+            (_isolate_env / "discord_threads.json").read_text(encoding="utf-8")
+        )
+        assert "thread-1" in tracked
+        assert result["session_seed_key"] == "agent:main:discord:thread:thread-1:thread-1"
+
+        # History gained the anchor; the reservation is gone; the counter moved.
+        state = _read_state_json(_isolate_env)
+        entry = next(e for e in state["start_history"] if e["id"] == "msg-A")
+        assert entry["number"] == 5
+        assert entry["thread_id"] == "thread-1"
+        assert state["pending_start"] == []
+        assert state["counter"] >= 5
+
+
+class TestRecoverIdempotent:
+    def test_second_recover_posts_nothing_and_reports_already_recovered(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        _arrange_recoverable_anchor(_isolate_env, hermes_starts_module, discord_router, number=5)
+
+        first = _call(hermes_starts_module, {"action": "recover", "anchor_id": "msg-A"})
+        assert first["success"] is True
+        calls_after_first = len(discord_router.calls)
+
+        second = _call(hermes_starts_module, {"action": "recover", "anchor_id": "msg-A"})
+
+        assert second["success"] is True
+        assert second["already_recovered"] is True
+        assert second["thread_id"] == first["thread_id"]
+        assert second["start_number"] == 5
+        assert len(discord_router.calls) == calls_after_first
+
+
+class TestRecoverExistingThread:
+    def test_existing_thread_reused_and_present_tails_skipped(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        parts = _arrange_recoverable_anchor(
+            _isolate_env,
+            hermes_starts_module,
+            discord_router,
+            number=6,
+            text=_THREE_PART_TEXT,
+        )
+        discord_router.messages["msg-A"]["thread"] = {"id": "thr-X"}
+        # The first tail part is already in the thread; the second is not.
+        discord_router.thread_messages["thr-X"] = [{"id": "msg-T1", "content": parts[1]}]
+
+        result = _call(hermes_starts_module, {"action": "recover", "anchor_id": "msg-A"})
+
+        assert result["success"] is True
+        assert result["recovered"] is True
+        assert result["thread_id"] == "thr-X"
+        assert _thread_create_calls(discord_router) == []
+        assert _new_opening_posts(discord_router, "channel-existing") == []
+        thread_posts = [
+            c
+            for c in discord_router.calls
+            if c["method"] == "POST" and c["url"] == f"{_API_BASE}/channels/thr-X/messages"
+        ]
+        assert [json.loads(c["body"])["content"] for c in thread_posts] == [parts[2]]
+        assert result["thread_message_ids"]
+        state = _read_state_json(_isolate_env)
+        assert state["pending_start"] == []
+        assert state["counter"] >= 6
+
+
+class TestRecoverAnchorMissing:
+    def test_anchor_404_leaves_state_untouched(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        _arrange_recoverable_anchor(_isolate_env, hermes_starts_module, discord_router)
+        # msg-A is not registered in router.messages -> Discord answers 404.
+        del discord_router.messages["msg-A"]
+        state_path = _isolate_env / "hermes_starts" / "state.json"
+        before = state_path.read_text(encoding="utf-8")
+
+        result = _call(hermes_starts_module, {"action": "recover", "anchor_id": "msg-A"})
+
+        assert result["success"] is False
+        assert "404" in result["error"]
+        assert state_path.read_text(encoding="utf-8") == before
+        assert not [c for c in discord_router.calls if c["method"] == "POST"]
+
+
+class TestRecoverAdoptsByNumber:
+    """When the hang preceded the anchor-id milestone, recovery adopts the
+    anchor only on exact content equality with the reservation."""
+
+    def test_pending_reservation_with_matching_content_is_adopted(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        _arrange_recoverable_anchor(
+            _isolate_env, hermes_starts_module, discord_router, number=5, stage="pending"
+        )
+
+        result = _call(
+            hermes_starts_module,
+            {"action": "recover", "anchor_id": "msg-A", "start_number": 5},
+        )
+
+        assert result["success"] is True
+        assert result["recovered"] is True
+        assert result["start_number"] == 5
+        assert result["channel_message_id"] == "msg-A"
+        state = _read_state_json(_isolate_env)
+        assert state["pending_start"] == []
+        assert state["counter"] >= 5
+
+    def test_pending_reservation_without_start_number_is_refused(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        _arrange_recoverable_anchor(
+            _isolate_env, hermes_starts_module, discord_router, number=5, stage="pending"
+        )
+        state_path = _isolate_env / "hermes_starts" / "state.json"
+        before = state_path.read_text(encoding="utf-8")
+
+        result = _call(hermes_starts_module, {"action": "recover", "anchor_id": "msg-A"})
+
+        assert result["success"] is False
+        assert "start_number" in result["error"]
+        assert state_path.read_text(encoding="utf-8") == before
+        assert not discord_router.calls
+
+    def test_pending_reservation_with_different_content_is_refused(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        _arrange_recoverable_anchor(
+            _isolate_env,
+            hermes_starts_module,
+            discord_router,
+            number=5,
+            stage="pending",
+            content="Someone else's message entirely.",
+        )
+        state_path = _isolate_env / "hermes_starts" / "state.json"
+        before = state_path.read_text(encoding="utf-8")
+
+        result = _call(
+            hermes_starts_module,
+            {"action": "recover", "anchor_id": "msg-A", "start_number": 5},
+        )
+
+        assert result["success"] is False
+        assert "does not match" in result["error"]
+        assert state_path.read_text(encoding="utf-8") == before
+        assert not [c for c in discord_router.calls if c["method"] == "POST"]
+
+    def test_unknown_anchor_without_reservation_is_refused(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(_isolate_env, counter=2)
+        _write_plugin_settings(_isolate_env, {"mention_user_id": _MENTION_UID})
+        discord_router.messages["msg-Z"] = {
+            "id": "msg-Z",
+            "channel_id": "channel-existing",
+            "content": "An opening with no reservation and no history entry.",
+        }
+        state_path = _isolate_env / "hermes_starts" / "state.json"
+        before = state_path.read_text(encoding="utf-8")
+
+        result = _call(
+            hermes_starts_module,
+            {"action": "recover", "anchor_id": "msg-Z", "start_number": 3},
+        )
+
+        assert result["success"] is False
+        assert "no pending start" in result["error"]
+        assert state_path.read_text(encoding="utf-8") == before
+        assert not [c for c in discord_router.calls if c["method"] == "POST"]
+
+
+class TestRecoverLockBusy:
+    @pytest.mark.platforms("posix")
+    def test_busy_lock_returns_clean_error_without_hanging(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env, monkeypatch
+    ):
+        import fcntl
+
+        import plugins.hermes_starts as real_package
+
+        _arrange_recoverable_anchor(_isolate_env, hermes_starts_module, discord_router)
+        seen: Dict[str, Any] = {}
+        real_lock = real_package._state_lock
+
+        def _shrunk_lock(timeout: float = 60.0):
+            seen["timeout"] = timeout
+            return real_lock(timeout=0.3)
+
+        monkeypatch.setattr(real_package, "_state_lock", _shrunk_lock)
+
+        lock_path = _isolate_env / "hermes_starts" / ".state.json.lock"
+        holder = open(lock_path, "a+b")
+        try:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = _call(
+                hermes_starts_module, {"action": "recover", "anchor_id": "msg-A"}
+            )
+        finally:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+            holder.close()
+
+        assert result["success"] is False
+        assert "lock" in result["error"]
+        assert isinstance(seen.get("timeout"), (int, float))
+        assert 0 < seen["timeout"] <= 10
+        assert not discord_router.calls
