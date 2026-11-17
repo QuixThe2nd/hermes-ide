@@ -5,6 +5,7 @@ from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional, Tuple, Union
 
 from agent.skill_utils import is_excluded_skill_path
+from hermes_cli.update_cmd_git import OFFICIAL_REPO_URL
 from tools.skills_hub_github import GitHubAuth, GitHubSource, _skip_bundle_file, _tree_members
 from tools.skills_hub_models import (
     SkillBundle, SkillMeta, SkillSource, _hermes_tags, _matches_query, _memo_json, _parse_frontmatter, hub,
@@ -32,13 +33,16 @@ def _entry_provider(entry: dict) -> str:
 
 
 class OptionalSkillSource(SkillSource):
-    """Skills from the repo's ``optional-skills/`` directory: official (Nous-maintained) but not
-    activated by default — absent from the system prompt and not copied to ~/.hermes/skills/ at
-    setup. Discoverable via the Skills Hub as source "official" with "builtin" trust."""
+    """Skills from the repo's ``optional-skills/`` directory: official (maintained in this
+    fork's repo) but not activated by default — absent from the system prompt and not copied to
+    ~/.hermes/skills/ at setup. Discoverable via the Skills Hub as source "official" with
+    "builtin" trust."""
 
     SOURCE_ID = "official"
     TRUST_LEVEL = "builtin"
-    OFFICIAL_REPO = "NousResearch/hermes-agent"
+    # Single source of truth is the update pipeline's repo URL, so the catalog
+    # and `hermes update` can never drift apart.
+    OFFICIAL_REPO = OFFICIAL_REPO_URL.removeprefix("https://github.com/").removesuffix(".git")
     OPTIONAL_SKILLS_PREFIX = "optional-skills"
 
     _parse_frontmatter = staticmethod(_parse_frontmatter)
@@ -212,7 +216,10 @@ class OptionalSkillSource(SkillSource):
                         dirs[rel_dir] = True
             return dirs or None
 
-        self._remote_dirs = _memo_json("official_optional_dirs", compute,
+        # The key embeds the repo slug: a cached listing fetched from a different
+        # official repo (e.g. pre-fork upstream) must never be served for this one.
+        key = f"official_optional_dirs_{self.OFFICIAL_REPO.replace('/', '__')}"
+        self._remote_dirs = _memo_json(key, compute,
                                        valid=lambda c: isinstance(c, dict) and bool(c)) or {}
         return self._remote_dirs
 
