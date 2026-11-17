@@ -219,7 +219,7 @@ class RetainBacklog:
 
     def _load(self) -> list[dict]:
         try:
-            raw = self.path.read_text(encoding="utf-8")
+            raw = self.path.read_text(encoding="utf-8-sig")
         except FileNotFoundError:
             self._may_exist = False
             return []
