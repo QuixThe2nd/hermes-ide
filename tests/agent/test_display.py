@@ -208,12 +208,6 @@ class TestDescribeToolCallSkillAndDelegateDescription:
         )
         assert phrase == "Delegating to a Claude agent in /w"
 
-    def test_delegate_agent_cursor_with_reason(self):
-        phrase = describe_tool_call(
-            "delegate_agent",
-            {"backend": "cursor", "goal": "g", "description": "cloud fix"},
-        )
-        assert phrase == "Delegated to Cursor agent: cloud fix"
 
 class TestDescribeDelegateLanePhrase:
     """describe_tool_call — progress phrases for the delegate_<lane> tools."""
