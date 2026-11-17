@@ -26,6 +26,7 @@ from tests.tools.test_cursor_agent_tool import (
     _default_client_agent_id,
     _install_cloud_happy_path,
 )
+from tests.tools.fixtures.fake_cursor_cloud import complete_stream_body
 from tests.tools.test_delegate_lanes import _write_fake_omp
 
 
@@ -348,6 +349,17 @@ def test_cursor_real_runner_reaches_submitted_payload(monkeypatch, tmp_path, ski
     workdir.mkdir()
     _configure_lane(monkeypatch, "backend_dev", "cursor", skills)
     _install_cloud_happy_path(monkeypatch, tmp_path)
+    # f677e4c6f13 requires a hash-verified artifact before a FINISHED run
+    # counts; the happy path serves an empty (truncated) stream, so serve a
+    # complete run stream via the shared helper the other real-runner cursor
+    # tests use (tests/tools/fixtures/fake_cursor_cloud.py).
+    from tools import cursor_artifact_egress
+
+    monkeypatch.setattr(
+        cursor_artifact_egress,
+        "_http_get_stream",
+        lambda url, *, api_key, timeout: complete_stream_body(),
+    )
     captured = {}
 
     def _create(payload, api_key):
