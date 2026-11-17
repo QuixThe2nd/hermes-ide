@@ -31,6 +31,11 @@ from utils import atomic_json_write
 _DISCORD_API_BASE = "https://discord.com/api/v10"
 _USER_AGENT = "DiscordBot (https://github.com/NousResearch/hermes-agent, 1.0)"
 _MAX_MESSAGE_LEN = 1950
+# Every Discord REST call is bounded: a call stuck on a dead peer must fail
+# into its caller's error path (leaving the reservation recoverable), never
+# pin the state lock until the tool-level timeout abandons the thread
+# (pc_c965dac61862).
+_DISCORD_REQUEST_TIMEOUT_SECONDS = 30.0
 
 # -- duplicate-start gate ----------------------------------------------------
 #
@@ -165,6 +170,22 @@ START_CONVERSATION_SCHEMA = {
             "force": {
                 "type": "boolean",
                 "description": "Re-provision the channel even if one already exists (setup action).",
+            },
+            "anchor_id": {
+                "type": "string",
+                "description": (
+                    "recover: anchor message id of an opening already posted "
+                    "whose start did not finish; reconciles its thread, "
+                    "listener mark, session seed and history without reposting."
+                ),
+            },
+            "start_number": {
+                "type": "integer",
+                "description": (
+                    "recover: reserved start number to reconcile when the "
+                    "anchor id was never recorded; content is verified "
+                    "before adopting."
+                ),
             },
         },
         "required": [],
@@ -503,7 +524,9 @@ def _discord_request(token: str, method: str, url: str, body: Any = None) -> Dic
     if body is not None:
         data = json.dumps(body).encode("utf-8")
     request = urllib.request.Request(url, data=data, method=method, headers=headers)
-    with urllib.request.urlopen(request) as response:
+    with urllib.request.urlopen(
+        request, timeout=_DISCORD_REQUEST_TIMEOUT_SECONDS
+    ) as response:
         raw = response.read().decode("utf-8")
         if not raw:
             return {}
@@ -824,6 +847,77 @@ def _state_lock(timeout: float = 60.0):
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     finally:
         handle.close()
+
+# Recovery takes the same cross-process lock with its own, shorter budget:
+# it must fail cleanly when a live start still holds the lock, not queue
+# behind it for a minute.
+_RECOVER_LOCK_TIMEOUT_SECONDS = 10.0
+
+
+def _pending_start_summary(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """In-flight starts as a result-facing list of ``{number, stage,
+    anchor_id}`` (plus ``thread_id`` when a milestone recorded one)."""
+    reservations = state.get(_RESERVATION_KEY)
+    rows = (
+        [r for r in reservations if isinstance(r, dict)]
+        if isinstance(reservations, list)
+        else []
+    )
+    summary: List[Dict[str, Any]] = []
+    for row in rows:
+        try:
+            number = int(row.get("number") or 0)
+        except (TypeError, ValueError):
+            continue
+        entry = {
+            "number": number,
+            "stage": str(row.get("stage") or ""),
+            "anchor_id": str(row.get("anchor_id") or ""),
+        }
+        thread_id = str(row.get("thread_id") or "")
+        if thread_id:
+            entry["thread_id"] = thread_id
+        summary.append(entry)
+    return summary
+
+
+def _recover_hint(pending: List[Dict[str, Any]]) -> str:
+    """How to finish the first half-sent start without reposting it."""
+    for row in pending:
+        if row.get("anchor_id"):
+            return (
+                "a start did not finish: call start_conversation with "
+                f"action='recover' and anchor_id='{row['anchor_id']}' to "
+                "reconcile its thread, listener mark, session seed and "
+                "history without reposting the opening"
+            )
+    if pending:
+        return (
+            "a start did not finish before its anchor id was recorded: "
+            "find the posted opening's message id in the inbox channel, "
+            f"then call start_conversation with action='recover', "
+            f"start_number={pending[0]['number']} and that anchor_id "
+            "(content is verified before adopting)"
+        )
+    return ""
+
+
+def _with_pending_details(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Attach what is known about in-flight starts to a failure result.
+
+    Read without the lock (the caller could not take it, or lost it to an
+    abandoned send); a stale read only over-shares recoverable state.
+    """
+    try:
+        pending = _pending_start_summary(_load_state())
+    except Exception:
+        return result
+    if pending:
+        result["pending_start"] = pending
+        hint = _recover_hint(pending)
+        if hint:
+            result["recover_hint"] = hint
+    return result
 
 
 def _dedup_settings() -> Dict[str, Any]:
@@ -1568,7 +1662,11 @@ def _handle_start(args: Dict[str, Any], token: str) -> str:
         with _state_lock():
             return _handle_start_locked(kind, message, next_move, tone, token)
     except _StateLockUnavailable as exc:
-        return json.dumps({"success": False, "dedup_deferred": True, "error": str(exc)})
+        return json.dumps(
+            _with_pending_details(
+                {"success": False, "dedup_deferred": True, "error": str(exc)}
+            )
+        )
     except _StateUnreadable as exc:
         return json.dumps({
             "success": False,
@@ -1756,66 +1854,101 @@ def _send_reserved_start(
                     _post_channel_message(token, state["channel_id"], part)
                 )
 
-        # The anchor id is known and every part is away: the reservation becomes
-        # history and the counter moves. From here the start is real, so a later
-        # attempt at the same opening is refused by the gate.
-        _commit_start(number, kind, composed, anchor_id, thread_id)
-
-        result: Dict[str, Any] = {
-            "success": True,
-            "action": "start",
-            "start_number": number,
-            "channel_id": state["channel_id"],
-            "channel_message_id": anchor_id,
-            "channel_message_ids": channel_message_ids,
-            "thread_message_ids": thread_message_ids,
-        }
+        # The anchor id is known and every part is away: the reservation
+        # becomes history and the counter moves. From here the start is
+        # real, so a later attempt at the same opening is refused by the
+        # gate.
+        result = _finalize_committed_start(
+            number,
+            kind,
+            composed,
+            anchor_id,
+            thread_id,
+            thread_name,
+            state["channel_id"],
+            channel_message_ids,
+            thread_message_ids,
+            warnings,
+        )
+        result["action"] = "start"
         if mention_uid:
             result["mentioned_user_id"] = mention_uid
-        if thread_id:
-            result["thread_id"] = thread_id
-            result["thread_name"] = thread_name
-            try:
-                _mark_participated_thread(thread_id)
-                _record_start_epoch()
-            except Exception as exc:
-                warnings.append(f"thread listen mark failed: {exc}")
-            seeded_key: Optional[str] = None
-            seed_error: Optional[str] = None
-            try:
-                seeded_key = _seed_thread_session(
-                    thread_id,
-                    thread_name,
-                    composed,
-                )
-            except Exception as exc:
-                seed_error = f"{type(exc).__name__}: {exc}"
-            if seeded_key:
-                result["session_seed_key"] = seeded_key
-            else:
-                # Never silently successful: the opening is posted in Discord
-                # but not provably durable in the thread's session, so the
-                # first reply may open a blank conversation. Report it with
-                # the surviving Discord ids; the start stays a success and
-                # nothing is re-sent.
-                detail = f": {seed_error}" if seed_error else ""
-                warnings.append(
-                    f"session seed incomplete{detail}: opening not durable "
-                    f"in the thread session; the first reply in thread "
-                    f"{thread_id} may not see the opening (anchor message "
-                    f"{anchor_id}, thread {thread_id}). No re-send was "
-                    "attempted."
-                )
-        if warnings:
-            result["warning"] = "; ".join(warnings)
         return json.dumps(result)
     except urllib.error.HTTPError as exc:
-        return json.dumps({"success": False, "error": f"HTTP error: {exc.code}"})
+        return json.dumps(
+            _with_pending_details({"success": False, "error": f"HTTP error: {exc.code}"})
+        )
     except urllib.error.URLError as exc:
         reason = exc.reason if isinstance(exc.reason, str) else str(exc.reason)
-        return json.dumps({"success": False, "error": f"URL error: {reason}"})
+        return json.dumps(
+            _with_pending_details({"success": False, "error": f"URL error: {reason}"})
+        )
     except Exception as exc:
-        return json.dumps({"success": False, "error": str(exc)})
+        return json.dumps(_with_pending_details({"success": False, "error": str(exc)}))
+
+
+def _finalize_committed_start(
+    number: int,
+    kind: str,
+    composed: str,
+    anchor_id: str,
+    thread_id: str,
+    thread_name: str,
+    channel_id: str,
+    channel_message_ids: List[str],
+    thread_message_ids: List[str],
+    warnings: List[str],
+) -> Dict[str, Any]:
+    """Commit a finished send and run the bookkeeping that follows it.
+
+    Shared by the live send (``_send_reserved_start``) and anchor recovery
+    (``recovery.py``): the history entry and counter move exactly once, and
+    the listener mark, start epoch and session seed are attempted with
+    failures reported as warnings, never as a failed start. Caller holds
+    the state lock.
+    """
+    _commit_start(number, kind, composed, anchor_id, thread_id)
+    result: Dict[str, Any] = {
+        "success": True,
+        "start_number": number,
+        "channel_id": channel_id,
+        "channel_message_id": anchor_id,
+        "channel_message_ids": channel_message_ids,
+        "thread_message_ids": thread_message_ids,
+    }
+    if thread_id:
+        result["thread_id"] = thread_id
+        result["thread_name"] = thread_name
+        try:
+            _mark_participated_thread(thread_id)
+            _record_start_epoch()
+        except Exception as exc:
+            warnings.append(f"thread listen mark failed: {exc}")
+        seeded_key: Optional[str] = None
+        seed_error: Optional[str] = None
+        try:
+            seeded_key = _seed_thread_session(thread_id, thread_name, composed)
+        except Exception as exc:
+            seed_error = f"{type(exc).__name__}: {exc}"
+        if seeded_key:
+            result["session_seed_key"] = seeded_key
+        else:
+            # Never silently successful: the opening is posted in Discord
+            # but not provably durable in the thread's session, so the
+            # first reply may open a blank conversation. Report it with
+            # the surviving Discord ids; the start stays a success and
+            # nothing is re-sent.
+            detail = f": {seed_error}" if seed_error else ""
+            warnings.append(
+                f"session seed incomplete{detail}: opening not durable "
+                f"in the thread session; the first reply in thread "
+                f"{thread_id} may not see the opening (anchor message "
+                f"{anchor_id}, thread {thread_id}). No re-send was "
+                "attempted."
+            )
+    if warnings:
+        result["warning"] = "; ".join(warnings)
+    return result
 
 
 def handle_start_conversation(args: dict, **kwargs: Any) -> str:
@@ -1833,16 +1966,12 @@ def handle_start_conversation(args: dict, **kwargs: Any) -> str:
         if action == "setup":
             return _handle_setup(args, token)
         if action == "recover":
+            from plugins.hermes_starts.recovery import _handle_recover
+
             return _handle_recover(args, token)
         return _handle_start(args, token)
     except Exception as exc:
         return json.dumps({"success": False, "error": str(exc)})
-
-
-def _handle_recover(args: Dict[str, Any], token: str) -> str:
-    # Stub: the recovery implementation lands with the bounded-send fix; the
-    # behavioral pins for it fail against this placeholder on purpose.
-    return json.dumps({"success": False, "error": "not implemented"})
 
 
 def check_requirements() -> bool:

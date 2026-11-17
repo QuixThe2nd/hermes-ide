@@ -75,6 +75,13 @@ def _deliver_inbox_opening(
     thread_id = ""
     try:
         thread_id = _create_thread_for_message(token, channel_id, message_id, title)
+    except TimeoutError:
+        # A timed-out create is not a failed one — the thread may exist
+        # server-side, and the send's outcome is unknown. Degrading to
+        # channel-only delivery here would strand the tail parts with the
+        # reservation's milestones half-advanced; the caller must fail the
+        # start and leave the recorded anchor for action='recover'.
+        raise
     except urllib.error.HTTPError as exc:
         if require_thread:
             raise
