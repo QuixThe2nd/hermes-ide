@@ -46,7 +46,7 @@ global.chrome = {
     onChanged: event,
     sync: { async get() { return {}; } },
   },
-  windows: { onFocusChange: event },
+  windows: { onFocusChanged: event },
 };
 
 require(backgroundScript);

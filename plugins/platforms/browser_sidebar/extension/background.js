@@ -57,7 +57,7 @@ chrome.action.onClicked.addListener((tab) => {
   openSidePanel(tab && typeof tab.windowId === 'number' ? tab.windowId : lastFocusedNormalWindowId);
 });
 
-chrome.windows.onFocusChange.addListener((windowId) => {
+chrome.windows.onFocusChanged.addListener((windowId) => {
   if (typeof windowId !== 'number' || windowId <= 0) return;
   chrome.windows
     .get(windowId)
