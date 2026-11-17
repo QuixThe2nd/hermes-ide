@@ -255,6 +255,7 @@ function handleWireFrame(data) {
       return; // tool traffic stays in the worker
     case 'ready':
     case 'delta':
+    case 'typing':
     case 'final':
     case 'error':
       broadcast({ kind: 'frame', frame }); // UI surfaces render these

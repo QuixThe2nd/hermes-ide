@@ -63,12 +63,50 @@ function ensureStreamBubble() {
   return made;
 }
 
+// ─── Typing indicator (not persisted; lives only in the live DOM) ──────────
+
+const TYPING_TIMEOUT_MS = 10000;
+let typingRow = null;
+let typingTimer = null;
+
+function showTypingIndicator() {
+  if (streamBubble) return; // the streaming bubble already signals activity
+  if (!typingRow) {
+    const row = document.createElement('div');
+    row.className = 'bubble typing';
+    const label = document.createElement('div');
+    label.className = 'who';
+    label.textContent = WHO_LABEL.steve;
+    const dots = document.createElement('div');
+    dots.className = 'dots';
+    dots.append(document.createElement('span'), document.createElement('span'), document.createElement('span'));
+    row.append(label, dots);
+    typingRow = row;
+  }
+  if (!typingRow.isConnected) transcriptEl.append(typingRow);
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  clearTimeout(typingTimer);
+  typingTimer = setTimeout(hideTypingIndicator, TYPING_TIMEOUT_MS);
+}
+
+function hideTypingIndicator() {
+  clearTimeout(typingTimer);
+  typingTimer = null;
+  if (typingRow && typingRow.isConnected) typingRow.remove();
+}
+
 // ─── Frames from the worker ─────────────────────────────────────────────────
 
 function handleFrame(frame) {
   if (!frame || typeof frame !== 'object') return;
   switch (frame.type) {
+    case 'typing': {
+      if (frame.active) showTypingIndicator();
+      else hideTypingIndicator();
+      return;
+    }
     case 'delta': {
+      hideTypingIndicator(); // the live bubble below signals activity instead
       const chunk = typeof frame.text === 'string' ? frame.text : frame.chunk;
       if (typeof chunk !== 'string' || !chunk) return;
       ensureStreamBubble().text.textContent += chunk; // suffix-only append
@@ -76,6 +114,7 @@ function handleFrame(frame) {
       return;
     }
     case 'final': {
+      hideTypingIndicator();
       const text = typeof frame.text === 'string' ? frame.text : '';
       if (!streamBubble) {
         appendEntry('steve', text); // final without any delta
@@ -90,6 +129,7 @@ function handleFrame(frame) {
       return;
     }
     case 'error': {
+      hideTypingIndicator();
       if (streamBubble) { // failed turn: keep the partial text, stop the cursor
         streamBubble.bubble.classList.remove('streaming');
         streamBubble = null;
@@ -132,6 +172,7 @@ async function send() {
   }
   inputEl.value = '';
   appendEntry('user', text);
+  showTypingIndicator(); // optimistic: the real typing/delta frames take over from here
 }
 
 inputEl.addEventListener('keydown', (event) => {
