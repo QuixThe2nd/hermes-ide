@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -191,8 +192,22 @@ func item(content string) map[string]any {
 	return map[string]any{"content": content, "timestamp": "2026-11-17T05:00:00Z"}
 }
 
-func entry(id, content string, retryAfter time.Time) Entry {
-	return Entry{ID: id, BankID: "test-bank", Item: item(content), QueuedAt: time.Now().UTC(), RetryAfter: retryAfter}
+// idMemo maps a test label to one minted operation id so assertions can
+// reference labels while every entry still carries a real UUID operation key
+// (entry ids must be replayable operation ids, see entryValid).
+var idMemo = map[string]string{}
+
+func idFor(label string) string {
+	if id, ok := idMemo[label]; ok {
+		return id
+	}
+	id := newOperationID()
+	idMemo[label] = id
+	return id
+}
+
+func entry(label, content string, retryAfter time.Time) Entry {
+	return Entry{ID: idFor(label), BankID: "test-bank", Item: item(content), QueuedAt: time.Now().UTC(), RetryAfter: retryAfter}
 }
 
 func openQueue(t *testing.T, path string) *Queue {
@@ -226,7 +241,7 @@ func TestQueuePersistenceRoundTrip(t *testing.T) {
 		t.Fatal("reopened queue must may-exist")
 	}
 	got := reopened.Entries()
-	if len(got) != 2 || got[0].ID != "id-1" || got[1].ID != "id-2" {
+	if len(got) != 2 || got[0].ID != idFor("id-1") || got[1].ID != idFor("id-2") {
 		t.Fatalf("FIFO order lost on round-trip: %+v", got)
 	}
 	if got[0].Item["content"] != "first memory" || got[0].BankID != "test-bank" {
@@ -291,7 +306,7 @@ func TestDrainNotDueSendsNothing(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	calls := 0
-	if err := q.Drain(now, func(Entry) error { calls++; return nil }); err != nil {
+	if _, err := q.Drain(now, func(Entry) error { calls++; return nil }); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
 	if calls != 0 {
@@ -301,7 +316,7 @@ func TestDrainNotDueSendsNothing(t *testing.T) {
 		t.Fatalf("entries = %d, want 1", got)
 	}
 	// The gate re-opens at the earliest retry_after.
-	if err := q.Drain(future.Add(time.Second), func(Entry) error { calls++; return nil }); err != nil {
+	if _, err := q.Drain(future.Add(time.Second), func(Entry) error { calls++; return nil }); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
 	if calls != 1 {
@@ -319,7 +334,7 @@ func TestDrainFIFORemoveAfterSuccess(t *testing.T) {
 		}
 	}
 	var order []string
-	if err := q.Drain(time.Now().UTC(), func(e Entry) error {
+	if _, err := q.Drain(time.Now().UTC(), func(e Entry) error {
 		order = append(order, e.Item["content"].(string))
 		return nil
 	}); err != nil {
@@ -336,7 +351,7 @@ func TestDrainFIFORemoveAfterSuccess(t *testing.T) {
 	}
 	// A second pass sends nothing (exactly-once).
 	calls := 0
-	if err := q.Drain(time.Now().UTC(), func(Entry) error { calls++; return nil }); err != nil {
+	if _, err := q.Drain(time.Now().UTC(), func(Entry) error { calls++; return nil }); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
 	if calls != 0 {
@@ -354,8 +369,8 @@ func TestDrainRemovesOnlySucceededEntries(t *testing.T) {
 		}
 	}
 	boom := errors.New("transient network blip")
-	err := q.Drain(time.Now().UTC(), func(e Entry) error {
-		if e.ID == "bad-1" {
+	_, err := q.Drain(time.Now().UTC(), func(e Entry) error {
+		if e.ID == idFor("bad-1") {
 			return boom
 		}
 		return nil
@@ -365,11 +380,11 @@ func TestDrainRemovesOnlySucceededEntries(t *testing.T) {
 	}
 	// First removed after success; the failing one and everything behind it stay.
 	remaining := q.Entries()
-	if len(remaining) != 2 || remaining[0].ID != "bad-1" || remaining[1].ID != "ok-2" {
+	if len(remaining) != 2 || remaining[0].ID != idFor("bad-1") || remaining[1].ID != idFor("ok-2") {
 		t.Fatalf("remaining = %+v, want [bad-1 ok-2]", remaining)
 	}
 	// A later pass can finish the job.
-	if err := q.Drain(time.Now().UTC(), func(Entry) error { return nil }); err != nil {
+	if _, err := q.Drain(time.Now().UTC(), func(Entry) error { return nil }); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
 	if got := len(openQueue(t, path).Entries()); got != 0 {
@@ -388,12 +403,15 @@ func TestDrainStopsOnRateLimitAndPushesRetryForward(t *testing.T) {
 	}
 	newRetry := time.Now().UTC().Add(3 * time.Hour)
 	calls := 0
-	err := q.Drain(time.Now().UTC(), func(e Entry) error {
+	next, err := q.Drain(time.Now().UTC(), func(e Entry) error {
 		calls++
 		return &RateLimitedError{RetryAt: newRetry}
 	})
 	if err != nil {
 		t.Fatalf("rate-limited drain must stop the pass, not fail: %v", err)
+	}
+	if !next.Equal(newRetry) {
+		t.Fatalf("drain next-retry = %v, want the pushed hint %v", next, newRetry)
 	}
 	if calls != 1 {
 		t.Fatalf("retain called %d times, want 1 (stop on first rate-limit)", calls)
@@ -405,7 +423,7 @@ func TestDrainStopsOnRateLimitAndPushesRetryForward(t *testing.T) {
 	}
 	// While the head is still limited the gate stays shut.
 	calls = 0
-	if err := q.Drain(time.Now().UTC().Add(time.Hour), func(Entry) error { calls++; return nil }); err != nil {
+	if _, err := q.Drain(time.Now().UTC().Add(time.Hour), func(Entry) error { calls++; return nil }); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
 	if calls != 0 {
@@ -413,7 +431,7 @@ func TestDrainStopsOnRateLimitAndPushesRetryForward(t *testing.T) {
 	}
 	// Once past it, the same FIFO order drains.
 	var order []string
-	if err := q.Drain(newRetry.Add(time.Second), func(e Entry) error {
+	if _, err := q.Drain(newRetry.Add(time.Second), func(e Entry) error {
 		order = append(order, e.Item["content"].(string))
 		return nil
 	}); err != nil {
@@ -438,7 +456,7 @@ func TestDrainEarliestGateMixedEntries(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 	calls := 0
-	if err := q.Drain(time.Now().UTC(), func(Entry) error { calls++; return nil }); err != nil {
+	if _, err := q.Drain(time.Now().UTC(), func(Entry) error { calls++; return nil }); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
 	if calls != 0 {
@@ -451,13 +469,13 @@ func TestDrainEarliestGateMixedEntries(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 	var order []string
-	if err := q.Drain(time.Now().UTC(), func(e Entry) error {
+	if _, err := q.Drain(time.Now().UTC(), func(e Entry) error {
 		order = append(order, e.ID)
 		return nil
 	}); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
-	if len(order) != 3 || order[0] != "later-1" || order[1] != "later-2" || order[2] != "due-1" {
+	if len(order) != 3 || order[0] != idFor("later-1") || order[1] != idFor("later-2") || order[2] != idFor("due-1") {
 		t.Fatalf("drain order = %v, want FIFO [later-1 later-2 due-1]", order)
 	}
 	if got := len(openQueue(t, path).Entries()); got != 0 {
@@ -471,7 +489,7 @@ func TestEntriesCopyAndCallArgFidelity(t *testing.T) {
 	due := time.Now().UTC().Add(-time.Second)
 	async := true
 	src := Entry{
-		ID: "id-args", BankID: "bank-x", Item: item("with args"),
+		ID: idFor("id-args"), BankID: "bank-x", Item: item("with args"),
 		DocumentID: "doc-42", RetainAsync: &async, QueuedAt: time.Now().UTC(), RetryAfter: due,
 	}
 	if _, err := q.Add(src); err != nil {
@@ -479,7 +497,7 @@ func TestEntriesCopyAndCallArgFidelity(t *testing.T) {
 	}
 
 	var got Entry
-	if err := q.Drain(time.Now().UTC(), func(e Entry) error { got = e; return nil }); err != nil {
+	if _, err := q.Drain(time.Now().UTC(), func(e Entry) error { got = e; return nil }); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
 	if got.BankID != "bank-x" || got.DocumentID != "doc-42" || got.RetainAsync == nil || !*got.RetainAsync {
@@ -495,7 +513,7 @@ func TestEntriesCopyAndCallArgFidelity(t *testing.T) {
 	}
 	snapshot := q.Entries()
 	snapshot[0], snapshot[1] = snapshot[1], snapshot[0]
-	if ids := []string{q.Entries()[0].ID, q.Entries()[1].ID}; ids[0] != "a" || ids[1] != "b" {
+	if ids := []string{q.Entries()[0].ID, q.Entries()[1].ID}; ids[0] != idFor("a") || ids[1] != idFor("b") {
 		t.Fatalf("queue order perturbed by caller mutation: %v", ids)
 	}
 }
@@ -507,7 +525,7 @@ func TestDrainWrappedRateLimitedErrorUnwraps(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 	newRetry := time.Now().UTC().Add(90 * time.Minute)
-	err := q.Drain(time.Now().UTC(), func(Entry) error {
+	next, err := q.Drain(time.Now().UTC(), func(Entry) error {
 		return fmt.Errorf("aretain_batch: %w", &RateLimitedError{RetryAt: newRetry})
 	})
 	if err != nil {
@@ -516,22 +534,92 @@ func TestDrainWrappedRateLimitedErrorUnwraps(t *testing.T) {
 	if got := q.Entries()[0].RetryAfter; !got.Equal(newRetry) {
 		t.Fatalf("retry_after = %v, want %v", got, newRetry)
 	}
+	if !next.Equal(newRetry) {
+		t.Fatalf("drain next-retry = %v, want the pushed hint %v", next, newRetry)
+	}
 }
 
-func TestOpenSkipsTornLines(t *testing.T) {
+func TestOpenQuarantinesCorruptLines(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "retain-backlog.jsonl")
 	good, _ := json.Marshal(entry("good-1", "kept", time.Now().UTC()))
-	torn := map[string]any{"id": nil} // unmarshalable as Entry keeps id zero
+	torn := map[string]any{"id": nil} // id null: unusable as an operation key
 	bad, _ := json.Marshal(torn)
+	// The identical corrupt line appears twice in one file: quarantined
+	// once per load (per-instance dedupe, mirroring the Python twin's
+	// in-memory line set; a restart re-appends, like Python's).
 	if err := os.WriteFile(path, []byte(
-		string(good)+"\n"+string(bad)+"\n{not json\n\n"+string(good)+"\n"), 0o600); err != nil {
+		string(good)+"\n"+string(bad)+"\n{not json\n"+string(bad)+"\n"+string(good)+"\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	q := openQueue(t, path)
 	entries := q.Entries()
-	if len(entries) != 2 || entries[0].ID != "good-1" || entries[1].ID != "good-1" {
+	if len(entries) != 2 || entries[0].ID != idFor("good-1") || entries[1].ID != idFor("good-1") {
 		t.Fatalf("torn-line recovery = %+v, want both good entries", entries)
+	}
+	// The corrupt lines survive in the sidecar, never silently dropped.
+	raw, err := os.ReadFile(path + CorruptSuffix)
+	if err != nil {
+		t.Fatalf("corrupt sidecar missing: %v", err)
+	}
+	if !strings.Contains(string(raw), string(bad)) || !strings.Contains(string(raw), "{not json") {
+		t.Fatalf("corrupt sidecar = %q, want both bad lines", raw)
+	}
+	if got := strings.Count(string(raw), string(bad)); got != 1 {
+		t.Fatalf("identical corrupt line quarantined %d times in one load, want 1", got)
+	}
+	// Reopen keeps replaying the good entries (a restart re-quarantines the
+	// still-live corrupt lines, like the Python twin).
+	if entries := openQueue(t, path).Entries(); len(entries) != 2 {
+		t.Fatalf("reopen entries = %d, want 2", len(entries))
+	}
+}
+
+func TestDrainReturnsNextRetry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "retain-backlog.jsonl")
+	q := openQueue(t, path)
+	future := time.Now().UTC().Add(2 * time.Hour)
+	if _, err := q.Add(entry("later", "memory", future)); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	// Gate shut: the pass returns the earliest retry so the caller can arm an
+	// exact wakeup instead of polling.
+	next, err := q.Drain(time.Now().UTC(), func(Entry) error { return nil })
+	if err != nil || !next.Equal(future) {
+		t.Fatalf("gated drain = (%v, %v), want (%v, nil)", next, err, future)
+	}
+	if !q.NextRetry().Equal(future) {
+		t.Fatalf("NextRetry = %v, want %v", q.NextRetry(), future)
+	}
+	// Fully drained: zero time means no wakeup is needed.
+	if next, err = q.Drain(future.Add(time.Second), func(Entry) error { return nil }); err != nil || !next.IsZero() {
+		t.Fatalf("drained next-retry = (%v, %v), want (zero, nil)", next, err)
+	}
+	// Non-rate-limit settle failure: entry kept, its retry returned with the
+	// error so a wakeup can still be armed for the retry.
+	if _, err := q.Add(entry("flaky", "memory", time.Now().UTC().Add(-time.Minute))); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	next, err = q.Drain(time.Now().UTC(), func(Entry) error { return errors.New("probe down") })
+	if err == nil || !next.Equal(q.NextRetry()) {
+		t.Fatalf("failed settle = (%v, %v), want (earliest retry, error)", next, err)
+	}
+}
+
+func TestAddMintsOperationID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "retain-backlog.jsonl")
+	q := openQueue(t, path)
+	added, err := q.Add(Entry{BankID: "test-bank", Item: item("minted"), RetryAfter: time.Now().UTC()})
+	if err != nil || !added {
+		t.Fatalf("Add = (%v, %v)", added, err)
+	}
+	id := q.Entries()[0].ID
+	if !uuidRe.MatchString(id) {
+		t.Fatalf("Add must mint a UUID operation id when empty, got %q", id)
+	}
+	// The minted id is persisted — it survives a reopen, still replayable.
+	if got := openQueue(t, path).Entries()[0].ID; got != id {
+		t.Fatalf("minted id not durable: %q vs %q", got, id)
 	}
 }
 
@@ -540,7 +628,7 @@ func TestOpenMissingFileIsQuiet(t *testing.T) {
 	if q.MayExist() {
 		t.Fatal("absent backlog must not may-exist")
 	}
-	if err := q.Drain(time.Now().UTC(), func(Entry) error {
+	if _, err := q.Drain(time.Now().UTC(), func(Entry) error {
 		t.Fatal("retain must not run for an absent backlog")
 		return nil
 	}); err != nil {
