@@ -158,10 +158,10 @@ class CronTickYielded(RuntimeError):
     """A stale-code ticker yielded this tick to a fresh gateway.
 
     Raised by ``tick()`` BEFORE the tick lock when boot fingerprint ≠ disk, this process does NOT
-    own the runtime lock and a fresh process holds it — the stale process must stay out of the
-    dispatch race (contention would starve the fresh ticker). Skew ``None`` never yields (fail
-    open). Raised, not returned, so ``record_ticker_error`` sees it and ``hermes cron status``
-    isn't green.
+    own the runtime lock and a process PROVABLY fresher than this one (not our overlap predecessor,
+    started later) holds it — the stale process must stay out of the dispatch race (contention
+    would starve the fresh ticker). Skew ``None`` never yields (fail open). Raised, not returned,
+    so ``record_ticker_error`` sees it and ``hermes cron status`` isn't green.
     """
 
     def __init__(self, boot_rev: str, disk_rev: str) -> None:
@@ -178,10 +178,41 @@ _YIELD_LOG_INTERVAL_SECONDS = 3600.0
 _last_yield_log: dict[str, object] = {}
 
 
+def _runtime_lock_holder_is_fresher() -> bool:
+    """True only when the gateway runtime-lock holder is PROVABLY fresher than this process:
+    its lock record (``gateway/status.py``) carries a usable pid + start time, that pid is not
+    this process's overlap predecessor, and the holder started strictly later than this process.
+    A draining overlap predecessor legitimately holds the lock while its pending successor runs —
+    that holder is older by construction and the successor must keep dispatching cron. Start-time
+    units are host-local (``get_process_start_time``); both values come from the same host, so the
+    comparison is sound. Any unreadable record or failed probe → False — yielding is a certainty
+    claim, never a guess."""
+    try:
+        from gateway import status as _gateway_status
+        from gateway.overlap_restart import overlap_predecessor_pid
+    except Exception:
+        return False
+    try:
+        record = _gateway_status._read_gateway_lock_record()
+        if not isinstance(record, dict):
+            return False
+        holder_pid = int(record.get("pid") or 0)
+        holder_start = int(record.get("start_time") or 0)
+        own_start = _gateway_status.get_process_start_time(os.getpid())
+    except Exception:
+        return False
+    if holder_pid <= 0 or holder_start <= 0 or own_start is None or own_start <= 0:
+        return False
+    if holder_pid == overlap_predecessor_pid():
+        return False
+    return holder_start > own_start
+
+
 def _should_yield_tick_to_fresh_gateway() -> tuple[str, str] | None:
     """``(boot_rev, disk_rev)`` when this tick must yield to a fresher gateway, else None. Yields
-    only when ALL hold: code skew, we don't own the runtime lock, another process holds it. Every
-    probe failure returns None — yielding is a certainty claim, never a guess."""
+    only when ALL hold: code skew, we don't own the runtime lock, another process holds it, and
+    that holder is provably fresher than this process (see ``_runtime_lock_holder_is_fresher``).
+    Every probe failure returns None — yielding is a certainty claim, never a guess."""
     skew = _detect_gateway_code_skew()
     if skew is None:
         return None
@@ -195,6 +226,8 @@ def _should_yield_tick_to_fresh_gateway() -> tuple[str, str] | None:
         if not _gateway_status.is_gateway_runtime_lock_active():
             return None
     except Exception:
+        return None
+    if not _runtime_lock_holder_is_fresher():
         return None
     return skew
 
