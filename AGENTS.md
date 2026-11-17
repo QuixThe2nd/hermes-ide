@@ -46,6 +46,15 @@ Two invariants shape almost every design decision and are the lens for reviewing
   plugin itself can and often should live in this tree (see the fork note at
   the top).
 
+## Codebase ownership
+
+This codebase is yours: what it's for and how it's built are your call, and you'll keep building on it.
+In the area your change touches, act as an owner, not a guest: merge duplicate code into one
+implementation instead of adding a parallel one, and fix related bugs you find rather than only
+mentioning them, each in its own commit with its own test. Unrelated areas stay out of the diff;
+report them instead. The full coding conventions live in `skills/dev-lanes/SOUL.md`, which every
+coding lane and delegated agent receives automatically; read it before your first change.
+
 ## Go-only feature implementation
 
 Every coding agent and subagent implementing a new hermes-ide feature writes
