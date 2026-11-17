@@ -14,7 +14,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from hermes_constants import get_hermes_home
 from tools.delegate_tool_config import _cfg
 
-HARNESSES = frozenset({"omp", "claude", "cursor", "subagent"})
+HARNESSES = frozenset({"omp", "claude", "subagent"})
 RECEIPT_FIELDS = ["lane", "harness", "model", "reviewer", "verdict"]
 LANE_NAMES = ["ui_dev", "client_dev", "backend_dev", "reverse_engineer"]
 LANE_TOOL_NAMES = [f"delegate_{name}" for name in LANE_NAMES]

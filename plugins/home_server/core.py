@@ -6,8 +6,7 @@ and keeps in sync the whole structure:
 * ``Notifications``   — text channels ``model-fallback``, ``gateway-restarts``,
   ``other`` (first: pinned to the top of the guild)
 * ``Lounges``         — text channels ``inbox``, ``outbox``
-* ``Models``          — voice channels ``Codex``, ``Kimi``, ``z.ai``,
-  ``Cursor``, ``Grok``
+* ``Models``          — voice channels ``Codex``, ``Kimi``, ``z.ai``, ``Grok``
 * ``Speeds``          — voice channels ``qBittorrent``, ``SABnzbd``, ``slskd``
 
 Creation alone is worthless, so reconcile also *wires* what it provisions:
@@ -166,7 +165,6 @@ TEMPLATE: Dict[str, ModuleSpec] = {
             ChannelSpec("Codex", CHANNEL_TYPE_VOICE, "codex"),
             ChannelSpec("Kimi", CHANNEL_TYPE_VOICE, "kimi"),
             ChannelSpec("z.ai", CHANNEL_TYPE_VOICE, "zai"),
-            ChannelSpec("Cursor", CHANNEL_TYPE_VOICE, "cursor"),
             ChannelSpec("Grok", CHANNEL_TYPE_VOICE, "grok"),
         ),
         legacy_categories=("Quotas",),

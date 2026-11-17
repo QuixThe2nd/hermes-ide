@@ -27,7 +27,7 @@ def test_select_cached_history_keeps_expected_replay_cleanup():
         },
     ]
 
-    persisted, observed, _ = _build_gateway_agent_history(live)
+    persisted, observed = _build_gateway_agent_history(live)
 
     assert observed is None
     assert len(persisted) < len(live)

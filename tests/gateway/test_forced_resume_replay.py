@@ -217,7 +217,7 @@ def test_forced_victim_replays_unresolved_read_only_call_exactly_once():
     # The repaired history feeds the real gateway history pipeline; the
     # model sees the fresh result at the tail and NO restart prose.
     assert outcome.repaired_history is not None
-    agent_history, _, _ = _build_gateway_agent_history(outcome.repaired_history)
+    agent_history, _ = _build_gateway_agent_history(outcome.repaired_history)
     assert agent_history[-1]["role"] == "tool"
     assert agent_history[-1]["tool_call_id"] == "call_read"
     assert "CONFIG-DATA" in agent_history[-1]["content"]
@@ -272,7 +272,7 @@ def test_mixed_batch_preserves_completed_and_replays_only_unresolved():
     assert contents["call_done"] == "ALREADY DONE RESULT"
     assert "FRESH SEARCH" in contents["call_open"]
 
-    agent_history, _, _ = _build_gateway_agent_history(repaired)
+    agent_history, _ = _build_gateway_agent_history(repaired)
     _assert_strict_pairing(agent_history)
     _assert_no_restart_prose(agent_history)
 
@@ -322,7 +322,7 @@ def test_interrupted_replayable_call_retried_once_and_marker_not_final():
     # fresh one.  The real replay-tail stripper must keep the LAST row so
     # the interrupted marker can never win the model-visible final result.
     on_disk = list(history) + [dict(store.appended[0][1])]
-    agent_history, _, _ = _build_gateway_agent_history(on_disk)
+    agent_history, _ = _build_gateway_agent_history(on_disk)
     moa_rows = [
         row
         for row in agent_history
@@ -430,7 +430,7 @@ def test_side_effecting_non_lifecycle_victim_executes_once():
     ]
     assert outcome.repaired_history is not None
 
-    agent_history, _, _ = _build_gateway_agent_history(outcome.repaired_history)
+    agent_history, _ = _build_gateway_agent_history(outcome.repaired_history)
     deploy_rows = [
         row for row in agent_history if row.get("tool_call_id") == "call_deploy"
     ]
@@ -456,7 +456,7 @@ def test_unknown_mcp_side_effecting_victim_replays_literally():
         agent, plan, raw_history=history, session_store=RecordingStore(), session_id="s"
     )
     assert agent.executions == [("mcp__ci__deploy", "call_mcp", '{"env": "prod"}')]
-    agent_history, _, _ = _build_gateway_agent_history(outcome.repaired_history)
+    agent_history, _ = _build_gateway_agent_history(outcome.repaired_history)
     assert agent_history[-1]["tool_call_id"] == "call_mcp"
     _assert_strict_pairing(agent_history)
 
@@ -552,7 +552,7 @@ def test_lifecycle_restart_requester_is_never_a_victim():
     assert orphan["effect_disposition"] == "unknown"
     assert "UNKNOWN" in orphan["content"]
     assert outcome.repaired_history is not None
-    agent_history, _, _ = _build_gateway_agent_history(outcome.repaired_history)
+    agent_history, _ = _build_gateway_agent_history(outcome.repaired_history)
     _assert_strict_pairing(agent_history)
     _assert_no_restart_prose(agent_history)
 
@@ -619,7 +619,7 @@ def test_mixed_batch_with_lifecycle_call_pairs_and_closes_it():
     # The marker key itself never reaches the transcript.
     assert "_orphan_recovery" not in orphan_row
 
-    agent_history, _, _ = _build_gateway_agent_history(outcome.repaired_history)
+    agent_history, _ = _build_gateway_agent_history(outcome.repaired_history)
     _assert_strict_pairing(agent_history)
     _assert_no_restart_prose(agent_history)
 
@@ -849,7 +849,7 @@ def test_user_message_queues_after_completed_batch_at_legal_boundary():
         agent, plan, raw_history=history, session_store=store, session_id="sid"
     )
     assert outcome.repaired_history is not None
-    agent_history, _, _ = _build_gateway_agent_history(outcome.repaired_history)
+    agent_history, _ = _build_gateway_agent_history(outcome.repaired_history)
 
     # The batch is complete before any user/model continuation…
     batch_index = next(
@@ -954,7 +954,7 @@ def test_replay_keeps_pairing_valid_for_strict_providers():
             agent, plan, raw_history=history, session_store=store, session_id="sid"
         )
         assert outcome.repaired_history is not None, _label
-        agent_history, _, _ = _build_gateway_agent_history(outcome.repaired_history)
+        agent_history, _ = _build_gateway_agent_history(outcome.repaired_history)
         _assert_strict_pairing(agent_history)
 
         issued = {
@@ -1077,7 +1077,7 @@ def test_composite_call_id_survives_byte_for_byte():
     # Persisted with the exact id…
     assert [row["tool_call_id"] for _sid, row in store.appended] == [cid]
     # …and the model-facing history pairs strictly on the exact id.
-    agent_history, _, _ = _build_gateway_agent_history(outcome.repaired_history)
+    agent_history, _ = _build_gateway_agent_history(outcome.repaired_history)
     _assert_strict_pairing(agent_history)
     assert agent_history[-1]["tool_call_id"] == cid
     assert "PIPE-DATA" in agent_history[-1]["content"]
@@ -1117,7 +1117,7 @@ def test_normalized_dispatcher_output_restamped_to_exact_id():
     assert agent.executions == [("read_file", cid, '{"path": "/etc/hosts"}')]
     assert outcome.repaired_history is not None
     assert [row["tool_call_id"] for _sid, row in store.appended] == [cid]
-    agent_history, _, _ = _build_gateway_agent_history(outcome.repaired_history)
+    agent_history, _ = _build_gateway_agent_history(outcome.repaired_history)
     _assert_strict_pairing(agent_history)
     assert agent_history[-1]["tool_call_id"] == cid
 
@@ -1194,7 +1194,7 @@ def test_duplicate_stale_markers_all_superseded_by_single_fresh_row():
     # one — the replay-tail cleanup must still surface exactly one row and
     # it must be the fresh result, never UNKNOWN.
     on_disk = list(history) + [dict(row) for _sid, row in store.appended]
-    agent_history, _, _ = _build_gateway_agent_history(on_disk)
+    agent_history, _ = _build_gateway_agent_history(on_disk)
     disk_rows = [
         row
         for row in agent_history
@@ -1229,7 +1229,7 @@ def test_completed_result_beats_later_stale_marker():
     assert outcome.repaired_history is None
 
     # Model-side cleanup: exactly one row, the real result — not UNKNOWN.
-    agent_history, _, _ = _build_gateway_agent_history(history)
+    agent_history, _ = _build_gateway_agent_history(history)
     rows = [
         row for row in agent_history
         if row.get("role") == "tool" and row.get("tool_call_id") == "call_d"
@@ -1760,7 +1760,7 @@ def test_padded_call_id_preserved_byte_for_byte():
     # Persisted with the exact padded bytes…
     assert [row["tool_call_id"] for _sid, row in store.appended] == [cid]
     # …and the model-facing history pairs on them.
-    agent_history, _, _ = _build_gateway_agent_history(outcome.repaired_history)
+    agent_history, _ = _build_gateway_agent_history(outcome.repaired_history)
     _assert_strict_pairing(agent_history)
     assert agent_history[-1]["tool_call_id"] == cid
     assert "PADDED-DATA" in agent_history[-1]["content"]
@@ -1789,7 +1789,7 @@ def test_padded_composite_id_restamped_verbatim_from_canonical_echo():
     )
     assert agent.executions == [("read_file", cid, '{"path": "/etc/hosts"}')]
     assert [row["tool_call_id"] for _sid, row in store.appended] == [cid]
-    agent_history, _, _ = _build_gateway_agent_history(outcome.repaired_history)
+    agent_history, _ = _build_gateway_agent_history(outcome.repaired_history)
     _assert_strict_pairing(agent_history)
     assert agent_history[-1]["tool_call_id"] == cid
 
@@ -1862,7 +1862,7 @@ def test_variant_answered_completed_call_never_replays():
 
     # And the completed (aliased) row is the model-visible answer — not an
     # interrupted marker, not UNKNOWN.
-    agent_history, _, _ = _build_gateway_agent_history(history)
+    agent_history, _ = _build_gateway_agent_history(history)
     rows = [
         row
         for row in agent_history

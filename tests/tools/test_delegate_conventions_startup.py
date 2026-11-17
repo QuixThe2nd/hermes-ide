@@ -22,10 +22,6 @@ from tools import delegate_tool_omp as omp
 from tools import delegation_ownership
 from tools.registry import registry
 from tests.tools.test_claude_agent_tool import _write_fake_binary
-from tests.tools.test_cursor_agent_tool import (
-    _default_client_agent_id,
-    _install_cloud_happy_path,
-)
 from tests.tools.test_delegate_lanes import _write_fake_omp
 
 
@@ -341,43 +337,6 @@ def test_claude_real_runner_reaches_command_and_append_system_file(
     _assert_conventions_once(system_text)
     _assert_skill_mode(system_text, skills)
 
-
-@pytest.mark.parametrize("skills", _SKILL_MODES)
-def test_cursor_real_runner_reaches_submitted_payload(monkeypatch, tmp_path, skills):
-    workdir = tmp_path / "workspace"
-    workdir.mkdir()
-    _configure_lane(monkeypatch, "backend_dev", "cursor", skills)
-    _install_cloud_happy_path(monkeypatch, tmp_path)
-    captured = {}
-
-    def _create(payload, api_key):
-        captured["payload"] = copy.deepcopy(payload)
-        client_id = _default_client_agent_id()
-        return (
-            {
-                "id": client_id,
-                "url": f"https://cursor.com/agents/{client_id}",
-                "latestRunId": "run-aaaa",
-            },
-            {"id": "run-aaaa", "agentId": client_id, "status": "CREATING"},
-        )
-
-    from tools import cursor_agent_tool
-
-    monkeypatch.setattr(cursor_agent_tool, "create_agent_with_timeout_dedupe", _create)
-
-    result = _dispatch_lane(
-        "backend_dev", workdir,
-        session_id="test-session", tool_call_id="test-tool-call",
-    )
-
-    assert result["success"] is True, result
-    prompt_text = captured["payload"]["prompt"]["text"]
-    assert prompt_text.startswith(cursor_agent_tool.NO_PUSH_PROMPT_PREFIX)
-    assert cursor_agent_tool.DEFAULT_ORCHESTRATION_PROMPT in prompt_text
-    assert prompt_text.endswith(_TASK_PROMPT)
-    _assert_conventions_once(prompt_text)
-    _assert_skill_mode(prompt_text, skills)
 
 
 def _native_parent():

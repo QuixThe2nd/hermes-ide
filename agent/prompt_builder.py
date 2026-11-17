@@ -33,8 +33,8 @@ from utils import atomic_json_write, file_signature
 logger = logging.getLogger(__name__)
 
 
-# Default read deadline for context files (SOUL.md, AGENTS.md, .cursorrules,
-# ...); overridable via ``context_file_read_timeout`` in config.yaml.
+# Default read deadline for context files (SOUL.md, AGENTS.md, ...);
+# overridable via ``context_file_read_timeout`` in config.yaml.
 # Intentionally short: network-backed filesystems (iCloud Drive, OneDrive,
 # NFS) can fault-in an evicted file and block a cold read indefinitely, which
 # stalls system-prompt assembly before the first turn.
@@ -81,7 +81,7 @@ def _read_text_with_timeout(
 
 
 def _scan_context_content(content: str, filename: str, *, user_authored: bool = False) -> str:
-    """Scan a context file (AGENTS.md, .cursorrules, SOUL.md) for injection; matches are BLOCKED.
+    """Scan a context file (AGENTS.md, CLAUDE.md, SOUL.md) for injection; matches are BLOCKED.
 
     "context" scope only (strict-scope SSH-backdoor/persistence/exfil patterns are too aggressive for a
     cloned repo's docs); blocking, not warning, because the file would otherwise enter the prompt verbatim.
@@ -90,7 +90,7 @@ def _scan_context_content(content: str, filename: str, *, user_authored: bool = 
     SOUL.md is user-authored and project checkouts never supply it — so a user
     who *documents* "ignore previous instructions" in their security guidance
     must not lose their whole identity file to a one-line log entry (#112570). Project-dir files
-    (repo AGENTS.md / .cursorrules / .hermes.md) arrive with the checkout and keep blocking, and so does
+    (repo AGENTS.md / CLAUDE.md / .hermes.md) arrive with the checkout and keep blocking, and so does
     a SOUL.md owned by a profile distribution (``hermes profile install <git-url>`` copies it in unscanned;
     ``load_soul_md`` passes ``user_authored=False`` when ``distribution.yaml`` owns the file).
     """
@@ -1534,14 +1534,6 @@ def _claude_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
     return found
 
 
-def _cursorrules_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
-    """.cursorrules + .cursor/rules/*.mdc — cwd only; every non-empty file is concatenated."""
-    candidates: list[tuple[str, Path]] = [(".cursorrules", cwd_path / ".cursorrules")]
-    cursor_rules_dir = cwd_path / ".cursor" / "rules"
-    if _is_dir_or_denied(cursor_rules_dir):
-        candidates += [(f".cursor/rules/{f.name}", f) for f in sorted(cursor_rules_dir.glob("*.mdc"))]
-    return [(label, path, _read_context_file(path)) for label, path in candidates if _exists_or_denied(path)]
-
 
 # Project-context types in priority order: the first type with any non-empty file wins, later types are
 # shadowed. Both the prompt build (loaders below) and the /context manifest
@@ -1550,7 +1542,6 @@ _CONTEXT_FILE_CANDIDATES = {
     "hermes_md": _hermes_md_candidates,
     "agents_md": _agents_md_candidates,
     "claude_md": _claude_md_candidates,
-    "cursorrules": _cursorrules_candidates,
 }
 
 
@@ -1611,18 +1602,6 @@ def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     return ""
 
 
-def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> str:
-    """.cursorrules + .cursor/rules/*.mdc — cwd only, concatenated."""
-    cursorrules_content = "".join(
-        f"## {label}\n\n{_scan_context_content(content, label)}\n\n"
-        for label, _path, content in _cursorrules_candidates(cwd_path) if content
-    )
-    if not cursorrules_content:
-        return ""
-    return _truncate_content(cursorrules_content, ".cursorrules", context_length=context_length,
-                             read_path=str(cwd_path / ".cursorrules"))
-
-
 def build_context_files_prompt(
     cwd: Optional[str] = None, skip_soul: bool = False, context_length: Optional[int] = None,
     allow_install_tree_fallback: bool = False, home_override: "Path | None" = None,
@@ -1630,7 +1609,7 @@ def build_context_files_prompt(
     """Discover and load context files for the system prompt (each capped, see ``_get_context_file_max_chars``).
 
     Only ONE project context type loads, first found wins: .hermes.md/HERMES.md (walk to git root) →
-    AGENTS.md chain (git root → cwd) → CLAUDE.md (cwd) → .cursorrules + .cursor/rules/*.mdc (cwd). SOUL.md
+    AGENTS.md chain (git root → cwd) → CLAUDE.md (cwd). SOUL.md
     from HERMES_HOME is independent and always included unless *skip_soul* (already the identity slot).
     """
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
@@ -1642,7 +1621,7 @@ def build_context_files_prompt(
         sections = []
     else:
         sections = [_load_hermes_md(cwd_path, context_length) or _load_agents_md(cwd_path, context_length)
-                    or _load_claude_md(cwd_path, context_length) or _load_cursorrules(cwd_path, context_length)]
+                    or _load_claude_md(cwd_path, context_length)]
     if not skip_soul:
         sections.append(load_soul_md(context_length, home_override=home_override))
     sections = [s for s in sections if s]

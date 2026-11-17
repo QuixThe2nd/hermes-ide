@@ -13,23 +13,19 @@ from plugins.quota_channels.core import (
     QuotaChannelsError,
     _remaining_from_name,
     fetch_codex_usage,
-    fetch_cursor_usage,
     fetch_grok_usage,
     fetch_kimi_usage,
     fetch_zai_usage,
     format_codex_name,
-    format_cursor_name,
     format_grok_name,
     format_kimi_name,
     format_reset_left,
     format_zai_name,
     parse_codex_usage,
-    parse_cursor_usage,
     parse_grok_usage,
     parse_kimi_usage,
     parse_zai_usage,
     run_codex_provider,
-    run_cursor_provider,
     run_grok_provider,
     run_kimi_provider,
     run_zai_provider,
@@ -472,27 +468,6 @@ class TestParseZaiUsage:
         assert reset_secs == 3600
 
 
-class TestParseCursorUsage:
-    def test_dual_pool_format(self):
-        end_ms = int((datetime(2026, 9, 1, tzinfo=timezone.utc).timestamp()) * 1000)
-        payload = json.dumps(
-            {
-                "planUsage": {"autoPercentUsed": 12.9, "apiPercentUsed": 33.2},
-                "billingCycleEnd": str(end_ms),
-            }
-        )
-        now = end_ms / 1000 - 86400 * 5
-        auto_remaining, api_remaining, reset_secs = parse_cursor_usage(
-            payload, now_fn=lambda: now
-        )
-        assert auto_remaining == 88
-        assert api_remaining == 67
-        assert reset_secs == 86400 * 5
-        assert (
-            format_cursor_name(auto_remaining, api_remaining, reset_secs)
-            == "Cursor: 88%/67% \u2022 5d left"
-        )
-
 
 class TestParseGrokUsage:
     def test_float32_field_and_timestamp(self):
@@ -565,12 +540,6 @@ class TestParseGrokUsage:
                 "Codex: 99% \u2022 2.2B tok/7d \u2022 7d left", "Codex"
             )
             == 99
-        )
-        assert (
-            _remaining_from_name(
-                "Cursor: 88%/85% \u2022 49M tok/7d \u2022 27d left", "Cursor"
-            )
-            == {"auto": 88, "api": 85}
         )
 
     def test_reset_without_field8_marker_raises(self):
@@ -724,35 +693,6 @@ class TestMockedProviderFetch:
         status, _ = fetch_zai_usage("raw-zai-key", http_fn=fake_http)
         assert status == 200
 
-    def test_cursor_fetch_and_parse(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        cursor_dir = tmp_path / ".config" / "cursor"
-        cursor_dir.mkdir(parents=True)
-        end_ms = int((datetime(2026, 9, 10, tzinfo=timezone.utc).timestamp()) * 1000)
-        (cursor_dir / "auth.json").write_text(json.dumps({"accessToken": "cursor-jwt"}))
-        monkeypatch.setattr(
-            "plugins.quota_channels.core.Path.home", lambda: tmp_path
-        )
-
-        def fake_http(req, timeout=25.0):
-            assert req.method == "POST"
-            assert req.data == b"{}"
-            body = json.dumps(
-                {
-                    "planUsage": {"autoPercentUsed": 10, "apiPercentUsed": 40},
-                    "billingCycleEnd": str(end_ms),
-                }
-            ).encode()
-            return 200, body
-
-        name, reset_secs, label = run_cursor_provider(
-            http_fn=fake_http, now_fn=lambda: end_ms / 1000 - 86400 * 2
-        )
-        assert label == "Cursor"
-        assert name == "Cursor: 90%/60% \u2022 2d left"
-        status, _ = fetch_cursor_usage("cursor-jwt", http_fn=fake_http)
-        assert status == 200
-
     def test_grok_fetch_and_parse(self, monkeypatch, tmp_path):
         auth = tmp_path / "auth.json"
         auth.write_text(
@@ -869,25 +809,6 @@ class TestMalformedParserResponses:
         with pytest.raises(QuotaChannelsError):
             parse_zai_usage(payload)
 
-    @pytest.mark.parametrize(
-        "payload",
-        [
-            "not-json",
-            json.dumps([]),
-            json.dumps({}),
-            json.dumps({"planUsage": {"autoPercentUsed": "x", "apiPercentUsed": 0}}),
-            json.dumps(
-                {
-                    "planUsage": {"autoPercentUsed": 0, "apiPercentUsed": 0},
-                    "billingCycleEnd": "not-numeric",
-                }
-            ),
-        ],
-        ids=["invalid_json", "non_dict", "missing_plan", "bad_percent", "bad_billing_end"],
-    )
-    def test_cursor_malformed(self, payload):
-        with pytest.raises(QuotaChannelsError):
-            parse_cursor_usage(payload)
 
     def test_grok_truncated_grpc_frame(self):
         body = _build_grok_grpc_body(10.0, 1_700_000_000)

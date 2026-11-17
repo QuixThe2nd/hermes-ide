@@ -2253,7 +2253,7 @@ def init_agent(
       reasoning_config: None → ``{"enabled": True, "effort": "medium"}`` on OpenRouter.
       prefill_messages: priming history. Anthropic Sonnet/Opus 4.6+ 400 on a trailing
         assistant message — use structured outputs there instead.
-      skip_context_files: skip SOUL.md/.hermes.md/AGENTS.md/CLAUDE.md/.cursorrules injection;
+      skip_context_files: skip SOUL.md/.hermes.md/AGENTS.md/CLAUDE.md injection;
         load_soul_identity keeps ~/.hermes/SOUL.md as identity regardless.
     """
     _install_safe_stdio()

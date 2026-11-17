@@ -144,7 +144,7 @@ def test_schema_registration():
 
 
 # ---------------------------------------------------------------------------
-# Lane-rule schema contract (claude / cursor / file tools)
+# Lane-rule schema contract (claude / file tools)
 # ---------------------------------------------------------------------------
 
 def test_claude_schema_description_states_lane_rule():
@@ -155,7 +155,6 @@ def test_claude_schema_description_states_lane_rule():
     assert entry is not None
     description = entry.schema["description"]
     assert "MEDIUM TO LARGE" in description
-    assert "delegate_cursor_agent" in description
     assert "/goal" in description
 
 
@@ -179,16 +178,6 @@ def test_schema_task_description_mentions_goal_cap():
     assert "4000" in task
 
 
-def test_cursor_schema_description_states_lane_rule():
-    import tools.cursor_agent_tool  # noqa: F401
-    from tools.registry import registry
-
-    entry = registry.get_entry("delegate_cursor_agent")
-    assert entry is not None
-    description = entry.schema["description"]
-    assert "SMALL TO MEDIUM" in description
-    assert "delegate_claude_agent" in description
-
 
 def test_file_tool_descriptions_route_source_edits_to_delegate_lanes():
     import tools.file_tools  # noqa: F401
@@ -197,7 +186,6 @@ def test_file_tool_descriptions_route_source_edits_to_delegate_lanes():
 
     for schema in (WRITE_FILE_SCHEMA, PATCH_SCHEMA):
         description = schema["description"]
-        assert 'delegate_agent(backend="cursor")' in description, schema["name"]
         assert 'delegate_agent(backend="claude")' in description, schema["name"]
 
 
@@ -1078,9 +1066,8 @@ def test_delegate_run_unaffected_when_no_status_callback_bound(
 def test_schema_timeout_description_claims_no_stall_kill():
     """The schema must not tell the model a stall watchdog exists."""
     from tools.claude_agent_tool import DELEGATE_CLAUDE_AGENT_SCHEMA
-    from tools.cursor_agent_tool import CURSOR_AGENT_SCHEMA
 
-    for schema in (DELEGATE_CLAUDE_AGENT_SCHEMA, CURSOR_AGENT_SCHEMA):
+    for schema in (DELEGATE_CLAUDE_AGENT_SCHEMA,):
         description = schema["parameters"]["properties"]["timeout_seconds"][
             "description"
         ]

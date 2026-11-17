@@ -34,8 +34,8 @@ def _make_runner(ctx, adapter=None):
 
 
 # ---------------------------------------------------------------------------
-# Branded agent-viewer status ordering (delegate_claude_agent /
-# delegate_cursor_agent live-viewer notices).
+# Branded agent-viewer status ordering (delegate_claude_agent
+# live-viewer notices).
 #
 # The notice is emitted from inside the tool call, i.e. from the same worker
 # thread that already enqueued the ``tool.started`` row. Routing it through the
@@ -45,7 +45,6 @@ def _make_runner(ctx, adapter=None):
 # ---------------------------------------------------------------------------
 
 _CLAUDE_NOTICE = "Claude Code Agent: http://192.168.30.20:8787/#20260829-024525-1532951"
-_CURSOR_NOTICE = "Cursor Cloud Agent: https://cursor.com/agents/bc-abc123"
 
 
 class _CaptureCore:
@@ -163,7 +162,7 @@ async def _run_consumer_until_sends(runner, adapter, count):
             pass
 
 
-@pytest.mark.parametrize("notice", [_CLAUDE_NOTICE, _CURSOR_NOTICE])
+@pytest.mark.parametrize("notice", [_CLAUDE_NOTICE])
 def test_agent_viewer_notice_rides_queue_behind_tool_row(notice, monkeypatch):
     """The branded notice is queued after the tool row, not scheduled directly."""
     import gateway.run as gateway_run
@@ -198,7 +197,7 @@ def test_agent_viewer_notice_rides_queue_behind_tool_row(notice, monkeypatch):
     assert scheduled == [], "branded notice must not take the direct status rail"
 
 
-@pytest.mark.parametrize("notice", [_CLAUDE_NOTICE, _CURSOR_NOTICE])
+@pytest.mark.parametrize("notice", [_CLAUDE_NOTICE])
 def test_agent_viewer_notice_falls_back_to_direct_rail(notice, monkeypatch):
     """Without a usable ordered queue the notice keeps the direct status path.
 
@@ -263,7 +262,6 @@ def test_ordinary_lifecycle_status_keeps_direct_rail(monkeypatch):
     "notice,recognizer_name",
     [
         (_CLAUDE_NOTICE, "_claude_agent_status_url"),
-        (_CURSOR_NOTICE, "_cursor_cloud_agent_status_url"),
     ],
 )
 def test_progress_consumer_delivers_tool_row_before_agent_notice(

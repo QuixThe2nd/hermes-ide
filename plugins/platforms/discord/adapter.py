@@ -26,7 +26,7 @@ import traceback
 from collections import defaultdict, OrderedDict
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
-from urllib.parse import quote, unquote, urljoin, urlparse
+from urllib.parse import quote, urljoin
 
 from agent.async_utils import (consume_detached_task_result as _consume_background_task_result)
 from agent.display import ToolPreview
@@ -69,83 +69,6 @@ def _format_discord_markdown_link(label: str, url: str) -> str:
     escaped_label = _DISCORD_MARKDOWN_LINK_LABEL_RE.sub(r"\\\1", label)
     escaped_url = quote(url, safe=":/?#[]@!$&'*+,;=%")
     return f"[{escaped_label}](<{escaped_url}>)"
-
-
-_CURSOR_CLOUD_AGENT_STATUS_PREFIX = "Cursor Cloud Agent: "
-_CURSOR_CLOUD_AGENT_ICON_URL = "https://cursor.com/apple-touch-icon.png"
-_CURSOR_CLOUD_AGENT_BRAND_URL = "https://cursor.com"
-_CURSOR_CLOUD_AGENT_ALLOWED_HOSTS = frozenset({"cursor.com", "www.cursor.com"})
-
-
-def _cursor_cloud_agent_status_url(content: str) -> Optional[str]:
-    """Return the watch URL when *content* is exactly a Cursor Cloud Agent status line."""
-    if content is None:
-        return None
-    text = content.strip()
-    if not text.startswith(_CURSOR_CLOUD_AGENT_STATUS_PREFIX):
-        return None
-    url = text[len(_CURSOR_CLOUD_AGENT_STATUS_PREFIX) :].strip()
-    if not url or any(ch.isspace() for ch in url):
-        return None
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        return None
-    if parsed.username or parsed.password or "@" in parsed.netloc:
-        return None
-    hostname = parsed.hostname
-    if hostname not in _CURSOR_CLOUD_AGENT_ALLOWED_HOSTS:
-        return None
-    decoded_path = unquote(parsed.path)
-    if ".." in decoded_path:
-        return None
-    if not re.fullmatch(r"/agents/[^/]+", decoded_path):
-        return None
-    return url
-
-
-def _cursor_cloud_agent_embed_spec(url: str) -> Dict[str, Any]:
-    """Pure-data embed fields for a Cursor Cloud Agent live-progress card."""
-    return {
-        "title": "Cursor Cloud Agent",
-        "url": url,
-        "description": _format_discord_markdown_link("Watch live session", url),
-        "author": {
-            "name": "Cursor",
-            "icon_url": _CURSOR_CLOUD_AGENT_ICON_URL,
-            "url": _CURSOR_CLOUD_AGENT_BRAND_URL,
-        },
-        "thumbnail": _CURSOR_CLOUD_AGENT_ICON_URL,
-        "color": 0x000000,
-        "footer": "Cursor · Cloud Agent",
-    }
-
-
-def _build_cursor_cloud_agent_embed(url: str) -> Any:
-    """Build a discord.Embed for a Cursor Cloud Agent live-progress URL."""
-    spec = _cursor_cloud_agent_embed_spec(url)
-    embed = discord.Embed(
-        title=spec["title"],
-        url=spec["url"],
-        description=spec["description"],
-        color=spec["color"],
-    )
-    author = spec["author"]
-    embed.set_author(
-        name=author["name"],
-        icon_url=author["icon_url"],
-        url=author["url"],
-    )
-    embed.set_thumbnail(url=spec["thumbnail"])
-    embed.set_footer(text=spec["footer"])
-    return embed
-
-
-def _cursor_cloud_agent_markdown_progress(url: str) -> str:
-    """Forum/fail-soft markdown form — no raw dumped URL."""
-    return (
-        f"{_CURSOR_CLOUD_AGENT_STATUS_PREFIX}"
-        f"{_format_discord_markdown_link('Watch live session', url)}"
-    )
 
 
 _CLAUDE_AGENT_STATUS_PREFIX = "Claude Code Agent: "
@@ -229,13 +152,6 @@ def _agent_progress_embed_payload(content: str) -> Optional[Tuple[str, str, Call
     claude_url = _claude_agent_status_url(content)
     if claude_url:
         return claude_url, _claude_agent_markdown_progress(claude_url), _build_claude_agent_embed
-    cursor_url = _cursor_cloud_agent_status_url(content)
-    if cursor_url:
-        return (
-            cursor_url,
-            _cursor_cloud_agent_markdown_progress(cursor_url),
-            _build_cursor_cloud_agent_embed,
-        )
     return None
 
 
