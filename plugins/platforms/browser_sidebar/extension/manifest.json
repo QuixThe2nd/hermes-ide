@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Big Steve",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Side panel chat with Big Steve.",
   "permissions": ["sidePanel", "scripting", "activeTab", "storage", "alarms", "tabs"],
   "host_permissions": ["<all_urls>"],

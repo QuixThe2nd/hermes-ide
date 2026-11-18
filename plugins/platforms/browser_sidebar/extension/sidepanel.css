@@ -23,11 +23,31 @@ body {
 header {
   padding: 12px 14px 8px;
   border-bottom: 1px solid #2c2c2c;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 h1 {
   margin: 0;
   font-size: 16px;
+}
+
+.new-chat {
+  border: 1px solid #4a4a4a;
+  border-radius: 8px;
+  background: #1e1e1e;
+  color: #f2f2f2;
+  width: 28px;
+  height: 28px;
+  line-height: 1;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.new-chat:hover {
+  background: #243044;
+  border-color: #5a6a8a;
 }
 
 .banner {
