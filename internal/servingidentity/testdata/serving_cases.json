@@ -275,7 +275,7 @@
         "successor_identity": null
       },
       "expect_lines": [
-        "✓ Serving gateway: pid 709505, start 3001234 — answering on the gateway control socket"
+        "⚠ Serving gateway: unknown — gateway pid 709505, start 3001234 answered without restart-handoff state (its build predates overlap reporting); it is the only gateway process found, but its serving role cannot be proven"
       ]
     },
     {
@@ -397,6 +397,410 @@
       "expect_lines": [
         "✓ Serving gateway: pid 709505, start 3001234 — answering on the gateway control socket",
         "⏳ Chained restart queued: another restart will run once the current handoff completes (requested by discord user 42 (restart))"
+      ]
+    },
+    {
+      "name": "status_legacy_identify_multi_process_ambiguous",
+      "op": "status",
+      "input": {
+        "identify": {
+          "pid": 709505,
+          "start_time": 3001234
+        },
+        "gateway_pids": [
+          709505,
+          1531038
+        ]
+      },
+      "expect_lines": [
+        "⚠ Serving gateway: ambiguous — the control socket is owned by pid 709505, which reports no restart-handoff state (its build predates overlap reporting), while gateway processes pid 709505, pid 1531038 are live; which one serves turns cannot be proven from here — re-check once the handoff completes"
+      ]
+    },
+    {
+      "name": "status_legacy_identify_draining_state_unknown",
+      "op": "status",
+      "input": {
+        "identify": {
+          "pid": 709505,
+          "start_time": 3001234
+        },
+        "state": {
+          "pid": 709505,
+          "gateway_state": "draining",
+          "pid_is_live": true,
+          "restart_requested": true
+        }
+      },
+      "expect_lines": [
+        "⚠ Serving gateway: unknown — the control socket is owned by pid 709505, which reports no restart-handoff state (its build predates overlap reporting) while its own state record says it is draining; the serving process cannot be proven from here"
+      ]
+    },
+    {
+      "name": "status_serving_green_beside_second_pid",
+      "op": "status",
+      "input": {
+        "identify": {
+          "pid": 1531038,
+          "start_time": 3005678,
+          "overlap": {
+            "role": "serving"
+          }
+        },
+        "gateway_pids": [
+          709505,
+          1531038
+        ]
+      },
+      "expect_lines": [
+        "✓ Serving gateway: pid 1531038, start 3005678 — answering on the gateway control socket"
+      ]
+    },
+    {
+      "name": "status_state_file_multi_process_ambiguous",
+      "op": "status",
+      "input": {
+        "state": {
+          "pid": 709505,
+          "gateway_state": "running",
+          "pid_is_live": true
+        },
+        "gateway_pids": [
+          709505,
+          1531038
+        ]
+      },
+      "expect_lines": [
+        "⚠ Serving gateway: ambiguous — gateway_state.json names pid 709505 but pid 709505, pid 1531038 gateway processes are live; which one serves turns cannot be proven from status files alone"
+      ]
+    },
+    {
+      "name": "status_state_file_draining_multi_names_candidates",
+      "op": "status",
+      "input": {
+        "state": {
+          "pid": 1438,
+          "gateway_state": "draining",
+          "pid_is_live": true,
+          "restart_requested": true
+        },
+        "gateway_pids": [
+          1438,
+          1531038
+        ]
+      },
+      "expect_lines": [
+        "⚠ Serving gateway: unknown — gateway_state.json names pid 1438 draining for a restart (state 'draining'); status files keep naming the predecessor until the handoff completes; live gateway processes: pid 1438, pid 1531038"
+      ]
+    },
+    {
+      "name": "status_no_sources_multi_process_ambiguous",
+      "op": "status",
+      "input": {
+        "gateway_pids": [
+          709505,
+          1531038
+        ]
+      },
+      "expect_lines": [
+        "⚠ Serving gateway: ambiguous — no control socket answer and no gateway_state.json record; gateway processes pid 709505, pid 1531038 are live and which one serves turns cannot be proven from here"
+      ]
+    },
+    {
+      "name": "transition_changed_names_both_processes",
+      "op": "transition",
+      "input": {
+        "previous": {
+          "pid": 709505,
+          "start_time": 3001234
+        },
+        "identity": {
+          "pid": 1531038,
+          "start_time": 3005678,
+          "code_sha": "abc123def"
+        }
+      },
+      "expect": "[System note: This conversation moved to a new Hermes gateway process: pid 1531038, start 3005678, build abc123de replaced pid 709505, start 3001234. That was a process transition, not a new task: the persisted conversation history and task context carried over and stay valid. Process-local state did NOT carry over — terminal sessions, background processes, kernels, sockets, in-memory caches, tool handles, and any pid you recorded belonged to the old process: revalidate them (re-open, re-list, re-check) before relying on them again.]"
+    },
+    {
+      "name": "transition_same_process_silent",
+      "op": "transition",
+      "input": {
+        "previous": {
+          "pid": 1531038,
+          "start_time": 3005678
+        },
+        "identity": {
+          "pid": 1531038,
+          "start_time": 3005678
+        }
+      },
+      "expect": ""
+    },
+    {
+      "name": "transition_first_turn_silent",
+      "op": "transition",
+      "input": {
+        "previous": null,
+        "identity": {
+          "pid": 1531038,
+          "start_time": 3005678
+        }
+      },
+      "expect": ""
+    },
+    {
+      "name": "transition_unknown_fingerprints_silent",
+      "op": "transition",
+      "input": {
+        "previous": {
+          "pid": 1531038
+        },
+        "identity": {
+          "pid": 1531038,
+          "start_time": 3005678
+        }
+      },
+      "expect": ""
+    },
+    {
+      "name": "record_same_process_skip",
+      "op": "record",
+      "input": {
+        "session_id": "telegram:42",
+        "stored": "{\"pid\": 1531038, \"start_time\": 3005678}",
+        "record": {
+          "pid": 1531038,
+          "start_time": 3005678
+        }
+      },
+      "expect": "skip"
+    },
+    {
+      "name": "record_process_change_write",
+      "op": "record",
+      "input": {
+        "session_id": "telegram:42",
+        "stored": "{\"pid\": 709505, \"start_time\": 3001234}",
+        "record": {
+          "pid": 1531038,
+          "start_time": 3005678
+        }
+      },
+      "expect": "write"
+    },
+    {
+      "name": "record_absent_write",
+      "op": "record",
+      "input": {
+        "session_id": "telegram:42",
+        "stored": null,
+        "record": {
+          "pid": 1531038,
+          "start_time": 3005678
+        }
+      },
+      "expect": "write"
+    },
+    {
+      "name": "record_corrupt_write",
+      "op": "record",
+      "input": {
+        "session_id": "telegram:42",
+        "stored": "{not json",
+        "record": {
+          "pid": 1531038,
+          "start_time": 3005678
+        }
+      },
+      "expect": "write"
+    },
+    {
+      "name": "record_reused_pid_write",
+      "op": "record",
+      "input": {
+        "session_id": "telegram:42",
+        "stored": "{\"pid\": 1531038, \"start_time\": 3019999}",
+        "record": {
+          "pid": 1531038,
+          "start_time": 3005678
+        }
+      },
+      "expect": "write"
+    },
+    {
+      "name": "record_invalid_session_skip",
+      "op": "record",
+      "input": {
+        "session_id": "  ",
+        "stored": null,
+        "record": {
+          "pid": 1531038,
+          "start_time": 3005678
+        }
+      },
+      "expect": "skip"
+    },
+    {
+      "name": "owner_guard_no_stamp_proceed",
+      "op": "owner_guard",
+      "input": {
+        "serving_pid": 0,
+        "identify": {
+          "pid": 709505
+        }
+      },
+      "expect": "proceed"
+    },
+    {
+      "name": "owner_guard_owner_is_server_proceed",
+      "op": "owner_guard",
+      "input": {
+        "serving_pid": 1531038,
+        "identify": {
+          "pid": 1531038
+        }
+      },
+      "expect": "proceed"
+    },
+    {
+      "name": "owner_guard_legacy_predecessor_refuse",
+      "op": "owner_guard",
+      "input": {
+        "serving_pid": 1531038,
+        "identify": {
+          "pid": 709505
+        }
+      },
+      "expect": "refuse"
+    },
+    {
+      "name": "owner_guard_draining_no_successor_refuse",
+      "op": "owner_guard",
+      "input": {
+        "serving_pid": 1531038,
+        "identify": {
+          "pid": 709505,
+          "overlap": {
+            "role": "draining-predecessor"
+          }
+        }
+      },
+      "expect": "refuse"
+    },
+    {
+      "name": "owner_guard_unready_successor_refuse",
+      "op": "owner_guard",
+      "input": {
+        "serving_pid": 1531038,
+        "identify": {
+          "pid": 709505,
+          "overlap": {
+            "role": "draining-predecessor",
+            "successor_pid": 1531038,
+            "successor_ready": false
+          }
+        }
+      },
+      "expect": "refuse"
+    },
+    {
+      "name": "owner_guard_wrong_successor_refuse",
+      "op": "owner_guard",
+      "input": {
+        "serving_pid": 1531038,
+        "identify": {
+          "pid": 709505,
+          "overlap": {
+            "role": "draining-predecessor",
+            "successor_pid": 42,
+            "successor_ready": true
+          }
+        }
+      },
+      "expect": "refuse"
+    },
+    {
+      "name": "owner_guard_attested_chain",
+      "op": "owner_guard",
+      "input": {
+        "serving_pid": 1531038,
+        "identify": {
+          "pid": 709505,
+          "overlap": {
+            "role": "draining-predecessor",
+            "successor_pid": 1531038,
+            "successor_ready": true
+          }
+        }
+      },
+      "expect": "attested-chain"
+    },
+    {
+      "name": "owner_refusal_legacy_answerer",
+      "op": "owner_refusal",
+      "input": {
+        "serving_pid": 1531038,
+        "identify": {
+          "pid": 709505
+        }
+      },
+      "expect": "No restart was queued: the gateway control socket is owned by pid 709505, which reports no restart-handoff state (its build predates overlap reporting), but this conversation is served by pid 1531038. A restart queued through pid 709505 would not target the process running this conversation. It is already served by pid 1531038; if it still needs a restart, retry after the current handoff completes or run `hermes gateway restart` from an operator shell."
+    },
+    {
+      "name": "owner_refusal_draining_answerer",
+      "op": "owner_refusal",
+      "input": {
+        "serving_pid": 1531038,
+        "identify": {
+          "pid": 709505,
+          "overlap": {
+            "role": "draining-predecessor"
+          }
+        }
+      },
+      "expect": "No restart was queued: the gateway control socket is owned by pid 709505, which is draining for a restart whose successor is not confirmed as this conversation's server, but this conversation is served by pid 1531038. A restart queued through pid 709505 would not target the process running this conversation. It is already served by pid 1531038; if it still needs a restart, retry after the current handoff completes or run `hermes gateway restart` from an operator shell."
+    },
+    {
+      "name": "turn_notes_first_turn_after_handoff",
+      "op": "turn_notes",
+      "input": {
+        "stored": "{\"pid\": 709505, \"start_time\": 3001234}",
+        "identity": {
+          "pid": 1531038,
+          "start_time": 3005678
+        }
+      },
+      "expect_lines": [
+        "[System note: This turn is served by Hermes gateway pid 1531038, start 3005678. That pid — not any pid reported by systemctl, the pid file, or gateway status files — is the process running this conversation.]",
+        "[System note: This conversation moved to a new Hermes gateway process: pid 1531038, start 3005678 replaced pid 709505, start 3001234. That was a process transition, not a new task: the persisted conversation history and task context carried over and stay valid. Process-local state did NOT carry over — terminal sessions, background processes, kernels, sockets, in-memory caches, tool handles, and any pid you recorded belonged to the old process: revalidate them (re-open, re-list, re-check) before relying on them again.]"
+      ]
+    },
+    {
+      "name": "turn_notes_same_process",
+      "op": "turn_notes",
+      "input": {
+        "stored": "{\"pid\": 1531038, \"start_time\": 3005678}",
+        "identity": {
+          "pid": 1531038,
+          "start_time": 3005678
+        }
+      },
+      "expect_lines": [
+        "[System note: This turn is served by Hermes gateway pid 1531038, start 3005678. That pid — not any pid reported by systemctl, the pid file, or gateway status files — is the process running this conversation.]"
+      ]
+    },
+    {
+      "name": "turn_notes_no_record",
+      "op": "turn_notes",
+      "input": {
+        "stored": null,
+        "identity": {
+          "pid": 1531038,
+          "start_time": 3005678
+        }
+      },
+      "expect_lines": [
+        "[System note: This turn is served by Hermes gateway pid 1531038, start 3005678. That pid — not any pid reported by systemctl, the pid file, or gateway status files — is the process running this conversation.]"
       ]
     }
   ]

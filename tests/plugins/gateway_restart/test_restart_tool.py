@@ -730,6 +730,165 @@ def test_handler_socket_ack_already_in_progress_is_success(monkeypatch):
     assert len(calls) == 1
 
 
+def _bind_serving_stamp(serving_pid="1531038", start="19048"):
+    """Bind the session's serving-identity stamp exactly as the gateway does
+    (contextvars via set_session_vars; caller clears in a finally)."""
+    set_session_vars(gateway_pid=serving_pid, gateway_start_time=start)
+
+
+def _legacy_socket_owner(monkeypatch):
+    """A pre-overlap answerer (the live incident: draining predecessor owns
+    the socket, reports no overlap state, and acks with its own pid)."""
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway",
+        lambda home, **kw: {"pid": 709505, "start_time": 850305},
+    )
+
+
+def test_handler_socket_refuses_when_owner_is_not_the_serving_process(monkeypatch):
+    """Live incident: the turn was served by the overlap successor while the
+    control socket was owned by the draining predecessor running pre-overlap
+    code. Queueing there chained a restart that could never fire; the tool
+    must refuse and name the serving process."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    _legacy_socket_owner(monkeypatch)
+    requested = []
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart",
+        lambda *a, **kw: requested.append(1) or {"queued": True, "pid": 709505})
+    _bind_serving_stamp()
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert requested == []
+    dumped = json.dumps(result)
+    assert "1531038" in dumped and "709505" in dumped
+    assert "served" in dumped
+
+
+def test_handler_socket_refuses_unattested_successor_chain(monkeypatch):
+    """The answerer attests a successor that is not yet hub-ready: chaining
+    onto its drain is still a guess. Refuse until the handoff is proven."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    _bind_serving_stamp()
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway",
+        lambda home, **kw: {
+            "pid": 709505, "start_time": 850305,
+            "overlap": {
+                "role": "draining-predecessor",
+                "successor_pid": 1531038,
+                "successor_start_time": 19048,
+                "successor_ready": False,
+            },
+        },
+    )
+    requested = []
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart",
+        lambda *a, **kw: requested.append(1) or {"queued": True, "pid": 709505})
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert requested == []
+    assert "1531038" in json.dumps(result)
+
+
+def test_handler_socket_chained_restart_names_the_serving_process(monkeypatch):
+    """A proven handoff (draining predecessor attests THIS serving process as
+    its hub-ready successor): the chain is correct, but the result must name
+    the process that will actually restart, not the socket owner."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    _bind_serving_stamp()
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway",
+        lambda home, **kw: {
+            "pid": 709505, "start_time": 850305,
+            "overlap": {
+                "role": "draining-predecessor",
+                "successor_pid": 1531038,
+                "successor_start_time": 19048,
+                "successor_ready": True,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart",
+        lambda home, **kw: {
+            "queued": True, "pid": 709505, "status": "chained",
+            "active_agents": 1, "via_service": False,
+        })
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    assert result["status"] == "chained"
+    assert result["process"] == "pid 1531038"
+    assert "709505" in result["note"]
+
+
+def test_handler_socket_owner_is_the_serving_process_proceeds(monkeypatch):
+    """Steady state: the socket owner is the serving process — unchanged
+    queue path, identify consulted, ack rendered as before."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    _bind_serving_stamp()
+    probed = []
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway",
+        lambda home, **kw: probed.append(1) or {"pid": 1531038, "start_time": 19048})
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart",
+        lambda home, **kw: {
+            "queued": True, "pid": 1531038, "status": "restarting",
+            "active_agents": 0, "via_service": False,
+        })
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    assert probed == [1]
+    assert result["process"] == "pid 1531038"
+
+
+def test_handler_socket_without_serving_identity_keeps_today_behavior(monkeypatch):
+    """A gateway that never stamped the serving identity (pre-fix): no owner
+    probe, ack passthrough — refusing there would break every old install."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    monkeypatch.delenv("HERMES_SESSION_GATEWAY_PID", raising=False)
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway",
+        lambda home, **kw: pytest.fail("identify must not run without a serving stamp"))
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart",
+        lambda home, **kw: {
+            "queued": True, "pid": 709505, "status": "chained",
+            "active_agents": 0, "via_service": False,
+        })
+
+    result = json.loads(handle_restart({}))
+
+    assert result["process"] == "pid 709505"
+
 def test_handler_socket_ack_refusal_surfaces_reason(monkeypatch):
     from plugins.gateway_restart.tool import handle_restart
 

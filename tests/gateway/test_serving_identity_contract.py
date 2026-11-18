@@ -77,9 +77,43 @@ def _python_render(case: dict):
         with patch.object(si, "_static_identity_fields",
                           lambda: case["input"]["identity"]):
             return si.serving_runtime_note(_table_runner(case["input"]))
+    if case["op"] == "transition":
+        # The persisted record vs the current process: silence normalizes
+        # to "" for the wire table (None in the module, "" in the Go twin).
+        with patch.object(si, "_static_identity_fields",
+                          lambda: case["input"]["identity"]):
+            return si.serving_transition_note(
+                case["input"]["previous"], case["input"]["identity"]) or ""
+    if case["op"] == "record":
+        from gateway.serving_transition import _record_write_needed, _valid_session_id
+        request = case["input"]
+        if not _valid_session_id(request["session_id"]):
+            return "skip"
+        return ("write" if _record_write_needed(
+            request["stored"], request["record"]["pid"],
+            request["record"]["start_time"]) else "skip")
+    if case["op"] == "owner_guard":
+        from plugins.gateway_restart.tool import socket_owner_action
+        request = case["input"]
+        return socket_owner_action(request["serving_pid"], request["identify"])
+    if case["op"] == "owner_refusal":
+        from plugins.gateway_restart.tool import socket_owner_refusal
+        request = case["input"]
+        return socket_owner_refusal(request["serving_pid"], request["identify"])
+    if case["op"] == "turn_notes":
+        request = case["input"]
+        identity = request["identity"]
+        fields = {"pid": identity.get("pid"), "start_time": identity.get("start_time"),
+                  "code_sha": identity.get("code_sha")}
+        with patch.object(si, "_static_identity_fields", lambda: fields):
+            runtime = si.serving_runtime_note(None)
+            transition = si.serving_transition_note(
+                json.loads(request["stored"]) if request["stored"] else None,
+                identity) or ""
+        return [note for note in (runtime, transition) if note]
     request = case["input"]
-    identify = request["identify"]
-    state = request["state"] or {}
+    identify = request.get("identify")
+    state = request.get("state") or {}
     return si.serving_status_lines(
         identify=identify,
         state_pid=state.get("pid"),
@@ -87,16 +121,18 @@ def _python_render(case: dict):
         state_pid_is_live=bool(state.get("pid_is_live", False)),
         state_is_stale=bool(state.get("is_stale", False)),
         state_restart_requested=state.get("restart_requested"),
-        chained={"source": request["chained_source"]} if request["chained_source"] else None,
+        chained=({"source": request["chained_source"]}
+                 if request.get("chained_source") else None),
         successor_identity=(
             (lambda pid, start_time: request["successor_identity"])
-            if request["successor_identity"] else None),
+            if request.get("successor_identity") else None),
+        gateway_pids=request.get("gateway_pids"),
     )
 
 
 @pytest.mark.parametrize("case", _shared_cases(), ids=lambda case: case["name"])
 def test_python_module_matches_the_shared_table(case):
-    if case["op"] == "note":
+    if case["op"] in ("note", "transition", "record", "owner_guard", "owner_refusal"):
         assert _python_render(case) == case["expect"]
     else:
         assert _python_render(case) == case["expect_lines"]
@@ -117,7 +153,7 @@ def test_python_module_matches_the_running_go_binary(case, go_servingidentity):
     )
     assert run.returncode == 0, run.stderr
     rendered = _python_render(case)
-    if case["op"] == "note":
+    if case["op"] in ("note", "transition", "record", "owner_guard", "owner_refusal"):
         assert rendered == run.stdout.rstrip("\n")
     else:
         assert rendered == json.loads(run.stdout)
@@ -141,5 +177,30 @@ def test_shared_table_covers_the_honesty_contract():
         "status_draining_no_successor_unknown",
         "status_role_unknown",
         "status_state_file_draining_never_green",
+        # CONTRACT CHANGE: a legacy identify answer (no overlap block) is
+        # never green — during overlap that answerer is the draining
+        # predecessor; ambiguity clauses name every live candidate
+        "status_legacy_identify_no_overlap",
+        "status_legacy_identify_multi_process_ambiguous",
+        "status_legacy_identify_draining_state_unknown",
+        "status_state_file_multi_process_ambiguous",
+        "status_no_sources_multi_process_ambiguous",
+        "status_serving_green_beside_second_pid",
+        # transitions: changed names both processes; everything else silent
+        "transition_changed_names_both_processes",
+        "transition_same_process_silent",
+        "transition_first_turn_silent",
+        "transition_unknown_fingerprints_silent",
+        # durable record discipline + restart-tool owner gate
+        "record_same_process_skip",
+        "record_process_change_write",
+        "record_invalid_session_skip",
+        "owner_guard_legacy_predecessor_refuse",
+        "owner_guard_unready_successor_refuse",
+        "owner_guard_attested_chain",
+        "owner_guard_no_stamp_proceed",
+        "owner_refusal_legacy_answerer",
+        "turn_notes_first_turn_after_handoff",
+        "turn_notes_same_process",
     ):
         assert required in names, f"shared table lost the {required} case"

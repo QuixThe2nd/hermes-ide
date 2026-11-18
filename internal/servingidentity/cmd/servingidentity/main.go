@@ -45,6 +45,28 @@ func main() {
 	switch op, _ := request["op"].(string); op {
 	case "note":
 		fmt.Println(servingidentity.RuntimeNote(snapshotFromRequest(request)))
+	case "transition":
+		fmt.Println(servingidentity.TransitionNote(
+			snapshotFromRecord(request["previous"]),
+			snapshotFromIdentityRecord(request)))
+	case "record":
+		fmt.Println(recordVerdictFromRequest(request))
+	case "owner_guard":
+		fmt.Println(servingidentity.OwnerAction(
+			intValue(request["serving_pid"]),
+			identifyFromRecord(request["identify"])))
+	case "owner_refusal":
+		fmt.Println(servingidentity.OwnerRefusal(
+			intValue(request["serving_pid"]),
+			identifyFromRecord(request["identify"])))
+	case "turn_notes":
+		encoded, err := json.Marshal(servingidentity.TurnNotes(
+			snapshotFromIdentityRecord(request), stringValue(request["stored"])))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "servingidentity: %v\n", err)
+			os.Exit(2)
+		}
+		fmt.Println(string(encoded))
 	case "status":
 		encoded, err := json.Marshal(statusFromRequest(request))
 		if err != nil {
@@ -55,6 +77,58 @@ func main() {
 	default:
 		fmt.Fprintf(os.Stderr, "servingidentity: unknown op: %q\n", op)
 		os.Exit(2)
+	}
+}
+
+// snapshotFromRecord maps a persisted served-by record {pid, start_time}
+// onto Snapshot (records carry no sha; identity snapshots do).
+func snapshotFromRecord(raw any) servingidentity.Snapshot {
+	record, _ := raw.(map[string]any)
+	return servingidentity.Snapshot{
+		PID:       intValue(record["pid"]),
+		StartTime: int64Value(record["start_time"]),
+	}
+}
+
+// snapshotFromIdentityRecord maps the current identity record
+// {pid, start_time, code_sha} onto Snapshot for the transition op.
+func snapshotFromIdentityRecord(request map[string]any) servingidentity.Snapshot {
+	snapshot := snapshotFromRecord(request["identity"])
+	if identity, ok := request["identity"].(map[string]any); ok {
+		snapshot.BuildSHA = stringValue(identity["code_sha"])
+	}
+	return snapshot
+}
+
+// recordVerdictFromRequest renders the write-on-change verdict ("write" |
+// "skip") for a session's served-by record: an invalid session id or a
+// stored record already matching this process means no write.
+func recordVerdictFromRequest(request map[string]any) string {
+	sessionID := stringValue(request["session_id"])
+	if !servingidentity.ValidSessionID(sessionID) {
+		return "skip"
+	}
+	current := snapshotFromRecord(request["record"])
+	stored := stringValue(request["stored"])
+	if servingidentity.RecordWriteNeeded(stored, current) {
+		return "write"
+	}
+	return "skip"
+}
+
+// identifyFromRecord maps a table identify answer {pid, overlap{...}}
+// onto Identify for the owner_guard op.
+func identifyFromRecord(raw any) *servingidentity.Identify {
+	record, ok := raw.(map[string]any)
+	if !ok || intValue(record["pid"]) <= 0 {
+		return nil
+	}
+	overlap, _ := record["overlap"].(map[string]any)
+	return &servingidentity.Identify{
+		PID:            intValue(record["pid"]),
+		Role:           servingidentity.Role(stringValue(overlap["role"])),
+		SuccessorPID:   intValue(overlap["successor_pid"]),
+		SuccessorReady: boolValue(overlap["successor_ready"]),
 	}
 }
 
@@ -107,7 +181,20 @@ func statusFromRequest(request map[string]any) []string {
 	if v, ok := request["successor_identity"].(string); ok && v != "" {
 		probe = func(int, int64) string { return v }
 	}
-	return servingidentity.StatusLines(identify, state, chained, probe)
+	return servingidentity.StatusLines(identify, state, chained, probe, pidsFromRequest(request["gateway_pids"]))
+}
+
+// pidsFromRequest maps the optional gateway_pids array (live process scan)
+// onto []int.
+func pidsFromRequest(raw any) []int {
+	items, _ := raw.([]any)
+	pids := make([]int, 0, len(items))
+	for _, item := range items {
+		if pid := intValue(item); pid > 0 {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
 }
 
 func orAny(primary, fallback any) any {

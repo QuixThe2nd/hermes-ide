@@ -1786,18 +1786,28 @@ class TurnRunner(_TurnRunnerCore):
         # The serving-identity runtime note rides the same channel: during an overlap restart every
         # externally visible pid (systemd MainPID, pid file, gateway_state.json) names the draining
         # predecessor, so each turn must be able to trust which process is actually serving it.
-        from gateway.serving_identity import serving_runtime_note
+        # When the session's DURABLE last-served record names a different process, a transition
+        # note rides beside it: persisted conversation/task context carried over (not a new task),
+        # process-local state (terminals, background processes, kernels, caches, pids) did not and
+        # must be revalidated.
+        from gateway.serving_transition import session_turn_notes
 
         turn_notes = list(runner._consume_pending_turn_sidecar_notes(ctx.session_key))
-        runtime_note = serving_runtime_note(runner)
+        runtime_note, transition_note = session_turn_notes(
+            getattr(runner, "session_store", None),
+            getattr(ctx, "session_id", None), runner)
         if runtime_note:
             turn_notes.append(runtime_note)
+        if transition_note:
+            turn_notes.append(transition_note)
         agent._gateway_turn_context_notes = "\n\n".join(turn_notes)
         # A transparent continuation defers the notes channel above, but a
         # restart just moved the conversation to a new process mid-turn —
-        # stage the runtime note on its own one-shot channel so the
-        # continuation turn still learns which process serves it.
-        agent._gateway_continuation_note = runtime_note
+        # stage the runtime notes on their own one-shot channel so the
+        # continuation turn still learns which process serves it AND that
+        # the process changed.
+        continuation_notes = [note for note in (runtime_note, transition_note) if note]
+        agent._gateway_continuation_note = "\n\n".join(continuation_notes)
         agent.background_review_callback, bg_release = self._make_bg_review_callbacks()
         # Register the release hook on the adapter so base.py's finally block fires it after the
         # main response is delivered.

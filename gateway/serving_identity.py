@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +87,10 @@ def _pid_attr(runner: Any, name: str) -> Optional[int]:
     except (TypeError, ValueError):
         return None
     return value if value > 0 else None
+
+
+def _positive_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 def serving_identity_snapshot(runner: Any) -> dict[str, Any]:
@@ -205,6 +209,83 @@ def serving_runtime_note(runner: Any) -> str:
     )
 
 
+def transition_state(
+    previous: Optional[Mapping[str, Any]],
+    current: Mapping[str, Any],
+) -> str:
+    """Compare a persisted last-served identity against the current process.
+
+    Shared contract with ``internal/servingidentity``:
+
+    - ``changed`` — the record provably names a different process: a
+      different pid, or the same pid with a different start fingerprint
+      (PIDs get reused; only the fingerprint disambiguates the recycle).
+    - ``same`` — identical pid AND start fingerprint.
+    - ``unknown`` — no usable record, or the fingerprints needed to compare
+      are missing: claim nothing rather than guess.
+    """
+    prev = previous if isinstance(previous, Mapping) else {}
+    prev_pid = prev.get("pid")
+    cur_pid = current.get("pid")
+    if not _positive_int(prev_pid) or not _positive_int(cur_pid):
+        return "unknown"
+    if prev_pid != cur_pid:
+        return "changed"
+    prev_start = prev.get("start_time")
+    cur_start = current.get("start_time")
+    if not _positive_int(prev_start) or not _positive_int(cur_start):
+        return "unknown"
+    return "same" if prev_start == cur_start else "changed"
+
+
+def serving_transition_note(
+    previous: Optional[Mapping[str, Any]],
+    current: Mapping[str, Any],
+) -> Optional[str]:
+    """First-turn-after-handoff note separating carried-over from process-local state.
+
+    Wording contract (shared with ``internal/servingidentity``): rendered
+    ONLY when the persisted record provably names a different process
+    (:func:`transition_state` == ``"changed"``) — never on a session's
+    first-ever turn, ordinary same-process turns, or unprovable comparisons.
+    The note names both identities, states the transition is not a new task
+    (persisted conversation/task context stays valid), and demands
+    revalidation of process-local state (terminals, background processes,
+    kernels, sockets, caches, tool handles, recorded pids).
+    """
+    if transition_state(previous, current) != "changed":
+        return None
+    old_clause = _start_clause(previous.get("pid"), previous.get("start_time"))
+    return (
+        "[System note: This conversation moved to a new Hermes gateway "
+        f"process: {_build_clause(current)} replaced {old_clause}. That was "
+        "a process transition, not a new task: the persisted conversation "
+        "history and task context carried over and stay valid. "
+        "Process-local state did NOT carry over — terminal sessions, "
+        "background processes, kernels, sockets, in-memory caches, tool "
+        "handles, and any pid you recorded belonged to the old process: "
+        "revalidate them (re-open, re-list, re-check) before relying on "
+        "them again.]"
+    )
+
+
+def serving_turn_notes(
+    runner: Any,
+    previous: Optional[Mapping[str, Any]] = None,
+) -> tuple[str, Optional[str]]:
+    """``(identity note, transition note | None)`` for this turn.
+
+    The transition note renders only when the caller's persisted
+    last-served identity (``gateway.serving_transition``) provably names a
+    different process; both notes ride the existing one-shot channels
+    (turn notes + continuation sidecar).
+    """
+    return (
+        serving_runtime_note(runner),
+        serving_transition_note(previous, serving_identity_snapshot(runner)),
+    )
+
+
 def serving_identity_clause(runner: Any) -> str:
     """Short identity clause (``pid N, build abcd1234``) for recovery notes."""
     fields = serving_identity_snapshot(runner)
@@ -255,6 +336,27 @@ def _successor_identity_state(
         return "unknown"
     return state if state in ("live", "dead", "unknown") else "unknown"
 
+def _pid_candidates(*pid_sources: Any) -> list[int]:
+    """Deduped positive-int pids across sources, order-preserving.
+
+    Sources may be a single pid, an iterable of pids (the process scan), or
+    ``None``. Non-int and non-positive values are dropped — the scan and the
+    state file are evidence surfaces that can carry junk.
+    """
+    seen: list[int] = []
+    for source in pid_sources:
+        if source is None:
+            continue
+        values = source if isinstance(source, (list, tuple, set, frozenset)) else [source]
+        for value in values:
+            if _positive_int(value) and value not in seen:
+                seen.append(value)
+    return seen
+
+
+def _pid_list(pids: list[int]) -> str:
+    """``"pid A, pid B"`` for candidate-name rendering."""
+    return ", ".join(f"pid {pid}" for pid in pids)
 
 def serving_status_lines(
     *,
@@ -266,25 +368,33 @@ def serving_status_lines(
     state_restart_requested: Any = None,
     chained: Optional[Mapping[str, Any]] = None,
     successor_identity: Optional[Callable[[int, Any], str]] = None,
+    gateway_pids: Optional[Iterable[int]] = None,
 ) -> list[str]:
     """Status-surface lines separating the serving gateway from predecessor evidence.
 
     Resolution ladder (shared contract with ``internal/servingidentity``):
 
-    1. A live control-socket ``identify`` answer is authoritative — EXCEPT a
-       ``draining-predecessor`` answer, which names the serving process only
-       when its reported successor carries the hub readiness ack AND passes
-       the start-fingerprint check (PID reuse). A spawned-but-unattested
-       successor is "starting", never a green serving claim; a fingerprint
-       mismatch or dead pid is a warning.
+    1. A live control-socket ``identify`` answer is authoritative — EXCEPT
+       a ``draining-predecessor`` answer, which names the serving process
+       only when its reported successor carries the hub readiness ack AND
+       passes the start-fingerprint check (PID reuse). A
+       spawned-but-unattested successor is "starting", never a green
+       serving claim; a fingerprint mismatch or dead pid is a warning. A
+       LEGACY answer (no overlap block — a gateway whose build predates
+       overlap reporting) is never green: its process's serving role cannot
+       be proven, and during an overlap window that answerer is exactly the
+       draining predecessor.
     2. Without a socket answer, a live, fresh ``gateway_state.json`` record
        names the serving pid — unless the record itself says the process is
        draining (``gateway_state == "draining"`` or ``restart_requested``),
-       in which case serving identity is unknown: status files name the
-       predecessor during the whole handoff window.
-    3. Otherwise "unknown" with the reason — never a serving claim that
-       cannot be proven.
+       or more than one gateway process is live (``gateway_pids``): a
+       status file names ONE process, never THE server among many.
+    3. Otherwise "unknown"/"ambiguous" with the reason and the candidate
+       pids — never a serving claim that cannot be proven.
 
+    ``gateway_pids`` (a process scan like ``find_gateway_pids``) is
+    evidence, never a serving claim: it only demotes unproven rungs to
+    ambiguous, and corroborates proven ones. Optional/absent by default.
     ``chained`` (a peeked ``.restart_chain.json`` payload) adds the
     pending-restart line.
     """
@@ -297,8 +407,7 @@ def serving_status_lines(
         successor_pid = overlap.get("successor_pid")
         if role == ROLE_DRAINING_PREDECESSOR:
             predecessor_pid = identify.get("pid")
-            if isinstance(successor_pid, int) and not isinstance(successor_pid, bool) \
-                    and successor_pid > 0:
+            if _positive_int(successor_pid):
                 expected_start = overlap.get("successor_start_time")
                 identity_state = _successor_identity_state(
                     successor_pid, expected_start, successor_identity)
@@ -331,25 +440,57 @@ def serving_status_lines(
             predecessor_pid = overlap.get("predecessor_pid")
             predecessor_clause = (
                 f"; predecessor pid {predecessor_pid} is draining its in-flight turns"
-                if isinstance(predecessor_pid, int) and predecessor_pid > 0 else ""
+                if _positive_int(predecessor_pid) else ""
             )
             lines.append(
                 f"✓ Serving gateway: {answering} — restart successor, serving new turns"
                 f"{predecessor_clause}")
-        elif role == ROLE_UNKNOWN:
+        elif role == ROLE_SERVING:
+            lines.append(f"✓ Serving gateway: {answering} — answering on the gateway control socket")
+        elif not role:
+            # LEGACY identify: no overlap block, so the answerer's serving
+            # role is unprovable. During an overlap window this is exactly
+            # the draining predecessor (a pre-overlap build) — green-serving
+            # it named the dying process in the field.
+            candidates = _pid_candidates(identify.get("pid"), state_pid, gateway_pids)
+            rendered = _pid_list(candidates)
+            if len(candidates) > 1:
+                lines.append(
+                    "⚠ Serving gateway: ambiguous — the control socket is owned by "
+                    f"pid {identify.get('pid')}, which reports no restart-handoff state "
+                    "(its build predates overlap reporting), while gateway processes "
+                    f"{rendered} are live; which one serves turns cannot be proven from "
+                    "here — re-check once the handoff completes")
+            elif str(state_gateway_state) == "draining" or bool(state_restart_requested):
+                lines.append(
+                    "⚠ Serving gateway: unknown — the control socket is owned by "
+                    f"pid {identify.get('pid')}, which reports no restart-handoff state "
+                    "(its build predates overlap reporting) while its own state record "
+                    "says it is draining; the serving process cannot be proven from here")
+            else:
+                lines.append(
+                    f"⚠ Serving gateway: unknown — gateway {answering} answered without "
+                    "restart-handoff state (its build predates overlap reporting); it is "
+                    "the only gateway process found, but its serving role cannot be proven")
+        else:
             lines.append(
                 f"⚠ Serving gateway: unknown — gateway {answering} answered, but its "
                 "restart-handoff state could not be classified")
-        else:
-            lines.append(f"✓ Serving gateway: {answering} — answering on the gateway control socket")
     elif isinstance(state_pid, int) and state_pid > 0:
         draining = str(state_gateway_state) == "draining" or bool(state_restart_requested)
+        candidates = _pid_candidates(state_pid, gateway_pids)
         if not state_is_stale and state_pid_is_live:
             if draining:
                 lines.append(
                     "⚠ Serving gateway: unknown — gateway_state.json names pid "
                     f"{state_pid} draining for a restart (state '{state_gateway_state}'); "
-                    "status files keep naming the predecessor until the handoff completes")
+                    "status files keep naming the predecessor until the handoff completes"
+                    + (f"; live gateway processes: {_pid_list(candidates)}" if len(candidates) > 1 else ""))
+            elif len(candidates) > 1:
+                lines.append(
+                    f"⚠ Serving gateway: ambiguous — gateway_state.json names pid {state_pid} "
+                    f"but {_pid_list(candidates)} gateway processes are live; which one "
+                    "serves turns cannot be proven from status files alone")
             else:
                 lines.append(
                     f"✓ Serving gateway: pid {state_pid} (from gateway_state.json, state '{state_gateway_state}')")
@@ -362,8 +503,15 @@ def serving_status_lines(
                 "⚠ Serving gateway: unknown — control socket not answering and gateway_state.json "
                 f"pid {state_pid} is not running")
     else:
-        lines.append(
-            "⚠ Serving gateway: unknown — no control socket answer and no gateway_state.json record")
+        candidates = _pid_candidates(gateway_pids)
+        if len(candidates) > 1:
+            lines.append(
+                "⚠ Serving gateway: ambiguous — no control socket answer and no "
+                f"gateway_state.json record; gateway processes {_pid_list(candidates)} "
+                "are live and which one serves turns cannot be proven from here")
+        else:
+            lines.append(
+                "⚠ Serving gateway: unknown — no control socket answer and no gateway_state.json record")
     if isinstance(chained, Mapping):
         source = chained.get("source") or "an earlier restart request"
         lines.append(
