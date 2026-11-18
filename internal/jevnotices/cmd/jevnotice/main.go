@@ -2,7 +2,8 @@
 // it reads one notice record as JSON on stdin (the same record shape as
 // testdata/notice_cases.json — purpose, subject, author, attempt, attempts,
 // label, confidence, allowed, scores, emoji, abstain, error) and writes the
-// rendered notice line to stdout.
+// rendered notice line to stdout — or nothing when the record's "notices"
+// field (the owning profile's display.jev_notices) turns notices off.
 //
 // This is the executable the production gateway runs for every Jev notice:
 // gateway/jev_notice.py resolves or builds this binary (content-hash-keyed
@@ -27,13 +28,17 @@ func main() {
 	os.Exit(run(os.Stdin, os.Stdout, os.Stderr))
 }
 
-// run is main over explicit streams: one record in, the notice line out,
-// and the process exit code returned (2 = unreadable record).
+// run is main over explicit streams: one record in, the notice line out (or
+// nothing for a silenced record), and the process exit code returned
+// (2 = unreadable record).
 func run(stdin io.Reader, stdout, stderr io.Writer) int {
 	var record map[string]any
 	if err := json.NewDecoder(stdin).Decode(&record); err != nil {
 		fmt.Fprintf(stderr, "jevnotice: unreadable record: %v\n", err)
 		return 2
+	}
+	if !jevnotices.NoticesEnabled(record) {
+		return 0 // the owning profile turned notices off: no line, not an error
 	}
 	fmt.Fprintln(stdout, jevnotices.Format(noticeFromRecord(record)))
 	return 0
