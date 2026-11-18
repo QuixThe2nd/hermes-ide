@@ -861,7 +861,7 @@ class CheckpointManager:
             str(Path.home()),
             temp_root,
             str(Path(temp_root).resolve()),
-            "/tmp",
+            "/tmp",  # no-tmp: ok — detection: never stage the shared temp root itself
             "/var/tmp",
             "/dev/shm",
             "/run",

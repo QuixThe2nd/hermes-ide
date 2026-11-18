@@ -4442,6 +4442,7 @@ monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7b5e408fcc50>
         monkeypatch.setattr(runner, "_sync_voice_mode_state_to_adapter", lambda *a, **k: None)
         monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", AsyncMock(return_value=True))
     
+no-tmp: ok — captured pytest transcript kept as review evidence, not authored text
 >       connected = await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -4568,8 +4569,11 @@ caplog = <_pytest.logging.LogCaptureFixture object at 0x7b5e40719810>
         def fake_profiles_to_serve(multiplex):
             assert multiplex is True
             return [
+no-tmp: ok — captured pytest transcript kept as review evidence, not authored text
                 ("default", Path("/tmp/default")),
+no-tmp: ok — captured pytest transcript kept as review evidence, not authored text
                 ("bad", Path("/tmp/bad")),
+no-tmp: ok — captured pytest transcript kept as review evidence, not authored text
                 ("good", Path("/tmp/good")),
             ]
     
@@ -4639,7 +4643,9 @@ monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7b5e42497d50>
         monkeypatch.setattr(
             "hermes_cli.profiles.profiles_to_serve",
             lambda multiplex: [
+no-tmp: ok — captured pytest transcript kept as review evidence, not authored text
                 ("default", Path("/tmp/default")),
+no-tmp: ok — captured pytest transcript kept as review evidence, not authored text
                 ("unsafe", Path("/tmp/unsafe")),
             ],
         )
@@ -6682,6 +6688,7 @@ runner = <gateway.run.GatewayRunner object at 0x79a196b21590>
         event.source.platform = Platform.TELEGRAM
         runner.adapters[event.source.platform] = mock_adapter
     
+no-tmp: ok — captured pytest transcript kept as review evidence, not authored text
         tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
     
         with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result) as mock_tts, \
@@ -6734,6 +6741,7 @@ runner = <gateway.run.GatewayRunner object at 0x79a1969e2c90>
         event.message_id = "462"
         runner.adapters[event.source.platform] = mock_adapter
     
+no-tmp: ok — captured pytest transcript kept as review evidence, not authored text
         tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
     
         with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result), \

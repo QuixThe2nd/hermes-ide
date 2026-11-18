@@ -968,6 +968,7 @@ violate them.
 
 3. **`platforms:` gating audited against actual script imports.**
    Skills that use POSIX-only primitives (`fcntl`, `termios`,
+<!-- no-tmp: ok — names the POSIX primitives the platforms: gate exists to audit -->
    `os.setsid`, `os.kill(pid, 0)` for liveness, `/proc`, `/tmp`
    hardcoded, `signal.SIGKILL`, bash heredocs, `osascript`, `apt`,
    `systemctl`) must declare their supported platforms. Default
