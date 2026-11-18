@@ -43,7 +43,9 @@ async def test_forwarded_restart_requeues_with_requester_routing(_isolated_home)
 
     runner = _queueable_runner()
     requester = {
-        "platform": "telegram", "chat_id": "42",
+        # A real Platform value: the comeback marker round-trips through
+        # SessionSource, whose enum has no "telegram" in this fork.
+        "platform": "discord", "chat_id": "42",
         "chat_type": "dm", "message_id": "m77",
     }
     result = await handle_forwarded_restart(runner, restart_hub=False, requester=requester)
