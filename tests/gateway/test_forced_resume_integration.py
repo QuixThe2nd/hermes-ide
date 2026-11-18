@@ -584,6 +584,36 @@ def test_chained_restart_tail_continues_with_process_identity(monkeypatch):
     assert rewritten[-1]["content"] == _EXPECTED_RESTART_RESULT
 
 
+def test_forwarded_restart_tail_continues_with_process_identity(monkeypatch):
+    """A forwarded (array-overlap) restart carries the same Old/New identity contract.
+
+    The forwarded result names the newest generation that took the request
+    (``forwarded_to``) as ``process``; the successor rewrite must still
+    present Old process = that generation and New process = itself, never a
+    bare success without identity.
+    """
+    from gateway.run_turn_recovery import _repair_restart_tool_tail
+
+    forwarded_pid = _NEW_PID - 1
+    history = _restart_tool_tail_history(
+        process=f"pid {forwarded_pid}",
+        status={
+            "status": "forwarded",
+            "active_agents": 1,
+            "via_service": True,
+            "forwarded_to": forwarded_pid,
+        },
+    )[:-1]
+    monkeypatch.setattr(os, "getpid", lambda: _NEW_PID)
+
+    repair = _repair_restart_tool_tail(history)
+
+    assert repair is not None
+    rewritten, changed = repair
+    assert changed is True
+    assert rewritten[-1]["content"] == _EXPECTED_RESTART_RESULT
+
+
 def test_rich_restart_result_is_trusted_and_idempotent(monkeypatch):
     """A second recovery pass in the same successor changes nothing."""
     from gateway.run_turn_recovery import _repair_restart_tool_tail

@@ -8,7 +8,8 @@ that same turn to finish.
 
 The contract under test is a TYPED seam, never prose:
 
-* only ``restarting`` / ``already_in_progress`` results stamp the reserved
+* only committed restart statuses (``restarting`` / ``already_in_progress`` /
+  ``forwarded``, plus legacy ``chained`` from older builds) stamp the reserved
   ``_hermes_turn_control`` field (the restart plugin's ``_result_json``) and
   arm the per-turn flag (``agent/turn_control``);
 * an armed flag ends the turn in ``conversation_loop`` with a typed
@@ -176,6 +177,10 @@ class TestArmGatewayRestartControl:
             TURN_CONTROL_FIELD: GATEWAY_RESTART_CONTROL
         }
         assert turn_control_field_for("forwarded") == {
+            TURN_CONTROL_FIELD: GATEWAY_RESTART_CONTROL
+        }
+        # Legacy overlap status written by older builds — still terminal.
+        assert turn_control_field_for("chained") == {
             TURN_CONTROL_FIELD: GATEWAY_RESTART_CONTROL
         }
         for non_terminal in ("failed", None, ""):
