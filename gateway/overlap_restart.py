@@ -29,7 +29,8 @@ DEFAULT_OVERLAP_SUCCESSOR_ATTACH_TIMEOUT_SECONDS = 300.0
 # The launch markers are popped from os.environ right after the PID claim (so
 # tool children never inherit them), but the hub attach that proves this
 # process is an attested successor happens later, when adapters connect.
-# Keep the predecessor here until this process becomes authoritative.
+# Ancestry anchor for this process's spawn; outlives the claim (attach may
+# happen after it) and never leaves the process.
 _pending_predecessor_pid: Optional[int] = None
 
 
@@ -39,6 +40,7 @@ def remember_pending_predecessor(pid: Optional[int]) -> None:
 
 
 def forget_pending_predecessor() -> None:
+    """Reset the anchor (test isolation; production keeps ancestry forever)."""
     remember_pending_predecessor(None)
 
 
