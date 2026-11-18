@@ -1,0 +1,140 @@
+{
+  "contract": "always-spawn restart policy - Go twin of gateway/overlap_restart.py spawn_successor; every restart spawns one overlap successor through the first overlap-capable adapter, no config key disables it (gateway.restart_platforms removed in #825)",
+  "cases": [
+    {
+      "name": "stale_restart_platforms_false_still_spawns",
+      "input": {
+        "started": false,
+        "via_service": true,
+        "predecessor_pid": 8412,
+        "adapters": [
+          {"name": "hub", "supports": true, "has_spawn": true, "spawn_pid": 4242, "service_managed": false, "has_mark_ready": true}
+        ],
+        "config": {"gateway": {"restart_platforms": false}}
+      },
+      "expect": {"result": "spawned", "pid": 4242, "started": true, "spawn_attempted": ["hub"], "readiness_marked": ["hub"], "service_managed": false}
+    },
+    {
+      "name": "stale_restart_platforms_true_same_decision",
+      "input": {
+        "started": false,
+        "via_service": false,
+        "predecessor_pid": 8412,
+        "adapters": [
+          {"name": "hub", "supports": true, "has_spawn": true, "spawn_pid": 4242, "service_managed": false, "has_mark_ready": true}
+        ],
+        "config": {"gateway": {"restart_platforms": true}}
+      },
+      "expect": {"result": "spawned", "pid": 4242, "started": true, "spawn_attempted": ["hub"], "readiness_marked": ["hub"], "service_managed": false}
+    },
+    {
+      "name": "no_config_section_same_decision",
+      "input": {
+        "started": false,
+        "via_service": true,
+        "predecessor_pid": 8412,
+        "adapters": [
+          {"name": "hub", "supports": true, "has_spawn": true, "spawn_pid": 4242, "service_managed": false, "has_mark_ready": true}
+        ],
+        "config": {}
+      },
+      "expect": {"result": "spawned", "pid": 4242, "started": true, "spawn_attempted": ["hub"], "readiness_marked": ["hub"], "service_managed": false}
+    },
+    {
+      "name": "already_started_returns_latched_pid_without_spawning",
+      "input": {
+        "started": true,
+        "started_pid": 777,
+        "via_service": true,
+        "predecessor_pid": 8412,
+        "adapters": [
+          {"name": "hub", "supports": true, "has_spawn": true, "spawn_pid": 9999, "service_managed": false, "has_mark_ready": true}
+        ],
+        "config": {"gateway": {"restart_platforms": false}}
+      },
+      "expect": {"result": "already-started", "pid": 777, "started": true, "spawn_attempted": [], "readiness_marked": [], "service_managed": false}
+    },
+    {
+      "name": "non_capable_adapters_are_skipped_to_legacy_drain",
+      "input": {
+        "started": false,
+        "via_service": true,
+        "predecessor_pid": 8412,
+        "adapters": [
+          {"name": "webhook", "supports": false, "has_spawn": true, "spawn_pid": 1111, "has_mark_ready": true},
+          {"name": "telegram", "supports": false, "has_spawn": true, "spawn_pid": 2222, "has_mark_ready": false}
+        ],
+        "config": {"gateway": {"restart_platforms": false}}
+      },
+      "expect": {"result": "legacy-drain", "pid": null, "started": false, "spawn_attempted": [], "readiness_marked": [], "service_managed": false}
+    },
+    {
+      "name": "capable_adapter_without_spawn_is_skipped",
+      "input": {
+        "started": false,
+        "via_service": true,
+        "predecessor_pid": 8412,
+        "adapters": [
+          {"name": "hub", "supports": true, "has_spawn": false, "spawn_pid": 4242, "has_mark_ready": true}
+        ],
+        "config": {"gateway": {"restart_platforms": false}}
+      },
+      "expect": {"result": "legacy-drain", "pid": null, "started": false, "spawn_attempted": [], "readiness_marked": [], "service_managed": false}
+    },
+    {
+      "name": "spawn_none_falls_through_to_next_capable_adapter",
+      "input": {
+        "started": false,
+        "via_service": true,
+        "predecessor_pid": 8412,
+        "adapters": [
+          {"name": "discord", "supports": true, "has_spawn": true, "spawn_pid": null, "has_mark_ready": true},
+          {"name": "matrix", "supports": true, "has_spawn": true, "spawn_pid": 5150, "service_managed": true, "has_mark_ready": true}
+        ],
+        "config": {"gateway": {"restart_platforms": false}}
+      },
+      "expect": {"result": "spawned", "pid": 5150, "started": true, "spawn_attempted": ["discord", "matrix"], "readiness_marked": ["discord", "matrix"], "service_managed": true}
+    },
+    {
+      "name": "readiness_marked_on_every_capable_adapter",
+      "input": {
+        "started": false,
+        "via_service": false,
+        "predecessor_pid": 8412,
+        "adapters": [
+          {"name": "discord", "supports": true, "has_spawn": true, "spawn_pid": 6001, "has_mark_ready": true},
+          {"name": "observer", "supports": true, "has_spawn": false, "has_mark_ready": true},
+          {"name": "matrix", "supports": true, "has_spawn": true, "spawn_pid": 6002, "has_mark_ready": false}
+        ],
+        "config": {"gateway": {"restart_platforms": false}}
+      },
+      "expect": {"result": "spawned", "pid": 6001, "started": true, "spawn_attempted": ["discord"], "readiness_marked": ["discord", "observer"], "service_managed": false}
+    },
+    {
+      "name": "spawn_error_with_latched_child_retains_successor",
+      "input": {
+        "started": false,
+        "via_service": true,
+        "predecessor_pid": 8412,
+        "adapters": [
+          {"name": "hub", "supports": true, "has_spawn": true, "spawn_error": true, "latched_pid": 6006, "service_managed": true, "has_mark_ready": true}
+        ],
+        "config": {"gateway": {"restart_platforms": false}}
+      },
+      "expect": {"result": "readiness-failed-retained", "pid": 6006, "started": true, "spawn_attempted": ["hub"], "readiness_marked": [], "service_managed": true}
+    },
+    {
+      "name": "spawn_error_without_latched_child_raises",
+      "input": {
+        "started": false,
+        "via_service": true,
+        "predecessor_pid": 8412,
+        "adapters": [
+          {"name": "hub", "supports": true, "has_spawn": true, "spawn_error": true, "has_mark_ready": true}
+        ],
+        "config": {"gateway": {"restart_platforms": false}}
+      },
+      "expect": {"result": "error", "pid": null, "started": false, "spawn_attempted": ["hub"], "readiness_marked": [], "service_managed": false}
+    }
+  ]
+}
