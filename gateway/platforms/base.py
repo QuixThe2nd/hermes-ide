@@ -1457,6 +1457,30 @@ def _split_post_delivery_entry(entry: Any) -> Tuple[Optional[int], Any]:
     return entry if isinstance(entry, tuple) and len(entry) == 2 else (None, entry)
 
 
+# Sentinel: "this run's generation has not been captured yet" (distinct from a frozen None —
+# adapters whose handler never stamps a generation legitimately freeze None).
+_UNSET_GENERATION = object()
+
+
+class _PostDeliveryBoundary:
+    """One turn's frozen post-delivery identity on a REUSED interrupt Event.
+
+    A queued follow-up runs on the same ``asyncio.Event`` guard as the turn before it, so the
+    generation/fired attributes on that shared object must never be read back after an await
+    that let the newer run stamp its own values. Each ``_process_message_background`` run
+    installs one of these at entry and stamps its generation when its handler returns; the
+    finally fires strictly through this frozen identity. ``generation`` stays
+    ``_UNSET_GENERATION`` when the run was cancelled/interrupted before its handler returned —
+    no newer run can exist in that window, so the fire path then falls back to the shared read.
+    """
+
+    __slots__ = ("fired", "generation")
+
+    def __init__(self) -> None:
+        self.fired = False
+        self.generation: Any = _UNSET_GENERATION
+
+
 def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
     """``getattr(obj, name)`` or create it via ``factory`` — the getattr-guard for
     tests that build adapters via ``object.__new__`` and never run ``__init__``."""
@@ -2932,7 +2956,15 @@ class BasePlatformAdapter(ABC):
         if not session_key or not callable(callback):
             return False
         active = self._active_sessions.get(session_key)
-        if active is None or getattr(active, "_hermes_post_delivery_fired", False):
+        if active is None:
+            return False
+        # The guard's CURRENT run boundary decides liveness: a reused Event may still carry
+        # the previous run's fired legacy marker while a newer run is live (overlapping drain
+        # handoff) — that newer run's unfired boundary is the boundary that will fire. Raw
+        # guards installed without a run fall back to the legacy marker.
+        _boundary = getattr(active, "_hermes_run_boundary", None)
+        if ((_boundary is not None and _boundary.fired)
+                or getattr(active, "_hermes_post_delivery_fired", False)):
             return False
         existing = self._post_delivery_callbacks.get(session_key)
         if existing is not None:
@@ -3750,17 +3782,39 @@ class BasePlatformAdapter(ABC):
             text_content=text_content, images=images, media_files=media_files,
             local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract)
 
-    async def _fire_post_delivery_callback(self, session_key: str, interrupt_event: asyncio.Event) -> None:
-        """Run the one-shot post-delivery callback (bounded, errors swallowed). The generation is
-        read HERE — stamped on the interrupt event DURING the handler await; an earlier snapshot
-        would let stale runs fire a fresher run's callbacks."""
+    async def _fire_post_delivery_callback(
+        self, session_key: str, interrupt_event: asyncio.Event, *,
+        run_boundary: Optional[_PostDeliveryBoundary] = None) -> None:
+        """Run the one-shot post-delivery callback (bounded, errors swallowed).
+
+        ``run_boundary`` is the firing run's frozen identity: the gateway stamps
+        ``_hermes_run_generation`` on the interrupt event DURING the handler await, and a
+        queued follow-up reuses that same Event — its handler can stamp a NEWER generation
+        while this run's finally is still awaiting typing cleanup. Reading the shared Event
+        after those awaits made the older finally fire the new turn's callback and mark the
+        new turn's lifecycle fired; the frozen boundary keeps each finally to its own run.
+        Without ``run_boundary`` (direct calls, no newer run possible) the legacy shared-Event
+        read applies unchanged.
+        """
         # Mark the boundary fired BEFORE popping/running: a registration landing while a
         # chained callback awaits must learn no boundary remains this run, not re-register
-        # into a registry nothing will read again.
+        # into a registry nothing will read again. Ownership-checked: when a newer run has
+        # already replaced the Event's boundary, this older finally must not mark THAT
+        # lifecycle fired — only its own (already dead) boundary.
         if interrupt_event is not None:
-            interrupt_event._hermes_post_delivery_fired = True  # type: ignore[attr-defined]
-        _post_cb = self.pop_post_delivery_callback(
-            session_key, generation=getattr(interrupt_event, "_hermes_run_generation", None))
+            if run_boundary is None:
+                interrupt_event._hermes_post_delivery_fired = True  # type: ignore[attr-defined]
+            else:
+                run_boundary.fired = True
+                if getattr(interrupt_event, "_hermes_run_boundary", None) is run_boundary:
+                    interrupt_event._hermes_post_delivery_fired = True  # type: ignore[attr-defined]
+        if run_boundary is None or run_boundary.generation is _UNSET_GENERATION:
+            # No frozen identity (direct call) or the run was cancelled before its handler
+            # returned — no newer run can exist in that window, so the shared read is safe.
+            _generation = getattr(interrupt_event, "_hermes_run_generation", None)
+        else:
+            _generation = run_boundary.generation
+        _post_cb = self.pop_post_delivery_callback(session_key, generation=_generation)
         if callable(_post_cb):
             with contextlib.suppress(asyncio.TimeoutError, Exception):
                 _post_result = _post_cb()
@@ -3814,8 +3868,12 @@ class BasePlatformAdapter(ABC):
         # Reuse the interrupt event handle_message() installed; new Event only if removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
-        # A queued-follow-up handoff reuses this Event across runs; the previous
-        # run's fired marker must not refuse THIS run's registrations.
+        # A queued-follow-up handoff reuses this Event across runs; each run installs its own
+        # post-delivery boundary so an overlapping older finally can neither fire THIS run's
+        # callbacks (frozen generation) nor mark THIS run's lifecycle fired (ownership check),
+        # and the previous run's fired marker must not refuse THIS run's registrations.
+        run_boundary = _PostDeliveryBoundary()
+        interrupt_event._hermes_run_boundary = run_boundary  # type: ignore[attr-defined]
         interrupt_event._hermes_post_delivery_fired = False  # type: ignore[attr-defined]
         _thread_metadata = _thread_metadata_for_event(event)
         # A new turn starts: stop any post-turn delegation typing supervisor
@@ -3829,6 +3887,12 @@ class BasePlatformAdapter(ABC):
         try:
             await self._run_processing_hook("on_processing_start", event)
             response = await self._message_handler(event)
+            # Freeze THIS run's delivery identity before any further await: the gateway
+            # stamps _hermes_run_generation on the shared Event during the handler above,
+            # and the queued follow-up spawned below reuses that Event — its handler can
+            # stamp a NEWER generation while this run's finally is still awaiting typing
+            # cleanup. The finally must fire with this frozen value, never a re-read.
+            run_boundary.generation = getattr(interrupt_event, "_hermes_run_generation", None)
             # A muted diagnostic wake ran for the session; its reply is not presented. The
             # policy read binds the routed profile; delivery itself stays in the launch scope.
             with self._media_delivery_scope(event.source):
@@ -3898,7 +3962,8 @@ class BasePlatformAdapter(ABC):
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
             # alive.
             await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
-            await self._fire_post_delivery_callback(session_key, interrupt_event)
+            await self._fire_post_delivery_callback(
+                session_key, interrupt_event, run_boundary=run_boundary)
             # Callback work or a late refresh may have recreated typing — one final bounded stop.
             await self._stop_typing_refresh(
                 event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
