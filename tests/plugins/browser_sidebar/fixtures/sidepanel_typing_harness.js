@@ -5,8 +5,10 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const path = require('node:path');
 
 const sidepanelScript = process.argv[2];
+const tabsScript = path.join(path.resolve(path.dirname(sidepanelScript)), 'tabs.js');
 
 // ── Fake timers (sidepanel.js's only use of setTimeout is the typing safety
 // timeout, so a tiny manual clock is enough to drive it deterministically). ──
@@ -86,10 +88,13 @@ const bannerEl = new FakeElement('div');
 const transcriptEl = new FakeElement('div');
 transcriptEl._root = true; // everything appended under it counts as "connected"
 const inputEl = new FakeElement('textarea');
+const newChatEl = new FakeElement('button');
 
 global.document = {
   getElementById(id) {
-    return { banner: bannerEl, transcript: transcriptEl, input: inputEl }[id];
+    return {
+      banner: bannerEl, transcript: transcriptEl, input: inputEl, 'new-chat': newChatEl,
+    }[id];
   },
   createElement(tag) { return new FakeElement(tag); },
 };
@@ -112,9 +117,20 @@ global.chrome = {
       get: () => Promise.resolve({}),
       set: () => Promise.resolve(),
     },
+    session: {
+      get: () => Promise.resolve({}),
+      set: () => Promise.resolve(),
+      remove: () => Promise.resolve(),
+    },
   },
   windows: {
     getCurrent: () => Promise.resolve({ id: 1 }),
+  },
+  tabs: {
+    onActivated: { addListener() {} },
+    onUpdated: { addListener() {} },
+    onRemoved: { addListener() {} },
+    query: () => Promise.resolve([]),
   },
 };
 
@@ -131,6 +147,7 @@ async function flush() {
 }
 
 async function main() {
+  require(tabsScript); // sidepanel.js uses the shared SidebarTabs helpers
   require(sidepanelScript);
   await flush();
 

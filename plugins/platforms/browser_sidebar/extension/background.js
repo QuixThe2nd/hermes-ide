@@ -2,9 +2,11 @@
 //
 // Owns the WebSocket to Hermes (token as the sole subprotocol), the side
 // panel toggle paths, and the run_tab_js tool bridge. Chat frames in:
-//   {type:"chat", id, text, tab:{id,url,title}}
-// Frames out: ready / delta{id,text} (suffix-only append) / final{id,text} /
-// error{message} / tool{request_id,name,run_tab_js,args:{code}}.
+//   {type:"chat", id, text, tab:{id,url,title}} — one conversation per tab id.
+// Frames out: ready / delta{id,text,tab_id?} (suffix-only append) /
+// final{id,text,tab_id?} / error{message} / tool{request_id,name,run_tab_js,
+// args:{code},tab_id?} — tab_id marks which tab's conversation the frame
+// belongs to; legacy frames without it are pre-per-tab server builds.
 // Tool replies: {type:"tool_result", request_id, ok, result|error}.
 
 'use strict';
@@ -110,7 +112,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ connected, error: fatalConnectError || connectError });
       return;
     case 'send_chat':
-      sendChat(msg.text).then(sendResponse, (err) =>
+      sendChat(msg.text, msg.tabId).then(sendResponse, (err) =>
         sendResponse({ ok: false, error: String((err && err.message) || err) }),
       );
       return true; // async sendResponse
@@ -131,10 +133,28 @@ async function activeTabContext() {
   }
 }
 
-async function sendChat(text) {
+async function tabContext(tabId) {
+  // The conversation's tab when the panel named one; otherwise whichever
+  // tab is focused (legacy single-session behavior).
+  if (Number.isInteger(tabId)) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab && typeof tab.id === 'number') {
+        return { id: tab.id, url: tab.url || null, title: tab.title || null };
+      }
+    } catch {
+      // Tab closed mid-send: still tag the frame with the id so the server
+      // routes to that conversation, not to whichever tab replaced it.
+    }
+    return { id: tabId, url: null, title: null };
+  }
+  return activeTabContext();
+}
+
+async function sendChat(text, tabId) {
   if (typeof text !== 'string' || !text.trim()) return { ok: false, error: 'empty message' };
   if (!connected || !ws || ws.readyState !== WebSocket.OPEN) return { ok: false, error: 'disconnected' };
-  const tab = await activeTabContext();
+  const tab = await tabContext(tabId);
   // Re-check after the await: the socket may have dropped meanwhile.
   if (!ws || ws.readyState !== WebSocket.OPEN) return { ok: false, error: 'disconnected' };
   const frame = { type: 'chat', id: crypto.randomUUID(), text, tab };
@@ -332,7 +352,26 @@ async function runTabJs(frame) {
   if (typeof code !== 'string') {
     return { type: 'tool_result', request_id: frame && frame.request_id, ok: false, error: 'bad tool args' };
   }
-  const tab = await activeTabForScripting();
+  // Script the tab the conversation belongs to (frame.tab_id), falling back
+  // to the focused tab for legacy frames without one.
+  const frameTabId = frame && Number.isInteger(frame.tab_id) ? frame.tab_id : null;
+  let tab = null;
+  if (frameTabId !== null) {
+    try {
+      const target = await chrome.tabs.get(frameTabId);
+      if (target && typeof target.id === 'number') tab = target;
+    } catch {
+      // Conversation tab is gone: fail the tool, never script another tab.
+    }
+    if (!tab) {
+      return {
+        type: 'tool_result', request_id: frame.request_id, ok: false,
+        error: 'conversation tab is closed',
+      };
+    }
+  } else {
+    tab = await activeTabForScripting();
+  }
   if (!tab) {
     return { type: 'tool_result', request_id: frame.request_id, ok: false, error: 'no active tab' };
   }

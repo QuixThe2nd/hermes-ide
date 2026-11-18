@@ -1,0 +1,265 @@
+// Fake DOM/chrome for sidepanel.js per-tab session logic: transcripts are
+// kept per tab (chrome.storage.session keyed by tab id), switching tabs
+// re-renders that tab's history, frames for non-active tabs are stored not
+// rendered, legacy frames (no tab_id) land on the active tab, the new-chat
+// button resets only the current tab, and closing a tab drops its transcript.
+'use strict';
+
+const assert = require('node:assert/strict');
+const path = require('node:path');
+
+const sidepanelScript = process.argv[2];
+const tabsScript = path.join(path.resolve(path.dirname(sidepanelScript)), 'tabs.js');
+
+// ── Fake timers (typing safety timeout) ────────────────────────────────────
+let now = 0;
+let nextTimerId = 1;
+const timers = new Map();
+global.setTimeout = (fn, ms) => {
+  const id = nextTimerId++;
+  timers.set(id, { fn, at: now + (ms || 0) });
+  return id;
+};
+global.clearTimeout = (id) => {
+  timers.delete(id);
+};
+
+// ── Fake DOM ───────────────────────────────────────────────────────────────
+class FakeElement {
+  constructor(tag) {
+    this.tag = tag;
+    this.children = [];
+    this.parent = null;
+    this._classes = new Set();
+    this._text = '';
+    this.value = '';
+    this.hidden = false;
+    this.scrollTop = 0;
+    this.scrollHeight = 0;
+    this.listeners = {};
+    const self = this;
+    this.classList = {
+      add(c) { self._classes.add(c); },
+      remove(c) { self._classes.delete(c); },
+      contains(c) { return self._classes.has(c); },
+    };
+  }
+  get className() { return [...this._classes].join(' '); }
+  set className(value) { this._classes = new Set(String(value).split(' ').filter(Boolean)); }
+  get textContent() { return this._text; }
+  set textContent(value) { this._text = String(value); }
+  get isConnected() {
+    let node = this;
+    while (node) {
+      if (node._root) return true;
+      node = node.parent;
+    }
+    return false;
+  }
+  get firstChild() { return this.children[0] || null; }
+  append(...nodes) {
+    for (const node of nodes) {
+      node.parent = this;
+      this.children.push(node);
+    }
+  }
+  removeChild(node) {
+    this.children = this.children.filter((c) => c !== node);
+    node.parent = null;
+    return node;
+  }
+  remove() {
+    if (this.parent) this.parent.removeChild(this);
+  }
+  addEventListener(type, handler) {
+    (this.listeners[type] = this.listeners[type] || []).push(handler);
+  }
+}
+
+const bannerEl = new FakeElement('div');
+const transcriptEl = new FakeElement('div');
+transcriptEl._root = true;
+const inputEl = new FakeElement('textarea');
+const newChatEl = new FakeElement('button');
+
+global.document = {
+  getElementById(id) {
+    return {
+      banner: bannerEl, transcript: transcriptEl,
+      input: inputEl, 'new-chat': newChatEl,
+    }[id];
+  },
+  createElement(tag) { return new FakeElement(tag); },
+};
+
+// ── Fake chrome ────────────────────────────────────────────────────────────
+const onMessageListeners = [];
+const sentMessages = [];
+const activatedEvent = { listeners: [], addListener(fn) { this.listeners.push(fn); } };
+const removedEvent = { listeners: [], addListener(fn) { this.listeners.push(fn); } };
+const updatedEvent = { listeners: [], addListener(fn) { this.listeners.push(fn); } };
+const focusChangedEvent = { listeners: [], addListener(fn) { this.listeners.push(fn); } };
+const sessionStore = new Map();
+const localStore = new Map();
+
+function storageArea(store) {
+  return {
+    get(keys) {
+      const list = Array.isArray(keys) ? keys : [keys];
+      const out = {};
+      for (const key of list) if (store.has(key)) out[key] = store.get(key);
+      return Promise.resolve(out);
+    },
+    set(items) {
+      for (const [key, value] of Object.entries(items)) store.set(key, value);
+      return Promise.resolve();
+    },
+    remove(keys) {
+      for (const key of Array.isArray(keys) ? keys : [keys]) store.delete(key);
+      return Promise.resolve();
+    },
+  };
+}
+
+global.chrome = {
+  runtime: {
+    onMessage: { addListener: (fn) => onMessageListeners.push(fn) },
+    sendMessage(msg) {
+      sentMessages.push(msg);
+      return Promise.resolve({ ok: true, id: 'req' });
+    },
+    connect() { return { onMessage: { addListener() {} } }; },
+  },
+  storage: {
+    local: storageArea(localStore),
+    session: storageArea(sessionStore),
+  },
+  windows: {
+    getCurrent: () => Promise.resolve({ id: 7 }),
+    onFocusChanged: focusChangedEvent,
+  },
+  tabs: {
+    onActivated: activatedEvent,
+    onRemoved: removedEvent,
+    onUpdated: updatedEvent,
+    query(options) {
+      assert.equal(options.windowId, 7, 'tab queries must be scoped to the panel window');
+      return Promise.resolve([{ id: 11, active: true, windowId: 7 }]);
+    },
+  },
+};
+
+function fire(event, ...payload) {
+  for (const fn of event.listeners) fn(...payload);
+}
+
+function deliver(frame) {
+  for (const fn of onMessageListeners) fn({ kind: 'frame', frame });
+}
+
+function domTexts() {
+  const texts = [];
+  const walk = (node) => {
+    for (const child of node.children) {
+      if (child._text) texts.push(child._text);
+      walk(child);
+    }
+  };
+  walk(transcriptEl);
+  return texts;
+}
+
+async function flush(rounds = 8) {
+  for (let i = 0; i < rounds; i += 1) await Promise.resolve();
+}
+
+async function main() {
+  require(tabsScript);
+  require(sidepanelScript);
+  await flush();
+
+  // The panel resolves its window and the currently active tab (tab 11).
+  fire(activatedEvent, { tabId: 11, windowId: 7 });
+  await flush();
+
+  // A user message goes out tagged with the active tab.
+  inputEl.value = 'hello tab 11';
+  const onKeydown = inputEl.listeners.keydown[0];
+  onKeydown({ key: 'Enter', shiftKey: false, isComposing: false, preventDefault() {} });
+  await flush();
+  assert.deepEqual(
+    sentMessages[sentMessages.length - 1],
+    { kind: 'send_chat', text: 'hello tab 11', tabId: 11 },
+    'send must carry the active tab id',
+  );
+  assert.ok(domTexts().includes('hello tab 11'), 'own message renders');
+
+  // Streaming reply for tab 11 renders live.
+  deliver({ type: 'typing', active: true, tab_id: 11 });
+  deliver({ type: 'delta', text: 'answer ', tab_id: 11 });
+  deliver({ type: 'delta', text: 'part 2', tab_id: 11 });
+  await flush();
+  assert.ok(domTexts().includes('answer part 2'), 'deltas accumulate');
+  deliver({ type: 'final', text: 'full answer', tab_id: 11 });
+  await flush();
+  assert.ok(domTexts().includes('full answer'), 'final replaces the draft');
+
+  // Frames for a background tab are stored, never rendered.
+  deliver({ type: 'delta', text: 'bg ', tab_id: 42 });
+  deliver({ type: 'delta', text: 'draft', tab_id: 42 });
+  deliver({ type: 'final', text: 'bg final', tab_id: 42 });
+  await flush();
+  assert.ok(!domTexts().some((t) => t.includes('bg')), 'background tab frames must not render');
+  assert.ok(
+    sessionStore.get('tabTranscript:42').some((e) => e.text === 'bg final'),
+    'background tab transcript persists',
+  );
+
+  // Switching tabs re-renders that tab's history without new extension traffic.
+  const sentBeforeSwitch = sentMessages.length;
+  fire(activatedEvent, { tabId: 42, windowId: 7 });
+  await flush();
+  assert.ok(domTexts().includes('bg final'), 'switch shows the background tab history');
+  assert.ok(!domTexts().includes('full answer'), "other tab's history is not shown");
+  assert.equal(sentMessages.length, sentBeforeSwitch, 'tab switches issue no extension messages');
+
+  // Switching back restores tab 11's earlier conversation.
+  fire(activatedEvent, { tabId: 11, windowId: 7 });
+  await flush();
+  assert.ok(domTexts().includes('hello tab 11') && domTexts().includes('full answer'),
+    'switching back restores the earlier conversation');
+  assert.ok(!domTexts().includes('bg final'));
+
+  // Legacy frames (older server, no tab_id) land on the active tab.
+  deliver({ type: 'error', message: 'legacy error' });
+  await flush();
+  assert.ok(domTexts().includes('legacy error'), 'legacy frames render on the active tab');
+
+  // New chat resets ONLY the current tab's conversation.
+  fire(activatedEvent, { tabId: 42, windowId: 7 });
+  await flush();
+  const onClick = newChatEl.listeners.click[0];
+  onClick();
+  await flush();
+  assert.deepEqual(
+    sentMessages[sentMessages.length - 1],
+    { kind: 'send_chat', text: '/new', tabId: 42 },
+    'new chat issues /new for the current tab only',
+  );
+  assert.equal(domTexts().length, 0, 'current tab transcript clears');
+  fire(activatedEvent, { tabId: 11, windowId: 7 });
+  await flush();
+  assert.ok(domTexts().includes('full answer'), 'other tabs keep their conversations');
+
+  // Closing a tab drops its local transcript.
+  fire(removedEvent, 11, { windowId: 7 });
+  await flush();
+  assert.ok(!sessionStore.has('tabTranscript:11'), 'closed tab transcript is dropped');
+
+  console.log('OK');
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
