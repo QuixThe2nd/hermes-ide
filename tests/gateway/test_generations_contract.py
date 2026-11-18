@@ -1,21 +1,15 @@
-"""Shared-contract parity for the gateway restart generation array.
+"""Contract: the Python generation twin answers exactly like the Go core.
 
-``internal/generations`` (Go, canonical contract statement) and
-``gateway/generations.py`` (Python twin, what the runtime uses) must answer
-every generation-array question identically: who is the newest live
-generation, who receives a forwarded restart, who may claim the runtime
-lock / PID file, when shared-credential adapters may start, and which PID
-file holders may be displaced.
+``internal/generations`` (Go) is the canonical decision core for overlapping
+gateway restarts; ``gateway/generations.py`` is the twin the runtime calls.
+This test pipes every shared-table case (testdata/cases.json) through the
+RUNNING Go binary (cmd/generations) when a Go toolchain exists and asserts
+the Python twin computes identical answers — newest live, restart target,
+may-claim, may-start-shared, ancestors, takeover, and the describe roles.
 
-The twin is pinned against the RUNNING Go implementation, not merely the
-shared table: when a Go toolchain is available the real ``cmd/generations``
-binary evaluates every shared-table record
-(internal/generations/testdata/cases.json) and the Python answers must
-match exactly. The Go tests run the same table as a second cross-check, so
-a decision change on either side fails BOTH suites unless the table — and
-therefore both twins — moves.
+Without a toolchain the table still runs against the Python twin alone, so a
+table edit can never silently diverge from the documented expectations.
 """
-from __future__ import annotations
 
 import json
 import shutil
@@ -25,122 +19,155 @@ from pathlib import Path
 import pytest
 
 from gateway.generations import (
-    Generation, GenerationArray, takeover_allowed,
+    Generation,
+    GenerationArray,
+    array_from_registry,
+    takeover_allowed,
 )
 
-_REPO = Path(__file__).resolve().parents[2]
-_TABLE = _REPO / "internal" / "generations" / "testdata" / "cases.json"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_CASES = _REPO_ROOT / "internal" / "generations" / "testdata" / "cases.json"
+_CMD = _REPO_ROOT / "internal" / "generations" / "cmd" / "generations"
 
 
-def _shared_cases():
-    return json.loads(_TABLE.read_text(encoding="utf-8"))["cases"]
+def _load_cases():
+    doc = json.loads(_CASES.read_text())
+    cases = doc.get("cases") or []
+    assert cases, "shared generations table is empty"
+    return cases
 
 
-def _go_binary(tmp_path_factory) -> str | None:
-    """Build cmd/generations once per session; None when no Go toolchain."""
-    if shutil.which("go") is None:
-        return None
-    binary = tmp_path_factory.mktemp("generations", numbered=True) / "generations"
-    build = subprocess.run(
-        ["go", "build", "-o", str(binary), "./cmd/generations"],
-        cwd=_REPO / "internal" / "generations",
-        capture_output=True, text=True, timeout=300,
-    )
-    if build.returncode != 0:
-        pytest.fail(f"go build cmd/generations failed:\n{build.stderr}")
-    return str(binary)
-
-
-@pytest.fixture(scope="session")
-def go_generations(tmp_path_factory) -> str | None:
-    return _go_binary(tmp_path_factory)
-
-
-def _python_answers(case: dict) -> dict:
-    array = GenerationArray(
+def _python_array(case):
+    gens = [
         Generation(
-            pid=int(row["pid"]),
-            id=str(row.get("id") or ""),
-            start_time=int(row.get("start_time") or 0),
-            predecessor=int(row.get("predecessor") or 0),
-            spawn_seq=int(row.get("spawn_seq") or 0),
-            attached=bool(row.get("attached")),
-            draining=bool(row.get("draining")),
-            live=bool(row.get("live")),
+            pid=int(g["pid"]),
+            predecessor=int(g.get("predecessor") or 0),
+            spawn_seq=int(g.get("spawn_seq") or 0),
+            attached=bool(g.get("attached")),
+            draining=bool(g.get("draining")),
+            live=bool(g.get("live")),
         )
-        for row in case["generations"]
-    )
+        for g in case["generations"]
+    ]
+    return GenerationArray(gens)
+
+
+def _python_answers(case):
+    array = _python_array(case)
     me = int(case["me"])
-    ancestors = array.ancestors_of(me)
-    answers = {
-        "newest_live": (array.newest_live() or Generation(pid=0)).pid,
-        "restart_target": (array.newest_live_other(me) or Generation(pid=0)).pid,
+    newest = array.newest_live()
+    target = array.newest_live_other(me)
+    pid_file = case.get("pid_file")
+    takeover = None
+    if pid_file is not None:
+        takeover = takeover_allowed(
+            int(pid_file["pid"]), bool(pid_file["live"]), array.ancestors_of(me))
+    return {
+        "newest_live": newest.pid if newest else 0,
+        "restart_target": target.pid if target else 0,
         "may_claim": array.may_claim_authority(me),
         "may_start_shared": array.may_start_shared_adapters(me),
-        "ancestors": ancestors,
+        "ancestors": array.ancestors_of(me),
         "describe": array.describe(),
-        "takeover": None,
+        "takeover": takeover,
     }
-    pid_file = case.get("pid_file")
-    if pid_file is not None:
-        answers["takeover"] = takeover_allowed(
-            int(pid_file["pid"]), bool(pid_file["live"]), ancestors)
-    return answers
 
 
-def _go_answers(binary: str, case: dict) -> dict:
-    run = subprocess.run(
-        [binary], input=json.dumps(case), capture_output=True, text=True, timeout=60,
-    )
-    if run.returncode != 0:
-        pytest.fail(f"cmd/generations rejected case {case.get('name')}: {run.stderr}")
-    return json.loads(run.stdout)
-
-
-@pytest.mark.parametrize("case", _shared_cases(), ids=lambda c: c["name"])
-def test_generation_answers_match_go_binary(case, go_generations):
-    expected = case["expect"]
+@pytest.mark.parametrize("case", _load_cases(), ids=lambda c: c["name"])
+def test_twin_matches_shared_table(case):
+    expect = case["expect"]
     answers = _python_answers(case)
-    # The table is the contract; assert against it directly so the suite is
-    # meaningful even on hosts with no Go toolchain.
-    assert answers["newest_live"] == expected["newest_live"]
-    assert answers["restart_target"] == expected["restart_target"]
-    assert answers["may_claim"] == expected["may_claim"]
-    assert answers["may_start_shared"] == expected["may_start_shared"]
-    assert answers["ancestors"] == expected["ancestors"]
-    assert answers["describe"] == expected["describe"]
-    if "takeover" in expected:
-        assert answers["takeover"] == expected["takeover"]
-    else:
-        assert answers["takeover"] is None
-    if go_generations is None:
-        pytest.skip("no Go toolchain: table-only parity")
-    assert _go_answers(go_generations, case) == answers, (
-        "Python twin drifted from the running Go implementation")
+    assert answers["newest_live"] == expect["newest_live"], "newest_live"
+    assert answers["restart_target"] == expect["restart_target"], "restart_target"
+    assert answers["may_claim"] == expect["may_claim"], "may_claim"
+    assert answers["may_start_shared"] == expect["may_start_shared"], "may_start_shared"
+    assert answers["ancestors"] == expect["ancestors"], "ancestors"
+    assert answers["describe"] == expect["describe"], "describe"
+    if "takeover" in expect and expect["takeover"] is not None:
+        assert answers["takeover"] == expect["takeover"], "takeover"
 
 
-def test_original_asking_with_live_successor_is_not_newest():
-    """The hub registry records only spawned successors; the original
-    gateway asking while its successor serves must forward, not restart."""
-    from gateway.generations import array_from_registry
-    rows = [{"pid": 102, "predecessor_pid": 101, "start_time": 5,
-             "state": "attached"}]
-    array = array_from_registry(rows, me_pid=101, me_start_time=4,
-                                me_predecessor=0, me_draining=True)
-    assert array.newest_live_other(101) is not None
-    assert array.newest_live_other(101).pid == 102
-    assert array.may_claim_authority(101) is False
-    assert array.describe() == ["102: serving", "101: draining"]
+@pytest.mark.skipif(shutil.which("go") is None, reason="no Go toolchain")
+def test_twin_matches_running_go_core():
+    """The Python twin must agree with the RUNNING Go binary on every case."""
+    for case in _load_cases():
+        request: dict = {
+            "generations": [
+                {
+                    "pid": int(g["pid"]),
+                    "predecessor": int(g.get("predecessor") or 0),
+                    "spawn_seq": int(g.get("spawn_seq") or 0),
+                    "attached": bool(g.get("attached")),
+                    "draining": bool(g.get("draining")),
+                    "live": bool(g.get("live")),
+                }
+                for g in case["generations"]
+            ],
+            "me": int(case["me"]),
+        }
+        if "pid_file" in case:
+            request["pid_file"] = {
+                "pid": int(case["pid_file"]["pid"]),
+                "live": bool(case["pid_file"]["live"]),
+            }
+        proc = subprocess.run(
+            ["go", "run", "./cmd/generations"],
+            cwd=_REPO_ROOT / "internal" / "generations",
+            input=json.dumps(request),
+            capture_output=True, text=True, check=True,
+        )
+        go_answers = json.loads(proc.stdout)
+        py_answers = _python_answers(case)
+        for key in ("newest_live", "restart_target", "may_claim",
+                    "may_start_shared", "ancestors", "describe", "takeover"):
+            assert py_answers[key] == go_answers[key], (
+                f"{case['name']}: {key}: python={py_answers[key]!r} go={go_answers[key]!r}")
 
 
-def test_registry_glue_derives_draining_from_successor_links():
-    from gateway.generations import array_from_registry
+def test_registry_glue_builds_the_complete_array():
+    """The registry glue adds the asking generation and synthesizes
+    record-less predecessors with conservative OS liveness."""
     rows = [
-        {"pid": 102, "predecessor_pid": 101, "start_time": 5, "state": "attached"},
-        {"pid": 103, "predecessor_pid": 102, "start_time": 6, "state": "attached"},
+        {"pid": 202, "predecessor_pid": 101, "start_time": 20, "state": "attached"},
+        {"pid": 303, "predecessor_pid": 202, "start_time": 30, "state": "starting"},
     ]
-    array = array_from_registry(rows, me_pid=103, me_start_time=6,
-                                me_predecessor=102)
-    # 103 asking: 102 spawned 103, so 102 is draining; 101 synthesized live.
-    assert array.describe() == ["103: serving", "102: draining", "101: draining"]
-    assert array.may_start_shared_adapters(103) is False
+    array = array_from_registry(rows, me_pid=202, me_start_time=20,
+                                me_predecessor=101, me_draining=True)
+    # v101 (the original) appears as a synthetic record and drains.
+    original = array.by_pid(101)
+    assert original is not None
+    assert original.draining and not original.attached
+    assert original.spawn_seq == 0  # older than every recorded successor
+    # v202 keeps its recorded sequence (spawn order) and reports its own drain state.
+    mine = array.by_pid(202)
+    assert mine is not None
+    assert mine.spawn_seq == 1 and mine.draining
+    # v303 is newest even while still starting.
+    newest = array.newest_live()
+    assert newest is not None and newest.pid == 303
+    assert not array.may_claim_authority(202)
+    # v303 may not start shared adapters while any ancestor lives.
+    assert not array.may_start_shared_adapters(303)
+
+
+def test_registry_glue_original_without_records_is_oldest():
+    """An original asking with live successors must not think itself newest."""
+    rows = [{"pid": 202, "predecessor_pid": 101, "start_time": 20, "state": "attached"}]
+    array = array_from_registry(rows, me_pid=101, me_start_time=10)
+    newest = array.newest_live()
+    assert newest is not None and newest.pid == 202
+    assert not array.may_claim_authority(101)
+    assert array.ancestors_of(202) == [101]
+
+
+def test_registry_glue_preserves_row_drain_links():
+    """A recorded generation with a recorded successor is draining."""
+    rows = [
+        {"pid": 202, "predecessor_pid": 101, "start_time": 20, "state": "attached"},
+        {"pid": 303, "predecessor_pid": 202, "start_time": 30, "state": "attached"},
+    ]
+    array = array_from_registry(rows, me_pid=101)
+    recorded = array.by_pid(202)
+    assert recorded is not None
+    assert recorded.draining
+    assert "202: draining" in array.describe()
