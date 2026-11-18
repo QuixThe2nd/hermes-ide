@@ -49,7 +49,6 @@ async def test_restart_slash_command_reaches_shared_queue(tmp_path, monkeypatch)
         message_type=MessageType.TEXT,
         source=make_restart_source(),
         message_id="m1",
-        platform_update_id=None,
     )
 
     result = await runner._handle_restart_command(event)
@@ -80,7 +79,6 @@ async def test_restart_slash_command_reports_chained_on_incoming_generation(
         message_type=MessageType.TEXT,
         source=make_restart_source(),
         message_id="m-chain",
-        platform_update_id=None,
     )
 
     result = await runner._handle_restart_command(event)

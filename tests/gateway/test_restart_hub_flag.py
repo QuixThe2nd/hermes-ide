@@ -156,7 +156,6 @@ async def _slash_restart(monkeypatch, tmp_path, text):
         message_type=MessageType.TEXT,
         source=make_restart_source(),
         message_id="m1",
-        platform_update_id=None,
     )
     await runner._handle_restart_command(event)
     return queued
