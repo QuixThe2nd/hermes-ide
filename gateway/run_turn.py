@@ -3998,41 +3998,14 @@ class GatewayTurnMixin:
         if message_text is None:
             return
 
-        # Capture the platform event time as message metadata and keep the
-        # persisted transcript clean (strip any leading timestamp prefix).
-        # This runs regardless of the toggle so storage stays clean and the
-        # send-time is preserved. Only the in-context RENDER (prepending the
-        # human-readable prefix the model sees) is gated behind
-        # gateway.message_timestamps.enabled — default OFF.
-        try:
-            from hermes_time import get_timezone as _get_evt_tz
-            from gateway.message_timestamps import (
-                coerce_message_timestamp as _coerce_msg_ts,
-                render_user_content_with_timestamp as _render_msg_ts,
-                strip_leading_message_timestamps as _strip_msg_ts,
-            )
-            _evt_tz = _get_evt_tz()
-            _evt_ts = getattr(event, "timestamp", None)
-            if message_text and isinstance(message_text, str):
-                _clean_message_text, _embedded_ts = _strip_msg_ts(
-                    message_text, tz=_evt_tz)
-                persist_user_message = _clean_message_text
-                _event_epoch = _coerce_msg_ts(_evt_ts, tz=_evt_tz)
-                persist_user_timestamp = (
-                    _event_epoch if _event_epoch is not None else _embedded_ts
-                )
-                if _message_timestamps_enabled(_load_gateway_config()):
-                    message_text = _render_msg_ts(
-                        _clean_message_text,
-                        persist_user_timestamp,
-                        tz=_evt_tz,
-                    )
-                else:
-                    # Toggle off: model sees the clean message; the timestamp
-                    # is still stored as metadata for later opt-in.
-                    message_text = _clean_message_text
-        except Exception as _ts_err:
-            logger.debug("Message timestamp injection failed (non-fatal): %s", _ts_err)
+        # Capture the platform event time as message metadata and keep the persisted
+        # transcript clean (leading timestamp prefix + the Discord triggering note —
+        # a model instruction, not authored text). Delegates to the same helper as
+        # the quick path so the two inbound lanes cannot drift apart again (a stale
+        # inline copy here previously re-leaked the note into the durable row).
+        message_text, persist_user_message, persist_user_timestamp = (
+            self._hmwa_apply_message_timestamp(event, message_text)
+        )
 
         # Stage the collected must-deliver notes for this turn's agent run
         # (one-shot; consumed in run_sync).  Staged AFTER the message_text
