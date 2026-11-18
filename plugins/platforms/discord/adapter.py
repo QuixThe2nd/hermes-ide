@@ -1784,15 +1784,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         Outbound-only troubleshooting surface (default-visible): purpose,
         subject, decision/confidence or the sanitized failure class for every
         REAL judge request. Never enters evidence (the observe seam takes final
-        replies only), never a reply to the user, and a send failure is logged
-        without touching any gate decision. The metadata marker lets tests and
-        future lanes distinguish notices from conversational sends.
+        replies only). Sent as an UNPINGED plain message — a Discord reply
+        would mention the user, and a troubleshooting line must not ping
+        anyone; correlation comes from the channel plus the sanitized author
+        fragment already inside the line ("user message from Alice"). A send
+        failure is logged without touching any gate decision. The metadata
+        marker lets tests and future lanes distinguish notices from
+        conversational sends; ``message_id`` is correlation for the log only.
         """
         try:
-            result = await self.send(
-                chat_id, line, reply_to=message_id or None,
-                metadata={"jev_notice": True},
-            )
+            result = await self.send(chat_id, line, metadata={"jev_notice": True})
             if result is not None and not getattr(result, "success", True):
                 logger.warning(
                     "[%s] jev notice send failed channel=%s message=%s error=%s",

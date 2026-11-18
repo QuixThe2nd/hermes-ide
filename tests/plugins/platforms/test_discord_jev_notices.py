@@ -206,7 +206,9 @@ class TestResponseGateNotices:
         ]
         notice = _notices(adapter)[0]
         assert notice[0] == "555"
-        assert notice[2]["reply_to"] == 42 or str(notice[2]["reply_to"]) == "42"
+        # Unpinged plain notice: never a Discord reply (a reply would mention
+        # the user). Correlation is the channel + the author in the line.
+        assert "reply_to" not in notice[2]
 
     @pytest.mark.asyncio
     async def test_denied_candidate_posts_deny_notice(self, monkeypatch):
