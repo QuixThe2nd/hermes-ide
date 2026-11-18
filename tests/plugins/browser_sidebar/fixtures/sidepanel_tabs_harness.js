@@ -2,7 +2,11 @@
 // kept per tab (chrome.storage.session keyed by tab id), switching tabs
 // re-renders that tab's history, frames for non-active tabs are stored not
 // rendered, legacy frames (no tab_id) land on the active tab, the new-chat
-// button resets only the current tab, and closing a tab drops its transcript.
+// button resets only the current tab, closing a tab drops its transcript,
+// re-activating a tab never duplicates its transcript (stored history
+// hydrates once per bucket), entries landing during the initial load stay
+// after the stored history, and a cleared (new-chat) transcript never
+// resurrects.
 'use strict';
 
 const assert = require('node:assert/strict');
@@ -173,6 +177,14 @@ async function flush(rounds = 8) {
   for (let i = 0; i < rounds; i += 1) await Promise.resolve();
 }
 
+// Bubble "who" labels (sidepanel.js WHO_LABEL) also carry text content;
+// strip them so entry assertions see only message bodies.
+const WHO_LABELS = new Set(['You', 'Big Steve', 'Error']);
+const entryTexts = () => domTexts().filter((t) => !WHO_LABELS.has(t));
+const occurrences = (list, value) => list.filter((t) => t === value).length;
+const storedTexts = (tabId) =>
+  (sessionStore.get('tabTranscript:' + tabId) || []).map((e) => e && e.text);
+
 async function main() {
   require(tabsScript);
   require(sidepanelScript);
@@ -255,6 +267,80 @@ async function main() {
   fire(removedEvent, 11, { windowId: 7 });
   await flush();
   assert.ok(!sessionStore.has('tabTranscript:11'), 'closed tab transcript is dropped');
+
+  // ── Regression: re-activating a tab must not duplicate its transcript ────
+  // loadBucket used to re-merge the stored history into the already-hydrated
+  // bucket on every activation, compounding one extra copy per return visit
+  // (and persisting the doubled list on the next save).
+  fire(activatedEvent, { tabId: 99, windowId: 7 });
+  await flush();
+  inputEl.value = 'tab 99 message';
+  inputEl.listeners.keydown[0]({ key: 'Enter', shiftKey: false, isComposing: false, preventDefault() {} });
+  deliver({ type: 'final', text: 'tab 99 reply', tab_id: 99 });
+  await flush();
+  for (let round = 0; round < 3; round += 1) {
+    fire(activatedEvent, { tabId: 88, windowId: 7 });
+    await flush();
+    fire(activatedEvent, { tabId: 99, windowId: 7 });
+    await flush();
+  }
+  deliver({ type: 'final', text: 'tab 99 later reply', tab_id: 99 }); // forces the next save
+  await flush();
+  for (const text of ['tab 99 message', 'tab 99 reply', 'tab 99 later reply']) {
+    assert.equal(occurrences(entryTexts(), text), 1, `${text} renders exactly once after repeated switches`);
+    assert.equal(occurrences(storedTexts(99), text), 1, `${text} is stored exactly once after repeated switches`);
+  }
+
+  // ── Entries arriving while the initial hydration is in flight ────────────
+  // Stored history lands first; entries appended before the load resolves
+  // stay after it — each exactly once, in the DOM and in the next save.
+  sessionStore.set('tabTranscript:77', [
+    { who: 'user', text: 'stored user line' },
+    { who: 'steve', text: 'stored steve line' },
+  ]);
+  fire(activatedEvent, { tabId: 77, windowId: 7 }); // starts loading the stored history
+  deliver({ type: 'final', text: 'in-flight reply', tab_id: 77 }); // arrives before the load resolves
+  await flush();
+  assert.deepEqual(
+    entryTexts(),
+    ['stored user line', 'stored steve line', 'in-flight reply'],
+    'stored history hydrates first; in-flight entries follow it',
+  );
+  deliver({ type: 'final', text: 'post-load reply', tab_id: 77 }); // forces the next save
+  await flush();
+  assert.deepEqual(
+    storedTexts(77),
+    ['stored user line', 'stored steve line', 'in-flight reply', 'post-load reply'],
+    'save after hydration keeps every entry exactly once',
+  );
+  fire(activatedEvent, { tabId: 99, windowId: 7 });
+  await flush();
+  fire(activatedEvent, { tabId: 77, windowId: 7 });
+  await flush();
+  assert.deepEqual(
+    entryTexts(),
+    ['stored user line', 'stored steve line', 'in-flight reply', 'post-load reply'],
+    're-activating the hydrated tab keeps the transcript stable',
+  );
+
+  // ── New chat: switching away and back must not resurrect the old chat ────
+  fire(activatedEvent, { tabId: 66, windowId: 7 });
+  await flush();
+  inputEl.value = 'tab 66 doomed message';
+  inputEl.listeners.keydown[0]({ key: 'Enter', shiftKey: false, isComposing: false, preventDefault() {} });
+  deliver({ type: 'final', text: 'tab 66 doomed reply', tab_id: 66 });
+  await flush();
+  assert.ok(domTexts().includes('tab 66 doomed message'), 'message renders before new chat');
+  newChatEl.listeners.click[0]();
+  await flush();
+  assert.equal(entryTexts().length, 0, 'new chat clears the visible transcript');
+  assert.deepEqual(storedTexts(66), [], 'new chat overwrites the stored history');
+  fire(activatedEvent, { tabId: 77, windowId: 7 });
+  await flush();
+  fire(activatedEvent, { tabId: 66, windowId: 7 });
+  await flush();
+  assert.equal(entryTexts().length, 0, 'switching away and back does not resurrect the cleared chat');
+  assert.ok(!domTexts().some((t) => t.includes('doomed')), 'cleared messages stay gone');
 
   console.log('OK');
 }
