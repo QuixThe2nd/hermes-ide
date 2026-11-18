@@ -6292,8 +6292,19 @@ def _print_serving_identity() -> None:
         from gateway.restart_chain import peek_chained_restart
         from gateway.serving_identity import serving_status_lines
         from gateway.status import (
-            _pid_exists, read_runtime_status, runtime_status_is_stale, runtime_status_pid_is_live)
+            _pid_exists, get_process_start_time, read_runtime_status,
+            runtime_status_is_stale, runtime_status_pid_is_live)
         from hermes_constants import get_hermes_home
+
+        def _successor_identity(pid: int, expected_start) -> str:
+            """Fingerprint-checked liveness: a reused PID is dead, not our successor."""
+            if not _pid_exists(pid):
+                return "dead"
+            if not isinstance(expected_start, int) or expected_start <= 0:
+                return "unknown"
+            current = get_process_start_time(pid)
+            return "unknown" if current is None else (
+                "live" if current == expected_start else "dead")
 
         state = read_runtime_status()
         lines = serving_status_lines(
@@ -6302,8 +6313,9 @@ def _print_serving_identity() -> None:
             state_gateway_state=(state or {}).get("gateway_state"),
             state_pid_is_live=runtime_status_pid_is_live(state),
             state_is_stale=runtime_status_is_stale(state),
+            state_restart_requested=(state or {}).get("restart_requested"),
             chained=peek_chained_restart(),
-            pid_live=_pid_exists,
+            successor_identity=_successor_identity,
         )
     except Exception:
         return
