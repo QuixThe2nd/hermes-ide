@@ -1200,7 +1200,6 @@ async def test_preclaimed_resume_event_consumes_claim_in_steer_mode():
     assert session_key not in adapter._pending_messages
     state = runner._peek_session_state(session_key)
     assert state is None or not state.conversation.queued_events
-    assert session_key not in runner._parked_steer_map()
 
 
 @pytest.mark.asyncio
@@ -1227,7 +1226,8 @@ async def test_resume_marker_does_not_bypass_a_real_running_agent():
         adapter._pending_messages.get(session_key) is event
         or event in state.conversation.queued_events
     )
-    assert session_key not in runner._parked_steer_map()
+    # (No parked-steer map to check: #702 deleted the busy-mode steer
+    # parking these assertions probed.)
 
 
 @pytest.mark.asyncio
