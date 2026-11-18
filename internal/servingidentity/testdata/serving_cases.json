@@ -546,7 +546,7 @@
       "name": "record_same_process_skip",
       "op": "record",
       "input": {
-        "session_id": "telegram:42",
+        "session_id": "discord:42",
         "stored": "{\"pid\": 1531038, \"start_time\": 3005678}",
         "record": {
           "pid": 1531038,
@@ -559,7 +559,7 @@
       "name": "record_process_change_write",
       "op": "record",
       "input": {
-        "session_id": "telegram:42",
+        "session_id": "discord:42",
         "stored": "{\"pid\": 709505, \"start_time\": 3001234}",
         "record": {
           "pid": 1531038,
@@ -572,7 +572,7 @@
       "name": "record_absent_write",
       "op": "record",
       "input": {
-        "session_id": "telegram:42",
+        "session_id": "discord:42",
         "stored": null,
         "record": {
           "pid": 1531038,
@@ -585,7 +585,7 @@
       "name": "record_corrupt_write",
       "op": "record",
       "input": {
-        "session_id": "telegram:42",
+        "session_id": "discord:42",
         "stored": "{not json",
         "record": {
           "pid": 1531038,
@@ -598,7 +598,7 @@
       "name": "record_reused_pid_write",
       "op": "record",
       "input": {
-        "session_id": "telegram:42",
+        "session_id": "discord:42",
         "stored": "{\"pid\": 1531038, \"start_time\": 3019999}",
         "record": {
           "pid": 1531038,
