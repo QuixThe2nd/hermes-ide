@@ -441,7 +441,11 @@ async def _try_claim(runner: Any, ancestors: set,
         return False
     if claim is True:
         runner._overlap_successor_pending = False
-        forget_pending_predecessor()
+        # Keep the predecessor anchor: a claim that raced ahead of the hub
+        # attach still needs it in ``overlap_attachment()`` (the env markers
+        # are already popped here), or this successor registers as a
+        # "starting" row forever and older generations refuse to forward to
+        # it. The anchor is ancestry, not one-shot launch state.
         logger.warning(
             "Gateway authority claimed by PID %d (generation array: predecessors draining)",
             os.getpid(),
@@ -960,6 +964,17 @@ async def watch_successor(
                 "starting a replacement successor", pid, os.getpid(),
             )
             mark_successor_lost(runner)
+        # Guard EVERY respawn attempt, not just the death announcement:
+        # mark_successor_lost clears the latch above, so later cycles reach
+        # this point with no pid at all. The restart line may already have
+        # advanced past the dead successor (it restarted into its own
+        # successor, or a forwarded request reached a newer generation).
+        # Respawning then would fork a PARALLEL newest generation — exactly
+        # the duplicate the generation array exists to prevent. Keep
+        # watching: if every newer generation later dies, the guard reopens
+        # and the replacement spawns then.
+        if await _newer_generation_continues_line(runner):
+            continue
         try:
             new_pid = await spawn_successor(runner, via_service=via_service)
         except Exception:
@@ -970,3 +985,20 @@ async def watch_successor(
             continue
         delay = backoff[min(attempt, len(backoff) - 1)]
         attempt += 1
+
+
+async def _newer_generation_continues_line(runner: Any) -> bool:
+    """True when a live generation NEWER than this process already carries the
+    restart line (per the hub's successor attestations).
+
+    Used by ``watch_successor`` to decide whether a dead successor needs a
+    replacement: when the line already continues past it, respawning would
+    create a second newest generation. An unreachable hub answers False —
+    the watcher then keeps its old respawn behavior, and the spawn itself
+    needs the hub anyway.
+    """
+    try:
+        array = await generation_array_for_runner(runner)
+    except Exception:
+        return False
+    return array.newest_live_other(os.getpid()) is not None
