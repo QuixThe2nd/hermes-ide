@@ -538,7 +538,13 @@ class TestBacklogDrain:
 
 @requires_runtime
 class TestWriterPath:
-    def test_rate_limited_turn_job_queues_backlog_with_same_document(self, tmp_path, monkeypatch):
+    def test_rate_limited_turn_job_is_not_queued(self, tmp_path, monkeypatch):
+        """Scope contract: the backlog serves the EXPLICIT hindsight_retain
+        tool only. An automatic turn retain that hits the provider rate limit
+        keeps its pre-feature behavior — the writer logs the failure and
+        nothing is queued. (Automatic retains are append-mode documents; a
+        replay of a partially committed append duplicates the appended tail,
+        so deferral is not safe for them.)"""
         monkeypatch.setattr(
             "plugins.memory.hindsight._check_api_supports_update_mode_append",
             lambda *a, **k: False,
@@ -551,13 +557,10 @@ class TestWriterPath:
         provider.sync_turn("hello", "world")
         provider._retain_queue.join()
 
-        entries = _read_backlog(tmp_path)
-        assert len(entries) == 1
-        assert entries[0]["bank_id"] == "test-bank"
-        assert "hello" in entries[0]["item"]["content"]
-        # The entry reuses the document id of the ORIGINAL (failed) attempt —
-        # chunk-hash recovery on replay depends on it.
-        assert entries[0]["document_id"] == sink[0]["document_id"]
+        assert len(sink) == 1  # the original attempt happened, and failed
+        assert _read_backlog(tmp_path) == []
+        assert not _backlog_path(tmp_path).exists()
+        assert provider._retain_backlog.may_exist is False
 
 
 # ---------------------------------------------------------------------------

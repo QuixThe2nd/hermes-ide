@@ -2716,23 +2716,11 @@ class HindsightMemoryProvider(MemoryProvider):
                                              tags=tags, update_mode=update_mode)
             logger.debug("Hindsight %s: bank=%s, doc=%s, mode=%s, async=%s, content_len=%d, num_turns=%d",
                          label, bank_id, document_id, update_mode, retain_async, len(content), len(turns))
-            try:
-                resp = self._retain_batch(item, bank_id=bank_id, document_id=document_id, retain_async=retain_async)
-            except Exception as exc:
-                retry_at = classify_exception(exc)
-                if retry_at is None:
-                    raise
-                # Provider rate limit: persist the turn instead of losing it;
-                # the backlog drains automatically once the limit resets.
-                # Replay is always async (operation id is the replay key).
-                try:
-                    self._enqueue_backlog_entry(item, bank_id=bank_id,
-                                                retry_after=retry_at, document_id=document_id)
-                except BacklogRuntimeUnavailable as unavailable:
-                    logger.warning("Hindsight retain-backlog runtime unavailable; "
-                                   "rate-limited retain not queued: %s", unavailable)
-                    raise exc from unavailable
-                return
+            # Tool-only scope: an automatic turn retain that hits the provider
+            # rate limit does NOT enter the backlog (a replayed append-mode
+            # document re-appends its tail; chunk-hash recovery only dedupes
+            # byte-identical chunks). The failure surfaces unchanged.
+            resp = self._retain_batch(item, bank_id=bank_id, document_id=document_id, retain_async=retain_async)
             # Async retains are only *accepted* here; track the op id(s) so the
             # next-turn prefetch can wait for true server-side completion.
             if retain_async and track_ops:

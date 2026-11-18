@@ -13,7 +13,14 @@ whose body wraps the upstream model provider's 429 —
 ``{"detail": "Fact extraction deferred by provider quota: ...
 ProviderRateLimitResetError: ... retry at 2026-11-17T05:36:33.557843+00:00:
 HTTP 429: ..."}``. A direct 429 is rate-limited too. Everything else (other
-500s, 4xx, network errors) propagates unchanged and queues nothing.
+
+SCOPE — the explicit ``hindsight_retain`` tool only. Deferred saves are a
+tool behavior: the tool can tell the caller its memory is queued and replay
+a stable, byte-identical document under a caller-minted document id.
+Automatic turn retains (``sync_turn``) do NOT queue: they are append-mode
+delta documents whose replay would re-append the tail (chunk-hash recovery
+only dedupes byte-identical chunks), and their failure behavior predating
+this feature (logged by the writer, nothing persisted) is unchanged.
 
 Replay semantics are the SERVER's, verified against the live container and
 OpenAPI (``.review-evidence/server-semantics.md``):
