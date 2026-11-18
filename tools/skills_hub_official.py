@@ -1,8 +1,8 @@
-"""Skills Hub official sources: repo-shipped optional skills and the centralized Hermes index."""
+"""Skills Hub official source: the repo-shipped optional-skills catalog."""
 
 import logging
 from pathlib import Path, PurePosixPath
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Union
 
 from agent.skill_utils import is_excluded_skill_path
 from hermes_cli.update_cmd_git import OFFICIAL_REPO_URL
@@ -13,23 +13,11 @@ from tools.skills_hub_models import (
 
 logger = logging.getLogger("tools.skills_hub")
 
-# Identifier prefixes stripped when matching index entries loosely.
-_INDEX_ID_PREFIXES = ("skills-sh/", "skills.sh/", "official/", "github/", "clawhub/")
-
-
-def _strip_prefix(value: str, prefixes) -> str:
-    return next((value[len(p):] for p in prefixes if value.startswith(p)), value)
-
 
 def _clean_rel_parts(path: str) -> Optional[List[str]]:
     """Split a relative path, dropping ``.``/empty parts; None on traversal or empty."""
     parts = [p for p in path.split("/") if p not in ("", ".")]
     return None if not parts or ".." in parts else parts
-
-
-def _entry_provider(entry: dict) -> str:
-    """Normalized ``extra.provider`` label of a raw index entry."""
-    return str((entry.get("extra") or {}).get("provider", "")).lower()
 
 
 class OptionalSkillSource(SkillSource):
@@ -285,111 +273,3 @@ class OptionalSkillSource(SkillSource):
                                       fm.get("description", "")[:200], tags if isinstance(tags, list) else []))
         return results
 
-
-class HermesIndexSource(SkillSource):
-    """Skill source backed by the centralized Hermes Skills Index: a JSON catalog on the docs site,
-    rebuilt daily by CI, with metadata + resolved GitHub paths for every skill — search and path
-    discovery cost zero GitHub API calls. When unavailable every method returns empty/None so
-    downstream sources take over transparently."""
-
-    SOURCE_ID = "hermes-index"
-
-    def __init__(self, auth: GitHubAuth):
-        self._index: Optional[dict] = None
-        self._loaded = False
-        self.auth = auth
-        self._github: Optional[GitHubSource] = None  # only needed for fetch
-
-    def _ensure_loaded(self) -> dict:
-        if not self._loaded:
-            from tools.skills_hub_search import _load_hermes_index
-            self._index, self._loaded = _load_hermes_index(), True
-        return self._index or {}
-
-    def _skills(self) -> list:
-        return self._ensure_loaded().get("skills", [])
-
-    def _get_github(self) -> GitHubSource:
-        if self._github is None:
-            self._github = GitHubSource(auth=self.auth)
-        return self._github
-
-    @property
-    def is_available(self) -> bool:
-        """Whether the index is loaded and has skills."""
-        return bool(self._skills())
-
-    def trust_level_for(self, identifier: str) -> str:
-        entry = next((s for s in self._skills() if s.get("identifier") == identifier), None)
-        return entry.get("trust_level", "community") if entry else "community"
-
-    def search(self, query: str, limit: int = 10, *, provider_filter: str = "") -> List[SkillMeta]:
-        """Search the cached index (zero API calls). Matches name, description, tags, identifier and
-        ``extra.provider`` (so ``nvidia`` finds ``NVIDIA/skills/...`` entries stored as source
-        "github"). Ranked exact name > name prefix > provider > whole-word > name substring > other,
-        index order as tiebreaker — a raw break-at-limit slice buried the most relevant skills.
-        Provider filters narrow the catalog before ranking and limiting."""
-        skills = self._skills()
-        want = provider_filter.strip().lower()
-        if want:
-            skills = [s for s in skills if _entry_provider(s) == want]
-        if not skills:
-            return []
-        if not query.strip():
-            return [self._to_meta(s) for s in skills[:limit]]  # featured / index order
-        query_lower = query.lower()
-        scored: List[Tuple[int, int, dict]] = []
-        for i, s in enumerate(skills):
-            name = str(s.get("name", "")).lower()
-            provider = _entry_provider(s)
-            haystack = " ".join([
-                name, str(s.get("description", "")).lower(), " ".join(str(t).lower() for t in s.get("tags", [])),
-                str(s.get("identifier", "")).lower(), provider,
-            ])
-            if query_lower not in haystack:
-                continue
-            ranks = (
-                name == query_lower, name.startswith(query_lower), provider == query_lower,
-                query_lower in name.split() or query_lower in provider.split(), query_lower in name, True,
-            )
-            scored.append((ranks.index(True), i, s))
-        scored.sort(key=lambda x: (x[0], x[1]))
-        return [self._to_meta(s) for _, _, s in scored[:limit]]
-
-    def fetch(self, identifier: str) -> Optional[SkillBundle]:
-        """Fetch via the index's ``resolved_github_id`` (skipping the whole
-        candidate/discovery chain), falling back to ``repo/path``."""
-        entry = self._find_entry(identifier)
-        if not entry:
-            return None
-        repo, path = entry.get("repo", ""), entry.get("path", "")
-        candidates = [entry.get("resolved_github_id")] + ([f"{repo}/{path}"] if repo and path else [])
-        for github_id in filter(None, candidates):
-            bundle = self._get_github().fetch(github_id)
-            if bundle:
-                bundle.source = entry.get("source", "hermes-index")
-                bundle.identifier = identifier
-                return bundle
-        return None
-
-    def inspect(self, identifier: str) -> Optional[SkillMeta]:
-        """Return metadata from the index (zero API calls)."""
-        entry = self._find_entry(identifier)
-        return self._to_meta(entry) if entry else None
-
-    def _find_entry(self, identifier: str) -> Optional[dict]:
-        """Exact identifier match first, then match with source prefixes stripped."""
-        skills = self._skills()
-        normalized = _strip_prefix(identifier, _INDEX_ID_PREFIXES)
-        return next((s for s in skills if s.get("identifier") == identifier), None) or next(
-            (s for s in skills if _strip_prefix(s.get("identifier", ""), _INDEX_ID_PREFIXES) == normalized), None,
-        )
-
-    @staticmethod
-    def _to_meta(entry: dict) -> SkillMeta:
-        return SkillMeta(
-            name=entry.get("name", ""), description=entry.get("description", ""),
-            source=entry.get("source", "hermes-index"), identifier=entry.get("identifier", ""),
-            trust_level=entry.get("trust_level", "community"), repo=entry.get("repo"), path=entry.get("path"),
-            tags=entry.get("tags", []), extra=entry.get("extra", {}),
-        )
