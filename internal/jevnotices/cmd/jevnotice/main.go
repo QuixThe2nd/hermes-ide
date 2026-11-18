@@ -15,6 +15,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strconv"
@@ -23,12 +24,19 @@ import (
 )
 
 func main() {
+	os.Exit(run(os.Stdin, os.Stdout, os.Stderr))
+}
+
+// run is main over explicit streams: one record in, the notice line out,
+// and the process exit code returned (2 = unreadable record).
+func run(stdin io.Reader, stdout, stderr io.Writer) int {
 	var record map[string]any
-	if err := json.NewDecoder(os.Stdin).Decode(&record); err != nil {
-		fmt.Fprintf(os.Stderr, "jevnotice: unreadable record: %v\n", err)
-		os.Exit(2)
+	if err := json.NewDecoder(stdin).Decode(&record); err != nil {
+		fmt.Fprintf(stderr, "jevnotice: unreadable record: %v\n", err)
+		return 2
 	}
-	fmt.Println(jevnotices.Format(noticeFromRecord(record)))
+	fmt.Fprintln(stdout, jevnotices.Format(noticeFromRecord(record)))
+	return 0
 }
 
 // noticeFromRecord maps the shared record shape onto Notice. Presence, not
