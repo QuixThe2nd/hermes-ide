@@ -40,6 +40,16 @@ def _context(last_assistant="The deploy is running.", age_minutes=4.0):
     }
 
 
+def _dormant_context(age_minutes=1129.1):
+    context = _context(last_assistant="", age_minutes=age_minutes)
+    context.update(
+        goal_active=False,
+        goal_recently_completed=False,
+        goal_paused=False,
+    )
+    return context
+
+
 def _log(context, live=False, bg_process=False, session="sess-1"):
     with (
         patch("plugins.papercuts.handle_papercuts", return_value='{"success":true}') as handle,
@@ -86,3 +96,49 @@ def test_live_work_makes_a_different_papercut_than_no_work():
 def test_background_process_counts_as_live_work():
     args, _ = _log(_context(), live=False, bg_process=True)
     assert "background_work_live=True" in args["observed"]
+
+
+
+
+@pytest.mark.parametrize("age_minutes", [1129.1, None])
+def test_dormant_session_is_suppressed_without_dedupe_state(age_minutes):
+    with (
+        patch("plugins.papercuts.handle_papercuts", return_value='{"success":true}') as handle,
+        patch("tools.async_delegation.has_live_for_session", return_value=False),
+        patch(
+            "tools.process_registry.process_registry.has_active_for_session",
+            return_value=False,
+        ),
+    ):
+        assert _log_chase_papercut(
+            "sess-dormant", _record(), _dormant_context(age_minutes)
+        ) is False
+
+    handle.assert_not_called()
+    assert goal_intent._CHASE_LAST_LOGGED == {}
+
+
+def test_dormant_session_with_live_work_still_logs():
+    args, _ = _log(_dormant_context(), live=True, session="sess-dormant-live")
+    assert args["summary"] == (
+        "User had to chase while background or delegated work was live"
+    )
+    assert "background_work_live=True" in args["observed"]
+
+
+@pytest.mark.parametrize(
+    "goal_flag", ["goal_active", "goal_recently_completed", "goal_paused"]
+)
+def test_underway_goal_state_still_logs_without_live_work(goal_flag):
+    context = _dormant_context()
+    context[goal_flag] = True
+    args, _ = _log(context, session=f"sess-{goal_flag}")
+    assert args["summary"] == (
+        "User had to chase while no background or delegated work was live"
+    )
+
+
+def test_recent_assistant_reply_still_logs_without_live_work():
+    args, _ = _log(_dormant_context(age_minutes=4.0), session="sess-recent-reply")
+    assert "minutes_since_last_assistant=4.0" in args["observed"]
+    assert "background_work_live=False" in args["observed"]
