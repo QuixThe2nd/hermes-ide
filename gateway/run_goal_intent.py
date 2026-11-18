@@ -151,6 +151,8 @@ class GatewayGoalIntentMixin:
         line may therefore arrive before the answer; that is intended.
         """
         author = str(getattr(source, "user_name", "") or "")
+        # Captured on the loop: display.jev_notices belongs to the profile owning the source.
+        profile_home = self._resolve_profile_home_for_source(source)
 
         def on_attempt(attempt: int, attempts: int, label, confidence, error) -> None:
             from gateway.jev_notice import format_notice, goal_intent_attempt_record
@@ -159,10 +161,11 @@ class GatewayGoalIntentMixin:
                 goal_intent_attempt_record(
                     attempt=attempt, attempts=attempts, label=label,
                     confidence=confidence, error=error, author=author,
-                )
+                ),
+                profile_home,
             )
             if line is None:
-                return  # formatter binary unavailable: skip, never a local twin
+                return  # notices off for this profile, or no formatter binary: never a local twin
             try:
                 future = asyncio.run_coroutine_threadsafe(
                     self._send_goal_status_notice(source, line, non_conversational=True),

@@ -1779,18 +1779,45 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     async def _post_jev_notice(
         self, message: Any, candidate: Dict[str, Any], record: Optional[Dict[str, Any]],
     ) -> None:
-        """The one notice owner for every lane: ``None`` (no HTTP request was made) posts nothing."""
+        """The one notice owner for every lane: ``None`` (no HTTP request) or an unresolvable
+        owning profile posts nothing; ``display.jev_notices`` is that owner's, never the default's."""
         if record is None:
+            return
+        try:
+            home = self._jev_notice_home(message)
+        except Exception:
+            logger.debug("[%s] jev notice owner unresolved; notice skipped", self.name, exc_info=True)
             return
         # Off the event loop: the cold go build / render subprocess and the
         # bridge lock are blocking work a diagnostic must not stall the loop on.
-        line = await format_notice_async(record)
+        line = await format_notice_async(record, home)
         if line is not None:
             await self._send_jev_notice(
                 line,
                 str(candidate.get("conversation_id") or GateRuntime.conversation_id(message.channel)),
                 str(candidate.get("message_id") or ""),
             )
+
+    def _jev_notice_home(self, message: Any) -> _Path:
+        """Home of the profile owning *message* — its routed identity, resolved as dispatch does.
+        A hub-side resolver only stamps ``source.profile``, so that profile's directory serves."""
+        channel = message.channel
+        thread_id, chat_id = self._thread_id_and_chat_for_channel(channel)
+        guild = getattr(message, "guild", None)
+        source = self.build_source(
+            chat_id=chat_id, user_id=str(message.author.id), thread_id=thread_id,
+            chat_type="dm" if isinstance(channel, discord.DMChannel) else "thread" if thread_id else "group",
+            guild_id=str(guild.id) if guild else None, parent_chat_id=self._get_parent_channel_id(channel),
+        )
+        resolve = getattr(self.gateway_runner, "_resolve_profile_home_for_source", None)
+        if callable(resolve):
+            self._canonicalize(source)
+            return _Path(resolve(source))
+        if source.profile:
+            from hermes_cli.profiles import get_profile_dir
+            return _Path(get_profile_dir(source.profile))
+        from hermes_constants import get_hermes_home
+        return get_hermes_home()
 
     async def _send_jev_notice(self, line: str, chat_id: str, message_id: str = "") -> None:
         """Post one Jev classification notice line into the originating conversation.

@@ -38,7 +38,7 @@ PURPOSE_GOAL_INTENT = "goal-intent"
 PURPOSE_RESPONSE_GATE = "response-gate"
 PURPOSE_REACTION_GATE = "reaction-gate"
 
-_BINARY_SOURCES = ("notice.go", "cmd/jevnotice/main.go")
+_BINARY_SOURCES = ("notice.go", "switch.go", "cmd/jevnotice/main.go")
 
 _bridge_lock = threading.Lock()
 _bridge_binary: Optional[str] = None
@@ -133,14 +133,24 @@ def go_formatter_binary() -> Optional[str]:
         return binary
 
 
-def format_notice(record: Dict[str, Any]) -> Optional[str]:
+def _notices_setting(profile_home: Path) -> Any:
+    """Raw ``display.jev_notices`` from *profile_home*'s config (None = unset); Go decides its meaning."""
+    from gateway.run import _load_gateway_config
+
+    display = _load_gateway_config(Path(profile_home) / "config.yaml").get("display")
+    return display.get("jev_notices") if isinstance(display, dict) else None
+
+
+def format_notice(record: Dict[str, Any], profile_home: Optional[Path] = None) -> Optional[str]:
     """Render one record through the Go formatter binary.
 
-    Returns the notice line, or None when the binary is unavailable or the
-    render failed — callers skip the notice then; they never substitute a
-    local rendering. NEVER raises: resolution (source hashing, cache paths)
-    and rendering are diagnostics, and a diagnostic failure must never
-    change the gate decision or the reaction it was reporting.
+    Returns the notice line, or None when the binary is unavailable, the
+    render failed, or *profile_home* (the profile OWNING the message, never
+    the default) sets ``display.jev_notices`` off — callers skip the notice
+    then; they never substitute a local rendering. NEVER raises: resolution
+    (source hashing, cache paths) and rendering are diagnostics, and a
+    diagnostic failure must never change the gate decision or the reaction
+    it was reporting.
     """
     global _unavailable_logged
     try:
@@ -154,6 +164,8 @@ def format_notice(record: Dict[str, Any]) -> Optional[str]:
                     "unaffected; retried until a build succeeds)"
                 )
             return None
+        if profile_home is not None:
+            record = {**record, "notices": _notices_setting(profile_home)}
         run = subprocess.run(
             [binary], input=json.dumps(record),
             capture_output=True, text=True, timeout=10,
@@ -167,7 +179,9 @@ def format_notice(record: Dict[str, Any]) -> Optional[str]:
     return run.stdout.rstrip("\n") or None
 
 
-async def format_notice_async(record: Dict[str, Any]) -> Optional[str]:
+async def format_notice_async(
+    record: Dict[str, Any], profile_home: Optional[Path] = None,
+) -> Optional[str]:
     """:func:`format_notice` off the event loop.
 
     The cold build (``go build``, up to 300 s), every render subprocess and the
@@ -176,7 +190,7 @@ async def format_notice_async(record: Dict[str, Any]) -> Optional[str]:
     diagnostic. The thread hop carries the caller's contextvars, so a profile
     scope stays bound.
     """
-    return await asyncio.to_thread(format_notice, record)
+    return await asyncio.to_thread(format_notice, record, profile_home)
 
 
 # ── record builders: one per owning call site ────────────────────────────

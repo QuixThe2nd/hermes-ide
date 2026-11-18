@@ -45,3 +45,20 @@ func TestRunRejectsAnUnreadableRecord(t *testing.T) {
 		}
 	}
 }
+
+// TestRunSilencedRecordWritesNothing: a record carrying notices=false (the
+// owning profile's display.jev_notices) exits 0 with empty stdout, which the
+// bridge reads as "no notice" — never an error and never a partial line.
+func TestRunSilencedRecordWritesNothing(t *testing.T) {
+	for _, value := range []string{"false", `"off"`, `"no"`, "0"} {
+		out, errOut, code := runRecord(t, `{"purpose":"reaction-gate","subject":"user message",`+
+			`"emoji":"🔥","notices":`+value+`}`)
+		if code != 0 || out != "" || errOut != "" {
+			t.Errorf("notices=%s: exit=%d stdout=%q stderr=%q, want silent success", value, code, out, errOut)
+		}
+	}
+	out, _, code := runRecord(t, `{"purpose":"reaction-gate","subject":"user message","emoji":"🔥","notices":true}`)
+	if code != 0 || !strings.HasPrefix(out, "🔎 jev reaction-gate ") {
+		t.Fatalf("notices=true: exit=%d stdout=%q, want the rendered line", code, out)
+	}
+}

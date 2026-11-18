@@ -689,3 +689,95 @@ class TestNoticeHistoryExclusion:
         assert "hello there" in context
         assert "🔎 jev" not in context
         assert "failed (http_502)" not in context
+
+
+def _write_config(home, text):
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(text, encoding="utf-8")
+
+
+class TestJevNoticesSwitch:
+    """``display.jev_notices: false`` posts no notice on any lane; decisions are unchanged."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("echo, error, dispatched", [
+        (False, None, True),         # response lane, enforce allow
+        (False, "http_502", False),  # response lane, fail-closed deny
+        (True, None, False),         # echo lane drops normal dispatch silently
+    ])
+    async def test_every_lane_stays_silent(self, tmp_path, monkeypatch, echo, error, dispatched):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _write_config(tmp_path, "display:\n  jev_notices: false\n")
+        speaking, choice = _DecisionRecorder(error=error), _ChoiceRecorder(probabilities=REACT_FIRE)
+        _stub_speaking(monkeypatch, speaking)
+        _stub_choice(monkeypatch, choice)
+        response = {"channels": ["555"], "mode": "enforce", "echo_channels": ["555"] if echo else []}
+        adapter = _adapter(reaction={"enabled": True, "channels": ["555"]}, response=response)
+        adapter._send_jev_notice = AsyncMock()
+        ambient = _message(content="ambient")
+
+        assert await adapter._dispatch_discord_message(ambient) is dispatched
+        await _drain(adapter)
+
+        assert (speaking.calls, choice.calls, ambient.add_reaction.await_count) == (1, 1, 1)
+        adapter._send_jev_notice.assert_not_awaited()
+
+
+class TestJevNoticesFollowTheOwningProfile:
+    """Under multiplexing the switch is read from the profile that owns the message."""
+
+    @pytest.fixture
+    def mux(self, tmp_path, monkeypatch):
+        from unittest.mock import patch
+
+        from gateway.config import GatewayConfig, Platform
+        from gateway.pairing import PairingStore
+        from gateway.profile_routing import parse_profile_routes
+        from gateway.run import GatewayRunner
+        from plugins.platforms.discord.hub import _HubProfileResolver
+
+        home = tmp_path / "hh"
+        _write_config(home, "display:\n  jev_notices: true\n")
+        _write_config(home / "profiles" / "winnie", "display:\n  jev_notices: false\n")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner.config.profile_routes = parse_profile_routes([
+            {"name": "winnie-room", "platform": "discord", "profile": "winnie", "chat_id": "777"},
+        ])
+        runner.pairing_store, runner.pairing_stores = PairingStore(profile="default"), {}
+        runner._primary_profile_name = "default"
+        rig = SimpleNamespace(**{
+            name: _adapter(response={"channels": ["555", "777"], "mode": "enforce"})
+            for name in ("primary", "winnie", "hub")
+        })
+        rig.winnie.set_owner_profile("winnie")
+        rig.primary.gateway_runner = rig.winnie.gateway_runner = runner
+        # A hub-side adapter attached by winnie's gateway: its resolver only stamps source.profile.
+        rig.hub.gateway_runner = _HubProfileResolver(
+            SimpleNamespace(_adapter_profiles={"k": {"winnie"}}, _adapter_routes={}), "k")
+        runner.adapters = {Platform.DISCORD: rig.primary}
+        runner._profile_adapters = {"winnie": {Platform.DISCORD: rig.winnie}}
+        served = [("default", home), ("winnie", home / "profiles" / "winnie")]
+        with patch("hermes_cli.profiles.profiles_to_serve", return_value=served), \
+                patch("hermes_cli.profiles.get_profile_dir",
+                      side_effect=lambda n: home if n == "default" else home / "profiles" / n), \
+                patch("hermes_cli.profiles.profile_exists", return_value=True):
+            yield rig
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bot, channel, posts", [
+        ("primary", 555, True),   # default bot, default profile: notices on
+        ("winnie", 555, False),   # winnie's own bot: winnie's switch is off
+        ("primary", 777, False),  # default bot routed to winnie: the routed profile decides
+        ("hub", 555, False),      # hub-side adapter attached for winnie
+    ])
+    async def test_switch_is_read_from_the_routed_profile(self, mux, monkeypatch, bot, channel, posts):
+        recorder = _DecisionRecorder()
+        _stub_speaking(monkeypatch, recorder)
+        adapter = getattr(mux, bot)
+
+        await adapter._dispatch_discord_message(_message(channel=_Channel(channel)))
+
+        assert recorder.calls == 1
+        assert bool(_notices(adapter)) is posts

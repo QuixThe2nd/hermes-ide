@@ -828,6 +828,9 @@ DEFAULT_CONFIG = {
         # Engine warning/failure notifications stay visible unless an operator opts in.
         # Does not suppress task results, manual commands, or existing logs.
         "suppress_warning_notifications": False,
+        # Gateway: post a "🔎 jev ..." line per real Jev classification into the originating chat.
+        # Read from the profile that owns the message; false posts nothing, decisions unchanged.
+        "jev_notices": True,
         # Gateway: show the "🧠 gateway context injected" progress card for gateway-only
         # envelope context (interruption system notes, voice prefixes added around the user
         # message). Memory/plugin/mixed context cards and ordinary tool progress are
