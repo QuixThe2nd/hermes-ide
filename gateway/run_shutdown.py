@@ -1100,7 +1100,9 @@ class GatewayShutdownMixin:
         thread pool rather than ``self._running_agents`` (#60432).
 
         Best-effort by construction: every failure is swallowed so a wedged
-        adapter can never extend shutdown. Returns the number of notices sent.
+        adapter can never extend shutdown. The notice is a diagnostic: it
+        honors ``display.suppress_warning_notifications``, and a suppressed
+        notice is neither sent nor counted. Returns the number of notices sent.
         """
         if not job_ids:
             return 0
@@ -1161,12 +1163,24 @@ class GatewayShutdownMixin:
                     metadata = self._thread_metadata_for_target(
                         platform, chat_id, thread_id, adapter=adapter
                     )
-                    result = await adapter.send(chat_id, msg, metadata=metadata)
-                    if result is not None and getattr(result, "success", True) is False:
+                    from gateway.warning_notifications import present_notification
+
+                    send_result = None
+
+                    async def _present_notice() -> None:
+                        nonlocal send_result
+                        send_result = await adapter.send(chat_id, msg, metadata=metadata)
+
+                    # No turn snapshot exists at shutdown, so the active
+                    # profile's effective config decides; a suppressed notice
+                    # must not count and must not enter the dedup set.
+                    if not await present_notification(_present_notice, platform=platform, diagnostic=True):
+                        continue
+                    if send_result is not None and getattr(send_result, "success", True) is False:
                         logger.debug(
                             "Cron interrupt notice to %s:%s failed: %s",
                             platform.value, chat_id,
-                            getattr(result, "error", "send returned success=False"),
+                            getattr(send_result, "error", "send returned success=False"),
                         )
                         continue
                     notified.add(dedup_key)
