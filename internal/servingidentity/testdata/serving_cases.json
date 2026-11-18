@@ -380,26 +380,6 @@
       ]
     },
     {
-      "name": "status_chained_restart_line",
-      "op": "status",
-      "input": {
-        "identify": {
-          "pid": 709505,
-          "start_time": 3001234,
-          "overlap": {
-            "role": "serving"
-          }
-        },
-        "state": null,
-        "chained_source": "discord user 42 (restart)",
-        "successor_identity": null
-      },
-      "expect_lines": [
-        "✓ Serving gateway: pid 709505, start 3001234 — answering on the gateway control socket",
-        "⏳ Chained restart queued: another restart will run once the current handoff completes (requested by discord user 42 (restart))"
-      ]
-    },
-    {
       "name": "status_legacy_identify_multi_process_ambiguous",
       "op": "status",
       "input": {
@@ -801,6 +781,202 @@
       },
       "expect_lines": [
         "[System note: This turn is served by Hermes gateway pid 1531038, start 3005678. That pid — not any pid reported by systemctl, the pid file, or gateway status files — is the process running this conversation.]"
+      ]
+    },
+    {
+      "name": "chain_rewrite_names_serving_process",
+      "op": "chain_rewrite",
+      "input": {
+        "serving_pid": 1531038,
+        "identify": {
+          "pid": 709505,
+          "overlap": {
+            "role": "draining-predecessor",
+            "successor_pid": 1531038,
+            "successor_ready": true
+          }
+        },
+        "ack": {
+          "queued": true,
+          "pid": 709505,
+          "status": "chained",
+          "active_agents": 1
+        }
+      },
+      "expect": {
+        "queued": true,
+        "pid": 1531038,
+        "status": "chained",
+        "active_agents": 1,
+        "note": "Restart chained for the serving process: 'process' names pid 1531038, the process serving this conversation. The control socket is still owned by the draining predecessor (pid 709505); the chained restart runs on pid 1531038 once that handoff completes."
+      }
+    },
+    {
+      "name": "chain_rewrite_plain_ack_untouched",
+      "op": "chain_rewrite",
+      "input": {
+        "serving_pid": 1531038,
+        "identify": {
+          "pid": 709505,
+          "overlap": {
+            "role": "draining-predecessor",
+            "successor_pid": 1531038,
+            "successor_ready": true
+          }
+        },
+        "ack": {
+          "queued": true,
+          "pid": 709505,
+          "status": "restarting"
+        }
+      },
+      "expect": {
+        "queued": true,
+        "pid": 709505,
+        "status": "restarting"
+      }
+    },
+    {
+      "name": "status_chained_marker_pending",
+      "op": "status",
+      "input": {
+        "identify": {
+          "pid": 1531038,
+          "start_time": 3005678,
+          "overlap": {
+            "role": "serving",
+            "successor_pid": 1531038,
+            "successor_ready": true
+          }
+        },
+        "chained": {
+          "source": "cli (hermes gateway restart)",
+          "predecessor": {
+            "pid": 709505,
+            "start_time": 3001234
+          },
+          "successor_pid": 1531038,
+          "successor_start_time": 3005678
+        },
+        "gateway_pids": [
+          1531038
+        ]
+      },
+      "expect_lines": [
+        "✓ Serving gateway: pid 1531038, start 3005678 — answering on the gateway control socket",
+        "⏳ Chained restart queued: another restart will run once the current handoff completes (requested by cli (hermes gateway restart))"
+      ]
+    },
+    {
+      "name": "status_chained_marker_stale_names_generation",
+      "op": "status",
+      "input": {
+        "identify": {
+          "pid": 2048123,
+          "start_time": 3009999,
+          "overlap": {
+            "role": "serving",
+            "successor_pid": 2048123,
+            "successor_ready": true
+          }
+        },
+        "chained": {
+          "source": "cli (hermes gateway restart)",
+          "predecessor": {
+            "pid": 709505,
+            "start_time": 3001234
+          },
+          "successor_pid": 1531038,
+          "successor_start_time": 3005678
+        },
+        "gateway_pids": [
+          2048123
+        ]
+      },
+      "expect_lines": [
+        "✓ Serving gateway: pid 2048123, start 3009999 — answering on the gateway control socket",
+        "⚠ Chained restart marker is stale and will not run: requested by cli (hermes gateway restart), recorded for predecessor pid 709505 → successor pid 1531038, but the serving process is pid 2048123, start 3009999; nothing will act on it — the next gateway start clears it"
+      ]
+    },
+    {
+      "name": "status_chained_marker_legacy_stays_pending",
+      "op": "status",
+      "input": {
+        "identify": {
+          "pid": 1531038,
+          "start_time": 3005678,
+          "overlap": {
+            "role": "serving",
+            "successor_pid": 1531038,
+            "successor_ready": true
+          }
+        },
+        "chained": {
+          "source": "gateway restart tool"
+        },
+        "gateway_pids": [
+          1531038
+        ]
+      },
+      "expect_lines": [
+        "✓ Serving gateway: pid 1531038, start 3005678 — answering on the gateway control socket",
+        "⏳ Chained restart queued: another restart will run once the current handoff completes (requested by gateway restart tool)"
+      ]
+    },
+    {
+      "name": "status_chained_marker_fingerprint_mismatch_stale",
+      "op": "status",
+      "input": {
+        "identify": {
+          "pid": 1531038,
+          "start_time": 4000000,
+          "overlap": {
+            "role": "serving",
+            "successor_pid": 1531038,
+            "successor_ready": true
+          }
+        },
+        "chained": {
+          "source": "cli (hermes gateway restart)",
+          "predecessor": {
+            "pid": 709505,
+            "start_time": 3001234
+          },
+          "successor_pid": 1531038,
+          "successor_start_time": 3005678
+        },
+        "gateway_pids": [
+          1531038
+        ]
+      },
+      "expect_lines": [
+        "✓ Serving gateway: pid 1531038, start 4000000 — answering on the gateway control socket",
+        "⚠ Chained restart marker is stale and will not run: requested by cli (hermes gateway restart), recorded for predecessor pid 709505 → successor pid 1531038, but the serving process is pid 1531038, start 4000000; nothing will act on it — the next gateway start clears it"
+      ]
+    },
+    {
+      "name": "status_chained_marker_legacy_pending",
+      "op": "status",
+      "input": {
+        "identify": {
+          "pid": 709505,
+          "start_time": 3001234,
+          "overlap": {
+            "role": "serving",
+            "successor_pid": 709505,
+            "successor_ready": true
+          }
+        },
+        "chained": {
+          "source": "discord user 42 (restart)"
+        },
+        "gateway_pids": [
+          709505
+        ]
+      },
+      "expect_lines": [
+        "✓ Serving gateway: pid 709505, start 3001234 — answering on the gateway control socket",
+        "⏳ Chained restart queued: another restart will run once the current handoff completes (requested by discord user 42 (restart))"
       ]
     }
   ]

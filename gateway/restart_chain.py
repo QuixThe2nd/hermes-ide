@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 from utils import atomic_json_write, is_truthy_value
 
@@ -91,11 +92,28 @@ def record_chained_restart(
     if not has_pending_overlap_successor(runner):
         return False
     path = _restart_chain_path()
+    from gateway.status import get_process_start_time
+
     payload = {
         "requested_at": time.time(),
         "source": _requesting_source_summary(source, message_id, kind=request_kind),
         "via_service": bool(via_service),
+        # The generation this chain belongs to. Without it neither the
+        # direct-claim sweep nor the status surface can tell a live chain
+        # from a marker orphaned by a dead generation (the incident where a
+        # marker requested against one gateway stayed "pending" through two
+        # successor restarts).
+        "predecessor": {
+            "pid": os.getpid(),
+            "start_time": get_process_start_time(os.getpid()),
+        },
     }
+    successor_pid = getattr(runner, "_overlap_restart_successor_pid", None)
+    if isinstance(successor_pid, int) and not isinstance(successor_pid, bool) and successor_pid > 0:
+        payload["successor_pid"] = successor_pid
+        successor_start = getattr(runner, "_overlap_restart_successor_start_time", None)
+        if isinstance(successor_start, int) and not isinstance(successor_start, bool) and successor_start > 0:
+            payload["successor_start_time"] = successor_start
     if restart_hub:
         payload["restart_hub"] = True
     try:
@@ -212,3 +230,108 @@ async def run_chained_restart(runner: Any) -> bool:
         return False
     logger.info("Chained gateway restart requested on the authoritative successor")
     return True
+
+
+def _marker_names_pid(marker: Mapping[str, Any]) -> bool:
+    """True when the marker names the serving pid as its predecessor."""
+    predecessor = marker.get("predecessor")
+    return isinstance(predecessor, Mapping) and isinstance(
+        predecessor.get("pid"), int) and not isinstance(predecessor.get("pid"), bool) \
+        and predecessor.get("pid") > 0
+
+
+def _marker_is_legacy(marker: Mapping[str, Any]) -> bool:
+    """A marker recorded before generation stamping: it names no process."""
+    successor_pid = marker.get("successor_pid")
+    successor_named = isinstance(successor_pid, int) and not isinstance(
+        successor_pid, bool) and successor_pid > 0
+    return not _marker_names_pid(marker) and not successor_named
+
+
+def chained_marker_state(
+    marker: Any,
+    serving_pid: Any,
+    serving_start: Any,
+) -> str:
+    """Classify a peeked chain marker against the process provably serving turns.
+
+    ``"pending"`` — the marker belongs to the serving process's own handoff:
+    it names the serving process as the draining predecessor, or as the
+    successor that predecessor is draining for.
+    ``"stale"`` — the marker carries its generation's identity (this code
+    stamps it at record time) and the serving process is provably NEITHER
+    member: that generation is dead and nothing will ever act on the marker.
+    ``"unproven"`` — legacy marker, or a comparison missing the fingerprints
+    to prove either way: claim nothing and keep the pending rendering.
+
+    Shared contract with ``internal/servingidentity`` (Go twin); pinned by
+    the shared honesty table.
+    """
+    if not isinstance(marker, Mapping) or _marker_is_legacy(marker):
+        return "unproven"
+    if not isinstance(serving_pid, int) or isinstance(serving_pid, bool) or serving_pid <= 0:
+        return "unproven"
+    predecessor = marker.get("predecessor") if isinstance(marker.get("predecessor"), Mapping) else {}
+    for record_pid, record_start in (
+        (predecessor.get("pid"), predecessor.get("start_time")),
+        (marker.get("successor_pid"), marker.get("successor_start_time")),
+    ):
+        if record_pid == serving_pid:
+            if not record_start or not serving_start:
+                return "unproven"
+            return "pending" if record_start == serving_start else "stale"
+    # The serving process is provably not the marker's predecessor (pid
+    # differs) nor its successor: a different live pid is a different
+    # process regardless of fingerprints.
+    return "stale"
+
+
+async def settle_chained_restart_after_direct_claim(
+    runner: Any,
+    *,
+    launched_as_overlap_successor: bool,
+) -> bool:
+    """Settle a leftover chain marker after a DIRECT authority claim.
+
+    ``run_chained_restart`` runs only on the pending-successor claim path
+    (``claim_when_predecessor_exits``). When this process claimed authority
+    directly — a normal start, ``--replace``, or an overlap successor whose
+    predecessor died before the deferred claim — no process will ever consume
+    a leftover marker: the successor it was recorded for is gone. Without
+    this sweep the marker outlives its generation: status keeps showing a
+    chained restart that can never run, and a FUTURE successor would act on
+    it spuriously.
+
+    The chain is honored only when the marker provably names THIS process as
+    its successor, or — for markers recorded before generation stamping —
+    when the overlap-successor launch env proves the drainer spawned this
+    process. Every other marker is consumed and discarded as orphaned.
+    Never raises: marker trouble must not break the startup.
+    """
+    from gateway.status import get_process_start_time
+
+    try:
+        marker = peek_chained_restart()
+        if marker is None:
+            return False
+        ours = (
+            marker.get("successor_pid") == os.getpid()
+            and marker.get("successor_start_time") == get_process_start_time(os.getpid())
+        )
+        if ours or (_marker_is_legacy(marker) and launched_as_overlap_successor):
+            logger.info(
+                "Chained restart marker honored after a direct authority claim; "
+                "requesting the chained restart")
+            return await run_chained_restart(runner)
+        consumed = consume_chained_restart()
+        logger.warning(
+            "Cleared an orphaned chained-restart marker left by a dead process "
+            "generation (source=%s): this gateway claimed authority directly and is "
+            "not the successor that marker was recorded for",
+            (consumed or marker).get("source"),
+        )
+        return False
+    except Exception:
+        logger.exception(
+            "Chained-restart marker sweep failed; leaving the marker in place")
+        return False

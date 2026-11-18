@@ -11733,6 +11733,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             _start_gateway_start_cron_and_housekeeping(runner))
         # READY only once adapters, cron and housekeeping run; missing systemd state just disables watchdog.
         runner._start_systemd_watchdog()
+        # A DIRECT claim (not the pending-successor path) never runs
+        # run_chained_restart, so settle any leftover chain marker at the same
+        # lifecycle point the genuine path would: honor it when it provably
+        # targets this process, else clear it as orphaned by a dead
+        # generation — otherwise status would forever show a chained restart
+        # that can never run.
+        from gateway.restart_chain import settle_chained_restart_after_direct_claim
+
+        await settle_chained_restart_after_direct_claim(
+            runner, launched_as_overlap_successor=runner._launched_as_overlap_successor)
 
     await runner.wait_for_shutdown()
 

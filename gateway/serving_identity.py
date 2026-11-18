@@ -399,6 +399,11 @@ def serving_status_lines(
     pending-restart line.
     """
     lines: list[str] = []
+    # (pid, start fingerprint) of the PROVEN serving process, when the ladder
+    # below proved one: the chain marker's staleness is judged against it.
+    # The state-file branch never sets it — a status file carries no start
+    # fingerprint, so it cannot prove process identity against a marker.
+    proven_serving: tuple[Any, Any] = (None, None)
     if isinstance(identify, Mapping) and isinstance(identify.get("pid"), int):
         raw_overlap = identify.get("overlap")
         overlap: Mapping[str, Any] = raw_overlap if isinstance(raw_overlap, Mapping) else {}
@@ -418,6 +423,7 @@ def serving_status_lines(
                         "running or its PID was reused; the restart may have failed, check "
                         "the gateway log before restarting anything")
                 elif overlap.get("successor_ready") is True and identity_state == "live":
+                    proven_serving = (successor_pid, expected_start)
                     lines.append(
                         f"✓ Serving gateway: pid {successor_pid} — restart successor "
                         "(hub-confirmed serving); new turns are served here")
@@ -437,6 +443,7 @@ def serving_status_lines(
                     "for a restart with no successor recorded; its supervisor will revive or "
                     "respawn it — check the gateway log before restarting anything")
         elif role == ROLE_OVERLAP_SUCCESSOR:
+            proven_serving = (identify.get("pid"), identify.get("start_time"))
             predecessor_pid = overlap.get("predecessor_pid")
             predecessor_clause = (
                 f"; predecessor pid {predecessor_pid} is draining its in-flight turns"
@@ -446,6 +453,7 @@ def serving_status_lines(
                 f"✓ Serving gateway: {answering} — restart successor, serving new turns"
                 f"{predecessor_clause}")
         elif role == ROLE_SERVING:
+            proven_serving = (identify.get("pid"), identify.get("start_time"))
             lines.append(f"✓ Serving gateway: {answering} — answering on the gateway control socket")
         elif not role:
             # LEGACY identify: no overlap block, so the answerer's serving
@@ -513,8 +521,29 @@ def serving_status_lines(
             lines.append(
                 "⚠ Serving gateway: unknown — no control socket answer and no gateway_state.json record")
     if isinstance(chained, Mapping):
+        from gateway.restart_chain import chained_marker_state
+
         source = chained.get("source") or "an earlier restart request"
-        lines.append(
-            "⏳ Chained restart queued: another restart will run once the current handoff "
-            f"completes (requested by {source})")
+        if chained_marker_state(chained, *proven_serving) == "stale":
+            # The marker names its own generation (this code stamps it); the
+            # proven serving process is neither member, so nothing can act
+            # on it. Rendering it "queued" would promise a restart that can
+            # never run (the live incident: a marker requested against one
+            # gateway shown as pending through two successor restarts).
+            generation_parts = []
+            predecessor = chained.get("predecessor")
+            if isinstance(predecessor, Mapping) and _positive_int(predecessor.get("pid")):
+                generation_parts.append(f"predecessor pid {predecessor.get('pid')}")
+            if _positive_int(chained.get("successor_pid")):
+                generation_parts.append(f"successor pid {chained.get('successor_pid')}")
+            generation = " → ".join(generation_parts) or "a previous process generation"
+            lines.append(
+                "⚠ Chained restart marker is stale and will not run: requested by "
+                f"{source}, recorded for {generation}, but the serving process is "
+                f"{_start_clause(*proven_serving)}; nothing will act on it — the next "
+                "gateway start clears it")
+        else:
+            lines.append(
+                "⏳ Chained restart queued: another restart will run once the current handoff "
+                f"completes (requested by {source})")
     return lines
