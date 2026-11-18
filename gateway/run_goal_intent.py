@@ -56,7 +56,15 @@ class GatewayGoalIntentMixin:
     def _schedule_auto_goal_intent(
         self: "GatewayRunner", event, session_key: str
     ) -> None:
-        """Classify an eligible inbound message off-path; park the decision."""
+        """Classify an eligible inbound message off-path; park the decision.
+
+        Eligibility is PROVENANCE-based, never content-based: internal events
+        and bot-authored sources are excluded (a gateway-generated diagnostic —
+        including the 🔎 jev notice lines — must never classify itself), while
+        a human-authored copy of diagnostic text is a fresh human message and
+        IS classified: quoting a notice is human speech, not autonomous
+        recursion, so no prefix suppression exists here.
+        """
         coro = None
         try:
             source = event.source

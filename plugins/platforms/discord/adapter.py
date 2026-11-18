@@ -1715,6 +1715,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         channel policy admits it, an explicit trigger (mention/reply/command/wake pattern)
         did not author it and it is not bot chatter. Every caller — live dispatch, recovered
         dispatch and the admission prefilters — goes through here, so they cannot disagree.
+
+        Recursion exclusion is provenance-based only (bot authors, trusted non-conversational
+        history metadata): diagnostic-generated messages never consult the judge again. A
+        HUMAN-authored copy of a notice line carries no diagnostic provenance — it is a fresh
+        human message and is consulted; content prefixes are never suppressed.
         """
         gate = self._response_gate
         if gate is None:

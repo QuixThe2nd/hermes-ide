@@ -472,6 +472,33 @@ class TestNoRecursion:
         adapter._handle_message.assert_not_awaited()
         assert _notices(adapter) == []
 
+    @pytest.mark.asyncio
+    async def test_human_authored_notice_copy_is_a_fresh_human_message(self, monkeypatch):
+        """A human pasting/quoting a notice line is fresh human speech, not
+        autonomous recursion: provenance (bot author, trusted non-conversational
+        metadata), never content, decides exclusion — so this message IS
+        consulted once and its own notice follows. No prefix suppression
+        exists, and none may be added.
+        """
+        speaking = _DecisionRecorder()
+        choice = _ChoiceRecorder(probabilities=REACT_FIRE)
+        _stub_speaking(monkeypatch, speaking)
+        _stub_choice(monkeypatch, choice)
+        adapter = _adapter(
+            reaction={"enabled": True, "channels": ["555"]},
+            response={"channels": ["555"], "mode": "enforce"},
+        )
+        human_copy = _message(
+            content="🔎 jev response-gate user message from Alice: failed (http_502)",
+        )
+
+        await adapter._dispatch_discord_message(human_copy)
+        await _drain(adapter)
+
+        assert speaking.calls == 1
+        assert choice.calls == 1
+        assert len(_notices(adapter)) == 2
+
 
 class TestFormatterIsolation:
     """A formatter failure anywhere (cache hashing, resolution, build, render) is a
