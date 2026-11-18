@@ -387,6 +387,27 @@ def user_restart_via_service() -> bool:
     return is_gateway_supervisor_process() or is_container_restart_context()
 
 
+def clear_pre_array_chain_marker() -> bool:
+    """Remove a leftover ``.restart_chain.json`` written by the pre-array
+    chained-restart design (removed with the generation array).
+
+    The array replaced chaining: a restart on any generation forwards to the
+    newest through the hub, and nothing ever queues through a chain marker,
+    so one found on disk after an upgrade can never run — an older binary
+    reading it would promise a restart that will not happen. Called once per
+    direct-claim boot. Returns True when a marker was removed.
+    """
+    from hermes_constants import get_hermes_home
+
+    marker = get_hermes_home() / ".restart_chain.json"
+    try:
+        marker.unlink()
+    except FileNotFoundError:
+        return False
+    logger.info("Cleared a stale pre-array restart chain marker at %s", marker)
+    return True
+
+
 def resolve_planned_restart_exit_code(runner: Any) -> Optional[int]:
     """Return the supervisor restart code, or None for an ordinary clean exit.
 

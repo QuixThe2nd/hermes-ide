@@ -368,31 +368,6 @@ def _socket_owner_guard(serving_pid: Optional[int], identify: Any) -> Optional[s
     return _error_json(socket_owner_refusal(serving_pid, identify))
 
 
-def _socket_chain_rewrites_serving_process(ack: dict, serving_pid: Optional[int], identify: Any) -> dict:
-    """Rewrite a chained ack so ``process`` names the process that will restart.
-
-    A chained restart recorded by the draining predecessor runs on its
-    hub-attested successor — the serving process. The ack's ``pid`` names the
-    predecessor (the answerer); rendering it as ``process`` would point the
-    agent at the dying process.
-    """
-    if not serving_pid or str(ack.get("status")) != "chained":
-        return ack
-    answer_pid = identify.get("pid") if isinstance(identify, dict) else None
-    if not isinstance(answer_pid, int) or isinstance(answer_pid, bool):
-        return ack
-    if answer_pid == serving_pid:
-        return ack
-    ack = dict(ack)
-    ack["pid"] = serving_pid
-    ack["note"] = (
-        f"Restart chained for the serving process: 'process' names pid {serving_pid}, "
-        f"the process serving this conversation. The control socket is still owned "
-        f"by the draining predecessor (pid {answer_pid}); the chained restart runs "
-        f"on pid {serving_pid} once that handoff completes."
-    )
-    return ack
-
 
 def _restart_via_control_socket(*, restart_hub: bool = False) -> str:
     """Queue the restart through the gateway's control socket (out-of-process path).
@@ -444,8 +419,7 @@ def _restart_via_control_socket(*, restart_hub: bool = False) -> str:
         return _error_json(
             f"The running gateway refused the restart: {ack.get('reason') or status or 'no reason given'}"
         )
-    return _socket_result_json(
-        _socket_chain_rewrites_serving_process(ack, serving_pid, identify))
+    return _socket_result_json(ack)
 
 
 def handle_restart(args: dict, **_: Any) -> str:

@@ -4005,6 +4005,7 @@ from gateway.restart import (
     DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    clear_pre_array_chain_marker,
     detached_restart_spawn_blocked,
     is_global_startup_conflict,
     parse_cron_drain_timeout,
@@ -11759,16 +11760,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             _start_gateway_start_cron_and_housekeeping(runner))
         # READY only once adapters, cron and housekeeping run; missing systemd state just disables watchdog.
         runner._start_systemd_watchdog()
-        # A DIRECT claim (not the pending-successor path) never runs
-        # run_chained_restart, so settle any leftover chain marker at the same
-        # lifecycle point the genuine path would: honor it when it provably
-        # targets this process, else clear it as orphaned by a dead
-        # generation — otherwise status would forever show a chained restart
-        # that can never run.
-        from gateway.restart_chain import settle_chained_restart_after_direct_claim
-
-        await settle_chained_restart_after_direct_claim(
-            runner, launched_as_overlap_successor=runner._launched_as_overlap_successor)
+        # Pre-array upgrade cleanup: a leftover .restart_chain.json (written
+        # by the chained-restart design this array replaced) can never run —
+        # restarts forward to the newest generation through the hub now, and
+        # nothing queues through a chain marker. Clear it at the same
+        # lifecycle point the genuine path used to settle it, so an older
+        # hermes binary never misreads it as a pending restart.
+        _best_effort(
+            clear_pre_array_chain_marker, "pre-array chain marker cleanup failed: %s")
 
     await runner.wait_for_shutdown()
 
