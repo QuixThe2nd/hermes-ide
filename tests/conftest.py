@@ -936,7 +936,13 @@ def short_af_unix_path():
     test cannot own. A unique owned directory keeps the path short and cleanup
     automatic.
     """
-    with tempfile.TemporaryDirectory(prefix="hermes-afunix-", dir="/tmp") as raw:
+    base = tempfile.gettempdir()  # respects TMPDIR; the literal /tmp root may
+    # be unwritable (hosts running /tmp mode 700) or absent (Termux).
+    if len(str(Path(base) / "hermes-afunix-xxxxxxxx" / "hub.sock").encode()) > 103:
+        # 103 bytes: macOS's 104-byte sun_path minus the NUL terminator, the
+        # tightest AF_UNIX bind limit on supported platforms (Linux allows 108).
+        pytest.skip(f"temp dir too long for an AF_UNIX socket path: {base}")
+    with tempfile.TemporaryDirectory(prefix="hermes-afunix-", dir=base) as raw:
         yield Path(raw) / "hub.sock"
 
 @pytest.fixture

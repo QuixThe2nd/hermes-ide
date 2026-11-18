@@ -372,11 +372,13 @@ def _hub_client_with_source(monkeypatch, tmp_path):
 
 
 @pytest.mark.platforms("posix")
-def test_hub_socket_roundtrip_returns_synthetic_submission(tmp_path, monkeypatch):
+def test_hub_socket_roundtrip_returns_synthetic_submission(tmp_path, monkeypatch, short_af_unix_path):
     async def scenario():
         from plugins.platforms.discord.hub import DiscordHubServer, _token_key
 
-        server = DiscordHubServer(tmp_path / "hub.sock")
+        # pytest tmp dirs can exceed macOS's 104-byte sun_path limit; the
+        # shared fixture binds in a short, test-owned directory.
+        server = DiscordHubServer(short_af_unix_path)
         captured = []
 
         class FakeHubAdapter:
@@ -425,11 +427,13 @@ def test_hub_socket_roundtrip_returns_synthetic_submission(tmp_path, monkeypatch
 
 
 @pytest.mark.platforms("posix")
-def test_hub_socket_disconnect_wakes_waiter_and_fails_closed(tmp_path, monkeypatch):
+def test_hub_socket_disconnect_wakes_waiter_and_fails_closed(tmp_path, monkeypatch, short_af_unix_path):
     async def scenario():
         from plugins.platforms.discord.hub import DiscordHubServer, _token_key
 
-        server = DiscordHubServer(tmp_path / "hub.sock")
+        # pytest tmp dirs can exceed macOS's 104-byte sun_path limit; the
+        # shared fixture binds in a short, test-owned directory.
+        server = DiscordHubServer(short_af_unix_path)
         started = asyncio.Event()
         release = asyncio.Event()
 
