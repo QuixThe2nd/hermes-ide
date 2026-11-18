@@ -437,19 +437,9 @@ def _restart_notify_payload(
     return data
 
 
-def _runner_restart_platforms(runner: Any) -> bool:
-    """Resolve ``gateway.restart_platforms`` from the runner's own raw config (default True)."""
-    try:
-        from gateway.run import _load_gateway_config
-
-        return restart_platforms_enabled(_load_gateway_config())
-    except Exception:  # noqa: BLE001 - config read must never block a restart
-        return True
-
-
 async def queue_user_restart(
     runner: Any, source: Optional[SessionSource], message_id: Optional[str],
-    *, restart_platforms: Optional[bool] = None, restart_hub: bool = False,
+    *, restart_hub: bool = False,
 ) -> dict:
     """Queue a user-requested restart — the ONE shared ``/restart`` sequence.
 
@@ -581,12 +571,9 @@ async def queue_user_restart(
 
         active_agents = runner._running_agent_count()
 
-        if restart_platforms is None:
-            restart_platforms = _runner_restart_platforms(runner)
         via_service = user_restart_via_service()
         started = runner.request_restart(
             detached=not via_service, via_service=via_service,
-            restart_platforms=restart_platforms,
         )
 
         return {
@@ -598,30 +585,6 @@ async def queue_user_restart(
         # Setup resolved (started, failed, or cancelled): drop the provisional
         # preflight state so a later attempt retries it, and wake any rider.
         restart_preflight.release_restart_preflight(preflight_attempt)
-
-
-def restart_platforms_enabled(config: Optional[Mapping[str, Any]] = None) -> bool:
-    """Whether a restart also bounces platform gateway connections (``gateway.restart_platforms``).
-
-    True (default): the overlap successor takes over the platform transports —
-    adapters reconnect on the successor, exactly like every restart before the
-    flag existed. False: the restart touches agent-core sessions only; platform
-    adapters are not bounced — no successor spawn through their hubs, no
-    restart choreography on their connections — and each transport simply
-    rides the predecessor until it exits, then reconnects on the successor.
-    """
-    gw: Any = None
-    if config is not None:
-        try:
-            gw = config.get("gateway")
-        except Exception:
-            gw = None
-    if not isinstance(gw, Mapping):
-        return True
-    raw = gw.get("restart_platforms", True)
-    if isinstance(raw, str):
-        return raw.strip().lower() in _TRUTHY
-    return bool(raw)
 
 
 def restart_committed(runner: Any) -> bool:

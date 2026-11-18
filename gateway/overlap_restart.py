@@ -533,24 +533,14 @@ def handover_systemd_overlap_successor(runner: Any, planned_exit_code: Optional[
         time.sleep(0.2)
 
 
-async def spawn_successor(
-    runner: Any, *, via_service: bool, restart_platforms: bool = True,
-) -> Optional[int]:
+async def spawn_successor(runner: Any, *, via_service: bool) -> Optional[int]:
     """Start one successor for this gateway process, before its drain wait.
 
-    ``restart_platforms=False`` (``gateway.restart_platforms: false``) skips the
-    successor spawn through platform-adapter hubs entirely: platform gateway
-    connections are not bounced as part of the restart — they stay attached to
-    the predecessor through its drain and reconnect on whatever process follows.
+    The successor takes over the platform transports: adapters reconnect on
+    it as part of the restart.
     """
     if getattr(runner, "_overlap_restart_successor_started", False):
         return getattr(runner, "_overlap_restart_successor_pid", None)
-    if not restart_platforms:
-        logger.info(
-            "restart_platforms=false: skipping the platform successor spawn — "
-            "agent-core restarts without bouncing platform gateway connections"
-        )
-        return None
     # A hub bounce (or any transient hub drop) pulls hub adapters out of
     # runner.adapters until the reconnect watcher brings them back. Spawning
     # in that window used to find no adapter and silently fall back to a

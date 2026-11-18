@@ -106,6 +106,8 @@ async def test_restart_control_requests_the_same_overlap_flow(monkeypatch):
             server.handle_request_line,
             json.dumps({
                 "verb": "restart", "id": 1,
+                # Old-client shape: a pre-removal CLI still sends
+                # ``restart_platforms``; the verb ignores it.
                 "params": {"restart_platforms": False},
             }).encode(),
         )
@@ -116,9 +118,7 @@ async def test_restart_control_requests_the_same_overlap_flow(monkeypatch):
     assert result["queued"] is True
     assert result["status"] == "restarting"
     assert result["pid"] == os.getpid()
-    queued.assert_awaited_once_with(
-        runner, None, None, restart_platforms=False, restart_hub=False
-    )
+    queued.assert_awaited_once_with(runner, None, None, restart_hub=False)
     runner.request_restart.assert_not_called()
 
 
@@ -164,7 +164,7 @@ async def test_restart_control_rebuilds_worker_requester(monkeypatch):
     source = args[1]
     assert args[0] is runner
     assert args[2] == "$event"
-    assert queued.await_args.kwargs == {"restart_platforms": False, "restart_hub": False}
+    assert queued.await_args.kwargs == {"restart_hub": False}
     assert source.platform is Platform.MATRIX
     assert source.chat_id == "!room:example.org"
     assert source.chat_type == "group"

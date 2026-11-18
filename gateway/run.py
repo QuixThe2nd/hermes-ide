@@ -6199,7 +6199,6 @@ class GatewayRunner(
         self._restart_detached = False
         self._restart_via_service = False
         self._restart_from_update = False
-        self._restart_platforms = True
         self._detached_restart_watcher_started = False
         self._restart_command_source: Optional[SessionSource] = None
         self._restart_generation = 0
@@ -11439,12 +11438,10 @@ async def _start_gateway_start_control_socket(runner):
             orchestration — is its transport. Runs on the socket executor
             thread; marshal onto the loop like pause-for-update does.
             """
-            from gateway.restart import _runner_restart_platforms, queue_user_restart
+            from gateway.restart import queue_user_restart
 
-            restart_platforms = params.get("restart_platforms")
-            if restart_platforms is None:
-                restart_platforms = _runner_restart_platforms(runner)
-            # Opt-in hub bounce: missing/false (old clients) never bounces.
+            # A ``restart_platforms`` param from an older CLI is ignored —
+            # restarts always hand over to the successor.
             restart_hub = is_truthy_value(params.get("restart_hub"))
             requester = params.get("requester")
             if not isinstance(requester, dict) or not requester:
@@ -11466,7 +11463,6 @@ async def _start_gateway_start_control_socket(runner):
                         result_box.append(
                             await queue_user_restart(
                                 runner, source, message_id,
-                                restart_platforms=bool(restart_platforms),
                                 restart_hub=bool(restart_hub),
                             )
                         )
@@ -11679,16 +11675,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     def restart_signal_handler():
         # SIGUSR1 (`hermes gateway restart`, `hermes update`) is a thin trigger of
         # the ONE restart core — same overlap pipeline as /restart and the agent
-        # restart tool, honouring gateway.restart_platforms. A consumed
-        # update-restart marker says the SIGUSR1 came from `hermes update`
-        # restarting this gateway onto new code, so the drain adopts update
-        # semantics (idle-past-timeout units stop holding it).
-        from gateway.restart import _runner_restart_platforms
+        # restart tool. A consumed update-restart marker says the SIGUSR1 came
+        # from `hermes update` restarting this gateway onto new code, so the
+        # drain adopts update semantics (idle-past-timeout units stop holding it).
         from gateway.status import consume_update_restart_marker_for_self
 
         runner.request_restart(
             detached=False, via_service=True,
-            restart_platforms=_runner_restart_platforms(runner),
             from_update=consume_update_restart_marker_for_self(),
         )
 

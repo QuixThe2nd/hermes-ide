@@ -286,7 +286,6 @@ def _restart_via_control_socket(*, restart_hub: bool = False) -> str:
         from gateway.control_socket import request_gateway_restart
 
         request_kwargs: dict[str, Any] = {
-            "restart_platforms": True,
             "restart_hub": bool(restart_hub),
             "timeout": _SOCKET_RESTART_TIMEOUT_S,
         }

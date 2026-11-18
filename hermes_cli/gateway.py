@@ -6584,7 +6584,7 @@ def _restart_all(system: bool) -> None:
         _service_call(kind, "start", system)
 
 
-def _restart_via_control_socket(restart_platforms: bool, *, old_pid: int | None = None) -> bool:
+def _restart_via_control_socket(*, old_pid: int | None = None) -> bool:
     """Ask the running gateway (control socket) to run the ONE restart core.
 
     With a live PID, attach to the non-destructive progress observer so the CLI
@@ -6599,15 +6599,13 @@ def _restart_via_control_socket(restart_platforms: bool, *, old_pid: int | None 
     if old_pid is not None:
         from hermes_cli.gateway_restart_progress import restart_gateway_with_progress
 
-        outcome = restart_gateway_with_progress(
-            old_pid, via_service=False, restart_platforms=restart_platforms,
-        )
+        outcome = restart_gateway_with_progress(old_pid, via_service=False)
         return outcome.accepted
     try:
         from hermes_constants import get_hermes_home
         from gateway.control_socket import request_gateway_restart
 
-        ack = request_gateway_restart(get_hermes_home(), restart_platforms=restart_platforms)
+        ack = request_gateway_restart(get_hermes_home())
     except Exception as exc:
         logger.debug("Control-socket restart transport unavailable: %s", exc)
         return False
@@ -6623,8 +6621,6 @@ def _restart_via_control_socket(restart_platforms: bool, *, old_pid: int | None 
         print("✓ Gateway restart chained — queued on the incoming generation")
     else:
         print("✓ Gateway restart queued — in-flight sessions drain undisturbed, then the gateway bounces")
-        if not restart_platforms:
-            print("  (--no-platforms: platform gateway connections are not bounced)")
     return True
 
 
@@ -6632,18 +6628,16 @@ def _cmd_restart(args):
     """`hermes gateway restart` — the CLI door onto the ONE restart pipeline.
 
     Transports, in order: (1) the running gateway's control socket runs the
-    same core ``queue_user_restart`` sequence /restart uses (carrying the
-    ``--no-platforms`` override); (2) SIGUSR1, which the gateway maps to the
-    same ``request_restart`` core; (3) the service manager (systemd/launchd/
-    Windows) as a TRANSPORT of the same semantics, not a second one — its
-    graceful path SIGUSR1s first too; (4) stop + fresh start when no gateway
-    is running.
+    same core ``queue_user_restart`` sequence /restart uses; (2) SIGUSR1, which
+    the gateway maps to the same ``request_restart`` core; (3) the service
+    manager (systemd/launchd/Windows) as a TRANSPORT of the same semantics,
+    not a second one — its graceful path SIGUSR1s first too; (4) stop + fresh
+    start when no gateway is running.
     """
     _refuse_from_inside_gateway("restart", "restart loops")
     system = getattr(args, "system", False)
     restart_all = getattr(args, "all", False)
     force = getattr(args, "force", False)
-    restart_platforms = not getattr(args, "no_platforms", False)
     _guard_named_profile_under_multiplexer(force=force)
     if restart_all and _dispatch_all_via_service_manager_if_s6("restart"):
         return
@@ -6657,7 +6651,7 @@ def _cmd_restart(args):
     # keeps the CLI attached for successor and drain progress; Ctrl-C detaches.
     from gateway.status import get_running_pid
 
-    if _restart_via_control_socket(restart_platforms, old_pid=get_running_pid()):
+    if _restart_via_control_socket(old_pid=get_running_pid()):
         return
 
     # The Windows restart path handles both registered installs and detached restarts.
