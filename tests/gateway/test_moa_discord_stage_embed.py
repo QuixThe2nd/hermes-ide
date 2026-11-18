@@ -2695,7 +2695,7 @@ async def test_full_path_per_slot_events_render_in_real_embed(
 
 def test_plain_platform_adapters_do_not_expose_stage_embed_capability():
     """The gateway gate selects Discord only: the base adapter must not
-    grow the renderer, so Telegram/Slack/etc. never match the hasattr check."""
+    grow the renderer, so Slack/Matrix/etc. never match the hasattr check."""
     from gateway.platforms.base import BasePlatformAdapter
 
     assert not hasattr(BasePlatformAdapter, "send_tool_stage_embed")

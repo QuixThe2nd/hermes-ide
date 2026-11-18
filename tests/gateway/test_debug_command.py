@@ -9,7 +9,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
-def _make_event(text="/debug", platform=Platform.TELEGRAM,
+def _make_event(text="/debug", platform=Platform.DISCORD,
                 user_id="12345", chat_id="67890"):
     source = SessionSource(
         platform=platform,

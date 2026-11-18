@@ -11,7 +11,7 @@ goals, notifications, shutdown, ...), sessions in `session*.py`, slash handlers 
 over `platforms/base.py`. `builtin_hooks/` is the extension point for always-registered gateway
 hooks (none shipped). The gateway reads user YAML **raw** (`run.py` + `config.py`), not through
 `DEFAULT_CONFIG` — a key the CLI sees but the gateway doesn't means you're on the wrong loader
-(`hermes_cli/AGENTS.md`). Each adapter picks a base toolset (Telegram → `"messaging"`).
+(`hermes_cli/AGENTS.md`). Each adapter picks a base toolset (WhatsApp → `"hermes-whatsapp"`).
 
 Slash commands: handlers are looked up by name through `_command_handler_table`; a command is
 listed in `_IDLE_COMMANDS` or `_PLAIN_COMMANDS` (works mid-run) in `run_busy.py`. No
@@ -110,7 +110,7 @@ locks by widening the tree-kill.
   answers "which bot received it / who may admit it / where does it run" ONCE per event and pins a
   frozen `RoutingIdentity` on the source (wire-invisible, like `_transport_adapter_ref`). Every
   ingress path calls the canonicalize seam before it derives a key: the adapter side
-  (`platforms/base.py::_canonicalize` — `handle_message`, `_enqueue_text_event`, Telegram photo /
+  (`platforms/base.py::_canonicalize` — `handle_message`, `_enqueue_text_event`, photo /
   album routing, `_handle_message_while_active`, every `_source_session_key`) and the runner side
   (`run_adapters.py::_canonicalize` — the per-profile / default message, busy and platform-event
   handlers, the adapter auth-check callback, `run_inbound.py::_hm_admit_event`). No key derivation

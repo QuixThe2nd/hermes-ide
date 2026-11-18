@@ -21,13 +21,13 @@ from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 
-SESSION_KEY = "agent:main:telegram:dm:1001"
+SESSION_KEY = "agent:main:discord:dm:1001"
 SID = "sid-auto-goal"
 
 
 def _source(*, user_id: str = "user-1", chat_type: str = "dm") -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="chat-1",
         chat_type=chat_type,
         user_id=user_id,
@@ -420,7 +420,7 @@ async def test_jev_http_error_fails_closed_no_goal(runner, monkeypatch):
         "hermes_cli.goal_intent.requests.post",
         return_value=SimpleNamespace(status_code=503, json=lambda: {}),
     ) as post:
-        decision = evaluate_goal_intent("why is tdarr down", SID, "telegram")
+        decision = evaluate_goal_intent("why is tdarr down", SID, "discord")
 
     assert post.call_count == 2  # one retry, then fail closed
     assert decision["label"] == "unknown"

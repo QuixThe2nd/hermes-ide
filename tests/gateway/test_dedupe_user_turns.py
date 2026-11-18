@@ -2,7 +2,7 @@
 
 When the gateway persists a user message after a transient provider
 failure (429/timeout/auth error), subsequent retries of the same
-Telegram message must not stack duplicate user turns in the transcript.
+platform message must not stack duplicate user turns in the transcript.
 The dedupe guard checks has_platform_message_id before persisting.
 """
 

@@ -23,28 +23,13 @@ These tests pin down the gateway-side guard introduced for #30170:
 
 from __future__ import annotations
 
-import sys
 import threading
 import time
-import types
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# ──────────────────────────────────────────────────────────────────────
-# Minimal stubs so gateway imports cleanly (mirrors test_busy_session_ack)
-# ──────────────────────────────────────────────────────────────────────
-_tg = types.ModuleType("telegram")
-_tg.constants = types.ModuleType("telegram.constants")
-_ct = MagicMock()
-_ct.SUPERGROUP = "supergroup"
-_ct.GROUP = "group"
-_ct.PRIVATE = "private"
-_tg.constants.ChatType = _ct
-sys.modules.setdefault("telegram", _tg)
-sys.modules.setdefault("telegram.constants", _tg.constants)
-sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 
 from gateway.platforms.base import (
     SessionSource,
@@ -59,7 +44,7 @@ from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL  # noqa: E402
 # ──────────────────────────────────────────────────────────────────────
 def _make_event(text: str = "hello", chat_id: str = "123") -> MessageEvent:
     source = SessionSource(
-        platform=MagicMock(value="telegram"),
+        platform=MagicMock(value="discord"),
         chat_id=chat_id,
         chat_type="private",
         user_id="user1",
@@ -96,7 +81,7 @@ def _make_adapter() -> MagicMock:
     adapter._send_with_retry = AsyncMock()
     adapter.config = MagicMock()
     adapter.config.extra = {}
-    adapter.platform = MagicMock(value="telegram")
+    adapter.platform = MagicMock(value="discord")
     return adapter
 
 

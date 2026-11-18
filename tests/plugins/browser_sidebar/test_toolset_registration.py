@@ -18,7 +18,7 @@ def test_restriction_map_exact_equality():
 
 def test_browser_sidebar_toolset_only_on_its_platform():
     assert toolset_allowed_for_platform("browser_sidebar", "browser_sidebar")
-    for platform in ("discord", "cli", "telegram", "matrix"):
+    for platform in ("discord", "cli", "slack", "matrix"):
         assert not toolset_allowed_for_platform("browser_sidebar", platform), platform
 
 

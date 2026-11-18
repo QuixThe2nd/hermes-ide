@@ -197,8 +197,7 @@ def redact_phone(phone: str) -> str:
     return phone[:4] + "****" + phone[-4:]
 
 
-# ─── GFM table → bullets. Discord calls convert_table_to_bullets(); Telegram imports the
-# primitives but keeps its own MarkdownV2-aware renderer.
+# ─── GFM table → bullets. Discord calls convert_table_to_bullets().
 # Delimiter row: optional outer pipes, dash cells (optional alignment colons). Requires at
 # least one internal '|' so a lone '---' rule is NOT matched.
 TABLE_SEPARATOR_RE = re.compile(r'^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*){1,}\|?\s*$')
@@ -216,8 +215,8 @@ def split_markdown_table_row(line: str) -> list[str]:
 
 
 def _render_table_block(table_block: list[str]) -> str:
-    """Render a GFM table as bold-heading + bullet groups (same alignment logic as Telegram's
-    renderer: without a row-label column the full row is data and the heading bullet is skipped)."""
+    """Render a GFM table as bold-heading + bullet groups (without a row-label column
+    the full row is data and the heading bullet is skipped)."""
     headers = split_markdown_table_row(table_block[0]) if len(table_block) >= 3 else []
     if len(headers) < 2:
         return "\n".join(table_block)
@@ -268,7 +267,7 @@ def compile_mention_patterns(raw, *, log_prefix: str, platform_label: str | None
                              logger_: 'logging.Logger | None' = None) -> 'list[re.Pattern]':
     """Compile regex wake-word/mention patterns from config or env values.
 
-    * **Config-style** (dingtalk, telegram): pass ``platform_label``. ``raw`` must be a
+    * **Config-style** (dingtalk): pass ``platform_label``. ``raw`` must be a
       list or string (else warn + ``[]``); non-string entries skipped; info log on load.
     * **Wakeword-style** (photon, bluebubbles): pass ``defaults``. ``raw`` may be None
       (defaults), a string (JSON list or comma/newline separated), a list, or a scalar.
@@ -619,7 +618,7 @@ class TextBatchAggregator:
     """Aggregates rapid-fire text events into single messages.
 
     Replaces the ``_enqueue_text_event`` / ``_flush_text_batch`` pattern
-    previously duplicated in telegram, discord, matrix, wecom, and feishu.
+    previously duplicated in discord, matrix, wecom, and feishu.
 
     Usage::
 

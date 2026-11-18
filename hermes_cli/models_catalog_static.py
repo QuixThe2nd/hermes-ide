@@ -350,7 +350,7 @@ _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named prov
 # ---------------------------------------------------------------------------
 # Provider groups — DISPLAY ONLY. Vendors with several slugs (global API, China API, OAuth plan,
 # ...) fold under one top-level row in the INTERACTIVE PICKERS (``hermes model``, setup wizard,
-# Telegram ``/model``). They do NOT change CANONICAL_PROVIDERS, slug identity, ``--provider``,
+# gateway ``/model``). They do NOT change CANONICAL_PROVIDERS, slug identity, ``--provider``,
 # ``/model <provider:model>`` or any typed path — every member slug stays individually addressable.
 # ``group_providers()`` is the single fold used by all three surfaces.
 #   group_id -> (display_label, group_description shown on the collapsed row, [member_slug, ...])

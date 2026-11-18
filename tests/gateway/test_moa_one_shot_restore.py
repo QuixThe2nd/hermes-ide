@@ -11,7 +11,7 @@ import pytest
 
 from gateway.run import GatewayRunner
 
-KEY = "agent:main:telegram:dm:999"
+KEY = "agent:main:discord:dm:999"
 PRIOR = {"provider": "openrouter", "model": "gpt-4"}
 
 

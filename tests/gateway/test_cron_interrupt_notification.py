@@ -33,16 +33,16 @@ def _reset_cron_running_set():
     sched._interrupted_job_ids.clear()
 
 
-def _telegram_job(job_id="be62d36a9914", name="daily-digest", chat_id="123456"):
+def _messaging_job(job_id="be62d36a9914", name="daily-digest", chat_id="123456"):
     return {
         "id": job_id,
         "name": name,
-        "deliver": f"telegram:{chat_id}",
+        "deliver": f"discord:{chat_id}",
     }
 
 
-def _telegram_target(chat_id="123456"):
-    return {"platform": "telegram", "chat_id": chat_id, "thread_id": None}
+def _messaging_target(chat_id="123456"):
+    return {"platform": "discord", "chat_id": chat_id, "thread_id": None}
 
 
 def _bind_notifier(runner):
@@ -62,11 +62,11 @@ class TestNotifyInterruptedCronJobs:
     async def test_owner_is_told_the_run_was_killed(self):
         runner, adapter = make_restart_runner()
         _bind_notifier(runner)
-        job = _telegram_job()
+        job = _messaging_job()
 
         with patch("cron.jobs.get_job", return_value=job), \
              patch("cron.scheduler._resolve_delivery_targets",
-                   return_value=[_telegram_target()]):
+                   return_value=[_messaging_target()]):
             sent = await runner._notify_interrupted_cron_jobs([job["id"]])
 
         assert sent == 1
@@ -87,10 +87,10 @@ class TestNotifyInterruptedCronJobs:
         (tmp_path / "config.yaml").write_text(json.dumps(cfg))
         runner, adapter = make_restart_runner()
         _bind_notifier(runner)
-        job = _telegram_job()
+        job = _messaging_job()
         with patch("cron.jobs.get_job", return_value=job), \
              patch("cron.scheduler._resolve_delivery_targets",
-                   return_value=[_telegram_target()]):
+                   return_value=[_messaging_target()]):
             sent = await runner._notify_interrupted_cron_jobs([job["id"]])
         expected = 0 if setting is True else 1
         assert sent == expected
@@ -101,11 +101,11 @@ class TestNotifyInterruptedCronJobs:
         runner, adapter = make_restart_runner()
         _bind_notifier(runner)
         runner._restart_requested = True
-        job = _telegram_job()
+        job = _messaging_job()
 
         with patch("cron.jobs.get_job", return_value=job), \
              patch("cron.scheduler._resolve_delivery_targets",
-                   return_value=[_telegram_target()]):
+                   return_value=[_messaging_target()]):
             await runner._notify_interrupted_cron_jobs([job["id"]])
 
         assert "restarting" in adapter.sent[0]
@@ -130,12 +130,12 @@ class TestNotifyInterruptedCronJobs:
     async def test_respects_platform_gateway_restart_notification_false(self):
         runner, adapter = make_restart_runner()
         _bind_notifier(runner)
-        runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification = False
-        job = _telegram_job()
+        runner.config.platforms[Platform.DISCORD].gateway_restart_notification = False
+        job = _messaging_job()
 
         with patch("cron.jobs.get_job", return_value=job), \
              patch("cron.scheduler._resolve_delivery_targets",
-                   return_value=[_telegram_target()]):
+                   return_value=[_messaging_target()]):
             sent = await runner._notify_interrupted_cron_jobs([job["id"]])
 
         assert sent == 0
@@ -150,7 +150,7 @@ class TestNotifyInterruptedCronJobs:
         actually exercised."""
         runner, adapter = make_restart_runner()
         _bind_notifier(runner)
-        job = dict(_telegram_job(), failure_deliver="local")
+        job = dict(_messaging_job(), failure_deliver="local")
 
         with patch("cron.jobs.get_job", return_value=job):
             sent = await runner._notify_interrupted_cron_jobs([job["id"]])
@@ -164,7 +164,7 @@ class TestNotifyInterruptedCronJobs:
         same real resolution path — the notice goes to the deliver target."""
         runner, adapter = make_restart_runner()
         _bind_notifier(runner)
-        job = _telegram_job()
+        job = _messaging_job()
 
         with patch("cron.jobs.get_job", return_value=job):
             sent = await runner._notify_interrupted_cron_jobs([job["id"]])
@@ -185,7 +185,7 @@ class TestNotifyInterruptedCronJobs:
         """Best-effort by construction: a wedged adapter must not propagate."""
         runner, adapter = make_restart_runner()
         _bind_notifier(runner)
-        job = _telegram_job()
+        job = _messaging_job()
 
         async def _boom(*_a, **_kw):
             raise RuntimeError("transport already closed")
@@ -194,7 +194,7 @@ class TestNotifyInterruptedCronJobs:
 
         with patch("cron.jobs.get_job", return_value=job), \
              patch("cron.scheduler._resolve_delivery_targets",
-                   return_value=[_telegram_target()]):
+                   return_value=[_messaging_target()]):
             sent = await runner._notify_interrupted_cron_jobs([job["id"]])
 
         assert sent == 0
@@ -203,11 +203,11 @@ class TestNotifyInterruptedCronJobs:
     async def test_duplicate_targets_send_once_per_job(self):
         runner, adapter = make_restart_runner()
         _bind_notifier(runner)
-        job = _telegram_job()
+        job = _messaging_job()
 
         with patch("cron.jobs.get_job", return_value=job), \
              patch("cron.scheduler._resolve_delivery_targets",
-                   return_value=[_telegram_target(), _telegram_target()]):
+                   return_value=[_messaging_target(), _messaging_target()]):
             sent = await runner._notify_interrupted_cron_jobs([job["id"]])
 
         assert sent == 1
@@ -248,9 +248,9 @@ class TestShutdownDeliversNoticeBeforeDisconnect:
         with patch("gateway.status.remove_pid_file"), \
              patch("gateway.status.write_runtime_status"), \
              patch("cron.scheduler.mark_job_run"), \
-             patch("cron.jobs.get_job", return_value=_telegram_job()), \
+             patch("cron.jobs.get_job", return_value=_messaging_job()), \
              patch("cron.scheduler._resolve_delivery_targets",
-                   return_value=[_telegram_target()]):
+                   return_value=[_messaging_target()]):
             await runner.stop()
 
         assert "cron_notice" in events, "interrupted-cron notice was never sent"

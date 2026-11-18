@@ -30,7 +30,7 @@ PRIMARY_YAML = {
         "profile_routes": [
             {
                 "name": "grant-topic",
-                "platform": "telegram",
+                "platform": "discord",
                 "chat_id": "-1004306455751",
                 "thread_id": "14",
                 "profile": "grant",
@@ -50,7 +50,7 @@ def _gateway_config(connected_values):
 
 @pytest.fixture
 def multiplex_homes(tmp_path, monkeypatch):
-    """A primary root whose config routes telegram→grant, plus the grant home.
+    """A primary root whose config routes discord→grant, plus the grant home.
 
     ``get_default_hermes_root`` is patched so the primary config, the profiles
     root, and ``get_profile_dir`` all resolve inside ``tmp_path``; the home
@@ -70,19 +70,19 @@ def multiplex_homes(tmp_path, monkeypatch):
 
 class TestRoutedSatellitePreflight:
     def test_routed_platform_passes_preflight(self, multiplex_homes):
-        """telegram→grant route: a grant-profile telegram deliver passes."""
+        """discord→grant route: a grant-profile discord deliver passes."""
         with patch("gateway.config.load_gateway_config",
                    return_value=_gateway_config(set())):
             assert _preflight_check_delivery(
-                {"deliver": "telegram:-1004306455751:14"}) is None
+                {"deliver": "discord:-1004306455751:14"}) is None
 
     def test_unrouted_platform_still_blocked(self, multiplex_homes):
-        """The route rescues telegram only — discord stays blocked."""
+        """The route rescues discord only — slack stays blocked."""
         with patch("gateway.config.load_gateway_config",
                    return_value=_gateway_config(set())):
-            reason = _preflight_check_delivery({"deliver": "discord:12345"})
+            reason = _preflight_check_delivery({"deliver": "slack:12345"})
             assert reason is not None
-            assert "discord" in reason
+            assert "slack" in reason
 
     def test_route_for_another_profile_does_not_rescue(self, tmp_path, monkeypatch):
         """A route naming a DIFFERENT profile is not this home's lifeline."""
@@ -96,7 +96,7 @@ class TestRoutedSatellitePreflight:
         )
         token = set_hermes_home_override(str(other_home))
         try:
-            assert _delivery_platform_routed_from_primary_gateway("telegram") is False
+            assert _delivery_platform_routed_from_primary_gateway("discord") is False
         finally:
             reset_hermes_home_override(token)
 
@@ -105,7 +105,7 @@ class TestRoutedSatellitePreflight:
         root, _ = multiplex_homes
         token = set_hermes_home_override(str(root))
         try:
-            assert _delivery_platform_routed_from_primary_gateway("telegram") is False
+            assert _delivery_platform_routed_from_primary_gateway("discord") is False
         finally:
             reset_hermes_home_override(token)
 
@@ -122,9 +122,9 @@ class TestRoutedSatellitePreflight:
             with patch("gateway.config.load_gateway_config",
                        return_value=_gateway_config(set())):
                 reason = _preflight_check_delivery(
-                    {"deliver": "telegram:-1004306455751:14"})
+                    {"deliver": "discord:-1004306455751:14"})
                 assert reason is not None
-                assert "telegram" in reason
+                assert "discord" in reason
         finally:
             reset_hermes_home_override(token)
 
@@ -141,6 +141,6 @@ class TestRoutedSatellitePreflight:
         )
         token = set_hermes_home_override(str(grant_home))
         try:
-            assert _delivery_platform_routed_from_primary_gateway("telegram") is False
+            assert _delivery_platform_routed_from_primary_gateway("discord") is False
         finally:
             reset_hermes_home_override(token)

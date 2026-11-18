@@ -64,7 +64,7 @@ def _session_entry(source):
         session_id="sess-1",
         created_at=datetime.now(),
         updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="dm",
         total_tokens=0,
     )
@@ -96,7 +96,7 @@ def _make_gate_runner():
     mock_adapter.supports_overlap_restart = True
     mock_adapter.admits_owned_work_while_draining = MagicMock(return_value=False)
     mock_adapter.handoff_event = AsyncMock(return_value=False)
-    runner.adapters = {Platform.TELEGRAM: mock_adapter, Platform.DISCORD: mock_adapter}
+    runner.adapters = {Platform.WHATSAPP: mock_adapter, Platform.DISCORD: mock_adapter}
     runner.hooks = SimpleNamespace(
         emit=AsyncMock(),
         emit_collect=AsyncMock(return_value=[]),
@@ -128,8 +128,6 @@ def _make_gate_runner():
     runner._goal_state_by_session = {}
     runner._goal_runs_in_progress = set()
     runner._goal_queued_by_session = set()
-    runner._is_telegram_topic_root_lobby = lambda _source: False
-    runner._should_send_telegram_lobby_reminder = lambda _source: False
     runner._check_slash_access = lambda _source, _command: None
     runner._begin_session_run_generation = lambda _key: 1
     runner._peek_session_state = lambda _key: None
@@ -442,7 +440,7 @@ async def test_busy_dispatch_still_works_when_not_draining():
 
 def _sub_path_state(*, started_ts: float, agent) -> None:
     """Session state that steers the busy region into one specific sub-path:
-    a fresh ``started_ts`` selects the Telegram follow-up grace window, the
+    a fresh ``started_ts`` selects the follow-up grace window, the
     pending sentinel selects the agent-setup window."""
     from gateway.session_state import SessionState
 
@@ -453,7 +451,7 @@ def _sub_path_state(*, started_ts: float, agent) -> None:
 
 
 @pytest.mark.asyncio
-async def test_telegram_grace_followup_during_drain_is_refused_honestly():
+async def test_grace_followup_during_drain_is_refused_honestly():
     """A text follow-up inside the post-start grace window gets the honest
     drain refusal — never a durable snapshot (user contract, Nov 2026)."""
     import time

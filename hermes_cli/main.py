@@ -440,7 +440,7 @@ def _under_gateway_supervisor(argv: list) -> bool:
     means "the root HERMES_HOME profile". If a supervised default-profile
     child read active_profile, switching the active profile (dashboard,
     ``hermes profile use``) would silently redirect the default gateway into
-    that profile — adopting its credentials and double-polling a Telegram
+    that profile — adopting its credentials and double-polling a bot
     token already owned by that profile's own gateway (#74872).
 
     Markers (see gateway/restart.py ``is_gateway_supervisor_process``):

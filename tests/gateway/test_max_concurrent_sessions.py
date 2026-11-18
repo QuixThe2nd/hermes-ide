@@ -33,7 +33,7 @@ class _FakeAdapter:
 
 def _make_source(chat_id: str = "chat-1") -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id=chat_id,
         chat_type="dm",
         user_id=f"user-{chat_id}",
@@ -51,10 +51,10 @@ def _make_event(text: str = "hello", chat_id: str = "chat-1") -> MessageEvent:
 def _make_runner(max_concurrent_sessions: int | None = None) -> GatewayRunner:
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")},
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="***")},
         max_concurrent_sessions=max_concurrent_sessions,
     )
-    runner.adapters = {Platform.TELEGRAM: _FakeAdapter()}
+    runner.adapters = {Platform.DISCORD: _FakeAdapter()}
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._active_session_leases = {}

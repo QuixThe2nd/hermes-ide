@@ -161,7 +161,7 @@ try:  # plugin tool discovery (user/project/pip plugins)
     # MCP tool discovery (external MCP servers from config) used to run here as a module-level side effect.
     # It was removed because discover_mcp_tools() internally uses a blocking future.result(timeout=120)
     # wait, and the gateway lazy-imports this module from inside the asyncio event loop on the first user
-    # message — freezing Discord/Telegram heartbeats for up to 120s whenever any configured MCP server was
+    # message — freezing gateway platform heartbeats for up to 120s whenever any configured MCP server was
     # slow or unreachable (#16856). - gateway/run.py            -> start_gateway() uses run_in_executor -
     from hermes_cli.plugins import discover_plugins
     discover_plugins()

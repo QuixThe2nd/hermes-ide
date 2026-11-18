@@ -24,9 +24,9 @@ def _run_async_immediately(coro):
 
 
 def _make_config():
-    telegram_cfg = SimpleNamespace(enabled=True, token="***", extra={})
+    discord_cfg = SimpleNamespace(enabled=True, token="***", extra={})
     return SimpleNamespace(
-        platforms={Platform.TELEGRAM: telegram_cfg},
+        platforms={Platform.DISCORD: discord_cfg},
         get_home_channel=lambda _platform: None,
     )
 
@@ -39,7 +39,7 @@ def _send(message):
          patch("tools.send_message_tool._send_to_platform", new=send_mock), \
          patch("gateway.mirror.mirror_to_session", return_value=True):
         result = json.loads(
-            send_message_tool({"action": "send", "target": "telegram:12345", "message": message})
+            send_message_tool({"action": "send", "target": "discord:12345", "message": message})
         )
     return result, send_mock
 

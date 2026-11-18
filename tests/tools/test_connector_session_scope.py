@@ -63,7 +63,7 @@ def test_ordinary_platform_defaults_grant_connections_without_widening_webhook()
     from hermes_cli.tools_config import _get_platform_tools
     from toolsets import resolve_toolset
 
-    for platform in ("cli", "telegram"):
+    for platform in ("cli", "discord"):
         enabled = _get_platform_tools({}, platform)
         assert "connections" in enabled
         assert "manage_connections" in {name for ts in enabled for name in resolve_toolset(ts)}

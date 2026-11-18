@@ -10,7 +10,7 @@ past that); see the **routing table** at the end and read the area file before e
 ## What Hermes Is
 
 Hermes is a personal AI agent that runs the same agent core across a CLI, a
-messaging gateway (Telegram, Discord, Slack, and ~20 other platforms), a TUI,
+messaging gateway (Discord, Slack, and ~20 other platforms), a TUI,
 and an Electron desktop app. It learns across sessions (memory + skills),
 delegates to subagents, runs scheduled jobs, and drives a real terminal and
 browser.
@@ -387,7 +387,7 @@ class AIAgent:
         disabled_toolsets: list = None,
         quiet_mode: bool = False,
         save_trajectories: bool = False,
-        platform: str = None,              # "cli", "telegram", etc.
+        platform: str = None,              # "cli", "discord", etc.
         session_id: str = None,
         skip_context_files: bool = False,
         skip_memory: bool = False,
@@ -444,7 +444,6 @@ All slash commands are defined in a central `COMMAND_REGISTRY` list of `CommandD
 - **CLI** — `process_command()` resolves aliases via `resolve_command()`, dispatches on canonical name
 - **Gateway** — `GATEWAY_KNOWN_COMMANDS` frozenset for hook emission, `resolve_command()` for dispatch
 - **Gateway help** — `gateway_help_lines()` generates `/help` output
-- **Telegram** — `telegram_bot_commands()` generates the BotCommand menu
 - **Slack** — `slack_subcommand_map()` generates `/hermes` subcommand routing
 - **Autocomplete** — `COMMANDS` flat dict feeds `SlashCommandCompleter`
 - **CLI help** — `COMMANDS_BY_CATEGORY` dict feeds `show_help()`
@@ -478,7 +477,7 @@ if canonical == "mycommand":
 - `gateway_only` — only available in messaging platforms
 - `gateway_config_gate` — config dotpath (e.g. `"display.tool_progress_command"`); when set on a `cli_only` command, the command becomes available in the gateway if the config value is truthy. `GATEWAY_KNOWN_COMMANDS` always includes config-gated commands so the gateway can dispatch them; help/menus only show them when the gate is open.
 
-**Adding an alias** requires only adding it to the `aliases` tuple on the existing `CommandDef`. No other file changes needed — dispatch, help text, Telegram menu, Slack mapping, and autocomplete all update automatically.
+**Adding an alias** requires only adding it to the `aliases` tuple on the existing `CommandDef`. No other file changes needed — dispatch, help text, platform menus, Slack mapping, and autocomplete all update automatically.
 
 ---
 
@@ -1017,8 +1016,8 @@ contributor skill PRs.
 ## Toolsets
 
 All toolsets are defined in `toolsets.py` as a single `TOOLSETS` dict.
-Each platform's adapter picks a base toolset (e.g. Telegram uses
-`"messaging"`); `_HERMES_CORE_TOOLS` is the default bundle most
+Each platform's adapter picks a base toolset (e.g. WhatsApp uses
+`"hermes-whatsapp"`); `_HERMES_CORE_TOOLS` is the default bundle most
 platforms inherit from.
 
 Current toolset keys: `browser`, `clarify`, `code_execution`, `cronjob`,

@@ -457,7 +457,7 @@ mcp_servers:
     command: uvx
     args:
       - notes-mcp
-telegram:
+discord:
   enabled: true
   chat_id: 12345
 """
@@ -576,7 +576,7 @@ class TestExistingConfigPreserved:
         # Untouched sections survive verbatim.
         assert merged["model"] == "hermes-4-405b"
         assert merged["api_key_env"] == "OPENROUTER_API_KEY"
-        assert merged["telegram"] == {"enabled": True, "chat_id": 12345}
+        assert merged["discord"] == {"enabled": True, "chat_id": 12345}
         # Existing and imported MCP servers coexist.
         assert "local-notes" in merged["mcp_servers"]
         assert "github" in merged["mcp_servers"]

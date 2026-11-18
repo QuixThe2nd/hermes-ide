@@ -46,26 +46,26 @@ class TestPairingAllowlistRead:
     def test_scoped_value_wins(self, monkeypatch):
         from gateway.pairing import _read_allowlist_env
 
-        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111")
+        monkeypatch.setenv("DISCORD_ALLOWED_USERS", "111")
         ss.set_multiplex_active(True)
-        with _Scope({"TELEGRAM_ALLOWED_USERS": "222"}):
-            assert _read_allowlist_env("TELEGRAM_ALLOWED_USERS") == "222"
+        with _Scope({"DISCORD_ALLOWED_USERS": "222"}):
+            assert _read_allowlist_env("DISCORD_ALLOWED_USERS") == "222"
 
     def test_scoped_miss_no_borrow(self, monkeypatch):
         from gateway.pairing import _read_allowlist_env
 
-        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "other-profile")
+        monkeypatch.setenv("DISCORD_ALLOWED_USERS", "other-profile")
         ss.set_multiplex_active(True)
         with _Scope({"UNRELATED": "x"}):
-            assert _read_allowlist_env("TELEGRAM_ALLOWED_USERS") == ""
+            assert _read_allowlist_env("DISCORD_ALLOWED_USERS") == ""
 
     def test_unscoped_multiplex_falls_back_to_env(self, monkeypatch):
         # Slack pattern: unscoped read under multiplex uses the process env.
         from gateway.pairing import _read_allowlist_env
 
-        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "own-env")
+        monkeypatch.setenv("DISCORD_ALLOWED_USERS", "own-env")
         ss.set_multiplex_active(True)
-        assert _read_allowlist_env("TELEGRAM_ALLOWED_USERS") == "own-env"
+        assert _read_allowlist_env("DISCORD_ALLOWED_USERS") == "own-env"
 
 
 # ── Cluster A: gateway/authz_mixin.py gate reads ───────────────────────────
@@ -101,22 +101,20 @@ class TestAuthzAuthEnv:
     def test_scoped_value_wins(self, monkeypatch):
         from gateway.authz_mixin import _auth_env
 
-        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111")
+        monkeypatch.setenv("DISCORD_ALLOWED_USERS", "111")
         ss.set_multiplex_active(True)
-        with _Scope({"TELEGRAM_ALLOWED_USERS": "222"}):
-            assert _auth_env("TELEGRAM_ALLOWED_USERS") == "222"
+        with _Scope({"DISCORD_ALLOWED_USERS": "222"}):
+            assert _auth_env("DISCORD_ALLOWED_USERS") == "222"
 
     def test_scoped_miss_returns_default_not_env(self, monkeypatch):
         from gateway.authz_mixin import _auth_env
 
-        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "profile-A")
+        monkeypatch.setenv("DISCORD_ALLOWED_USERS", "profile-A")
         monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
-        monkeypatch.setenv("TELEGRAM_ALLOW_ALL_USERS", "true")
         ss.set_multiplex_active(True)
         with _Scope({"UNRELATED": "x"}):
-            assert _auth_env("TELEGRAM_ALLOWED_USERS") == ""
+            assert _auth_env("DISCORD_ALLOWED_USERS") == ""
             assert _auth_env("GATEWAY_ALLOW_ALL_USERS") == ""
-            assert _auth_env("TELEGRAM_ALLOW_ALL_USERS") == ""
 
     def test_single_profile_legacy_env(self, monkeypatch):
         from gateway.authz_mixin import _auth_env

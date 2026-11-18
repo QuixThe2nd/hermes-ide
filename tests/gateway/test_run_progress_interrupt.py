@@ -22,7 +22,7 @@ from gateway.session import SessionSource
 
 
 class ProgressCaptureAdapter(BasePlatformAdapter):
-    def __init__(self, platform=Platform.TELEGRAM):
+    def __init__(self, platform=Platform.DISCORD):
         super().__init__(PlatformConfig(enabled=True, token="***"), platform)
         self.sent = []
         self.edits = []
@@ -173,7 +173,7 @@ async def _run_once(monkeypatch, tmp_path, agent_cls, session_id):
         lambda: {"api_key": "fake"},
     )
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="-1001",
         chat_type="group",
         thread_id="17585",
@@ -184,7 +184,7 @@ async def _run_once(monkeypatch, tmp_path, agent_cls, session_id):
         history=[],
         source=source,
         session_id=session_id,
-        session_key="agent:main:telegram:group:-1001:17585",
+        session_key="agent:main:discord:group:-1001:17585",
     )
     return adapter, result
 

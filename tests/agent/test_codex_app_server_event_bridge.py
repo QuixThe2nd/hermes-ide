@@ -2,7 +2,7 @@
 
 Pin the translation of codex JSON-RPC notifications into agent callbacks
 (`tool_progress_callback`, `_fire_stream_delta`, `_fire_reasoning_delta`,
-`_emit_interim_assistant_message`) so Discord/Telegram/TUI continue to
+`_emit_interim_assistant_message`) so Discord/Slack/TUI continue to
 surface live tool-progress bubbles and interim assistant commentary when
 the active provider runs on `openai_runtime: codex_app_server` (#33200).
 
@@ -318,7 +318,7 @@ class TestBridgeWiredInRuntime:
     """Verify run_codex_app_server_turn actually constructs the session
     with `on_event=<bridge>`. This is the integration guard that prevents
     a future refactor from dropping the bridge wiring and silently
-    regressing Discord/Telegram live progress visibility."""
+    regressing Discord/Slack live progress visibility."""
 
     def test_session_constructor_receives_on_event(self, monkeypatch):
         from agent import codex_runtime

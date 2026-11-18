@@ -29,7 +29,7 @@ def session_context_engaged() -> bool:
 #   persist a completion's full routing origin (relay egress guards need it).
 # * UI_SESSION_ID: in-process UI tab id, separate from the durable SESSION_ID, so a stale/rotated
 #   durable key is not consumed by the wrong poller.
-# * MESSAGE_ID: reply anchor keeping notifications inside the originating Telegram topic.
+# * MESSAGE_ID: reply anchor keeping notifications inside the originating thread/topic.
 # * CRON_SESSION: tri-state — _UNSET = legacy env fallback; "1" = cron; "" = non-cron, masks env.
 _SESSION_VARS = (
     _SESSION_PLATFORM, _SESSION_SOURCE, _SESSION_CHAT_ID, _SESSION_CHAT_TYPE,

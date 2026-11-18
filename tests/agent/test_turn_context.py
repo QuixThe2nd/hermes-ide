@@ -576,7 +576,7 @@ def _title_turn(platform, message="Fix the login button"):
     return titler
 
 
-@pytest.mark.parametrize("platform", ["cli", "telegram", "desktop", "acp", None])
+@pytest.mark.parametrize("platform", ["cli", "discord", "desktop", "acp", None])
 def test_prologue_titles_the_surfaces_a_person_reads(platform):
     assert _title_turn(platform).called
 
@@ -683,7 +683,7 @@ def test_prologue_prunes_both_outside_assistant_whatsapp(handoff_home):
     _start_mission(pm)  # mission exists; the session namespace still gates
     for key in (
         "agent:main:whatsapp:dm:61400000000",
-        "agent:assistant:telegram:dm:61400000000",
+        "agent:assistant:discord:dm:61400000000",
         "",
     ):
         agent = _HandoffAgent(key)

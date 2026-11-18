@@ -187,7 +187,7 @@ def test_notify_ssh_uses_batchmode_and_single_remote_argument(
 def test_notify_command_override_env(fake_run):
     notify_session_complete(
         session_id="sess-42",
-        platform="telegram",
+        platform="discord",
         interrupted=False,
         completed=True,
         command="/opt/notify.sh",
@@ -200,8 +200,8 @@ def test_notify_command_override_env(fake_run):
     env = kwargs["env"]
     assert env["HERMES_NOTIFY_TITLE"] == "Custom Title"
     assert env["HERMES_NOTIFY_SUBTITLE"] == "Task finished"
-    assert env["HERMES_NOTIFY_BODY"] == "Session finished · telegram"
-    assert env["HERMES_NOTIFY_PLATFORM"] == "telegram"
+    assert env["HERMES_NOTIFY_BODY"] == "Session finished · discord"
+    assert env["HERMES_NOTIFY_PLATFORM"] == "discord"
     assert env["HERMES_NOTIFY_SESSION_ID"] == "sess-42"
 
 

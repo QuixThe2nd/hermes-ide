@@ -509,19 +509,19 @@ def test_register_background_delegation_makes_completion_durable(tmp_path, monke
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     res = ad.register_background_delegation(
         delegation_id="mission-abc123def456",
-        session_key="agent:main:telegram:dm:1",
+        session_key="agent:main:discord:dm:1",
         goal="Reach out to Sam",
         tool="delegate_assistant",
         result_kind=ad.RESULT_KIND_MISSION,
     )
     assert res["status"] == "dispatched"
-    assert ad.has_live_for_session(session_key="agent:main:telegram:dm:1")
+    assert ad.has_live_for_session(session_key="agent:main:discord:dm:1")
 
     ok = ad.publish_terminal_event(
         {
             "type": "async_delegation",
             "delegation_id": "mission-abc123def456",
-            "session_key": "agent:main:telegram:dm:1",
+            "session_key": "agent:main:discord:dm:1",
             "status": "completed",
             "summary": "Sam agreed",
             "tool": "delegate_assistant",
@@ -536,7 +536,7 @@ def test_register_background_delegation_makes_completion_durable(tmp_path, monke
     durable = ad.get_durable_delegation("mission-abc123def456")
     assert durable is not None
     assert durable["delivery_state"] == "pending"
-    assert durable["origin_session"] == "agent:main:telegram:dm:1"
+    assert durable["origin_session"] == "agent:main:discord:dm:1"
 
 
 # ---------------------------------------------------------------------------

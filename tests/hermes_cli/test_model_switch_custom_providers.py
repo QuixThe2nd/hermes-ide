@@ -1,7 +1,7 @@
 """Regression tests for /model support of config.yaml custom_providers.
 
 The terminal `hermes model` flow already exposes `custom_providers`, but the
-shared slash-command pipeline (`/model` in CLI/gateway/Telegram) historically
+shared slash-command pipeline (`/model` in CLI/gateway/Slack) historically
 only looked at `providers:`.
 
 Fixtures that set ``discover_models=False`` deliberately opt out of live
@@ -1996,7 +1996,7 @@ def test_custom_provider_context_length_models_dict_still_probes(monkeypatch):
 
     ``hermes model`` writes ``models: {default: {context_length: N}}`` for
     local Ollama. That must not suppress live /v1/models discovery — otherwise
-    Desktop/Telegram only show the saved default and Refresh does nothing.
+    Desktop/Slack only show the saved default and Refresh does nothing.
     """
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})

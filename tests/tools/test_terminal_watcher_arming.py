@@ -13,7 +13,7 @@ from tools.terminal_tool_background import _register_completion_watcher
 
 def _proc_session():
     return SimpleNamespace(
-        id="proc_active", watcher_platform="telegram", watcher_chat_id="123",
+        id="proc_active", watcher_platform="discord", watcher_chat_id="123",
         watcher_user_id="u", watcher_user_name="Ada", watcher_thread_id="",
         watcher_message_id="", parent_session_id="",
     )
@@ -29,7 +29,7 @@ def test_live_gateway_arms_watcher_at_registration(monkeypatch):
     _install_runner(monkeypatch, SimpleNamespace(arm_process_watcher=lambda w: armed.append(w) or True))
     registry = ProcessRegistry()
 
-    _register_completion_watcher(registry, _proc_session(), "agent:main:telegram:dm:123")
+    _register_completion_watcher(registry, _proc_session(), "agent:main:discord:dm:123")
 
     assert [w["session_id"] for w in armed] == ["proc_active"]
     assert armed[0]["notify_on_complete"] is True and armed[0]["chat_id"] == "123"
@@ -41,9 +41,9 @@ def test_watcher_stays_pending_without_a_serving_gateway(monkeypatch):
     startup / post-turn drain path."""
     registry = ProcessRegistry()
     _install_runner(monkeypatch, None)
-    _register_completion_watcher(registry, _proc_session(), "agent:main:telegram:dm:123")
+    _register_completion_watcher(registry, _proc_session(), "agent:main:discord:dm:123")
 
     _install_runner(monkeypatch, SimpleNamespace(arm_process_watcher=lambda w: False))
-    _register_completion_watcher(registry, _proc_session(), "agent:main:telegram:dm:123")
+    _register_completion_watcher(registry, _proc_session(), "agent:main:discord:dm:123")
 
     assert [w["session_id"] for w in registry.pending_watchers] == ["proc_active", "proc_active"]

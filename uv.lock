@@ -87,7 +87,6 @@ ty = false
 openai = false
 google-auth-httplib2 = false
 mautrix = false
-python-telegram-bot = false
 psutil = false
 jinja2 = false
 hindsight-client = false

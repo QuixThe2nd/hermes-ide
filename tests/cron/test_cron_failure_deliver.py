@@ -251,12 +251,12 @@ class TestResolutionGrammar:
         supports work identically for failure_deliver."""
         job = {
             "deliver": "local",
-            "failure_deliver": "slack:D0ALERTS,telegram:-1001:17",
+            "failure_deliver": "slack:D0ALERTS,discord:-1001:17",
         }
         targets = _resolve_delivery_targets(job, for_failure=True)
         assert [(t["platform"], t["chat_id"], t.get("thread_id")) for t in targets] == [
             ("slack", "D0ALERTS", None),
-            ("telegram", "-1001", "17"),
+            ("discord", "-1001", "17"),
         ]
 
     def test_legacy_list_value_is_flattened_like_deliver(self):
@@ -305,10 +305,10 @@ class TestToolSurface:
             action="create",
             prompt="scan",
             schedule="every 1h",
-            failure_deliver=["slack", "telegram"],
+            failure_deliver=["slack", "discord"],
         ))
         assert result["success"] is True
-        assert get_job(result["job_id"])["failure_deliver"] == "slack,telegram"
+        assert get_job(result["job_id"])["failure_deliver"] == "slack,discord"
 
     def test_create_rejects_bad_bot_chat_profile_same_as_deliver(self, cron_env):
         from tools.cronjob_tools import cronjob

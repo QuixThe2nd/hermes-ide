@@ -251,7 +251,7 @@ async def test_connect_clears_previous_fatal_error(monkeypatch):
     """Regression: a successful connect() must clear any prior fatal-error
     state via _mark_connected(), not just set self._running = True directly.
 
-    Every other platform adapter (Telegram, WeCom, Matrix, ...) calls
+    Every other platform adapter (Matrix, WhatsApp, Feishu, ...) calls
     _mark_connected() on a successful connect, which clears
     _fatal_error_code/_fatal_error_message/_fatal_error_retryable and
     rewrites the runtime status file as "connected". DiscordAdapter used to

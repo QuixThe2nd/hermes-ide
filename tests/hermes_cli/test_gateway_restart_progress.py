@@ -260,7 +260,7 @@ def test_observer_excludes_platforms_preserved_from_the_predecessor(tmp_path, mo
         "gateway_state": "running",
         "platforms": {
             "discord": {"state": "connected", "writer_pid": 200},
-            "telegram": {"state": "connected", "writer_pid": 100},
+            "matrix": {"state": "connected", "writer_pid": 100},
             "slack": {"state": "connecting", "writer_pid": 200},
         },
     })

@@ -31,7 +31,7 @@ from agent.conversation_compression import CompressionCommitFence
 from hermes_state import SessionDB
 
 
-def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "telegram"):
+def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "discord"):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
 

@@ -267,7 +267,7 @@ func TestStopFailsClosedWithoutAnySessionSpine(t *testing.T) {
 	fn, calls := spyInterrupt()
 	reg := NewRegistry()
 	reg.Put(cliRecord("deleg_4bb10003", "delegate_claude_agent", KindCLIAgent, "",
-		withSessionKey("telegram:999:guard"), func(r *Record) { r.InterruptFn = fn }))
+		withSessionKey("discord:999:guard"), func(r *Record) { r.InterruptFn = fn }))
 	caller := &Caller{SessionID: "", CurrentSessionKey: ""}
 
 	if _, err := reg.Stop("deleg_4bb10003", caller); !errors.Is(err, ErrNoLiveSubagent) {
@@ -363,8 +363,8 @@ func TestStopOwnershipResolvesCompressionLineage(t *testing.T) {
 func TestSteerOwnershipViaCurrentSessionKey(t *testing.T) {
 	reg := NewRegistry()
 	reg.Put(cliRecord("deleg_5dd10002", "delegate_cursor_agent", KindCloudAgent, "",
-		withSessionKey("telegram:4242:curator")))
-	caller := &Caller{SessionID: "", CurrentSessionKey: "telegram:4242:curator"}
+		withSessionKey("discord:4242:curator")))
+	caller := &Caller{SessionID: "", CurrentSessionKey: "discord:4242:curator"}
 
 	reply, err := reg.Steer("deleg_5dd10002", "Tighten the diff scope", caller)
 	if err != nil || reply.Status != StatusNotSteerable {
@@ -375,8 +375,8 @@ func TestSteerOwnershipViaCurrentSessionKey(t *testing.T) {
 func TestSessionKeyMismatchIsRefused(t *testing.T) {
 	reg := NewRegistry()
 	reg.Put(cliRecord("deleg_key-miss", "delegate_claude_agent", KindCLIAgent, "",
-		withSessionKey("telegram:4242:curator")))
-	caller := &Caller{SessionID: "", CurrentSessionKey: "telegram:777:other"}
+		withSessionKey("discord:4242:curator")))
+	caller := &Caller{SessionID: "", CurrentSessionKey: "discord:777:other"}
 	if _, err := reg.Steer("deleg_key-miss", "text", caller); !errors.Is(err, ErrNoLiveSubagent) {
 		t.Fatalf("err = %v, want ErrNoLiveSubagent", err)
 	}
@@ -388,8 +388,8 @@ func TestForeignSessionIDStaysRefusedDespiteMatchingSessionKey(t *testing.T) {
 	fn, calls := spyInterrupt()
 	reg := NewRegistry()
 	reg.Put(cliRecord("deleg_foreign-key", "delegate_claude_agent", KindCLIAgent, "sess-someone-else",
-		withSessionKey("telegram:4242:curator"), func(r *Record) { r.InterruptFn = fn }))
-	caller := &Caller{SessionID: "", CurrentSessionKey: "telegram:4242:curator"}
+		withSessionKey("discord:4242:curator"), func(r *Record) { r.InterruptFn = fn }))
+	caller := &Caller{SessionID: "", CurrentSessionKey: "discord:4242:curator"}
 
 	if _, err := reg.Stop("deleg_foreign-key", caller); !errors.Is(err, ErrNoLiveSubagent) {
 		t.Fatalf("err = %v, want ErrNoLiveSubagent (foreign session id never falls through to a key match)", err)
@@ -402,8 +402,8 @@ func TestForeignSessionIDStaysRefusedDespiteMatchingSessionKey(t *testing.T) {
 func TestParentSessionWithoutRecordSessionIsRefused(t *testing.T) {
 	reg := NewRegistry()
 	reg.Put(cliRecord("deleg_half-spine", "delegate_cursor_agent", KindCloudAgent, "",
-		withSessionKey("telegram:1:x")))
-	caller := &Caller{SessionID: "sess-parent", CurrentSessionKey: "telegram:1:x"}
+		withSessionKey("discord:1:x")))
+	caller := &Caller{SessionID: "sess-parent", CurrentSessionKey: "discord:1:x"}
 	if _, err := reg.Stop("deleg_half-spine", caller); !errors.Is(err, ErrNoLiveSubagent) {
 		t.Fatalf("err = %v, want ErrNoLiveSubagent (no session-key fallback beside a caller session id)", err)
 	}

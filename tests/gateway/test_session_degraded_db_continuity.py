@@ -30,7 +30,7 @@ from unittest.mock import patch
 SESSION_ID = "degraded-db-continuity-session"
 CHAT_ID = "-1001234567890"
 THREAD_ID = "42"
-SESSION_KEY = "agent:orion:telegram:group:-1001234567890:8148316720"
+SESSION_KEY = "agent:orion:discord:group:-1001234567890:8148316720"
 
 
 def _make_gateway_agent(session_db):
@@ -47,7 +47,7 @@ def _make_gateway_agent(session_db):
             session_id=SESSION_ID,
             skip_context_files=True,
             skip_memory=True,
-            platform="telegram",
+            platform="discord",
             user_id="8148316720",
             user_name="testuser",
             chat_id=CHAT_ID,
@@ -81,10 +81,10 @@ class TestEnsureDbSessionPersistsRoutingIdentity:
                 assert row["thread_id"] == THREAD_ID
                 assert row["user_id"] == "8148316720"
                 assert row["display_name"] == "Test Group"
-                assert row["source"] == "telegram"
+                assert row["source"] == "discord"
                 assert row["profile_name"] == "orion"
                 origin = json.loads(row["origin_json"])
-                assert origin["platform"] == "telegram"
+                assert origin["platform"] == "discord"
                 assert origin["chat_id"] == CHAT_ID
                 assert origin["chat_name"] == "Test Group"
                 assert origin["chat_type"] == "group"
@@ -107,7 +107,7 @@ class TestEnsureDbSessionPersistsRoutingIdentity:
                 # left session_key NULL so this returned None on every restart.
                 found = db.find_latest_gateway_session_for_peer(
                     session_key=SESSION_KEY,
-                    source="telegram",
+                    source="discord",
                 )
                 assert found is not None
                 assert found["id"] == SESSION_ID

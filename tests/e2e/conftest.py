@@ -167,7 +167,7 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> Gatew
     # credentials and may probe model context length over the network. CI has no
     # credentials, so resolution walks the whole fallback chain and can exceed
     # send_and_capture's poll window on slow runners (flaked in run 28856659216,
-    # telegram param only — first parametrization pays the cold-resolution cost).
+    # the first parametrization only — it pays the cold-resolution cost
     runner._reset_notice_session_info = lambda source: ""
 
     # Keep the agent-turn path hermetic: _run_post_turn_hooks runs the /goal
@@ -176,7 +176,7 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> Gatew
     # state.db init can exceed send_and_capture's 2s poll window, so the send
     # lands after the assertion — the "Expected 'mock' to have been called
     # once. Called 0 times." flake on
-    # test_plaintext_restart_gateway_in_group_stays_plain_text[telegram]
+    # test_plaintext_restart_gateway_in_group_stays_plain_text[slack]
     # (issue #92130; e.g. runs 32802504263 / 32799192528 / 32796821900).
     # e2e tests exercise gateway command dispatch, not post-turn goal hooks.
     runner._run_post_turn_hooks = AsyncMock()

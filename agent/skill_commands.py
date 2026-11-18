@@ -22,8 +22,8 @@ _skill_commands_project: Optional[str] = None
 # freshness lookup always see a consistent snapshot. Scanning stays outside.
 _publish_lock = threading.Lock()
 # ``\w`` keeps Unicode letters (CJK, Cyrillic) so a ``name: 小说拆条`` skill registers ``/小说拆条``
-# instead of slugging to "" and being dropped (#12351); Telegram's ``[a-z0-9_]`` menu limit is
-# applied by hermes_cli/commands_platforms.py, not here.
+# instead of slugging to "" and being dropped (#12351); platform command-menu
+# charset limits are applied by hermes_cli/commands_platforms.py, not here.
 _SKILL_INVALID_CHARS = re.compile(r"[^\w-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
@@ -56,7 +56,7 @@ SKILL_EXCERPT_JOINT = "\x1e"
 
 def slugify_skill_name(name: str) -> str:
     """Normalize a skill/bundle name to a ``/command`` slug (``Foo Bar`` -> ``foo-bar``);
-    strips chars (``+``, ``/``) that would make invalid Telegram command names."""
+    strips chars (``+``, ``/``) that would make invalid platform command names."""
     cmd = _SKILL_INVALID_CHARS.sub("", name.lower().replace(" ", "-").replace("_", "-"))
     return _SKILL_MULTI_HYPHEN.sub("-", cmd).strip("-")
 
@@ -447,7 +447,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
 
 def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     """Return the current skill commands mapping (scan first if empty). Rescans
-    when the platform scope (one gateway serving Telegram and Discord) or the
+    when the platform scope (one gateway serving Discord and Slack) or the
     active profile's home (Desktop profile switch) or the session's project root (two sessions in two
     repos) changes, so each sees its own ``platform_disabled`` / ``external_dirs`` / project-skill view.
 
@@ -492,7 +492,7 @@ def reload_skills() -> Dict[str, Any]:
 
 def resolve_skill_command_key(command: str) -> Optional[str]:
     """Resolve a user-typed /command to its canonical ``/slug`` key, or None.
-    ``_`` ≡ ``-``: Telegram disallows hyphens, so ``/claude-code`` arrives as ``/claude_code``."""
+    ``_`` ≡ ``-``: platform menus disallow hyphens, so ``/claude-code`` arrives as ``/claude_code``."""
     return resolve_slash_key(command, get_skill_commands())
 
 

@@ -14,7 +14,7 @@ from hermes_cli.commands import (
 # Logger name parity with the origin module (tests capture "hermes_cli.commands").
 logger = logging.getLogger("hermes_cli.commands")
 
-_CMD_NAME_LIMIT = 32  # max command name length shared by Telegram and Discord
+_CMD_NAME_LIMIT = 32  # max command name length shared by gateway platform menus
 
 
 
@@ -39,7 +39,7 @@ def _truncate_desc(desc: str, limit: int) -> str:
 
 def _clamp_command_names(
     entries: Sequence[tuple[str, ...]], reserved: set[str]) -> list[tuple[str, ...]]:
-    """Enforce the 32-char Telegram/Discord name limit: over-long names are truncated; on a
+    """Enforce the 32-char gateway command-name limit: over-long names are truncated; on a
     collision with *reserved* or an earlier entry a 31-char prefix + digit ``0``-``9`` is tried,
     then the entry is silently dropped. Duplicates are dropped; extra tuple elements pass through.
     """

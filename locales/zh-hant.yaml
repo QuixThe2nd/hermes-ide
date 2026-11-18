@@ -244,17 +244,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     current_with_title:    "📌 工作階段：`{session_id}`\n標題：**{title}**"
     current_no_title:      "📌 工作階段：`{session_id}`\n尚未設定標題。用法：`/title 我的工作階段名稱`"
 
-  topic:
-    not_telegram_dm:         "/topic 指令僅在 Telegram 私人聊天中可用。"
-    no_session_db:           "工作階段資料庫無法使用。"
-    unauthorized:            "您無權在此 bot 上使用 /topic。"
-    restore_needs_topic:     "若要恢復工作階段，請先建立或開啟一個 Telegram topic，然後在該 topic 中傳送 /topic <session-id>。若要建立新 topic，請開啟 All Messages 並在其中傳送任意訊息。"
-    topics_disabled:         "此 bot 尚未啟用 Telegram topics。\n\n啟用方法：\n1. 開啟 @BotFather。\n2. 選擇您的 bot。\n3. 開啟 Bot Settings → Threads Settings。\n4. 開啟 Threaded Mode，並確保允許使用者建立新 thread。\n\n然後再次傳送 /topic。"
-    topics_user_disallowed:  "Telegram topics 已啟用，但不允許使用者建立 topics。\n\n開啟 @BotFather → 選擇您的 bot → Bot Settings → Threads Settings，然後關閉 'Disallow users to create new threads'。\n\n然後再次傳送 /topic。"
-    enable_failed:           "啟用 Telegram topic 模式失敗：{error}"
-    bound_status:            "此 topic 已連結至：\n工作階段：{label}\nID：{session_id}\n\n使用 /new 將此 topic 取代為新工作階段。\n如需平行作業，請開啟 All Messages 並在其中傳送訊息以建立另一個 topic。"
-    thread_ready:            "Telegram 多工作階段 topics 已啟用。\n\n此 topic 將作為獨立的 Hermes 工作階段使用。使用 /new 取代此 topic 目前的工作階段。如需平行作業，請開啟 All Messages 並在其中傳送訊息以建立另一個 topic。"
-    untitled_session:        "未命名工作階段"
 
   undo:
     nothing:               "沒有可復原的內容。"

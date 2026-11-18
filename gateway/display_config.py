@@ -34,7 +34,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "busy_ack_detail": True,
     # When true, delete tool-progress / status bubbles
     # after the final response lands on platforms that support message
-    # deletion (e.g. Telegram). Off by default — progress is still shown
+    # deletion. Off by default — progress is still shown
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,

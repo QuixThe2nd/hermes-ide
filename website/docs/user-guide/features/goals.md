@@ -266,7 +266,7 @@ to complete the goal, the judge will catch it and stop.
 ### Continuation replies do not quote the goal message (gateway)
 
 A continuation prompt is not a reply to the message that set the goal, so on
-platforms that quote a reply target (Telegram) its progress bubbles and final
+platforms that quote a reply target, its progress bubbles and final
 reply are posted to the chat/topic without quoting that original message. The
 🎯 line is a normal outbound chat message too — never model context, never a
 system-prompt change.

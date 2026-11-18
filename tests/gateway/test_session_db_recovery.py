@@ -270,31 +270,31 @@ def test_recovered_db_rows_survive_fallback_structural_save(monkeypatch, tmp_pat
     scope = str(sessions_dir.resolve())
     now = _now()
     durable = SessionEntry(
-        session_key="agent:main:telegram:dm:durable",
+        session_key="agent:main:discord:dm:durable",
         session_id="durable-session",
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="dm",
         created_at=now,
         updated_at=now,
-        origin=SessionSource(platform=Platform.TELEGRAM, chat_id="durable"),
+        origin=SessionSource(platform=Platform.DISCORD, chat_id="durable"),
     )
     deleted = SessionEntry(
-        session_key="agent:main:telegram:dm:deleted",
+        session_key="agent:main:discord:dm:deleted",
         session_id="deleted-session",
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="dm",
         created_at=now,
         updated_at=now,
-        origin=SessionSource(platform=Platform.TELEGRAM, chat_id="deleted"),
+        origin=SessionSource(platform=Platform.DISCORD, chat_id="deleted"),
     )
     changed = SessionEntry(
-        session_key="agent:main:telegram:dm:changed",
+        session_key="agent:main:discord:dm:changed",
         session_id="changed-before-recovery",
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="dm",
         created_at=now,
         updated_at=now,
-        origin=SessionSource(platform=Platform.TELEGRAM, chat_id="changed"),
+        origin=SessionSource(platform=Platform.DISCORD, chat_id="changed"),
     )
     database = hermes_state.SessionDB(db_path=db_path)
     for entry in (durable, deleted, changed):
@@ -335,13 +335,13 @@ def test_recovered_db_rows_survive_fallback_structural_save(monkeypatch, tmp_pat
     store._db_handle_cache._unavailable[db_path].next_retry_at = 0
 
     current = SessionEntry(
-        session_key="agent:main:telegram:dm:current",
+        session_key="agent:main:discord:dm:current",
         session_id="current-session",
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="dm",
         created_at=now,
         updated_at=now,
-        origin=SessionSource(platform=Platform.TELEGRAM, chat_id="current"),
+        origin=SessionSource(platform=Platform.DISCORD, chat_id="current"),
     )
     with store._lock:
         store._entries.pop(deleted.session_key)

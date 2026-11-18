@@ -24,7 +24,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 
 class _StubAdapter(BasePlatformAdapter):
     def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.DISCORD)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
@@ -50,11 +50,11 @@ class TestQueueMessageStorage:
 
     def test_get_pending_message_consumes_and_clears(self):
         adapter = _StubAdapter()
-        session_key = "telegram:user:123"
+        session_key = "discord:user:123"
         event = MessageEvent(
             text="queued prompt",
             message_type=MessageType.TEXT,
-            source=MagicMock(chat_id="123", platform=Platform.TELEGRAM),
+            source=MagicMock(chat_id="123", platform=Platform.DISCORD),
             message_id="q2",
         )
         adapter._pending_messages[session_key] = event
@@ -69,7 +69,7 @@ class TestQueueMessageStorage:
     def test_queue_does_not_set_interrupt_event(self):
         """The whole point of /queue — no interrupt signal."""
         adapter = _StubAdapter()
-        session_key = "telegram:user:123"
+        session_key = "discord:user:123"
 
         # Simulate an active session (agent running)
         adapter._active_sessions[session_key] = asyncio.Event()
@@ -95,7 +95,7 @@ class TestQueueConsumptionAfterCompletion:
         """After agent finishes without interrupt, pending message should
         still be retrievable from adapter._pending_messages."""
         adapter = _StubAdapter()
-        session_key = "telegram:user:123"
+        session_key = "discord:user:123"
 
         # Simulate: agent starts, /queue stores a message, agent finishes
         adapter._active_sessions[session_key] = asyncio.Event()
@@ -124,7 +124,7 @@ class TestQueueConsumptionAfterCompletion:
         runner = GatewayRunner.__new__(GatewayRunner)
         runner._queued_events = {}
         adapter = _StubAdapter()
-        session_key = "telegram:user:123"
+        session_key = "discord:user:123"
 
         # /queue once — lands in slot. Second /queue — overflow.
         for text in ("Q1", "Q2"):
@@ -185,13 +185,13 @@ class TestBusyInputModeQueueFifo:
         runner = GatewayRunner.__new__(GatewayRunner)
         runner._queued_events = {}
         adapter = _StubAdapter()
-        runner.adapters = {Platform.TELEGRAM: adapter}
+        runner.adapters = {Platform.DISCORD: adapter}
         return runner, adapter
 
     def _text_event(self, text: str) -> MessageEvent:
         # profile=None: a MagicMock auto-attribute reads as a truthy stamped
         # profile and trips fail-closed adapter resolution (AGENTS.md #17).
-        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM, profile=None)
+        source = MagicMock(chat_id="c1", platform=Platform.DISCORD, profile=None)
         return MessageEvent(
             text=text,
             message_type=MessageType.TEXT,
@@ -202,7 +202,7 @@ class TestBusyInputModeQueueFifo:
     def test_rapid_text_followups_are_queued_in_fifo_order(self):
         """Five rapid texts in queue mode must all survive (none silently dropped)."""
         runner, adapter = self._make_runner_and_adapter()
-        session_key = "telegram:user:fifo"
+        session_key = "discord:user:fifo"
 
         texts = ["one", "two", "three", "four", "five"]
         for text in texts:
@@ -221,7 +221,7 @@ class TestBusyInputModeQueueFifo:
 
 
     def _media_event(self, path: str, mime: str, message_type: MessageType, text: str = "") -> MessageEvent:
-        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM, profile=None)
+        source = MagicMock(chat_id="c1", platform=Platform.DISCORD, profile=None)
         return MessageEvent(
             text=text, message_type=message_type, source=source,
             media_urls=[path], media_types=[mime], message_id=f"m-{path}",
@@ -232,7 +232,7 @@ class TestBusyInputModeQueueFifo:
         event (the merge branch used to fire on any ``media_urls``). Video/document follow-ups
         are the same class."""
         runner, adapter = self._make_runner_and_adapter()
-        session_key = "telegram:user:voice-fifo"
+        session_key = "discord:user:voice-fifo"
 
         for path in ("/tmp/v1.ogg", "/tmp/v2.ogg", "/tmp/v3.ogg"):
             runner._queue_or_replace_pending_event(
@@ -252,7 +252,7 @@ class TestBusyInputModeQueueFifo:
         """Control: rapid photos (and a trailing caption text) still collapse into one album
         event so the next turn sees the whole burst."""
         runner, adapter = self._make_runner_and_adapter()
-        session_key = "telegram:user:photo-burst"
+        session_key = "discord:user:photo-burst"
 
         runner._queue_or_replace_pending_event(
             session_key, self._media_event("/tmp/a.jpg", "image/jpeg", MessageType.PHOTO, text="first"))

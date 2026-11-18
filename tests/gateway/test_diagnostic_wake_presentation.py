@@ -30,7 +30,7 @@ class Adapter(BasePlatformAdapter):
 async def test_diagnostic_wake_executes_without_final_or_error_echo(tmp_path, monkeypatch, suppressed):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(f"display: {{suppress_warning_notifications: {str(suppressed).lower()}}}")
-    adapter = Adapter(PlatformConfig(enabled=True), Platform.TELEGRAM)
+    adapter = Adapter(PlatformConfig(enabled=True), Platform.DISCORD)
     adapter.sent = []
     adapter._start_typing_refresh = lambda *a: None
     adapter._stop_typing_refresh = AsyncMock()
@@ -38,7 +38,7 @@ async def test_diagnostic_wake_executes_without_final_or_error_echo(tmp_path, mo
     adapter._fire_post_delivery_callback = AsyncMock()
     adapter._finish_session_task = lambda *a: None
     adapter.send_final_ledgered = AsyncMock(return_value=(SendResult(success=True), adapter))
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat")
+    source = SessionSource(platform=Platform.DISCORD, chat_id="chat")
     event = MessageEvent(text="internal diagnostic", source=source, internal=True,
                          metadata={"notification_category": "diagnostic"})
     adapter._message_handler = AsyncMock(return_value="I repeat the technical diagnostic")

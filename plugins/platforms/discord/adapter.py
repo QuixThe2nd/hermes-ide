@@ -1195,7 +1195,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._vault_prompt_requests: Dict[str, Any] = {}
         self._vault_prompt_sessions: Dict[tuple[str, str], str] = {}
         self._vault_prompt_lock = threading.RLock()
-        # Text batching: merge rapid successive messages (Telegram-style)
+        # Text batching: merge rapid successive messages
         self._text_batch_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", 0.6)
         self._text_batch_split_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0)
         # A tagged bot may emit one logical response as several Discord
@@ -1277,7 +1277,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Once an oversized streaming edit saturates at the 2000-char preview cap, every subsequent
         # progressive edit truncates to the SAME text; re-sending it is a no-op that still counts against
         # Discord's edit rate limit (~1 edit per stream tick for the rest of a long reply). Mirrors the
-        # Telegram #58563 fix.
+        # #58563 fix, first shipped in a since-removed adapter.
         self._last_overflow_preview: Dict[tuple, str] = {}
         self._warned_fail_closed_default = False
 
@@ -4671,7 +4671,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
         Mid-stream (``finalize=False``) we keep editing the original message with a truncated preview —
         splitting mid-stream would move the edit target to a continuation and the next accumulated-token
-        tick would re-split, looping forever (the Telegram #48648 lesson).
+        tick would re-split, looping forever (the #48648 lesson, first learned in a since-removed adapter).
         """
         if not self._client:
             return SendResult(success=False, error="Not connected")
@@ -4701,7 +4701,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 _saturated_preview = True
                 # Saturated-preview dedup: past the cap every edit is the same text; skip until finalize.
                 # Re-sending it is a visual no-op that still counts against Discord's edit rate limit — skip
-                # silently until finalize (mirrors the Telegram #58563 fix).
+                # silently until finalize (same dedup as #58563).
                 if self._last_overflow_preview.get(_preview_key) == formatted:
                     return SendResult(success=True, message_id=message_id)
             elif not finalize:
@@ -5177,7 +5177,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         except Exception as e:
             # Interaction may already be responded to (caller deferred, Discord retry).
             logger.debug("[Discord] Could not send unauthorized ephemeral: %s", e)
-        # Fire-and-forget: don't block the interaction handler on Telegram I/O.
+        # Fire-and-forget: don't block the interaction handler on platform I/O.
         try:
             asyncio.create_task(self._notify_unauthorized_slash(
                 user_name, user_id, chan_id, guild_id, command_text, reason,

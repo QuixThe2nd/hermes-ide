@@ -17,10 +17,10 @@ from gateway.session import SessionSource
 
 def _clear_auth_env(monkeypatch) -> None:
     for key in (
-        "TELEGRAM_ALLOWED_USERS",
+        "DISCORD_ALLOWED_USERS",
         "WHATSAPP_ALLOWED_USERS",
         "GATEWAY_ALLOWED_USERS",
-        "TELEGRAM_ALLOW_ALL_USERS",
+        "DISCORD_ALLOW_ALL_USERS",
         "WHATSAPP_ALLOW_ALL_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
     ):

@@ -113,7 +113,7 @@ def test_auto_reset_cleanup_clears_last_resolved_model():
     Behavioral: exercises the real funnel instead of pinning source shape.
     """
     runner = object.__new__(gateway_run.GatewayRunner)
-    key = "agent:main:telegram:dm:58403"
+    key = "agent:main:discord:dm:58403"
     runner._last_resolved_model = {key: "stale/model", "other": "keep/me"}
     runner._clear_conversation_scope(key, reason="auto_reset")
     assert key not in runner._last_resolved_model, (

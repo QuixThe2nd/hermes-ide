@@ -487,7 +487,7 @@ def parse_model_flags_detailed(raw_args: str) -> ModelFlagParseResult:
     effective persistence decision belongs to :func:`resolve_persist_behavior`. ``reasoning_effort``
     is the raw level word (validated by :func:`hermes_constants.parse_reasoning_effort` at apply
     time) so a model pick and its effort travel as ONE request on every surface."""
-    # Telegram/iOS auto-convert ``--`` to an em/en dash: normalize a single Unicode dash before
+    # Mobile keyboards auto-convert ``--`` to an em/en dash: normalize a single Unicode dash before
     # a flag keyword.
     raw_args = re.sub(r'[\u2012\u2013\u2014\u2015](provider|reasoning|global|session|refresh|once)', r'--\1', raw_args)
 

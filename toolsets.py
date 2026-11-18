@@ -474,7 +474,7 @@ TOOLSETS = {
     },
     
     "hermes-whatsapp": {
-        "description": "WhatsApp bot toolset - similar to Telegram (personal messaging, more trusted)",
+        "description": "WhatsApp bot toolset - personal messaging, more trusted",
         "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },

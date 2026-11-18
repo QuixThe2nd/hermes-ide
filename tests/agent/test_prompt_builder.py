@@ -792,7 +792,7 @@ class TestPromptBuilderConstants:
         # check that this test is calibrated correctly).
         # Dieted (#95681): messaging hints now share the _MEDIA_NATIVE
         # spine ("write MEDIA:/absolute/path..."), not per-hint prose.
-        assert "MEDIA:/absolute/path" in PLATFORM_HINTS["telegram"]
+        assert "MEDIA:/absolute/path" in PLATFORM_HINTS["whatsapp"]
 
 
 

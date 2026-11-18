@@ -48,7 +48,7 @@ def test_unscoped_housekeeping_sweep_enters_the_owning_profile_scope(tmp_path, m
     try:
         # The housekeeping watcher runs with NO scope installed.
         assert secret_scope.current_secret_scope() is None
-        seen = _seen_after_release(_runner({"agent:b:telegram:dm:1": prof_b}), "agent:b:telegram:dm:1")
+        seen = _seen_after_release(_runner({"agent:b:discord:dm:1": prof_b}), "agent:b:discord:dm:1")
     finally:
         secret_scope.set_multiplex_active(False)
     assert seen["home"] == prof_b
@@ -81,7 +81,7 @@ def test_in_turn_cap_eviction_of_another_profiles_agent_enters_the_owners_scope(
     home_token = set_hermes_home_override(str(prof_a))
     scope_token = secret_scope.set_secret_scope({"HINDSIGHT_LLM_API_KEY": "key-of-a"})
     try:
-        seen = _seen_after_release(_runner({"agent:b:telegram:dm:1": prof_b}), "agent:b:telegram:dm:1")
+        seen = _seen_after_release(_runner({"agent:b:discord:dm:1": prof_b}), "agent:b:discord:dm:1")
     finally:
         secret_scope.reset_secret_scope(scope_token)
         reset_hermes_home_override(home_token)
@@ -103,7 +103,7 @@ def test_in_turn_cap_eviction_of_a_default_profile_agent_leaves_the_secondarys_s
     home_token = set_hermes_home_override(str(prof_a))
     scope_token = secret_scope.set_secret_scope({"MARKER": "profile-a"})
     try:
-        seen = _seen_after_release(_runner({}), "agent:main:telegram:dm:9")
+        seen = _seen_after_release(_runner({}), "agent:main:discord:dm:9")
     finally:
         secret_scope.reset_secret_scope(scope_token)
         reset_hermes_home_override(home_token)
@@ -127,7 +127,7 @@ def test_default_profile_owner_is_the_root_even_when_launched_under_a_named_prof
     home_token = set_hermes_home_override(str(prof_x))
     scope_token = secret_scope.set_secret_scope({"MARKER": "profile-x"})
     try:
-        seen = _seen_after_release(_runner({}), "agent:main:telegram:dm:3")
+        seen = _seen_after_release(_runner({}), "agent:main:discord:dm:3")
     finally:
         secret_scope.reset_secret_scope(scope_token)
         reset_hermes_home_override(home_token)

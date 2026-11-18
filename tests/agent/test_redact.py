@@ -517,19 +517,6 @@ class TestApiKeyHeaders:
         assert "anotherOpaqueSecret" not in result
 
 
-class TestTelegramTokens:
-    def test_bot_token(self):
-        text = "bot123456789:ABCDEfghij-KLMNopqrst_UVWXyz12345"
-        result = redact_sensitive_text(text)
-        assert "ABCDEfghij" not in result
-        assert "123456789:***" in result
-
-    def test_raw_token(self):
-        text = "12345678901:ABCDEfghijKLMNopqrstUVWXyz1234567890"
-        result = redact_sensitive_text(text)
-        assert "ABCDEfghij" not in result
-
-
 class TestPassthrough:
     def test_empty_string(self):
         assert redact_sensitive_text("") == ""
@@ -570,7 +557,7 @@ PATH=/usr/local/bin:/usr/bin
 OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012mno345
 OPENROUTER_API_KEY=sk-or-v1-reallyLongSecretKeyValue12345678
 FIRECRAWL_API_KEY=fc-shortkey123456789012
-TELEGRAM_BOT_TOKEN=bot987654321:ABCDEfghij-KLMNopqrst_UVWXyz12345
+DISCORD_BOT_TOKEN=bot987654321:ABCDEfghij-KLMNopqrst_UVWXyz12345
 SHELL=/bin/bash
 USER=teknium"""
         result = redact_sensitive_text(env_dump)

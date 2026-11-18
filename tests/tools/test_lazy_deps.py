@@ -358,7 +358,7 @@ class TestRefreshActiveFeatures:
             ld._unsupported_feature_reason("platform.matrix") or ""
         )
 
-    def test_restore_snapshot_skips_telegram_with_lazy_installs_disabled(
+    def test_restore_snapshot_skips_discord_with_lazy_installs_disabled(
         self, monkeypatch
     ):
         """The security opt-out also blocks updater-driven restoration."""
@@ -372,10 +372,10 @@ class TestRefreshActiveFeatures:
             ),
         )
 
-        result = ld.restore_features(["platform.telegram"])
+        result = ld.restore_features(["platform.discord"])
 
         assert result == {
-            "platform.telegram": (
+            "platform.discord": (
                 "skipped: lazy installs disabled "
                 "(security.allow_lazy_installs=false)"
             )

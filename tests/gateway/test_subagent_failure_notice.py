@@ -158,7 +158,7 @@ class TestGatewayFailureNotice:
 
     def test_fires_without_progress_queue(self, monkeypatch):
         """The notice must not depend on tool_progress being enabled —
-        progress_queue=None is exactly the Telegram/Slack default where the
+        progress_queue=None is exactly the Slack default where the
         silent-failure report came from."""
         runner, captured = _make_runner_and_captured(monkeypatch)
         assert runner._ctx.progress_queue is None

@@ -81,7 +81,7 @@ def test_persistent_transcript_lag_escalates_to_error(caplog):
             {"role": "assistant", "content": "not written"}]
     runner = SimpleNamespace()
     ctx = SimpleNamespace(history=persisted, channel_prompt=None, user_config=None,
-                          session_id="sid-1", session_key="agent:main:telegram:dm:1")
+                          session_id="sid-1", session_key="agent:main:discord:dm:1")
     turn = TurnRunner(runner, ctx)
     agent = SimpleNamespace(session_id="sid-1", _session_messages=live)
 

@@ -276,7 +276,7 @@ def test_bound_principal_rejects_empty_or_malformed_channel_context(monkeypatch,
 
 
 def test_presented_identity_survives_wrong_platform_for_hmac_audit(monkeypatch):
-    _install_fake_gateway(monkeypatch, platform="telegram", user="11111111111111111",
+    _install_fake_gateway(monkeypatch, platform="slack", user="11111111111111111",
                           chat="33333333333333333", thread="")
     assert get_presented_gateway_identity() == (True, "11111111111111111")
     with pytest.raises(AuthorizationError) as exc:

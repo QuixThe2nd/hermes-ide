@@ -23,10 +23,10 @@ def test_run_turn_builds_turn_runner_from_run_turn_runner():
     gateway._run_still_current_fn = lambda session_key, run_generation: lambda: True
     display = GatewayTurnMixin._RunAgentDisplay(
         user_config={},
-        platform_key="telegram",
+        platform_key="discord",
         resolve_display_setting=lambda *args: False,
     )
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat", user_id="user")
+    source = SessionSource(platform=Platform.DISCORD, chat_id="chat", user_id="user")
 
     async def build():
         return gateway._run_agent_build_turn_context(
@@ -34,7 +34,7 @@ def test_run_turn_builds_turn_runner_from_run_turn_runner():
             object,
             message="hello",
             source=source,
-            session_key="agent:main:telegram:chat",
+            session_key="agent:main:discord:chat",
             run_generation=1,
         )
 

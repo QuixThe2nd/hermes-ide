@@ -385,7 +385,6 @@ async def test_global_opt_out_leaves_no_delivery_listener(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_priority_tool_steer_uses_the_same_delivery_receipt(monkeypatch):
-    monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "0")
     agent = _agent(tools=True)
     runner, adapter, source, session_key = _runner(agent)
     event = _event(source, "m-priority", "priority correction")

@@ -11,7 +11,7 @@ from cron.scheduler_delivery import _deliver_result
 def configured_transport():
     from gateway.config import GatewayConfig, Platform, PlatformConfig
     config = GatewayConfig()
-    config.platforms[Platform.TELEGRAM] = PlatformConfig(enabled=True)
+    config.platforms[Platform.DISCORD] = PlatformConfig(enabled=True)
     with patch("gateway.config.load_gateway_config", return_value=config):
         yield
 
@@ -21,7 +21,7 @@ def test_failure_queue_settles_without_claiming_a_suppressed_send(tmp_path, monk
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(delivery_queue, "DELIVERY_DB", tmp_path / "queue.db")
     (tmp_path / "config.yaml").write_text("display: {suppress_warning_notifications: false}\n")
-    job = {"id": "fixture", "name": "fixture", "deliver": "telegram:chat", "execution_id": "run"}
+    job = {"id": "fixture", "name": "fixture", "deliver": "discord:chat", "execution_id": "run"}
     delivery_queue.enqueue("run", job, "arbitrary diagnostic", for_failure=True)
     (tmp_path / "config.yaml").write_text(f"display: {{suppress_warning_notifications: {str(suppress).lower()}}}\n")
     with patch("cron.scheduler_delivery._deliver_standalone") as send:
@@ -34,8 +34,8 @@ def test_failure_queue_settles_without_claiming_a_suppressed_send(tmp_path, monk
 
 def test_success_content_and_explicit_destination_override_survive(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / "config.yaml").write_text("display:\n  suppress_warning_notifications: true\n  platforms:\n    telegram:\n      suppress_warning_notifications: false\n")
-    job = {"id": "fixture", "deliver": "telegram:chat"}
+    (tmp_path / "config.yaml").write_text("display:\n  suppress_warning_notifications: true\n  platforms:\n    discord:\n      suppress_warning_notifications: false\n")
+    job = {"id": "fixture", "deliver": "discord:chat"}
     with patch("cron.scheduler_delivery._deliver_standalone") as send:
         assert _deliver_result(job, "warning quoted in requested result", for_failure=False) is None
         assert _deliver_result(job, "diagnostic", for_failure=True) is None
@@ -45,8 +45,8 @@ def test_success_content_and_explicit_destination_override_survive(tmp_path, mon
 def test_mixed_target_queue_is_not_reported_wholly_suppressed(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(delivery_queue, "DELIVERY_DB", tmp_path / "queue.db")
-    (tmp_path / "config.yaml").write_text("display:\n  suppress_warning_notifications: true\n  platforms:\n    telegram:\n      suppress_warning_notifications: false\n")
-    job = {"id": "fixture", "deliver": ["slack:muted", "telegram:allowed"]}
+    (tmp_path / "config.yaml").write_text("display:\n  suppress_warning_notifications: true\n  platforms:\n    discord:\n      suppress_warning_notifications: false\n")
+    job = {"id": "fixture", "deliver": ["slack:muted", "discord:allowed"]}
     delivery_queue.enqueue("mixed", job, "diagnostic", for_failure=True)
     with patch("cron.scheduler_delivery._deliver_standalone") as send:
         assert scheduler.drain_delivery_queue({}, None) == 1

@@ -1,6 +1,6 @@
 """Slash command registry for the Hermes CLI and gateway.
 
-Every consumer -- CLI help, gateway dispatch, Telegram BotCommands, Slack
+Every consumer -- CLI help, gateway dispatch, Slack
 subcommand mapping, autocomplete -- derives from ``COMMAND_REGISTRY``. To add a
 command, append a ``CommandDef``; to add an alias, set ``aliases=("short",)``.
 """
@@ -48,16 +48,12 @@ VALID_BUSY_POLICIES: frozenset[str] = frozenset({"dispatch", "reject", "interrup
 
 COMMAND_REGISTRY: list[CommandDef] = [
     # Session
-    CommandDef("start", "Acknowledge platform start pings without a reply", "Session",
-               gateway_only=True, busy_policy="dispatch", busy_handler="start"),
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
                args_hint="[name]",
                busy_policy="interrupt_then_dispatch", busy_handler="new"),
     CommandDef("incognito", "Start a new incognito session (no external memory, no prior history)", "Session",
                gateway_only=True, args_hint="[name|status]", subcommands=("status",),
                busy_policy="interrupt_then_dispatch", busy_handler="incognito"),
-    CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
-               gateway_only=True, args_hint="[off|help|session-id]"),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True, desktop="terminal"),
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
@@ -419,9 +415,6 @@ import shutil  # noqa: F401,E402
 import subprocess  # noqa: F401,E402
 import time  # noqa: F401,E402
 
-def _requires_argument(args_hint: str) -> bool:
-    """Return True when selecting a command without text would be incomplete."""
-    return args_hint.strip().startswith("<")
 
 _CMD_NAME_LIMIT = 32
 
@@ -431,7 +424,7 @@ def _clamp_command_names(
 ) -> list[tuple[str, ...]]:
     """Enforce 32-char command name limit with collision avoidance.
 
-    Both Telegram and Discord cap slash command names at 32 characters.
+    Discord caps slash command names at 32 characters.
     Names exceeding the limit are truncated.  If truncation creates a duplicate
     (against *reserved* names or earlier entries in the same batch), the name is
     shortened to 31 chars and a digit ``0``-``9`` is appended to differentiate.
@@ -482,16 +475,15 @@ def _collect_gateway_skill_entries(
 
     Args:
         platform: Platform identifier for per-platform skill filtering
-            (``"telegram"``, ``"discord"``, etc.).
+            (``"discord"``, etc.).
         max_slots: Maximum number of entries to return (remaining slots after
             built-in/core commands), or ``None`` to return every eligible
             plugin and skill candidate for a caller that applies a global cap.
         reserved_names: Names already taken by built-in commands.  Mutated
             in-place as new names are added.
-        desc_limit: Max description length (40 for Telegram, 100 for Discord).
-        sanitize_name: Optional name transform applied before clamping, e.g.
-            :func:`_sanitize_telegram_name` for Telegram.  May return an
-            empty string to signal "skip this entry".
+        desc_limit: Max description length (100 for Discord).
+        sanitize_name: Optional name transform applied before clamping.  May return an
+        empty string to signal "skip this entry".
 
     Returns:
         ``(entries, hidden_count)`` where *entries* contains
@@ -507,10 +499,6 @@ def _collect_gateway_skill_entries(
         from hermes_cli.plugins import get_plugin_commands
         plugin_cmds = get_plugin_commands()
         for cmd_name in sorted(plugin_cmds):
-            if platform == "telegram":
-                args_hint = str(plugin_cmds[cmd_name].get("args_hint") or "").strip()
-                if _requires_argument(args_hint):
-                    continue
             name = sanitize_name(cmd_name) if sanitize_name else cmd_name
             if not name:
                 continue
@@ -650,21 +638,3 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----
-
-
-# ``gateway/run.py`` telegramizes help-text command mentions through
-# ``from hermes_cli.commands import _sanitize_telegram_name`` — a path that predates the
-# commands_platforms split.  Re-export the real object lazily: commands_platforms imports
-# this module at its top, so an eager import here would be circular.  Chained onto the
-# PLUGIN-COMPAT ``__getattr__`` above; the ``globals().get`` capture keeps this hook
-# standing after that block is reverted away.
-_prev_module_getattr = globals().get("__getattr__")
-
-
-def __getattr__(name):  # PEP 562 — chained onto the PLUGIN-COMPAT hook above
-    if name == "_sanitize_telegram_name":
-        import importlib
-        return getattr(importlib.import_module("hermes_cli.commands_platforms"), name)
-    if _prev_module_getattr is not None:
-        return _prev_module_getattr(name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -17,7 +17,7 @@ class StubAdapter(BasePlatformAdapter):
     def __init__(
         self,
         *,
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         succeed=True,
         fatal_error=None,
         fatal_retryable=True,
@@ -54,7 +54,7 @@ def _make_runner():
     """Create a minimal GatewayRunner via object.__new__ to skip __init__."""
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="test")}
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="test")}
     )
     runner._running = True
     runner._shutdown_event = asyncio.Event()
@@ -77,11 +77,11 @@ class TestStartupPlatformIsolation:
 
     @pytest.mark.asyncio
     async def test_start_continues_after_platform_connect_timeout(self, tmp_path):
-        """A timeout on Telegram should queue it and still connect Feishu."""
+        """A timeout on Discord should queue it and still connect Feishu."""
         runner = _make_runner()
         runner.config = GatewayConfig(
             platforms={
-                Platform.TELEGRAM: PlatformConfig(enabled=True, token="test"),
+                Platform.DISCORD: PlatformConfig(enabled=True, token="test"),
                 Platform.FEISHU: PlatformConfig(enabled=True, token="test"),
             },
             sessions_dir=tmp_path,
@@ -96,7 +96,7 @@ class TestStartupPlatformIsolation:
         runner._send_restart_notification = AsyncMock()
 
         adapters = {
-            Platform.TELEGRAM: StubAdapter(platform=Platform.TELEGRAM),
+            Platform.DISCORD: StubAdapter(platform=Platform.DISCORD),
             Platform.FEISHU: StubAdapter(platform=Platform.FEISHU),
         }
         runner._create_adapter = MagicMock(
@@ -104,7 +104,7 @@ class TestStartupPlatformIsolation:
         )
         runner._connect_adapter_with_timeout = AsyncMock(
             side_effect=[
-                TimeoutError("telegram connect timed out after 30s"),
+                TimeoutError("discord connect timed out after 30s"),
                 True,
             ]
         )
@@ -128,9 +128,9 @@ class TestStartupPlatformIsolation:
                                 with patch("gateway.run.asyncio.create_task", side_effect=fake_create_task):
                                     assert await runner.start() is True
 
-        assert Platform.TELEGRAM in runner._failed_platforms
+        assert Platform.DISCORD in runner._failed_platforms
         assert Platform.FEISHU in runner.adapters
-        assert Platform.TELEGRAM not in runner.adapters
+        assert Platform.DISCORD not in runner.adapters
         assert runner._create_adapter.call_count == 2
 
 
@@ -141,13 +141,13 @@ class TestStartupFailureQueuing:
         """When adapter.connect() returns False without fatal error, queue for retry."""
         runner = _make_runner()
         platform_config = PlatformConfig(enabled=True, token="test")
-        runner._failed_platforms[Platform.TELEGRAM] = {
+        runner._failed_platforms[Platform.DISCORD] = {
             "config": platform_config,
             "attempts": 1,
             "next_retry": time.monotonic() + 30,
         }
-        assert Platform.TELEGRAM in runner._failed_platforms
-        assert runner._failed_platforms[Platform.TELEGRAM]["attempts"] == 1
+        assert Platform.DISCORD in runner._failed_platforms
+        assert runner._failed_platforms[Platform.DISCORD]["attempts"] == 1
 
 
 # --- Reconnect watcher ---
@@ -164,7 +164,7 @@ class TestPlatformReconnectWatcher:
         message queued while the bot was offline."""
         runner = _make_runner()
 
-        runner._failed_platforms[Platform.TELEGRAM] = {
+        runner._failed_platforms[Platform.DISCORD] = {
             "config": PlatformConfig(enabled=True, token="test"),
             "attempts": 1,
             "next_retry": time.monotonic() - 1,
@@ -191,18 +191,18 @@ class TestPlatformReconnectWatcher:
         assert succeed_adapter.connect_calls == [True], (
             f"watcher must pass is_reconnect=True; got {succeed_adapter.connect_calls!r}"
         )
-        assert Platform.TELEGRAM in runner.adapters
+        assert Platform.DISCORD in runner.adapters
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("degraded", [False, True])
     async def test_reconnect_stamp_honours_adapter_send_path_degraded(self, degraded):
         """connect() returning True is not proof the receive path is live:
-        Telegram's degraded reconnect returns True while its own ladder
+        Discord's degraded reconnect returns True while its own ladder
         retries. The watcher's status stamp must publish what the adapter
         reports, not an unconditional "connected" (#101391)."""
         runner = _make_runner()
         runner._update_platform_runtime_status = MagicMock()
-        runner._failed_platforms[Platform.TELEGRAM] = {
+        runner._failed_platforms[Platform.DISCORD] = {
             "config": PlatformConfig(enabled=True, token="test"),
             "attempts": 1,
             "next_retry": time.monotonic() - 1,
@@ -233,9 +233,9 @@ class TestPlatformReconnectWatcher:
 
         stamps = [
             c.kwargs for c in runner._update_platform_runtime_status.call_args_list
-            if c.args and c.args[0] == Platform.TELEGRAM.value
+            if c.args and c.args[0] == Platform.DISCORD.value
         ]
-        assert stamps, "watcher never stamped telegram"
+        assert stamps, "watcher never stamped discord"
         final = stamps[-1]
         assert final["platform_state"] == ("retrying" if degraded else "connected")
         assert final["error_message"] == (adapter.DEGRADED_STATUS_MESSAGE if degraded else None)
@@ -249,7 +249,7 @@ class TestPlatformReconnectWatcher:
         runner = _make_runner()
         adapter = StubAdapter(succeed=True)
 
-        success = await runner._connect_adapter_with_timeout(adapter, Platform.TELEGRAM)
+        success = await runner._connect_adapter_with_timeout(adapter, Platform.DISCORD)
 
         assert success is True
         assert adapter.connect_calls == [False], (
@@ -272,7 +272,7 @@ class TestPlatformReconnectWatcher:
         runner._schedule_resume_pending_sessions = MagicMock(return_value=1)
 
         platform_config = PlatformConfig(enabled=True, token="test")
-        runner._failed_platforms[Platform.TELEGRAM] = {
+        runner._failed_platforms[Platform.DISCORD] = {
             "config": platform_config,
             "attempts": 1,
             "next_retry": time.monotonic() - 1,
@@ -299,12 +299,12 @@ class TestPlatformReconnectWatcher:
 
                 await run_one_iteration()
 
-        assert Platform.TELEGRAM in runner.adapters
+        assert Platform.DISCORD in runner.adapters
         runner._redeliver_failed_obligations_for_platform.assert_awaited_once_with(
-            Platform.TELEGRAM
+            Platform.DISCORD
         )
         runner._schedule_resume_pending_sessions.assert_called_once_with(
-            platform=Platform.TELEGRAM
+            platform=Platform.DISCORD
         )
 
 
@@ -320,7 +320,7 @@ class TestPlatformReconnectWatcher:
         platform_config = PlatformConfig(enabled=True, token="test")
         # Far past the old circuit-breaker threshold (10): even after many
         # consecutive retryable failures the platform must stay unpaused.
-        runner._failed_platforms[Platform.TELEGRAM] = {
+        runner._failed_platforms[Platform.DISCORD] = {
             "config": platform_config,
             "attempts": 25,
             "next_retry": time.monotonic() - 1,
@@ -349,8 +349,8 @@ class TestPlatformReconnectWatcher:
             await run_one_iteration()
 
         # Platform stays in queue and keeps retrying — never auto-paused.
-        assert Platform.TELEGRAM in runner._failed_platforms
-        info = runner._failed_platforms[Platform.TELEGRAM]
+        assert Platform.DISCORD in runner._failed_platforms
+        info = runner._failed_platforms[Platform.DISCORD]
         assert info.get("paused") is not True
         assert "pause_reason" not in info
         assert info["attempts"] == 26
@@ -372,14 +372,14 @@ class TestRuntimeDisconnectQueuing:
 
         adapter = StubAdapter(succeed=True)
         adapter._set_fatal_error("auth_error", "bad token", retryable=False)
-        runner.adapters[Platform.TELEGRAM] = adapter
+        runner.adapters[Platform.DISCORD] = adapter
 
         # Need to prevent stop() from running fully
         runner.stop = AsyncMock()
 
         await runner._handle_adapter_fatal_error(adapter)
 
-        assert Platform.TELEGRAM not in runner._failed_platforms
+        assert Platform.DISCORD not in runner._failed_platforms
 
     @pytest.mark.asyncio
     async def test_retryable_error_keeps_gateway_alive_when_all_down(self):
@@ -394,14 +394,14 @@ class TestRuntimeDisconnectQueuing:
 
         adapter = StubAdapter(succeed=True)
         adapter._set_fatal_error("network_error", "DNS failure", retryable=True)
-        runner.adapters[Platform.TELEGRAM] = adapter
+        runner.adapters[Platform.DISCORD] = adapter
 
         await runner._handle_adapter_fatal_error(adapter)
 
         # stop() should NOT be called — gateway stays alive for the watcher
         runner.stop.assert_not_called()
         assert runner._exit_with_failure is False
-        assert Platform.TELEGRAM in runner._failed_platforms
+        assert Platform.DISCORD in runner._failed_platforms
 
 
 # --- Pause / resume circuit breaker ---
@@ -413,32 +413,32 @@ class TestPauseResume:
 
     def test_pause_is_idempotent(self):
         runner = _make_runner()
-        runner._failed_platforms[Platform.TELEGRAM] = {
+        runner._failed_platforms[Platform.DISCORD] = {
             "config": PlatformConfig(enabled=True, token="t"),
             "attempts": 3,
             "next_retry": time.monotonic() + 30,
             "paused": True,
             "pause_reason": "first reason",
         }
-        runner._pause_failed_platform(Platform.TELEGRAM, reason="second reason")
+        runner._pause_failed_platform(Platform.DISCORD, reason="second reason")
         # Reason should not be overwritten on a second pause call.
         assert (
-            runner._failed_platforms[Platform.TELEGRAM]["pause_reason"]
+            runner._failed_platforms[Platform.DISCORD]["pause_reason"]
             == "first reason"
         )
 
 
     def test_resume_clears_paused_and_resets_attempts(self):
         runner = _make_runner()
-        runner._failed_platforms[Platform.TELEGRAM] = {
+        runner._failed_platforms[Platform.DISCORD] = {
             "config": PlatformConfig(enabled=True, token="t"),
             "attempts": 10,
             "next_retry": float("inf"),
             "paused": True,
             "pause_reason": "auto-paused",
         }
-        assert runner._resume_paused_platform(Platform.TELEGRAM) is True
-        info = runner._failed_platforms[Platform.TELEGRAM]
+        assert runner._resume_paused_platform(Platform.DISCORD) is True
+        info = runner._failed_platforms[Platform.DISCORD]
         assert info["paused"] is False
         assert info["attempts"] == 0
         assert info["next_retry"] != float("inf")
@@ -556,7 +556,7 @@ class TestFatalHandoffCancellationProof:
 
         adapter = StubAdapter(succeed=True)
         adapter._set_fatal_error("network_error", "DNS failure", retryable=True)
-        runner.adapters[Platform.TELEGRAM] = adapter
+        runner.adapters[Platform.DISCORD] = adapter
         # A healthy peer keeps self.adapters non-empty, so the existing
         # "no platforms remain" shutdown branches do not fire.
         runner.adapters[Platform.FEISHU] = StubAdapter(platform=Platform.FEISHU)
@@ -702,11 +702,11 @@ class TestReconnectWatcherRaceGuard:
 
         platform_config = PlatformConfig(enabled=True, token="test")
         runner.config = GatewayConfig(
-            platforms={Platform.TELEGRAM: platform_config}
+            platforms={Platform.DISCORD: platform_config}
         )
 
         adapter = StubAdapter(
-            platform=Platform.TELEGRAM,
+            platform=Platform.DISCORD,
             succeed=False,
             fatal_error="network outage",
             fatal_retryable=True,
@@ -717,7 +717,7 @@ class TestReconnectWatcherRaceGuard:
             "NETWORK_ERROR", "network outage", retryable=True
         )
         # Populate adapters so the impl pops it and queues for reconnect
-        runner.adapters[Platform.TELEGRAM] = adapter
+        runner.adapters[Platform.DISCORD] = adapter
 
         call_count = {"ensure": 0}
 
@@ -731,7 +731,7 @@ class TestReconnectWatcherRaceGuard:
         ):
             await runner._handle_adapter_fatal_error(adapter)
 
-        assert Platform.TELEGRAM in runner._failed_platforms
+        assert Platform.DISCORD in runner._failed_platforms
         assert call_count["ensure"] >= 1
 
     @pytest.mark.asyncio
@@ -746,11 +746,11 @@ class TestReconnectWatcherRaceGuard:
 
         platform_config = PlatformConfig(enabled=True, token="test")
         runner.config = GatewayConfig(
-            platforms={Platform.TELEGRAM: platform_config}
+            platforms={Platform.DISCORD: platform_config}
         )
 
         adapter = StubAdapter(
-            platform=Platform.TELEGRAM,
+            platform=Platform.DISCORD,
             succeed=False,
             fatal_error="bad token",
             fatal_retryable=False,
@@ -760,7 +760,7 @@ class TestReconnectWatcherRaceGuard:
         adapter._set_fatal_error(
             "AUTH_FAILED", "bad token", retryable=False
         )
-        runner.adapters[Platform.TELEGRAM] = adapter
+        runner.adapters[Platform.DISCORD] = adapter
 
         ensure_called = False
 
@@ -771,7 +771,7 @@ class TestReconnectWatcherRaceGuard:
         with patch.object(runner, "_ensure_reconnect_watcher_running", side_effect=noop_ensure):
             await runner._handle_adapter_fatal_error(adapter)
 
-        assert Platform.TELEGRAM not in runner._failed_platforms
+        assert Platform.DISCORD not in runner._failed_platforms
         assert not ensure_called
 
 
@@ -797,7 +797,7 @@ class TestConnectAdapterDetachOnTimeout:
             ):
                 with pytest.raises(TimeoutError, match="timed out"):
                     await runner._connect_adapter_with_timeout(
-                        adapter, Platform.TELEGRAM
+                        adapter, Platform.DISCORD
                     )
 
         # After the TimeoutError, the slow connect coroutine should have been
@@ -894,8 +894,8 @@ class TestRequeueHealsDeadReconnectWatcher:
 
     @staticmethod
     def _already_queued(runner, *, attempts=7):
-        runner._failed_platforms[Platform.TELEGRAM] = {
-            "config": runner.config.platforms[Platform.TELEGRAM],
+        runner._failed_platforms[Platform.DISCORD] = {
+            "config": runner.config.platforms[Platform.DISCORD],
             "attempts": attempts,
             "next_retry": time.monotonic() + 300,
             "queued_at": time.monotonic() - 3600,
@@ -907,8 +907,8 @@ class TestRequeueHealsDeadReconnectWatcher:
     def _fatal_adapter():
         adapter = StubAdapter()
         adapter._set_fatal_error(
-            "telegram_network_error",
-            "Telegram polling could not reconnect after 10 network error retries.",
+            "discord_network_error",
+            "Discord gateway could not reconnect after 10 network error retries.",
             retryable=True,
         )
         return adapter
@@ -917,7 +917,7 @@ class TestRequeueHealsDeadReconnectWatcher:
     async def test_requeue_respawns_a_watcher_that_gave_up_restarting(self):
         """The core #90386 regression.
 
-        Telegram is queued and the watcher has exhausted its restart budget, so
+        Discord is queued and the watcher has exhausted its restart budget, so
         the task is done and ``_spawn_supervised`` will never bring it back on
         its own. A fresh retryable fatal error arrives for that same platform.
         Nothing is enqueued (it is already there), but the watcher MUST be
@@ -957,7 +957,7 @@ class TestRequeueHealsDeadReconnectWatcher:
         spawned: list[str] = []
         runner = self._runner_with_dead_watcher(spawned)
         self._already_queued(runner, attempts=7)
-        before = dict(runner._failed_platforms[Platform.TELEGRAM])
+        before = dict(runner._failed_platforms[Platform.DISCORD])
 
         async def _died():
             return None
@@ -967,7 +967,7 @@ class TestRequeueHealsDeadReconnectWatcher:
         runner._reconnect_watcher_task = dead
 
         assert runner._queue_retryable_fatal_platform(self._fatal_adapter()) is False
-        assert runner._failed_platforms[Platform.TELEGRAM] == before, (
+        assert runner._failed_platforms[Platform.DISCORD] == before, (
             "the existing queue entry, including its attempt count and backoff "
             "deadline, must survive the watcher heal untouched"
         )
@@ -1055,9 +1055,9 @@ class TestSupervisionExhaustionHasAnOwner:
         return runner
 
     @staticmethod
-    def _queue_telegram(runner):
-        runner._failed_platforms[Platform.TELEGRAM] = {
-            "config": runner.config.platforms[Platform.TELEGRAM],
+    def _queue_discord(runner):
+        runner._failed_platforms[Platform.DISCORD] = {
+            "config": runner.config.platforms[Platform.DISCORD],
             "attempts": 9,
             "next_retry": time.monotonic() + 300,
             "queued_at": time.monotonic() - 7200,
@@ -1084,7 +1084,7 @@ class TestSupervisionExhaustionHasAnOwner:
         # One crash more than supervision will tolerate, so the give-up branch
         # is genuinely reached and the slow tier is what recovers it.
         runner = self._runner(monkeypatch, crashes=3)
-        self._queue_telegram(runner)
+        self._queue_discord(runner)
 
         runner._spawn_reconnect_watcher()
         await self._settle(300)
@@ -1104,7 +1104,7 @@ class TestSupervisionExhaustionHasAnOwner:
     async def test_the_slow_tier_is_bounded_not_a_restart_loop(self, monkeypatch):
         """A watcher that never recovers must stop being respawned, and say so."""
         runner = self._runner(monkeypatch, crashes=10_000)
-        self._queue_telegram(runner)
+        self._queue_discord(runner)
         monkeypatch.setattr(GatewayRunner, "_MAX_SLOW_WATCHER_RESPAWNS", 3)
 
         runner._spawn_reconnect_watcher()
@@ -1158,7 +1158,7 @@ class TestSupervisionExhaustionHasAnOwner:
     async def test_the_slow_tier_stands_down_when_the_queue_drains(self, monkeypatch):
         """Something else healed the platform -- stop respawning for it."""
         runner = self._runner(monkeypatch, crashes=10_000)
-        self._queue_telegram(runner)
+        self._queue_discord(runner)
 
         runner._spawn_reconnect_watcher()
         # Let supervision give up, then drain the queue before the slow tier
@@ -1180,7 +1180,7 @@ class TestSupervisionExhaustionHasAnOwner:
         self, monkeypatch
     ):
         runner = self._runner(monkeypatch, crashes=10_000)
-        self._queue_telegram(runner)
+        self._queue_discord(runner)
         runner._running = False
 
         runner._on_reconnect_watcher_gave_up("platform_reconnect_watcher")

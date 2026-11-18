@@ -232,7 +232,7 @@ def _wire_notes(runner, ctx=None):
 def _seam_ctx():
     ctx = MagicMock()
     ctx.user_config = {}
-    source = SimpleNamespace(platform="telegram", is_bot=False)
+    source = SimpleNamespace(platform="discord", is_bot=False)
     ctx.source = source
     ctx._native_slack_task_cards = False
     ctx._hooks_ref = SimpleNamespace(loaded_hooks=False)
@@ -469,9 +469,9 @@ def test_status_lines_unknown_when_no_sources():
 def test_status_lines_report_pending_chained_restart():
     lines = serving_status_lines(
         identify=_identify(_SUCCESSOR_PID, role=ROLE_SERVING),
-        chained={"source": "telegram user 42 (restart)"},
+        chained={"source": "discord user 42 (restart)"},
         successor_identity=_successor_identity(_SUCCESSOR_PID, _SUCCESSOR_START))
-    assert any("Chained restart queued" in ln and "telegram user 42" in ln for ln in lines)
+    assert any("Chained restart queued" in ln and "discord user 42" in ln for ln in lines)
 
 
 def test_status_lines_no_chained_line_without_marker():

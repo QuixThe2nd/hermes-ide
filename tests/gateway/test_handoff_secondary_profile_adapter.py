@@ -10,7 +10,7 @@ persisting a ``agent:medicina:...`` key and reporting ``handoff_state='completed
 a false positive that looks fine in the database and is wrong on the wire.
 
 This was caught by an adversarial review reading gateway.log, not by the
-end-to-end test — the log line showed ``hermes_plugins.telegram_platform``
+end-to-end test — the log line showed ``hermes_plugins.<name>_platform``
 (primary) instead of the secondary's ``..._home_<hash>`` adapter module.
 """
 
@@ -37,10 +37,10 @@ def _adapter(tag):
 
 def _config(chat_id):
     cfg = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="***")}
     )
-    cfg.platforms[Platform.TELEGRAM].notification_channel = DeliveryTarget(
-        platform=Platform.TELEGRAM, chat_id=chat_id, name=f"restarts-{chat_id}",
+    cfg.platforms[Platform.DISCORD].notification_channel = DeliveryTarget(
+        platform=Platform.DISCORD, chat_id=chat_id, name=f"restarts-{chat_id}",
     )
     return cfg
 
@@ -49,9 +49,9 @@ def _make_multiplex_runner():
     runner = object.__new__(GatewayRunner)
     runner.config = _config("1111")          # primary/default notification channel
     runner.config.multiplex_profiles = True
-    runner.adapters = {Platform.TELEGRAM: _adapter("primary")}
+    runner.adapters = {Platform.DISCORD: _adapter("primary")}
     runner._profile_adapters = {
-        "medicina": {Platform.TELEGRAM: _adapter("medicina")},
+        "medicina": {Platform.DISCORD: _adapter("medicina")},
     }
     runner.hooks = SimpleNamespace(
         emit=AsyncMock(), emit_collect=AsyncMock(return_value=[]), loaded_hooks=False,
@@ -63,7 +63,7 @@ def _make_multiplex_runner():
     store.get_or_create_session = AsyncMock(return_value=SessionEntry(
         session_key="k", session_id="s",
         created_at=datetime.now(), updated_at=datetime.now(),
-        platform=Platform.TELEGRAM, chat_type="dm",
+        platform=Platform.DISCORD, chat_type="dm",
     ))
 
     async def _switch(key, sid):
@@ -71,7 +71,7 @@ def _make_multiplex_runner():
         return SessionEntry(
             session_key=key, session_id=sid,
             created_at=datetime.now(), updated_at=datetime.now(),
-            platform=Platform.TELEGRAM, chat_type="dm",
+            platform=Platform.DISCORD, chat_type="dm",
         )
 
     store.switch_session = AsyncMock(side_effect=_switch)
@@ -142,7 +142,7 @@ async def test_secondary_profile_handoff_uses_its_own_adapter(monkeypatch):
     monkeypatch.setattr("gateway.run.load_gateway_config", lambda: _config("2222"))
 
     await runner._process_handoff(
-        {"id": "cli-session", "title": "work", "handoff_platform": "telegram"},
+        {"id": "cli-session", "title": "work", "handoff_platform": "discord"},
         profile_name="medicina",
     )
 
@@ -168,7 +168,7 @@ async def test_default_profile_handoff_keeps_primary_adapter(monkeypatch):
     _patch_transport_spy(monkeypatch, used)
 
     await runner._process_handoff(
-        {"id": "cli-session", "title": "work", "handoff_platform": "telegram"},
+        {"id": "cli-session", "title": "work", "handoff_platform": "discord"},
         profile_name=None,
     )
 
@@ -194,7 +194,7 @@ async def test_secondary_profile_config_load_failure_fails_closed(monkeypatch):
 
     with pytest.raises(RuntimeError, match="could not load config"):
         await runner._process_handoff(
-            {"id": "cli-session", "title": "work", "handoff_platform": "telegram"},
+            {"id": "cli-session", "title": "work", "handoff_platform": "discord"},
             profile_name="medicina",
         )
     assert used == {}, (
@@ -218,6 +218,6 @@ async def test_secondary_profile_without_live_adapters_fails_loudly(monkeypatch)
 
     with pytest.raises(RuntimeError, match="no live adapters"):
         await runner._process_handoff(
-            {"id": "cli-session", "title": "work", "handoff_platform": "telegram"},
+            {"id": "cli-session", "title": "work", "handoff_platform": "discord"},
             profile_name="medicina",
         )

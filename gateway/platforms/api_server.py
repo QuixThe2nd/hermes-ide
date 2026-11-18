@@ -1911,7 +1911,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @staticmethod
     def _normalize_session_source(value: Any) -> str:
         text = str(value or "").strip().lower()
-        allowed = {"api_server", "hermes_browser", "browser", "cli", "telegram", "discord", "slack", "desktop", "dashboard"}
+        allowed = {"api_server", "hermes_browser", "browser", "cli", "discord", "slack", "desktop", "dashboard"}
         if text not in allowed:
             return "api_server"
         return "hermes_browser" if text == "browser" else text
@@ -2151,7 +2151,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "tool_complete_callback": tool_complete_callback,
             "reasoning_callback": reasoning_callback,
             "session_db": self._ensure_session_db(),
-            # Same fallback provider chain as Telegram/Discord/Slack.
+            # Same fallback provider chain as the messaging platforms.
             "fallback_model": None if confirmed_runtime_lock else GatewayRunner._load_fallback_model(),
             "reasoning_config": request_reasoning_config,
             "gateway_session_key": gateway_session_key}

@@ -29,14 +29,14 @@ def test_prompt_snapshots_are_deduplicated_and_hydrated_for_readers(db):
     prompt = "You are Hermes.\n" + ("Follow the profile policy.\n" * 5)
     db.create_session(
         "s1",
-        "telegram",
-        session_key="agent:main:telegram:dm:c1",
+        "discord",
+        session_key="agent:main:discord:dm:c1",
         chat_id="c1",
         chat_type="dm",
         system_prompt=prompt,
     )
     db.create_session("s2", "cli", system_prompt=prompt)
-    db.request_handoff("s1", "telegram")
+    db.request_handoff("s1", "discord")
 
     stored = db._conn.execute(
         "SELECT hash, prompt FROM system_prompts"
@@ -188,7 +188,7 @@ def test_imported_prompts_are_deduplicated(tmp_path):
     source = SessionDB(db_path=tmp_path / "source.db")
     try:
         source.create_session("s1", "cli", system_prompt=prompt)
-        source.create_session("s2", "telegram", system_prompt=prompt)
+        source.create_session("s2", "discord", system_prompt=prompt)
         exported = [source.export_session("s1"), source.export_session("s2")]
     finally:
         source.close()
@@ -216,7 +216,7 @@ def test_v24_inline_prompts_migrate_once_to_content_addressed_storage(tmp_path):
 
     db = SessionDB(db_path=db_path)
     db.create_session("s1", "cli")
-    db.create_session("s2", "telegram")
+    db.create_session("s2", "discord")
     db._conn.execute(
         "UPDATE sessions SET system_prompt = ?, system_prompt_hash = NULL",
         (legacy_prompt,),

@@ -1,7 +1,7 @@
 """Live-adapter delivery confirmation for cron (#77763).
 
 A ``no_agent`` job fired, the scheduler logged
-``delivered to telegram:<chat> via live adapter``, and the user received
+``delivered to discord:<chat> via live adapter``, and the user received
 nothing — no message row, no delivery obligation. The log line was not
 evidence of a send:
 
@@ -98,7 +98,7 @@ CHAT_ID = "-1001234567890"
 
 
 def _job(thread_id=None):
-    origin = {"platform": "telegram", "chat_id": CHAT_ID}
+    origin = {"platform": "discord", "chat_id": CHAT_ID}
     if thread_id is not None:
         origin["thread_id"] = thread_id
     return {
@@ -111,7 +111,7 @@ def _job(thread_id=None):
 
 def _gateway_config(relay=False):
     config = MagicMock()
-    platforms = {Platform.TELEGRAM: PlatformConfig(enabled=True)}
+    platforms = {Platform.DISCORD: PlatformConfig(enabled=True)}
     if relay:
         platforms[Platform.RELAY] = PlatformConfig(enabled=True)
     config.platforms = platforms
@@ -121,9 +121,9 @@ def _gateway_config(relay=False):
 def _adapters(relay=False):
     adapter = MagicMock()
     if relay:
-        adapter.fronts_platform = lambda p: p == Platform.TELEGRAM
+        adapter.fronts_platform = lambda p: p == Platform.DISCORD
         return {Platform.RELAY: adapter}
-    return {Platform.TELEGRAM: adapter}
+    return {Platform.DISCORD: adapter}
 
 
 RECORDED_VERIFICATION = []
@@ -221,7 +221,7 @@ class TestEmptyPayloadFailsClosed:
     def test_empty_payload_never_reaches_the_standalone_sender(self, caplog):
         """The native fallback must not re-open the hole the live lane closed.
 
-        Telegram's adapter returns ``SendResult(success=True)`` for empty
+        A platform adapter returns ``SendResult(success=True)`` for empty
         content without an API call, so an unguarded fallback would log a
         standalone "delivered" for the same phantom payload (#77763).
         """
@@ -267,12 +267,12 @@ class TestDeliveredLogNamesTheLane:
 class TestLiveDeliveryIsAFinalNotification:
     """Cron output is a final user-visible delivery, not a progress send.
 
-    Telegram's adapter defaults to ``_notifications_mode = "important"`` and
+    A platform adapter defaults to ``_notifications_mode = "important"`` and
     sends with ``disable_notification=True`` unless ``metadata["notify"]`` is
     set — so a cron brief without the marker lands silently, which users
     report as "never delivered" (#77763 thread, #58258 typing bubble). The
     marker must ride both the text route and the media route, in every
-    Telegram routing mode.
+    routing mode.
     """
 
     def test_text_route_metadata_carries_notify(self):
@@ -374,7 +374,7 @@ class TestUnverifiedDeliveryIsRecordedOnTheJob:
     def test_evidence_free_ack_records_the_target(self):
         error, _, _ = _run(_job(), "Nightly report.", _SendResult())
         assert error is None
-        assert RECORDED_VERIFICATION == [("92e639af907f", [f"telegram:{CHAT_ID}"])]
+        assert RECORDED_VERIFICATION == [("92e639af907f", [f"discord:{CHAT_ID}"])]
 
     def test_positive_evidence_clears_the_marker(self):
         error, _, _ = _run(_job(), "Nightly report.", _SendResult(message_id=1234))

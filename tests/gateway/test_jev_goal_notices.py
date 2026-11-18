@@ -34,12 +34,12 @@ pytestmark = pytest.mark.skipif(
            "binary and no Go toolchain to build one",
 )
 
-SESSION_KEY = "agent:main:telegram:dm:1001"
+SESSION_KEY = "agent:main:discord:dm:1001"
 
 
 def _source(*, user_name="operator", profile=None, chat_id="chat-1") -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id=chat_id,
         user_id="user-1",
         user_name=user_name,
@@ -107,7 +107,7 @@ def _jev_http_error(status):
 
 
 class _RecordingAdapter(BasePlatformAdapter):
-    """Telegram adapter whose turn lifecycle is all production code.
+    """Discord adapter whose turn lifecycle is all production code.
 
     ``_process_message_background`` — the real delivery boundary, session
     guards and queued-follow-up drain — runs unmodified; only ``send``
@@ -116,7 +116,7 @@ class _RecordingAdapter(BasePlatformAdapter):
 
     def __init__(self):
         super().__init__(
-            PlatformConfig(enabled=True, typing_indicator=False), Platform.TELEGRAM
+            PlatformConfig(enabled=True, typing_indicator=False), Platform.DISCORD
         )
         self.sends: list = []
 
@@ -176,7 +176,7 @@ async def test_success_attempt_posts_one_notice_line(runner, monkeypatch):
         "hermes_cli.goal_intent.requests.post", return_value=_jev_response("task", 0.91)
     ):
         decision = await runner._run_auto_goal_evaluation(
-            "why is tdarr down", _source(), "telegram"
+            "why is tdarr down", _source(), "discord"
         )
     assert decision["label"] == "task"
     assert sent == [
@@ -191,7 +191,7 @@ async def test_retry_then_success_posts_one_notice_per_attempt(runner, monkeypat
     responses = [_jev_http_error(502), _jev_response("chase", 0.77)]
     with patch("hermes_cli.goal_intent.requests.post", side_effect=responses) as post:
         decision = await runner._run_auto_goal_evaluation(
-            "and is it still broken?", _source(), "telegram"
+            "and is it still broken?", _source(), "discord"
         )
     assert post.call_count == 2
     assert decision["label"] == "chase"
@@ -210,7 +210,7 @@ async def test_both_attempts_failing_posts_two_failure_notices_and_fails_closed(
         side_effect=[_jev_http_error(500), _jev_http_error(500)],
     ) as post:
         decision = await runner._run_auto_goal_evaluation(
-            "give me the file", _source(), "telegram"
+            "give me the file", _source(), "discord"
         )
     assert post.call_count == 2
     assert decision["label"] == "unknown"
@@ -225,7 +225,7 @@ async def test_chat_and_low_confidence_labels_are_visible(runner, monkeypatch):
     monkeypatch.setenv("LITELLM_API_KEY", "test-key")
     sent = _wire_send(runner)
     with patch("hermes_cli.goal_intent.requests.post", return_value=_jev_response("chat", 0.2)):
-        await runner._run_auto_goal_evaluation("huh", _source(), "telegram")
+        await runner._run_auto_goal_evaluation("huh", _source(), "discord")
     assert sent == [
         "🔎 jev goal-intent (attempt 1/2) user message from operator: chat (confidence 0.20)"
     ]
@@ -247,7 +247,7 @@ class TestNoCallPostsNothing:
         sent = _wire_send(runner)
         with patch("hermes_cli.goal_intent.requests.post") as post:
             decision = await runner._run_auto_goal_evaluation(
-                "why is tdarr down", _source(), "telegram"
+                "why is tdarr down", _source(), "discord"
             )
         post.assert_not_called()
         assert sent == []
@@ -265,7 +265,7 @@ async def test_notice_delivery_failure_never_touches_the_decision(runner, monkey
     runner._adapter_for_source = lambda _source: SimpleNamespace()
     with patch("hermes_cli.goal_intent.requests.post", return_value=_jev_response("task", 0.9)):
         decision = await runner._run_auto_goal_evaluation(
-            "why is tdarr down", _source(), "telegram"
+            "why is tdarr down", _source(), "discord"
         )
     assert decision["label"] == "task"
     assert decision["confidence"] == 0.9
@@ -308,8 +308,8 @@ async def test_notices_reach_only_the_owning_source_adapter(runner, monkeypatch,
             deliveries.append((tag, message, str(get_hermes_home())))
         return SimpleNamespace(send=_send)
 
-    runner.adapters = {Platform.TELEGRAM: _adapter("default")}
-    runner._profile_adapters = {"beta": {Platform.TELEGRAM: _adapter("beta")}}
+    runner.adapters = {Platform.DISCORD: _adapter("default")}
+    runner._profile_adapters = {"beta": {Platform.DISCORD: _adapter("beta")}}
 
     source_a1 = _source(chat_id="chat-a", user_name="A-User")
     source_b = _source(chat_id="chat-b", user_name="B-User", profile="beta")
@@ -361,7 +361,7 @@ async def test_jev_notice_send_is_marked_non_conversational_and_interim(runner, 
     async def _send(chat_id, message, metadata=None, **_kwargs):
         sent.append((message, metadata))
 
-    runner.adapters = {Platform.TELEGRAM: SimpleNamespace(send=_send)}
+    runner.adapters = {Platform.DISCORD: SimpleNamespace(send=_send)}
 
     with patch("hermes_cli.goal_intent.requests.post", return_value=_jev_response("task", 0.9)):
         runner._schedule_auto_goal_intent(_event("why is tdarr down"), SESSION_KEY)
@@ -403,7 +403,7 @@ class TestIndependentDeliveryLifecycle:
         the notice is on the wire while the handler has not even returned."""
         monkeypatch.setenv("LITELLM_API_KEY", "test-key")
         adapter = _RecordingAdapter()
-        runner.adapters = {Platform.TELEGRAM: adapter}
+        runner.adapters = {Platform.DISCORD: adapter}
         registrations: list = []
         original_register = adapter.register_post_delivery_callback
 
@@ -453,7 +453,7 @@ class TestIndependentDeliveryLifecycle:
         arrives exactly once, with no future boundary to double-fire it."""
         monkeypatch.setenv("LITELLM_API_KEY", "test-key")
         adapter = _RecordingAdapter()
-        runner.adapters = {Platform.TELEGRAM: adapter}
+        runner.adapters = {Platform.DISCORD: adapter}
 
         async def handler(event):
             return "the answer"
@@ -490,7 +490,7 @@ class TestIndependentDeliveryLifecycle:
         still arrives exactly once with no registry entry left behind."""
         monkeypatch.setenv("LITELLM_API_KEY", "test-key")
         adapter = _RecordingAdapter()
-        runner.adapters = {Platform.TELEGRAM: adapter}
+        runner.adapters = {Platform.DISCORD: adapter}
         started = asyncio.Event()
         handler_release = asyncio.Event()
 
@@ -538,7 +538,7 @@ class TestIndependentDeliveryLifecycle:
         """
         monkeypatch.setenv("LITELLM_API_KEY", "test-key")
         adapter = _RecordingAdapter()
-        runner.adapters = {Platform.TELEGRAM: adapter}
+        runner.adapters = {Platform.DISCORD: adapter}
         registrations: list = []
         original_register = adapter.register_post_delivery_callback
 
@@ -630,8 +630,8 @@ class TestIndependentDeliveryLifecycle:
         monkeypatch.setattr(runner.config, "multiplex_profiles", True, raising=False)
         adapter_default = _RecordingAdapter()
         adapter_b = _RecordingAdapter()
-        runner.adapters = {Platform.TELEGRAM: adapter_default}
-        runner._profile_adapters = {"beta": {Platform.TELEGRAM: adapter_b}}
+        runner.adapters = {Platform.DISCORD: adapter_default}
+        runner._profile_adapters = {"beta": {Platform.DISCORD: adapter_b}}
 
         source_b = _source(chat_id="chat-b", user_name="B-User", profile="beta")
         with patch(

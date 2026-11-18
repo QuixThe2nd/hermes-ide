@@ -19,17 +19,16 @@ from gateway.session import SessionSource
 
 
 class TestParseTargetPlatformChat:
-    def test_explicit_telegram_chat(self):
-        target = DeliveryTarget.parse("telegram:12345")
-        assert target.platform == Platform.TELEGRAM
+    def test_explicit_discord_chat(self):
+        target = DeliveryTarget.parse("discord:12345")
+        assert target.platform == Platform.DISCORD
         assert target.chat_id == "12345"
         assert target.is_explicit is True
 
-
     def test_origin_with_source(self):
-        origin = SessionSource(platform=Platform.TELEGRAM, chat_id="789", thread_id="42")
+        origin = SessionSource(platform=Platform.DISCORD, chat_id="789", thread_id="42")
         target = DeliveryTarget.parse("origin", origin=origin)
-        assert target.platform == Platform.TELEGRAM
+        assert target.platform == Platform.DISCORD
         assert target.chat_id == "789"
         assert target.thread_id == "42"
         assert target.is_origin is True
@@ -37,7 +36,7 @@ class TestParseTargetPlatformChat:
 
 class TestTargetToStringRoundtrip:
     def test_origin_roundtrip(self):
-        origin = SessionSource(platform=Platform.TELEGRAM, chat_id="111", thread_id="42")
+        origin = SessionSource(platform=Platform.DISCORD, chat_id="111", thread_id="42")
         target = DeliveryTarget.parse("origin", origin=origin)
         assert target.to_string() == "origin"
 
@@ -61,10 +60,9 @@ class TestPlatformNameCaseInsensitivity:
     
     def test_uppercase_platform_name(self):
         """Platform names should be case-insensitive."""
-        target = DeliveryTarget.parse("TELEGRAM:12345")
-        assert target.platform == Platform.TELEGRAM
+        target = DeliveryTarget.parse("DISCORD:12345")
+        assert target.platform == Platform.DISCORD
         assert target.chat_id == "12345"
-    
 
 class _RelayDeliveryTransport:
     """Relay transport that advertises Slack and records outbound wire frames."""
@@ -137,17 +135,10 @@ async def test_relay_fronted_target_delivers_without_prior_inbound_chat_state(tm
 class RecordingAdapter:
     def __init__(self):
         self.calls = []
-        self.ensure_dm_topic_calls = []
 
     async def send(self, chat_id, content, metadata=None):
         self.calls.append({"chat_id": chat_id, "content": content, "metadata": metadata})
         return {"success": True}
-
-    async def ensure_dm_topic(self, chat_id, topic_name, force_create=False):
-        self.ensure_dm_topic_calls.append(
-            {"chat_id": chat_id, "topic_name": topic_name, "force_create": force_create}
-        )
-        return "38049"
 
 
 @pytest.mark.asyncio
@@ -215,74 +206,6 @@ async def test_disabled_native_adapter_does_not_shadow_relay(tmp_path, monkeypat
     assert transport.sent[0][1] == "slack"
 
 
-class StaleTopicAdapter:
-    def __init__(self):
-        self.calls = []
-        self.ensure_dm_topic_calls = []
-
-    async def send(self, chat_id, content, metadata=None):
-        self.calls.append({"chat_id": chat_id, "content": content, "metadata": dict(metadata or {})})
-        if len(self.calls) == 1:
-            return SendResult(success=False, error="Bad Request: message thread not found")
-        return SendResult(success=True, message_id="fresh-message")
-
-    async def ensure_dm_topic(self, chat_id, topic_name, force_create=False):
-        self.ensure_dm_topic_calls.append(
-            {"chat_id": chat_id, "topic_name": topic_name, "force_create": force_create}
-        )
-        return "38064" if force_create else "32343"
-
-
-@pytest.mark.asyncio
-async def test_named_telegram_private_topic_is_created_before_delivery(tmp_path, monkeypatch):
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
-    adapter = RecordingAdapter()
-    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
-    target = DeliveryTarget.parse("telegram:722341991:Hermes API Test")
-
-    await router._deliver_to_platform(target, "hello", metadata=None)
-
-    assert adapter.ensure_dm_topic_calls == [
-        {"chat_id": "722341991", "topic_name": "Hermes API Test", "force_create": False}
-    ]
-    assert adapter.calls == [
-        {
-            "chat_id": "722341991",
-            "content": "hello",
-            "metadata": {
-                "thread_id": "38049",
-                "telegram_dm_topic_created_for_send": True,
-            },
-        }
-    ]
-
-
-@pytest.mark.asyncio
-async def test_explicit_telegram_private_thread_uses_reply_fallback_with_anchor(tmp_path, monkeypatch):
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
-    adapter = RecordingAdapter()
-    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
-    target = DeliveryTarget.parse("telegram:722341991:32344")
-
-    await router._deliver_to_platform(
-        target,
-        "hello",
-        metadata={"telegram_reply_to_message_id": "9001"},
-    )
-
-    assert adapter.calls == [
-        {
-            "chat_id": "722341991",
-            "content": "hello",
-            "metadata": {
-                "telegram_reply_to_message_id": "9001",
-                "thread_id": "32344",
-                "telegram_dm_topic_reply_fallback": True,
-            },
-        }
-    ]
-
-
 class FailingAdapter:
     async def send(self, chat_id, content, metadata=None):
         return SendResult(success=False, error="route failed", retryable=False)
@@ -293,7 +216,7 @@ class FailingAdapter:
 # ---------------------------------------------------------------------------
 
 class ChunkingAdapter:
-    """Adapter that declares splits_long_messages=True (like Discord/Telegram)."""
+    """Adapter that declares splits_long_messages=True (like Discord)."""
     splits_long_messages = True
 
     def __init__(self):
@@ -374,8 +297,8 @@ async def test_oversized_non_ascii_output_is_delivered_on_windows_codepage(tmp_p
     _simulate_windows_codepage_write(monkeypatch)
 
     adapter = RecordingAdapter()
-    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
-    target = DeliveryTarget.parse("telegram:12345")
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
+    target = DeliveryTarget.parse("discord:12345")
 
     result = await router._deliver_to_platform(
         target, _NON_ASCII_OVERSIZED, metadata={"job_id": "nightly"}

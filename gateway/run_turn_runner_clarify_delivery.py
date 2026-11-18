@@ -1,6 +1,6 @@
 """Clarify prompt delivery on messaging platforms: send disposition, plain-text fallback, bounded wait.
 
-A native clarify card (Telegram inline keyboard, Slack blocks, …) can fail to render in three ways
+A native clarify card (Slack blocks, Discord components, …) can fail to render in three ways
 the user never sees (#112684): the platform rejects it at once, the send outruns the 15 s
 disposition window and only then fails (pool / connect timeouts, a stale-thread retry), or there
 is no chat surface at all. Each used to end as a full ``clarify_timeout`` of silence reported as

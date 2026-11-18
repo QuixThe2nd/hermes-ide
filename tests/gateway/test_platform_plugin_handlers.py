@@ -2,8 +2,7 @@
 
 Covers:
 * ``PluginContext.register_platform_handler`` validation + queuing
-* ``PluginContext.register_telegram_handler`` back-compat alias
-* ``PluginManager.get_platform_handler_factories`` accessor (+ telegram alias)
+* ``PluginManager.get_platform_handler_factories`` accessor
 * ``BasePlatformAdapter._wire_plugin_handlers`` invoking factories with
   ``(native, adapter)`` — exercised through the Discord adapter
 * Defensive isolation: a factory that raises does NOT prevent other
@@ -98,52 +97,29 @@ class TestRegisterPlatformHandlerAPI:
 
     def test_accessor_returns_copy(self):
         mgr, ctx = _make_ctx()
-        ctx.register_platform_handler("telegram", lambda n, a: None)
+        ctx.register_platform_handler("slack", lambda n, a: None)
 
-        got = mgr.get_platform_handler_factories("telegram")
+        got = mgr.get_platform_handler_factories("slack")
         got.append(("junk", "junk"))
-        assert len(mgr.get_platform_handler_factories("telegram")) == 1
+        assert len(mgr.get_platform_handler_factories("slack")) == 1
 
     def test_multiple_plugins_each_recorded(self):
         mgr = PluginManager()
         for name in ("plugin_a", "plugin_b"):
             manifest = PluginManifest(name=name, version="0.1.0", description="t")
             ctx = PluginContext(manifest=manifest, manager=mgr)
-            ctx.register_platform_handler("telegram", lambda n, a: None)
+            ctx.register_platform_handler("slack", lambda n, a: None)
 
-        names = [n for _, n in mgr.get_platform_handler_factories("telegram")]
+        names = [n for _, n in mgr.get_platform_handler_factories("slack")]
         assert names == ["plugin_a", "plugin_b"]
 
     def test_force_rediscovery_clears_factories(self):
         mgr, ctx = _make_ctx()
-        ctx.register_platform_handler("telegram", lambda n, a: None)
-        assert len(mgr.get_platform_handler_factories("telegram")) == 1
+        ctx.register_platform_handler("slack", lambda n, a: None)
+        assert len(mgr.get_platform_handler_factories("slack")) == 1
 
         mgr.discover_and_load(force=True)
-        assert mgr.get_platform_handler_factories("telegram") == []
-
-
-# ===========================================================================
-# Telegram back-compat alias
-# ===========================================================================
-
-class TestTelegramAlias:
-    def test_register_telegram_handler_routes_to_telegram_bucket(self):
-        mgr, ctx = _make_ctx()
-
-        def factory(application, adapter):  # pragma: no cover
-            pass
-
-        ctx.register_telegram_handler(factory)
-
-        assert mgr.get_platform_handler_factories("telegram") == [
-            (factory, "test_plugin")
-        ]
-
-    def test_alias_non_callable_raises(self):
-        _, ctx = _make_ctx()
-        with pytest.raises(ValueError, match="non-callable"):
-            ctx.register_telegram_handler("not-a-callable")  # type: ignore[arg-type]
+        assert mgr.get_platform_handler_factories("slack") == []
 
 
 # ===========================================================================

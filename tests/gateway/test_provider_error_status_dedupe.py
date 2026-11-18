@@ -27,19 +27,19 @@ _EXHAUSTION_STATUS = "❌ API failed after 4 retries — TimeoutError: codex str
 
 
 def test_provider_error_status_is_dropped_for_chat_platforms():
-    assert _prepare("telegram", "lifecycle", _EXHAUSTION_STATUS) is None
+    assert _prepare("slack", "lifecycle", _EXHAUSTION_STATUS) is None
     assert _prepare("discord", "status", _EXHAUSTION_STATUS) is None
 
 
 def test_live_retry_progress_events_still_pass_through():
-    out = _prepare("telegram", "retry_progress", "⚠️ API call failed (attempt 2/4) error_type=TimeoutError — retrying in 8s")
+    out = _prepare("discord", "retry_progress", "⚠️ API call failed (attempt 2/4) error_type=TimeoutError — retrying in 8s")
     assert out is not None, "the opt-in retry_progress lane must keep flowing during the stall"
 
 
 def test_final_response_still_rewrites_to_the_provider_error_reply():
     from gateway.run import _sanitize_gateway_final_response
     final = _sanitize_gateway_final_response(
-        "telegram", "API call failed after 4 retries: TimeoutError: connection closed")
+        "discord", "API call failed after 4 retries: TimeoutError: connection closed")
     assert "kept failing" in final
     assert "/retry" in final, "the canonical failure message must tell the user what to do"
 
@@ -50,4 +50,4 @@ def test_raw_text_platforms_keep_the_status_unchanged():
 
 
 def test_normal_status_lines_still_flow():
-    assert _prepare("telegram", "status", "🧠 Remembering this conversation…") == "🧠 Remembering this conversation…"
+    assert _prepare("discord", "status", "🧠 Remembering this conversation…") == "🧠 Remembering this conversation…"

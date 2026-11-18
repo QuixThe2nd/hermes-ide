@@ -185,7 +185,7 @@ def test_persistent_docker_default_profile_shares_default_container(monkeypatch)
     from gateway.session_context import clear_session_vars, set_session_vars
 
     _persistent_docker(monkeypatch)
-    tokens = set_session_vars(session_key="agent:main:telegram:dm:123", profile="")
+    tokens = set_session_vars(session_key="agent:main:discord:dm:123", profile="")
     try:
         assert terminal_tool._resolve_container_task_id(None) == "default"
     finally:
@@ -196,7 +196,7 @@ def test_persistent_docker_two_sessions_same_profile_share_container(monkeypatch
     from gateway.session_context import clear_session_vars, set_session_vars
 
     _persistent_docker(monkeypatch)
-    tokens = set_session_vars(session_key="agent:main:telegram:dm:123", profile="work")
+    tokens = set_session_vars(session_key="agent:main:discord:dm:123", profile="work")
     try:
         a = terminal_tool._resolve_container_task_id(None)
     finally:

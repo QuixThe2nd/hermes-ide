@@ -1,7 +1,8 @@
 """Bot-to-bot loop guard: ``_is_user_authorized`` refuses a chat in cooldown, ``_admit_bot_message`` counts.
 
-The scenarios set ``TELEGRAM_GROUP_ALLOWED_CHATS``: that allowlist admits a bot before the ``ALLOW_BOTS``
-block runs, which is the configuration that produced the incident.
+The scenarios admit the bots through the user allowlist while ``DISCORD_ALLOW_BOTS`` is also on:
+an allowlist-admitted bot skips the ``ALLOW_BOTS`` block, which is the configuration that
+produced the original incident.
 """
 
 from concurrent.futures import ThreadPoolExecutor
@@ -21,9 +22,9 @@ HUMAN = "100200300"
 
 
 @pytest.fixture(autouse=True)
-def _isolate_telegram_env(monkeypatch):
-    for var in ("TELEGRAM_ALLOW_BOTS", "TELEGRAM_ALLOWED_USERS", "TELEGRAM_ALLOW_ALL_USERS", "TELEGRAM_GROUP_ALLOWED_USERS",
-                "TELEGRAM_GROUP_ALLOWED_CHATS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
+def _isolate_authz_env(monkeypatch):
+    for var in ("DISCORD_ALLOW_BOTS", "DISCORD_ALLOWED_USERS", "SLACK_ALLOW_BOTS",
+                "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -50,20 +51,20 @@ def runner(clock, settings):
 
 
 def _bot(user_id: str, chat_id: str = GROUP_CHAT, chat_type: str = "group") -> SessionSource:
-    return SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, chat_type=chat_type, user_id=user_id,
+    return SessionSource(platform=Platform.DISCORD, chat_id=chat_id, chat_type=chat_type, user_id=user_id,
                          user_name=f"Bot{user_id}", is_bot=True)
 
 
 def _human(chat_id: str = GROUP_CHAT, chat_type: str = "group") -> SessionSource:
-    return SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, chat_type=chat_type, user_id=HUMAN,
+    return SessionSource(platform=Platform.DISCORD, chat_id=chat_id, chat_type=chat_type, user_id=HUMAN,
                          user_name="Alice", is_bot=False)
 
 
 def _incident_config(monkeypatch):
-    """ALLOW_BOTS on, a human allowlist, and the group-chat allowlist that short-circuits authz."""
-    monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", "mentions")
-    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", HUMAN)
-    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", f"{GROUP_CHAT},{OTHER_GROUP}")
+    """ALLOW_BOTS on, and a user allowlist that also names the bots — an allowlisted bot
+    is admitted before the ``ALLOW_BOTS`` block runs."""
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", f"{HUMAN},{BOT_A},{BOT_B},{BOT_C}")
 
 
 def _inbound(runner, source: SessionSource) -> bool:
@@ -79,7 +80,7 @@ def _ping_pong(runner, turns: int, chat_id: str = GROUP_CHAT) -> list:
 
 
 def test_one_inbound_is_counted_once_however_often_the_verdict_is_asked(monkeypatch, runner):
-    """The Telegram adapter, the ingress gate and the busy path all ask the verdict for one message."""
+    """The adapter, the ingress gate and the busy path all ask the verdict for one message."""
     _incident_config(monkeypatch)
     for _ in range(20):
         bot = _bot(BOT_A)
@@ -176,11 +177,11 @@ async def test_routed_bot_traffic_is_metered_by_the_transport_profiles_policy(tm
     ([BOT_A, BOT_B], GROUP_CHAT, "group", True),
     ([BOT_A, BOT_B, BOT_C], GROUP_CHAT, "group", True),
     ([BOT_A], "123", "dm", False),
-], ids=["ping-pong of 40 turns", "three bots share one budget", "plain ALLOW_BOTS dm without a chat allowlist"])
+], ids=["ping-pong of 40 turns", "three bots share one budget", "dm lane outside any group allowlist"])
 def test_admitted_bot_traffic_is_cut_at_the_budget(monkeypatch, runner, senders, chat_id, chat_type, group_allowlist):
     _incident_config(monkeypatch)
     if not group_allowlist:
-        monkeypatch.delenv("TELEGRAM_GROUP_ALLOWED_CHATS")
+        monkeypatch.setenv("DISCORD_ALLOWED_USERS", HUMAN)  # bots no longer allowlisted
 
     verdicts = [_inbound(runner, _bot(senders[i % len(senders)], chat_id, chat_type)) for i in range(40)]
 
@@ -208,9 +209,9 @@ def test_budget_is_scoped_by_chat_and_platform(monkeypatch, runner):
 
     assert _inbound(runner, _bot(BOT_A, chat_id=OTHER_GROUP)) is True
     assert _inbound(runner, _bot(BOT_B, chat_id=OTHER_GROUP)) is True
-    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
-    discord_bot = SessionSource(platform=Platform.DISCORD, chat_id=GROUP_CHAT, chat_type="group", user_id=BOT_A, is_bot=True)
-    assert _inbound(runner, discord_bot) is True
+    monkeypatch.setenv("SLACK_ALLOW_BOTS", "all")
+    slack_bot = SessionSource(platform=Platform.SLACK, chat_id=GROUP_CHAT, chat_type="group", user_id=BOT_A, is_bot=True)
+    assert _inbound(runner, slack_bot) is True
 
 
 def test_cooldown_expiry_readmits_with_a_fresh_budget(monkeypatch, runner, clock):
@@ -232,7 +233,7 @@ def test_disabled_via_config_admits_everything(monkeypatch, runner, settings):
 
 def test_rejected_bot_messages_do_not_consume_budget(monkeypatch, runner):
     """Only admitted bot traffic counts, so an unauthorized bot cannot silence an authorized one."""
-    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", HUMAN)
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", HUMAN)
 
     for _ in range(30):
         assert _inbound(runner, _bot(BOT_A, chat_id="123", chat_type="dm")) is False

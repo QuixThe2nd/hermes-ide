@@ -47,14 +47,14 @@ class TestTextDocumentNote:
     async def test_event_contract_marks_non_inlined_text_and_preserves_path(self):
         runner = object.__new__(GatewayRunner)
         runner.config = GatewayConfig(
-            platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")}
+            platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="fake")}
         )
         runner.adapters = {}
         runner._pending_native_image_paths_by_session = {}
         runner._session_model_overrides = {}
         runner._session_reasoning_overrides = {}
         source = SessionSource(
-            platform=Platform.TELEGRAM,
+            platform=Platform.DISCORD,
             chat_id="text-document",
             chat_type="dm",
             user_id="42",

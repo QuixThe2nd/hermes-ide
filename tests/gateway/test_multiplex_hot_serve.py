@@ -125,7 +125,7 @@ async def test_deleted_profile_is_torn_down_and_unrouted_others_untouched(tmp_pa
         evicted = []
         runner._evict_cached_agent = evicted.append
         reconnect = asyncio.get_running_loop().create_task(asyncio.sleep(3600))
-        runner._profile_failed_platforms = {"gamma": {Platform.TELEGRAM: reconnect}}
+        runner._profile_failed_platforms = {"gamma": {Platform.DISCORD: reconnect}}
 
         from hermes_constants import mark_named_profile_deleted
         mark_named_profile_deleted(gamma_dir)  # what ``delete_profile`` does before rmtree

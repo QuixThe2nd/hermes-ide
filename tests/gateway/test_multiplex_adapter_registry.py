@@ -208,7 +208,6 @@ def _secondary_recovery_runner(*, running=True):
     runner._background_tasks = set()
     runner.session_store = object()
     runner._handle_active_session_busy_message = object()
-    runner._recover_telegram_topic_thread_id = object()
     runner._busy_text_mode = "queue"
     runner._make_adapter_auth_check = lambda platform, profile_name=None: object()
     runner._adapter_disconnect_timeout_secs = lambda: 0

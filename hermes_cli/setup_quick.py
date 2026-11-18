@@ -10,7 +10,7 @@ from pathlib import Path
 logger = logging.getLogger("hermes_cli.setup")
 
 # (env-var name substring, platform label, emoji) — order matters: first match wins.
-_MESSAGING_PLATFORMS = (("TELEGRAM", "Telegram", "📱"), ("DISCORD", "Discord", "💬"), ("SLACK", "Slack", "💼"))
+_MESSAGING_PLATFORMS = (("DISCORD", "Discord", "💬"), ("SLACK", "Slack", "💼"))
 
 
 
@@ -223,7 +223,7 @@ def _blank_slate_walkthrough(config: dict, hermes_home):
 
     # Optional messaging gateway
     print()
-    if prompt_yes_no("Connect a messaging platform (Telegram, Discord, …)?", default=False):
+    if prompt_yes_no("Connect a messaging platform (Discord, Slack, …)?", default=False):
         setup_gateway(config)
     save_config(config)
     _blank_slate_done(config, hermes_home, "  Enable more tools:   hermes tools")

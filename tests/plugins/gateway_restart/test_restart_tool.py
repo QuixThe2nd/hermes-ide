@@ -144,11 +144,11 @@ def _bind_session(runner, **kwargs):
 
 
 # A gateway chat session: platform + chat + session key all bound.
-_TELEGRAM_SESSION = {
-    "platform": "telegram",
+_CHAT_SESSION = {
+    "platform": "discord",
     "chat_id": "42",
     "chat_type": "dm",
-    "session_key": "tg-42",
+    "session_key": "chat-42",
 }
 
 
@@ -364,7 +364,7 @@ def test_handler_refuses_cron_sessions(gateway_loop, monkeypatch):
 
     runner = _live_runner(monkeypatch, gateway_loop)
 
-    _bind_session(runner, cron_session="1", **_TELEGRAM_SESSION)
+    _bind_session(runner, cron_session="1", **_CHAT_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
@@ -381,7 +381,7 @@ def test_handler_uses_service_path_under_supervisor(gateway_loop, monkeypatch):
     runner = _live_runner(monkeypatch, gateway_loop)
     monkeypatch.setenv(EXTERNAL_GATEWAY_SUPERVISOR_ENV, "1")
 
-    _bind_session(runner, **_TELEGRAM_SESSION)
+    _bind_session(runner, **_CHAT_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
@@ -401,7 +401,7 @@ def test_handler_uses_detached_helper_when_unsupervised(gateway_loop, monkeypatc
 
     runner = _live_runner(monkeypatch, gateway_loop)
 
-    _bind_session(runner, **_TELEGRAM_SESSION)
+    _bind_session(runner, **_CHAT_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
@@ -421,7 +421,7 @@ def test_handler_uses_service_path_in_container(gateway_loop, monkeypatch):
     runner = _live_runner(monkeypatch, gateway_loop)
     monkeypatch.setattr("gateway.restart.is_container_restart_context", lambda: True)
 
-    _bind_session(runner, **_TELEGRAM_SESSION)
+    _bind_session(runner, **_CHAT_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
@@ -441,7 +441,7 @@ def test_handler_reports_committed_restart_without_second_restart(
 
     runner = _live_runner(monkeypatch, gateway_loop, _restart_requested=True)
 
-    _bind_session(runner, **_TELEGRAM_SESSION)
+    _bind_session(runner, **_CHAT_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
@@ -467,7 +467,7 @@ def test_handler_chains_committed_restart_with_pending_successor(
         _overlap_restart_successor_started=True,
     )
 
-    _bind_session(runner, **_TELEGRAM_SESSION)
+    _bind_session(runner, **_CHAT_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
@@ -499,7 +499,7 @@ def test_handler_persists_restart_notify_from_session_context(
 
     _bind_session(
         runner,
-        platform="telegram",
+        platform="discord",
         chat_id="99",
         chat_type="group",
         thread_id="topic-7",
@@ -517,7 +517,7 @@ def test_handler_persists_restart_notify_from_session_context(
     notify_path = tmp_path / ".restart_notify.json"
     assert notify_path.exists()
     data = json.loads(notify_path.read_text(encoding="utf-8"))
-    assert data["platform"] == "telegram"
+    assert data["platform"] == "discord"
     assert data["chat_id"] == "99"
     assert data["chat_type"] == "group"
     assert data["thread_id"] == "topic-7"
@@ -530,7 +530,7 @@ def test_handler_persists_restart_notify_from_session_context(
     assert source.chat_id == "99"
     assert source.message_id == "m5"
 
-    # The tool is not a Telegram update — the redelivery dedup marker stays
+    # The tool is not a slash-command restart — the redelivery dedup marker stays
     # a /restart-slash-path-only write.
     assert not (tmp_path / ".restart_last_processed.json").exists()
 
@@ -562,7 +562,7 @@ def test_notify_marker_write_is_synchronous_on_the_gateway_loop(
 
     monkeypatch.setattr(gateway_restart, "atomic_json_write", _sync_only_write)
 
-    _bind_session(runner, **_TELEGRAM_SESSION)
+    _bind_session(runner, **_CHAT_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
@@ -865,7 +865,7 @@ def test_other_session_live_queues_the_drain_immediately(gateway_loop, monkeypat
     slept = MagicMock()
     monkeypatch.setattr(time, "sleep", slept)
 
-    _bind_session(runner, **_TELEGRAM_SESSION)
+    _bind_session(runner, **_CHAT_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
@@ -922,7 +922,7 @@ def test_extra_cron_or_api_work_queues_drain_immediately(
     slept = MagicMock()
     monkeypatch.setattr(time, "sleep", slept)
 
-    _bind_session(runner, **_TELEGRAM_SESSION)
+    _bind_session(runner, **_CHAT_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
@@ -995,7 +995,7 @@ def test_plugin_to_stop_route_spawns_exactly_one_direct_watcher(
     )
     monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
 
-    _bind_session(runner, **_TELEGRAM_SESSION)
+    _bind_session(runner, **_CHAT_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
@@ -1068,7 +1068,7 @@ def test_plugin_to_stop_route_supervised_spawns_no_watcher(
     popen = MagicMock()
     monkeypatch.setattr(subprocess, "Popen", popen)
 
-    _bind_session(runner, **_TELEGRAM_SESSION)
+    _bind_session(runner, **_CHAT_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:

@@ -149,7 +149,7 @@ class TestSendWithReplyToMode:
 
 
 class TestConfigSerialization:
-    """Tests for reply_to_mode serialization (shared with Telegram)."""
+    """Tests for reply_to_mode serialization."""
 
 
     def test_from_dict_loads_reply_to_mode(self):

@@ -35,7 +35,7 @@ def _make_entry(key: str, session_id: str, **kw) -> SessionEntry:
         session_id=session_id,
         created_at=now - timedelta(hours=2),
         updated_at=now - timedelta(hours=1),
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="dm",
         **kw,
     )
@@ -69,7 +69,7 @@ def _make_store_with_db(tmp_path, db_mock) -> SessionStore:
 def _source() -> SessionSource:
     # session_key for this peer is deterministic; matches the entry key we seed.
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="8494508720",
         chat_type="dm",
         user_id="8494508720",

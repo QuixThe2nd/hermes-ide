@@ -1677,7 +1677,7 @@ def _run_conversation_inlined(
         persist_user_display_metadata: Optional payload for that event
             (e.g. a delegation's task count).
         persist_user_platform_id: Optional platform-side message id (e.g. the
-            Discord/Telegram message id) to store as metadata on that
+            Discord message id) to store as metadata on that
             persisted user message, so restart drain-window recovery can
             dedup an interrupted turn against the transcript.
 
@@ -6210,7 +6210,7 @@ def _run_conversation_inlined(
                     # can still surface this shape via TypeError.  Treat
                     # them as retryable so the error classifier's normal
                     # retry/fallback path runs instead of killing the turn
-                    # as non-retryable (which left Telegram users staring
+                    # as non-retryable (which left gateway users staring
                     # at a bare "Non-retryable error" with no recovery).
                     and not (
                         isinstance(api_error, TypeError)
@@ -8917,7 +8917,7 @@ def run_conversation(
         persist_user_display_metadata: Optional payload for that event
             (e.g. a delegation's task count).
         persist_user_platform_id: Optional platform-side message id (e.g. the
-            Discord/Telegram message id) to store as metadata on that
+            Discord message id) to store as metadata on that
             persisted user message, so restart drain-window recovery can
             dedup an interrupted turn against the transcript.
 

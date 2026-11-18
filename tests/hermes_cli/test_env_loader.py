@@ -510,7 +510,7 @@ def test_shell_exported_credentials_survive_cleanup(tmp_path, monkeypatch):
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-from-shell")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-from-shell")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "12345:token-from-shell")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "12345:token-from-shell")
     # A profile-managed routing key inherited alongside them IS cleared.
     monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "cursor_login")
 
@@ -518,7 +518,7 @@ def test_shell_exported_credentials_survive_cleanup(tmp_path, monkeypatch):
 
     assert os.getenv("OPENAI_API_KEY") == "sk-from-shell"
     assert os.getenv("ANTHROPIC_API_KEY") == "sk-ant-from-shell"
-    assert os.getenv("TELEGRAM_BOT_TOKEN") == "12345:token-from-shell"
+    assert os.getenv("DISCORD_BOT_TOKEN") == "12345:token-from-shell"
     assert "HERMES_ACP_AUTH_METHOD" not in os.environ
 
 

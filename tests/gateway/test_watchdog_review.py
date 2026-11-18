@@ -165,7 +165,7 @@ def _runner_for_stall(adapter):
 def _pending_event(chat_id="chat-1"):
     from gateway.session import SessionSource
     from gateway.config import Platform
-    source = SessionSource(chat_id=chat_id, thread_id=None, platform=Platform.TELEGRAM)
+    source = SessionSource(chat_id=chat_id, thread_id=None, platform=Platform.DISCORD)
     return SimpleNamespace(text="follow-up", source=source, timestamp=time.time())
 
 
@@ -173,7 +173,7 @@ def _pending_event(chat_id="chat-1"):
 async def test_s2_progress_between_scan_and_send_aborts_delivery():
     adapter = _FakeAdapter()
     runner = _runner_for_stall(adapter)
-    session_key = "agent:main:telegram:dm:race"
+    session_key = "agent:main:discord:dm:race"
     adapter._pending_messages[session_key] = _pending_event()
     agent = _RacingAgent()
     runner._running_agents[session_key] = agent
@@ -191,7 +191,7 @@ async def test_s2_progress_between_scan_and_send_aborts_delivery():
 async def test_s2_pending_drained_between_scan_and_send_aborts_delivery():
     adapter = _FakeAdapter()
     runner = _runner_for_stall(adapter)
-    session_key = "agent:main:telegram:dm:drain"
+    session_key = "agent:main:discord:dm:drain"
 
     class _DrainOnReadAgent:
         def __init__(self):
@@ -222,7 +222,7 @@ async def test_s2_still_stale_after_revalidation_delivers():
     """Sanity: revalidation must not suppress GENUINE stall notices."""
     adapter = _FakeAdapter()
     runner = _runner_for_stall(adapter)
-    session_key = "agent:main:telegram:dm:genuine"
+    session_key = "agent:main:discord:dm:genuine"
     adapter._pending_messages[session_key] = _pending_event()
 
     class _StaleAgent:
