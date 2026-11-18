@@ -72,6 +72,16 @@ def _table_runner(snap: dict):
     return runner
 
 
+# Ops whose table expectation is one value (string or dict) rather than a
+# line list.
+_VALUE_OPS = ("note", "transition", "record", "owner_guard",
+              "owner_refusal", "chain_rewrite")
+
+# Of those, the ops whose Go binary prints a bare value (not JSON): the
+# binary prints chain_rewrite as JSON.
+_BARE_OUTPUT_OPS = ("note", "transition", "record", "owner_guard", "owner_refusal")
+
+
 def _python_render(case: dict):
     if case["op"] == "note":
         with patch.object(si, "_static_identity_fields",
@@ -100,6 +110,11 @@ def _python_render(case: dict):
         from plugins.gateway_restart.tool import socket_owner_refusal
         request = case["input"]
         return socket_owner_refusal(request["serving_pid"], request["identify"])
+    if case["op"] == "chain_rewrite":
+        from plugins.gateway_restart.tool import _socket_chain_rewrites_serving_process
+        request = case["input"]
+        return _socket_chain_rewrites_serving_process(
+            dict(request["ack"]), request["serving_pid"], request["identify"])
     if case["op"] == "turn_notes":
         request = case["input"]
         identity = request["identity"]
@@ -121,8 +136,8 @@ def _python_render(case: dict):
         state_pid_is_live=bool(state.get("pid_is_live", False)),
         state_is_stale=bool(state.get("is_stale", False)),
         state_restart_requested=state.get("restart_requested"),
-        chained=({"source": request["chained_source"]}
-                 if request.get("chained_source") else None),
+        chained=request.get("chained") or (
+            {"source": request["chained_source"]} if request.get("chained_source") else None),
         successor_identity=(
             (lambda pid, start_time: request["successor_identity"])
             if request.get("successor_identity") else None),
@@ -132,7 +147,7 @@ def _python_render(case: dict):
 
 @pytest.mark.parametrize("case", _shared_cases(), ids=lambda case: case["name"])
 def test_python_module_matches_the_shared_table(case):
-    if case["op"] in ("note", "transition", "record", "owner_guard", "owner_refusal"):
+    if case["op"] in _VALUE_OPS:
         assert _python_render(case) == case["expect"]
     else:
         assert _python_render(case) == case["expect_lines"]
@@ -153,7 +168,7 @@ def test_python_module_matches_the_running_go_binary(case, go_servingidentity):
     )
     assert run.returncode == 0, run.stderr
     rendered = _python_render(case)
-    if case["op"] in ("note", "transition", "record", "owner_guard", "owner_refusal"):
+    if case["op"] in _BARE_OUTPUT_OPS:
         assert rendered == run.stdout.rstrip("\n")
     else:
         assert rendered == json.loads(run.stdout)

@@ -18,8 +18,16 @@ type sharedCase struct {
 	Name        string   `json:"name"`
 	Op          string   `json:"op"`
 	Input       any      `json:"input"`
-	Expect      string   `json:"expect"`
+	Expect      any      `json:"expect"`
 	ExpectLines []string `json:"expect_lines"`
+}
+
+// expectString renders a scalar expectation (note/transition/record/
+// owner-guard/owner-refusal print one value; chain-rewrite prints a JSON
+// object compared separately).
+func (c sharedCase) expectString() string {
+	s, _ := c.Expect.(string)
+	return s
 }
 
 func loadSharedCases(t *testing.T) []sharedCase {
@@ -46,8 +54,8 @@ func TestRuntimeNoteMatchesSharedTable(t *testing.T) {
 			continue
 		}
 		input, _ := c.Input.(map[string]any)
-		if got := RuntimeNote(snapshotFromTable(input)); got != c.Expect {
-			t.Errorf("%s:\n got: %q\nwant: %q", c.Name, got, c.Expect)
+		if got := RuntimeNote(snapshotFromTable(input)); got != c.expectString() {
+			t.Errorf("%s:\n got: %q\nwant: %q", c.Name, got, c.expectString())
 		}
 	}
 }
@@ -76,9 +84,85 @@ func TestTransitionMatchesSharedTable(t *testing.T) {
 		}
 		input, _ := c.Input.(map[string]any)
 		if got := TransitionNote(snapshotFromRecord(input["previous"]),
-			identityFromRecord(input["identity"])); got != c.Expect {
-			t.Errorf("%s:\n got: %q\nwant: %q", c.Name, got, c.Expect)
+			identityFromRecord(input["identity"])); got != c.expectString() {
+			t.Errorf("%s:\n got: %q\nwant: %q", c.Name, got, c.expectString())
 		}
+	}
+}
+
+// TestRecordAndOwnerOpsMatchSharedTable drives the durable-record and
+// restart-gate ops through the same shared table the Python contract test
+// executes, so both twins are pinned on the identical inputs.
+func TestRecordAndOwnerOpsMatchSharedTable(t *testing.T) {
+	for _, c := range loadSharedCases(t) {
+		input, _ := c.Input.(map[string]any)
+		switch c.Op {
+		case "record":
+			current := snapshotFromRecord(input["record"])
+			got := "skip"
+			if ValidSessionID(tableString(input["session_id"])) &&
+				RecordWriteNeeded(tableString(input["stored"]), current) {
+				got = "write"
+			}
+			if got != c.expectString() {
+				t.Errorf("%s: got %q want %q", c.Name, got, c.expectString())
+			}
+		case "owner_guard":
+			if got := OwnerAction(tableInt(input["serving_pid"]),
+				tableIdentify(input["identify"])); got != c.expectString() {
+				t.Errorf("%s: got %q want %q", c.Name, got, c.expectString())
+			}
+		case "owner_refusal":
+			if got := OwnerRefusal(tableInt(input["serving_pid"]),
+				tableIdentify(input["identify"])); got != c.expectString() {
+				t.Errorf("%s: got %q want %q", c.Name, got, c.expectString())
+			}
+		}
+	}
+}
+
+// TestChainRewriteAndTurnNotesMatchSharedTable pins the two JSON-valued
+// ops: the chained-across-overlap ack rewrite and the per-turn note pair.
+func TestChainRewriteAndTurnNotesMatchSharedTable(t *testing.T) {
+	for _, c := range loadSharedCases(t) {
+		input, _ := c.Input.(map[string]any)
+		switch c.Op {
+		case "chain_rewrite":
+			ack, _ := input["ack"].(map[string]any)
+			got := ChainRewrite(map[string]any(ack), tableInt(input["serving_pid"]),
+				tableIdentify(input["identify"]))
+			want, _ := c.Expect.(map[string]any)
+			// JSON round-trip both sides: table numbers decode as float64
+			// while the rewrite writes ints — marshaled bytes are the
+			// contract, not the Go value types.
+			gotJSON, _ := json.Marshal(got)
+			wantJSON, _ := json.Marshal(want)
+			if string(gotJSON) != string(wantJSON) {
+				t.Errorf("%s:\n got: %s\nwant: %s", c.Name, gotJSON, wantJSON)
+			}
+		case "turn_notes":
+			got := TurnNotes(identityFromRecord(input["identity"]),
+				tableString(input["stored"]))
+			if !reflect.DeepEqual(got, c.ExpectLines) {
+				t.Errorf("%s:\n got: %q\nwant: %q", c.Name, got, c.ExpectLines)
+			}
+		}
+	}
+}
+
+// tableIdentify maps a table identify answer {pid, overlap{...}} onto
+// Identify (nil when absent).
+func tableIdentify(raw any) *Identify {
+	record, ok := raw.(map[string]any)
+	if !ok || tableInt(record["pid"]) <= 0 {
+		return nil
+	}
+	overlap, _ := record["overlap"].(map[string]any)
+	return &Identify{
+		PID:            tableInt(record["pid"]),
+		Role:           Role(tableString(overlap["role"])),
+		SuccessorPID:   tableInt(overlap["successor_pid"]),
+		SuccessorReady: tableBool(overlap["successor_ready"]),
 	}
 }
 
@@ -170,12 +254,21 @@ func stateFromTable(input map[string]any) *StateFile {
 	}
 }
 
-func chainedFromTable(input map[string]any) string {
-	source := tableString(input["chained_source"])
-	if source == "" {
-		return ""
+func chainedFromTable(input map[string]any) *ChainedMarker {
+	if raw, ok := input["chained"].(map[string]any); ok {
+		marker := &ChainedMarker{Source: ChainedSource(tableString(raw["source"]))}
+		if predecessor, ok := raw["predecessor"].(map[string]any); ok {
+			marker.PredecessorPID = tableInt(predecessor["pid"])
+			marker.PredecessorStart = tableInt64(predecessor["start_time"])
+		}
+		marker.SuccessorPID = tableInt(raw["successor_pid"])
+		marker.SuccessorStart = tableInt64(raw["successor_start_time"])
+		return marker
 	}
-	return ChainedSource(source)
+	if source := tableString(input["chained_source"]); source != "" {
+		return &ChainedMarker{Source: ChainedSource(source)}
+	}
+	return nil
 }
 
 func probeFromTable(input map[string]any) SuccessorIdentity {
@@ -265,7 +358,7 @@ func TestStatusLinesNeverGreenWithoutProof(t *testing.T) {
 		PID: 1438, Role: RoleDrainingPredecessor,
 		SuccessorPID: 709505, SuccessorStartTime: 3001234,
 	}
-	lines := StatusLines(draining, nil, "", func(int, int64) string { return "live" }, nil)
+	lines := StatusLines(draining, nil, nil, func(int, int64) string { return "live" }, nil)
 	if len(lines) != 1 || !strings.HasPrefix(lines[0], "⏳") {
 		t.Errorf("unattested successor must be starting, got %q", lines)
 	}
@@ -274,13 +367,13 @@ func TestStatusLinesNeverGreenWithoutProof(t *testing.T) {
 		PID: 1438, Role: RoleDrainingPredecessor,
 		SuccessorPID: 709505, SuccessorStartTime: 3001234, SuccessorReady: true,
 	}
-	lines = StatusLines(reused, nil, "", func(int, int64) string { return "dead" }, nil)
+	lines = StatusLines(reused, nil, nil, func(int, int64) string { return "dead" }, nil)
 	if len(lines) != 1 || !strings.HasPrefix(lines[0], "⚠") {
 		t.Errorf("reused successor pid must warn, got %q", lines)
 	}
 	// A fresh live draining state record never labels its pid the server.
 	state := &StateFile{PID: 1438, GatewayState: "draining", PIDIsLive: true, RestartRequested: true}
-	lines = StatusLines(nil, state, "", nil, nil)
+	lines = StatusLines(nil, state, nil, nil, nil)
 	if len(lines) != 1 || !strings.HasPrefix(lines[0], "⚠") {
 		t.Errorf("draining state record must stay unknown, got %q", lines)
 	}
@@ -288,7 +381,7 @@ func TestStatusLinesNeverGreenWithoutProof(t *testing.T) {
 	// overlap window that answerer is the draining predecessor, and its
 	// serving role cannot be proven from here.
 	legacy := &Identify{PID: 709505, StartTime: 3001234}
-	lines = StatusLines(legacy, nil, "", nil, nil)
+	lines = StatusLines(legacy, nil, nil, nil, nil)
 	if len(lines) != 1 || !strings.HasPrefix(lines[0], "⚠") ||
 		strings.Contains(lines[0], "✓") {
 		t.Errorf("legacy identify must never be green, got %q", lines)
@@ -296,7 +389,7 @@ func TestStatusLinesNeverGreenWithoutProof(t *testing.T) {
 	// A proven serving role stays green beside a second live gateway pid:
 	// that overlap window is exactly when two gateways legitimately coexist.
 	serving := &Identify{PID: 1531038, StartTime: 3005678, Role: RoleServing}
-	lines = StatusLines(serving, nil, "", nil, []int{709505, 1531038})
+	lines = StatusLines(serving, nil, nil, nil, []int{709505, 1531038})
 	if len(lines) != 1 || !strings.HasPrefix(lines[0], "✓") {
 		t.Errorf("proven serving role must stay green, got %q", lines)
 	}
@@ -443,5 +536,44 @@ func TestChainedSourceFallback(t *testing.T) {
 	}
 	if got := ChainedSource("discord user 42 (restart)"); got != "discord user 42 (restart)" {
 		t.Errorf("recorded source: got %q", got)
+	}
+}
+
+// TestChainedMarkerStateMatrix pins the staleness classifier's decisions —
+// a provably dead generation must never read as a queued restart. Twin of
+// tests/gateway/test_serving_identity.py's chained-marker staleness block.
+func TestChainedMarkerStateMatrix(t *testing.T) {
+	full := &ChainedMarker{
+		Source:           "cli (hermes gateway restart)",
+		PredecessorPID:   709505,
+		PredecessorStart: 3001234,
+		SuccessorPID:     1531038,
+		SuccessorStart:   3005678,
+	}
+	legacy := &ChainedMarker{Source: "discord user 42 (restart)"}
+	cases := []struct {
+		name         string
+		marker       *ChainedMarker
+		servingPID   int
+		servingStart int64
+		want         string
+	}{
+		{"successor serving its own chain", full, 1531038, 3005678, "pending"},
+		{"predecessor still draining", full, 709505, 3001234, "pending"},
+		{"pid matches but start differs (reuse)", full, 1531038, 4000000, "stale"},
+		{"serving process is neither member", full, 2295812, 9000000, "stale"},
+		{"legacy marker claims nothing", legacy, 1531038, 3005678, "unproven"},
+		{"full marker without a proven serving pid", full, 0, 0, "unproven"},
+	}
+	for _, tc := range cases {
+		if got := ChainedMarkerState(tc.marker, tc.servingPID, tc.servingStart); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	if line := ChainedLine(full, 1531038, 4000000); !strings.HasPrefix(line, "⚠ Chained restart marker is stale") {
+		t.Errorf("stale marker must render stale, got %q", line)
+	}
+	if line := ChainedLine(full, 709505, 3001234); !strings.HasPrefix(line, "⏳ Chained restart queued") {
+		t.Errorf("pending marker must render queued, got %q", line)
 	}
 }

@@ -41,6 +41,37 @@
 //     draining (gateway_state "draining" or restart_requested), in which
 //     case serving identity is unknown. Otherwise "unknown" with the reason
 //     — never a serving claim that cannot be proven.
+//   - The process scan (gatewayPIDs / find_gateway_pids) is EVIDENCE, never
+//     a claim: it never upgrades an answer, but with more than one live
+//     gateway process it demotes the unproven rungs — a legacy identify
+//     answer (no overlap block), the state-file fallback, and the no-sources
+//     case — to "ambiguous", naming every candidate pid. A proven serving
+//     role, overlap-successor answer, or attested successor STAYS green
+//     beside a second live pid: that overlap window is exactly when two
+//     gateway processes legitimately coexist. A LEGACY identify answer is
+//     never green at all — during overlap that answerer is the draining
+//     predecessor, and its serving role cannot be proven from here (the
+//     field incident: status green-served the predecessor while its
+//     successor served the turns).
+//   - Process transitions (TransitionState/TransitionNote): the session's
+//     DURABLE served-by record (transitionrecord.go — "served_by:<session>"
+//     holding pid + start fingerprint, written on change only) proves which
+//     process served the previous turns. A provably different process
+//     (pid inequality, or equal pids with differing fingerprints — PIDs get
+//     reused) renders the transition note: it names both identities, states
+//     the transition is NOT a new task (persisted conversation/task context
+//     carried over and stays valid), and demands revalidation of
+//     process-local state (terminals, background processes, kernels,
+//     sockets, caches, tool handles, recorded pids). Same process, first
+//     turn, or unprovable fingerprints render nothing — silence is never a
+//     guess.
+//   - The restart-tool owner gate (OwnerAction/OwnerRefusal/ChainRewrite):
+//     a restart queued through the control socket must target the process
+//     serving THIS conversation. The socket's answerer must be that
+//     process, or attest it as a hub-ready successor ("attested-chain" —
+//     the result then names the serving process, not the socket owner);
+//     anything else is a refusal naming both pids. No serving stamp on the
+//     session keeps pre-fix behavior exactly (old installs never refused).
 package servingidentity
 
 import (
@@ -307,7 +338,8 @@ func pidList(pids []int) string {
 
 // StatusLines renders the serving-gateway status block. Wording is
 // byte-identical to gateway.serving_identity.serving_status_lines;
-// chainedSource is empty when no chained-restart marker exists.
+// chained is a peeked .restart_chain.json marker (nil when none exists);
+// a marker whose generation provably died renders as stale, never queued.
 //
 // gatewayPIDs is the live gateway process scan (hermes_cli.find_gateway_pids):
 // EVIDENCE, never a claim. It never upgrades an answer — a serving claim
@@ -319,7 +351,7 @@ func pidList(pids []int) string {
 // overlap role is NEVER green: during overlap that answerer is the draining
 // predecessor, and its serving role cannot be proven from here (the incident
 // where status green-served the predecessor while the successor served turns).
-func StatusLines(id *Identify, st *StateFile, chainedSource string, successorIdentity SuccessorIdentity, gatewayPIDs []int) []string {
+func StatusLines(id *Identify, st *StateFile, chained *ChainedMarker, successorIdentity SuccessorIdentity, gatewayPIDs []int) []string {
 	resolve := func(pid int, expectedStart int64) string {
 		if successorIdentity == nil {
 			if expectedStart == 0 {
@@ -334,6 +366,10 @@ func StatusLines(id *Identify, st *StateFile, chainedSource string, successorIde
 		return state
 	}
 	var lines []string
+	// The PROVEN serving identity (pid + start fingerprint), for the chain
+	// marker's staleness judgement. The state-file branch never sets it: a
+	// status file carries no start fingerprint.
+	servingPID, servingStart := 0, int64(0)
 	switch {
 	case id != nil && id.PID > 0:
 		answering := buildClause(id.PID, id.StartTime, "")
@@ -349,6 +385,7 @@ func StatusLines(id *Identify, st *StateFile, chainedSource string, successorIde
 							"running or its PID was reused; the restart may have failed, check "+
 							"the gateway log before restarting anything")
 				case id.SuccessorReady && state == "live":
+					servingPID, servingStart = id.SuccessorPID, id.SuccessorStartTime
 					lines = append(lines,
 						"✓ Serving gateway: pid "+strconv.Itoa(id.SuccessorPID)+" — restart successor "+
 							"(hub-confirmed serving); new turns are served here",
@@ -369,6 +406,7 @@ func StatusLines(id *Identify, st *StateFile, chainedSource string, successorIde
 						"respawn it — check the gateway log before restarting anything")
 			}
 		case id.Role == RoleOverlapSuccessor:
+			servingPID, servingStart = id.PID, id.StartTime
 			predecessorClause := ""
 			if id.PredecessorPID > 0 {
 				predecessorClause = "; predecessor pid " + strconv.Itoa(id.PredecessorPID) +
@@ -377,6 +415,7 @@ func StatusLines(id *Identify, st *StateFile, chainedSource string, successorIde
 			lines = append(lines, "✓ Serving gateway: "+answering+
 				" — restart successor, serving new turns"+predecessorClause)
 		case id.Role == RoleServing:
+			servingPID, servingStart = id.PID, id.StartTime
 			lines = append(lines, "✓ Serving gateway: "+answering+
 				" — answering on the gateway control socket")
 		case id.Role == "":
@@ -449,9 +488,10 @@ func StatusLines(id *Identify, st *StateFile, chainedSource string, successorIde
 			lines = append(lines, "⚠ Serving gateway: unknown — no control socket answer and no gateway_state.json record")
 		}
 	}
-	if chainedSource != "" {
-		lines = append(lines, "⏳ Chained restart queued: another restart will run once the current handoff "+
-			"completes (requested by "+chainedSource+")")
+	if chained != nil {
+		if line := ChainedLine(chained, servingPID, servingStart); line != "" {
+			lines = append(lines, line)
+		}
 	}
 	return lines
 }
