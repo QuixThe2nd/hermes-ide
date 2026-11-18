@@ -1,0 +1,92 @@
+{
+  "cases": [
+    {
+      "name": "user_manual_host",
+      "trigger": "user",
+      "supervised": false,
+      "container": false,
+      "expect": {
+        "via_service": false,
+        "detached": true,
+        "spawns_successor": true
+      }
+    },
+    {
+      "name": "update_signal_manual_host_spawns_overlap_successor",
+      "trigger": "update_signal",
+      "supervised": false,
+      "container": false,
+      "expect": {
+        "via_service": false,
+        "detached": true,
+        "spawns_successor": true
+      }
+    },
+    {
+      "name": "user_systemd_unit",
+      "trigger": "user",
+      "supervised": true,
+      "container": false,
+      "expect": {
+        "via_service": true,
+        "detached": false,
+        "spawns_successor": true
+      }
+    },
+    {
+      "name": "update_signal_systemd_unit_spawns_in_unit_successor",
+      "trigger": "update_signal",
+      "supervised": true,
+      "container": false,
+      "expect": {
+        "via_service": true,
+        "detached": false,
+        "spawns_successor": true
+      }
+    },
+    {
+      "name": "user_container_restart_policy",
+      "trigger": "user",
+      "supervised": false,
+      "container": true,
+      "expect": {
+        "via_service": true,
+        "detached": false,
+        "spawns_successor": false
+      }
+    },
+    {
+      "name": "update_signal_container_restart_policy_relaunch",
+      "trigger": "update_signal",
+      "supervised": false,
+      "container": true,
+      "expect": {
+        "via_service": true,
+        "detached": false,
+        "spawns_successor": false
+      }
+    },
+    {
+      "name": "user_supervised_container",
+      "trigger": "user",
+      "supervised": true,
+      "container": true,
+      "expect": {
+        "via_service": true,
+        "detached": false,
+        "spawns_successor": true
+      }
+    },
+    {
+      "name": "update_signal_supervised_container",
+      "trigger": "update_signal",
+      "supervised": true,
+      "container": true,
+      "expect": {
+        "via_service": true,
+        "detached": false,
+        "spawns_successor": true
+      }
+    }
+  ]
+}

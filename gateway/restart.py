@@ -374,8 +374,41 @@ def is_container_restart_context() -> bool:
     return os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
 
 
+def restart_transport_plan(
+    trigger: str, *, supervised: bool, container: bool
+) -> dict:
+    """The ONE transport decision every restart trigger must derive from.
+
+    Go twin (canonical contract statement): ``internal/restartplan`` — the
+    shared table ``testdata/restart_cases.json`` and the contract test
+    ``tests/gateway/test_restart_plan_contract.py`` pin both twins to the
+    same decisions. ``trigger`` is "user" (/restart, the restart tool, the
+    control-socket verb) or "update_signal" (SIGUSR1 from ``hermes update``
+    or the ``hermes gateway restart`` fallback); it is validated and then
+    MUST NOT influence the outcome — the update signal regressed exactly
+    here by hardcoding ``via_service=True`` on hosts with no supervisor.
+
+    ``supervised`` mirrors :func:`is_gateway_supervisor_process`, ``container``
+    mirrors :func:`is_container_restart_context`. Returns the flags
+    ``request_restart`` consumes: ``via_service`` (exit 75 to the
+    supervisor/container restart policy), ``detached`` (this dying process
+    arms its own replacement replay when nothing else will), and
+    ``spawns_successor`` (an overlap successor is expected during the drain —
+    in-unit under systemd, over the hub RPC on an unsupervised host, never
+    from inside a plain container whose restart policy owns the relaunch).
+    """
+    if trigger not in ("user", "update_signal"):
+        raise ValueError(f"unknown restart trigger: {trigger!r}")
+    via_service = bool(supervised or container)
+    return {
+        "via_service": via_service,
+        "detached": not via_service,
+        "spawns_successor": bool(supervised or not via_service),
+    }
+
+
 def user_restart_via_service() -> bool:
-    """Route a user-initiated restart (``/restart``, the ``restart`` tool) via
+    """Route a restart (``/restart``, the ``restart`` tool, SIGUSR1) via
     the service-manager exit path?
 
     True when a service manager (systemd/launchd/s6) supervises the gateway or
@@ -385,7 +418,11 @@ def user_restart_via_service() -> bool:
     kills the cgroup) or Docker (tini exits when the gateway dies, taking the
     detached helper with it).
     """
-    return is_gateway_supervisor_process() or is_container_restart_context()
+    return restart_transport_plan(
+        "user",
+        supervised=is_gateway_supervisor_process(),
+        container=is_container_restart_context(),
+    )["via_service"]
 
 
 def clear_pre_array_chain_marker() -> bool:
