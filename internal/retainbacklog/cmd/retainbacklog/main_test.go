@@ -310,10 +310,10 @@ func TestEnqueueMintsIDAndPersists(t *testing.T) {
 	}
 }
 
-// The Python emergency spool imports entries by replaying their ORIGINAL
-// line (id included) through this command; a crash between import and
-// spool-clear replays the same line. Provided ids must be honored and
-// re-Add must dedupe to the single entry.
+// The emergency spool imports entries by replaying their ORIGINAL line
+// (id included); a crash between import and spool-clear replays the same
+// line. Provided ids must be honored and re-Add must dedupe to the single
+// entry — the crash-safety Add already promises.
 func TestEnqueueCommandHonorsProvidedIDAndDedupes(t *testing.T) {
 	home := t.TempDir()
 	id := "cccccccc-dddd-4eee-8fff-000000000000"
@@ -341,6 +341,49 @@ func TestEnqueueCommandHonorsProvidedIDAndDedupes(t *testing.T) {
 	entries := q.Entries()
 	if len(entries) != 1 || entries[0].ID != id {
 		t.Fatalf("entries=%+v, want exactly the one provided-id entry", entries)
+	}
+}
+
+// The bridge's spool flush is this one command: the whole import runs as a
+// single flock-held transaction (not the per-line enqueue loop it replaced),
+// reports counts for the host log, and clears the spool.
+func TestImportSpoolCommandFoldsSpoolAndReports(t *testing.T) {
+	home := t.TempDir()
+	id := "cccccccc-dddd-4eee-8fff-000000000000"
+	lines := `{"id":"` + id + `","bank_id":"bank","item":{"content":"spooled"},"document_id":"doc-s","retry_after":"` +
+		time.Now().Add(time.Hour).UTC().Format(time.RFC3339) + `"}` + "\nnot json\n"
+	if err := os.MkdirAll(filepath.Join(home, "hindsight"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(spoolPath(home), []byte(lines), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	if err := run([]string{"import-spool", "--home", home}, strings.NewReader(""), &out); err != nil {
+		t.Fatal(err)
+	}
+	var reply map[string]any
+	if err := json.Unmarshal([]byte(out.String()), &reply); err != nil {
+		t.Fatal(err)
+	}
+	if reply["imported"] != float64(1) || reply["quarantined"] != float64(1) {
+		t.Fatalf("reply=%v, want 1 imported and 1 quarantined", reply)
+	}
+
+	q, err := retainbacklog.Open(backlogPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := q.Entries()
+	if len(entries) != 1 || entries[0].ID != id || entries[0].DocumentID != "doc-s" {
+		t.Fatalf("entries=%+v, want the spooled entry under its own id", entries)
+	}
+	if _, serr := os.Stat(spoolPath(home)); !os.IsNotExist(serr) {
+		t.Fatalf("spool must be cleared, stat err=%v", serr)
+	}
+	if _, cerr := os.Stat(spoolPath(home) + retainbacklog.CorruptSuffix); cerr != nil {
+		t.Fatalf("corrupt sidecar missing: %v", cerr)
 	}
 }
 
@@ -379,4 +422,8 @@ func TestLockFailClosedWhenUnwritable(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(blocked, "retain-backlog.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("no queue file may appear without the lock, err=%v", err)
 	}
+}
+
+func spoolPath(home string) string {
+	return filepath.Join(home, "hindsight", retainbacklog.SpoolFilename)
 }

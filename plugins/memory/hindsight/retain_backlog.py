@@ -297,17 +297,6 @@ def _fsync_dir(path: Path) -> None:
         finally:
             os.close(fd)
 
-
-def _atomic_rewrite(path: Path, text: str) -> None:
-    """tmp + fsync + rename + dir fsync: a reader never sees a torn file."""
-    tmp = path.with_name(path.name + f".tmp-{os.getpid()}")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(text)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
-    _fsync_dir(path.parent)
-
 class RetainBacklog:
     """One profile's backlog, delegated to the Go runtime. ``home_resolver``
     is invoked per operation so a multiplexed process keys every binary
@@ -428,54 +417,21 @@ class RetainBacklog:
         return entry["id"]
 
     def _flush_spool(self) -> None:
-        """Import emergency-spooled entries into the real queue through the
-        Go runtime's enqueue command (id honored, dedupe by id), then clear
-        the imported lines atomically. Any failure — runtime gone again, an
-        enqueue error — keeps the remaining lines in order for the next
-        flush, so a crash between import and clear re-imports nothing (the
-        runtime dedupes by id). Unparseable lines are quarantined next to
-        the spool, never silently dropped. A missing spool file is a no-op
+        """Import emergency-spooled entries into the real queue via the Go
+        runtime's import-spool command: one flock-held transaction that Adds
+        every parseable line (id honored, dedupe by id), quarantines corrupt
+        lines next to the spool, and rewrites the spool with any unimported
+        remainder in order — a crash between import and clear re-imports
+        nothing (the runtime dedupes by id). A missing spool file is a no-op
         that never touches the runtime."""
-        spool = self._spool_path
-        if not spool.exists():
+        if not self._spool_path.exists():
             return
-        lines = [ln for ln in spool.read_text(encoding="utf-8").splitlines() if ln.strip()]
-        if not lines:
-            with contextlib.suppress(OSError):
-                spool.unlink()
-                _fsync_dir(spool.parent)
-            return
-        kept: list[str] = []
-        corrupt: list[str] = []
-        for idx, line in enumerate(lines):
-            try:
-                json.loads(line)  # shape sanity; the runtime validates fully
-            except json.JSONDecodeError:
-                corrupt.append(line)
-                continue
-            try:
-                self._enqueue_line(line)
-            except Exception as exc:
-                logger.warning("Hindsight retain-backlog spool import stalled "
-                               "at line %d/%d: %s", idx + 1, len(lines), exc)
-                kept.extend(lines[idx:])
-                break
-        _atomic_rewrite(spool, "".join(ln + "\n" for ln in kept))
-        if corrupt:
-            sidecar = spool.with_name(spool.name + CORRUPT_SUFFIX)
-            with open(sidecar, "a", encoding="utf-8") as fh:
-                fh.writelines(ln + "\n" for ln in corrupt)
-                fh.flush()
-                os.fsync(fh.fileno())
-            logger.warning("Hindsight retain-backlog: %d corrupt spool line(s) "
-                           "quarantined to %s", len(corrupt), sidecar)
-
-    def _enqueue_line(self, line: str) -> None:
-        """One spool line through the Go enqueue command (id honored,
-        deduped by the runtime's Add)."""
-        proc = self._spawn("enqueue")
         try:
-            _, err = proc.communicate(line + "\n", timeout=_ENQUEUE_TIMEOUT_S)
+            proc = self._spawn("import-spool")
+        except BacklogRuntimeUnavailable:
+            return  # runtime gone again: lines stay spooled for the next flush
+        try:
+            _, err = proc.communicate(timeout=_ENQUEUE_TIMEOUT_S)
         except subprocess.TimeoutExpired:
             proc.kill()
             raise

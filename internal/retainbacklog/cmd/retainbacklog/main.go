@@ -23,8 +23,11 @@
 //	        <- {"id":..,"result":"ok|conflict|gone|permanent"} | {"id":..,"error":...}
 //	      final: {"type":"done","next_retry":"<rfc3339>|null","remaining":N}
 //
-//	retainbacklog peek --home DIR
-//	      stdout: {"next_retry":"<rfc3339>|null","remaining":N}
+//	retainbacklog import-spool --home DIR
+//	      folds <home>/hindsight/retain-backlog-spool.jsonl into the queue
+//	      under the same flock: FIFO, id honored, dedupe by id; corrupt lines
+//	      quarantine to <spool>.corrupt; unimported remainder stays spooled
+//	      stdout: {"imported":N,"quarantined":M}
 //
 // Exit codes: 0 ok, 2 usage, 1 runtime failure (message on stderr). A
 // runtime failure after partial progress leaves a consistent persisted
@@ -70,7 +73,7 @@ func (u *usageError) Unwrap() error { return u.err }
 
 func run(args []string, stdin io.Reader, stdout io.Writer) error {
 	if len(args) < 1 {
-		return &usageError{errors.New("usage: retainbacklog <enqueue|drain|peek> --home DIR")}
+		return &usageError{errors.New("usage: retainbacklog <enqueue|drain|peek|import-spool> --home DIR")}
 	}
 	fs := flag.NewFlagSet("retainbacklog "+args[0], flag.ContinueOnError)
 	home := fs.String("home", "", "HERMES_HOME of the owning profile")
@@ -87,6 +90,8 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 		return cmdDrain(*home, stdin, stdout)
 	case "peek":
 		return cmdPeek(*home, stdout)
+	case "import-spool":
+		return cmdImportSpool(*home, stdout)
 	default:
 		return &usageError{fmt.Errorf("unknown subcommand %q", args[0])}
 	}
@@ -123,6 +128,23 @@ func cmdPeek(home string, stdout io.Writer) error {
 	defer lock.Close()
 	emitDone(stdout, lock.Queue().NextRetry(), lock.Queue().Len())
 	return nil
+}
+
+func cmdImportSpool(home string, stdout io.Writer) error {
+	lock, err := openLocked(home)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	imported, quarantined, err := lock.Queue().ImportSpool(retainbacklog.SpoolPath(home))
+	out, _ := json.Marshal(map[string]any{"imported": imported, "quarantined": quarantined})
+	fmt.Fprintln(stdout, string(out))
+	var stall *retainbacklog.SpoolStallError
+	if errors.As(err, &stall) {
+		fmt.Fprintf(os.Stderr, "retainbacklog: %v\n", stall)
+		return nil // not a command failure: the remainder stays spooled, next pass retries
+	}
+	return err
 }
 
 // hostRemote adapts the stdio protocol to retainbacklog.Remote: every Remote

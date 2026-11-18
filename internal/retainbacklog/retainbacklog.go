@@ -237,19 +237,7 @@ func (q *Queue) quarantine(line string) error {
 		return nil
 	}
 	q.quarantined[line] = true
-	corruptPath := q.path + CorruptSuffix
-	if err := os.MkdirAll(filepath.Dir(corruptPath), 0o755); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(corruptPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if _, err := f.WriteString(line + "\n"); err != nil {
-		return err
-	}
-	return f.Sync()
+	return appendQuarantine(q.path+CorruptSuffix, line)
 }
 
 // save persists the entries atomically: tmp file in the same directory (0600,
