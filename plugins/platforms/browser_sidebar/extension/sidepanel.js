@@ -29,7 +29,10 @@ const inputEl = document.getElementById('input');
 const newChatEl = document.getElementById('new-chat');
 
 // tabId (integer) → that tab's conversation; null → the legacy single
-// conversation. Buckets hold {entries, streamText, streaming, loading}.
+// conversation. Buckets hold {entries, streamText, streaming, loading,
+// hydrated}: stored history merges in once; afterwards memory is the
+// source of truth (re-merging on every activation duplicated the
+// transcript once per return visit).
 const buckets = new Map();
 let activeTabId = null; // null until the window's active tab resolves
 let streamBubble = null; // DOM node receiving deltas for the active bucket
@@ -39,7 +42,7 @@ let streamBubble = null; // DOM node receiving deltas for the active bucket
 function bucketFor(tabId) {
   let bucket = buckets.get(tabId);
   if (!bucket) {
-    bucket = { entries: [], streamText: '', streaming: false, loading: false };
+    bucket = { entries: [], streamText: '', streaming: false, loading: false, hydrated: false };
     buckets.set(tabId, bucket);
   }
   return bucket;
@@ -63,7 +66,10 @@ function saveBucket(tabId) {
 
 function loadBucket(tabId) {
   const bucket = bucketFor(tabId);
-  if (bucket.loading) return;
+  // Hydrate from storage at most once per bucket lifetime. The bucket
+  // already holds the stored history afterwards, so re-running this on a
+  // later activation would prepend a duplicate copy of every entry.
+  if (bucket.loading || bucket.hydrated) return;
   bucket.loading = true;
   storageArea(tabId)
     .get(storageKey(tabId))
@@ -76,10 +82,11 @@ function loadBucket(tabId) {
         : [];
       bucket.entries = loaded.concat(bucket.entries);
       bucket.loading = false;
+      bucket.hydrated = true;
       if (tabId === activeTabId) renderActive();
     })
     .catch(() => {
-      bucket.loading = false;
+      bucket.loading = false; // never hydrated: a later activation retries
     });
 }
 
