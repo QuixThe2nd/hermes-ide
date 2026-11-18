@@ -6278,6 +6278,42 @@ def _print_runtime_health() -> None:
             print(f"  {line}")
 
 
+def _print_serving_identity() -> None:
+    """Authoritative serving-gateway identity, separate from supervisor evidence.
+
+    During an overlap restart the pid file, gateway_state.json and systemd
+    MainPID all name the draining predecessor; this block resolves the
+    process actually serving turns (control socket first, then the state
+    file) and says "unknown" when no source is provable — never a serving
+    claim inferred from the supervisor.
+    """
+    try:
+        from gateway.control_socket import identify_gateway
+        from gateway.restart_chain import peek_chained_restart
+        from gateway.serving_identity import serving_status_lines
+        from gateway.status import (
+            _pid_exists, read_runtime_status, runtime_status_is_stale, runtime_status_pid_is_live)
+        from hermes_constants import get_hermes_home
+
+        state = read_runtime_status()
+        lines = serving_status_lines(
+            identify=identify_gateway(get_hermes_home()),
+            state_pid=(state or {}).get("pid"),
+            state_gateway_state=(state or {}).get("gateway_state"),
+            state_pid_is_live=runtime_status_pid_is_live(state),
+            state_is_stale=runtime_status_is_stale(state),
+            chained=peek_chained_restart(),
+            pid_live=_pid_exists,
+        )
+    except Exception:
+        return
+    if lines:
+        print()
+        print("Serving gateway identity:")
+        for line in lines:
+            print(line)
+
+
 def _cmd_run(args):
     if getattr(args, "service", False):
         # The Windows SCM frontend (MSIX HermesGateway service):
@@ -6734,6 +6770,7 @@ def _cmd_status(args):
         else:
             _gw_windows().status(deep=deep)
         _print_gateway_process_mismatch(snapshot)
+        _print_serving_identity()
         _print_multiplex_standalone_reason()
         _print_served_ingress_urls()
     else:
@@ -6742,6 +6779,7 @@ def _cmd_status(args):
             print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
             print("  (Running manually, not as a system service)")
             _print_runtime_health()
+            _print_serving_identity()
             _print_multiplex_standalone_reason()
             _print_served_ingress_urls()
             print()
@@ -6749,6 +6787,7 @@ def _cmd_status(args):
         else:
             print("✗ Gateway is not running")
             _print_runtime_health()
+            _print_serving_identity()
             print()
             print("To start:")
             print("  hermes gateway run      # Run in foreground")

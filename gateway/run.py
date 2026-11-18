@@ -11415,6 +11415,13 @@ async def _start_gateway_start_control_socket(runner):
             except concurrent.futures.TimeoutError:
                 return {"multiplex": True, "pending": True, "served_profiles": runner.served_profile_names()}
 
+        def _identify_verb() -> dict:
+            """Enrich the default identify answer with this runner's overlap role."""
+            from gateway.control_socket import build_identify_payload
+
+            return build_identify_payload(runner=runner)
+
+
         def _restart_verb_handler(params: dict) -> dict:
             """`hermes gateway restart` asks this process to run the ONE restart core.
 
@@ -11480,7 +11487,8 @@ async def _start_gateway_start_control_socket(runner):
             }
 
         _control_server = GatewayControlServer(
-            verb_handlers={"pause-for-update": _pause_for_update_handler,
+            verb_handlers={"identify": _identify_verb,
+                           "pause-for-update": _pause_for_update_handler,
                            "restart": _restart_verb_handler,
                            "rescan-profiles": _rescan_profiles_handler,
                            "migrate-profile-identity": migrate_profile_identity_verb(runner),

@@ -1787,7 +1787,16 @@ class TurnRunner(_TurnRunnerCore):
         self._merge_turn_request_overrides(agent, turn_route)
         # Must-deliver notes for THIS turn ride the current user message (api_content sidecar), never
         # the system prompt. Assigned unconditionally so a reused agent never replays a stale note.
-        agent._gateway_turn_context_notes = "\n\n".join(runner._consume_pending_turn_sidecar_notes(ctx.session_key))
+        # The serving-identity runtime note rides the same channel: during an overlap restart every
+        # externally visible pid (systemd MainPID, pid file, gateway_state.json) names the draining
+        # predecessor, so each turn must be able to trust which process is actually serving it.
+        from gateway.serving_identity import serving_runtime_note
+
+        turn_notes = list(runner._consume_pending_turn_sidecar_notes(ctx.session_key))
+        runtime_note = serving_runtime_note(runner)
+        if runtime_note:
+            turn_notes.append(runtime_note)
+        agent._gateway_turn_context_notes = "\n\n".join(turn_notes)
         agent.background_review_callback, bg_release = self._make_bg_review_callbacks()
         # Register the release hook on the adapter so base.py's finally block fires it after the
         # main response is delivered.
