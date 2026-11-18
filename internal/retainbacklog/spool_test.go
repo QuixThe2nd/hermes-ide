@@ -64,7 +64,7 @@ func TestImportSpoolFoldsEntriesHonoringIDsAndClearsSpool(t *testing.T) {
 	writeSpool(t, dir, spoolLine(t, id1, "one")+"\n"+spoolLine(t, id2, "two")+"\n")
 
 	q := spoolQueue(t, dir)
-	imported, quarantined, err := q.ImportSpool(filepath.Join(dir, "hindsight", SpoolFilename))
+	imported, quarantined, err := q.ImportSpool(dir)
 	if err != nil || imported != 2 || quarantined != 0 {
 		t.Fatalf("imported=%d quarantined=%d err=%v", imported, quarantined, err)
 	}
@@ -88,12 +88,12 @@ func TestImportSpoolDedupesByIDOnReplay(t *testing.T) {
 	line := spoolLine(t, id, "keep")
 	writeSpool(t, dir, line+"\n")
 	q := spoolQueue(t, dir)
-	if _, _, err := q.ImportSpool(filepath.Join(dir, "hindsight", SpoolFilename)); err != nil {
+	if _, _, err := q.ImportSpool(dir); err != nil {
 		t.Fatal(err)
 	}
 	writeSpool(t, dir, line+"\n") // the crash: line re-presented verbatim
 
-	imported, _, err := q.ImportSpool(filepath.Join(dir, "hindsight", SpoolFilename))
+	imported, _, err := q.ImportSpool(dir)
 	if err != nil || imported != 1 {
 		t.Fatalf("imported=%d err=%v, want the replay counted once", imported, err)
 	}
@@ -115,7 +115,7 @@ func TestImportSpoolQuarantinesCorruptLinesNotTheRest(t *testing.T) {
 	writeSpool(t, dir, good+"\n"+torn+"\n"+"just garbage\n")
 
 	q := spoolQueue(t, dir)
-	imported, quarantined, err := q.ImportSpool(filepath.Join(dir, "hindsight", SpoolFilename))
+	imported, quarantined, err := q.ImportSpool(dir)
 	if err != nil || imported != 1 || quarantined != 2 {
 		t.Fatalf("imported=%d quarantined=%d err=%v", imported, quarantined, err)
 	}
@@ -138,7 +138,7 @@ func TestImportSpoolQuarantinesCorruptLinesNotTheRest(t *testing.T) {
 func TestImportSpoolMissingIsNoOp(t *testing.T) {
 	dir := t.TempDir()
 	q := spoolQueue(t, dir)
-	imported, quarantined, err := q.ImportSpool(filepath.Join(dir, "hindsight", SpoolFilename))
+	imported, quarantined, err := q.ImportSpool(dir)
 	if err != nil || imported != 0 || quarantined != 0 {
 		t.Fatalf("imported=%d quarantined=%d err=%v, want no-op", imported, quarantined, err)
 	}
@@ -153,7 +153,7 @@ func TestImportSpoolBlankOnlyRemovesSpool(t *testing.T) {
 	dir := t.TempDir()
 	writeSpool(t, dir, "\n   \n\r\n")
 	q := spoolQueue(t, dir)
-	imported, _, err := q.ImportSpool(filepath.Join(dir, "hindsight", SpoolFilename))
+	imported, _, err := q.ImportSpool(dir)
 	if err != nil || imported != 0 {
 		t.Fatalf("imported=%d err=%v, want no-op", imported, err)
 	}
@@ -171,7 +171,7 @@ func TestImportSpoolMintsMissingIDLikeEnqueue(t *testing.T) {
 	dir := t.TempDir()
 	writeSpool(t, dir, spoolLine(t, "", "mint me")+"\n")
 	q := spoolQueue(t, dir)
-	if _, _, err := q.ImportSpool(filepath.Join(dir, "hindsight", SpoolFilename)); err != nil {
+	if _, _, err := q.ImportSpool(dir); err != nil {
 		t.Fatal(err)
 	}
 	entries := q.Entries()
@@ -200,12 +200,180 @@ func TestImportSpoolStallAfterProgressKeepsOnlyTail(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	imported, _, err := q.ImportSpool(filepath.Join(dir, "hindsight", SpoolFilename))
+	imported, _, err := q.ImportSpool(dir)
 	var stall *SpoolStallError
 	if !errors.As(err, &stall) || imported != 1 {
 		t.Fatalf("imported=%d err=%v, want dedupe in then stall", imported, err)
 	}
 	if got := spoolText(t, dir); got != out+"\n" {
 		t.Fatalf("remainder=%q, want only the failing line kept", got)
+	}
+}
+
+// -- per-entry spool directory ------------------------------------------------
+
+func spoolDirPathFor(dir string) string {
+	return filepath.Join(dir, "hindsight", SpoolDirName)
+}
+
+func writeSpoolEntryFile(t *testing.T, dir, name, body string) {
+	t.Helper()
+	if err := os.MkdirAll(spoolDirPathFor(dir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(spoolDirPathFor(dir), name), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func spoolDirFileExists(t *testing.T, dir, name string) bool {
+	t.Helper()
+	_, err := os.Stat(filepath.Join(spoolDirPathFor(dir), name))
+	return err == nil
+}
+
+// Per-entry files import in name (FIFO) order with ids honored, and each
+// is unlinked only after its Add persisted.
+func TestImportSpoolDirFoldsEntryFilesFIFOAndUnlinks(t *testing.T) {
+	dir := t.TempDir()
+	id1, id2 := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "11111111-2222-4333-8444-555555555555"
+	writeSpoolEntryFile(t, dir,
+		"0000000000000000001-aaaabbbb4ccc8dddeeeeeeeeeeee.entry", spoolLine(t, id1, "one"))
+	writeSpoolEntryFile(t, dir,
+		"0000000000000000002-11111111222243338444555555555555.entry", spoolLine(t, id2, "two"))
+
+	q := spoolQueue(t, dir)
+	imported, quarantined, err := q.ImportSpool(dir)
+	if err != nil || imported != 2 || quarantined != 0 {
+		t.Fatalf("imported=%d quarantined=%d err=%v", imported, quarantined, err)
+	}
+	entries := q.Entries()
+	if len(entries) != 2 || entries[0].ID != id1 || entries[1].ID != id2 {
+		t.Fatalf("entries=%+v, want FIFO by file name", entries)
+	}
+	for _, name := range []string{
+		"0000000000000000001-aaaabbbb4ccc8dddeeeeeeeeeeee.entry",
+		"0000000000000000002-11111111222243338444555555555555.entry",
+	} {
+		if spoolDirFileExists(t, dir, name) {
+			t.Fatalf("%s must be unlinked after import", name)
+		}
+	}
+}
+
+// A live tmp file and an already-quarantined file are invisible to the
+// import: not read, not imported, not removed.
+func TestImportSpoolDirIgnoresTmpAndCorruptFiles(t *testing.T) {
+	dir := t.TempDir()
+	id := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	writeSpoolEntryFile(t, dir,
+		"0000000000000000001-aaaabbbb4ccc8dddeeeeeeeeeeee.entry", spoolLine(t, id, "keep"))
+	writeSpoolEntryFile(t, dir, "tmp-abc123", spoolLine(t, "in-flight", "half written"))
+	writeSpoolEntryFile(t, dir, "0000000000000000000-old.entry.corrupt", "not json")
+
+	q := spoolQueue(t, dir)
+	imported, quarantined, err := q.ImportSpool(dir)
+	if err != nil || imported != 1 || quarantined != 0 {
+		t.Fatalf("imported=%d quarantined=%d err=%v", imported, quarantined, err)
+	}
+	for _, name := range []string{"tmp-abc123", "0000000000000000000-old.entry.corrupt"} {
+		if !spoolDirFileExists(t, dir, name) {
+			t.Fatalf("%s must be left untouched", name)
+		}
+	}
+}
+
+// An unparseable entry file is quarantined by rename, never silently
+// dropped, and does not strand the files behind it.
+func TestImportSpoolDirQuarantinesUnparseableFile(t *testing.T) {
+	dir := t.TempDir()
+	id := "11111111-2222-4333-8444-555555555555"
+	writeSpoolEntryFile(t, dir,
+		"0000000000000000001-badbadbadbadbadbadbadbadbadbad01.entry", "not json\n")
+	writeSpoolEntryFile(t, dir,
+		"0000000000000000002-11111111222243338444555555555555.entry", spoolLine(t, id, "good"))
+
+	q := spoolQueue(t, dir)
+	imported, quarantined, err := q.ImportSpool(dir)
+	if err != nil || imported != 1 || quarantined != 1 {
+		t.Fatalf("imported=%d quarantined=%d err=%v", imported, quarantined, err)
+	}
+	if !spoolDirFileExists(t, dir,
+		"0000000000000000001-badbadbadbadbadbadbadbadbadbad01.entry.corrupt") {
+		t.Fatal("bad file must be renamed to .corrupt, not dropped")
+	}
+	if spoolDirFileExists(t, dir,
+		"0000000000000000002-11111111222243338444555555555555.entry") {
+		t.Fatal("good file must be imported and unlinked")
+	}
+}
+
+// A stall mid-directory keeps the failing file and every later one, in
+// order; files already imported stay imported (their Adds persisted).
+func TestImportSpoolDirStallKeepsFailingAndLaterFiles(t *testing.T) {
+	dir := t.TempDir()
+	seeded := Entry{ID: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+		BankID: "b", Item: item(t, "seed"), RetryAfter: time.Now()}
+	q := spoolQueue(t, dir)
+	if _, _, err := q.Add(seeded); err != nil { // seeds the backlog file
+		t.Fatal(err)
+	}
+	if err := os.Remove(q.path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(q.path, 0o755); err != nil { // later saves fail
+		t.Fatal(err)
+	}
+	// Same id as the seeded entry: dedupes without saving, so it imports
+	// and unlinks even while saves fail.
+	writeSpoolEntryFile(t, dir,
+		"0000000000000000001-aaaabbbb4ccc8dddeeeeeeeeeeee.entry", spoolLine(t, seeded.ID, "dupe"))
+	writeSpoolEntryFile(t, dir,
+		"0000000000000000002-11111111222243338444555555555555.entry",
+		spoolLine(t, "11111111-2222-4333-8444-555555555555", "stalls"))
+	writeSpoolEntryFile(t, dir,
+		"0000000000000000003-33333333444445555666677777777777.entry",
+		spoolLine(t, "33333333-4444-4555-5666-777777777777", "after"))
+
+	imported, _, err := q.ImportSpool(dir)
+	var stall *SpoolStallError
+	if !errors.As(err, &stall) || imported != 1 {
+		t.Fatalf("imported=%d err=%v, want dedupe in then stall", imported, err)
+	}
+	if spoolDirFileExists(t, dir,
+		"0000000000000000001-aaaabbbb4ccc8dddeeeeeeeeeeee.entry") {
+		t.Fatal("deduped file must be unlinked")
+	}
+	for _, name := range []string{
+		"0000000000000000002-11111111222243338444555555555555.entry",
+		"0000000000000000003-33333333444445555666677777777777.entry",
+	} {
+		if !spoolDirFileExists(t, dir, name) {
+			t.Fatalf("%s must stay spooled after the stall", name)
+		}
+	}
+}
+
+// Legacy spool-file lines import BEFORE per-entry files: a home upgraded
+// mid-outage keeps one global FIFO order.
+func TestImportSpoolLegacyLinesImportBeforeDirEntries(t *testing.T) {
+	dir := t.TempDir()
+	idFile := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	idDir := "11111111-2222-4333-8444-555555555555"
+	writeSpool(t, dir, spoolLine(t, idFile, "older")+"\n")
+	writeSpoolEntryFile(t, dir,
+		"0000000000000000001-11111111222243338444555555555555.entry", spoolLine(t, idDir, "newer"))
+
+	q := spoolQueue(t, dir)
+	imported, _, err := q.ImportSpool(dir)
+	if err != nil || imported != 2 {
+		t.Fatalf("imported=%d err=%v", imported, err)
+	}
+	entries := q.Entries()
+	if len(entries) != 2 || entries[0].ID != idFile || entries[1].ID != idDir {
+		t.Fatalf("entries=%+v, want legacy line first", entries)
+	}
+	if spoolText(t, dir) != "" {
+		t.Fatalf("legacy spool must clear: %q", spoolText(t, dir))
 	}
 }

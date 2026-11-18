@@ -24,9 +24,12 @@
 //	      final: {"type":"done","next_retry":"<rfc3339>|null","remaining":N}
 //
 //	retainbacklog import-spool --home DIR
-//	      folds <home>/hindsight/retain-backlog-spool.jsonl into the queue
-//	      under the same flock: FIFO, id honored, dedupe by id; corrupt lines
-//	      quarantine to <spool>.corrupt; unimported remainder stays spooled
+//	      folds the emergency spool — legacy <home>/hindsight/
+//	      retain-backlog-spool.jsonl lines first, then the immutable
+//	      per-entry files in <home>/hindsight/retain-backlog-spool/ —
+//	      into the queue under the same flock: FIFO, id honored, dedupe
+//	      by id; corrupt entries quarantine to .corrupt; unimported
+//	      remainders stay spooled
 //	      stdout: {"imported":N,"quarantined":M}
 //
 // Exit codes: 0 ok, 2 usage, 1 runtime failure (message on stderr). A
@@ -136,7 +139,7 @@ func cmdImportSpool(home string, stdout io.Writer) error {
 		return err
 	}
 	defer lock.Close()
-	imported, quarantined, err := lock.Queue().ImportSpool(retainbacklog.SpoolPath(home))
+	imported, quarantined, err := lock.Queue().ImportSpool(home)
 	out, _ := json.Marshal(map[string]any{"imported": imported, "quarantined": quarantined})
 	fmt.Fprintln(stdout, string(out))
 	var stall *retainbacklog.SpoolStallError

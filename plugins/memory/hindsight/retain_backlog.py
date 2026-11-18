@@ -47,16 +47,24 @@ original sync call, and the client must not claim it.
 
 Failure containment: when the Go runtime cannot be produced (no prebuilt
 binary, no Go toolchain) enqueue does NOT lose the retain — it durably
-appends the entry (id minted here, still before any remote submission) to
-an emergency spool, ``<home>/hindsight/retain-backlog-spool.jsonl``, and
-the tool still reports the memory as queued. The next runtime acquisition
-— drain, peek, or enqueue, including in a fresh process after a restart —
-imports spooled lines through the real Go ``enqueue`` command, which
-honors the spooled id and dedupes by it, so a crash between import and
-spool-clear re-imports nothing. Corrupt spool lines are quarantined next
-to the spool, never silently dropped. drain/peek still raise
-:class:`BacklogRuntimeUnavailable` when the runtime is missing and real
-backlog work is pending.
+publishes the entry (id minted here, still before any remote submission)
+as one immutable file in the emergency spool directory
+``<home>/hindsight/retain-backlog-spool/`` (write tmp + fsync + atomic
+rename), and the tool still reports the memory as queued. Because the
+writer never mutates a published file and the Go importer never unlinks
+one before its queue Add persisted, the unlocked Python writer and the
+flock-holding importer can interleave with no lock protocol and no loss —
+the append-to-shared-file design this replaces could hand the writer an
+unlinked inode while fsync reported success. A legacy single-file spool
+(``retain-backlog-spool.jsonl``) from older builds still imports first.
+The next runtime acquisition — drain, peek, or enqueue, including in a
+fresh process after a restart — imports spooled entries through the real
+Go ``import-spool`` command, which honors the spooled id and dedupes by
+it, so a crash between import and spool-clear re-imports nothing. Corrupt
+spool entries are quarantined (legacy lines to a ``.corrupt`` sidecar,
+entry files renamed in place), never silently dropped. drain/peek still
+raise :class:`BacklogRuntimeUnavailable` when the runtime is missing and
+real backlog work is pending.
 """
 
 from __future__ import annotations
@@ -80,7 +88,11 @@ from typing import Any, Callable, Protocol
 logger = logging.getLogger(__name__)
 
 BACKLOG_FILENAME = "retain-backlog.jsonl"
+# Legacy single-file emergency spool (pre-per-entry builds); still imported.
 SPOOL_FILENAME = "retain-backlog-spool.jsonl"
+# Per-entry emergency spool directory; see the module docstring.
+SPOOL_DIRNAME = "retain-backlog-spool"
+SPOOL_ENTRY_SUFFIX = ".entry"
 
 _RETRY_AT_RE = re.compile(
     r"retry at (\d{4}-\d{2}-\d{2}[T ][\d:.]+(?:Z|[+-]\d{2}:?\d{2})?)", re.IGNORECASE
@@ -320,17 +332,38 @@ class RetainBacklog:
         return self._home_resolver() / "hindsight" / SPOOL_FILENAME
 
     @property
+    def _spool_dir(self) -> Path:
+        return self._home_resolver() / "hindsight" / SPOOL_DIRNAME
+
+    def _spool_dir_has_entries(self) -> bool:
+        """True when the per-entry spool holds at least one importable
+        ``.entry`` file — the accurate drain gate: tmp and quarantined
+        files alone import nothing and must not open it."""
+        try:
+            return any(
+                p.name.endswith(SPOOL_ENTRY_SUFFIX)
+                for p in self._spool_dir.iterdir()
+            )
+        except (FileNotFoundError, NotADirectoryError, PermissionError):
+            return False
+
+    @property
     def may_exist(self) -> bool:
         """Cheap gate for hot paths: True only when a backlog file might
         exist for the live home."""
         return str(self._home_resolver()) in self._may_exist_homes
 
     def refresh_may_exist(self) -> bool:
-        """One stat; True when a backlog or emergency-spool file exists for
-        the live home — the spool alone must open the drain gate so its
-        import runs as soon as the runtime is producible again."""
+        """Cheap existence check; True when a backlog or emergency-spool
+        entry exists for the live home — the spool alone must open the
+        drain gate so its import runs as soon as the runtime is producible
+        again."""
         base = self._home_resolver() / "hindsight"
-        exists = (base / BACKLOG_FILENAME).exists() or (base / SPOOL_FILENAME).exists()
+        exists = (
+            (base / BACKLOG_FILENAME).exists()
+            or (base / SPOOL_FILENAME).exists()
+            or self._spool_dir_has_entries()
+        )
         key = str(self._home_resolver())
         if exists:
             self._may_exist_homes.add(key)
@@ -399,32 +432,56 @@ class RetainBacklog:
 
     def _spool(self, entry: dict) -> str:
         """Emergency-spool one entry when the Go runtime is unproducible:
-        append it (id minted here — nothing has been submitted under any id
-        yet, so this is still "before any remote submission") with fsync.
-        The next runtime acquisition imports the line through the real Go
-        enqueue, which honors the id; the tool can honestly report the
+        publish it (id minted here — nothing has been submitted under any
+        id yet, so this is still "before any remote submission") as ONE
+        immutable per-entry file: write a tmp file, fsync it, atomically
+        rename it into place, fsync the directory. The writer never
+        appends to a shared file and never touches a published entry
+        again; the Go importer unlinks an entry file only after that
+        entry's queue Add persisted. No cross-process lock is needed — an
+        import racing this publish either lists the file (imports it now)
+        or does not (it stays for the next pass) — so the entry cannot be
+        lost the way an append into an unlinked inode was, and any
+        failure here raises instead of reporting a false success. The
+        next runtime acquisition imports the entry through the real Go
+        runtime, which honors the id; the tool can honestly report the
         memory as queued."""
         entry = dict(entry)
         entry["id"] = str(uuid.uuid4())
-        path = self._spool_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-        _fsync_dir(path.parent)
+        spool_dir = self._spool_dir
+        spool_dir.mkdir(parents=True, exist_ok=True)
+        # 19 digits holds ns timestamps until 2286; name order is FIFO.
+        # Clock skew across processes can reorder entries near in time —
+        # no loss, only an approximate queue order.
+        name = (
+            f"{time.time_ns():019d}-{entry['id'].replace('-', '')}"
+            f"{SPOOL_ENTRY_SUFFIX}"
+        )
+        tmp = spool_dir / f"tmp-{uuid.uuid4().hex}"
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, spool_dir / name)
+        finally:
+            # a failed publish must not leave a half-written tmp behind
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+        _fsync_dir(spool_dir)
         self._set_may_exist(True)
         return entry["id"]
 
     def _flush_spool(self) -> None:
         """Import emergency-spooled entries into the real queue via the Go
-        runtime's import-spool command: one flock-held transaction that Adds
-        every parseable line (id honored, dedupe by id), quarantines corrupt
-        lines next to the spool, and rewrites the spool with any unimported
-        remainder in order — a crash between import and clear re-imports
-        nothing (the runtime dedupes by id). A missing spool file is a no-op
-        that never touches the runtime."""
-        if not self._spool_path.exists():
+        runtime's import-spool command: one flock-held transaction that
+        Adds every parseable entry (id honored, dedupe by id) — legacy
+        spool-file lines first, then per-entry files in FIFO order —
+        quarantines corrupt entries, and leaves any unimported remainder
+        in place in order; a crash between import and clear re-imports
+        nothing (the runtime dedupes by id). A spool with nothing
+        importable is a no-op that never touches the runtime."""
+        if not self._spool_path.exists() and not self._spool_dir_has_entries():
             return
         try:
             proc = self._spawn("import-spool")

@@ -6,20 +6,41 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
-// SpoolFilename is the emergency spool inside <home>/hindsight/. When the
-// runtime binary itself cannot be produced (no per-home cache, no
-// process-global build, no prebuilt binary, no Go toolchain), the Python
-// bridge appends would-be backlog entries here with fsync instead of losing
-// them (RetainBacklog._spool in retain_backlog.py). ImportSpool folds those
-// lines back into the real queue as soon as a runtime is producible again.
+// SpoolFilename is the LEGACY emergency spool inside <home>/hindsight/: a
+// single JSONL file the Python bridge appended to before per-entry files
+// existed. It stays readable forever so data spooled by any older build
+// still imports; new writers publish into SpoolDirName instead.
 const SpoolFilename = "retain-backlog-spool.jsonl"
 
-// SpoolPath returns the emergency spool path for a home directory.
+// SpoolDirName is the per-entry emergency spool directory inside
+// <home>/hindsight/. When the runtime binary itself cannot be produced
+// (no per-home cache, no process-global build, no prebuilt binary, no Go
+// toolchain), the Python bridge emergency-spools would-be backlog entries
+// here as IMMUTABLE per-entry files published atomically (write tmp +
+// fsync + rename). The writer never mutates or removes a published file
+// and the importer never rewrites or unlinks a file it has not fully
+// imported, so the unlocked cross-process Python writer cannot lose an
+// entry to the importer the way an append into a rewritten/unlinked
+// shared file could. Names are "<19-digit ns timestamp>-<entry id
+// hex>.entry": lexicographic order preserves FIFO; anything not ending in
+// .entry (a live tmp, a quarantined .corrupt) is invisible to the import.
+const SpoolDirName = "retain-backlog-spool"
+
+// SpoolEntrySuffix marks one importable per-entry spool file.
+const SpoolEntrySuffix = ".entry"
+
+// SpoolPath returns the legacy emergency spool path for a home directory.
 func SpoolPath(home string) string {
 	return filepath.Join(home, "hindsight", SpoolFilename)
+}
+
+// SpoolDirPath returns the per-entry emergency spool directory for a home.
+func SpoolDirPath(home string) string {
+	return filepath.Join(home, "hindsight", SpoolDirName)
 }
 
 // SpoolStallError reports that an import stopped at an entry whose Add
@@ -36,23 +57,38 @@ func (e *SpoolStallError) Error() string {
 
 func (e *SpoolStallError) Unwrap() error { return e.Err }
 
-// ImportSpool folds every parseable spool line into the queue — FIFO, id
-// honored, dedupe by id (the same Add the enqueue command uses) — and
-// rewrites the spool atomically with what remains. Lines that do not parse
-// as an Entry are quarantined to <spool>.corrupt, never silently dropped.
-// The first Add failure stalls the import (SpoolStallError): the failing
-// line onward stays spooled. A missing or blank spool is a no-op that
-// removes nothing and leaves no backlog file behind. The caller holds the
-// cross-process flock: the whole import runs as one locked transaction,
-// unlike the per-line enqueue loop it replaces.
-// Returns the line counts imported (added or deduped) and quarantined.
-func (q *Queue) ImportSpool(spoolPath string) (imported, quarantined int, err error) {
+// ImportSpool folds every emergency-spooled entry into the queue — FIFO,
+// id honored, dedupe by id (the same Add the enqueue command uses) —
+// under the caller's cross-process flock, as one locked transaction.
+// Legacy spool-file lines come first (they predate the per-entry
+// protocol), then per-entry spool files in name order. A legacy line that
+// does not parse as an Entry is quarantined to <spool>.corrupt and a
+// per-entry file that does not parse is renamed to <name>.corrupt — never
+// silently dropped. The first Add failure stalls the import
+// (SpoolStallError): the failing legacy line onward stays spooled and
+// later entry files stay put, in order, for the next pass. A missing or
+// blank spool is a no-op that removes nothing and leaves no backlog file
+// behind.
+//
+// Concurrency contract with the unlocked Python writer: published entry
+// files are immutable and an entry file is unlinked only AFTER its Add
+// persisted, so a writer interleaving with this pass cannot lose data — a
+// file it publishes after this pass's listing simply stays for the next
+// one, and a file unlinked mid-crash-window re-imports and dedupes by id.
+// Returns the counts imported (added or deduped) and quarantined.
+func (q *Queue) ImportSpool(home string) (imported, quarantined int, err error) {
+	spoolPath := SpoolPath(home)
+	spoolDir := SpoolDirPath(home)
 	raw, err := os.ReadFile(spoolPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, 0, nil
+		if !os.IsNotExist(err) {
+			return 0, 0, err
 		}
-		return 0, 0, err
+		raw = nil
+	}
+	files, ferr := spoolEntryFiles(spoolDir)
+	if ferr != nil {
+		return 0, 0, ferr
 	}
 	lines := nonblankLines(raw)
 	var (
@@ -80,13 +116,78 @@ func (q *Queue) ImportSpool(spoolPath string) (imported, quarantined int, err er
 		}
 		imported++
 	}
+	if stalled == nil {
+		for _, name := range files {
+			raw, rerr := os.ReadFile(filepath.Join(spoolDir, name))
+			if rerr != nil {
+				if os.IsNotExist(rerr) {
+					continue // a concurrent importer already took it
+				}
+				stalled = rerr
+				break
+			}
+			var e Entry
+			if jerr := json.Unmarshal(bytes.TrimSpace(raw), &e); jerr != nil {
+				if qerr := renameCorrupt(spoolDir, name); qerr != nil {
+					return imported, quarantined, qerr
+				}
+				quarantined++
+				continue
+			}
+			if _, _, aerr := q.Add(e); aerr != nil {
+				stalled = aerr
+				break
+			}
+			if rerr := os.Remove(filepath.Join(spoolDir, name)); rerr != nil && !os.IsNotExist(rerr) {
+				return imported, quarantined, rerr
+			}
+			imported++
+		}
+	}
 	if werr := rewriteSpool(spoolPath, remainder); werr != nil {
 		return imported, quarantined, werr
+	}
+	if len(files) > 0 {
+		if serr := fsyncDir(spoolDir); serr != nil {
+			return imported, quarantined, serr
+		}
 	}
 	if stalled != nil {
 		return imported, quarantined, &SpoolStallError{Err: stalled}
 	}
 	return imported, quarantined, nil
+}
+
+// spoolEntryFiles lists the importable per-entry spool files in name (FIFO)
+// order. A missing directory is an empty list, not an error; tmp and
+// quarantined files do not match the suffix and are left untouched.
+func spoolEntryFiles(dir string) ([]string, error) {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	names := make([]string, 0, len(ents))
+	for _, e := range ents {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), SpoolEntrySuffix) {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// renameCorrupt quarantines one unrecoverable per-entry spool file in
+// place: <name> -> <name>.corrupt. Recoverable by an operator, never
+// replayed, never silently dropped — the file-level twin of the legacy
+// .corrupt sidecar.
+func renameCorrupt(dir, name string) error {
+	if err := os.Rename(filepath.Join(dir, name), filepath.Join(dir, name+CorruptSuffix)); err != nil {
+		return err
+	}
+	return fsyncDir(dir)
 }
 
 // nonblankLines splits spool bytes into the non-blank lines the import

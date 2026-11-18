@@ -20,9 +20,12 @@ Replays carry the same ``document_id`` as the original attempt so partially
 committed chunks are recovered by chunk-hash, never duplicated.
 """
 
+import builtins
 import json
+import os
 import re
 import shutil
+import subprocess
 import threading
 import time
 import uuid
@@ -926,14 +929,44 @@ def _spool_path(home: Path) -> Path:
     return home / "hindsight" / rb.SPOOL_FILENAME
 
 
+def _spool_dir(home: Path) -> Path:
+    return home / "hindsight" / rb.SPOOL_DIRNAME
+
+
 def _read_spool(home: Path) -> list[dict]:
-    path = _spool_path(home)
-    if not path.exists():
+    """Every emergency-spooled entry, oldest first — the per-entry files
+    in name (FIFO) order, one entry each."""
+    d = _spool_dir(home)
+    if not d.exists():
         return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    out = []
+    for p in sorted(d.glob(f"*{rb.SPOOL_ENTRY_SUFFIX}")):
+        out.extend(
+            json.loads(line)
+            for line in p.read_text().splitlines()
+            if line.strip()
+        )
+    return out
 
 
 def _write_spool(home: Path, entries: list[dict]) -> None:
+    """Publish entries exactly the way the fixed writer does: one
+    immutable per-entry file per entry, tmp + atomic rename."""
+    d = _spool_dir(home)
+    d.mkdir(parents=True, exist_ok=True)
+    for e in entries:
+        name = (
+            f"{time.time_ns():019d}-{e['id'].replace('-', '')}"
+            f"{rb.SPOOL_ENTRY_SUFFIX}"
+        )
+        tmp = d / f"tmp-{uuid.uuid4().hex}"
+        tmp.write_text(json.dumps(e) + "\n")
+        os.replace(tmp, d / name)
+
+
+def _write_legacy_spool(home: Path, entries: list[dict]) -> None:
+    """The pre-per-entry single-file spool an older build may have left
+    behind; its import is the data-migration contract."""
     path = _spool_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(e) + "\n" for e in entries))
@@ -1049,6 +1082,160 @@ class TestEmergencySpool:
         )
         assert restarted._retain_backlog.may_exist is True
         assert _read_backlog(tmp_path)[0]["item"]["content"] == "startup import"
+
+
+def _spool_entry_dict(*, content: str) -> dict:
+    """One enqueue-shaped entry dict, exactly what _spool persists."""
+    return {
+        "bank_id": "test-bank",
+        "item": {"content": content},
+        "document_id": None,
+        "queued_at": _future_iso(),
+        "retry_after": _future_iso(),
+    }
+
+
+@requires_runtime
+class TestSpoolImportRace:
+    """The NO-SHIP race pinned here was independently reproduced at
+    e7118e53f3: the Python emergency writer appended to a single spool
+    file while the Go importer — under its queue flock, which the Python
+    writer never took — read that file and rewrote/unlinked it. A writer
+    paused with the file open appended straight into an unlinked inode:
+    fsync reported success, _spool returned an id, and the entry was gone.
+
+    The fixed protocol has no shared mutable file: the writer publishes an
+    immutable per-entry file (tmp + atomic rename) and the Go importer
+    unlinks an entry file only after its Add persisted. The deterministic
+    interleaving below drives the REAL Go importer at the exact moment the
+    REAL Python writer holds its file open but has not yet published —
+    the same interleaving that lost entry B before the fix. No sleeps and
+    no flakiness: the importer runs from inside the writer's own open().
+    """
+
+    def test_import_racing_open_publish_cannot_lose_entry(
+        self, tmp_path, monkeypatch
+    ):
+        # Entry A: spool it with the runtime broken, as a real outage does.
+        with pytest.MonkeyPatch.context() as mp:
+            TestEmergencySpool._break_runtime(mp)
+            backlog = RetainBacklog(lambda: tmp_path)
+            id_a = backlog._spool(_spool_entry_dict(content="A"))
+        assert backlog.may_exist is True
+
+        binary = rb._runtime_binary(tmp_path / "warm")
+        real_open = builtins.open
+
+        def racing_open(file, mode="r", *args, **kwargs):
+            fh = real_open(file, mode, *args, **kwargs)
+            # The writer now holds its file open with entry B not yet
+            # visible to any reader — run the real Go importer exactly
+            # here, mid-_spool. On the old append design this unlinked
+            # the spool out from under the open fd; on the fixed design
+            # the importer at worst lists a tmp file it must ignore.
+            subprocess.run(
+                [binary, "import-spool", "--home", str(tmp_path)],
+                check=True, capture_output=True, timeout=60,
+            )
+            return fh
+
+        monkeypatch.setattr(rb, "open", racing_open, raising=False)
+        backlog = RetainBacklog(lambda: tmp_path)
+        id_b = backlog._spool(_spool_entry_dict(content="B"))
+
+        # _spool reported success for B, so B must actually be durable
+        # somewhere: after one final import it must be in the queue.
+        # Before the fix B sat in an unlinked inode and was simply gone.
+        backlog.peek()  # flushes the spool through the real importer
+        ids = [e["id"] for e in _read_backlog(tmp_path)]
+        assert id_a in ids
+        assert id_b in ids, "entry B lost to the import/publish race"
+
+
+@requires_runtime
+class TestSpoolConcurrentPublishImport:
+    def test_concurrent_writers_and_importers_lose_nothing(self, tmp_path):
+        """Real cross-process concurrency: threads running the ACTUAL
+        _spool publisher race a loop of real Go import-spool subprocesses.
+        Every id _spool reported must end up in the queue exactly once —
+        no loss, no duplicates — for ANY interleaving; the assertions are
+        schedule-independent, so the test cannot flake on timing."""
+        binary = rb._runtime_binary(tmp_path / "warm")
+        backlog = RetainBacklog(lambda: tmp_path)
+        n_writers, per_writer = 8, 12
+        total = n_writers * per_writer
+        start = threading.Barrier(n_writers + 1)
+        stop = threading.Event()
+        reported: list[str] = []
+        reported_lock = threading.Lock()
+
+        def writer():
+            start.wait()
+            mine = [
+                backlog._spool(_spool_entry_dict(content=f"w{i}"))
+                for i in range(per_writer)
+            ]
+            with reported_lock:
+                reported.extend(mine)
+
+        def importer():
+            start.wait()
+            while not stop.is_set():
+                subprocess.run(
+                    [binary, "import-spool", "--home", str(tmp_path)],
+                    check=True, capture_output=True, timeout=60,
+                )
+
+        threads = [threading.Thread(target=writer) for _ in range(n_writers)]
+        imp = threading.Thread(target=importer)
+        imp.start()
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        stop.set()
+        imp.join()
+
+        subprocess.run(  # final pass imports whatever outlasted the races
+            [binary, "import-spool", "--home", str(tmp_path)],
+            check=True, capture_output=True, timeout=60,
+        )
+        assert len(reported) == total
+        assert len(set(reported)) == total, "an id was reported twice"
+        queued = sorted(e["id"] for e in _read_backlog(tmp_path))
+        assert queued == sorted(reported), (
+            f"loss/duplicate: {len(queued)} queued vs {total} reported")
+
+
+@requires_runtime
+class TestLegacySpoolMigration:
+    def test_legacy_single_file_spool_imports_and_clears(self, tmp_path):
+        """Data migration: a single-file spool left by an older build (or
+        written while this test's writer was downgraded) imports through
+        the normal flush path — ids honored, FIFO, file cleared — and new
+        per-entry spool entries around it import too."""
+        legacy_a = _spool_entry_dict(content="legacy A")
+        legacy_a["id"] = str(uuid.uuid4())
+        legacy_b = _spool_entry_dict(content="legacy B")
+        legacy_b["id"] = str(uuid.uuid4())
+        _write_legacy_spool(tmp_path, [legacy_a, legacy_b])
+
+        backlog = RetainBacklog(lambda: tmp_path)
+        assert backlog.refresh_may_exist() is True
+        assert backlog.peek()[1] == 2  # the flush imported both
+        assert not _spool_path(tmp_path).exists()
+        assert [
+            e["item"]["content"] for e in _read_backlog(tmp_path)
+        ] == ["legacy A", "legacy B"]
+
+        # A NEW per-entry spool flush right after still works, in order.
+        with pytest.MonkeyPatch.context() as mp:
+            TestEmergencySpool._break_runtime(mp)
+            backlog._spool(_spool_entry_dict(content="new style"))
+        assert backlog.peek()[1] == 3
+        assert [
+            e["item"]["content"] for e in _read_backlog(tmp_path)
+        ] == ["legacy A", "legacy B", "new style"]
 
 
 # ---------------------------------------------------------------------------
