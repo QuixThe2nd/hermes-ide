@@ -142,6 +142,18 @@ def check_restart_requirements() -> bool:
         return False
 
 
+def _forwarded_process_note(target_pid: int, forwarding_pid: Optional[int]) -> str:
+    """Self-describing note for a forwarded restart result (both transports)."""
+    forwarder = f" (pid {forwarding_pid})" if forwarding_pid else ""
+    return (
+        "Restart queued, not completed: 'process' names the newest generation "
+        f"(pid {target_pid}), which took the request and spawns its own successor. "
+        f"The generation that forwarded it{forwarder} is superseded and will not "
+        "perform the restart; that successor process rewrites this result with "
+        "the 'Restarted successfully' completion notice."
+    )
+
+
 def _result_json(runner: Any, status: dict) -> str:
     payload = {
         "success": True,
@@ -158,6 +170,12 @@ def _result_json(runner: Any, status: dict) -> str:
     forwarded_to = status.get("forwarded_to")
     if isinstance(forwarded_to, int) and forwarded_to > 0:
         payload["forwarded_to"] = forwarded_to
+        if str(status.get("status")) == "forwarded":
+            # A forwarded restart runs on the NEWEST generation, not this
+            # superseded forwarder — naming this process would point the
+            # agent at a process that will not restart.
+            payload["process"] = f"pid {forwarded_to}"
+            payload["note"] = _forwarded_process_note(forwarded_to, os.getpid())
     # Committed restart statuses stamp the reserved exact field so the tool
     # executor can arm the per-turn flag and end this turn (no further
     # provider calls, no later sibling tools).
@@ -368,6 +386,48 @@ def _socket_owner_guard(serving_pid: Optional[int], identify: Any) -> Optional[s
     return _error_json(socket_owner_refusal(serving_pid, identify))
 
 
+def _socket_ack_names_restarting_process(
+    ack: dict, serving_pid: Optional[int], identify: Any
+) -> dict:
+    """Rewrite an overlap ack so ``process`` names the process that will restart.
+
+    The ack's ``pid`` names the ANSWERING process — the socket owner, which
+    during an overlap restart is a draining generation. A ``forwarded`` ack
+    already names the newest generation (``forwarded_to`` — the one that
+    took the request and spawns its own successor); a ``chained`` ack from
+    an older build is proven by the identify attestation (the guard's
+    ``attested-chain``). Either way rendering the answerer as ``process``
+    would point the agent at a dying process.
+    """
+    status = str(ack.get("status") or "")
+    if status == "forwarded":
+        target = ack.get("forwarded_to")
+        proven = isinstance(target, int) and not isinstance(target, bool) and target > 0
+    elif status == "chained":
+        target = serving_pid
+        proven = socket_owner_action(serving_pid, identify) == "attested-chain"
+    else:
+        return ack
+    if not proven:
+        return ack
+    answer_pid = ack.get("pid")
+    if not isinstance(answer_pid, int) or isinstance(answer_pid, bool) or answer_pid <= 0:
+        answer_pid = identify.get("pid") if isinstance(identify, dict) else None
+    if answer_pid == target:
+        return ack
+    ack = dict(ack)
+    ack["pid"] = target
+    if status == "forwarded":
+        ack["note"] = _forwarded_process_note(target, answer_pid)
+    else:
+        ack["note"] = (
+            f"Restart chained for the serving process: 'process' names pid {target}, "
+            f"the process serving this conversation. The control socket is still "
+            f"owned by the draining predecessor (pid {answer_pid}); the chained "
+            f"restart runs on pid {target} once that handoff completes."
+        )
+    return ack
+
 
 def _restart_via_control_socket(*, restart_hub: bool = False) -> str:
     """Queue the restart through the gateway's control socket (out-of-process path).
@@ -419,7 +479,8 @@ def _restart_via_control_socket(*, restart_hub: bool = False) -> str:
         return _error_json(
             f"The running gateway refused the restart: {ack.get('reason') or status or 'no reason given'}"
         )
-    return _socket_result_json(ack)
+    return _socket_result_json(
+        _socket_ack_names_restarting_process(ack, serving_pid, identify))
 
 
 def handle_restart(args: dict, **_: Any) -> str:
