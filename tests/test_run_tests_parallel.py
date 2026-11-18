@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import shutil
 import os
+import tempfile
 import subprocess
 import sys
 import textwrap
@@ -42,7 +43,9 @@ def isolated_probe_environment(monkeypatch):
 # Both tests share the same handoff file: the leaker writes here, the
 # verifier reads here. We park it in $TMPDIR with a unique-per-run name
 # so concurrent invocations of the suite don't clobber each other.
-_HANDOFF_DIR = Path(os.environ.get("TMPDIR", "/tmp")) / "hermes-isolation-probe"
+# gettempdir(): /tmp does not exist on Windows runners (the literal default
+# made this module fail at import time — a collection error for the whole file).
+_HANDOFF_DIR = Path(tempfile.gettempdir()) / "hermes-isolation-probe"
 _HANDOFF_DIR.mkdir(exist_ok=True)
 
 
