@@ -1771,15 +1771,26 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         non-conversational through ``_send_jev_notice``.
         """
         self._response_gate_log(decision, candidate, outcome="echo")
-        chat_id = candidate.get("conversation_id") or GateRuntime.conversation_id(message.channel)
-        message_id = candidate.get("message_id") or ""
-        record = response_gate_record(decision, author=self._jev_notice_author(message))
+        await self._post_jev_notice(
+            message, candidate, response_gate_record(decision, author=self._jev_notice_author(message)),
+        )
+        return False
+
+    async def _post_jev_notice(
+        self, message: Any, candidate: Dict[str, Any], record: Optional[Dict[str, Any]],
+    ) -> None:
+        """The one notice owner for every lane: ``None`` (no HTTP request was made) posts nothing."""
         if record is None:
-            return False  # no HTTP request was made: no notice, no echo line
+            return
+        # Off the event loop: the cold go build / render subprocess and the
+        # bridge lock are blocking work a diagnostic must not stall the loop on.
         line = await format_notice_async(record)
         if line is not None:
-            await self._send_jev_notice(line, str(chat_id), str(message_id))
-        return False
+            await self._send_jev_notice(
+                line,
+                str(candidate.get("conversation_id") or GateRuntime.conversation_id(message.channel)),
+                str(candidate.get("message_id") or ""),
+            )
 
     async def _send_jev_notice(self, line: str, chat_id: str, message_id: str = "") -> None:
         """Post one Jev classification notice line into the originating conversation.
@@ -1846,16 +1857,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._response_gate_log(decision, candidate)
         # One visible notice per real judge request (echo channels already post
         # their judge-score line; a no-call outcome produces no record at all).
-        record = response_gate_record(decision, author=self._jev_notice_author(message))
-        # Off the event loop: the cold go build / render subprocess and the
-        # bridge lock are blocking work a diagnostic must not stall the loop on.
-        line = await format_notice_async(record) if record is not None else None
-        if line is not None:
-            await self._send_jev_notice(
-                line,
-                str(candidate.get("conversation_id") or ""),
-                str(candidate.get("message_id") or ""),
-            )
+        await self._post_jev_notice(
+            message, candidate, response_gate_record(decision, author=self._jev_notice_author(message)),
+        )
         if gate.mode != "enforce":
             return None  # shadow: the legacy decision always stands
         if not decision.allowed:
@@ -2274,18 +2278,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             )
             # One visible notice per real judge request (react, abstain or
             # failure); a no-call outcome produces no record at all.
-            notice_record = reaction_gate_record(
-                decision, author=self._jev_notice_author(message),
+            await self._post_jev_notice(
+                message, candidate, reaction_gate_record(decision, author=self._jev_notice_author(message)),
             )
-            notice_line = (
-                await format_notice_async(notice_record) if notice_record is not None else None
-            )
-            if notice_line is not None:
-                await self._send_jev_notice(
-                    notice_line,
-                    str(candidate.get("conversation_id") or ""),
-                    str(candidate.get("message_id") or ""),
-                )
             emoji = decision.emoji
             if emoji is None:
                 self._reaction_gate_log(decision, candidate)
