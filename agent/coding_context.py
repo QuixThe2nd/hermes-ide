@@ -31,6 +31,7 @@ INTERACTIVE_CODING_PLATFORMS = {"cli", "tui", "acp", "desktop", ""}
 # Project-root signals (cheap filename checks) marking a code workspace even without git.
 _PROJECT_MARKERS = (
     "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "package.json", "tsconfig.json", "deno.json",
+    "Cargo.toml", "go.mod", "pom.xml", "build.gradle", "build.gradle.kts", "Gemfile", "composer.json", "mix.exs",
     "pubspec.yaml", "CMakeLists.txt", "Makefile", "Dockerfile", "AGENTS.md", "CLAUDE.md",
 )
 # Agent-instruction files surfaced separately from manifests in the snapshot.
