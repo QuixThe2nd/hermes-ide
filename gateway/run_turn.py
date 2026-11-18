@@ -21,7 +21,7 @@ from agent.turn_failure_copy import FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTI
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
-from gateway.media_repair import repair_explicit_computer_use_media_paths
+from gateway.context_injection_labels import tag_turn_note
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
 from gateway.response_filters import display_kind_for_event, is_machinery_display_kind
@@ -590,7 +590,7 @@ class GatewayTurnMixin:
             continuity_note = None
         if continuity_note:
             context_note = context_note + "\n\n" + continuity_note
-        turn_sidecar_notes.append(context_note)
+        turn_sidecar_notes.append(tag_turn_note("session_reset", context_note))
 
         try:
             should_notify = reset_reason == "suspended"
@@ -1492,13 +1492,15 @@ class GatewayTurnMixin:
                 )
                 _onb_cfg = _load_gateway_config()
                 if profile_build_mode(_onb_cfg) == "ask" and not is_seen(_onb_cfg, PROFILE_BUILD_FLAG):
-                    turn_sidecar_notes.append(profile_build_directive().strip())
+                    turn_sidecar_notes.append(
+                        tag_turn_note("intro", profile_build_directive().strip())
+                    )
                     mark_seen(_hermes_home / "config.yaml", PROFILE_BUILD_FLAG)
                 else:
-                    turn_sidecar_notes.append(_intro_note)
+                    turn_sidecar_notes.append(tag_turn_note("intro", _intro_note))
             except Exception as _pb_err:
                 logger.debug("Profile-build onboarding directive failed, using plain intro: %s", _pb_err)
-                turn_sidecar_notes.append(_intro_note)
+                turn_sidecar_notes.append(tag_turn_note("intro", _intro_note))
 
         # One-time prompt if no home channel is set (webhooks deliver to configured targets instead).
         if not source.platform or source.platform in (Platform.LOCAL, Platform.WEBHOOK):
@@ -2113,7 +2115,7 @@ class GatewayTurnMixin:
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
         # (appending to the ephemeral system prompt forced a full agent rebuild).
-        turn_sidecar_notes: List[str] = []
+        turn_sidecar_notes: List[Any] = []
         if _was_auto_reset:
             await self._hmwa_deliver_auto_reset_notice(session_entry, source, turn_sidecar_notes)
 
@@ -2150,7 +2152,7 @@ class GatewayTurnMixin:
         # card, the user) that the instance changed between turns.
         _restart_note = self._hub_restart_sidecar_note(event)
         if _restart_note:
-            turn_sidecar_notes.append(_restart_note)
+            turn_sidecar_notes.append(tag_turn_note("restart", _restart_note))
 
         # Auto-analyze user images so the model gets a description plus the local path.
         message_text = await self._prepare_profile_scoped_inbound_message_text(
@@ -2373,7 +2375,7 @@ class GatewayTurnMixin:
         # turn1→turn2 system-prompt diff and a full agent rebuild.  They now
         # ride the current user message via the api_content sidecar instead
         # (staged below, consumed in run_sync → build_turn_context).
-        turn_sidecar_notes: List[str] = []
+        turn_sidecar_notes: List[Any] = []
 
         # If the previous session expired and was auto-reset, deliver a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
@@ -2398,7 +2400,7 @@ class GatewayTurnMixin:
                 continuity_note = None
             if continuity_note:
                 context_note = context_note + "\n\n" + continuity_note
-            turn_sidecar_notes.append(context_note)
+            turn_sidecar_notes.append(tag_turn_note("session_reset", context_note))
 
             # Send a user-facing notification explaining the reset, unless:
             # - notifications are disabled in config
@@ -3949,16 +3951,18 @@ class GatewayTurnMixin:
                     profile_build_mode(_onb_cfg) == "ask"
                     and not is_seen(_onb_cfg, PROFILE_BUILD_FLAG)
                 ):
-                    turn_sidecar_notes.append(profile_build_directive().strip())
+                    turn_sidecar_notes.append(
+                        tag_turn_note("intro", profile_build_directive().strip())
+                    )
                     mark_seen(_hermes_home / "config.yaml", PROFILE_BUILD_FLAG)
                 else:
-                    turn_sidecar_notes.append(_intro_note)
+                    turn_sidecar_notes.append(tag_turn_note("intro", _intro_note))
             except Exception as _pb_err:
                 logger.debug(
                     "Profile-build onboarding directive failed, using plain intro: %s",
                     _pb_err,
                 )
-                turn_sidecar_notes.append(_intro_note)
+                turn_sidecar_notes.append(tag_turn_note("intro", _intro_note))
 
         # -----------------------------------------------------------------
         # Voice channel awareness — deliver current voice channel state so
@@ -3975,7 +3979,7 @@ class GatewayTurnMixin:
         # session's first post-restart turn to a new gateway generation.
         _restart_note = self._hub_restart_sidecar_note(event)
         if _restart_note:
-            turn_sidecar_notes.append(_restart_note)
+            turn_sidecar_notes.append(tag_turn_note("restart", _restart_note))
 
         # -----------------------------------------------------------------
         # Auto-analyze images sent by the user

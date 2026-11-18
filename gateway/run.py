@@ -56,6 +56,7 @@ from typing import (
     Optional,
     Any,
     List,
+    Sequence,
     Tuple,
     Union,
     cast,
@@ -5707,6 +5708,8 @@ def _format_context_injection_progress(
     message_len_fn: Callable[[str], int] = len,
     include_content: bool = True,
     recalled_count: Any = None,
+    kinds: Optional[Sequence[Optional[str]]] = None,
+    triggering_message_id: Any = None,
 ) -> list[str]:
     """Render API-bound ephemeral context as tool-style progress cards.
 
@@ -5757,21 +5760,30 @@ def _format_context_injection_progress(
         if time_line is None:
             time_line = f"{chr(0x1F550)} Injecting time"
 
-    heading = "🧠 Injecting memory" if "memory" in (sources or []) else "🧠 Context injected"
-    # A positive discrete count from the producer upgrades the memory heading
-    # to the counted form. Non-int / zero / None values (plugin-only injections,
-    # providers without a discrete count) keep the existing headings.
-    if (
-        "memory" in (sources or [])
-        and isinstance(recalled_count, int)
-        and not isinstance(recalled_count, bool)
-        and recalled_count > 0
-    ):
-        heading = (
-            f"🧠 Injecting {recalled_count} memory"
-            if recalled_count == 1
-            else f"🧠 Injecting {recalled_count} memories"
+    from gateway.context_injection_labels import (
+        context_injection_heading_lines,
+        triggering_message_id_kind,
+    )
+
+    # Kind-tagged heading lines: one per classified segment, in payload
+    # order. The Discord triggering-id note leads the card bytes, so its
+    # anchored classification (see triggering_message_id_kind) comes first;
+    # kinds=None is the legacy shape and renders exactly the pre-kinds
+    # heading. Unknown/unclassified kinds keep the generic label — never a
+    # guessed one.
+    _anchored_kind = triggering_message_id_kind(card_content, triggering_message_id)
+    _heading_kinds: Optional[list[Optional[str]]] = None
+    if _anchored_kind:
+        _heading_kinds = [_anchored_kind] + [k for k in (kinds or [])]
+    elif kinds:
+        _heading_kinds = list(kinds)
+    heading = "\n".join(
+        context_injection_heading_lines(
+            _heading_kinds,
+            memory_sourced="memory" in (sources or []),
+            recalled_count=recalled_count,
         )
+    )
 
     if not include_content:
         if time_line is not None:

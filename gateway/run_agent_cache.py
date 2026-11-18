@@ -869,13 +869,16 @@ class GatewayAgentCacheMixin:
                             cached[0], cached[1], _live, _snapshot_sid,
                         )
 
-    def _set_pending_turn_sidecar_notes(self, session_key: str, notes: List[str]) -> None:
-        """Stage per-turn must-deliver notes for the next agent run (one-shot)."""
+    def _set_pending_turn_sidecar_notes(self, session_key: str, notes: List[Any]) -> None:
+        """Stage per-turn must-deliver notes for the next agent run (one-shot).
+
+        Entries are plain strings or ``(kind, text)`` pairs tagged by their
+        producer for the injection card (``tag_turn_note``)."""
         if not session_key or not notes:
             return
         self._session_state(session_key).conversation.sidecar_notes = list(notes)
 
-    def _consume_pending_turn_sidecar_notes(self, session_key: str) -> List[str]:
+    def _consume_pending_turn_sidecar_notes(self, session_key: str) -> List[Any]:
         if not session_key:
             return []
         state = self._peek_session_state(session_key)

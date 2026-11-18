@@ -265,6 +265,8 @@ class TurnRunner(_TurnRunnerCore):
             message_len_fn=message_len_fn,
             include_content=include_content,
             recalled_count=args.get("recalled_count"),
+            kinds=args.get("kinds"),
+            triggering_message_id=getattr(ctx, "inbound_message_id", None),
         )
         for message in messages:
             ctx.progress_queue.put(message)
@@ -1791,6 +1793,7 @@ class TurnRunner(_TurnRunnerCore):
         # process-local state (terminals, background processes, kernels, caches, pids) did not and
         # must be revalidated.
         from gateway.serving_transition import session_turn_notes
+        from gateway.context_injection_labels import join_turn_notes, tag_turn_note
 
         turn_notes = list(runner._consume_pending_turn_sidecar_notes(ctx.session_key))
         runtime_note, transition_note = session_turn_notes(
@@ -1799,13 +1802,20 @@ class TurnRunner(_TurnRunnerCore):
         if runtime_note:
             turn_notes.append(runtime_note)
         if transition_note:
-            turn_notes.append(transition_note)
-        agent._gateway_turn_context_notes = "\n\n".join(turn_notes)
+            # "Conversation moved processes" (#829) is a restart notice; the
+            # per-turn serving-identity runtime note names the serving process
+            # on every turn and is NOT one — it stays unclassified.
+            turn_notes.append(tag_turn_note("restart", transition_note))
+        # Joined text is byte-identical to the legacy "\n\n".join; kinds are
+        # additive display metadata aligned 1:1 with the staged entries.
+        agent._gateway_turn_context_notes, agent._gateway_turn_note_kinds = (
+            join_turn_notes(turn_notes)
+        )
         # A transparent continuation defers the notes channel above, but a
         # restart just moved the conversation to a new process mid-turn —
         # stage the runtime notes on their own one-shot channel so the
-        # continuation turn still learns which process serves it AND that
-        # the process changed.
+        # continuation turn still learns which process serves it AND that the
+        # process changed.
         continuation_notes = [note for note in (runtime_note, transition_note) if note]
         agent._gateway_continuation_note = "\n\n".join(continuation_notes)
         agent.background_review_callback, bg_release = self._make_bg_review_callbacks()
