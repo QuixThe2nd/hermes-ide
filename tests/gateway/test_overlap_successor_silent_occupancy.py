@@ -95,13 +95,17 @@ async def test_overlap_successor_inbound_silent_while_predecessor_holds_lease(mo
         event, session_key, target_pid=predecessor_pid
     )
 
-    # Delivery to the owning generation joins its live turn as a queued follow-up.
+    # Delivery to the owning generation joins its live turn: with the busy-input
+    # queue mode removed (#687 follow-up), a busy session consumes a text event
+    # as an interrupt/steer of the running agent — never a silent occupancy
+    # refusal, never a second agent.
     predecessor, predecessor_adapter = make_restart_runner(platform=Platform.DISCORD)
-    predecessor._busy_input_mode = "queue"
-    predecessor._running_agents[session_key] = MagicMock()
+    running_agent = MagicMock()
+    predecessor._running_agents[session_key] = running_agent
     with patch.object(GatewayRunner, "_handle_message_with_agent", fail_if_agent_runs):
         assert await predecessor._handle_message(event) is None
-    assert predecessor_adapter._pending_messages[session_key].text == event.text
+    running_agent.interrupt.assert_called_once_with(event.text)
+    assert not predecessor_adapter._pending_messages
 
     held = active_session_registry_snapshot()
     assert len(held) == 1
