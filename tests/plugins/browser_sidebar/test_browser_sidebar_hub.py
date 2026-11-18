@@ -10,6 +10,7 @@ pytest.importorskip("websockets")
 
 from gateway.config import PlatformConfig
 from plugins.platforms.browser_sidebar import adapter as bs
+from plugins.platforms.browser_sidebar import runtime as sidebar_runtime
 from plugins.platforms.discord.hub import DiscordHubServer
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.platforms("posix")]
@@ -61,7 +62,7 @@ class _HubSidebar:
         for gateway in reversed(self.gateways):
             await gateway.disconnect()
         await self.server.stop()
-        bs._ADAPTERS.clear()
+        sidebar_runtime.reset()
 
     def add_gateway(self, name: str) -> _Gateway:
         gateway = _Gateway(self, name)
