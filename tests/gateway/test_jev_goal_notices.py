@@ -3,19 +3,22 @@
 ``GatewayGoalIntentMixin._run_auto_goal_evaluation`` is the runtime owner of
 the goal-intent Jev requests: every real HTTP attempt (retry and failure
 included) must post one concise notice line back to the originating chat via
-the deferred status-notice lane, a no-call bypass must post nothing, a notice
-delivery failure must not touch the classification, and each source's notices
-must reach only that source's own delivery adapter (profile/bot origin
-isolation). Only external I/O is stubbed: the Jev HTTP socket
-(``requests.post``) and the platform send seam.
+the DIRECT outbound lane on the source's owning adapter — independent of the
+turn's delivery boundary and never the shared post-delivery registry (the
+registry slot is keyed by session, so ordering behind the boundary strands
+late notices and drops the older one when two overlapped turns each hold
+one). A no-call bypass must post nothing, a notice delivery failure must not
+touch the classification, and each source's notices must reach only that
+source's own delivery adapter (profile/bot origin isolation). Only external
+I/O is stubbed: the Jev HTTP socket (``requests.post``) and the platform
+send seam.
 """
 
 from __future__ import annotations
 
 import asyncio
-import threading
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -103,12 +106,12 @@ def _jev_http_error(status):
     return SimpleNamespace(status_code=status, json=lambda: {})
 
 
-class _RegistryAdapter(BasePlatformAdapter):
-    """Telegram adapter whose post-delivery machinery is all production code.
+class _RecordingAdapter(BasePlatformAdapter):
+    """Telegram adapter whose turn lifecycle is all production code.
 
-    ``register_post_delivery_callback`` / ``pop_post_delivery_callback`` /
-    ``_fire_post_delivery_callback`` / the session guards are the real
-    registry the gateway uses; only ``send`` records instead of doing I/O.
+    ``_process_message_background`` — the real delivery boundary, session
+    guards and queued-follow-up drain — runs unmodified; only ``send``
+    records instead of doing I/O.
     """
 
     def __init__(self):
@@ -143,26 +146,12 @@ class _RegistryAdapter(BasePlatformAdapter):
         return [s for s in self.sends if str(s["content"]).startswith("🔎 jev")]
 
 
-class _GatedPost:
-    """``requests.post`` stand-in whose completion the test controls.
-
-    The classifier thread blocks inside the attempt until ``release()``, so a
-    test can fire the turn's delivery boundary while the real classification
-    is provably still in flight.
-    """
-
-    def __init__(self, response):
-        self._response = response
-        self._gate = threading.Event()
-        self.started = threading.Event()
-
-    def __call__(self, *_args, **_kwargs):
-        self.started.set()
-        assert self._gate.wait(timeout=10), "test never released the gated attempt"
-        return self._response
-
-    def release(self) -> None:
-        self._gate.set()
+def _registry_generation(adapter) -> "int | None":
+    """Generation currently parked in the adapter's post-delivery registry."""
+    entry = adapter._post_delivery_callbacks.get(SESSION_KEY)
+    if isinstance(entry, tuple) and len(entry) == 2:
+        return entry[0]
+    return None
 
 
 async def _poll_until(predicate, timeout: float = 5.0) -> None:
@@ -356,14 +345,15 @@ async def test_notices_reach_only_the_owning_source_adapter(runner, monkeypatch,
 
 
 @pytest.mark.asyncio
-async def test_jev_notice_send_is_marked_non_conversational_history(runner, monkeypatch):
-    """The goal-path Jev notice is non-conversational history at the send seam.
+async def test_jev_notice_send_is_marked_non_conversational_and_interim(runner, monkeypatch):
+    """The goal-path Jev notice is non-conversational interim history at the send seam.
 
-    The real chain runs (classifier callback → deferred post-delivery lane →
+    The real chain runs (classifier callback → direct outbound lane →
     ``_send_goal_status_notice``); only the adapter's platform send is I/O and
     records what the owning caller passed. A troubleshooting notice must never
     become the conversation boundary or leak into the model's recovered
-    context on platforms that honor the flag (Discord).
+    context on platforms that honor the flag (Discord), and must never seal a
+    live native stream as if it were the turn's final message.
     """
     monkeypatch.setenv("LITELLM_API_KEY", "test-key")
     sent: list = []  # (message, metadata)
@@ -385,146 +375,251 @@ async def test_jev_notice_send_is_marked_non_conversational_history(runner, monk
         "🔎 jev goal-intent (attempt 1/2) user message from operator: task (confidence 0.90)"
     ]
     metadata = sent[0][1]
-    assert metadata is not None and metadata.get("non_conversational_history") is True
+    assert metadata is not None
+    assert metadata.get("non_conversational_history") is True
+    assert metadata.get("_interim_send") is True
 
 
-class TestPostDeliveryRegistryLifecycle:
-    """Late classifications through the REAL adapter callback registry.
+class TestIndependentDeliveryLifecycle:
+    """Diagnostic emission is independent of the turn's delivery boundary.
 
-    The turn's delivery boundary (``_fire_post_delivery_callback`` in the
-    turn task's finally) is the registry's only consumer, while the goal
-    classifier runs detached from the turn: the boundary waits at most 20s
-    for a decision and a cold formatter build can take minutes. Every real
-    classification attempt must therefore still get exactly one delivery
-    attempt — registered before the boundary, delivered directly after it —
-    never a stranded registry entry waiting for an unrelated future turn.
+    The goal-intent classifier runs detached from the turn on an executor
+    thread; each real attempt's notice goes out through the DIRECT outbound
+    lane on the owning adapter and never the shared post-delivery registry.
+    The registry slot is keyed by session while each turn stamps its own
+    ``_hermes_run_generation`` on the shared guard, so ordering behind the
+    boundary strands notices whose turn already ended (no boundary left to
+    fire them) and silently drops the older notice when two overlapped turns
+    each hold one — a newer generation replaces the older slot outright
+    (the review4 acceptance blocker). A status line may therefore arrive
+    BEFORE the answer; that is intended.
     """
 
     @pytest.mark.asyncio
-    async def test_attempt_completing_after_the_boundary_delivers_directly(
+    async def test_notice_is_delivered_while_the_response_is_still_blocked(
         self, runner, monkeypatch
     ):
-        """The review's late scenario: the turn ends (response delivered,
-        errored or interrupted) while the classification is still in flight."""
+        """A classification completing mid-turn does not wait for the turn:
+        the notice is on the wire while the handler has not even returned."""
         monkeypatch.setenv("LITELLM_API_KEY", "test-key")
-        adapter = _RegistryAdapter()
+        adapter = _RecordingAdapter()
         runner.adapters = {Platform.TELEGRAM: adapter}
-        guard = asyncio.Event()
-        adapter._active_sessions[SESSION_KEY] = guard
+        registrations: list = []
+        original_register = adapter.register_post_delivery_callback
 
-        gated = _GatedPost(_jev_response("task", 0.91))
-        with patch("hermes_cli.goal_intent.requests.post", gated):
-            runner._schedule_auto_goal_intent(_event("why is tdarr down"), SESSION_KEY)
-            await _poll_until(gated.started.is_set)  # classification in flight
-            await adapter._fire_post_delivery_callback(SESSION_KEY, guard)
-            gated.release()  # the attempt completes only after the boundary
+        def _spying_register(session_key, callback, *, generation=None):
+            registrations.append(generation)
+            return original_register(session_key, callback, generation=generation)
+
+        adapter.register_post_delivery_callback = _spying_register
+        handler_release = asyncio.Event()
+
+        async def handler(event):
+            runner._schedule_auto_goal_intent(event, SESSION_KEY)
+            await handler_release.wait()
+            return "the answer"
+
+        adapter.set_message_handler(handler)
+        notice = (
+            "🔎 jev goal-intent (attempt 1/2) user message from operator: "
+            "task (confidence 0.90)"
+        )
+        with patch(
+            "hermes_cli.goal_intent.requests.post", return_value=_jev_response("task", 0.9)
+        ):
+            task = asyncio.create_task(
+                adapter._process_message_background(
+                    _event("why is tdarr down"), SESSION_KEY
+                )
+            )
+            await _poll_until(lambda: adapter.jev_sends())  # turn still inside handler
+
+        assert handler_release.is_set() is False  # delivered before the answer existed
+        assert [s["content"] for s in adapter.jev_sends()] == [notice]
+        assert adapter._post_delivery_callbacks == {}
+
+        handler_release.set()
+        await asyncio.wait_for(task, 10)
+        contents = [s["content"] for s in adapter.sends]
+        assert contents.index(notice) < contents.index("the answer")
+        assert registrations == []  # the notice path never touched the shared registry
+        assert adapter._post_delivery_callbacks == {}
+
+    @pytest.mark.asyncio
+    async def test_notice_completing_after_the_boundary_is_delivered_once(
+        self, runner, monkeypatch
+    ):
+        """The turn fully completed first; the classification's notice still
+        arrives exactly once, with no future boundary to double-fire it."""
+        monkeypatch.setenv("LITELLM_API_KEY", "test-key")
+        adapter = _RecordingAdapter()
+        runner.adapters = {Platform.TELEGRAM: adapter}
+
+        async def handler(event):
+            return "the answer"
+
+        adapter.set_message_handler(handler)
+        await adapter._process_message_background(
+            _event("why is tdarr down"), SESSION_KEY
+        )
+        assert adapter.jev_sends() == []  # boundary fired, nothing stranded
+
+        notice = (
+            "🔎 jev goal-intent (attempt 1/2) user message from operator: "
+            "task (confidence 0.90)"
+        )
+        with patch(
+            "hermes_cli.goal_intent.requests.post", return_value=_jev_response("task", 0.9)
+        ):
+            runner._schedule_auto_goal_intent(_event("classify me now"), SESSION_KEY)
             await _drain(runner)
             await _poll_until(lambda: adapter.jev_sends())
 
-        assert [s["content"] for s in adapter.jev_sends()] == [
-            "🔎 jev goal-intent (attempt 1/2) user message from operator: task (confidence 0.91)"
-        ]
-        assert adapter.jev_sends()[0]["metadata"].get("non_conversational_history") is True
-        # Nothing stranded: an unrelated future boundary must not re-send.
+        assert [s["content"] for s in adapter.jev_sends()] == [notice]
         assert adapter._post_delivery_callbacks == {}
-        await adapter._fire_post_delivery_callback(SESSION_KEY, guard)
+        guard = adapter._active_sessions.get(SESSION_KEY)
+        if guard is not None:
+            await adapter._fire_post_delivery_callback(SESSION_KEY, guard)
         assert len(adapter.jev_sends()) == 1
 
     @pytest.mark.asyncio
-    async def test_attempt_during_the_turn_defers_until_the_boundary(
+    async def test_notice_after_an_interrupted_turn_is_delivered_once(
         self, runner, monkeypatch
     ):
-        """Normal ordering is unchanged: a notice ready while the turn is live
-        waits for the boundary (it must not interleave with the response
-        stream) and fires exactly once there."""
+        """The turn was interrupted mid-handler; the classification's notice
+        still arrives exactly once with no registry entry left behind."""
         monkeypatch.setenv("LITELLM_API_KEY", "test-key")
-        adapter = _RegistryAdapter()
+        adapter = _RecordingAdapter()
         runner.adapters = {Platform.TELEGRAM: adapter}
-        guard = asyncio.Event()
-        adapter._active_sessions[SESSION_KEY] = guard
+        started = asyncio.Event()
+        handler_release = asyncio.Event()
 
+        async def handler(event):
+            started.set()
+            await handler_release.wait()
+            return "never delivered"
+
+        adapter.set_message_handler(handler)
         with patch(
             "hermes_cli.goal_intent.requests.post", return_value=_jev_response("task", 0.9)
         ):
-            runner._schedule_auto_goal_intent(_event("why is tdarr down"), SESSION_KEY)
-            await _drain(runner)
-            await _poll_until(lambda: SESSION_KEY in adapter._post_delivery_callbacks)
+            task = asyncio.create_task(
+                adapter._process_message_background(
+                    _event("why is tdarr down"), SESSION_KEY
+                )
+            )
+            await _poll_until(started.is_set)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
 
-        assert adapter.jev_sends() == []  # deferred behind the response delivery
-        await adapter._fire_post_delivery_callback(SESSION_KEY, guard)
-        assert [s["content"] for s in adapter.jev_sends()] == [
-            "🔎 jev goal-intent (attempt 1/2) user message from operator: task (confidence 0.90)"
-        ]
-        assert adapter._post_delivery_callbacks == {}
-
-    @pytest.mark.asyncio
-    async def test_attempt_after_an_errored_turn_still_delivers(self, runner, monkeypatch):
-        """The boundary fires from the real turn task's finally even when the
-        turn errors; a classification completing after that must still deliver
-        exactly once with no next user turn."""
-        monkeypatch.setenv("LITELLM_API_KEY", "test-key")
-        adapter = _RegistryAdapter()
-        runner.adapters = {Platform.TELEGRAM: adapter}
-
-        async def failing_handler(event):
-            raise RuntimeError("agent exploded")
-
-        adapter.set_message_handler(failing_handler)
-        guard = asyncio.Event()
-        adapter._active_sessions[SESSION_KEY] = guard
-        await adapter._process_message_background(_event("why is tdarr down"), SESSION_KEY)
-
-        with patch(
-            "hermes_cli.goal_intent.requests.post", return_value=_jev_response("task", 0.9)
-        ):
-            runner._schedule_auto_goal_intent(_event("classify me"), SESSION_KEY)
+            runner._schedule_auto_goal_intent(_event("classify me now"), SESSION_KEY)
             await _drain(runner)
             await _poll_until(lambda: adapter.jev_sends())
 
-        assert [s["content"] for s in adapter.jev_sends()] == [
-            "🔎 jev goal-intent (attempt 1/2) user message from operator: task (confidence 0.90)"
-        ]
+        notice = (
+            "🔎 jev goal-intent (attempt 1/2) user message from operator: "
+            "task (confidence 0.90)"
+        )
+        assert [s["content"] for s in adapter.jev_sends()] == [notice]
         assert adapter._post_delivery_callbacks == {}
 
     @pytest.mark.asyncio
-    async def test_followup_turn_drains_and_leaves_no_stranded_work(self, runner):
-        """A queued follow-up hands the guard to the drain turn; both runs
-        complete through the real finally boundaries and leave the registry
-        empty with the guard released (a post-turn registration is refused,
-        not parked)."""
-        adapter = _RegistryAdapter()
-        fired: list = []
+    async def test_two_overlapped_turn_requests_both_emit(self, runner, monkeypatch):
+        """The review4 acceptance blocker, through the real notifier path.
 
-        async def registering_handler(event):
-            adapter.register_post_delivery_callback(
-                SESSION_KEY, lambda: fired.append("cb")
+        Two turns overlap on one session (a queued follow-up drains onto the
+        reused guard while the older turn's finally is still running), each
+        turn stamps its own generation and each holds a classification.
+        Ordering the notices behind the delivery boundary dropped the older
+        one (a newer registration replaced its registry slot); direct
+        outbound delivery must emit BOTH, exactly once each, without the
+        registry ever holding an entry.
+        """
+        monkeypatch.setenv("LITELLM_API_KEY", "test-key")
+        adapter = _RecordingAdapter()
+        runner.adapters = {Platform.TELEGRAM: adapter}
+        registrations: list = []
+        original_register = adapter.register_post_delivery_callback
+
+        def _spying_register(session_key, callback, *, generation=None):
+            registrations.append(generation)
+            return original_register(session_key, callback, generation=generation)
+
+        adapter.register_post_delivery_callback = _spying_register
+
+        def _notice_landed(generation: int) -> bool:
+            marker = "task (confidence" if generation == 1 else "chase (confidence"
+            return any(
+                marker in str(s["content"]) for s in adapter.jev_sends()
+            ) or _registry_generation(adapter) == generation
+
+        async def handler(event):
+            # Stamp this run's generation exactly as the gateway does per
+            # turn (run_agent_cache), so the two turns are distinguishable
+            # the way production makes them.
+            guard = adapter._active_sessions[SESSION_KEY]
+            generation = 1 if event.text == "first" else 2
+            guard._hermes_run_generation = generation
+            runner._schedule_auto_goal_intent(event, SESSION_KEY)
+            await _poll_until(lambda: _notice_landed(generation), timeout=10.0)
+            return f"answer {generation}"
+
+        adapter.set_message_handler(handler)
+
+        def _routed_post(_url, json=None, **_kwargs):
+            message = str((json or {}).get("state", {}).get("message") or "")
+            if message == "first":
+                return _jev_response("task", 0.9)
+            return _jev_response("chase", 0.8)
+
+        # Hold run 1's finally between its typing cleanup and its delivery
+        # boundary until run 2's notice has landed — the exact window the
+        # acceptance blocker lived in (bounded by _poll_until's deadline).
+        original_stop = adapter._stop_typing_refresh
+        stop_calls = {"n": 0}
+        first_coro: list = []
+
+        async def _stalling_stop(chat_id, typing_task=None, *, metadata=None, **kwargs):
+            coro = asyncio.current_task().get_coro()
+            if first_coro and coro is first_coro[0]:
+                stop_calls["n"] += 1
+                if stop_calls["n"] == 2:
+                    await _poll_until(lambda: _notice_landed(2), timeout=10.0)
+            return await original_stop(chat_id, typing_task, metadata=metadata, **kwargs)
+
+        adapter._stop_typing_refresh = _stalling_stop
+        adapter._pending_messages[SESSION_KEY] = _event("second")
+
+        with patch("hermes_cli.goal_intent.requests.post", side_effect=_routed_post):
+            first_task = asyncio.create_task(
+                adapter._process_message_background(_event("first"), SESSION_KEY)
             )
-            return None
+            first_coro.append(first_task.get_coro())
+            await asyncio.wait_for(first_task, 20)
+            tasks = {t for t in adapter._session_tasks.values() if not t.done()}
+            tasks |= {t for t in adapter._background_tasks if not t.done()}
+            if tasks:
+                await asyncio.wait_for(asyncio.gather(*tasks), 20)
+            await _drain(runner)
 
-        adapter.set_message_handler(registering_handler)
-        guard = asyncio.Event()
-        adapter._active_sessions[SESSION_KEY] = guard
-        adapter._pending_messages[SESSION_KEY] = _event("queued follow-up")
-
-        await adapter._process_message_background(_event("first"), SESSION_KEY)
-        # The drain turn may interleave with run 1's finally awaits; wait for
-        # the queued event to be consumed and every spawned task to finish.
-        await _poll_until(lambda: not adapter._pending_messages)
-        for task in list(adapter._background_tasks):
-            if not task.done():
-                await asyncio.wait_for(asyncio.shield(task), timeout=5)
-
-        assert fired  # the runs' registrations fired, never stranded
+        lines = sorted(s["content"] for s in adapter.jev_sends())
+        assert lines == sorted([
+            "🔎 jev goal-intent (attempt 1/2) user message from operator: "
+            "task (confidence 0.90)",
+            "🔎 jev goal-intent (attempt 1/2) user message from operator: "
+            "chase (confidence 0.80)",
+        ])
+        assert registrations == []  # both notices bypassed the shared registry
         assert adapter._post_delivery_callbacks == {}
-        assert adapter.register_post_delivery_callback(SESSION_KEY, lambda: None) is False
 
     @pytest.mark.asyncio
-    async def test_late_notice_delivers_through_the_owning_profile_scope(
+    async def test_notice_delivers_through_the_owning_profile_scope(
         self, runner, monkeypatch, tmp_path
     ):
-        """A/B/A routing with REAL registry adapters: the deferred send of a
-        late notice (boundary already fired, no active turn) still runs in the
-        OWNING profile's scope and reaches only that profile's adapter."""
+        """A/B/A routing with real lifecycle adapters: the notice send runs
+        in the OWNING profile's scope and reaches only that profile's
+        adapter."""
         from pathlib import Path
 
         monkeypatch.setenv("LITELLM_API_KEY", "test-key")
@@ -533,8 +628,8 @@ class TestPostDeliveryRegistryLifecycle:
 
         home_b = create_profile("beta", no_alias=True, no_skills=True)
         monkeypatch.setattr(runner.config, "multiplex_profiles", True, raising=False)
-        adapter_default = _RegistryAdapter()
-        adapter_b = _RegistryAdapter()
+        adapter_default = _RecordingAdapter()
+        adapter_b = _RecordingAdapter()
         runner.adapters = {Platform.TELEGRAM: adapter_default}
         runner._profile_adapters = {"beta": {Platform.TELEGRAM: adapter_b}}
 
@@ -550,5 +645,5 @@ class TestPostDeliveryRegistryLifecycle:
         assert [s["content"] for s in sends] == [
             "🔎 jev goal-intent (attempt 1/2) user message from B-User: task (confidence 0.90)"
         ]
-        assert sends[0]["home"] == str(home_b)  # owning profile's scope at the eventual send
+        assert sends[0]["home"] == str(home_b)  # owning profile's scope at the send
         assert adapter_default.jev_sends() == []

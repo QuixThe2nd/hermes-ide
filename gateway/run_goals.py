@@ -153,7 +153,13 @@ class GatewayGoalsMixin:
             metadata = None
         if non_conversational:
             metadata = dict(metadata or {})
+            # A diagnostic is never the turn's final message: the interim
+            # marker keeps a live native stream (relay seal-interception)
+            # from sealing on notice text, and non-conversational history
+            # keeps it out of the model's recovered context and off the
+            # last-self-message boundary.
             metadata["non_conversational_history"] = True
+            metadata["_interim_send"] = True
 
         result = await adapter.send(source.chat_id, message, metadata=metadata)
         if result is not None and not getattr(result, "success", True):
@@ -162,9 +168,7 @@ class GatewayGoalsMixin:
                 getattr(result, "error", "unknown error"),
             )
 
-    async def _defer_goal_status_notice_after_delivery(
-        self, source: Any, message: str, *, non_conversational: bool = False
-    ) -> None:
+    async def _defer_goal_status_notice_after_delivery(self, source: Any, message: str) -> None:
         """Send a /goal status line after the main response is delivered.
 
         The gateway message handler returns the agent response to the platform
@@ -173,15 +177,6 @@ class GatewayGoalsMixin:
         send.  Platform adapters provide a one-shot post-delivery callback for
         exactly this boundary; when unavailable, fall back to direct awaited
         delivery rather than silently dropping the notice.
-
-        The registry is only consumed by the turn task's delivery boundary, so
-        it is used ONLY while a live run will still fire one (the goal
-        classifier is detached from the turn and can outlive it — the boundary
-        waits at most 20s for a decision while a cold formatter build can take
-        minutes). With no live run, or after its boundary already fired (turn
-        completed, errored or interrupted), the notice delivers directly: the
-        originating turn's response is already out, so reading order is
-        preserved without waiting for an unrelated future turn.
         """
         adapter = self._adapter_for_source(source)
         if not adapter:
@@ -190,9 +185,7 @@ class GatewayGoalsMixin:
 
         async def _deliver() -> None:
             try:
-                await self._send_goal_status_notice(
-                    source, message, non_conversational=non_conversational
-                )
+                await self._send_goal_status_notice(source, message)
             except Exception as exc:
                 logger.warning("goal continuation: status send failed: %s", exc, exc_info=True)
 
@@ -207,10 +200,12 @@ class GatewayGoalsMixin:
                 active = getattr(adapter, "_active_sessions", {}).get(session_key)
                 if active is not None:
                     generation = getattr(active, "_hermes_run_generation", None)
-                if adapter.register_post_delivery_callback(
-                    session_key, _deliver, generation=generation
-                ):
-                    return  # a live run's boundary will fire it
+                adapter.register_post_delivery_callback(
+                    session_key,
+                    _deliver,
+                    generation=generation,
+                )
+                return
             except Exception as exc:
                 logger.debug("goal continuation: post-delivery callback registration failed: %s", exc)
 

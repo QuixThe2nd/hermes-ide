@@ -268,11 +268,6 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     def _preexisting_callback() -> None:
         pre_existing_fired.append(True)
 
-    # A live run holds the session guard (registration is accepted only while
-    # a delivery boundary will still fire).
-    import asyncio as _asyncio
-
-    adapter._active_sessions[session_key] = _asyncio.Event()
     # Pre-register a callback with the same generation the run will use
     # (run_generation=None in this test path — matches the default slot).
     adapter.register_post_delivery_callback(session_key, _preexisting_callback)

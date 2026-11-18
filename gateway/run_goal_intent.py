@@ -138,10 +138,17 @@ class GatewayGoalIntentMixin:
 
         Runs on the executor thread (inside the source's profile scope, carried
         by ``_run_in_executor_with_context``); each real HTTP attempt posts one
-        concise line back to the originating chat through the same deferred
-        status-notice lane the 🎯 line uses — outbound-only, never model
+        concise line back to the originating chat through a DIRECT outbound
+        send on the source's owning adapter — outbound-only, never model
         context, and a delivery failure is logged without touching the
         classification or the turn.
+
+        Deliberately NOT the post-delivery registry: the registry slot is
+        keyed by session while the classifier is detached from the turn, so
+        ordering behind the turn's delivery boundary both strands late
+        notices (no live boundary left to fire them) and silently drops the
+        older notice when two overlapped turns each register one. A status
+        line may therefore arrive before the answer; that is intended.
         """
         author = str(getattr(source, "user_name", "") or "")
 
@@ -158,9 +165,7 @@ class GatewayGoalIntentMixin:
                 return  # formatter binary unavailable: skip, never a local twin
             try:
                 future = asyncio.run_coroutine_threadsafe(
-                    self._defer_goal_status_notice_after_delivery(
-                        source, line, non_conversational=True
-                    ),
+                    self._send_goal_status_notice(source, line, non_conversational=True),
                     loop,
                 )
 
