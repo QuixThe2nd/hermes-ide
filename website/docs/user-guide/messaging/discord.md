@@ -489,7 +489,7 @@ discord:
     timeout_seconds: 3.0      # per-request budget; over budget means deny
     context_messages: 10      # recent same-channel messages sent as evidence
     context_chars: 8000       # total character budget for that evidence block
-    model: jev-1.13.0  # judge model; fixed default, no fallback chain
+    model: jev-1.14.0  # judge model; fixed default, no fallback chain
     threads_require_membership: true  # threads stay silent until the bot has participated (default)
 ```
 
@@ -533,7 +533,7 @@ discord:
     timeout_seconds: 3.0       # per-request budget; over budget means no reaction
     context_messages: 10       # recent same-channel messages sent as evidence
     context_chars: 8000        # total character budget for that evidence block
-    model: jev-1.13.0  # judge model; fixed default, no fallback chain
+    model: jev-1.14.0  # judge model; fixed default, no fallback chain
     decision_formula: 'abstain < 0.5 or (emoji_count >= 2 and top > 5 * second)'  # the default rule, spelled out
     include_threads: true            # a listed parent channel id also selects its threads (default)
     threads_require_membership: true  # in-scope threads stay silent until the bot has participated (default)
