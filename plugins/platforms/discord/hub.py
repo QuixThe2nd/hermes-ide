@@ -26,6 +26,13 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 import psutil
 
 from agent.async_utils import consume_detached_task_result
+from gateway.generations import (
+    AttachedGeneration,
+    RoutingState,
+    handoff_eligible,
+    register_decision,
+    route_choice,
+)
 from hermes_constants import get_default_hermes_root
 
 logger = logging.getLogger(__name__)
@@ -154,32 +161,31 @@ class DiscordSessionRouter:
             raise ValueError("session_key is required")
         async with self._lock:
             owner = self._owners.get(session_key)
-            if owner is not None and owner != generation_id and owner in self._clients:
+            if not register_decision(self._routing_state(), session_key, generation_id):
                 return {"owner": owner, "version": None}
             version = self._versions.get(session_key, 0) + 1
             self._versions[session_key] = version
             self._owners[session_key] = generation_id
             return {"owner": generation_id, "version": version}
 
+    def _routing_state(self) -> RoutingState:
+        """Snapshot of the router state the canonical routing core sees."""
+        return RoutingState(
+            attached=tuple(
+                AttachedGeneration(generation_id, self._client_pids.get(generation_id, 0))
+                for generation_id in self._clients
+            ),
+            owners=dict(self._owners),
+        )
+
     async def _route_locked(self, session_key: str, record: Dict[str, Any], *,
                             excluded: frozenset[str] = frozenset(),
                             target_pid: Optional[int] = None) -> Optional[str]:
         owner = self._owners.get(session_key)
-        if target_pid is not None:
-            generation = next((
-                candidate for candidate, pid in self._client_pids.items()
-                if pid == target_pid and candidate in self._clients
-                and candidate not in excluded
-            ), None)
-        else:
-            generation = (
-                owner if owner in self._clients and owner not in excluded else None
-            )
-            if generation is None:
-                generation = next((
-                    candidate for candidate in reversed(self._clients)
-                    if candidate not in excluded
-                ), None)
+        generation = route_choice(
+            self._routing_state(), session_key,
+            excluded=excluded, target_pid=target_pid,
+        )
         if generation is None:
             self._hold(record)
             logger.warning(
@@ -247,9 +253,8 @@ class DiscordSessionRouter:
         async with self._lock:
             if self._versions.get(session_key) != version:
                 return False
-            if target_pid is not None and not any(
-                pid == target_pid and candidate in self._clients and candidate not in visited
-                for candidate, pid in self._client_pids.items()
+            if target_pid is not None and not handoff_eligible(
+                self._routing_state(), visited=visited, target_pid=target_pid,
             ):
                 return False
             # None means the hub retained the record after a delivery failure or

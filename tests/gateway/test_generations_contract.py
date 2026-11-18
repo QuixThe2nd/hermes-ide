@@ -160,6 +160,34 @@ def test_registry_glue_original_without_records_is_oldest():
     assert array.ancestors_of(202) == [101]
 
 
+def test_registry_glue_places_unrecorded_successor_after_its_predecessor():
+    """A successor absent from the rows still outranks its own predecessor.
+
+    Hub-less deployments (and lost records) build the array from the
+    self-reported predecessor link alone; a PID tie-break must not decide
+    which of the two is newest — the successor is, by construction.
+    """
+    # No rows at all: the successor claims while the predecessor drains.
+    array = array_from_registry([], me_pid=202, me_predecessor=101)
+    newest = array.newest_live()
+    assert newest is not None and newest.pid == 202
+    assert array.may_claim_authority(202)
+    assert array.ancestors_of(202) == [101]
+
+    # A recorded successor of mine still outranks me: my own spawn never
+    # leapfrogs generations recorded after me.
+    rows = [{"pid": 303, "predecessor_pid": 202, "start_time": 30,
+             "state": "attached"}]
+    array = array_from_registry(rows, me_pid=202, me_predecessor=101)
+    newest = array.newest_live()
+    assert newest is not None and newest.pid == 303
+    assert not array.may_claim_authority(202)
+
+    # No known predecessor: the asker is treated as the original (oldest).
+    array = array_from_registry(rows, me_pid=404)
+    assert not array.may_claim_authority(404)
+
+
 def test_registry_glue_preserves_row_drain_links():
     """A recorded generation with a recorded successor is draining."""
     rows = [

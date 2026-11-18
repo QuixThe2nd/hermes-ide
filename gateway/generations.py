@@ -17,13 +17,18 @@ transport hub, and exit independently in any order.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, replace
-from typing import Dict, Iterable, List, Optional
+from dataclasses import dataclass, field, replace
+from typing import Dict, Iterable, List, Optional, Tuple
 
 __all__ = [
     "Generation",
     "GenerationArray",
+    "AttachedGeneration",
+    "RoutingState",
     "array_from_registry",
+    "handoff_eligible",
+    "register_decision",
+    "route_choice",
     "takeover_allowed",
 ]
 
@@ -262,3 +267,77 @@ def array_from_registry(rows: Iterable[dict], *, me_pid: int,
                 attached=False, draining=True, live=_pid_alive(pred),
             )
     return GenerationArray(records.values())
+
+@dataclass(frozen=True)
+class AttachedGeneration:
+    """One generation currently attached to the transport hub."""
+
+    generation_id: str
+    pid: int = 0
+
+
+@dataclass(frozen=True)
+class RoutingState:
+    """Hub router state snapshot the routing decisions run on.
+
+    ``attached`` is in attach order, OLDEST first: re-attaching moves a
+    generation to the end, so the LAST entry is the newest attached
+    generation — the one that takes new work.
+    """
+
+    attached: Tuple[AttachedGeneration, ...] = ()
+    owners: Dict[str, str] = field(default_factory=dict)
+
+
+def route_choice(state: RoutingState, session: str,
+                 excluded: Iterable[str] = (),
+                 target_pid: Optional[int] = None) -> Optional[str]:
+    """Pick the generation that must serve one inbound hub event.
+
+    ``excluded`` names generations that already refused or received the
+    event (overlap handoff trail); a ``target_pid`` pins the event to the
+    generation whose gateway process owns it. None means HOLD: no eligible
+    generation is attached — the caller retains the event for replay,
+    never drops or duplicates it.
+    """
+    skip = {str(item) for item in excluded if item}
+    if target_pid is not None and target_pid > 0:
+        for gen in state.attached:
+            if (gen.pid == target_pid and gen.generation_id
+                    and gen.generation_id not in skip):
+                return gen.generation_id
+        return None
+    owner = state.owners.get(session)
+    if (owner and owner not in skip
+            and any(gen.generation_id == owner for gen in state.attached)):
+        return owner
+    for gen in reversed(state.attached):
+        if gen.generation_id and gen.generation_id not in skip:
+            return gen.generation_id
+    return None
+
+
+def handoff_eligible(state: RoutingState, visited: Iterable[str] = (),
+                     target_pid: Optional[int] = None) -> bool:
+    """May the hub return an event to the generation owning target_pid
+    without revisiting any generation in ``visited`` (the event's trail)?"""
+    if not target_pid or target_pid <= 0:
+        return False
+    skip = {str(item) for item in visited if item}
+    return any(
+        gen.pid == target_pid and gen.generation_id
+        and gen.generation_id not in skip
+        for gen in state.attached
+    )
+
+
+def register_decision(state: RoutingState, session: str, me: str) -> bool:
+    """May generation ``me`` claim a locally-started turn on ``session``?
+
+    False means the session already has a live owner that is not me — the
+    existing owner keeps the session (a busy session never moves).
+    """
+    owner = state.owners.get(session)
+    if not owner or owner == me:
+        return True
+    return not any(gen.generation_id == owner for gen in state.attached)
