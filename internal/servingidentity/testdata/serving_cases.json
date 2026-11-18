@@ -1,0 +1,403 @@
+{
+  "cases": [
+    {
+      "name": "note_serving",
+      "op": "note",
+      "input": {
+        "identity": {
+          "pid": 8412,
+          "start_time": 2007821,
+          "code_sha": "abcd1234ef567890abcd"
+        },
+        "restart_requested": false,
+        "overlap_successor_pending": false
+      },
+      "expect": "[System note: This turn is served by Hermes gateway pid 8412, start 2007821, build abcd1234. That pid — not any pid reported by systemctl, the pid file, or gateway status files — is the process running this conversation.]"
+    },
+    {
+      "name": "note_pure_drain_stays_serving",
+      "op": "note",
+      "input": {
+        "identity": {
+          "pid": 8412,
+          "start_time": 2007821,
+          "code_sha": "abcd1234ef567890abcd"
+        },
+        "restart_requested": false,
+        "overlap_successor_pending": false,
+        "draining": true
+      },
+      "expect": "[System note: This turn is served by Hermes gateway pid 8412, start 2007821, build abcd1234. That pid — not any pid reported by systemctl, the pid file, or gateway status files — is the process running this conversation.]"
+    },
+    {
+      "name": "note_overlap_successor",
+      "op": "note",
+      "input": {
+        "identity": {
+          "pid": 8412,
+          "start_time": 2007821,
+          "code_sha": "abcd1234ef567890abcd"
+        },
+        "restart_requested": false,
+        "overlap_successor_pending": true,
+        "predecessor_pid": 1438
+      },
+      "expect": "[System note: This turn is served by Hermes gateway pid 8412, start 2007821, build abcd1234. It is the restart successor: predecessor pid 1438 is draining its final in-flight turns, so systemctl, the pid file and gateway_state.json may still report pid 1438 until it exits. That drain is the expected handoff — the restart already succeeded; do not wait for the predecessor or treat its drain as an incomplete restart.]"
+    },
+    {
+      "name": "note_overlap_successor_no_predecessor",
+      "op": "note",
+      "input": {
+        "identity": {
+          "pid": 8412,
+          "start_time": 2007821,
+          "code_sha": "abcd1234ef567890abcd"
+        },
+        "restart_requested": false,
+        "overlap_successor_pending": true,
+        "predecessor_pid": 0
+      },
+      "expect": "[System note: This turn is served by Hermes gateway pid 8412, start 2007821, build abcd1234. That pid — not any pid reported by systemctl, the pid file, or gateway status files — is the process running this conversation.]"
+    },
+    {
+      "name": "note_draining_ready_successor",
+      "op": "note",
+      "input": {
+        "identity": {
+          "pid": 1438,
+          "start_time": 2001111,
+          "code_sha": "abcd1234ef567890abcd"
+        },
+        "restart_requested": true,
+        "successor_pid": 709505,
+        "successor_start_time": 3001234,
+        "successor_ready": true
+      },
+      "expect": "[System note: This turn is served by Hermes gateway pid 1438, start 2001111, build abcd1234. This process is draining for a queued restart; its restart successor (pid 709505) has already taken over new turns. Finish this turn's work and do not call restart again for the same restart.]"
+    },
+    {
+      "name": "note_draining_spawned_unattested",
+      "op": "note",
+      "input": {
+        "identity": {
+          "pid": 1438,
+          "start_time": 2001111,
+          "code_sha": "abcd1234ef567890abcd"
+        },
+        "restart_requested": true,
+        "successor_pid": 709505,
+        "successor_start_time": 3001234,
+        "successor_ready": false
+      },
+      "expect": "[System note: This turn is served by Hermes gateway pid 1438, start 2001111, build abcd1234. This process is draining for a queued restart; a successor process (pid 709505) is starting and will take over new turns once its hub attach is confirmed. Finish this turn's work and do not call restart again for the same restart.]"
+    },
+    {
+      "name": "note_draining_no_successor",
+      "op": "note",
+      "input": {
+        "identity": {
+          "pid": 1438,
+          "start_time": 2001111,
+          "code_sha": "abcd1234ef567890abcd"
+        },
+        "restart_requested": true
+      },
+      "expect": "[System note: This turn is served by Hermes gateway pid 1438, start 2001111, build abcd1234. This process is draining for a queued restart; new turns will be served by the replacement process once this one exits. Finish this turn's work and do not call restart again for the same restart.]"
+    },
+    {
+      "name": "note_minimal_identity",
+      "op": "note",
+      "input": {
+        "identity": {
+          "pid": 99,
+          "start_time": 0,
+          "code_sha": ""
+        },
+        "restart_requested": false
+      },
+      "expect": "[System note: This turn is served by Hermes gateway pid 99. That pid — not any pid reported by systemctl, the pid file, or gateway status files — is the process running this conversation.]"
+    },
+    {
+      "name": "status_ready_live_successor_green",
+      "op": "status",
+      "input": {
+        "identify": {
+          "pid": 1438,
+          "start_time": 2001111,
+          "overlap": {
+            "role": "draining-predecessor",
+            "successor_pid": 709505,
+            "successor_start_time": 3001234,
+            "successor_ready": true
+          }
+        },
+        "state": null,
+        "chained_source": null,
+        "successor_identity": "live"
+      },
+      "expect_lines": [
+        "✓ Serving gateway: pid 709505 — restart successor (hub-confirmed serving); new turns are served here",
+        "  Draining predecessor: pid 1438 — finishing its in-flight turns; systemctl, the pid file and gateway_state.json still show pid 1438 until it exits (expected handoff, not an incomplete restart)"
+      ]
+    },
+    {
+      "name": "status_spawned_unattested_starting",
+      "op": "status",
+      "input": {
+        "identify": {
+          "pid": 1438,
+          "start_time": 2001111,
+          "overlap": {
+            "role": "draining-predecessor",
+            "successor_pid": 709505,
+            "successor_start_time": 3001234,
+            "successor_ready": false
+          }
+        },
+        "state": null,
+        "chained_source": null,
+        "successor_identity": "live"
+      },
+      "expect_lines": [
+        "⏳ Serving gateway: successor pid 709505 is starting — draining predecessor pid 1438 spawned it, but its readiness is not yet confirmed; re-check in a moment"
+      ]
+    },
+    {
+      "name": "status_ready_but_fingerprint_unknown",
+      "op": "status",
+      "input": {
+        "identify": {
+          "pid": 1438,
+          "start_time": 2001111,
+          "overlap": {
+            "role": "draining-predecessor",
+            "successor_pid": 709505,
+            "successor_ready": true
+          }
+        },
+        "state": null,
+        "chained_source": null,
+        "successor_identity": "unknown"
+      },
+      "expect_lines": [
+        "⏳ Serving gateway: successor pid 709505 is starting — draining predecessor pid 1438 spawned it, but its readiness is not yet confirmed; re-check in a moment"
+      ]
+    },
+    {
+      "name": "status_pid_reuse_dead",
+      "op": "status",
+      "input": {
+        "identify": {
+          "pid": 1438,
+          "start_time": 2001111,
+          "overlap": {
+            "role": "draining-predecessor",
+            "successor_pid": 709505,
+            "successor_start_time": 3001234,
+            "successor_ready": true
+          }
+        },
+        "state": null,
+        "chained_source": null,
+        "successor_identity": "dead"
+      },
+      "expect_lines": [
+        "⚠ Serving gateway: unknown — predecessor pid 1438 is draining, but its reported successor pid 709505 is not running or its PID was reused; the restart may have failed, check the gateway log before restarting anything"
+      ]
+    },
+    {
+      "name": "status_draining_no_successor_unknown",
+      "op": "status",
+      "input": {
+        "identify": {
+          "pid": 1438,
+          "start_time": 2001111,
+          "overlap": {
+            "role": "draining-predecessor"
+          }
+        },
+        "state": null,
+        "chained_source": null,
+        "successor_identity": null
+      },
+      "expect_lines": [
+        "⚠ Serving gateway: unknown — gateway pid 1438 is draining for a restart with no successor recorded; its supervisor will revive or respawn it — check the gateway log before restarting anything"
+      ]
+    },
+    {
+      "name": "status_role_unknown",
+      "op": "status",
+      "input": {
+        "identify": {
+          "pid": 1438,
+          "start_time": 2001111,
+          "overlap": {
+            "role": "unknown"
+          }
+        },
+        "state": null,
+        "chained_source": null,
+        "successor_identity": null
+      },
+      "expect_lines": [
+        "⚠ Serving gateway: unknown — gateway pid 1438, start 2001111 answered, but its restart-handoff state could not be classified"
+      ]
+    },
+    {
+      "name": "status_plain_serving",
+      "op": "status",
+      "input": {
+        "identify": {
+          "pid": 709505,
+          "start_time": 3001234,
+          "overlap": {
+            "role": "serving"
+          }
+        },
+        "state": null,
+        "chained_source": null,
+        "successor_identity": null
+      },
+      "expect_lines": [
+        "✓ Serving gateway: pid 709505, start 3001234 — answering on the gateway control socket"
+      ]
+    },
+    {
+      "name": "status_legacy_identify_no_overlap",
+      "op": "status",
+      "input": {
+        "identify": {
+          "pid": 709505,
+          "start_time": 3001234
+        },
+        "state": null,
+        "chained_source": null,
+        "successor_identity": null
+      },
+      "expect_lines": [
+        "✓ Serving gateway: pid 709505, start 3001234 — answering on the gateway control socket"
+      ]
+    },
+    {
+      "name": "status_overlap_successor_answer",
+      "op": "status",
+      "input": {
+        "identify": {
+          "pid": 709505,
+          "start_time": 3001234,
+          "overlap": {
+            "role": "overlap-successor",
+            "predecessor_pid": 1438
+          }
+        },
+        "state": null,
+        "chained_source": null,
+        "successor_identity": null
+      },
+      "expect_lines": [
+        "✓ Serving gateway: pid 709505, start 3001234 — restart successor, serving new turns; predecessor pid 1438 is draining its in-flight turns"
+      ]
+    },
+    {
+      "name": "status_state_file_running_green",
+      "op": "status",
+      "input": {
+        "identify": null,
+        "state": {
+          "pid": 709505,
+          "gateway_state": "running",
+          "pid_is_live": true
+        },
+        "chained_source": null,
+        "successor_identity": null
+      },
+      "expect_lines": [
+        "✓ Serving gateway: pid 709505 (from gateway_state.json, state 'running')"
+      ]
+    },
+    {
+      "name": "status_state_file_draining_never_green",
+      "op": "status",
+      "input": {
+        "identify": null,
+        "state": {
+          "pid": 1438,
+          "gateway_state": "draining",
+          "pid_is_live": true,
+          "restart_requested": true
+        },
+        "chained_source": null,
+        "successor_identity": null
+      },
+      "expect_lines": [
+        "⚠ Serving gateway: unknown — gateway_state.json names pid 1438 draining for a restart (state 'draining'); status files keep naming the predecessor until the handoff completes"
+      ]
+    },
+    {
+      "name": "status_state_file_stale_unknown",
+      "op": "status",
+      "input": {
+        "identify": null,
+        "state": {
+          "pid": 709505,
+          "gateway_state": "running",
+          "is_stale": true
+        },
+        "chained_source": null,
+        "successor_identity": null
+      },
+      "expect_lines": [
+        "⚠ Serving gateway: unknown — control socket not answering and gateway_state.json is stale (state 'running')"
+      ]
+    },
+    {
+      "name": "status_state_file_dead_unknown",
+      "op": "status",
+      "input": {
+        "identify": null,
+        "state": {
+          "pid": 709505,
+          "gateway_state": "running"
+        },
+        "chained_source": null,
+        "successor_identity": null
+      },
+      "expect_lines": [
+        "⚠ Serving gateway: unknown — control socket not answering and gateway_state.json pid 709505 is not running"
+      ]
+    },
+    {
+      "name": "status_no_sources_unknown",
+      "op": "status",
+      "input": {
+        "identify": null,
+        "state": null,
+        "chained_source": null,
+        "successor_identity": null
+      },
+      "expect_lines": [
+        "⚠ Serving gateway: unknown — no control socket answer and no gateway_state.json record"
+      ]
+    },
+    {
+      "name": "status_chained_restart_line",
+      "op": "status",
+      "input": {
+        "identify": {
+          "pid": 709505,
+          "start_time": 3001234,
+          "overlap": {
+            "role": "serving"
+          }
+        },
+        "state": null,
+        "chained_source": "telegram user 42 (restart)",
+        "successor_identity": null
+      },
+      "expect_lines": [
+        "✓ Serving gateway: pid 709505, start 3001234 — answering on the gateway control socket",
+        "⏳ Chained restart queued: another restart will run once the current handoff completes (requested by telegram user 42 (restart))"
+      ]
+    }
+  ]
+}

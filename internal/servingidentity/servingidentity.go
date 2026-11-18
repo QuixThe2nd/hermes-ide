@@ -3,30 +3,44 @@
 // of the current gateway process during an overlap restart, the per-turn
 // runtime note that names the process actually serving the conversation, and
 // the status-surface lines that separate the authoritative serving gateway
-// from predecessor/supervisor evidence. Same rules, independently tested.
-// Production Python never imports or shells out to it; it exists so the
-// identity contract has a second, line-balance-accounted implementation.
+// from predecessor/supervisor evidence.
+//
+// This is the canonical statement of the contract; the Python module is what
+// the runtime renders with (executed by tests, not imported at runtime —
+// deployments (pip, docker) carry no Go toolchain, the same arrangement as
+// every other internal/* twin). cmd/servingidentity is the executable form:
+// the Python contract test (tests/gateway/test_serving_identity_contract.py)
+// builds it and asserts byte-identical rendering for every shared-table
+// record in testdata/serving_cases.json, and the Go tests run the same table
+// as a second cross-check.
 //
 // Contract (shared with the Python twin):
 //   - Roles, exactly: "serving", "overlap-successor",
-//     "draining-predecessor".
+//     "draining-predecessor", "unknown".
 //   - Classification reads restart-handoff state only: a restart-requested
 //     process is a draining predecessor (its spawned successor takes new
 //     turns); a process booted pending behind a live predecessor is the
-//     overlap successor serving now; anything else — including a pure
-//     shutdown/pause drain without a restart request — is serving.
+//     overlap successor serving now; a pure shutdown/pause drain without a
+//     restart request is serving. "unknown" appears on the wire when
+//     classification failed — no role claim may be invented from an error.
 //   - The runtime note ALWAYS names the serving pid and states that pids
 //     reported by systemctl, the pid file, or status files are not the
-//     conversation's process; a knowable transition appends the
-//     predecessor/successor explanation. A draining predecessor without a
-//     spawned successor says "a successor is being started", never a pid it
+//     conversation's process. A draining predecessor may claim its successor
+//     "already took over new turns" ONLY on the hub-attested readiness ack
+//     that gates real event handoff — never a bare spawned PID (spawn is not
+//     readiness, and PIDs get reused); without the ack the successor is
+//     "starting", and with no successor at all the note never names a pid it
 //     cannot prove.
 //   - Status lines resolve the serving gateway by ladder: a live identify
-//     answer is authoritative (a draining-predecessor answer points at its
-//     reported successor, with a liveness warning when that successor is not
-//     running); then a live, fresh gateway_state.json record names the pid by
-//     source; otherwise "unknown" with the reason — never a serving claim
-//     that cannot be proven. A pending chained-restart marker adds its line.
+//     answer is authoritative — EXCEPT a draining-predecessor answer, which
+//     names the serving process only when its reported successor carries the
+//     readiness ack AND passes the start-fingerprint check (PID reuse →
+//     dead); a spawned-but-unattested successor is "starting", never a green
+//     serving claim. Without a socket answer, a live fresh
+//     gateway_state.json record names the pid — unless the record itself is
+//     draining (gateway_state "draining" or restart_requested), in which
+//     case serving identity is unknown. Otherwise "unknown" with the reason
+//     — never a serving claim that cannot be proven.
 package servingidentity
 
 import (
@@ -42,12 +56,16 @@ const (
 	RoleServing             Role = "serving"
 	RoleOverlapSuccessor    Role = "overlap-successor"
 	RoleDrainingPredecessor Role = "draining-predecessor"
+	RoleUnknown             Role = "unknown"
 )
 
-// Snapshot mirrors gateway.serving_identity.serving_identity_snapshot input:
-// static process identity plus the runner's restart-handoff state. StartTime
-// is the opaque per-process start fingerprint (jiffies or centiseconds —
-// units differ per platform; only same-host equality is meaningful).
+// Snapshot mirrors gateway.serving_identity.serving_identity_snapshot: static
+// process identity plus the runner's restart-handoff state. StartTime is the
+// opaque per-process start fingerprint (jiffies or centiseconds — units
+// differ per platform; only same-host equality is meaningful).
+// SuccessorReady is the hub-attested readiness ack
+// (gateway.overlap_restart.overlap_successor_readiness) — the same signal
+// that gates real event handoff; a bare SuccessorPID never implies it.
 type Snapshot struct {
 	PID       int
 	StartTime int64
@@ -58,9 +76,12 @@ type Snapshot struct {
 	OverlapSuccessorPending bool
 	PredecessorPID          int
 	SuccessorPID            int
+	SuccessorStartTime      int64
+	SuccessorReady          bool
 }
 
-// Classify returns the snapshot's role.
+// Classify returns the snapshot's role. A pure drain without a restart
+// request is NOT a restart handoff and stays serving.
 func Classify(s Snapshot) Role {
 	switch {
 	case s.RestartRequested:
@@ -88,7 +109,9 @@ func buildClause(pid int, startTime int64, buildSHA string) string {
 }
 
 // RuntimeNote renders the per-turn runtime note for the snapshot. Wording is
-// byte-identical to gateway.serving_identity.serving_runtime_note.
+// byte-identical to gateway.serving_identity.serving_runtime_note; an
+// unclassifiable snapshot (RoleUnknown on the wire) renders the generic
+// serving note — it still names its own pid and claims nothing else.
 func RuntimeNote(s Snapshot) string {
 	identity := buildClause(s.PID, s.StartTime, s.BuildSHA)
 	switch Classify(s) {
@@ -101,9 +124,13 @@ func RuntimeNote(s Snapshot) string {
 				p + " until it exits. That drain is the expected handoff — the restart already succeeded; do not wait for the predecessor or treat its drain as an incomplete restart.]"
 		}
 	case RoleDrainingPredecessor:
-		successor := "a successor is being started and will take new turns"
-		if s.SuccessorPID > 0 {
-			successor = "successor pid " + strconv.Itoa(s.SuccessorPID) + " already takes new turns"
+		successor := "new turns will be served by the replacement process once this one exits"
+		if s.SuccessorReady && s.SuccessorPID > 0 {
+			successor = "its restart successor (pid " + strconv.Itoa(s.SuccessorPID) +
+				") has already taken over new turns"
+		} else if s.SuccessorPID > 0 {
+			successor = "a successor process (pid " + strconv.Itoa(s.SuccessorPID) +
+				") is starting and will take over new turns once its hub attach is confirmed"
 		}
 		return "[System note: This turn is served by Hermes gateway " + identity +
 			". This process is draining for a queued restart; " + successor +
@@ -116,52 +143,109 @@ func RuntimeNote(s Snapshot) string {
 // Identify is one control-socket identify answer as consumed by the status
 // surface: the answering process plus its overlap enrichment.
 type Identify struct {
-	PID            int
-	StartTime      int64
-	Role           Role
-	PredecessorPID int
-	SuccessorPID   int
+	PID                int
+	StartTime          int64
+	Role               Role
+	PredecessorPID     int
+	SuccessorPID       int
+	SuccessorStartTime int64
+	SuccessorReady     bool
 }
 
-// StateFile is the gateway_state.json fallback input, pre-judged: PIDIsLive
-// and IsStale come from the caller's liveness/staleness helpers.
+// StateFile is the gateway_state.json fallback input, pre-judged: PIDIsLive,
+// IsStale and RestartRequested come from the caller's helpers. A live, fresh
+// record that is itself draining never labels its pid as the serving
+// gateway: status files keep naming the predecessor until the handoff
+// completes.
 type StateFile struct {
-	PID          int
-	GatewayState string
-	PIDIsLive    bool
-	IsStale      bool
+	PID              int
+	GatewayState     string
+	PIDIsLive        bool
+	IsStale          bool
+	RestartRequested bool
 }
 
-// StatusLines renders the serving-gateway status block. pidLive may be nil
-// (no probe available: a reported successor is trusted as reported).
+// SuccessorIdentity resolves a reported successor pid against its expected
+// start fingerprint: "live", "dead" (not running, or a reused PID whose
+// fingerprint differs) or "unknown" (no probe / no fingerprint). A nil
+// resolver means no probe is available.
+type SuccessorIdentity func(pid int, expectedStart int64) string
+
+// StatusLines renders the serving-gateway status block. Wording is
+// byte-identical to gateway.serving_identity.serving_status_lines;
 // chainedSource is empty when no chained-restart marker exists.
-// Wording is byte-identical to gateway.serving_identity.serving_status_lines.
-func StatusLines(id *Identify, st *StateFile, chainedSource string, pidLive func(int) bool) []string {
+func StatusLines(id *Identify, st *StateFile, chainedSource string, successorIdentity SuccessorIdentity) []string {
+	resolve := func(pid int, expectedStart int64) string {
+		if successorIdentity == nil {
+			if expectedStart == 0 {
+				return "unknown"
+			}
+			return "live"
+		}
+		state := successorIdentity(pid, expectedStart)
+		if state != "live" && state != "dead" {
+			return "unknown"
+		}
+		return state
+	}
 	var lines []string
 	switch {
 	case id != nil && id.PID > 0:
 		answering := buildClause(id.PID, id.StartTime, "")
 		switch {
-		case id.Role == RoleDrainingPredecessor && id.SuccessorPID > 0:
-			if pidLive == nil || pidLive(id.SuccessorPID) {
-				lines = append(lines,
-					"✓ Serving gateway: pid "+strconv.Itoa(id.SuccessorPID)+" — restart successor; new turns are served here",
-					"  Draining predecessor: pid "+strconv.Itoa(id.PID)+" — finishing its in-flight turns; "+
-						"systemctl, the pid file and gateway_state.json still show pid "+strconv.Itoa(id.PID)+
-						" until it exits (expected handoff, not an incomplete restart)")
+		case id.Role == RoleDrainingPredecessor:
+			if id.SuccessorPID > 0 {
+				state := resolve(id.SuccessorPID, id.SuccessorStartTime)
+				switch {
+				case state == "dead":
+					lines = append(lines,
+						"⚠ Serving gateway: unknown — predecessor pid "+strconv.Itoa(id.PID)+" is draining, "+
+							"but its reported successor pid "+strconv.Itoa(id.SuccessorPID)+" is not "+
+							"running or its PID was reused; the restart may have failed, check "+
+							"the gateway log before restarting anything")
+				case id.SuccessorReady && state == "live":
+					lines = append(lines,
+						"✓ Serving gateway: pid "+strconv.Itoa(id.SuccessorPID)+" — restart successor "+
+							"(hub-confirmed serving); new turns are served here",
+						"  Draining predecessor: pid "+strconv.Itoa(id.PID)+" — finishing its "+
+							"in-flight turns; systemctl, the pid file and gateway_state.json "+
+							"still show pid "+strconv.Itoa(id.PID)+" until it exits (expected "+
+							"handoff, not an incomplete restart)")
+				default:
+					lines = append(lines,
+						"⏳ Serving gateway: successor pid "+strconv.Itoa(id.SuccessorPID)+" is starting — "+
+							"draining predecessor pid "+strconv.Itoa(id.PID)+" spawned it, but its "+
+							"readiness is not yet confirmed; re-check in a moment")
+				}
 			} else {
 				lines = append(lines,
-					"⚠ Serving gateway: unknown — predecessor pid "+strconv.Itoa(id.PID)+" is draining, but its "+
-						"reported successor pid "+strconv.Itoa(id.SuccessorPID)+" is not running; the restart may have failed, "+
-						"check the gateway log before restarting anything")
+					"⚠ Serving gateway: unknown — gateway pid "+strconv.Itoa(id.PID)+" is draining "+
+						"for a restart with no successor recorded; its supervisor will revive or "+
+						"respawn it — check the gateway log before restarting anything")
 			}
 		case id.Role == RoleOverlapSuccessor:
-			lines = append(lines, "✓ Serving gateway: "+answering+" — restart successor, now authoritative")
+			predecessorClause := ""
+			if id.PredecessorPID > 0 {
+				predecessorClause = "; predecessor pid " + strconv.Itoa(id.PredecessorPID) +
+					" is draining its in-flight turns"
+			}
+			lines = append(lines, "✓ Serving gateway: "+answering+
+				" — restart successor, serving new turns"+predecessorClause)
+		case id.Role == RoleUnknown:
+			lines = append(lines, "⚠ Serving gateway: unknown — gateway "+answering+
+				" answered, but its restart-handoff state could not be classified")
 		default:
-			lines = append(lines, "✓ Serving gateway: "+answering+" — answering on the gateway control socket")
+			lines = append(lines, "✓ Serving gateway: "+answering+
+				" — answering on the gateway control socket")
 		}
 	case st != nil && st.PID > 0:
+		draining := st.GatewayState == "draining" || st.RestartRequested
 		switch {
+		case !st.IsStale && st.PIDIsLive && draining:
+			lines = append(lines,
+				"⚠ Serving gateway: unknown — gateway_state.json names pid "+strconv.Itoa(st.PID)+
+					" draining for a restart (state '"+st.GatewayState+"'); "+
+					"status files keep naming the predecessor until the handoff completes")
 		case !st.IsStale && st.PIDIsLive:
 			lines = append(lines, "✓ Serving gateway: pid "+strconv.Itoa(st.PID)+
 				" (from gateway_state.json, state '"+st.GatewayState+"')")
@@ -183,9 +267,11 @@ func StatusLines(id *Identify, st *StateFile, chainedSource string, pidLive func
 }
 
 // OverlapFields renders the identify "overlap" merge for a snapshot: the
-// role always, predecessor/successor pids only when known (> 0). Key order
-// is irrelevant (wire JSON), but the present-key set must match the Python
-// twin's overlap_fields.
+// role always, predecessor/successor pids only when known (> 0), the
+// successor start fingerprint alongside a successor pid, and the hub-attested
+// readiness flag only when a successor is reported. Key order is irrelevant
+// (wire JSON), but the present-key set must match the Python twin's
+// overlap_fields.
 func OverlapFields(s Snapshot) map[string]any {
 	fields := map[string]any{"role": string(Classify(s))}
 	if s.PredecessorPID > 0 {
@@ -193,6 +279,10 @@ func OverlapFields(s Snapshot) map[string]any {
 	}
 	if s.SuccessorPID > 0 {
 		fields["successor_pid"] = s.SuccessorPID
+		if s.SuccessorStartTime != 0 {
+			fields["successor_start_time"] = s.SuccessorStartTime
+		}
+		fields["successor_ready"] = s.SuccessorReady
 	}
 	return fields
 }
@@ -206,141 +296,4 @@ func ChainedSource(source string) string {
 		return "an earlier restart request"
 	}
 	return source
-}
-
-// ---------------------------------------------------------------------------
-// Restart-result identity: the queued payload and the completion notice.
-// Mirrors plugins/gateway_restart/tool.py (_result_json/_socket_result_json,
-// _QUEUED_NOTE) and gateway/run_turn_recovery.py
-// (_restart_success_content/_parse_restart_success_content), which share
-// their constants with agent/turn_control.py.
-// ---------------------------------------------------------------------------
-
-// Restart notice lines (agent/turn_control.py).
-const (
-	NoticeFirstLine     = "Restarted successfully"
-	OldProcessPrefix    = "Old process: "
-	NewProcessPrefix    = "New process: "
-	TurnControlField    = "_hermes_turn_control"
-	GatewayRestartValue = "gateway_restart"
-)
-
-// QueuedNote is the self-describing queue state every committed restart
-// reply carries (plugins/gateway_restart/tool.py::_QUEUED_NOTE).
-const QueuedNote = "Restart queued, not completed: 'process' names the OLD gateway. " +
-	"The successor process rewrites this result with the " +
-	"'Restarted successfully' completion notice and Old/New process " +
-	"identity."
-
-// TerminalRestartStatuses are the queue-committing statuses that stamp the
-// turn-control field and end the requesting turn (agent/turn_control.py).
-var TerminalRestartStatuses = map[string]bool{
-	"restarting":          true,
-	"already_in_progress": true,
-	"chained":             true,
-}
-
-// TurnControlFieldFor returns the reserved control-field stamp for a
-// committed restart status, or nil.
-func TurnControlFieldFor(status string) map[string]string {
-	if TerminalRestartStatuses[status] {
-		return map[string]string{TurnControlField: GatewayRestartValue}
-	}
-	return nil
-}
-
-// QueuedResult assembles the committed-restart reply payload (the
-// `_socket_result_json` field set). Process names the OLD gateway; the
-// reply says it is queued, never completed.
-func QueuedResult(status string, activeAgents int, viaService any, process string) map[string]any {
-	payload := map[string]any{
-		"success":       true,
-		"status":        status,
-		"active_agents": activeAgents,
-		"via_service":   viaService,
-		"queued":        true,
-		"note":          QueuedNote,
-	}
-	if process != "" {
-		payload["process"] = process
-	}
-	if stamp := TurnControlFieldFor(status); stamp != nil {
-		for k, v := range stamp {
-			payload[k] = v
-		}
-	}
-	return payload
-}
-
-// RestartSuccessContent builds the exact completion notice the successor
-// rewrites the restart tool result with (gateway/run_turn_recovery.py).
-// oldProcess may be empty (legacy results without the old identity);
-// hubLine is the optional opt-in "Hub: " report line.
-func RestartSuccessContent(oldProcess, newProcess, hubLine string) string {
-	lines := []string{NoticeFirstLine}
-	if oldProcess != "" {
-		lines = append(lines, OldProcessPrefix+oldProcess)
-	}
-	lines = append(lines, NewProcessPrefix+newProcess)
-	if oldProcess != "" {
-		lines = append(lines,
-			"This is a tool result for you, not a message to send or quote "+
-				"to the user. This chat is no longer running in "+oldProcess+"; "+
-				"you are now running in "+newProcess+". Continue the interrupted "+
-				"task with your tools until the original work is verified, then "+
-				"reply to the user about that work.")
-	} else {
-		lines = append(lines,
-			"This is a tool result for you, not a message to send or quote "+
-				"to the user. You are now running in "+newProcess+". Continue "+
-				"the interrupted task with your tools until the original work is "+
-				"verified, then reply to the user about that work.")
-	}
-	if hubLine != "" {
-		lines = append(lines, "Hub: "+hubLine)
-	}
-	return strings.Join(lines, "\n")
-}
-
-// ParseRestartSuccessContent accepts ONLY the exact builder output and
-// recovers the old identity (empty when the notice lacked it). Builder and
-// parser stay in lockstep so a reworded instruction cannot be trusted
-// half-way through a handoff.
-func ParseRestartSuccessContent(content string) (oldProcess, newProcess string, ok bool) {
-	lines := strings.Split(content, "\n")
-	hubLine := ""
-	if len(lines) >= 4 && strings.HasPrefix(lines[len(lines)-1], "Hub: ") {
-		hubLine = strings.TrimSpace(lines[len(lines)-1][len("Hub: "):])
-		if hubLine == "" {
-			return "", "", false
-		}
-		lines = lines[:len(lines)-1]
-	}
-	if len(lines) == 0 || lines[0] != NoticeFirstLine {
-		return "", "", false
-	}
-	newLine := ""
-	switch len(lines) {
-	case 4:
-		if !strings.HasPrefix(lines[1], OldProcessPrefix) {
-			return "", "", false
-		}
-		oldProcess = strings.TrimSpace(lines[1][len(OldProcessPrefix):])
-		newLine = lines[2]
-	case 3:
-		newLine = lines[1]
-	default:
-		return "", "", false
-	}
-	if !strings.HasPrefix(newLine, NewProcessPrefix) {
-		return "", "", false
-	}
-	newProcess = strings.TrimSpace(newLine[len(NewProcessPrefix):])
-	if newProcess == "" || (len(lines) == 4 && oldProcess == "") {
-		return "", "", false
-	}
-	if content != RestartSuccessContent(oldProcess, newProcess, hubLine) {
-		return "", "", false
-	}
-	return oldProcess, newProcess, true
 }
