@@ -486,7 +486,7 @@ _EXPECTED_RESTART_RESULT_WITHOUT_OLD = (
     "verified, then reply to the user about that work."
 )
 
-def _restart_tool_tail_history(*, timestamp=None, process=_OLD_PROCESS):
+def _restart_tool_tail_history(*, timestamp=None, process=_OLD_PROCESS, status=None):
     """The exact durable shape left by the dying process's restart control."""
     from plugins.gateway_restart.tool import _result_json
 
@@ -495,7 +495,7 @@ def _restart_tool_tail_history(*, timestamp=None, process=_OLD_PROCESS):
     arguments = "{}"
     result = _result_json(
         SimpleNamespace(_draining=True),
-        {"status": "restarting", "active_agents": 1, "via_service": False},
+        status or {"status": "restarting", "active_agents": 1, "via_service": False},
     )
     payload = json.loads(result)
     if process is None:
@@ -560,6 +560,29 @@ def test_restart_tool_tail_continues_with_process_identity(monkeypatch):
     assert rewritten[-1]["content"] == _EXPECTED_RESTART_RESULT
     assert rewritten[-1]["tool_call_id"] == "call_restart"
     assert all(row.get("content") != _RESTART_CLOSE_ROW for row in rewritten)
+
+
+def test_chained_restart_tail_continues_with_process_identity(monkeypatch):
+    """A chained (overlap-queued) restart carries the same Old/New identity contract.
+
+    The chained ack names the draining predecessor as ``process``; the
+    successor rewrite must still present Old process = predecessor and
+    New process = itself, never a bare success without identity.
+    """
+    from gateway.run_turn_recovery import _repair_restart_tool_tail
+
+    history = _restart_tool_tail_history(
+        process=_OLD_PROCESS,
+        status={"status": "chained", "active_agents": 1, "via_service": True},
+    )[:-1]
+    monkeypatch.setattr(os, "getpid", lambda: _NEW_PID)
+
+    repair = _repair_restart_tool_tail(history)
+
+    assert repair is not None
+    rewritten, changed = repair
+    assert changed is True
+    assert rewritten[-1]["content"] == _EXPECTED_RESTART_RESULT
 
 
 def test_rich_restart_result_is_trusted_and_idempotent(monkeypatch):

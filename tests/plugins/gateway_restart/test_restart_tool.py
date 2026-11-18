@@ -247,6 +247,40 @@ def test_schema_describes_successor_tool_result_and_single_bounce():
     assert "Continue the interrupted task" in description
     assert "do not call restart again for the same restart" in description.lower()
     assert "ends this turn immediately" not in description.lower()
+    # Queued is not completed: the immediate result must say so itself.
+    assert "only means the restart was queued" in description
+    assert "never completed" in description
+
+
+def test_queued_result_json_marks_queued_and_names_old_process():
+    from plugins.gateway_restart.tool import _result_json
+
+    payload = json.loads(_result_json(
+        SimpleNamespace(_draining=True),
+        {"status": "chained", "active_agents": 1, "via_service": True},
+    ))
+
+    assert payload["success"] is True
+    assert payload["queued"] is True
+    assert payload["process"] == f"pid {os.getpid()}"
+    # The payload must be self-describing: 'process' is the OLD gateway, the
+    # successor rewrite — not this reply — is the completion claim.
+    assert "not completed" in payload["note"]
+    assert "OLD gateway" in payload["note"]
+    assert "Restarted successfully" in payload["note"]
+
+
+def test_socket_result_json_marks_queued_and_names_ack_process():
+    from plugins.gateway_restart.tool import _socket_result_json
+
+    payload = json.loads(_socket_result_json(
+        {"queued": True, "status": "chained", "pid": 1438,
+         "active_agents": 1, "via_service": True}))
+
+    assert payload["queued"] is True
+    assert payload["process"] == "pid 1438"
+    assert "not completed" in payload["note"]
+    assert "OLD gateway" in payload["note"]
 
 
 def test_plugin_discovery_loads_tool_on_gateway_toolset(_isolate_hermes_home):
@@ -624,7 +658,7 @@ def test_handler_queues_via_control_socket_when_no_runner(monkeypatch):
     # the tool executor ends the turn identically on either transport.
     expected_fields = {
         "success", "status", "process", "active_agents", "via_service",
-        *turn_control_field_for("restarting"),
+        "queued", "note", *turn_control_field_for("restarting"),
     }
     assert set(result) == expected_fields
     assert requested["home"] == get_hermes_home()
@@ -845,7 +879,7 @@ def test_other_session_live_queues_the_drain_immediately(gateway_loop, monkeypat
 
     expected_fields = {
         "success", "status", "process", "active_agents", "via_service",
-        *turn_control_field_for("restarting"),
+        "queued", "note", *turn_control_field_for("restarting"),
     }
     assert set(result) == expected_fields
     assert result["process"] == f"pid {os.getpid()}"
@@ -1180,7 +1214,7 @@ else:
         from agent.turn_control import turn_control_field_for
         assert set(result) == {
             "success", "status", "process", "active_agents", "via_service",
-            *turn_control_field_for("restarting"),
+            "queued", "note", *turn_control_field_for("restarting"),
         }, sorted(result)
         print("SOCKET-OK")
     finally:
