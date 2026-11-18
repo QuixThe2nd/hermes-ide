@@ -391,10 +391,9 @@ def test_omp_lane_accepts_git_free_workdir_and_cursor_rejects(
     directory.mkdir()
     assert not (directory / ".git").exists()
 
-    monkeypatch.setattr(lane_tool, "lanes_configured", lambda: True)
     monkeypatch.setattr(
-        lane_tool, "resolve_lane_spec",
-        lambda name, lanes=None: resolve_lane_spec(
+        lane_tool, "resolve_runnable_spec",
+        lambda name, lanes=None, omp_config=None: resolve_lane_spec(
             "ui_dev", {"ui_dev": {"harness": "omp",
                                   "models": ["provider/m"]}}),
     )

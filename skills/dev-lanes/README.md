@@ -23,9 +23,11 @@ Each lane tool takes an optional `description` argument — a short phrase shown
 
 The bundled defaults use OMP. Every lane can instead select `claude`, `cursor`, or `subagent` in config. Models form an ordered fallback chain; only quota and rate-limit failures advance the chain, with OMP `errorStatus` 403 and 429 classified as quota. Other errors stop immediately so an invalid task or missing credential does not fan out across providers.
 
-## Opt in
+## Configuration
 
-Lane schemas are hidden until `delegation.lanes` is non-empty. Any non-empty mapping opts into all four tools; entries override the bundled defaults field by field. Config keys accept either `ui_dev` or `delegate_ui_dev` naming.
+The lane tools are always registered; there is no opt-in switch. Each lane is visible whenever its harness can actually run: when the `omp` binary is missing from the host, the bundled OMP default falls back to the Claude wrapper, then to the in-process subagent, so the tools work out of the box. A lane explicitly pinned to `claude` or `cursor` in config hides only while that binary is unavailable.
+
+`delegation.lanes` is a per-lane override overlay: entries override the bundled defaults field by field without discarding the rest of a lane's configuration. Config keys accept either `ui_dev` or `delegate_ui_dev` naming.
 
 ```yaml
 delegation:
