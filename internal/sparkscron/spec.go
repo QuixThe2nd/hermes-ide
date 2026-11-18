@@ -26,6 +26,9 @@
 //   - The job's toolsets are the generic, always-present ones. Host-specific
 //     toolsets (e.g. tabctl) are deliberately absent: a default job must
 //     resolve its toolset on every install.
+//   - The job attaches no skills: a default job must not reference a skill
+//     that may not exist on the install (hermes-starts ships only on the
+//     maintainer's host). The prompt is self-contained.
 package sparkscron
 
 // JobName is the canonical cron job name looked for and seeded.
@@ -33,10 +36,6 @@ const JobName = "inbox-sparks"
 
 // Schedule is the default wake cadence: every 120 minutes.
 const Schedule = "every 120m"
-
-// Skill is the skill reference the job loads when present (fail-open in the
-// scheduler when absent; the prompt is self-contained either way).
-const Skill = "hermes-starts"
 
 // Deliver keeps run output local: the wake itself posts nothing to any
 // channel — start_conversation is the only thing that talks to the user, so
@@ -56,10 +55,9 @@ var Toolsets = []string{
 }
 
 // Prompt is the complete, self-contained wake prompt. Generic by contract:
-// no maintainer names, channel ids, host paths, or host-specific tool names.
-// The bar (honest, substantive, no task status, no duplicates) mirrors the
-// hermes-starts skill; [SILENT] is the scheduler's delivery-suppression
-// marker for the common nothing-to-say run.
+// no maintainer names, channel ids, host paths, host-specific tool names, or
+// skill references. [SILENT] is the scheduler's delivery-suppression marker
+// for the common nothing-to-say run.
 const Prompt = `You are waking up on a schedule to decide whether Hermes should START a conversation with the user — not to answer one.
 
 Look over recent activity for anything worth opening a conversation about: recent conversations and session history, finished job results, anything you noticed while working. The bar is honest and substantive — an observation, idea, question, joke, compliment, piece of feedback, disagreement, or a genuine check-in. Something worth texting first, in your own voice.
@@ -90,7 +88,7 @@ func DefaultSpec() Spec {
 	return Spec{
 		Name:            JobName,
 		Schedule:        Schedule,
-		Skills:          []string{Skill},
+		Skills:          []string{},
 		Deliver:         Deliver,
 		EnabledToolsets: append([]string(nil), Toolsets...),
 		Prompt:          Prompt,
@@ -110,8 +108,8 @@ func (s Spec) Validate() error {
 	if s.Deliver != Deliver {
 		return errf("deliver %q must be %q so a no-opening run cannot reach any channel", s.Deliver, Deliver)
 	}
-	if len(s.Skills) == 0 || s.Skills[0] != Skill {
-		return errf("skills must reference %q", Skill)
+	if len(s.Skills) != 0 {
+		return errf("skills must be empty: the default job must not reference a skill that may not ship, got %v", s.Skills)
 	}
 	seen := make(map[string]bool, len(s.EnabledToolsets))
 	for _, ts := range s.EnabledToolsets {

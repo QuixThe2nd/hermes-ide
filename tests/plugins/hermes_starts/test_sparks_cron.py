@@ -110,7 +110,8 @@ def test_fresh_home_seeds_job_once(_isolate_env, sparks_cron, real_binary):
     for toolset in ("file", "terminal", "session_search", "skills", "web"):
         assert toolset in job["enabled_toolsets"]
     assert "tabctl" not in job["enabled_toolsets"]
-    assert job["skills"] == ["hermes-starts"]
+    assert job["skills"] == []
+    assert job["skill"] is None
     assert job["model"] is None and job["provider"] is None
     assert "[SILENT]" in job["prompt"]
     assert "start_conversation" in job["prompt"]

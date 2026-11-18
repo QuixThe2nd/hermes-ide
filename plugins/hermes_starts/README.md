@@ -52,10 +52,10 @@ and — when no job named `inbox-sparks` exists — creates one:
 
 - **schedule** `every 120m`, **deliver** `local` (a no-opening run posts
   nothing anywhere; `start_conversation` is the only thing that talks),
-- **skill** `hermes-starts` when present (the prompt is self-contained
-  either way),
 - **toolsets** `hermes_starts` plus the generic `file`, `terminal`,
-  `session_search`, `skills`, `web` — no host-specific toolsets.
+  `session_search`, `skills`, `web` — no host-specific toolsets;
+- **no skills** — the repo ships no skill for the job to attach; the wake
+  prompt is self-contained and works on every install.
 
 Seeding is idempotent and deferential:
 

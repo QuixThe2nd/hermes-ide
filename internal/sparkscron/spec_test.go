@@ -24,8 +24,8 @@ func TestSpecValidate(t *testing.T) {
 		{"wrong name", func(s *Spec) { s.Name = "inbox-sparks-2" }},
 		{"empty schedule", func(s *Spec) { s.Schedule = "" }},
 		{"non-local deliver leaks runs to a channel", func(s *Spec) { s.Deliver = "origin" }},
-		{"no skill reference", func(s *Spec) { s.Skills = nil }},
-		{"wrong skill first", func(s *Spec) { s.Skills = []string{"other", Skill} }},
+		{"attaches the historical hermes-starts skill", func(s *Spec) { s.Skills = []string{"hermes-starts"} }},
+		{"attaches any skill", func(s *Spec) { s.Skills = []string{"other"} }},
 		{"no toolsets", func(s *Spec) { s.EnabledToolsets = nil }},
 		{"empty toolset entry", func(s *Spec) { s.EnabledToolsets = []string{"hermes_starts", ""} }},
 		{"duplicate toolset entry", func(s *Spec) { s.EnabledToolsets = []string{"hermes_starts", "file", "file"} }},
@@ -44,8 +44,9 @@ func TestSpecValidate(t *testing.T) {
 }
 
 // TestDefaultSpecShape pins the relationships the seeded job relies on:
-// generic toolsets only (tabctl is host-specific and must stay out), the
-// skill the wake expects, and the prompt's own contract markers.
+// generic toolsets only (tabctl is host-specific and must stay out), no
+// skill attachment (the repo ships no skill for this job to require), and
+// the prompt's own contract markers.
 func TestDefaultSpecShape(t *testing.T) {
 	spec := DefaultSpec()
 	if spec.Name != "inbox-sparks" {
@@ -57,8 +58,8 @@ func TestDefaultSpecShape(t *testing.T) {
 	if spec.Deliver != "local" {
 		t.Errorf("Deliver = %q, want local", spec.Deliver)
 	}
-	if len(spec.Skills) != 1 || spec.Skills[0] != "hermes-starts" {
-		t.Errorf("Skills = %v, want [hermes-starts]", spec.Skills)
+	if len(spec.Skills) != 0 {
+		t.Errorf("Skills = %v, want no skill attachment", spec.Skills)
 	}
 	want := map[string]bool{
 		"hermes_starts": false, "file": false, "terminal": false,
