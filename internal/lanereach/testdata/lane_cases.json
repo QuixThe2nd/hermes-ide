@@ -1,0 +1,148 @@
+{
+  "cases": [
+    {
+      "name": "reachable_subagent_needs_no_binary",
+      "op": "reachable",
+      "harness": "subagent",
+      "omp_binary": "",
+      "pin": {"omp": null, "claude": null, "cursor": null},
+      "expect": {"reachable": true, "harness": "subagent"}
+    },
+    {
+      "name": "reachable_omp_configured_binary_found",
+      "op": "reachable",
+      "harness": "omp",
+      "omp_binary": "ompd",
+      "pin": {"omp": "/opt/omp/bin/ompd", "claude": null, "cursor": null},
+      "expect": {"reachable": true, "harness": "omp"}
+    },
+    {
+      "name": "reachable_omp_default_name_missing",
+      "op": "reachable",
+      "harness": "omp",
+      "omp_binary": "",
+      "pin": {"omp": null, "claude": "/w/claude-glm", "cursor": "/w/agent"},
+      "expect": {"reachable": false, "harness": "omp"}
+    },
+    {
+      "name": "reachable_claude_wrapper_found",
+      "op": "reachable",
+      "harness": "claude",
+      "omp_binary": "",
+      "pin": {"omp": null, "claude": "/home/dev/.local/bin/claude-glm", "cursor": null},
+      "expect": {"reachable": true, "harness": "claude"}
+    },
+    {
+      "name": "reachable_claude_wrapper_missing",
+      "op": "reachable",
+      "harness": "claude",
+      "omp_binary": "",
+      "pin": {"omp": "/usr/bin/omp", "claude": null, "cursor": null},
+      "expect": {"reachable": false, "harness": "claude"}
+    },
+    {
+      "name": "reachable_cursor_agent_found",
+      "op": "reachable",
+      "harness": "cursor",
+      "omp_binary": "",
+      "pin": {"omp": null, "claude": null, "cursor": "/usr/local/bin/agent"},
+      "expect": {"reachable": true, "harness": "cursor"}
+    },
+    {
+      "name": "reachable_cursor_agent_missing",
+      "op": "reachable",
+      "harness": "cursor",
+      "omp_binary": "",
+      "pin": {"omp": null, "claude": "/w/claude-glm", "cursor": null},
+      "expect": {"reachable": false, "harness": "cursor"}
+    },
+    {
+      "name": "reachable_unknown_harness_is_false",
+      "op": "reachable",
+      "harness": "codex",
+      "omp_binary": "",
+      "pin": {"omp": "/usr/bin/omp", "claude": "/w/claude-glm", "cursor": "/w/agent"},
+      "expect": {"reachable": false, "harness": "codex"}
+    },
+    {
+      "name": "reachable_empty_harness_is_false",
+      "op": "reachable",
+      "harness": "",
+      "omp_binary": "",
+      "pin": {"omp": "/usr/bin/omp", "claude": "/w/claude-glm", "cursor": "/w/agent"},
+      "expect": {"reachable": false, "harness": ""}
+    },
+    {
+      "name": "resolve_omp_stays_when_reachable",
+      "op": "resolve",
+      "harness": "omp",
+      "omp_binary": "",
+      "pin": {"omp": "/usr/bin/omp", "claude": null, "cursor": null},
+      "expect": {"reachable": true, "harness": "omp"}
+    },
+    {
+      "name": "resolve_missing_omp_steps_to_claude_even_though_subagent_also_runnable",
+      "op": "resolve",
+      "harness": "omp",
+      "omp_binary": "",
+      "pin": {"omp": null, "claude": "/home/dev/.local/bin/claude-glm", "cursor": null},
+      "expect": {"reachable": true, "harness": "claude"}
+    },
+    {
+      "name": "resolve_missing_omp_and_claude_land_subagent",
+      "op": "resolve",
+      "harness": "omp",
+      "omp_binary": "",
+      "pin": {"omp": null, "claude": null, "cursor": "/usr/local/bin/agent"},
+      "expect": {"reachable": true, "harness": "subagent"}
+    },
+    {
+      "name": "resolve_missing_omp_with_custom_binary_name_steps_to_claude",
+      "op": "resolve",
+      "harness": "omp",
+      "omp_binary": "/opt/omp/bin/ompd",
+      "pin": {"omp": null, "claude": "/w/claude-glm", "cursor": null},
+      "expect": {"reachable": true, "harness": "claude"}
+    },
+    {
+      "name": "resolve_pinned_claude_missing_hides_lane_no_fallback",
+      "op": "resolve",
+      "harness": "claude",
+      "omp_binary": "",
+      "pin": {"omp": "/usr/bin/omp", "claude": null, "cursor": null},
+      "expect": {"reachable": false, "harness": "claude"}
+    },
+    {
+      "name": "resolve_pinned_claude_found_runs_claude",
+      "op": "resolve",
+      "harness": "claude",
+      "omp_binary": "",
+      "pin": {"omp": null, "claude": "/w/claude-glm", "cursor": null},
+      "expect": {"reachable": true, "harness": "claude"}
+    },
+    {
+      "name": "resolve_pinned_cursor_missing_hides_lane_no_fallback",
+      "op": "resolve",
+      "harness": "cursor",
+      "omp_binary": "",
+      "pin": {"omp": "/usr/bin/omp", "claude": "/w/claude-glm", "cursor": null},
+      "expect": {"reachable": false, "harness": "cursor"}
+    },
+    {
+      "name": "resolve_pinned_cursor_found_runs_cursor",
+      "op": "resolve",
+      "harness": "cursor",
+      "omp_binary": "",
+      "pin": {"omp": null, "claude": null, "cursor": "/usr/local/bin/agent"},
+      "expect": {"reachable": true, "harness": "cursor"}
+    },
+    {
+      "name": "resolve_subagent_stays_subagent",
+      "op": "resolve",
+      "harness": "subagent",
+      "omp_binary": "",
+      "pin": {"omp": null, "claude": null, "cursor": null},
+      "expect": {"reachable": true, "harness": "subagent"}
+    }
+  ]
+}
