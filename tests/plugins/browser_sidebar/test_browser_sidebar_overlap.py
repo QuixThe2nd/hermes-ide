@@ -87,6 +87,10 @@ class _Gateway:
     def session_key(self) -> str:
         return self.adapter._sidebar_session_key()
 
+    def session_key_for(self, frame: dict) -> str:
+        """The per-tab session key the gateway derives for *frame*'s chat."""
+        return self.adapter._event_session_key(bs._chat_frame_to_event(frame))
+
 
 class _HubSidebar:
     def __init__(self, socket_path):
@@ -194,7 +198,8 @@ async def test_successor_attaches_while_predecessor_turn_runs(short_af_unix_path
         # the running owner, never on the successor.
         await _chat(ws, "follow up mid-turn", "m2")
         await _wait_for(
-            lambda: old.session_key in old.adapter._pending_messages,
+            lambda: old.session_key_for(_chat_frame("first turn", "m1"))
+            in old.adapter._pending_messages,
             what="follow-up queued on the predecessor",
         )
         assert successor.events == []
@@ -203,7 +208,8 @@ async def test_successor_attaches_while_predecessor_turn_runs(short_af_unix_path
         # successor immediately — not after the predecessor exits.
         old.finish_turn()
         await _wait_for(
-            lambda: old.adapter._session_versions.get(old.session_key) is None,
+            lambda: old.adapter._session_versions.get(
+                old.session_key_for(_chat_frame("first turn", "m1"))) is None,
             what="predecessor ownership release",
         )
         await _chat(ws, "new turn for the successor", "m3")
@@ -312,20 +318,23 @@ async def test_stale_release_cannot_steal_successor_ownership(short_af_unix_path
         ws = await hub.connect_extension()
         await _chat(ws, "first turn", "m1")
         await asyncio.wait_for(old.message_arrived.wait(), 5)
-        old_version = old.adapter._session_versions.get(old.session_key)
+        old_version = old.adapter._session_versions.get(
+            old.session_key_for(_chat_frame("first turn", "m1")))
         assert old_version is not None
 
         successor = hub.add_gateway("successor")
         await successor.connect()
         old.finish_turn()
         await _wait_for(
-            lambda: old.adapter._session_versions.get(old.session_key) is None,
+            lambda: old.adapter._session_versions.get(
+                old.session_key_for(_chat_frame("first turn", "m1"))) is None,
             what="predecessor ownership release",
         )
 
         await _chat(ws, "successor's turn", "m2")
         await asyncio.wait_for(successor.message_arrived.wait(), 5)
-        successor_version = successor.adapter._session_versions.get(successor.session_key)
+        successor_version = successor.adapter._session_versions.get(
+            successor.session_key_for(_chat_frame("successor's turn", "m2")))
         assert successor_version is not None
         # A clean release resets the fence; the successor's claim is fresh.
         assert successor_version == 1
@@ -333,13 +342,15 @@ async def test_stale_release_cannot_steal_successor_ownership(short_af_unix_path
         # A stale unregister from the old generation (version fence from the
         # pre-handoff delivery) must not move the session.
         released = await old.adapter._call("unregister", {
-            "session_key": successor.session_key, "version": old_version,
+            "session_key": successor.session_key_for(_chat_frame("successor's turn", "m2")),
+            "version": old_version,
         })
         assert released is not True
 
         successor.finish_turn()
         await _wait_for(
-            lambda: successor.adapter._session_versions.get(successor.session_key) is None,
+            lambda: successor.adapter._session_versions.get(
+                successor.session_key_for(_chat_frame("successor's turn", "m2"))) is None,
             what="successor ownership release",
         )
         await _chat(ws, "still the successor's", "m3")
@@ -421,7 +432,8 @@ async def test_draining_predecessor_hands_off_unowned_sidebar_event(short_af_uni
         # will be checked against.
         await _chat(ws, "first turn", "m1")
         await asyncio.wait_for(old.message_arrived.wait(), 5)
-        assert old.adapter._session_versions.get(old.session_key) is not None
+        assert old.adapter._session_versions.get(
+            old.session_key_for(_chat_frame("first turn", "m1"))) is not None
 
         successor = hub.add_gateway("successor")
         await successor.connect()
@@ -429,7 +441,8 @@ async def test_draining_predecessor_hands_off_unowned_sidebar_event(short_af_uni
         old.adapter.gateway_runner = SimpleNamespace(
             _draining=True,
             _running_agents={},
-            _session_key_for_source=lambda source: old.session_key,
+            _session_key_for_source=(
+                lambda source: old.session_key_for(_chat_frame("hand me off", "m5"))),
             _intake_adapter_for=lambda source: old.adapter,
         )
         old.adapter._overlap_successor_ready = True
@@ -437,9 +450,10 @@ async def test_draining_predecessor_hands_off_unowned_sidebar_event(short_af_uni
         assert admits_owned_work(old.adapter.gateway_runner, SimpleNamespace()) is False
 
         event = bs._chat_frame_to_event(_chat_frame("hand me off", "m5"))
-        await old.adapter._handle_message_while_active(event, old.session_key)
+        tab_key = old.session_key_for(_chat_frame("hand me off", "m5"))
+        await old.adapter._handle_message_while_active(event, tab_key)
         assert event._gateway_accepted is True
-        assert old.session_key not in old.adapter._pending_messages
+        assert tab_key not in old.adapter._pending_messages
 
         successor.message_arrived.clear()
         await asyncio.wait_for(successor.message_arrived.wait(), 5)

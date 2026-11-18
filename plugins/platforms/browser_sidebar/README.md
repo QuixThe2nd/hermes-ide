@@ -1,11 +1,13 @@
 # Browser sidebar platform
 
 The Brave extension sidebar talks to the installation-wide Discord hub over a WebSocket.
-The hub routes each sidebar session to one attached gateway generation for this Hermes
-profile (see "Hub lifecycle and deployment" for the restart-handoff contract).
-The extension offers the configured token as its sole subprotocol, and the
-server authenticates and selects it during the handshake. There is no
-allow-all switch.
+Each browser tab is its own Hermes session (``chat_id="tab-<id>"``); the hub routes each
+tab's session to one attached gateway generation for this Hermes profile (see "Hub
+lifecycle and deployment" for the restart-handoff contract). Frames whose tab id is
+missing or unusable fall back to the single legacy ``brave`` conversation, so older
+extension builds keep working unchanged. The extension offers the configured token as
+its sole subprotocol, and the server authenticates and selects it during the handshake.
+There is no allow-all switch.
 
 Put `BROWSER_SIDEBAR_TOKEN` in `/root/.hermes/secrets/browser-sidebar.env`.
 Do not commit the token.
@@ -18,9 +20,9 @@ The hub listens on port **8796**, path `/ws`. Point the extension at
 `hermes-discord-hub` owns the authenticated extension socket; gateway processes attach
 over the hub's same-user Unix socket. The sidebar rides the same instant-overlap restart
 machinery as Discord: a successor gateway attaches while the predecessor drains, and the
-hub's session router picks the delivery generation per session. A session with a turn
-still running on the predecessor stays there (follow-ups queue on the running owner);
-after that turn completes the next new turn routes to the successor immediately — the
+hub's session router picks the delivery generation per session — per TAB session, so a
+tab with a turn still running on the predecessor stays there (follow-ups queue on the
+running owner) while another tab's new turn routes to the successor immediately; the
 browser socket never drops. A pending `run_tab_js` result returns to the generation that
 issued the request. Events that arrive while no gateway generation can take them are
 retained at the hub and replayed on the next attach. A still-attached predecessor may
@@ -43,6 +45,8 @@ Inbound from the extension:
 
 - `{"type":"chat","id":"m1","text":"...","tab":{"id":..,"url":..,"title":..}}` — becomes a
   gateway message prefixed with `[browser tab: <title> — <url>]`; missing tab fields render `?`.
+  A numeric `tab.id` selects that tab's own session (`tab-<id>`); anything else falls back
+  to the legacy `brave` conversation.
 - `{"type":"tool_result","request_id":"..","ok":true,"result":".."}` — resolves a pending
   `run_tab_js` call (`ok:false` carries `"error"`); results truncate at 100 000 chars.
 - `{"type":"hello","client":"big-steve-extension","version":".."}` — client hello;
@@ -51,10 +55,23 @@ Inbound from the extension:
 Outbound to the extension:
 
 - `{"type":"ready"}` — successful hello acknowledgement.
-- `{"type":"delta","id":"<draft>","text":"<suffix>"}` — streaming deltas, append-only.
-- `{"type":"final","id":"<last chat id>","text":"..."}` — sealed turn end; draft state resets.
-- `{"type":"tool","name":"run_tab_js","args":{"code":".."},"request_id":".."}` — tool request.
+- `{"type":"delta","id":"<draft>","text":"<suffix>","tab_id":<int>}` — streaming deltas,
+  append-only. `tab_id` names which tab's conversation the frame belongs to (absent on
+  legacy frames; the panel then renders it on the active tab).
+- `{"type":"final","id":"<last chat id>","text":"...","tab_id":<int>}` — sealed turn end;
+  draft state resets.
+- `{"type":"typing","active":true|false,"tab_id":<int>}` — typing indicator per tab.
+- `{"type":"tool","name":"run_tab_js","args":{"code":".."},"request_id":"..","tab_id":<int>}`
+  — tool request; the worker scripts THAT tab (a closed tab fails the tool instead of
+  scripting whichever tab is focused). Without `tab_id` the focused tab is used.
 - `{"type":"error","text":".."}` — malformed/unknown frames; the socket stays usable.
+
+The side panel keeps one transcript per tab (persisted to `chrome.storage.session`,
+keyed `tabTranscript:<id>`; the legacy conversation keeps the old
+`chrome.storage.local` `transcript` key) and tracks its window's active tab
+(`tabs.onActivated`/`onUpdated`, window focus). The header's **new chat** button sends
+`/new` tagged with the current tab, so the gateway's existing `/new` handling resets
+only that tab's session, and clears that tab's local transcript.
 
 A wrong, missing, or additional offered subprotocol — or a configured token
 with non-token characters — rejects the WebSocket handshake. Authentication

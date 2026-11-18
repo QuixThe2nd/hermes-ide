@@ -260,8 +260,16 @@ class BrowserSidebarHub:
             await self._write_frame({"type": "error", "error": "gateway unavailable"}, websocket)
             return
         from gateway.run_drain_queue import serialize_drain_event
-        from plugins.platforms.browser_sidebar.protocol import chat_frame_to_event
+        from plugins.platforms.browser_sidebar.protocol import (
+            chat_frame_to_event,
+            chat_id_for_frame,
+            session_key_for_chat_id,
+        )
 
+        # One session per browser tab: the attached key is the legacy base
+        # (chat id "brave"); the frame's tab id selects the actual session.
+        # A frame without a usable tab id keeps the base key itself.
+        session_key = session_key_for_chat_id(session_key, chat_id_for_frame(frame))
         record = serialize_drain_event(session_key, chat_frame_to_event(frame))
         delivered = await router.route(session_key, record)
         if delivered is None:

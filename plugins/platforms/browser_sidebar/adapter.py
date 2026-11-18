@@ -26,6 +26,8 @@ from gateway.platforms._shared import (
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
+
+from tools.session_context import get_current_session_key
 # Canonical absolute import, NOT a relative one: the plugin loader executes
 # this file under synthetic module names (``hermes_plugins.<slug>`` plus
 # per-home variants) and evicts them on reload, so any module-global state
@@ -35,6 +37,8 @@ from gateway.session import SessionSource
 from plugins.platforms.browser_sidebar import runtime as sidebar_runtime
 from plugins.platforms.browser_sidebar.protocol import (
     DEFAULT_PORT,
+    tab_id_for_session_key as _tab_id_for_session_key,
+    tab_id_from_chat_id as _tab_id_from_chat_id,
     chat_frame_to_event as _chat_frame_to_event,
     is_valid_token as _is_valid_token,
 )
@@ -122,13 +126,20 @@ async def _run_tab_js_entry(args: dict) -> str:
             "diagnostics": {**sidebar_runtime.diagnostics(), "handler_module": __name__},
         })
     adapter, owner_loop = lease
+    # The turn's ambient session key says WHICH tab's conversation is asking
+    # (per-tab sessions end in "tab-<id>"). Read it here, before the marshal:
+    # the session ContextVar is thread-local and the marshaled coroutine runs
+    # on the adapter's loop, outside the turn's context. An unknown key yields
+    # no tab id and the extension falls back to the focused tab.
+    tab_id = _tab_id_for_session_key(get_current_session_key(""))
     try:
         same_loop = asyncio.get_running_loop() is owner_loop
     except RuntimeError:  # dispatched without a loop — marshal over
         same_loop = False
     if same_loop:
-        return await _run_tab_js_on(adapter, code)
-    future = asyncio.run_coroutine_threadsafe(_run_tab_js_on(adapter, code), owner_loop)
+        return await _run_tab_js_on(adapter, code, tab_id)
+    future = asyncio.run_coroutine_threadsafe(
+        _run_tab_js_on(adapter, code, tab_id), owner_loop)
     try:
         return future.result(timeout=adapter.tool_timeout + 5.0)
     except Exception as exc:
@@ -136,15 +147,20 @@ async def _run_tab_js_entry(args: dict) -> str:
         return json.dumps({"success": False, "error": f"run_tab_js failed: {exc}"})
 
 
-async def _run_tab_js_on(adapter: "BrowserSidebarAdapter", code: str) -> str:
+async def _run_tab_js_on(adapter: "BrowserSidebarAdapter", code: str,
+                         tab_id: Optional[int] = None) -> str:
     """Execute one run_tab_js request on the adapter's owning loop."""
     request_id = uuid.uuid4().hex
     future: asyncio.Future = asyncio.get_running_loop().create_future()
     adapter._pending_tools[request_id] = future
+    frame = {
+        "type": "tool", "name": "run_tab_js", "args": {"code": code},
+        "request_id": request_id,
+    }
+    if tab_id is not None:
+        frame["tab_id"] = tab_id  # script THIS tab, not whichever is focused
     try:
-        await adapter._send_browser_frame({
-            "type": "tool", "name": "run_tab_js", "args": {"code": code}, "request_id": request_id,
-        })
+        await adapter._send_browser_frame(frame)
         ok, payload = await asyncio.wait_for(future, timeout=adapter.tool_timeout)
     except asyncio.TimeoutError:
         return json.dumps({"success": False, "error": (
@@ -423,6 +439,16 @@ class BrowserSidebarAdapter(HubOverlapClientMixin, BasePlatformAdapter):
 
     # ── outbound ────────────────────────────────────────────────────────────
 
+    def _tab_field(self, chat_id: str) -> Dict[str, Any]:
+        """Outbound frames carry the conversation's tab id when there is one.
+
+        The gateway passes the turn's chat id ("tab-<id>" for per-tab
+        sessions); the legacy "brave" conversation yields no field, keeping
+        the old wire shape byte-identical.
+        """
+        tab_id = _tab_id_from_chat_id(chat_id)
+        return {"tab_id": tab_id} if tab_id is not None else {}
+
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if not self._browser_connected:
@@ -430,6 +456,7 @@ class BrowserSidebarAdapter(HubOverlapClientMixin, BasePlatformAdapter):
         try:
             await self._send_browser_frame({
                 "type": "final", "id": self._last_inbound_id, "text": str(content),
+                **self._tab_field(chat_id),
             })
         except Exception as exc:
             return SendResult(success=False, error=str(exc), retryable=True)
@@ -451,7 +478,10 @@ class BrowserSidebarAdapter(HubOverlapClientMixin, BasePlatformAdapter):
         # must re-send the full text so the client can rebuild from scratch.
         delta = content[len(previous):] if content.startswith(previous) else content
         try:
-            await self._send_browser_frame({"type": "delta", "id": str(draft_id), "text": delta})
+            await self._send_browser_frame({
+                "type": "delta", "id": str(draft_id), "text": delta,
+                **self._tab_field(chat_id),
+            })
         except Exception as exc:
             self._draft_prev.pop(draft_id, None)
             return SendResult(success=False, error=str(exc), retryable=True)
@@ -463,7 +493,9 @@ class BrowserSidebarAdapter(HubOverlapClientMixin, BasePlatformAdapter):
         if not self._browser_connected:
             return
         with contextlib.suppress(Exception):
-            await self._send_browser_frame({"type": "typing", "active": True})
+            await self._send_browser_frame({
+                "type": "typing", "active": True, **self._tab_field(chat_id),
+            })
             self._typing_active = True
 
     async def stop_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
@@ -476,7 +508,9 @@ class BrowserSidebarAdapter(HubOverlapClientMixin, BasePlatformAdapter):
         if not self._browser_connected:
             return
         with contextlib.suppress(Exception):
-            await self._send_browser_frame({"type": "typing", "active": False})
+            await self._send_browser_frame({
+                "type": "typing", "active": False, **self._tab_field(chat_id),
+            })
 
 
 def register(ctx) -> None:
