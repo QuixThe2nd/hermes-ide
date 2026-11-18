@@ -9,7 +9,8 @@
 // belongs to; legacy frames without it are pre-per-tab server builds.
 // Tool replies: {type:"tool_result", request_id, ok, result|error}.
 // Tool frames dispatch through TOOL_HANDLERS: run_tab_js (eval in the page's
-// MAIN world), navigate_tab (chrome.tabs.update + wait for
+// MAIN world, falling back to chrome.debugger Runtime.evaluate when the
+// page's CSP blocks eval), navigate_tab (chrome.tabs.update + wait for
 // onUpdated 'complete'), activate_tab (activate the tab, focus its window).
 // Every handler resolves its target tab the same way: args.tab_id, then
 // frame.tab_id, then the focused tab; a named-but-closed tab fails the tool.
@@ -462,6 +463,36 @@ async function activateTab(frame) {
   }));
 }
 
+// The page's CSP can block the MAIN-world eval entirely (e.g. GitHub). When
+// the injection fails that way, rerun the code through the chrome.debugger
+// protocol instead. While attached Chrome shows a "being debugged" infobar.
+const CSP_EVAL_ERROR_RE = /EvalError|unsafe-eval|Content Security Policy/i;
+
+async function runTabJsViaDebugger(tab, code) {
+  const target = { tabId: tab.id };
+  let attached = false;
+  try {
+    await chrome.debugger.attach(target, '1.3');
+    attached = true;
+    const out = await chrome.debugger.sendCommand(
+      target, 'Runtime.evaluate',
+      { expression: code, returnByValue: true, awaitPromise: true });
+    if (out && out.exceptionDetails) {
+      const details = out.exceptionDetails;
+      const text = (details.exception && details.exception.description)
+        || details.text || 'evaluation failed';
+      return { ok: false, error: String(text) };
+    }
+    const value = out && out.result ? out.result.value : undefined;
+    const encoded = value === undefined ? 'undefined' : JSON.stringify(value);
+    return { ok: true, result: String(encoded).slice(0, TOOL_RESULT_MAX) };
+  } finally {
+    if (attached) {
+      Promise.resolve(chrome.debugger.detach(target)).catch(() => {});
+    }
+  }
+}
+
 async function runTabJs(frame) {
   const code = frame && frame.args && frame.args.code;
   if (typeof code !== 'string') {
@@ -474,7 +505,8 @@ async function runTabJs(frame) {
   if (!tab) return toolErr(frame.request_id, 'no active tab');
 
   // A rejected injection, an injection.error, or an error string returned by
-  // the runner (it catches the eval error itself) all normalize to a failure.
+  // the runner (it catches the eval error itself) all normalize to a failure;
+  // a CSP-shaped one reruns through the chrome.debugger protocol.
   let injectionError = null;
   let encoded = null;
   try {
@@ -502,6 +534,17 @@ async function runTabJs(frame) {
   }
 
   if (injectionError !== null) {
+    if (CSP_EVAL_ERROR_RE.test(injectionError)) {
+      try {
+        const out = await withTimeout(
+          runTabJsViaDebugger(tab, code), TOOL_TIMEOUT_MS, 'timeout');
+        return out.ok
+          ? toolOk(frame.request_id, out.result)
+          : toolErr(frame.request_id, out.error);
+      } catch (err) {
+        return toolErr(frame.request_id, String((err && err.message) || err));
+      }
+    }
     return toolErr(frame.request_id, injectionError);
   }
   if (typeof encoded !== 'string') {

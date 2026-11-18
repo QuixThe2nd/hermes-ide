@@ -6,6 +6,8 @@
 // - navigate_tab updates the url and replies only once that tab reports
 //   onUpdated status 'complete', then removes its listener.
 // - activate_tab activates the tab and focuses its window.
+// - run_tab_js falls back to chrome.debugger (Runtime.evaluate) when CSP
+//   blocks the MAIN-world eval; non-CSP errors must not touch the debugger.
 'use strict';
 
 const assert = require('node:assert/strict');
@@ -319,6 +321,77 @@ async function main() {
   const unkResult = resultFor('unk-1');
   assert.ok(unkResult && unkResult.ok === false, 'unknown tool gives ok:false');
   assert.match(unkResult.error, /unknown tool/);
+
+  // (c) executeScript rejects with the CSP error: the debugger path is used.
+  resetScenario();
+  executeScriptMode = 'reject-csp';
+  wireFrame(toolFrame('run_tab_js', { code: '2+3' }, 'csp-1', 11));
+  await flush();
+  await sleep(20);
+  assert.deepEqual(debuggerCalls.attach,
+    [{ target: { tabId: 11 }, version: '1.3' }], 'attach with protocol 1.3');
+  assert.equal(debuggerCalls.sendCommand.length, 1);
+  assert.equal(debuggerCalls.sendCommand[0].method, 'Runtime.evaluate');
+  assert.deepEqual(debuggerCalls.sendCommand[0].params, {
+    expression: '2+3', returnByValue: true, awaitPromise: true,
+  });
+  assert.deepEqual(debuggerCalls.detach, [{ tabId: 11 }], 'detach after evaluate');
+  const cspResult = resultFor('csp-1');
+  assert.ok(cspResult && cspResult.ok, 'debugger path returns the value');
+  assert.equal(cspResult.result, '42');
+  // args.tab_id wins on the debugger path too.
+  resetScenario();
+  executeScriptMode = 'reject-csp';
+  wireFrame(toolFrame('run_tab_js', { code: '2+3', tab_id: 42 }, 'csp-1b', 11));
+  await flush();
+  await sleep(20);
+  assert.deepEqual(debuggerCalls.attach, [{ target: { tabId: 42 }, version: '1.3' }]);
+  assert.ok(resultFor('csp-1b').ok);
+
+  // (d) The runner RETURNS the CSP error string: the fallback is still used.
+  resetScenario();
+  executeScriptMode = 'return-csp';
+  wireFrame(toolFrame('run_tab_js', { code: 'eval("x")' }, 'csp-2', 11));
+  await flush();
+  await sleep(20);
+  assert.equal(debuggerCalls.attach.length, 1,
+    'a returned CSP error string must also fall back');
+  const csp2 = resultFor('csp-2');
+  assert.ok(csp2 && csp2.ok, 'debugger path returns the value');
+  assert.equal(csp2.result, '42');
+
+  // (e) Runtime.evaluate fails (rejects or exceptionDetails): ok:false, detached.
+  resetScenario();
+  executeScriptMode = 'reject-csp';
+  debuggerMode = 'eval-throws';
+  wireFrame(toolFrame('run_tab_js', { code: '1' }, 'csp-3', 11));
+  await flush();
+  await sleep(20);
+  const csp3 = resultFor('csp-3');
+  assert.ok(csp3 && csp3.ok === false, 'debugger rejection fails the tool');
+  assert.deepEqual(debuggerCalls.detach, [{ tabId: 11 }], 'detach still called');
+  resetScenario();
+  executeScriptMode = 'reject-csp';
+  debuggerMode = 'exception';
+  wireFrame(toolFrame('run_tab_js', { code: 'nope' }, 'csp-4', 11));
+  await flush();
+  await sleep(20);
+  const csp4 = resultFor('csp-4');
+  assert.ok(csp4 && csp4.ok === false, 'exceptionDetails fails the tool');
+  assert.match(csp4.error, /ReferenceError|Uncaught/);
+  assert.deepEqual(debuggerCalls.detach, [{ tabId: 11 }], 'detach still called');
+
+  // (f) A non-CSP scripting error must NOT touch the debugger.
+  resetScenario();
+  executeScriptMode = 'reject-other';
+  wireFrame(toolFrame('run_tab_js', { code: '1' }, 'other-1', 11));
+  await flush();
+  await sleep(20);
+  const other1 = resultFor('other-1');
+  assert.ok(other1 && other1.ok === false, 'non-CSP error still fails the tool');
+  assert.match(other1.error, /chrome:\/\//);
+  assert.equal(debuggerCalls.attach.length, 0, 'debugger must not be used');
+  assert.equal(debuggerCalls.detach.length, 0);
 
   console.log('OK');
 }

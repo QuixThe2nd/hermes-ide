@@ -95,3 +95,13 @@ The `browser_sidebar` toolset (`run_tab_js`, `navigate_tab`, `activate_tab`) is
 default-off and restricted to this platform; enable it via `hermes tools` or
 `platform_toolsets`.
 
+### run_tab_js and page CSP
+
+`run_tab_js` evaluates code in the page's MAIN world via `chrome.scripting`. Sites with a
+strict Content Security Policy (GitHub, for example) refuse `eval`, so the worker detects
+CSP-shaped failures (`EvalError` / `unsafe-eval` / `Content Security Policy`) and reruns
+the same code through the `chrome.debugger` protocol (`Runtime.evaluate` with
+`returnByValue` + `awaitPromise`, protocol `1.3`), detaching afterwards. **While attached,
+Chrome shows a "…is being debugged" infobar on that tab** — expected, and it disappears
+when the call finishes. Non-CSP errors (e.g. `chrome://` pages) never touch the debugger.
+The manifest therefore needs the `debugger` permission.
