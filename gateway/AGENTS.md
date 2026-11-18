@@ -20,8 +20,8 @@ listed in `_IDLE_COMMANDS` or `_PLAIN_COMMANDS` (works mid-run) in `run_busy.py`
 ## Tool-progress defaults
 
 Resolved by `display_config.py` (`_GLOBAL_DEFAULTS` + tiers): `tool_progress` defaults to `describe`
-and `tool_progress_codebox` to `true`; `tool_progress: all` (or a bare `true`) is the explicit
-verbose opt-in and `tool_progress_codebox: false` restores plain text. Boxing covers every lane —
+and `tool_progress: all` (or a bare `true`) is the explicit verbose opt-in. Tool-progress rows ALWAYS
+render in fenced code boxes (enforced in code, not configurable). Boxing covers every lane —
 accumulated bubbles, `separate` per-row messages and non-editable sends (`format_progress_group` /
 `format_progress_row`); a row carrying its own 3+ fence ships unboxed. Pass rows RAW to these
 helpers — never pre-boxed — so nothing double-boxes.

@@ -5847,7 +5847,6 @@ class GatewayTurnMixin:
         resolve_display_setting: Any = None
         progress_mode: str = "all"
         progress_grouping: str = "accumulate"
-        progress_codebox: bool = False
         _display_surface_mode: Any = None
         tool_progress_enabled: bool = False
         # This turn's safely parsed tool_preview_length (0 = unlimited). The
@@ -5901,10 +5900,6 @@ class GatewayTurnMixin:
         )
         # "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
-        # Code-box presentation for every progress row (default on; plain when false)
-        progress_codebox = bool(
-            resolve_display_setting(user_config, platform_key, "tool_progress_codebox")
-        )
         _generic_status_recent: List[str] = []
         _generic_status_catalog = resolve_status_phrase_catalog(user_config, platform_key)
 
@@ -5983,7 +5978,6 @@ class GatewayTurnMixin:
             user_config=user_config, platform_key=platform_key, enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets, resolve_display_setting=resolve_display_setting,
             progress_mode=progress_mode, progress_grouping=progress_grouping,
-            progress_codebox=progress_codebox,
             _display_surface_mode=_display_surface_mode, tool_preview_max_len=tool_preview_max_len,
             tool_progress_enabled=tool_progress_enabled, _live_status_mode=_live_status_mode,
             _live_status_adapter_snapshot=_live_status_adapter_snapshot,
@@ -6000,7 +5994,7 @@ class GatewayTurnMixin:
     _DISPLAY_TO_TURN_CTX = (
         "_live_status_adapter_snapshot", "_live_status_adapter_provider",
         "_live_status_mode", "_thinking_enabled", "progress_mode",
-        "progress_grouping", "progress_codebox", "tool_preview_max_len", "tool_progress_enabled", "log_queue",
+        "progress_grouping", "tool_preview_max_len", "tool_progress_enabled", "log_queue",
         "resolve_display_setting", "user_config", "enabled_toolsets", "disabled_toolsets",
         "log_mode_enabled", "interim_assistant_messages_enabled", "needs_progress_queue",
         "_native_slack_task_cards",
@@ -7124,10 +7118,6 @@ class GatewayTurnMixin:
         )
         # Tool progress grouping: "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
-        # Code-box presentation for every progress row (default on; plain when false)
-        _progress_codebox = bool(
-            resolve_display_setting(user_config, platform_key, "tool_progress_codebox")
-        )
         from gateway.status_phrases import (
             choose_status_phrase,
             resolve_status_phrase_catalog,
@@ -7336,7 +7326,6 @@ class GatewayTurnMixin:
             _thinking_enabled=_thinking_enabled,
             progress_mode=progress_mode,
             progress_grouping=progress_grouping,
-            progress_codebox=_progress_codebox,
             tool_preview_max_len=_tool_preview_max_len,
             tool_progress_enabled=tool_progress_enabled,
             progress_queue=progress_queue,

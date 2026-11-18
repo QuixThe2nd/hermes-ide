@@ -25,11 +25,6 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # and a bare boolean ``tool_progress: true`` still coerces to "all" (see _NORMALISERS).
     "tool_progress": "describe",
     "tool_progress_grouping": "accumulate",  # "accumulate" = edit one bubble; "separate" = one msg per tool
-    # Present tool-progress rows as unlabelled fenced code blocks (accumulated
-    # groups, "separate" per-row messages and non-editable sends alike; embedded
-    # ``` are escaped so they stay inside the box). On by default;
-    # ``tool_progress_codebox: false`` restores plain text.
-    "tool_progress_codebox": True,
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
@@ -212,7 +207,6 @@ _NORMALISERS: dict[str, Any] = {
     "cleanup_progress": _norm_cleanup_progress,
     "live_status": _norm_tristate("full", "off", {"full", "verb", "off"}, extra_truthy={"all"}),
     "tool_progress_grouping": _norm_choice(("accumulate", "separate")),
-    "tool_progress_codebox": _norm_bool,
     "tool_preview_length": _norm_int,
 }
 
@@ -264,13 +258,13 @@ def _row_contains_fence(line) -> bool:
     return bool(re.search(r"(`{3,}|~{3,})", str(line)))
 
 
-def format_progress_group(lines: list, codebox: bool) -> str:
+def format_progress_group(lines: list) -> str:
     """Render accumulated tool-progress rows as one bubble's text.
 
-    ``codebox`` wraps the whole group in a single unlabelled fenced code block
-    (``display.tool_progress_codebox``). The box is always a plain ``` pair;
-    any 3+ backtick or tilde run inside the body is neutered with a trailing
-    U+200B so an embedded fence can never break out of the outer box.
+    The whole group is wrapped in a single unlabelled fenced code block (not
+    configurable). The box is always a plain ``` pair; any 3+ backtick or
+    tilde run inside the body is neutered with a trailing U+200B so an
+    embedded fence can never break out of the outer box.
 
     SEGMENTED RENDERING: if ANY row in the group contains its own 3+ fence
     run, the group is split into contiguous runs of fenced vs plain rows.
@@ -279,17 +273,14 @@ def format_progress_group(lines: list, codebox: bool) -> str:
     — Discord cannot nest codeblocks, but it renders multiple non-nested
     blocks in one message fine. Segments are joined with a blank line, so a
     pure-fenced group reduces to the plain newline-free raw join and a
-    pure-plain group keeps the single-box behavior above. Plain mode
-    (``codebox`` off) is always the historical newline join.
+    pure-plain group keeps the single-box behavior above.
 
     Oversized GROUPS that contain fenced rows are not pre-chunked here —
     chunk_oversized_progress_row handles single plain rows only, so a large
     segmented group reaches the native adapter and is split there.
     """
-    if not codebox or not any(_row_contains_fence(line) for line in lines):
+    if not any(_row_contains_fence(line) for line in lines):
         body = "\n".join(str(line) for line in lines)
-        if not codebox:
-            return body
         return f"```\n{_neuter_box_fences(body)}\n```"
     segments: list[str] = []
     run: list[str] = []
@@ -306,17 +297,14 @@ def format_progress_group(lines: list, codebox: bool) -> str:
     return "\n\n".join(segments)
 
 
-def format_progress_row(row, codebox: bool, limit: int, len_fn=len) -> list[str]:
+def format_progress_row(row, limit: int, len_fn=len) -> list[str]:
     """Texts to send for ONE row delivered as its own message ("separate" / non-editable).
 
-    Plain mode is the row unchanged. Boxed mode wraps it via
-    :func:`format_progress_group` (fenced rows stay unboxed) and slices an
-    oversized row into limit-fitting boxes so nothing is split mid-fence by
-    the adapter. Rows must be passed RAW (never pre-boxed).
+    Wraps the row via :func:`format_progress_group` (fenced rows stay unboxed)
+    and slices an oversized row into limit-fitting boxes so nothing is split
+    mid-fence by the adapter. Rows must be passed RAW (never pre-boxed).
     """
-    if not codebox:
-        return [str(row)]
-    return [format_progress_group([chunk], True) for chunk in chunk_oversized_progress_row(row, limit, len_fn)]
+    return [format_progress_group([chunk]) for chunk in chunk_oversized_progress_row(row, limit, len_fn)]
 
 
 # "```\n" + "\n```" around a one-line boxed group.
@@ -361,13 +349,13 @@ def chunk_oversized_progress_row(line, limit: int, len_fn=len) -> list:
     return chunks
 
 
-def repeat_row_text(base_msg, count: int, codebox: bool) -> str:
-    """The repeat-rendered row text for a ``__dedup__`` update (neutered when boxed).
+def repeat_row_text(base_msg, count: int) -> str:
+    """The repeat-rendered row text for a ``__dedup__`` update (neutered for the box).
 
     A fenced row ships unboxed (its fences render as real blocks), so its
     repeat text stays raw — no ZWSP neutering.
     """
     text = f"{base_msg} (×{count + 1})"
-    if not codebox or _row_contains_fence(base_msg):
+    if _row_contains_fence(base_msg):
         return text
     return _neuter_box_fences(text)

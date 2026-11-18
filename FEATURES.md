@@ -68,7 +68,7 @@ display:
       tool_progress: compact
 ```
 
-Tool-progress groups can render as one fenced code box per group via `display.tool_progress_codebox` or `display.platforms.<platform>.tool_progress_codebox`; normal commentary, finals, and status notices stay standalone plain messages.
+Tool-progress groups always render as one fenced code box per group (not configurable); normal commentary, finals, and status notices stay standalone plain messages.
 
 The smaller edges are handled too. Tool progress can also use **describe** mode (`tool_progress: describe`): each tool call renders as one short human phrase — and tools that accept an optional `description` argument fold that intent into the phrase, e.g. `Fetching recent Discord messages in channel 1234 to find the deploy report`. Sessions use your stable username instead of a server nickname. `DISCORD_ALLOWED_GUILDS` lets any member of a listed server talk to the bot without changing DM access. Threads rename once after the first reply lands, not halfway through a turn. Progress updates respect each platform's real message limit. Quote-replies in auto-threaded channels get their own thread by default, keeping the parent channel clean; set `discord.auto_thread_replies: false` to answer them inline instead.
 
