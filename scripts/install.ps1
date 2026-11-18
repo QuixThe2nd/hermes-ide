@@ -3129,7 +3129,12 @@ except Exception:
         # regardless of what was written to stderr).
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
-        & $venvPython -c "import dotenv, openai, rich, prompt_toolkit" 2>&1 | Out-Null
+        # Assignment (not a pipeline): under Windows PowerShell 5.1 an
+        # `& exe ... 2>&1 | Out-Null` shape can fail the whole invocation
+        # with "Cannot run a document in the middle of a pipeline" before
+        # the probe even starts; assigning to $null discards the merged
+        # output just as well and keeps $LASTEXITCODE as the signal.
+        $null = & $venvPython -c "import dotenv, openai, rich, prompt_toolkit" 2>&1
         $importExitCode = $LASTEXITCODE
         $ErrorActionPreference = $prevEAP
         if ($importExitCode -ne 0) {
