@@ -74,6 +74,10 @@ async def bind_listener(
     except BaseException:
         await runner.cleanup()
         raise
+    # Site handle for the adapter's stop_intake (overlap authority release):
+    # stopping the listening socket frees the port while in-flight requests
+    # and the AppRunner stay alive.
+    adapter._ingress_site = site
     return runner
 
 

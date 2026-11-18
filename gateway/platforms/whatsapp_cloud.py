@@ -154,6 +154,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
     serves_profile_prefix: bool = True
 
+    # Owns the WhatsApp webhook TCP port (unless in shared-listener mode):
+    # intake must stop at overlap authority release so the newest
+    # generation can bind it.
+    owns_singleton_listener: bool = True
+
     splits_long_messages = True  # send() chunks via truncate_message()
 
     def __init__(self, config: PlatformConfig):
@@ -289,6 +294,20 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 logger.exception("[whatsapp_cloud] %s failed", what)
             setattr(self, attr, None)
         self._mark_disconnected()
+
+    async def stop_intake(self) -> None:
+        """Stop the inbound webhook listener; in-flight requests finish.
+
+        Overlap authority release calls this so the newest gateway
+        generation can bind the port immediately while this process
+        finishes the runs it already owns. Outbound Graph delivery is
+        unaffected.
+        """
+        site = getattr(self, "_ingress_site", None)
+        self._ingress_site = None
+        if site is not None:
+            await site.stop()
+            logger.info("[whatsapp_cloud] Listener stopped for overlap authority handoff")
 
     # ------------------------------------------------------------------ outbound
     @staticmethod

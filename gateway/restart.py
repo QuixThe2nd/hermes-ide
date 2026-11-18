@@ -395,6 +395,11 @@ def resolve_planned_restart_exit_code(runner: Any) -> Optional[int]:
     exiting 0 under systemd would make it start another gateway beside the
     successor. Do not use the generalized supervised-launch marker here; the
     Windows Scheduled Task has no restart policy.
+
+    Generation-array aware: a live NEWER generation (hub registry, read
+    synchronously from the hub's mirror file) keeps the overlap exit code
+    even when this process's own successor died — the lineage continues in
+    the newer process and the supervisor must not start a second gateway.
     """
     if not getattr(runner, "_restart_requested", False):
         return None
@@ -405,6 +410,11 @@ def resolve_planned_restart_exit_code(runner: Any) -> Optional[int]:
         return None
     if successor_started:
         return GATEWAY_OVERLAP_RESTART_EXIT_CODE
+    if getattr(runner, "_restart_via_service", False):
+        from gateway.overlap_restart import newest_live_other_pid
+
+        if newest_live_other_pid() is not None:
+            return GATEWAY_OVERLAP_RESTART_EXIT_CODE
     return GATEWAY_SERVICE_RESTART_EXIT_CODE
 
 
@@ -437,6 +447,57 @@ def _restart_notify_payload(
     return data
 
 
+def _forward_restart_if_superseded(
+    runner: Any, source: Optional[SessionSource], message_id: Optional[str],
+    *, restart_hub: bool,
+) -> Optional[dict]:
+    """Hand this restart to the newest live generation when one exists.
+
+    The generation array, not this process, owns restart authority: any live
+    NEWER attached generation takes the request and spawns its own successor,
+    so a restart that lands on an older draining (or superseded) generation
+    still restarts the NEWEST code immediately. Covers both the restart
+    already committed here (our successor is the newer generation) and the
+    not-yet-committed case (a forwarded target was itself superseded).
+    A target that is live but still attaching cannot receive a hub control;
+    the caller reports the restart already in progress instead.
+    """
+    from gateway.overlap_restart import forward_restart_to_newest
+
+    requester = _restart_notify_payload(source, message_id) if source is not None else None
+    try:
+        result = await forward_restart_to_newest(
+            runner, restart_hub=restart_hub, requester=requester,
+        )
+    except Exception:
+        logger.exception("Restart forward to the newest generation failed; "
+                         "continuing with the local restart decision")
+        return None
+    if result is None:
+        return None
+    if runner._running_agent_count():
+        result.setdefault("active_agents", runner._running_agent_count())
+    return result
+
+
+async def handle_forwarded_restart(
+    runner: Any, *, restart_hub: bool, requester: Optional[dict] = None,
+) -> dict:
+    """Take a restart request another generation forwarded here (hub control).
+
+    Runs on the gateway loop inside the hub adapter's control task — the
+    same ``queue_user_restart`` core every entry point uses, with the
+    requester routing reconstructed from the forward payload so the newest
+    generation's own restart persists the comeback marker.
+    """
+    source = None
+    message_id = None
+    if isinstance(requester, dict) and requester:
+        source = runner._source_from_restart_notify_payload(requester)
+        message_id = str(requester["message_id"]) if requester.get("message_id") else None
+    return await queue_user_restart(
+        runner, source, message_id, restart_hub=bool(restart_hub),
+    )
 async def queue_user_restart(
     runner: Any, source: Optional[SessionSource], message_id: Optional[str],
     *, restart_hub: bool = False,
@@ -460,29 +521,25 @@ async def queue_user_restart(
     succeeded.
 
     Returns the status dict both entry points derive their reply from:
-    ``status`` ("restarting" / "already_in_progress" / "chained" /
+    ``status`` ("restarting" / "forwarded" / "already_in_progress" /
     "shutdown_in_progress"), ``active_agents`` (counted before the drain
-    closes in), and ``via_service`` (None when nothing was started or chained
-    this call).
+    closes in), and ``via_service`` (None when nothing was started or
+    forwarded this call). "forwarded" carries ``forwarded_to`` — the newest
+    generation that took the request and spawns its own successor.
 
     ``restart_hub`` (opt-in, default False) never changes the drain call: its
     hand-off is the ``.restart_hub_pending.json`` marker written just before
     ``request_restart`` so the NEXT gateway process — never this dying one —
-    bounces ``hermes-discord-hub.service``. A chained request stores the flag
-    on the chain marker instead; the already-up successor re-queues it.
+    bounces ``hermes-discord-hub.service``. A forwarded request carries the
+    flag to the newest generation, which re-queues it with its own marker.
     """
     from gateway.run import _hermes_home
-    from gateway.restart_chain import chained_restart_status
 
-    chained = chained_restart_status(
-        runner,
-        source=source,
-        message_id=message_id,
-        via_service=user_restart_via_service(),
-        restart_hub=restart_hub,
-    )
-    if chained is not None:
-        return chained
+    forwarded = await _forward_restart_if_superseded(
+            runner, source, message_id, restart_hub=restart_hub,
+        )
+    if forwarded is not None:
+        return forwarded
     if restart_committed(runner):
         return {
             "status": "already_in_progress",
@@ -508,18 +565,12 @@ async def queue_user_restart(
     try:
         # Ownership recheck after the preflight's awaits: another entry point
         # (or a signal-initiated drain) may have opened the restart while this
-        # caller was inspecting or delivering. A pending successor can still
-        # accept exactly one chained request; other losers keep the winner's
-        # routing and send nothing further.
-        chained = chained_restart_status(
-            runner,
-            source=source,
-            message_id=message_id,
-            via_service=user_restart_via_service(),
-            restart_hub=restart_hub,
+        # caller was inspecting or delivering.
+        forwarded = await _forward_restart_if_superseded(
+            runner, source, message_id, restart_hub=restart_hub,
         )
-        if chained is not None:
-            return chained
+        if forwarded is not None:
+            return forwarded
         if restart_committed(runner):
             return {
                 "status": "already_in_progress",

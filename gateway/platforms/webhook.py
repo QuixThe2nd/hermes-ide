@@ -160,6 +160,9 @@ class WebhookAdapter(BasePlatformAdapter):
     interactive_resume: bool = False
     # ``/p/<profile>/webhooks/<route>`` on the shared listener (``_resolve_request_profile``).
     serves_profile_prefix: bool = True
+    # Owns the webhook TCP port: intake must stop at overlap authority
+    # release so the newest generation can bind it.
+    owns_singleton_listener: bool = True
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WEBHOOK)
@@ -173,6 +176,7 @@ class WebhookAdapter(BasePlatformAdapter):
         self._dynamic_routes_mtime: float = 0.0
         self._routes: Dict[str, dict] = dict(self._static_routes)
         self._runner = None
+        self._site = None
         self._v1_signature_warned: set[str] = set()  # routes already warned about legacy V1 (once per route)
         # Keyed by session chat_id; read by EVERY send() (interim status messages AND the final
         # response) so never pop on send(). TTL-pruned on each POST.
@@ -232,7 +236,7 @@ class WebhookAdapter(BasePlatformAdapter):
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         try:
-            await start_tcp_site(self._runner, self._host, self._port, log_tag="webhook")
+            self._site = await start_tcp_site(self._runner, self._host, self._port, log_tag="webhook")
         except OSError as exc:
             await self._runner.cleanup()
             self._runner = None
@@ -245,6 +249,19 @@ class WebhookAdapter(BasePlatformAdapter):
                     self._port, ", ".join(self._routes.keys()) or "(none configured)")
         self._wire_plugin_handlers(None)
         return True
+
+    async def stop_intake(self) -> None:
+        """Stop accepting new webhook deliveries; in-flight requests finish.
+
+        Overlap authority release calls this so the newest gateway
+        generation can bind the shared port immediately while this process
+        finishes the agent runs it already owns. Outbound delivery is
+        unaffected.
+        """
+        site, self._site = self._site, None
+        if site is not None:
+            await site.stop()
+            logger.info("[webhook] Listener stopped for overlap authority handoff")
 
     async def disconnect(self) -> None:
         await self._coalescer.flush()  # buffered events are dispatched, not dropped, on shutdown/reconnect

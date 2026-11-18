@@ -128,6 +128,34 @@ def _live_runner(monkeypatch, gateway_loop, **overrides):
     return runner
 
 
+def _install_forwardable_newest(monkeypatch, runner, *, pid: int):
+    """Attach a live newer generation + hub adapter so the request forwards."""
+    import os
+
+    import gateway.overlap_restart as overlap_restart
+    from gateway.generations import Generation, GenerationArray
+    from gateway.platforms.base import Platform
+
+    array = GenerationArray([
+        Generation(pid=os.getpid(), predecessor=0, spawn_seq=1, draining=True),
+        Generation(pid=pid, predecessor=os.getpid(), spawn_seq=2, attached=True),
+    ])
+
+    async def fixed_array(_runner):
+        return array
+
+    monkeypatch.setattr(overlap_restart, "generation_array_for_runner", fixed_array)
+
+    class _ForwardAdapter:
+        supports_overlap_restart = True
+        _running = True
+
+        async def forward_restart_to_newest(self, **kwargs):
+            return {"status": "restarting", "active_agents": 0}
+
+    runner.adapters[Platform.DISCORD] = _ForwardAdapter()
+
+
 def _bind_session(runner, **kwargs):
     """Bind tool context and seed the runner's cached comeback source."""
     set_session_vars(**kwargs)
@@ -454,7 +482,7 @@ def test_handler_reports_committed_restart_without_second_restart(
     assert not (tmp_path / ".restart_notify.json").exists()
 
 
-def test_handler_chains_committed_restart_with_pending_successor(
+def test_handler_forwards_committed_restart_to_newest_generation(
     gateway_loop, monkeypatch, tmp_path
 ):
     from plugins.gateway_restart.tool import handle_restart
@@ -466,6 +494,7 @@ def test_handler_chains_committed_restart_with_pending_successor(
         _draining=True,
         _overlap_restart_successor_started=True,
     )
+    _install_forwardable_newest(monkeypatch, runner, pid=202)
 
     _bind_session(runner, **_CHAT_SESSION)
     try:
@@ -474,8 +503,9 @@ def test_handler_chains_committed_restart_with_pending_successor(
         clear_session_vars(None)
 
     assert result["success"] is True
-    assert result["status"] == "chained"
-    assert (tmp_path / ".restart_chain.json").exists()
+    assert result["status"] == "forwarded"
+    assert result["forwarded_to"] == 202
+    assert not (tmp_path / ".restart_notify.json").exists()
     runner.request_restart.assert_not_called()
 
 

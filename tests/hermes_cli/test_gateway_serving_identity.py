@@ -25,17 +25,21 @@ import pytest
 from hermes_cli.gateway import _print_serving_identity
 
 
-def _patch_sources(monkeypatch, *, identify=None, state=None, chained=None,
+def _patch_sources(monkeypatch, *, identify=None, state=None,
                    state_pid_is_live=False, state_is_stale=False,
                    state_restart_requested=None, successor_identity=None):
-    from gateway import control_socket, restart_chain
+    from gateway import control_socket
     from gateway import status as status_mod
 
     monkeypatch.setattr(control_socket, "identify_gateway", lambda home, **kw: identify)
     monkeypatch.setattr(status_mod, "read_runtime_status", lambda path=None: state)
     monkeypatch.setattr(status_mod, "runtime_status_pid_is_live", lambda record: state_pid_is_live)
     monkeypatch.setattr(status_mod, "runtime_status_is_stale", lambda record, ttl_s=None: state_is_stale)
-    monkeypatch.setattr(restart_chain, "peek_chained_restart", lambda: chained)
+    if successor_identity is not None:
+        monkeypatch.setattr(status_mod, "_pid_exists", lambda pid: successor_identity(pid) != "dead")
+        monkeypatch.setattr(
+            status_mod, "get_process_start_time",
+            lambda pid: successor_identity(pid) == "live" and 999 or None)
     # The gateway.run process scan is host evidence: patch it so tests are
     # hermetic (the dev host may run a live gateway — including a real
     # overlap pair).
@@ -66,18 +70,6 @@ def test_status_state_draining_record_is_never_serving(monkeypatch, capsys):
     assert "draining" in out
 
 
-def test_status_reports_pending_chained_restart(monkeypatch, capsys):
-    _patch_sources(
-        monkeypatch,
-        identify={"pid": 709505, "start_time": 123457, "kind": "hermes-gateway",
-                  "overlap": {"role": "serving"}},
-        chained={"source": "discord user 42 (restart)"},
-    )
-    _print_serving_identity()
-    out = capsys.readouterr().out
-    assert "✓ Serving gateway: pid 709505" in out
-    assert "Chained restart queued" in out
-    assert "discord user 42" in out
 
 
 def test_status_silent_when_nothing_to_say(monkeypatch, capsys):
@@ -109,6 +101,15 @@ class _ControlSocketServer:
         self.started = threading.Event()
 
     def __enter__(self):
+        # A live gateway stamps gateway_state.json at startup, which warms
+        # the code-identity cache before any control-socket identify. Do
+        # the same here: otherwise the first identify pays several cold
+        # `git` subprocess calls, which blows the client's 2s deadline on
+        # a saturated test runner and turns this into a wall-clock flake.
+        from hermes_cli.version_info import get_code_identity
+
+        get_code_identity()
+
         def _run():
             self._loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._loop)
@@ -164,8 +165,7 @@ def _patch_successor_readiness(monkeypatch, ready: bool):
 
 @pytest.fixture
 def quiet_state(monkeypatch):
-    """Keep the state-file and chained-restart ladders out of the socket tests' way."""
-    from gateway import restart_chain
+    """Keep the state-file ladder out of the socket tests' way."""
     from gateway import status as status_mod
     monkeypatch.setattr(
         "hermes_cli.gateway.find_gateway_pids", lambda: [])

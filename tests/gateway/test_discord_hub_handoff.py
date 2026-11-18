@@ -968,13 +968,13 @@ def test_spawn_replacement_uses_the_checkout_venv_interpreter(tmp_path):
 @pytest.mark.asyncio
 async def test_deferred_successor_claim_retries_then_becomes_authoritative(monkeypatch):
     from gateway.overlap_restart import (
-        GATEWAY_CLAIM_SUCCESSOR_PENDING, claim_when_predecessor_exits,
+        GATEWAY_CLAIM_SUCCESSOR_PENDING, claim_authority_when_lock_frees,
     )
 
     alive = iter((True, False))
     monkeypatch.setattr("gateway.status._pid_exists", lambda pid: next(alive))
     claims = iter((GATEWAY_CLAIM_SUCCESSOR_PENDING, True))
-    monkeypatch.setattr("gateway.run._start_gateway_claim_pid_file", lambda *_: next(claims))
+    monkeypatch.setattr("gateway.run._start_gateway_claim_pid_file", lambda *_, **__: next(claims))
     runner = SimpleNamespace(
         _overlap_successor_pending=True,
         _shutdown_event=asyncio.Event(),
@@ -982,7 +982,7 @@ async def test_deferred_successor_claim_retries_then_becomes_authoritative(monke
     )
     on_authoritative = AsyncMock()
 
-    assert await claim_when_predecessor_exits(
+    assert await claim_authority_when_lock_frees(
         runner, 4242, on_authoritative, poll_seconds=0,
     )
     assert runner._overlap_successor_pending is False
@@ -992,10 +992,10 @@ async def test_deferred_successor_claim_retries_then_becomes_authoritative(monke
 
 @pytest.mark.asyncio
 async def test_deferred_successor_exits_cleanly_when_another_gateway_wins(monkeypatch, caplog):
-    from gateway.overlap_restart import claim_when_predecessor_exits
+    from gateway.overlap_restart import claim_authority_when_lock_frees
 
     monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
-    monkeypatch.setattr("gateway.run._start_gateway_claim_pid_file", lambda *_: False)
+    monkeypatch.setattr("gateway.run._start_gateway_claim_pid_file", lambda *_, **__: False)
     adapter = SimpleNamespace(
         supports_overlap_restart=True,
         disconnect=AsyncMock(),
@@ -1012,7 +1012,7 @@ async def test_deferred_successor_exits_cleanly_when_another_gateway_wins(monkey
     )
 
     with caplog.at_level(logging.WARNING):
-        assert not await claim_when_predecessor_exits(
+        assert not await claim_authority_when_lock_frees(
             runner, 4242, AsyncMock(), poll_seconds=0,
         )
     assert runner._exit_cleanly is True
@@ -1029,11 +1029,11 @@ async def test_deferred_successor_exits_cleanly_when_another_gateway_wins(monkey
 
 @pytest.mark.asyncio
 async def test_deferred_claim_error_does_not_leave_a_pending_zombie(monkeypatch):
-    from gateway.overlap_restart import claim_when_predecessor_exits
+    from gateway.overlap_restart import claim_authority_when_lock_frees
 
     monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
 
-    def fail_claim(_pid):
+    def fail_claim(_pid, **_kwargs):
         raise OSError("lock probe failed")
 
     monkeypatch.setattr("gateway.run._start_gateway_claim_pid_file", fail_claim)
@@ -1043,7 +1043,7 @@ async def test_deferred_claim_error_does_not_leave_a_pending_zombie(monkeypatch)
         stop=AsyncMock(),
     )
 
-    assert not await claim_when_predecessor_exits(runner, 4242, AsyncMock(), poll_seconds=0)
+    assert not await claim_authority_when_lock_frees(runner, 4242, AsyncMock(), poll_seconds=0)
     assert runner._exit_with_failure is True
     runner.stop.assert_awaited_once_with()
 
@@ -1229,7 +1229,7 @@ async def test_start_gateway_attaches_before_deferred_authority_claim(monkeypatc
             runner._shutdown_event.set()
         return True
 
-    monkeypatch.setattr("gateway.overlap_restart.claim_when_predecessor_exits", fake_claim)
+    monkeypatch.setattr("gateway.overlap_restart.claim_authority_when_lock_frees", fake_claim)
     tail = {}
 
     async def fake_tail(*args):

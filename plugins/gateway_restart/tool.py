@@ -28,7 +28,7 @@ RESTART_SCHEMA = {
         "Restart hermes-ide through the same path as the /restart slash "
         "command. New turns and other sessions' long running turns "
         "continue in a new instance. A success reply here only means the "
-        "restart was queued (status restarting/already_in_progress/chained), "
+        "restart was queued (status restarting/already_in_progress/forwarded), "
         "never completed; completion is only the rewritten result below. "
         "This call only requests the restart; "
         "the old process terminates this turn mechanically. The successor "
@@ -155,6 +155,9 @@ def _result_json(runner: Any, status: dict) -> str:
         "queued": True,
         "note": _QUEUED_NOTE,
     }
+    forwarded_to = status.get("forwarded_to")
+    if isinstance(forwarded_to, int) and forwarded_to > 0:
+        payload["forwarded_to"] = forwarded_to
     # Committed restart statuses stamp the reserved exact field so the tool
     # executor can arm the per-turn flag and end this turn (no further
     # provider calls, no later sibling tools).
@@ -216,7 +219,7 @@ async def _queue_user_restart(
     privates; the two user-restart entry points cannot drift apart. Must run
     on the gateway event loop (``request_restart`` schedules its drain task
     there), and returns the shared status dict shape: ``status``
-    ("restarting" / "already_in_progress" / "chained"), ``active_agents`` (counted
+    ("restarting" / "already_in_progress" / "forwarded"), ``active_agents`` (counted
     before the drain closes in), and ``via_service`` (None when nothing was
     started this call).
     """
@@ -245,6 +248,9 @@ def _socket_result_json(ack: dict) -> str:
         "queued": True,
         "note": ack.get("note") or _QUEUED_NOTE,
     }
+    forwarded_to = ack.get("forwarded_to")
+    if isinstance(forwarded_to, int) and forwarded_to > 0:
+        payload["forwarded_to"] = forwarded_to
     process = ack.get("pid")
     if isinstance(process, int) and not isinstance(process, bool) and process > 0:
         payload["process"] = f"pid {process}"
@@ -432,7 +438,7 @@ def _restart_via_control_socket(*, restart_hub: bool = False) -> str:
     if not isinstance(ack, dict):
         return _error_json(_NO_GATEWAY_ERROR)
     status = str(ack.get("status") or "")
-    if not ack.get("queued") and status not in {"already_in_progress", "chained"}:
+    if not ack.get("queued") and status not in {"already_in_progress", "forwarded"}:
         # The gateway answered but refused (e.g. a drain already shutting
         # down, or the hand-off not observed in time) — surface its reason.
         return _error_json(

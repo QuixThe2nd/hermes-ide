@@ -2196,14 +2196,10 @@ class GatewayShutdownMixin:
     ) -> bool:
         from gateway.run import _RESTART_WAIT_RETRY_SLEEP_S
         if self._restart_task_started:
-            if overlap:
-                from gateway.restart_chain import record_chained_restart
-
-                record_chained_restart(
-                    self,
-                    request_kind="request_restart",
-                    via_service=via_service,
-                )
+            # A second request while one restart cycle runs never chains a
+            # marker: user-restart entry points forward superseding requests
+            # to the newest generation (generation array) before they reach
+            # this method, and the in-flight cycle already covers the intent.
             return False
         # One provisional setup transaction: every flag and partial cycle
         # mutation below is owned by THIS request until the restart task
@@ -2242,7 +2238,12 @@ class GatewayShutdownMixin:
             except Exception:
                 logger.exception("Overlapping restart successor could not start; using the legacy drain path")
             if overlap and getattr(self, "_overlap_restart_successor_started", False):
-                from gateway.overlap_restart import watch_successor
+                from gateway.overlap_restart import release_authority, watch_successor
+                # Authority handover at drain START: the successor owns the
+                # lock, PID file, runtime-status record, control socket and
+                # singleton listeners from this moment; we keep only the
+                # in-flight sessions below.
+                release_authority(self)
                 # Strong reference: a bare create_task may be garbage-collected.
                 # Not in _background_tasks — it exits on its own once stop() begins.
                 self._overlap_successor_watch_task = asyncio.create_task(

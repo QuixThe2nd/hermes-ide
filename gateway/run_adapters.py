@@ -1318,6 +1318,9 @@ class GatewayAdapterLifecycleMixin:
         _set_reaction = getattr(adapter, "set_reaction_handler", None)
         if callable(_set_reaction):
             _set_reaction(self._handle_reaction_event)
+        _set_restart = getattr(adapter, "set_restart_request_handler", None)
+        if callable(_set_restart):
+            _set_restart(self._handle_forwarded_restart)
         adapter.set_authorization_check(
             authorization_check or self._make_adapter_auth_check(adapter.platform)
         )

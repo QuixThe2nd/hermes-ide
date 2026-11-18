@@ -315,7 +315,7 @@ _SYNC_RPC_METHODS = frozenset({
 })
 _MATRIX_SYNC_RPC_METHODS = frozenset({"get_diagnostics"})
 # Dispatched as tasks: they call out to Discord/Matrix and may block on rate limits.
-_CONCURRENT_RPC_METHODS = frozenset({"rpc", "sync_rpc", "spawn_gateway"})
+_CONCURRENT_RPC_METHODS = frozenset({"rpc", "sync_rpc", "spawn_gateway", "generation_control"})
 _PICKER_CALLBACK_KWARGS = {
     "send_model_picker": "on_model_selected",
     "send_choice_picker": "on_choice_selected",
@@ -770,6 +770,16 @@ class DiscordHubServer:
                 "pid": os.getpid(),
                 "current_generation": (client.router or self.router).current_generation,
             }
+        if method == "generation_control":
+            if client is None:
+                raise RuntimeError("an attached generation is required")
+            target = (client.router or self.router).current_generation
+            if not target or target == client.generation_id:
+                raise RuntimeError("no newer generation is attached to receive a control")
+            return await self._request_generation_control(
+                target, str(params.get("method") or ""), dict(params.get("params") or {}),
+                timeout=float(params.get("timeout") or 30),
+            )
         if method == "spawn_gateway":
             return await self._spawn_gateway(params)
         if method == "register_spawned_gateway":

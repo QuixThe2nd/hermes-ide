@@ -198,6 +198,49 @@ class HubOverlapClientMixin:
                     f"{self._hub_label} successor did not attach within {timeout:g} seconds")
             await asyncio.sleep(min(_OVERLAP_SUCCESSOR_ATTACH_POLL_SECONDS, remaining))
 
+    def set_restart_request_handler(self, handler) -> None:
+        """Wire the runner's forwarded-restart entry (gateway/run.py)."""
+        self._restart_request_handler = handler
+
+    async def forward_restart_to_newest(self, *, restart_hub: bool = False,
+                                        requester: Optional[dict] = None,
+                                        timeout: float = 30.0) -> Optional[dict]:
+        """Ask the hub to deliver a restart request to the newest generation.
+
+        The hub routes the control to the router's current (newest attached)
+        generation; that generation runs its own restart queue and spawns its
+        own successor. ``requester`` is the ``/restart`` notify payload so the
+        target persists the comeback routing for its own successor. None when
+        the hub cannot forward (no newer generation attached, control timed
+        out) — the caller then falls back to its own restart decision.
+        """
+        params: Dict[str, Any] = {"restart_hub": bool(restart_hub)}
+        if requester:
+            params["requester"] = requester
+        try:
+            result = await self._call("generation_control", {
+                "method": "restart_request",
+                "params": params,
+                "timeout": timeout,
+            })
+        except Exception as exc:
+            logger.debug("[%s] %s restart forward unavailable: %s",
+                         self.name, self._hub_label, exc)
+            return None
+        return result if isinstance(result, dict) else None
+
+    async def _restart_request_control(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Hub-control entry: a newer-generation restart was forwarded here."""
+        handler = getattr(self, "_restart_request_handler", None)
+        if not callable(handler):
+            raise RuntimeError("gateway restart handler is not wired")
+        requester = params.get("requester")
+        result = await handler(
+            restart_hub=bool(params.get("restart_hub")),
+            requester=requester if isinstance(requester, dict) else None,
+        )
+        return result if isinstance(result, dict) else {"status": "restarting"}
+
     async def spawn_overlap_successor(
         self, *, via_service: bool = False, predecessor_pid: Optional[int] = None
     ) -> Optional[int]:
@@ -515,7 +558,9 @@ class DiscordHubClientAdapter(HubOverlapClientMixin, BasePlatformAdapter):
         try:
             method = message.get("method")
             params = message.get("params") or {}
-            if method == "invoke_picker_callback":
+            if method == "restart_request":
+                result = await self._restart_request_control(params)
+            elif method == "invoke_picker_callback":
                 picker_id = str(params.get("picker_id") or "")
                 callback = self._picker_callbacks.pop(picker_id, None)
                 if not callable(callback):

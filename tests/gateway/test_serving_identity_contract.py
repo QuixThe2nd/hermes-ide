@@ -136,8 +136,7 @@ def _python_render(case: dict):
         state_pid_is_live=bool(state.get("pid_is_live", False)),
         state_is_stale=bool(state.get("is_stale", False)),
         state_restart_requested=state.get("restart_requested"),
-        chained=request.get("chained") or (
-            {"source": request["chained_source"]} if request.get("chained_source") else None),
+
         successor_identity=(
             (lambda pid, start_time: request["successor_identity"])
             if request.get("successor_identity") else None),

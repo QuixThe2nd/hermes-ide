@@ -6275,7 +6275,6 @@ def _print_serving_identity() -> None:
     """
     try:
         from gateway.control_socket import identify_gateway
-        from gateway.restart_chain import peek_chained_restart
         from gateway.serving_identity import serving_status_lines
         from gateway.status import (
             _pid_exists, get_process_start_time, read_runtime_status,
@@ -6305,7 +6304,6 @@ def _print_serving_identity() -> None:
             state_pid_is_live=runtime_status_pid_is_live(state),
             state_is_stale=runtime_status_is_stale(state),
             state_restart_requested=(state or {}).get("restart_requested"),
-            chained=peek_chained_restart(),
             successor_identity=_successor_identity,
             gateway_pids=find_gateway_pids(),
         )
@@ -6604,13 +6602,13 @@ def _restart_via_control_socket(*, old_pid: int | None = None) -> bool:
     if not isinstance(ack, dict):
         return False
     status = str(ack.get("status") or "")
-    if not ack.get("queued") and status not in {"already_in_progress", "chained"}:
+    if not ack.get("queued") and status not in {"already_in_progress", "forwarded"}:
         logger.debug("Control-socket restart verb refused: %s", ack)
         return False
     if status == "already_in_progress":
         print("✓ Gateway restart already in progress — draining active work")
-    elif status == "chained":
-        print("✓ Gateway restart chained — queued on the incoming generation")
+    elif status == "forwarded":
+        print(f"✓ Gateway restart forwarded to the newest generation (PID {ack.get('forwarded_to') or '?'})")
     else:
         print("✓ Gateway restart queued — in-flight sessions drain undisturbed, then the gateway bounces")
     return True

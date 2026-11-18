@@ -223,17 +223,33 @@ def array_from_registry(rows: Iterable[dict], *, me_pid: int,
         records[me_pid] = replace(mine, attached=mine.attached or me_attached,
                                   draining=me_draining, live=True)
     else:
-        # The registry records only spawned successors; an asking process
-        # missing from it is the original (or a degraded-history survivor
-        # whose records were lost). Sequence 0 keeps it OLDER than every
-        # spawned successor: an original asking with a live successor must
-        # not mistake itself for the newest. True authority is arbitrated
-        # by the lock + PID-file takeover rules, which fail closed, so a
-        # lost-history ordering error can only delay a claim, never
-        # duplicate one.
+        # The registry records only spawned successors. An asking process
+        # missing from it is either the original (no known predecessor —
+        # sequence 0 keeps it OLDER than every spawned successor, so an
+        # original asking with a live successor never mistakes itself for
+        # the newest) or a successor that never registered (hub-less
+        # deployment, records lost). A successor knows its predecessor:
+        # place it strictly after that predecessor, and strictly before
+        # the earliest row that names IT as predecessor (its own
+        # successor), so ordering stays consistent with every recorded
+        # chain. No consistent window (degenerate history) keeps sequence
+        # 0 — a lost-history ordering error can only delay a claim (lock
+        # + PID-file takeover fail closed), never duplicate one.
+        lo = 0
+        if me_predecessor > 0 and me_predecessor in records:
+            lo = records[me_predecessor].spawn_seq
+        hi = None
+        for gen in records.values():
+            if gen.predecessor == me_pid:
+                bound = gen.spawn_seq - 1
+                hi = bound if hi is None else min(hi, bound)
+        if me_predecessor > 0:
+            seq = lo + 1 if (hi is None or lo + 1 <= hi) else 0
+        else:
+            seq = 0
         records[me_pid] = Generation(
             pid=me_pid, start_time=me_start_time,
-            predecessor=me_predecessor, spawn_seq=0,
+            predecessor=me_predecessor, spawn_seq=seq,
             attached=me_attached, draining=me_draining, live=True,
         )
     # Complete the array: every record's predecessor without a record gets

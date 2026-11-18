@@ -175,7 +175,7 @@ class TestArmGatewayRestartControl:
         assert turn_control_field_for("already_in_progress") == {
             TURN_CONTROL_FIELD: GATEWAY_RESTART_CONTROL
         }
-        assert turn_control_field_for("chained") == {
+        assert turn_control_field_for("forwarded") == {
             TURN_CONTROL_FIELD: GATEWAY_RESTART_CONTROL
         }
         for non_terminal in ("failed", None, ""):
