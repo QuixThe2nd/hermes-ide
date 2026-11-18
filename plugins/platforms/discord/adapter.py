@@ -362,10 +362,14 @@ _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(r"^\s*♻️?\s+Gateway\s+(?:restarted successfully|online\b)[\s\S]*$", re.IGNORECASE),
-    # Jev classification notices (the Go formatter's fixed "🔎 jev " prefix).
-    # Emitters DO set non_conversational_history metadata; this pattern only
-    # covers notices already sitting in a channel from before that metadata
-    # landed (or a lane that forgot it) when history is recovered cold.
+)
+# Jev classification notices (the Go formatter's fixed "🔎 jev " prefix) are a
+# SEPARATE, provenance-scoped fallback: the pattern drops a notice line only
+# when the OWNING BOT authored the message. A human pasting/quoting a notice
+# verbatim is genuine conversational history and must survive cold recovery
+# (no-prefix-blanket-suppression contract). The trusted exclusions (metadata
+# flags, tracked message ids) are author-independent and stay in force.
+_DISCORD_SELF_NOTICE_HISTORY_MESSAGE_PATTERNS = (
     re.compile(r"^\s*🔎\s+jev\s+\S", re.IGNORECASE),
 )
 try:
@@ -649,6 +653,12 @@ def _looks_like_nonconversational_history_message(content: str) -> bool:
     """Fallback recognizer for legacy status bumps missing persisted IDs."""
     text = content or ""
     return any(pattern.match(text) for pattern in _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS)
+
+
+def _looks_like_self_notice_history_message(content: str) -> bool:
+    """Jev-notice fallback; callers must first prove owning-bot authorship."""
+    text = content or ""
+    return any(pattern.match(text) for pattern in _DISCORD_SELF_NOTICE_HISTORY_MESSAGE_PATTERNS)
 
 
 def _clean_discord_id(entry: str) -> str:
@@ -4380,7 +4390,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         _target_id = thread_id or chat_id
                         if nonconversational:
                             self._nonconversational_messages.mark_many([message_id])
-                        elif not _looks_like_nonconversational_history_message(content):
+                        elif not (
+                            _looks_like_nonconversational_history_message(content)
+                            or _looks_like_self_notice_history_message(content)
+                        ):
                             self._last_self_message_id[_target_id] = message_id
                         # Inbox contract: every top-level bot message in the
                         # Hermes Starts inbox channel anchors a public thread.
@@ -4502,7 +4515,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 _target_id = thread_id or chat_id
                 if nonconversational:
                     await self._nonconversational_messages.mark_many(message_ids)
-                elif not _looks_like_nonconversational_history_message(content):
+                elif not (
+                    _looks_like_nonconversational_history_message(content)
+                    or _looks_like_self_notice_history_message(content)
+                ):
                     self._last_self_message_id[_target_id] = message_ids[-1]
             # Inbox contract: every top-level bot message in the Hermes
             # Starts inbox channel anchors a public thread.
@@ -4866,7 +4882,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             prev_msg = sent
         last_id = continuation_ids[-1] if continuation_ids else message_id
         # Point the history-backfill fast path at the final visible chunk.
-        if not _looks_like_nonconversational_history_message(content):
+        if not (
+            _looks_like_nonconversational_history_message(content)
+            or _looks_like_self_notice_history_message(content)
+        ):
             self._last_self_message_id[str(channel.id)] = last_id
         logger.debug(
             "[%s] Overflow split delivered %d chunks; last_id=%s", self.name, delivered, last_id,
@@ -6303,6 +6322,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 if (
                     str(getattr(msg, "id", "")) in self._nonconversational_messages
                     or _looks_like_nonconversational_history_message(content)
+                    or (
+                        msg.author == self._client.user
+                        and _looks_like_self_notice_history_message(content)
+                    )
                 ):
                     return None
                 # DISCORD_ALLOW_BOTS: for history, "mentions" counts as "all" (context, not response).
@@ -6352,6 +6375,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 if (
                     str(getattr(msg, "id", "")) in self._nonconversational_messages
                     or _looks_like_nonconversational_history_message(_content)
+                    or (
+                        msg.author == self._client.user
+                        and _looks_like_self_notice_history_message(_content)
+                    )
                 ):
                     continue
                 # Partition point: our own conversational message (needed for cold start).
