@@ -20,6 +20,7 @@ duplicated formatter is not.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -27,6 +28,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -40,7 +42,13 @@ _BINARY_SOURCES = ("notice.go", "cmd/jevnotice/main.go")
 
 _bridge_lock = threading.Lock()
 _bridge_binary: Optional[str] = None
-_bridge_resolved = False
+# A SUCCESSFUL resolution is pinned for the process. A failed one is retried
+# after this cooldown: the "notices disabled until it succeeds" log is a
+# promise, so a later toolchain install (or a transient build failure) starts
+# producing notices again without a gateway restart. The cooldown keeps a
+# permanently-broken environment from re-attempting a 300 s build per message.
+_BRIDGE_RETRY_COOLDOWN_SECONDS = 300.0
+_bridge_failed_at: Optional[float] = None
 _unavailable_logged = False
 
 
@@ -67,12 +75,17 @@ def _cached_binary_path() -> Path:
 
 
 def _resolve_go_binary() -> Optional[str]:
-    """Find a usable cmd/jevnotice binary: cached, or built from the checkout."""
-    binary = _cached_binary_path()
+    """Find a usable cmd/jevnotice binary: cached, or built from the checkout.
+
+    Never raises: source hashing and cache-path resolution can fail (unreadable
+    checkout, unwritable home) and a diagnostic must not take the gate down
+    with it — every failure path returns None (notices skipped).
+    """
     try:
+        binary = _cached_binary_path()
         if binary.is_file() and os.access(binary, os.X_OK):
             return str(binary)
-    except OSError:
+    except Exception:
         return None
     module_dir = _repo_module_dir()
     if module_dir is None or shutil.which("go") is None:
@@ -97,13 +110,27 @@ def _resolve_go_binary() -> Optional[str]:
 
 
 def go_formatter_binary() -> Optional[str]:
-    """The resolved Go formatter binary path, or None when unavailable."""
-    global _bridge_binary, _bridge_resolved
+    """The resolved Go formatter binary path, or None when unavailable.
+
+    A successful resolution is cached for the process; a failed one is retried
+    after ``_BRIDGE_RETRY_COOLDOWN_SECONDS`` so a later Go toolchain (or a
+    recovered build failure) revives notices without a restart.
+    """
+    global _bridge_binary, _bridge_failed_at
     with _bridge_lock:
-        if not _bridge_resolved:
-            _bridge_binary = _resolve_go_binary()
-            _bridge_resolved = True
-        return _bridge_binary
+        if _bridge_binary is not None:
+            return _bridge_binary
+        if (
+            _bridge_failed_at is not None
+            and (time.monotonic() - _bridge_failed_at) < _BRIDGE_RETRY_COOLDOWN_SECONDS
+        ):
+            return None
+        binary = _resolve_go_binary()
+        if binary is not None:
+            _bridge_binary = binary
+        else:
+            _bridge_failed_at = time.monotonic()
+        return binary
 
 
 def format_notice(record: Dict[str, Any]) -> Optional[str]:
@@ -111,19 +138,22 @@ def format_notice(record: Dict[str, Any]) -> Optional[str]:
 
     Returns the notice line, or None when the binary is unavailable or the
     render failed — callers skip the notice then; they never substitute a
-    local rendering.
+    local rendering. NEVER raises: resolution (source hashing, cache paths)
+    and rendering are diagnostics, and a diagnostic failure must never
+    change the gate decision or the reaction it was reporting.
     """
     global _unavailable_logged
-    binary = go_formatter_binary()
-    if binary is None:
-        if not _unavailable_logged:
-            _unavailable_logged = True
-            logger.warning(
-                "jev notices unavailable: no cached formatter binary and no Go "
-                "toolchain to build one (notices are skipped, decisions unaffected)"
-            )
-        return None
     try:
+        binary = go_formatter_binary()
+        if binary is None:
+            if not _unavailable_logged:
+                _unavailable_logged = True
+                logger.warning(
+                    "jev notices unavailable: no cached formatter binary and no Go "
+                    "toolchain to build one (notices are skipped, decisions "
+                    "unaffected; retried until a build succeeds)"
+                )
+            return None
         run = subprocess.run(
             [binary], input=json.dumps(record),
             capture_output=True, text=True, timeout=10,
@@ -135,6 +165,18 @@ def format_notice(record: Dict[str, Any]) -> Optional[str]:
         logger.debug("jev notice formatter exited %s: %s", run.returncode, run.stderr.strip())
         return None
     return run.stdout.rstrip("\n") or None
+
+
+async def format_notice_async(record: Dict[str, Any]) -> Optional[str]:
+    """:func:`format_notice` off the event loop.
+
+    The cold build (``go build``, up to 300 s), every render subprocess and the
+    process-global bridge lock are blocking work: async callers (the Discord
+    response/reaction paths) must not stall the gateway's event loop behind a
+    diagnostic. The thread hop carries the caller's contextvars, so a profile
+    scope stays bound.
+    """
+    return await asyncio.to_thread(format_notice, record)
 
 
 # ── record builders: one per owning call site ────────────────────────────

@@ -150,7 +150,10 @@ class GatewayGoalIntentMixin:
                 return  # formatter binary unavailable: skip, never a local twin
             try:
                 future = asyncio.run_coroutine_threadsafe(
-                    self._defer_goal_status_notice_after_delivery(source, line), loop
+                    self._defer_goal_status_notice_after_delivery(
+                        source, line, non_conversational=True
+                    ),
+                    loop,
                 )
 
                 def _drain(fut) -> None:

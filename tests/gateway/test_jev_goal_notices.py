@@ -82,7 +82,7 @@ def _wire_send(runner, *, adapter=None):
     """Replace only the platform send seam; return the collected notice lines."""
     sent: list = []
 
-    async def fake_send(source, message):
+    async def fake_send(source, message, **_kwargs):
         sent.append(message)
 
     runner._send_goal_status_notice = fake_send
@@ -211,37 +211,106 @@ async def test_notice_delivery_failure_never_touches_the_decision(runner, monkey
 
 
 @pytest.mark.asyncio
-async def test_notices_reach_only_the_owning_source_adapter(runner, monkeypatch):
-    """A/B/A origin isolation: each source's notices go to its own adapter only."""
+async def test_notices_reach_only_the_owning_source_adapter(runner, monkeypatch, tmp_path):
+    """A/B/A origin isolation through the REAL delivery resolver and profile scope.
+
+    The runner's primary adapter serves the default profile; profile ``beta`` has
+    its own adapter in ``_profile_adapters``. ``_adapter_for_source`` /
+    ``_delivery_adapter_for`` / the profile-scope chain are the production
+    code — only the platform send seam (I/O) is replaced, recording what each
+    delivery saw. Each notice must leave through the OWNING profile's adapter
+    with that profile's HERMES_HOME bound at send time (the scope carried by
+    ``_spawn_goal_intent_task`` → ``_run_in_executor_with_context`` → the
+    deferred delivery coroutine).
+    """
+    from pathlib import Path
+
+    from hermes_constants import get_hermes_home
+
     monkeypatch.setenv("LITELLM_API_KEY", "test-key")
-    adapter_a = SimpleNamespace()
-    adapter_b = SimpleNamespace()
-    sent_a, sent_b = [], []
+    # A second live profile home under the (faked) profiles root, registered
+    # through the real creation path: the resolver's liveness check
+    # (``named_profile_is_live``) requires an identity marker, and a bare
+    # mkdir leaves a ghost shell the runtime correctly refuses (falls back to
+    # the default home). Real registration = identity + layout, no mocks.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    from hermes_cli.profiles import create_profile
 
-    def make_send(sink):
-        async def _send(source, message):
-            sink.append(message)
-        return _send
+    home_b = create_profile("beta", no_alias=True, no_skills=True)
+    home_default = tmp_path / ".hermes"
+    monkeypatch.setattr(runner.config, "multiplex_profiles", True, raising=False)
 
-    adapters = {"chat-a": adapter_a, "chat-b": adapter_b}
-    sends = {"chat-a": make_send(sent_a), "chat-b": make_send(sent_b)}
+    deliveries: list = []  # (owning profile tag, notice line, HERMES_HOME at send)
 
-    async def send_for(source, message):
-        await sends[source.chat_id](source, message)
+    def _adapter(tag):
+        async def _send(chat_id, message, metadata=None, **_kwargs):
+            deliveries.append((tag, message, str(get_hermes_home())))
+        return SimpleNamespace(send=_send)
 
-    runner._send_goal_status_notice = send_for
-    runner._adapter_for_source = lambda source: adapters[source.chat_id]
+    runner.adapters = {Platform.TELEGRAM: _adapter("default")}
+    runner._profile_adapters = {"beta": {Platform.TELEGRAM: _adapter("beta")}}
 
     source_a1 = _source(chat_id="chat-a", user_name="A-User")
-    source_b = _source(chat_id="chat-b", user_name="B-User")
+    source_b = _source(chat_id="chat-b", user_name="B-User", profile="beta")
     source_a2 = _source(chat_id="chat-a", user_name="A-User")
 
-    with patch("hermes_cli.goal_intent.requests.post", return_value=_jev_response("task", 0.9)):
-        await runner._run_auto_goal_evaluation("fix a", source_a1, "telegram")
-        await runner._run_auto_goal_evaluation("fix b", source_b, "telegram")
-        await runner._run_auto_goal_evaluation("fix a again", source_a2, "telegram")
+    async def _classify_and_deliver(text, source):
+        runner._schedule_auto_goal_intent(_event(text, source=source), SESSION_KEY)
+        await _drain(runner)
+        # The deferred delivery coroutine is scheduled thread-safely from the
+        # executor callback; yield the loop until it has run (bounded poll).
+        loop = asyncio.get_running_loop()
+        before = len(deliveries)
+        deadline = loop.time() + 5.0
+        while len(deliveries) <= before and loop.time() < deadline:
+            await asyncio.sleep(0)
 
-    assert len(sent_a) == 2
-    assert len(sent_b) == 1
-    assert all("from A-User" in line for line in sent_a)
-    assert "from B-User" in sent_b[0]
+    with patch("hermes_cli.goal_intent.requests.post", return_value=_jev_response("task", 0.9)):
+        await _classify_and_deliver("fix a", source_a1)
+        await _classify_and_deliver("fix b", source_b)
+        await _classify_and_deliver("fix a again", source_a2)
+
+    assert [(tag, line) for tag, line, _home in deliveries] == [
+        ("default", "🔎 jev goal-intent (attempt 1/2) user message from A-User: task (confidence 0.90)"),
+        ("beta", "🔎 jev goal-intent (attempt 1/2) user message from B-User: task (confidence 0.90)"),
+        ("default", "🔎 jev goal-intent (attempt 1/2) user message from A-User: task (confidence 0.90)"),
+    ]
+    by_tag = {}
+    for tag, _line, home in deliveries:
+        by_tag.setdefault(tag, set()).add(home)
+    # The sending scope was the OWNING profile's home, never another profile's.
+    assert by_tag["default"] == {str(home_default)}
+    assert by_tag["beta"] == {str(home_b)}
+
+
+@pytest.mark.asyncio
+async def test_jev_notice_send_is_marked_non_conversational_history(runner, monkeypatch):
+    """The goal-path Jev notice is non-conversational history at the send seam.
+
+    The real chain runs (classifier callback → deferred post-delivery lane →
+    ``_send_goal_status_notice``); only the adapter's platform send is I/O and
+    records what the owning caller passed. A troubleshooting notice must never
+    become the conversation boundary or leak into the model's recovered
+    context on platforms that honor the flag (Discord).
+    """
+    monkeypatch.setenv("LITELLM_API_KEY", "test-key")
+    sent: list = []  # (message, metadata)
+
+    async def _send(chat_id, message, metadata=None, **_kwargs):
+        sent.append((message, metadata))
+
+    runner.adapters = {Platform.TELEGRAM: SimpleNamespace(send=_send)}
+
+    with patch("hermes_cli.goal_intent.requests.post", return_value=_jev_response("task", 0.9)):
+        runner._schedule_auto_goal_intent(_event("why is tdarr down"), SESSION_KEY)
+        await _drain(runner)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 5.0
+        while not sent and loop.time() < deadline:
+            await asyncio.sleep(0)
+
+    assert [message for message, _meta in sent] == [
+        "🔎 jev goal-intent (attempt 1/2) user message from operator: task (confidence 0.90)"
+    ]
+    metadata = sent[0][1]
+    assert metadata is not None and metadata.get("non_conversational_history") is True

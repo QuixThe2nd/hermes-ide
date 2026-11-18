@@ -79,6 +79,65 @@ class TestGoalIntentAttemptRecord:
         assert record["error"] == "schema_mismatch: no answers object"
 
 
+class TestBridgeFailureIsolation:
+    """Diagnostics must never change a decision: any formatter failure — cache
+    source hashing, path resolution, build, render — fails closed to None."""
+
+    def test_format_notice_swallows_resolution_errors(self, monkeypatch):
+        import gateway.jev_notice as jn
+
+        def _boom():
+            raise OSError("cache source hashing broke")
+
+        monkeypatch.setattr(jn, "_cached_binary_path", _boom)
+        monkeypatch.setattr(jn, "_bridge_binary", None)
+        monkeypatch.setattr(jn, "_bridge_failed_at", None)
+        assert format_notice({"purpose": "goal-intent", "subject": "user message"}) is None
+
+    def test_format_notice_swallows_render_errors(self, monkeypatch):
+        import gateway.jev_notice as jn
+
+        monkeypatch.setattr(jn, "go_formatter_binary", lambda: "/nonexistent/jevnotice")
+        # subprocess.run raises FileNotFoundError for a missing binary.
+        assert format_notice({"purpose": "goal-intent", "subject": "user message"}) is None
+
+    def test_failed_resolution_is_retried_not_pinned(self, monkeypatch):
+        """The "notices disabled until it succeeds" log is a promise: a failed
+        resolution must not be pinned for the process lifetime."""
+        import gateway.jev_notice as jn
+
+        monkeypatch.setattr(jn, "_bridge_binary", None)
+        monkeypatch.setattr(jn, "_bridge_failed_at", None)
+        # Cooldown elapses immediately: the failure stamp predates the window.
+        monkeypatch.setattr(jn, "_BRIDGE_RETRY_COOLDOWN_SECONDS", 0.0)
+        attempts = []
+
+        def _resolve():
+            attempts.append(1)
+            return None if len(attempts) == 1 else "/freshly/built/jevnotice"
+
+        monkeypatch.setattr(jn, "_resolve_go_binary", _resolve)
+        assert go_formatter_binary() is None  # first attempt fails…
+        assert go_formatter_binary() == "/freshly/built/jevnotice"  # …and is retried
+        assert len(attempts) == 2
+
+    def test_successful_resolution_is_pinned(self, monkeypatch):
+        import gateway.jev_notice as jn
+
+        monkeypatch.setattr(jn, "_bridge_binary", None)
+        monkeypatch.setattr(jn, "_bridge_failed_at", None)
+        attempts = []
+
+        def _resolve():
+            attempts.append(1)
+            return "/cached/jevnotice"
+
+        monkeypatch.setattr(jn, "_resolve_go_binary", _resolve)
+        assert go_formatter_binary() == "/cached/jevnotice"
+        assert go_formatter_binary() == "/cached/jevnotice"
+        assert len(attempts) == 1  # one successful build, no re-resolution
+
+
 class TestNoCallProducesNoRecord:
     def test_response_gate_missing_credential_is_not_a_request(self):
         decision = SimpleNamespace(

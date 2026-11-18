@@ -132,8 +132,16 @@ class GatewayGoalsMixin:
             logger.debug("goal continuation: no adapter for %s", getattr(source, "platform", None))
         return adapter
 
-    async def _send_goal_status_notice(self, source: Any, message: str) -> None:
-        """Send a /goal judge status line back to the originating chat/thread."""
+    async def _send_goal_status_notice(
+        self, source: Any, message: str, *, non_conversational: bool = False
+    ) -> None:
+        """Send a /goal judge status line back to the originating chat/thread.
+
+        ``non_conversational=True`` (the Jev notice lines) marks the send as
+        non-conversational history: a troubleshooting notice must never become
+        the last-self-message boundary or leak into the model's recovered
+        context on platforms that honor the flag (Discord).
+        """
         adapter = self._adapter_for_source(source)
         if not adapter:
             logger.debug("goal continuation: no adapter for %s", getattr(source, "platform", None))
@@ -143,6 +151,9 @@ class GatewayGoalsMixin:
             metadata = self._thread_metadata_for_source(source)
         except Exception:
             metadata = None
+        if non_conversational:
+            metadata = dict(metadata or {})
+            metadata["non_conversational_history"] = True
 
         result = await adapter.send(source.chat_id, message, metadata=metadata)
         if result is not None and not getattr(result, "success", True):
@@ -151,7 +162,9 @@ class GatewayGoalsMixin:
                 getattr(result, "error", "unknown error"),
             )
 
-    async def _defer_goal_status_notice_after_delivery(self, source: Any, message: str) -> None:
+    async def _defer_goal_status_notice_after_delivery(
+        self, source: Any, message: str, *, non_conversational: bool = False
+    ) -> None:
         """Send a /goal status line after the main response is delivered.
 
         The gateway message handler returns the agent response to the platform
@@ -168,7 +181,9 @@ class GatewayGoalsMixin:
 
         async def _deliver() -> None:
             try:
-                await self._send_goal_status_notice(source, message)
+                await self._send_goal_status_notice(
+                    source, message, non_conversational=non_conversational
+                )
             except Exception as exc:
                 logger.warning("goal continuation: status send failed: %s", exc, exc_info=True)
 

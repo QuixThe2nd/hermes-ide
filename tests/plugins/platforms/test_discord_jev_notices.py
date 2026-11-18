@@ -13,6 +13,7 @@ production paths.
 import asyncio
 import logging
 import os
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -281,7 +282,16 @@ class TestResponseGateNotices:
         assert _notices(adapter) == []
 
     @pytest.mark.asyncio
-    async def test_echo_channel_posts_judge_line_not_a_second_notice(self, monkeypatch):
+    async def test_echo_channel_posts_the_go_notice_line_unpinged(self, monkeypatch):
+        """Echo channels post the SAME Go-formatted notice every lane posts.
+
+        The old echo lane rendered a local Python line and sent it as a
+        Discord reply (a ping); it now goes through the single formatter
+        owner and the unpinged non-conversational notice path. Contract test
+        corrected: the prior version exempted the echo lane from the
+        all-consumers formatter contract, which the acceptance review
+        rejected (two production formatting owners).
+        """
         recorder = _DecisionRecorder()
         _stub_speaking(monkeypatch, recorder)
         adapter = _adapter(response={
@@ -292,9 +302,34 @@ class TestResponseGateNotices:
         await adapter._dispatch_discord_message(ambient)
 
         assert recorder.calls == 1
-        assert _notices(adapter) == []  # the echo IS the notice line there
-        all_sends = [call.args[1] for call in adapter.send.await_args_list]
-        assert len([text for text in all_sends if "allow" in text or "deny" in text]) == 1
+        notices = _notices(adapter)
+        assert len(notices) == 1  # the echo IS the notice line there
+        assert notices[0][0] == "555"
+        assert notices[0][1].startswith("🔎 jev response-gate user message from Alice: ")
+        assert "allow" in notices[0][1]
+        # Unpinged plain notice: never a Discord reply.
+        assert "reply_to" not in notices[0][2]
+        assert notices[0][2]["metadata"]["non_conversational_history"] is True
+
+    @pytest.mark.asyncio
+    async def test_echo_channel_missing_credential_posts_nothing(self, monkeypatch):
+        """No HTTP request was made, so no echo diagnostic may claim one."""
+        recorder = _DecisionRecorder()
+        _stub_speaking(monkeypatch, recorder)
+        adapter = _adapter(
+            response={
+                "channels": ["555"], "echo_channels": ["555"], "mode": "enforce",
+            },
+            credential=None,
+        )
+        ambient = _message(content="ambient chatter")
+
+        dispatched = await adapter._dispatch_discord_message(ambient)
+
+        assert recorder.calls == 0
+        # Not even a "gate error (missing_credential)" line: that outcome
+        # never touched the judge, and a notice may only report real requests.
+        assert adapter.send.await_args_list == []
 
     @pytest.mark.asyncio
     async def test_notice_send_failure_never_changes_the_decision(self, monkeypatch, caplog):
@@ -411,3 +446,219 @@ class TestNoRecursion:
         assert speaking.calls == 1
         assert choice.calls == 1
         assert len(_notices(adapter)) == 2
+
+    @pytest.mark.asyncio
+    async def test_inbound_notice_replay_never_consults_the_judge(self, monkeypatch):
+        """A notice line arriving back inbound (relay, edit, history tooling) is bot
+        chatter: no classifier request, no dispatch — the notice loop never feeds itself."""
+        speaking = _DecisionRecorder()
+        choice = _ChoiceRecorder(probabilities=REACT_FIRE)
+        _stub_speaking(monkeypatch, speaking)
+        _stub_choice(monkeypatch, choice)
+        adapter = _adapter(
+            reaction={"enabled": True, "channels": ["555"]},
+            response={"channels": ["555"], "mode": "enforce"},
+        )
+        inbound_notice = _message(
+            content="🔎 jev response-gate user message from Alice: allow "
+                    "(addresses_bot=0.91 continues_bot_thread=0.12 joins_bot_thread=0.03 noise=0.05)",
+            author=SimpleNamespace(id=BOT_ID, name="hermes", display_name=BOT_NAME, bot=True),
+        )
+
+        await adapter._dispatch_discord_message(inbound_notice)
+
+        assert speaking.calls == 0
+        assert choice.calls == 0
+        adapter._handle_message.assert_not_awaited()
+        assert _notices(adapter) == []
+
+
+class TestFormatterIsolation:
+    """A formatter failure anywhere (cache hashing, resolution, build, render) is a
+    diagnostic failure: it must never escape into — or change — the gate decision,
+    the dispatch verdict or the reaction the notice was reporting."""
+
+    def _break_resolution(self, monkeypatch):
+        import gateway.jev_notice as jn
+
+        def _boom():
+            raise OSError("cache path resolution broke")
+
+        monkeypatch.setattr(jn, "_cached_binary_path", _boom)
+        monkeypatch.setattr(jn, "_bridge_binary", None)
+        monkeypatch.setattr(jn, "_bridge_failed_at", None)
+
+    @pytest.mark.asyncio
+    async def test_resolution_failure_never_changes_dispatch(self, monkeypatch):
+        self._break_resolution(monkeypatch)
+        recorder = _DecisionRecorder()
+        _stub_speaking(monkeypatch, recorder)
+        adapter = _adapter(response={"channels": ["555"], "mode": "enforce"})
+        ambient = _message(content="ambient chatter")
+
+        dispatched = await adapter._dispatch_discord_message(ambient)
+
+        assert dispatched is True  # the allow verdict stands, no exception escapes
+        assert recorder.calls == 1
+        assert _notices(adapter) == []
+
+    @pytest.mark.asyncio
+    async def test_resolution_failure_never_changes_the_reaction(self, monkeypatch):
+        self._break_resolution(monkeypatch)
+        recorder = _ChoiceRecorder(probabilities=REACT_FIRE)
+        _stub_choice(monkeypatch, recorder)
+        adapter = _adapter(reaction={"enabled": True, "channels": ["555"]})
+        ambient = _message(content="nice one!")
+
+        await adapter._dispatch_discord_message(ambient)
+        await _drain(adapter)
+
+        assert ambient.add_reaction.await_count == 1  # the 🔥 decision stands
+        assert _notices(adapter) == []
+
+
+class TestEventLoopResponsiveness:
+    """The Go build/render subprocess and the bridge lock are blocking work: the
+    async notice path must keep the event loop responsive while a build stalls."""
+
+    @pytest.mark.asyncio
+    async def test_blocked_build_does_not_stall_the_loop(self, monkeypatch):
+        import gateway.jev_notice as jn
+
+        build_started = threading.Event()
+        release_build = threading.Event()
+
+        def _blocked_resolve():
+            build_started.set()
+            assert release_build.wait(30), "test never released the build"
+            return None
+
+        monkeypatch.setattr(jn, "_resolve_go_binary", _blocked_resolve)
+        monkeypatch.setattr(jn, "_bridge_binary", None)
+        monkeypatch.setattr(jn, "_bridge_failed_at", None)
+        recorder = _DecisionRecorder()
+        _stub_speaking(monkeypatch, recorder)
+        adapter = _adapter(response={"channels": ["555"], "mode": "enforce"})
+        ambient = _message(content="ambient chatter")
+
+        task = asyncio.ensure_future(adapter._dispatch_discord_message(ambient))
+        # Let the dispatch reach the formatter bridge (no wall-clock sleeps:
+        # yield until the controlled build actually starts).
+        while not build_started.is_set():
+            await asyncio.sleep(0)
+
+        # The loop must stay responsive while the build is blocked elsewhere.
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+
+        async def _heartbeat():
+            for _ in range(200):
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(_heartbeat(), timeout=2.0)
+        assert loop.time() - start < 2.0
+
+        release_build.set()
+        dispatched = await asyncio.wait_for(task, timeout=30)
+        assert dispatched is True
+        assert recorder.calls == 1
+
+
+class TestNoticeHistoryExclusion:
+    """Notices are excluded from model-history recovery: the metadata marks them
+    non-conversational, they never become the last-self-message boundary, and a
+    cold history scan (recovery) filters them out by ID and by notice prefix."""
+
+    @pytest.mark.asyncio
+    async def test_notice_metadata_marks_history_non_conversational(self, monkeypatch):
+        recorder = _DecisionRecorder()
+        _stub_speaking(monkeypatch, recorder)
+        adapter = _adapter(response={"channels": ["555"], "mode": "enforce"})
+        ambient = _message(content="ambient chatter")
+
+        await adapter._dispatch_discord_message(ambient)
+
+        notices = _notices(adapter)
+        assert notices, "a real judge request must post its notice"
+        metadata = notices[0][2]["metadata"]
+        assert metadata["jev_notice"] is True
+        assert metadata["non_conversational_history"] is True
+
+    @pytest.mark.asyncio
+    async def test_real_send_never_becomes_history_boundary(self, monkeypatch, tmp_path):
+        """Real adapter.send (only the Discord transport object is faked): the
+        notice's message ID is marked non-conversational and never recorded as
+        the conversation's last-self-message boundary."""
+        recorder = _DecisionRecorder()
+        _stub_speaking(monkeypatch, recorder)
+        adapter = _adapter(response={"channels": ["555"], "mode": "enforce"})
+        # Re-wire the real send seam: a fake connected channel instead of a
+        # mocked adapter.send, so the tracker/boundary logic in send() runs.
+        del adapter.send  # undo the _adapter() I/O mock; the real send() runs
+        notice_msg = SimpleNamespace(id=7001)
+
+        async def _record_skip(_self, _reply, result, *_a, **_kw):  # delivery ledger is I/O
+            return result
+
+        monkeypatch.setattr(
+            DiscordAdapter, "_record_response_async", _record_skip,
+        )
+        channel = _Channel(555)
+        adapter._client = SimpleNamespace(
+            user=adapter._client.user,
+            get_channel=lambda _cid: channel,
+            fetch_channel=AsyncMock(return_value=channel),
+            close=AsyncMock(),
+        )
+        channel.send = AsyncMock(return_value=notice_msg)
+        ambient = _message(content="ambient chatter")
+
+        dispatched = await adapter._dispatch_discord_message(ambient)
+
+        assert dispatched is True
+        assert channel.send.await_count == 1
+        notice_id = str(notice_msg.id)
+        assert notice_id in adapter._nonconversational_messages
+        # The notice is NOT the conversation boundary for history recovery.
+        assert adapter._last_self_message_id.get("555") != notice_id
+
+    @pytest.mark.asyncio
+    async def test_recovered_history_drops_notices_and_keeps_conversation(
+        self, monkeypatch, tmp_path,
+    ):
+        """Cold history recovery: a notice sitting in the channel (sent before the
+        process restarted, so only the persisted tracker/prefix can exclude it)
+        neither truncates the window nor leaks into the model's context."""
+        notice_text = (
+            "🔎 jev response-gate user message from Alice: failed (http_502)"
+        )
+        adapter = _adapter(response={"channels": ["555"], "mode": "enforce"})
+        bot_author = adapter._client.user
+
+        def _msg(msg_id, content, author):
+            return SimpleNamespace(
+                id=msg_id, content=content, clean_content=content,
+                attachments=[], author=author, type=discord.MessageType.default,
+            )
+
+        # Newest first: the notice is the newest message in the channel.
+        messages = [
+            _msg(7001, notice_text, bot_author),
+            _message(content="hello there, still need the context"),  # id 42, human
+        ]
+
+        class _HistoryChannel(_Channel):
+            def history(self, **_kwargs):
+                async def _gen():
+                    for entry in messages:
+                        yield entry
+                return _gen()
+
+        channel = _HistoryChannel(555)
+        context = await adapter._fetch_channel_context(
+            channel, SimpleNamespace(id=9999),
+        )
+
+        assert "hello there" in context
+        assert "🔎 jev" not in context
+        assert "failed (http_502)" not in context

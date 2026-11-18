@@ -362,6 +362,11 @@ _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(r"^\s*♻️?\s+Gateway\s+(?:restarted successfully|online\b)[\s\S]*$", re.IGNORECASE),
+    # Jev classification notices (the Go formatter's fixed "🔎 jev " prefix).
+    # Emitters DO set non_conversational_history metadata; this pattern only
+    # covers notices already sitting in a channel from before that metadata
+    # landed (or a lane that forgot it) when history is recovered cold.
+    re.compile(r"^\s*🔎\s+jev\s+\S", re.IGNORECASE),
 )
 try:
     import discord
@@ -1079,7 +1084,7 @@ from plugins.platforms.discord.reaction_gate_reload import (
     start_reaction_gate_reload_watcher,
 )
 from gateway.jev_notice import (
-    format_notice,
+    format_notice_async,
     reaction_gate_record,
     response_gate_record,
 )
@@ -1739,43 +1744,26 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         keys = candidate.get("channel_keys") or ()
         return bool(gate.echo_keys.intersection(keys))
 
-    def _response_gate_echo_text(self, decision: GateDecision) -> str:
-        if decision.error:
-            return f"gate error ({decision.error})"
-        if decision.scores:
-            verdict = "allow" if decision.allowed else "deny"
-            parts = " ".join(
-                f"{key}={decision.scores.get(key, 0.0):.2f}" for key in _RESPONSE_GATE_SCORE_KEYS
-            )
-            return f"{verdict} ({parts})"
-        # Legacy single-score decision (no component nouls): keep the threshold readout.
-        gate = self._response_gate
-        threshold = float(gate.config.threshold) if gate is not None else 0.8
-        score = decision.score if decision.score is not None else 0.0
-        if score >= threshold:
-            return f"{score:.2f}"
-        return f"{score:.2f} (below {threshold:g})"
-
     async def _response_gate_echo(
         self, message: Any, candidate: Dict[str, Any], decision: GateDecision,
     ) -> bool:
-        """Post one judge echo line and drop normal dispatch (echo channels only)."""
+        """Post the judge's notice line and drop normal dispatch (echo channels only).
+
+        Same notice owner as every other lane: the record builders apply the
+        no-call rule (a ``missing_credential`` decision never made an HTTP
+        request and posts NOTHING — never a fake "gate error" diagnostic), the
+        Go binary renders, and the line goes out unpinged and
+        non-conversational through ``_send_jev_notice``.
+        """
         self._response_gate_log(decision, candidate, outcome="echo")
         chat_id = candidate.get("conversation_id") or GateRuntime.conversation_id(message.channel)
         message_id = candidate.get("message_id") or ""
-        text = self._response_gate_echo_text(decision)
-        try:
-            result = await self.send(chat_id, text, reply_to=message_id or None)
-            if not result.success:
-                logger.warning(
-                    "[%s] response_gate echo send failed channel=%s message=%s error=%s",
-                    self.name, chat_id, message_id, result.error,
-                )
-        except Exception as exc:
-            logger.warning(
-                "[%s] response_gate echo send failed channel=%s message=%s error=%s",
-                self.name, chat_id, message_id, type(exc).__name__, exc_info=True,
-            )
+        record = response_gate_record(decision, author=self._jev_notice_author(message))
+        if record is None:
+            return False  # no HTTP request was made: no notice, no echo line
+        line = await format_notice_async(record)
+        if line is not None:
+            await self._send_jev_notice(line, str(chat_id), str(message_id))
         return False
 
     async def _send_jev_notice(self, line: str, chat_id: str, message_id: str = "") -> None:
@@ -1789,11 +1777,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         anyone; correlation comes from the channel plus the sanitized author
         fragment already inside the line ("user message from Alice"). A send
         failure is logged without touching any gate decision. The metadata
-        marker lets tests and future lanes distinguish notices from
-        conversational sends; ``message_id`` is correlation for the log only.
+        markers let tests and future lanes distinguish notices from
+        conversational sends AND mark them non-conversational for history
+        recovery: a notice must never become the last-self-message boundary
+        or leak into the model's recovered context; ``message_id`` is
+        correlation for the log only.
         """
         try:
-            result = await self.send(chat_id, line, metadata={"jev_notice": True})
+            result = await self.send(
+                chat_id, line,
+                metadata={"jev_notice": True, "non_conversational_history": True},
+            )
             if result is not None and not getattr(result, "success", True):
                 logger.warning(
                     "[%s] jev notice send failed channel=%s message=%s error=%s",
@@ -1838,7 +1832,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # One visible notice per real judge request (echo channels already post
         # their judge-score line; a no-call outcome produces no record at all).
         record = response_gate_record(decision, author=self._jev_notice_author(message))
-        line = format_notice(record) if record is not None else None
+        # Off the event loop: the cold go build / render subprocess and the
+        # bridge lock are blocking work a diagnostic must not stall the loop on.
+        line = await format_notice_async(record) if record is not None else None
         if line is not None:
             await self._send_jev_notice(
                 line,
@@ -2266,7 +2262,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             notice_record = reaction_gate_record(
                 decision, author=self._jev_notice_author(message),
             )
-            notice_line = format_notice(notice_record) if notice_record is not None else None
+            notice_line = (
+                await format_notice_async(notice_record) if notice_record is not None else None
+            )
             if notice_line is not None:
                 await self._send_jev_notice(
                     notice_line,
