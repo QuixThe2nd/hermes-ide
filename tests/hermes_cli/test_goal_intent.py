@@ -75,7 +75,7 @@ def test_classifier_posts_one_jev_decision_and_reuses_contract_draft(jev_key):
     assert post.call_args.kwargs["timeout"] == goal_intent._JEV_TIMEOUT_S
     assert post.call_args.kwargs["allow_redirects"] is False
     body = post.call_args.kwargs["json"]
-    assert body["model"] == "jev-1.13.0"
+    assert body["model"] == "jev-1.14.0"
     assert body["state"]["message"] == message
     assert body["state"]["assistant_last_reply"].startswith("The public route")
     assert body["state"]["user_previous_message"] == "is the service public?"

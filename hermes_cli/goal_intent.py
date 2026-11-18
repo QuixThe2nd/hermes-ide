@@ -1,7 +1,7 @@
 """Auto-goal intent classification via Jev Decisions, JSONL audit trail, and report.
 
 Every eligible human gateway message is classified as CHAT, TASK, APPROVAL, or
-CHASE by one Jev Decisions POST (model ``jev-1.13.0``) and appended to a
+CHASE by one Jev Decisions POST (model ``jev-1.14.0``) and appended to a
 private JSONL log. There is no LLM fallback: transport/HTTP/schema failures are
 retried once and then fail closed as ``unknown``. Only a CHASE at or above the
 action confidence floor (the same ``AUTO_GOAL_CONFIDENCE_MIN`` auto-goal
@@ -47,7 +47,7 @@ _CHASE_SNIPPET_LIMIT = 200
 # platform plugin module). Direct to the litellm proxy fronting TypeSafe's Jev;
 # the credential is a litellm virtual key (LITELLM_API_KEY).
 JEV_DECISIONS_URL = "http://192.168.30.21:4000/jev/decisions"
-JEV_MODEL = "jev-1.13.0"
+JEV_MODEL = "jev-1.14.0"
 _JEV_TIMEOUT_S = 8.0
 _JEV_ATTEMPTS = 2  # one retry on transport/HTTP/schema failure, then fail closed
 

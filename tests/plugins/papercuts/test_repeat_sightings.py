@@ -1,30 +1,28 @@
-"""Repeat papercut sightings stay in the journal without spamming Discord."""
+"""Repeat papercut sightings stay in the journal with no side effects."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 
 @pytest.fixture()
-def threaded_home(tmp_path, monkeypatch):
+def papercuts_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
+    # Leftover legacy flag: must have no effect on behaviour.
     (home / "config.yaml").write_text(
         "papercuts:\n  threads:\n    enabled: true\n",
         encoding="utf-8",
     )
-    from plugins.papercuts.lifecycle import threads_enabled
-
-    assert threads_enabled() is True
+    return home
 
 
-def _log(observed: str) -> dict:
+def _log(observed: str, *, turn: str = "t1") -> dict:
     from plugins.papercuts import handle_papercuts
 
     return json.loads(
@@ -35,56 +33,43 @@ def _log(observed: str) -> dict:
                 "observed": observed,
                 "suggested_fix": "Remove the repeated detour",
                 "component": "test",
-            }
+            },
+            session_id="s1",
+            turn_id=turn,
+            task_id="s1",
         )
     )
 
 
-def _create_threaded_item() -> str:
-    from plugins.papercuts.lifecycle import _append_stage_event
+def test_repeat_sighting_is_journaled_as_occurrence(papercuts_home):
+    first = _log("initial sighting", turn="t1")
+    item_id = first["item"]["id"]
 
-    item_id = _log("initial sighting")["item"]["id"]
-    _append_stage_event(item_id, "triage", thread_id="thread-1")
-    return item_id
+    repeated = _log("the same thing happened again", turn="t2")
 
-
-def test_repeat_sighting_is_journaled_without_thread_post(threaded_home):
-    item_id = _create_threaded_item()
-
-    with (
-        patch("plugins.papercuts.threads.post", return_value=True) as post,
-        patch("plugins.papercuts.threads.reopen", return_value=True) as reopen,
-    ):
-        repeated = _log("the same thing happened again")
-
-    post.assert_not_called()
-    reopen.assert_not_called()
     assert repeated["success"] is True
     assert repeated["deduplicated"] is True
     assert repeated["reopened"] is False
     assert repeated["item"]["id"] == item_id
     assert repeated["item"]["occurrences"] == 2
+    assert "warning" not in repeated
 
 
-def test_reopen_notification_omits_repeat_sighting(threaded_home):
+def test_closed_papercut_reopens_on_new_sighting(papercuts_home):
     from plugins.papercuts import handle_papercuts
 
-    item_id = _create_threaded_item()
-    with patch("plugins.papercuts.threads.archive", return_value=True):
-        closed = json.loads(handle_papercuts({"action": "resolve", "id": item_id}))
+    item_id = _log("initial sighting", turn="t1")["item"]["id"]
+    closed = json.loads(
+        handle_papercuts({"action": "resolve", "id": item_id}, session_id="s1", turn_id="t2")
+    )
     assert closed["changed"] is True
+    assert "warning" not in closed
 
-    with (
-        patch("plugins.papercuts.threads.post", return_value=True) as post,
-        patch("plugins.papercuts.threads.reopen", return_value=True) as reopen,
-    ):
-        repeated = _log("the friction returned")
+    repeated = _log("the friction returned", turn="t3")
 
-    reopen.assert_called_once_with("thread-1")
-    post.assert_called_once_with("thread-1", "reopened — the friction came back")
     assert repeated["success"] is True
     assert repeated["deduplicated"] is True
     assert repeated["reopened"] is True
     assert repeated["item"]["occurrences"] == 2
     assert repeated["item"]["status"] == "open"
-    assert repeated["item"]["stage"] == "triage"
+    assert "warning" not in repeated

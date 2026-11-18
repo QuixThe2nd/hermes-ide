@@ -15,6 +15,7 @@ import json
 import os
 import time
 import threading
+from functools import lru_cache
 from agent.i18n import t
 from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
@@ -30,6 +31,28 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+@lru_cache(maxsize=1)
+def _goal_continuation_prefixes() -> tuple:
+    """Exact text prefixes (up to the ``{goal}`` slot) of every continuation
+    template ``GoalManager`` emits — plain, contract, subgoals, and the
+    quality-gate-failed variant. Derived from the templates so they cannot drift."""
+    from hermes_cli.goals import (
+        CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE,
+        CONTINUATION_PROMPT_TEMPLATE,
+        CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE,
+        CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE,
+    )
+    return tuple(
+        t.split("{goal}", 1)[0]
+        for t in (
+            CONTINUATION_PROMPT_TEMPLATE,
+            CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE,
+            CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE,
+            CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE,
+        )
+    )
 
 
 def _strip_slot(text: str, slot: str) -> Optional[str]:
@@ -254,11 +277,13 @@ class GatewayBusySessionMixin:
                 from gateway.platforms.event import transfer_replay_completion
 
                 return transfer_replay_completion(queued_copy, queued_event)
-        if session_key in pending_slot or getattr(queued_event, "internal", False):
-            # Internal events (resume wakes, background completions) never take the
-            # human head slot: the slot's text-merge semantics would collapse a wake
-            # into the next user message (mirrors the adapter-side rule that a wake
-            # must not merge into an occupied human slot).
+        if session_key in pending_slot or (
+            getattr(queued_event, "internal", False)
+            and not self._is_goal_continuation_event(queued_event)
+        ):
+            # Overflow preserves FIFO when the head is occupied. Other internal
+            # events always use overflow so text merging cannot collapse them
+            # into a human turn; goal continuations retain their pending-slot drain.
             self._session_state(session_key).conversation.queued_events.append(queued_event)
         else:
             pending_slot[session_key] = queued_event
@@ -368,9 +393,24 @@ class GatewayBusySessionMixin:
 
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
-        """True for synthetic /goal continuation turns (so pause/clear can spare real /queue items)."""
-        text = getattr(event_or_text, "text", event_or_text) or ""
-        return str(text).startswith("[Continuing toward your standing goal]\nGoal:")
+        """True for synthetic /goal continuation turns (so pause/clear can spare real /queue items).
+
+        Two-part check, never a loose text prefix: the text must match the EXACT
+        prefix of a template ``GoalManager`` emits, and an *event* must additionally
+        carry internal provenance. A human quoting the banner — or even a full
+        template — arrives as a non-internal platform event and must be preserved,
+        not drained as synthetic. Text-only input (the enqueue side) is decided by
+        the exact prefixes alone.
+        """
+        text = getattr(event_or_text, "text", None)
+        raw = event_or_text if text is None else text
+        if not raw:
+            return False
+        if not str(raw).startswith(_goal_continuation_prefixes()):
+            return False
+        if text is None:
+            return True  # bare template text: no event provenance to inspect
+        return bool(getattr(event_or_text, "internal", False))
 
     def _clear_goal_pending_continuations(self, session_key: str, adapter: Any) -> int:
         """Remove queued synthetic /goal continuations for one session; real /queue items are kept."""
