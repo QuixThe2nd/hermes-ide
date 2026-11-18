@@ -10,10 +10,13 @@
 // display names, label/score/confidence numbers and already-sanitized error
 // tokens.
 //
-// This package is the canonical formatter. The Python twin
-// (gateway/jev_notice.py) must produce byte-identical lines; both are pinned
-// to the shared table in testdata/notice_cases.json, which each side's tests
-// execute, so the two implementations cannot drift apart silently.
+// This package is the canonical formatter and is executable as
+// cmd/jevnotice (record JSON on stdin, notice line on stdout). The Python
+// twin (gateway/jev_notice.py) renders the lines the gateway actually sends
+// — deployments carry no Go toolchain — and is pinned against the RUNNING
+// Go binary by tests/gateway/test_jev_notice_contract.py, plus the shared
+// table in testdata/notice_cases.json which each side's tests execute, so
+// the two implementations cannot drift apart silently.
 package jevnotices
 
 import (

@@ -2,15 +2,19 @@
 
 ``internal/jevnotices`` (Go, canonical) and ``gateway/jev_notice.py`` (Python
 twin, what the runtime actually formats with) must render byte-identical
-lines; both execute the shared table in ``internal/jevnotices/
-testdata/notice_cases.json`` so neither can drift silently. The record
-builders here are also pinned: a no-call outcome must produce NO record (no
-notice may claim an HTTP request that was never made).
+lines. The twin is pinned against the RUNNING Go implementation, not merely
+the shared table: when a Go toolchain is available the real
+``cmd/jevnotice`` binary renders every shared-table record and the Python
+output must match it byte for byte. The record builders here are also
+pinned: a no-call outcome must produce NO record (no notice may claim an
+HTTP request that was never made).
 """
 
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,16 +27,54 @@ from gateway.jev_notice import (
     response_gate_record,
 )
 
-_TABLE = Path(__file__).resolve().parents[2] / "internal" / "jevnotices" / "testdata" / "notice_cases.json"
+_REPO = Path(__file__).resolve().parents[2]
+_TABLE = _REPO / "internal" / "jevnotices" / "testdata" / "notice_cases.json"
 
 
 def _shared_cases():
     return json.loads(_TABLE.read_text(encoding="utf-8"))["cases"]
 
 
+def _go_binary(tmp_path_factory) -> str | None:
+    """Build cmd/jevnotice once per session; None when no Go toolchain."""
+    if shutil.which("go") is None:
+        return None
+    binary = tmp_path_factory.mktemp("jevnotice", numbered=True) / "jevnotice"
+    build = subprocess.run(
+        ["go", "build", "-o", str(binary), "./cmd/jevnotice"],
+        cwd=_REPO / "internal" / "jevnotices",
+        capture_output=True, text=True, timeout=300,
+    )
+    if build.returncode != 0:
+        pytest.fail(f"go build cmd/jevnotice failed:\n{build.stderr}")
+    return str(binary)
+
+
+@pytest.fixture(scope="session")
+def go_jevnotice(tmp_path_factory) -> str | None:
+    return _go_binary(tmp_path_factory)
+
+
 @pytest.mark.parametrize("case", _shared_cases(), ids=lambda case: case["name"])
 def test_python_twin_matches_the_shared_table(case):
     assert format_notice(case["record"]) == case["expect"]
+
+
+@pytest.mark.parametrize("case", _shared_cases(), ids=lambda case: case["name"])
+def test_python_twin_matches_the_running_go_formatter(case, go_jevnotice):
+    """The real Go binary renders the same record: Python twin == Go output.
+
+    Skipped only where no Go toolchain exists (CI builds it; the go-line-balance
+    lane runs the Go tests on the same table as a second cross-check).
+    """
+    if go_jevnotice is None:
+        pytest.skip("no Go toolchain available")
+    run = subprocess.run(
+        [go_jevnotice], input=json.dumps(case["record"]),
+        capture_output=True, text=True, timeout=30,
+    )
+    assert run.returncode == 0, run.stderr
+    assert format_notice(case["record"]) == run.stdout.rstrip("\n")
 
 
 def test_shared_table_covers_every_purpose_and_failure():

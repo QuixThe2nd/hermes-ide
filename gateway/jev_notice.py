@@ -6,10 +6,16 @@ carrying purpose, classified subject, decision/confidence and a sanitized
 error class — never request/response bodies, credentials, message content or
 prompt text. Notices never enter model context and never change a decision.
 
-The canonical formatter is the Go package ``internal/jevnotices``; this Python
-twin must produce byte-identical lines. Both are pinned to the shared table
-``internal/jevnotices/testdata/notice_cases.json``, which each side's tests
-execute, so the implementations cannot drift apart silently.
+The canonical formatter is the Go package ``internal/jevnotices``. This
+Python twin is what the gateway hot path formats with: deployments (pip,
+docker) carry no Go toolchain and the repo has no runtime Go bridge — the
+same twin arrangement as internal/cronyield, internal/cronunreachable,
+internal/citationstrip and friends. The twin is pinned against the RUNNING
+Go implementation: tests/gateway/test_jev_notice_contract.py builds
+``internal/jevnotices/cmd/jevnotice`` and asserts byte-identical output for
+every record in the shared table ``internal/jevnotices/testdata/
+notice_cases.json`` (which the Go tests also execute), so the two sides
+cannot drift apart silently.
 """
 
 from __future__ import annotations
