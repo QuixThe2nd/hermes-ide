@@ -205,7 +205,7 @@ def _build_child_system_prompt(
             f"{workspace_path}\n"
             "Use this exact path for local repository/workdir operations unless the task explicitly says otherwise."
         )
-        # Project context files (AGENTS.md / CLAUDE.md / .cursorrules ...) via the SAME discovery/priority/cap logic
+        # Project context files (.hermes.md / AGENTS.md / CLAUDE.md ...) via the SAME discovery/priority/cap logic
         # as the main agent's prompt: children are built with skip_context_files=True, so without this a subagent
         # works in a repo blind to its conventions. SOUL.md is skipped (identity belongs to the parent).
         # workspace_path comes only from explicit sources (_resolve_workspace_hint, never bare getcwd), so the
