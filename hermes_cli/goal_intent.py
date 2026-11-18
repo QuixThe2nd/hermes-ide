@@ -21,7 +21,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
 
@@ -264,11 +264,32 @@ def _parse_jev_intent(response: Dict[str, Any]) -> Tuple[str, float]:
     return choice.strip().lower(), confidence
 
 
-def classify(message_text: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _notify_attempt(on_attempt, attempt: int, label, confidence, error) -> None:
+    """Deliver one per-attempt fact to the caller's callback; never raises."""
+    if on_attempt is None:
+        return
+    try:
+        on_attempt(attempt, _JEV_ATTEMPTS, label, confidence, error)
+    except Exception as exc:
+        logger.debug("goal intent attempt callback failed: %s", exc)
+
+
+def classify(
+    message_text: str,
+    context: Optional[Dict[str, Any]] = None,
+    on_attempt: Optional[Callable[[int, int, Optional[str], Optional[float], Optional[str]], None]] = None,
+) -> Dict[str, Any]:
     """Classify one inbound message via one Jev Decisions POST; never raises.
 
     Fail-safe result label is ``unknown`` (no LLM fallback): transport, HTTP
     and schema failures are retried once, then the decision fails closed.
+
+    ``on_attempt`` (optional, never raises into the classifier) is called after
+    EVERY real HTTP attempt — success or failure, retry included — as
+    ``(attempt, attempts, label, confidence, error)``: exactly one of
+    label/confidence (success) or error (the sanitized failure class) is set.
+    The no-call bypasses (empty message, missing credential) never invoke it,
+    so a consumer can surface one notice per actual request without inferring.
     """
     from hermes_cli.goals import draft_contract
 
@@ -302,10 +323,12 @@ def classify(message_text: str, context: Optional[Dict[str, Any]] = None) -> Dic
     for _attempt in range(_JEV_ATTEMPTS):
         try:
             decision = _parse_jev_intent(_jev_request(payload, credential))
+            _notify_attempt(on_attempt, _attempt + 1, decision[0], decision[1], None)
             break
         except _JevError as exc:
             last_error = exc
             logger.debug("goal intent jev decision failed (%s), attempt %d", exc.reason, _attempt + 1)
+            _notify_attempt(on_attempt, _attempt + 1, None, None, exc.reason)
     if decision is None:
         return _unknown(f"classification unavailable: {last_error.reason if last_error else 'jev decision failed'}")
     label, confidence = decision
@@ -539,14 +562,15 @@ def _log_chase_papercut(
 
 
 def evaluate_goal_intent(
-    message_text: str, session_id: str, platform: str
+    message_text: str, session_id: str, platform: str, on_attempt=None
 ) -> Dict[str, Any]:
     """Classify, audit-log and papercut one message; never raises or touches the reply path.
 
     Returns the auto-goal decision payload: the audit ``record`` plus the FULL
     message and the exchange context (``last_assistant`` /
     ``user_previous_message``) so the turn-end applier can create or steer a
-    goal without re-reading the session.
+    goal without re-reading the session. ``on_attempt`` (see :func:`classify`)
+    is invoked after every real Jev HTTP attempt.
     """
     try:
         try:
@@ -555,7 +579,7 @@ def evaluate_goal_intent(
             logger.debug("goal intent context unavailable: %s", exc)
             context = dict(_EMPTY_CONTEXT)
         try:
-            result = classify(message_text, context)
+            result = classify(message_text, context, on_attempt=on_attempt)
         except Exception as exc:
             logger.debug("goal intent classifier raised: %s", exc)
             result = _unknown(f"classifier failed: {type(exc).__name__}")

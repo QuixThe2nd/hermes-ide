@@ -108,9 +108,11 @@ class GatewayGoalIntentMixin:
             sid = str(getattr(session_entry, "session_id", "") or "")
         except Exception as exc:
             logger.debug("auto-goal session resolution failed: %s", exc)
+        loop = asyncio.get_running_loop()
+        on_attempt = self._jev_attempt_notifier(source, loop)
         try:
             decision = await self._run_in_executor_with_context(
-                evaluate_goal_intent, text, sid, platform
+                evaluate_goal_intent, text, sid, platform, on_attempt
             )
         except asyncio.CancelledError:
             raise
@@ -122,3 +124,40 @@ class GatewayGoalIntentMixin:
             decision.setdefault("message", text)
             return decision
         return None
+
+    def _jev_attempt_notifier(self: "GatewayRunner", source, loop: asyncio.AbstractEventLoop):
+        """Per-attempt Jev notice callback for one inbound message's classification.
+
+        Runs on the executor thread (inside the source's profile scope, carried
+        by ``_run_in_executor_with_context``); each real HTTP attempt posts one
+        concise line back to the originating chat through the same deferred
+        status-notice lane the 🎯 line uses — outbound-only, never model
+        context, and a delivery failure is logged without touching the
+        classification or the turn.
+        """
+        author = str(getattr(source, "user_name", "") or "")
+
+        def on_attempt(attempt: int, attempts: int, label, confidence, error) -> None:
+            from gateway.jev_notice import format_notice, goal_intent_attempt_record
+
+            line = format_notice(
+                goal_intent_attempt_record(
+                    attempt=attempt, attempts=attempts, label=label,
+                    confidence=confidence, error=error, author=author,
+                )
+            )
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._defer_goal_status_notice_after_delivery(source, line), loop
+                )
+
+                def _drain(fut) -> None:
+                    exc = fut.exception()
+                    if exc is not None:
+                        logger.debug("jev notice delivery failed: %s", exc)
+
+                future.add_done_callback(_drain)
+            except Exception as exc:
+                logger.debug("jev notice delivery scheduling failed: %s", exc)
+
+        return on_attempt

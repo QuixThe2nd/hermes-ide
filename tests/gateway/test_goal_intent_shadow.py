@@ -87,7 +87,7 @@ async def test_classification_does_not_delay_or_change_reply_and_writes_bounded_
     release = threading.Event()
     text = "x" * 400
 
-    def slow_classify(message, context):
+    def slow_classify(message, context, on_attempt=None):
         started.set()
         assert release.wait(timeout=5), "classifier was not released"
         return {
@@ -161,7 +161,7 @@ async def test_eligible_message_is_classified_and_parked_for_turn_end(runner):
     # for the turn boundary (no goal mutation at arrival).
     with patch(
         "hermes_cli.goal_intent.evaluate_goal_intent",
-        side_effect=lambda text, sid, platform: {
+        side_effect=lambda text, sid, platform, on_attempt=None: {
             "label": "chat", "reason": "jev decision", "confidence": 0.9,
             "contract_draft": None, "message": text, "session_id": sid,
             "last_assistant": "", "user_previous_message": "",

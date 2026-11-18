@@ -1078,6 +1078,11 @@ from plugins.platforms.discord.reaction_gate import (
 from plugins.platforms.discord.reaction_gate_reload import (
     start_reaction_gate_reload_watcher,
 )
+from gateway.jev_notice import (
+    format_notice,
+    reaction_gate_record,
+    response_gate_record,
+)
 
 #: Component display order for gate echoes/logs (matches the judge's question order).
 _RESPONSE_GATE_SCORE_KEYS = (ADDRESSES_BOT_KEY, CONTINUES_THREAD_KEY, JOINS_BOT_THREAD_KEY, NOISE_KEY)
@@ -1773,6 +1778,36 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             )
         return False
 
+    async def _send_jev_notice(self, line: str, chat_id: str, message_id: str = "") -> None:
+        """Post one Jev classification notice line into the originating conversation.
+
+        Outbound-only troubleshooting surface (default-visible): purpose,
+        subject, decision/confidence or the sanitized failure class for every
+        REAL judge request. Never enters evidence (the observe seam takes final
+        replies only), never a reply to the user, and a send failure is logged
+        without touching any gate decision. The metadata marker lets tests and
+        future lanes distinguish notices from conversational sends.
+        """
+        try:
+            result = await self.send(
+                chat_id, line, reply_to=message_id or None,
+                metadata={"jev_notice": True},
+            )
+            if result is not None and not getattr(result, "success", True):
+                logger.warning(
+                    "[%s] jev notice send failed channel=%s message=%s error=%s",
+                    self.name, chat_id, message_id, getattr(result, "error", "unknown"),
+                )
+        except Exception:
+            logger.warning(
+                "[%s] jev notice send failed channel=%s message=%s",
+                self.name, chat_id, message_id, exc_info=True,
+            )
+
+    def _jev_notice_author(self, message: Any) -> str:
+        author = getattr(message, "author", None)
+        return str(getattr(author, "display_name", None) or getattr(author, "name", "") or "")
+
     async def _response_gate_decide(self, message: Any, candidate: Dict[str, Any]) -> Optional[bool]:
         """Run the gate for one candidate.
 
@@ -1799,6 +1834,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if is_echo:
             return await self._response_gate_echo(message, candidate, decision)
         self._response_gate_log(decision, candidate)
+        # One visible notice per real judge request (echo channels already post
+        # their judge-score line; a no-call outcome produces no record at all).
+        record = response_gate_record(decision, author=self._jev_notice_author(message))
+        if record is not None:
+            await self._send_jev_notice(
+                format_notice(record),
+                str(candidate.get("conversation_id") or ""),
+                str(candidate.get("message_id") or ""),
+            )
         if gate.mode != "enforce":
             return None  # shadow: the legacy decision always stands
         if not decision.allowed:
@@ -2215,6 +2259,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 bot_id=getattr(user, "id", None),
                 recent=recent,
             )
+            # One visible notice per real judge request (react, abstain or
+            # failure); a no-call outcome produces no record at all.
+            notice_record = reaction_gate_record(
+                decision, author=self._jev_notice_author(message),
+            )
+            if notice_record is not None:
+                await self._send_jev_notice(
+                    format_notice(notice_record),
+                    str(candidate.get("conversation_id") or ""),
+                    str(candidate.get("message_id") or ""),
+                )
             emoji = decision.emoji
             if emoji is None:
                 self._reaction_gate_log(decision, candidate)
