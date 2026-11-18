@@ -725,6 +725,24 @@ class ResponsesApiTransport(ProviderTransport):
         # Lazy: provider plugins import this transport during model_metadata init.
         from agent.model_metadata import strip_codex_context_variant_suffix as _strip_ctx_variant
         request_overrides = params.get("request_overrides") or {}
+        # A caller ``input`` override replaces the input list wholesale (raw-kwarg contract,
+        # unchanged from the pre-relocation wire) — the leading system item would be discarded
+        # with it, silently dropping the prompt, so those builds keep the instructions wire.
+        if "input" in request_overrides:
+            system_prompt_as_item = False
+        # An ``instructions`` override replaces the system prompt wholesale: the wire carries
+        # ONLY the override text. Resolve it BEFORE the relocation below — the leading system
+        # item must carry the effective prompt, or kwargs.update() later re-lands the override
+        # at top level next to the original prompt's item (two system rows on the bridge).
+        # A key that is present but blank/None is still an explicit override (base 165183140bc
+        # wire): no relocation — the raw value lands at top level and preflight resolves it
+        # to the default identity, leaving the original prompt absent.
+        override_instructions = request_overrides.get("instructions") if system_prompt_as_item else None
+        effective_instructions = instructions
+        if isinstance(override_instructions, str) and override_instructions.strip():
+            effective_instructions = override_instructions
+        elif "instructions" in request_overrides:
+            system_prompt_as_item = False
         # An override may rewrite the wire model; provenance must be stamped with what actually goes out.
         wire_model = _strip_ctx_variant(request_overrides.get("model", model))
         input_items = self.convert_messages(
@@ -733,7 +751,7 @@ class ResponsesApiTransport(ProviderTransport):
             is_codex_backend=is_codex_backend, context_management=context_management, model=wire_model,
         )
         if system_prompt_as_item:
-            input_items = [{"role": "system", "content": instructions}, *input_items]
+            input_items = [{"role": "system", "content": effective_instructions}, *input_items]
         kwargs = {
             # ``-900k`` picker variants are Hermes-side aliases; the backend knows only the base slug.
             "model": wire_model,
@@ -753,7 +771,7 @@ class ResponsesApiTransport(ProviderTransport):
         # Content-addressed (instructions + tools) within a logical scope that survives
         # compression rotation; session_id itself stays untouched for transcript isolation.
         _cache_scope = _cache_scope_from_session_id(params.get("cache_scope_id") or session_id)
-        cache_key = _content_cache_key(instructions, response_tools, _cache_scope) or _cache_scope
+        cache_key = _content_cache_key(effective_instructions, response_tools, _cache_scope) or _cache_scope
         # xAI takes prompt_cache_key in extra_body (below); GitHub Models opts out entirely.
         if not is_github_responses and not is_xai_responses and cache_key:
             kwargs["prompt_cache_key"] = cache_key
@@ -775,6 +793,10 @@ class ResponsesApiTransport(ProviderTransport):
         if request_overrides:
             kwargs.update(request_overrides)
             kwargs["model"] = wire_model
+            if system_prompt_as_item:
+                # The override's instructions already ride the leading system item;
+                # re-applying the key here would duplicate the prompt on the wire.
+                kwargs["instructions"] = ""
 
         _sanitize_astra_request_kwargs(kwargs, model, params.get("base_url"))
 

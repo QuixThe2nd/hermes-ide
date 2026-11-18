@@ -4,6 +4,7 @@ import json
 import pytest
 from types import SimpleNamespace
 
+from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 from agent.transports import get_transport
 from agent.transports.types import NormalizedResponse
 
@@ -2040,3 +2041,106 @@ class TestBridgedResponsesSystemPromptAsInputItem:
             assert kw["input"][1] == {"role": "user", "content": prompts[key][0]}
             assert kw["input"][0]["content"] not in {k for k in prompts if k != key}
         assert originals == snapshots
+
+
+class TestBridgedResponsesRequestOverrides:
+    """``request_overrides`` interaction with the bridged system-item layout.
+
+    Base contract (pre-bridged-layout, 165183140bc): ``kwargs.update(request_overrides)``
+    ran last, so an ``instructions`` override replaced the system prompt wholesale — the
+    wire carried ONLY the override text — and an ``input`` override replaced the input
+    list while the prompt kept riding ``instructions``. The relocation must preserve both
+    semantics: it carries the EFFECTIVE prompt, never stacking the original prompt's
+    system item under an overridden ``instructions`` field (two system rows on the wire).
+    """
+
+    OVERRIDE = "OVERRIDE SYSTEM: curator auxiliary identity."
+
+    def _build(self, transport, overrides, **extra):
+        kw = transport.build_kwargs(
+            model="hermes",
+            messages=[
+                {"role": "system", "content": TestBridgedResponsesSystemPromptAsInputItem.SYSTEM},
+                {"role": "user", "content": "Ping"},
+            ],
+            tools=[], provider="custom:litellm",
+            base_url=TestBridgedResponsesSystemPromptAsInputItem.LITELLM,
+            request_overrides=overrides, **extra,
+        )
+        return kw, transport.preflight_kwargs(kw)
+
+    def test_instructions_override_replaces_system_item(self, transport):
+        """Only the override text may reach the wire — one system row, no instructions
+        field. Pre-fix the wire held BOTH instructions=override AND the original prompt
+        as a leading system item (preflight preserves both)."""
+        kw, normalized = self._build(transport, {"instructions": self.OVERRIDE})
+        assert [i for i in kw["input"] if i.get("role") == "system"] == [
+            {"role": "system", "content": self.OVERRIDE}
+        ]
+        assert "instructions" not in normalized
+        assert [i for i in normalized["input"] if i.get("role") == "system"] == [
+            {"role": "system", "content": self.OVERRIDE}
+        ]
+        assert TestBridgedResponsesSystemPromptAsInputItem.SYSTEM not in json.dumps(normalized)
+
+    @pytest.mark.parametrize("blank", ["", "   ", None], ids=["empty", "whitespace", "none"])
+    def test_blank_instructions_override_matches_base_wire(self, transport, blank):
+        """An explicitly present blank/None override is still a wholesale replacement —
+        the pristine-base (165183140bc) wire, reproduced end to end: the raw value rides
+        top-level ``instructions``, no system item is relocated, preflight resolves the
+        blank prompt to DEFAULT_AGENT_IDENTITY, and the original prompt is absent."""
+        kw, normalized = self._build(transport, {"instructions": blank})
+        assert kw["instructions"] == blank
+        assert not any(i.get("role") == "system" for i in kw["input"])
+        assert TestBridgedResponsesSystemPromptAsInputItem.SYSTEM not in json.dumps(kw)
+        assert normalized["instructions"] == DEFAULT_AGENT_IDENTITY
+        assert not any(i.get("role") == "system" for i in normalized["input"])
+        assert TestBridgedResponsesSystemPromptAsInputItem.SYSTEM not in json.dumps(normalized)
+
+    @pytest.mark.parametrize(
+        "base_url,extra",
+        [
+            (None, {}),
+            ("https://api.openai.com/v1", {}),
+        ],
+        ids=["sdk-default-origin", "openai"],
+    )
+    def test_native_route_instructions_override_unchanged_from_base(self, transport, base_url, extra):
+        """Direct OpenAI keeps the historical wire: the override lands in top-level
+        ``instructions`` and no system item is emitted — the relocation never runs."""
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[
+                {"role": "system", "content": TestBridgedResponsesSystemPromptAsInputItem.SYSTEM},
+                {"role": "user", "content": "Ping"},
+            ],
+            tools=[], base_url=base_url, request_overrides={"instructions": self.OVERRIDE},
+            **extra,
+        )
+        assert kw["instructions"] == self.OVERRIDE
+        assert not any(i.get("role") == "system" for i in kw["input"])
+        normalized = transport.preflight_kwargs(kw)
+        assert normalized["instructions"] == self.OVERRIDE
+        assert not any(i.get("role") == "system" for i in normalized["input"])
+
+    def test_input_override_keeps_instructions_wire(self, transport):
+        """An ``input`` override replaces the input list wholesale (base contract) — it
+        never carried the system prompt, so the prompt keeps riding ``instructions``
+        instead of being silently discarded with the replaced items."""
+        caller_input = [{"role": "user", "content": "raw caller payload"}]
+        kw, normalized = self._build(transport, {"input": caller_input})
+        assert kw["instructions"] == TestBridgedResponsesSystemPromptAsInputItem.SYSTEM
+        assert kw["input"] == caller_input
+        assert normalized["instructions"] == TestBridgedResponsesSystemPromptAsInputItem.SYSTEM
+        assert normalized["input"] == caller_input
+
+    def test_cache_key_tracks_overridden_prompt(self, transport):
+        """``prompt_cache_key`` is content-addressed over the prompt actually sent: an
+        overridden system prompt must change the key within the same cache scope, and
+        the same override must hash stably across builds."""
+        def _key(overrides):
+            _, normalized = self._build(transport, overrides, session_id="override-cache-scope")
+            return normalized["prompt_cache_key"]
+
+        assert _key({}) != _key({"instructions": self.OVERRIDE})
+        assert _key({"instructions": self.OVERRIDE}) == _key({"instructions": self.OVERRIDE})
