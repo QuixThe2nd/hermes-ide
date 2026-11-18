@@ -21,7 +21,7 @@
         "default": "Ctrl+B",
         "mac": "Command+B"
       },
-      "description": "Open the Big Steve sidebar"
+      "description": "Toggle the Big Steve sidebar"
     }
   },
   "content_scripts": [

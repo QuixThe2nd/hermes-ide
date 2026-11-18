@@ -22,6 +22,7 @@ from tools import delegate_tool_omp as omp
 from tools import delegation_ownership
 from tools.registry import registry
 from tests.tools.test_claude_agent_tool import _write_fake_binary
+
 from tests.tools.test_delegate_lanes import _write_fake_omp
 
 
@@ -336,6 +337,7 @@ def test_claude_real_runner_reaches_command_and_append_system_file(
     system_text = system_out.read_text(encoding="utf-8")
     _assert_conventions_once(system_text)
     _assert_skill_mode(system_text, skills)
+
 
 
 

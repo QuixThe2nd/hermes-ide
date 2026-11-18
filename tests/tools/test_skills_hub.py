@@ -947,7 +947,7 @@ class TestOptionalSkillSourceMetadata:
         meta = src.inspect("official/finance/3-statement-model")
 
         assert meta is not None
-        assert meta.repo == "NousResearch/hermes-agent"
+        assert meta.repo == "QuixThe2nd/hermes-ide"
         assert meta.path == "optional-skills/finance/3-statement-model"
 
     def test_scan_all_accepts_install_prefix_but_rejects_nested_support_skills(self, tmp_path):
@@ -1128,7 +1128,7 @@ class TestOptionalSkillSourceLiveRepoFallback:
         meta = src.inspect("official/software-development/ast-grep")
 
         assert meta is not None
-        assert meta.repo == "NousResearch/hermes-agent"
+        assert meta.repo == "QuixThe2nd/hermes-ide"
         assert meta.path == "optional-skills/software-development/ast-grep"
 
     def test_offline_degrades_to_local_only(self, tmp_path):
@@ -1138,6 +1138,62 @@ class TestOptionalSkillSourceLiveRepoFallback:
 
         assert src.fetch("official/never-heard-of-it") is None
         assert src.search("never-heard-of-it") == []
+
+
+class TestOfficialRepoIsFork:
+    """The official optional-skills catalog reads this fork's repo, not upstream
+    Nous (root AGENTS.md: Nous is historical ancestry, never an update source)."""
+
+    FORK_REPO = "QuixThe2nd/hermes-ide"
+    UPSTREAM_REPO = "NousResearch/hermes-agent"
+
+    @staticmethod
+    def _tree(remote_dirs):
+        return ("main", [
+            {"type": "blob", "path": f"optional-skills/{d}/SKILL.md", "mode": "100644"}
+            for d in remote_dirs
+        ])
+
+    def _make_source(self, tmp_path, fork_dirs, upstream_dirs=()):
+        src = OptionalSkillSource()
+        src._optional_dir = tmp_path / "optional-skills"
+        src._optional_dir.mkdir(exist_ok=True)
+        fake = MagicMock()
+        trees = {self.FORK_REPO: self._tree(fork_dirs),
+                 self.UPSTREAM_REPO: self._tree(upstream_dirs)}
+        fake._get_repo_tree.side_effect = lambda repo: trees.get(repo)
+        src._github = fake
+        return src, fake
+
+    def test_remote_listing_reads_fork_tree_and_reports_fork_repo(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.skills_hub.INDEX_CACHE_DIR", tmp_path / "cache")
+        src, fake = self._make_source(
+            tmp_path, fork_dirs=["health/fork-only"], upstream_dirs=["health/neuroskill-bci"])
+
+        results = src.search("")
+
+        assert [r.identifier for r in results] == ["official/health/fork-only"]
+        assert results[0].repo == self.FORK_REPO
+        fake._get_repo_tree.assert_called_once_with(self.FORK_REPO)
+
+    def test_upstream_only_skill_not_listed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.skills_hub.INDEX_CACHE_DIR", tmp_path / "cache")
+        src, _ = self._make_source(
+            tmp_path, fork_dirs=[], upstream_dirs=["health/neuroskill-bci"])
+
+        assert src.search("neuroskill") == []
+
+    def test_cached_listing_for_other_repo_not_reused(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir(parents=True)
+        # Pre-fork on-disk cache: old key, listing taken from the upstream repo.
+        (cache_dir / "official_optional_dirs.json").write_text(
+            json.dumps({"health/neuroskill-bci": True}), encoding="utf-8")
+        monkeypatch.setattr("tools.skills_hub.INDEX_CACHE_DIR", cache_dir)
+        src, fake = self._make_source(tmp_path, fork_dirs=["health/fork-only"])
+
+        assert src._list_remote_skill_dirs() == {"health/fork-only": True}
+        fake._get_repo_tree.assert_called_once_with(self.FORK_REPO)
 
 
 class TestQuarantineBundleBinaryAssets:
