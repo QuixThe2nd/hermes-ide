@@ -115,9 +115,9 @@ class ThreadParticipationTracker:
     (mtime alone shares the kernel's coarse clock granularity: two writes inside
     the same tick get identical mtimes, while the replace always mints a new inode)."""
 
-    _MAX_TRACKED = 20000
+    _MAX_TRACKED = 500
 
-    def __init__(self, platform_name: str, max_tracked: int = 20000):
+    def __init__(self, platform_name: str, max_tracked: int = 500):
         self._platform = platform_name
         self._max_tracked = max_tracked
         self._threads: dict[str, None] = dict.fromkeys(self._load() or [])
