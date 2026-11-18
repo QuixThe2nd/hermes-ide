@@ -20,9 +20,7 @@
 //	         | {"id":..,"error":"rate","retry_after":"<rfc3339>"}
 //	         | {"id":..,"error":"other"}
 //	        -> {"type":"retry_op","id":..,"bank_id":..}          (failed/cancelled)
-//	        <- {"id":..,"result":"ok|conflict|gone"} | {"id":..,"error":...}
-//	        -> {"type":"submit","entry":{...}}                    (not_found)
-//	        <- {"id":..,"result":"ok"} | {"id":..,"error":...}
+//	        <- {"id":..,"result":"ok|conflict|gone|permanent"} | {"id":..,"error":...}
 //	      final: {"type":"done","next_retry":"<rfc3339>|null","remaining":N}
 //
 //	retainbacklog peek --home DIR
@@ -197,6 +195,8 @@ func (h *hostRemote) RetryOperation(ctx context.Context, bankID, opID string) er
 		return retainbacklog.ErrRetryConflict
 	case "gone":
 		return retainbacklog.ErrGoneFromRetry
+	case "permanent":
+		return retainbacklog.ErrRetryPermanent
 	default:
 		return fmt.Errorf("protocol: retry_op reply result %q", reply.Result)
 	}

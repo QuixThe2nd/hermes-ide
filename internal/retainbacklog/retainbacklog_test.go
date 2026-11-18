@@ -222,6 +222,121 @@ func TestRetryGoneFallsBackToSubmit(t *testing.T) {
 	}
 }
 
+// The server's PERMANENT retry refusal — a batch_retain parent whose children
+// all completed (or it has none) — can never be re-queued. The entry mints a
+// NEW operation id, persists the swap atomically BEFORE submitting, and
+// replays the same item + document id (server-side chunk-hash recovery skips
+// every chunk the old operation already committed). The old server row is
+// never deleted: there is no delete in the protocol at all.
+func TestPermanentRetryResubmitsUnderNewOperationID(t *testing.T) {
+	oldID := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	q := dueQueue(t, Entry{ID: oldID, Submitted: true, DocumentID: "doc-keep"})
+	remote := newFakeRemote()
+	remote.statuses[oldID] = "failed"
+	remote.retryErr = ErrRetryPermanent
+
+	if _, err := q.Drain(time.Now().UTC(), remote); err != nil {
+		t.Fatal(err)
+	}
+	if len(remote.retries) != 1 || remote.retries[0] != oldID {
+		t.Fatalf("retries=%v, want exactly one retry of the old id", remote.retries)
+	}
+	if len(remote.submits) != 1 {
+		t.Fatalf("submits=%d, want 1 resubmission under the new id", len(remote.submits))
+	}
+	newID := remote.submits[0]
+	if newID == oldID || !uuidRe.MatchString(newID) {
+		t.Fatalf("new id %q, want a fresh uuid != %q", newID, oldID)
+	}
+	entries := q.Entries()
+	if len(entries) != 1 || entries[0].ID != newID {
+		t.Fatalf("queued id=%v, want the new id", entries)
+	}
+	if entries[0].DocumentID != "doc-keep" {
+		t.Fatalf("document id changed: %q", entries[0].DocumentID)
+	}
+	if !entries[0].Submitted {
+		t.Fatal("resubmitted entry must be marked submitted after the ack")
+	}
+	// Durable: the id swap survives reopen (it was saved before the submit).
+	reopened, err := Open(q.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reopened.Entries(); len(got) != 1 || got[0].ID != newID || !got[0].Submitted {
+		t.Fatalf("reopened entries=%v, want new id submitted", got)
+	}
+}
+
+// Ambiguous refusals keep polling only for a bounded window; the permanent
+// refusal must not be re-asked forever (the fake's retries list proves the
+// retry is attempted once per pass, and the new-id submit breaks the cycle).
+func TestPermanentRetryIsNotRetriedForever(t *testing.T) {
+	oldID := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	q := dueQueue(t, Entry{ID: oldID, Submitted: true, DocumentID: "doc-keep"})
+	remote := newFakeRemote()
+	remote.statuses[oldID] = "failed"
+	remote.retryErr = ErrRetryPermanent
+
+	// First pass: retry refused permanently -> resubmit under a new id.
+	if _, err := q.Drain(time.Now().UTC(), remote); err != nil {
+		t.Fatal(err)
+	}
+	newID := q.Entries()[0].ID
+	// The server finishes the resubmitted operation; the old row is gone.
+	remote.retryErr = nil
+	remote.statuses[newID] = "completed"
+	if _, err := q.Drain(time.Now().Add(PollInterval), remote); err != nil {
+		t.Fatal(err)
+	}
+	if q.Len() != 0 {
+		t.Fatalf("entries=%d, want settled after the new op completed", q.Len())
+	}
+	if len(remote.retries) != 1 {
+		t.Fatalf("retries=%v, want exactly one retry attempt total", remote.retries)
+	}
+}
+
+// The permanent-refusal swap must be persisted BEFORE the new-id submit:
+// if the pass dies between swap and submit (kill -9, crash), reopening
+// from disk keeps the entry under the NEW id, submitted=false — so the
+// next pass submits the new id and never touches the dead one again.
+func TestPermanentSwapSurvivesAbortBetweenSwapAndSubmit(t *testing.T) {
+	oldID := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	q := dueQueue(t, Entry{ID: oldID, Submitted: true, DocumentID: "doc-keep"})
+	remote := newFakeRemote()
+	remote.statuses[oldID] = "failed"
+	remote.retryErr = ErrRetryPermanent
+	remote.submitErr = errors.New("aborted after swap (crash window)")
+	if _, err := q.Drain(time.Now().UTC(), remote); err == nil {
+		t.Fatal("want the mid-pass abort propagated")
+	}
+
+	reopened, err := Open(q.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := reopened.Entries()
+	if len(entries) != 1 || entries[0].ID == oldID || entries[0].Submitted {
+		t.Fatalf("entries=%+v, want the swapped id persisted with submitted=false", entries)
+	}
+	newID := entries[0].ID
+
+	// A later pass — after the submit-failure backoff — with a fresh
+	// remote (nothing known server-side) settles under the new id alone;
+	// the refused id is never retried again.
+	remote2 := newFakeRemote()
+	if _, err := reopened.Drain(time.Now().UTC().Add(BackoffFirst+time.Second), remote2); err != nil {
+		t.Fatal(err)
+	}
+	if len(remote2.retries) != 0 {
+		t.Fatalf("retries=%v, want none — old id is dead", remote2.retries)
+	}
+	if len(remote2.submits) != 1 || remote2.submits[0] != newID {
+		t.Fatalf("submits=%v, want exactly [%s]", remote2.submits, newID)
+	}
+}
+
 // The pass is gated by the earliest retry_after, and each entry is
 // individually gated: a not-yet-due FIFO head must not be settled early just
 // because a later entry is due.

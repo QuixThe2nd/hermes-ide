@@ -223,6 +223,66 @@ func TestDrainProtocolRateErrorSchedulesWithoutFailing(t *testing.T) {
 	}
 }
 
+func TestDrainProtocolPermanentConflictResubmitsNewID(t *testing.T) {
+	home := t.TempDir()
+	seedEntry(t, home, retainbacklog.Entry{Submitted: true, DocumentID: "doc-p"})
+
+	inR, inW, _ := os.Pipe()
+	outR, outW, _ := os.Pipe()
+	errCh := make(chan error, 1)
+	go func() { errCh <- run([]string{"drain", "--home", home}, inR, outW) }()
+
+	scanner := bufio.NewScanner(outR)
+	readOne := func() string {
+		if !scanner.Scan() {
+			t.Fatal("binary closed stdout early")
+		}
+		return scanner.Text()
+	}
+	if line := readOne(); !strings.Contains(line, `"type":"status"`) {
+		t.Fatalf("first line=%s, want status probe", line)
+	}
+	inW.WriteString(`{"id":"` + opID + `","status":"failed"}` + "\n")
+	if line := readOne(); !strings.Contains(line, `"type":"retry_op"`) {
+		t.Fatalf("second line=%s, want retry_op request", line)
+	}
+	// The server's permanent refusal: batch parent, no incomplete children.
+	inW.WriteString(`{"id":"` + opID + `","result":"permanent"}` + "\n")
+	line := readOne()
+	if !strings.Contains(line, `"type":"submit"`) {
+		t.Fatalf("third line=%s, want a submit under the NEW operation id", line)
+	}
+	var submitReq map[string]any
+	if err := json.Unmarshal([]byte(line), &submitReq); err != nil {
+		t.Fatal(err)
+	}
+	entry, _ := submitReq["entry"].(map[string]any)
+	newID, _ := entry["id"].(string)
+	if newID == "" || newID == opID {
+		t.Fatalf("submit entry id=%v, want a fresh id", entry["id"])
+	}
+	if entry["document_id"] != "doc-p" {
+		t.Fatalf("submit document_id=%v, want the original", entry["document_id"])
+	}
+	inW.WriteString(`{"id":"` + newID + `","result":"ok"}` + "\n")
+	if line := readOne(); !strings.Contains(line, `"type":"done"`) {
+		t.Fatalf("final line=%s, want done", line)
+	}
+	inW.Close()
+	outW.Close()
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	q, err := retainbacklog.Open(backlogPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := q.Entries()
+	if len(entries) != 1 || entries[0].ID != newID || !entries[0].Submitted {
+		t.Fatalf("entries=%+v, want the new id persisted submitted", entries)
+	}
+}
+
 func TestEnqueueMintsIDAndPersists(t *testing.T) {
 	home := t.TempDir()
 	entry := `{"bank_id":"bank","item":{"content":"queued"},"document_id":"doc-1","retry_after":"` +
@@ -247,6 +307,40 @@ func TestEnqueueMintsIDAndPersists(t *testing.T) {
 	entries := q.Entries()
 	if len(entries) != 1 || entries[0].ID != id || entries[0].DocumentID != "doc-1" {
 		t.Fatalf("entries=%+v, want the persisted entry under its minted id", entries)
+	}
+}
+
+// The Python emergency spool imports entries by replaying their ORIGINAL
+// line (id included) through this command; a crash between import and
+// spool-clear replays the same line. Provided ids must be honored and
+// re-Add must dedupe to the single entry.
+func TestEnqueueCommandHonorsProvidedIDAndDedupes(t *testing.T) {
+	home := t.TempDir()
+	id := "cccccccc-dddd-4eee-8fff-000000000000"
+	line := `{"id":"` + id + `","bank_id":"bank","item":{"content":"spooled"},"document_id":"doc-s","retry_after":"` +
+		time.Now().Add(time.Hour).UTC().Format(time.RFC3339) + `"}` + "\n"
+
+	for i := range 2 {
+		var out strings.Builder
+		if err := run([]string{"enqueue", "--home", home}, strings.NewReader(line), &out); err != nil {
+			t.Fatalf("pass %d: %v", i+1, err)
+		}
+		var reply map[string]any
+		if err := json.Unmarshal([]byte(out.String()), &reply); err != nil {
+			t.Fatal(err)
+		}
+		if reply["id"] != id {
+			t.Fatalf("pass %d reply=%v, want the PROVIDED id honored", i+1, reply)
+		}
+	}
+
+	q, err := retainbacklog.Open(backlogPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := q.Entries()
+	if len(entries) != 1 || entries[0].ID != id {
+		t.Fatalf("entries=%+v, want exactly the one provided-id entry", entries)
 	}
 }
 

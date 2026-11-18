@@ -46,9 +46,17 @@ commits. NOT "exactly once" — the server does not guarantee that for the
 original sync call, and the client must not claim it.
 
 Failure containment: when the Go runtime cannot be produced (no prebuilt
-binary, no Go toolchain) enqueue raises :class:`BacklogRuntimeUnavailable`
-and the caller surfaces the original provider failure — behavior degrades
-to pre-feature, never a silent drop.
+binary, no Go toolchain) enqueue does NOT lose the retain — it durably
+appends the entry (id minted here, still before any remote submission) to
+an emergency spool, ``<home>/hindsight/retain-backlog-spool.jsonl``, and
+the tool still reports the memory as queued. The next runtime acquisition
+— drain, peek, or enqueue, including in a fresh process after a restart —
+imports spooled lines through the real Go ``enqueue`` command, which
+honors the spooled id and dedupes by it, so a crash between import and
+spool-clear re-imports nothing. Corrupt spool lines are quarantined next
+to the spool, never silently dropped. drain/peek still raise
+:class:`BacklogRuntimeUnavailable` when the runtime is missing and real
+backlog work is pending.
 """
 
 from __future__ import annotations
@@ -64,6 +72,7 @@ import shutil
 import subprocess
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -71,7 +80,7 @@ from typing import Any, Callable, Protocol
 logger = logging.getLogger(__name__)
 
 BACKLOG_FILENAME = "retain-backlog.jsonl"
-CORRUPT_SUFFIX = ".corrupt"
+SPOOL_FILENAME = "retain-backlog-spool.jsonl"
 
 _RETRY_AT_RE = re.compile(
     r"retry at (\d{4}-\d{2}-\d{2}[T ][\d:.]+(?:Z|[+-]\d{2}:?\d{2})?)", re.IGNORECASE
@@ -79,6 +88,25 @@ _RETRY_AT_RE = re.compile(
 
 _RATE_LIMIT_NEEDLES = ("providerratelimitreseterror", "deferred by provider quota")
 _DEFAULT_RETRY_DELAY = timedelta(hours=1)
+
+# The live server's PERMANENT retry refusal (memory_engine.retry_operation,
+# read from the deployed container): "Operation ... is a batch_retain parent
+# with no incomplete sub-batches to retry (its children have all completed,
+# or it has none). Resubmit the source documents ...". Every other 409
+# ("cannot be retried: status is 'pending' ...") is a moved-row race and
+# polls again.
+_PERMANENT_RETRY_NEEDLES = ("no incomplete sub-batches to retry",)
+
+
+def _permanent_retry_refusal(exc: BaseException) -> bool:
+    """True when *exc* carries the server's explicit never-retryable 409."""
+    body = getattr(exc, "body", None)
+    if isinstance(body, (bytes, bytearray)):
+        body = body.decode("utf-8", "replace")
+    elif not isinstance(body, str):
+        body = str(body) if body else ""
+    hay = f"{body}\n{exc}".lower()
+    return any(needle in hay for needle in _PERMANENT_RETRY_NEEDLES)
 
 # Total wall-clock budget for one drain pass: the child is waiting on OUR
 # SDK replies (each bounded by the provider timeout), so this only fires on
@@ -93,8 +121,9 @@ _GO_PACKAGE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "intern
 
 class BacklogRuntimeUnavailable(RuntimeError):
     """The Go backlog runtime could not be produced (no prebuilt binary and
-    no Go toolchain to build one). Rate-limited retains then surface their
-    original failure instead of being silently dropped."""
+    no Go toolchain to build one). Enqueue then emergency-spools the entry
+    instead of losing it; drain/peek raise this while the runtime is
+    missing and backlog work is pending."""
 
 
 def classify_rate_limit(
@@ -259,6 +288,26 @@ def _runtime_binary(home: Path) -> str:
             raise
 
 
+def _fsync_dir(path: Path) -> None:
+    """Best-effort directory fsync so a rename/unlink survives a crash."""
+    with contextlib.suppress(OSError):
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def _atomic_rewrite(path: Path, text: str) -> None:
+    """tmp + fsync + rename + dir fsync: a reader never sees a torn file."""
+    tmp = path.with_name(path.name + f".tmp-{os.getpid()}")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+    _fsync_dir(path.parent)
+
 class RetainBacklog:
     """One profile's backlog, delegated to the Go runtime. ``home_resolver``
     is invoked per operation so a multiplexed process keys every binary
@@ -267,21 +316,46 @@ class RetainBacklog:
     def __init__(self, home_resolver: Callable[[], Path], *, binary: str | None = None):
         self._home_resolver = home_resolver
         self._binary_override = binary
-        self._may_exist = False
+        # may_exist is keyed per resolved home: one multiplexed process
+        # serves several profiles, and an empty peek under B must not clear
+        # A's flag — returning to A must still drain A's persisted backlog
+        # without a manual refresh. The hot-path gate stays I/O-free.
+        self._may_exist_homes: set[str] = set()
 
     @property
     def path(self) -> Path:
         return self._home_resolver() / "hindsight" / BACKLOG_FILENAME
 
     @property
+    def _spool_path(self) -> Path:
+        return self._home_resolver() / "hindsight" / SPOOL_FILENAME
+
+    @property
     def may_exist(self) -> bool:
-        """Cheap gate for hot paths: True only when a backlog file might exist."""
-        return self._may_exist
+        """Cheap gate for hot paths: True only when a backlog file might
+        exist for the live home."""
+        return str(self._home_resolver()) in self._may_exist_homes
 
     def refresh_may_exist(self) -> bool:
-        """One stat; True when a backlog file exists for the live home."""
-        self._may_exist = self.path.exists()
-        return self._may_exist
+        """One stat; True when a backlog or emergency-spool file exists for
+        the live home — the spool alone must open the drain gate so its
+        import runs as soon as the runtime is producible again."""
+        base = self._home_resolver() / "hindsight"
+        exists = (base / BACKLOG_FILENAME).exists() or (base / SPOOL_FILENAME).exists()
+        key = str(self._home_resolver())
+        if exists:
+            self._may_exist_homes.add(key)
+        else:
+            self._may_exist_homes.discard(key)
+        return exists
+
+    def _set_may_exist(self, remaining: bool) -> None:
+        """Record the live home's backlog state after an operation on it."""
+        key = str(self._home_resolver())
+        if remaining:
+            self._may_exist_homes.add(key)
+        else:
+            self._may_exist_homes.discard(key)
 
     def _spawn(self, *args: str) -> subprocess.Popen:
         binary = self._binary_override or _runtime_binary(self._home_resolver())
@@ -304,8 +378,11 @@ class RetainBacklog:
         now: datetime | None = None,
     ) -> str:
         """Persist one already-built retain item via the Go runtime; returns
-        the entry id — the server-side ``operation_id``, minted and persisted
-        by the runtime before any remote submission, never regenerated."""
+        the entry id — the server-side ``operation_id``, minted by the
+        runtime (or by this bridge while emergency-spooling) and persisted
+        before any remote submission, never regenerated. When the runtime
+        cannot be produced the entry is emergency-spooled durably instead
+        of lost, and imports on the next runtime acquisition."""
         entry = {
             "bank_id": bank_id,
             "item": item,
@@ -313,7 +390,11 @@ class RetainBacklog:
             "queued_at": _to_iso(now or datetime.now(timezone.utc)),
             "retry_after": _to_iso(retry_after),
         }
-        proc = self._spawn("enqueue")
+        self._flush_spool()  # FIFO: older spooled entries enter the queue first
+        try:
+            proc = self._spawn("enqueue")
+        except BacklogRuntimeUnavailable:
+            return self._spool(entry)
         try:
             out, err = proc.communicate(
                 json.dumps(entry) + "\n", timeout=_ENQUEUE_TIMEOUT_S)
@@ -324,19 +405,97 @@ class RetainBacklog:
             raise RuntimeError(
                 f"retainbacklog enqueue failed ({proc.returncode}): {err.strip()}")
         reply = json.loads(out)
-        self._may_exist = True
+        self._set_may_exist(True)
         return reply["id"]
+
+    def _spool(self, entry: dict) -> str:
+        """Emergency-spool one entry when the Go runtime is unproducible:
+        append it (id minted here — nothing has been submitted under any id
+        yet, so this is still "before any remote submission") with fsync.
+        The next runtime acquisition imports the line through the real Go
+        enqueue, which honors the id; the tool can honestly report the
+        memory as queued."""
+        entry = dict(entry)
+        entry["id"] = str(uuid.uuid4())
+        path = self._spool_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        _fsync_dir(path.parent)
+        self._set_may_exist(True)
+        return entry["id"]
+
+    def _flush_spool(self) -> None:
+        """Import emergency-spooled entries into the real queue through the
+        Go runtime's enqueue command (id honored, dedupe by id), then clear
+        the imported lines atomically. Any failure — runtime gone again, an
+        enqueue error — keeps the remaining lines in order for the next
+        flush, so a crash between import and clear re-imports nothing (the
+        runtime dedupes by id). Unparseable lines are quarantined next to
+        the spool, never silently dropped. A missing spool file is a no-op
+        that never touches the runtime."""
+        spool = self._spool_path
+        if not spool.exists():
+            return
+        lines = [ln for ln in spool.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        if not lines:
+            with contextlib.suppress(OSError):
+                spool.unlink()
+                _fsync_dir(spool.parent)
+            return
+        kept: list[str] = []
+        corrupt: list[str] = []
+        for idx, line in enumerate(lines):
+            try:
+                json.loads(line)  # shape sanity; the runtime validates fully
+            except json.JSONDecodeError:
+                corrupt.append(line)
+                continue
+            try:
+                self._enqueue_line(line)
+            except Exception as exc:
+                logger.warning("Hindsight retain-backlog spool import stalled "
+                               "at line %d/%d: %s", idx + 1, len(lines), exc)
+                kept.extend(lines[idx:])
+                break
+        _atomic_rewrite(spool, "".join(ln + "\n" for ln in kept))
+        if corrupt:
+            sidecar = spool.with_name(spool.name + CORRUPT_SUFFIX)
+            with open(sidecar, "a", encoding="utf-8") as fh:
+                fh.writelines(ln + "\n" for ln in corrupt)
+                fh.flush()
+                os.fsync(fh.fileno())
+            logger.warning("Hindsight retain-backlog: %d corrupt spool line(s) "
+                           "quarantined to %s", len(corrupt), sidecar)
+
+    def _enqueue_line(self, line: str) -> None:
+        """One spool line through the Go enqueue command (id honored,
+        deduped by the runtime's Add)."""
+        proc = self._spawn("enqueue")
+        try:
+            _, err = proc.communicate(line + "\n", timeout=_ENQUEUE_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            raise
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"retainbacklog spool import failed ({proc.returncode}): {err.strip()}")
+
 
     def peek(self) -> tuple[datetime | None, int]:
         """(earliest retry_after among queued entries, entry count) — the
-        instants a later drain may make progress. (None, 0) when empty."""
+        instants a later drain may make progress. (None, 0) when empty.
+        Imports any emergency spool first so the count includes it."""
+        self._flush_spool()
         proc = self._spawn("peek")
         out, err = proc.communicate(timeout=_ENQUEUE_TIMEOUT_S)
         if proc.returncode != 0:
             raise RuntimeError(
                 f"retainbacklog peek failed ({proc.returncode}): {err.strip()}")
         done = json.loads(out)
-        self._may_exist = done["remaining"] > 0
+        self._set_may_exist(done["remaining"] > 0)
         return _parse_done_retry(done), done["remaining"]
 
     def drain(self, remote: BacklogRemote) -> datetime | None:
@@ -348,8 +507,9 @@ class RetainBacklog:
 
         Returns the earliest ``retry_after`` among entries still queued after
         the pass (None when empty) so the caller can arm a wakeup."""
-        if not self._may_exist:
+        if not self.may_exist:
             return None
+        self._flush_spool()  # spooled entries join the pass that is about to run
         proc = self._spawn("drain")
         try:
             return self._drain_protocol(proc, remote)
@@ -398,7 +558,7 @@ class RetainBacklog:
             raise RuntimeError(f"retainbacklog runtime exited mid-drain: {err.strip()}") from None
         proc.stdin.close()
         proc.wait(timeout=30)
-        self._may_exist = done["remaining"] > 0
+        self._set_may_exist(done["remaining"] > 0)
         if done.get("error"):
             logger.warning("Hindsight retain-backlog drain reported: %s", done["error"])
         return _parse_done_retry(done)

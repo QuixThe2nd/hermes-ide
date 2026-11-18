@@ -325,6 +325,38 @@ class TestClassification:
         )
 
 
+class TestPermanentRetryClassification:
+    """The two live-server 409s must map differently: the explicit
+    batch-parent refusal ("no incomplete sub-batches to retry") can NEVER be
+    re-queued, so it must classify as permanent; every other 409 (the row
+    moved to pending/processing between read and retry) is a race that just
+    polls again."""
+
+    def test_batch_parent_refusal_is_permanent(self):
+        body = ("Operation 7f3c is a batch_retain parent with no incomplete "
+                "sub-batches to retry (its children have all completed, or it "
+                "has none). Resubmit the source documents to re-run them.")
+        assert rb._permanent_retry_refusal(_FakeApiError(409, body)) is True
+
+    def test_bytes_body_is_permanent(self):
+        exc = _FakeApiError(
+            409, b'{"detail": "no incomplete sub-batches to retry"}')
+        assert rb._permanent_retry_refusal(exc) is True
+
+    @pytest.mark.parametrize("other", [
+        "Operation 7f3c cannot be retried: status is 'pending'",
+        "Operation 7f3c not found",
+    ])
+    def test_other_refusals_are_not_permanent(self, other):
+        assert rb._permanent_retry_refusal(_FakeApiError(409, other)) is False
+
+    def test_classification_keys_on_body_text_not_status(self):
+        # Only called on 409 by the adapter; the classifier itself is a pure
+        # body-text predicate.
+        assert rb._permanent_retry_refusal(
+            _FakeApiError(500, "no incomplete sub-batches to retry")) is True
+
+
 # ---------------------------------------------------------------------------
 # Tool path: rate-limited retain queues instead of erroring
 # ---------------------------------------------------------------------------
@@ -642,6 +674,55 @@ class TestReconcileBeforeSubmit:
 
 
 @requires_runtime
+class TestPermanentRetryRefusal:
+    """The server's permanent retry refusal (batch parent whose children all
+    completed, or it has none) must not poll the dead operation forever: the
+    runtime mints a NEW operation id and replays the SAME document id, so
+    server-side chunk-hash recovery skips every chunk the old operation
+    committed and nothing duplicates. The old row is never deleted."""
+
+    def test_permanent_refusal_mints_new_id_same_document(self, tmp_path):
+        backlog = RetainBacklog(lambda: tmp_path)
+        past = datetime.now(UTC) - timedelta(minutes=1)
+        old_id = backlog.enqueue(bank_id="b", item={"content": "keep"},
+                                 retry_after=past, document_id="doc-stable")
+        backlog.drain(_ScriptedRemote())  # not_found -> submit, ack, scheduled
+
+        class _Permanent(_ScriptedRemote):
+            def retry_operation(self, bank_id: str, op_id: str) -> str:
+                self.calls.append(("retry", op_id))
+                return "permanent"
+
+        remote = _Permanent(statuses={old_id: "failed"})
+        _flip_retry_after(tmp_path, _past_iso())
+        backlog.drain(remote)
+
+        assert [c for c in remote.calls if c[0] == "retry"] == [("retry", old_id)]
+        submits = [c for c in remote.calls if c[0] == "submit"]
+        assert len(submits) == 1
+        new_id, document_id = submits[0][1], submits[0][2]
+        assert new_id != old_id
+        assert document_id == "doc-stable"
+        entries = _read_backlog(tmp_path)
+        assert [e["id"] for e in entries] == [new_id]
+        assert entries[0]["document_id"] == "doc-stable"
+
+        # Not endless polling: the next pass polls the NEW operation; the
+        # dead id is never retried again.
+        _flip_retry_after(tmp_path, _past_iso())
+        backlog.drain(remote)
+        assert [c for c in remote.calls if c[0] == "retry"] == [("retry", old_id)]
+        assert [c for c in remote.calls if c[0] == "status"] == [
+            ("status", old_id), ("status", new_id)
+        ]
+
+        remote.statuses[new_id] = "completed"
+        _flip_retry_after(tmp_path, _past_iso())
+        assert backlog.drain(remote) is None
+        assert _read_backlog(tmp_path) == []
+
+
+@requires_runtime
 class TestCrashWindowNoDuplicate:
     def test_crash_after_ack_resolves_by_polling_not_resubmitting(self, tmp_path):
         """The durable record is the ENTRY, not the ack: a crash between the
@@ -808,6 +889,167 @@ class TestProfileIsolation:
         assert backlog.refresh_may_exist() is True
         assert [e["item"]["content"] for e in _read_backlog(home_a)] == ["profile a memory"]
 
+    def test_returning_to_first_profile_drains_without_manual_refresh(self, tmp_path, monkeypatch):
+        """A→B→A regression: ``may_exist`` was one process-wide bool, so an
+        empty peek under B cleared the flag and drain's gate refused to run
+        for A — stranding A's persisted backlog until a manual refresh."""
+        home_a, home_b = tmp_path / "a", tmp_path / "b"
+        home_a.mkdir(); home_b.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home_a))
+        backlog = RetainBacklog(get_hermes_home)
+        op_id = backlog.enqueue(
+            bank_id="b", item={"content": "profile a memory"},
+            retry_after=datetime.now(UTC) - timedelta(minutes=1),
+        )
+        assert _backlog_path(home_a).exists()
+
+        # Live home flips to B: an empty peek must not clear A's flag.
+        monkeypatch.setenv("HERMES_HOME", str(home_b))
+        assert backlog.peek() == (None, 0)
+
+        # Back on A with no manual refresh: the gate admits A, the due
+        # entry submits, and an observed completion removes it.
+        monkeypatch.setenv("HERMES_HOME", str(home_a))
+        assert backlog.may_exist is True
+        remote = _ScriptedRemote()
+        backlog.drain(remote)
+        assert [c[1] for c in remote.calls if c[0] == "submit"] == [op_id]
+
+        remote.statuses[op_id] = "completed"
+        _flip_retry_after(home_a, _past_iso())
+        assert backlog.drain(remote) is None
+        assert _read_backlog(home_a) == []
+        assert backlog.may_exist is False
+
+
+def _spool_path(home: Path) -> Path:
+    return home / "hindsight" / rb.SPOOL_FILENAME
+
+
+def _read_spool(home: Path) -> list[dict]:
+    path = _spool_path(home)
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def _write_spool(home: Path, entries: list[dict]) -> None:
+    path = _spool_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(e) + "\n" for e in entries))
+
+
+@requires_runtime
+class TestEmergencySpool:
+    """Go runtime unproducible at enqueue time (no per-home cache, no
+    process-global build, no prebuilt binary, no toolchain): the quota-failed
+    EXPLICIT hindsight_retain must still be durably saved — to an emergency
+    spool — then imported and drained through the real Go runtime once it is
+    producible again, across a restart, exactly once."""
+
+    @staticmethod
+    def _break_runtime(mp: pytest.MonkeyPatch) -> None:
+        mp.setattr(rb, "_binary_cache", {})
+        mp.setattr(rb, "_prebuilt_binary", lambda: None)
+
+        def _no_toolchain(dest, home):
+            raise rb.BacklogRuntimeUnavailable("no Go toolchain (simulated)")
+
+        mp.setattr(rb, "_build_binary", _no_toolchain)
+
+    def test_quota_failure_without_runtime_spools_durably(self, tmp_path):
+        with pytest.MonkeyPatch.context() as mp:
+            self._break_runtime(mp)
+            client, sink = _fake_client(
+                outcomes=[_FakeApiError(500, _quota_body(_future_iso()))]
+            )
+            provider = _make_provider(tmp_path, client=client)
+            payload = _retain(provider, "spooled memory")
+            # Settle the writer's immediately-queued drain pass while the
+            # runtime is still broken (it must change nothing).
+            provider._retain_queue.join()
+
+        # Durable save, not an error: the memory is queued (in the spool).
+        assert "error" not in payload
+        assert payload["result"].startswith("Memory queued")
+        assert not _backlog_path(tmp_path).exists()
+        entries = _read_spool(tmp_path)
+        assert len(entries) == 1
+        entry = entries[0]
+        assert uuid.UUID(entry["id"])
+        assert entry["bank_id"] == "test-bank"
+        assert entry["item"]["content"] == "spooled memory"
+        assert entry["document_id"] == sink[0]["document_id"]
+        assert entry["retry_after"]
+
+    def test_spooled_entry_imports_and_drains_after_restore(self, tmp_path):
+        # Warm the process-global binary cache from a scratch home so the
+        # restore phase resolves instantly and cannot lose the import race
+        # against the provider's floor-1s wakeup drain.
+        rb._runtime_binary(tmp_path / "warm")
+        with pytest.MonkeyPatch.context() as mp:
+            self._break_runtime(mp)
+            client, _ = _fake_client(
+                outcomes=[_FakeApiError(500, _quota_body(_past_iso()))]
+            )
+            provider = _make_provider(tmp_path, client=client)
+            assert _retain(provider, "restore me")["result"].startswith("Memory queued")
+            provider._retain_queue.join()
+        spooled = _read_spool(tmp_path)
+        assert len(spooled) == 1
+        entry_id, document_id = spooled[0]["id"], spooled[0]["document_id"]
+
+        # Restart: a fresh bridge holds no in-memory state; the spool alone
+        # must open the drain gate.
+        backlog = RetainBacklog(lambda: tmp_path)
+        assert backlog.may_exist is False
+        assert backlog.refresh_may_exist() is True
+
+        # Runtime restored: the drain imports the spool through the real Go
+        # enqueue (id honored) and settles the entry in the same pass.
+        remote = _ScriptedRemote()
+        backlog.drain(remote)
+        assert [c for c in remote.calls if c[0] == "submit"] == [
+            ("submit", entry_id, document_id)
+        ]
+        assert _read_spool(tmp_path) == []
+        assert [e["id"] for e in _read_backlog(tmp_path)] == [entry_id]
+
+        # Crash window between import and spool-clear: re-presenting the
+        # same spool line must NOT add a second queue entry (id dedupe).
+        _write_spool(tmp_path, spooled)
+        backlog.peek()
+        assert _read_spool(tmp_path) == []
+        assert [e["id"] for e in _read_backlog(tmp_path)] == [entry_id]
+
+        # The imported entry settles like any other: removed on completion.
+        remote.statuses[entry_id] = "completed"
+        _flip_retry_after(tmp_path, _past_iso())
+        assert backlog.drain(remote) is None
+        assert _read_backlog(tmp_path) == []
+
+    def test_fresh_provider_startup_drain_imports_spool(self, tmp_path):
+        with pytest.MonkeyPatch.context() as mp:
+            self._break_runtime(mp)
+            client, _ = _fake_client(
+                outcomes=[_FakeApiError(500, _quota_body(_future_iso()))]
+            )
+            provider = _make_provider(tmp_path, client=client)
+            assert _retain(provider, "startup import")["result"].startswith("Memory queued")
+            provider._retain_queue.join()
+        assert _read_spool(tmp_path)
+
+        # Restart the whole provider (no client needed: the entry is not
+        # due, so the import requires no network). Initialize's
+        # refresh_may_exist must see the spool and the startup drain must
+        # import it into the real backlog.
+        restarted = _make_provider(tmp_path)
+        assert _wait_until(
+            lambda: _read_backlog(tmp_path) and not _read_spool(tmp_path)
+        )
+        assert restarted._retain_backlog.may_exist is True
+        assert _read_backlog(tmp_path)[0]["item"]["content"] == "startup import"
+
 
 # ---------------------------------------------------------------------------
 # Concurrency: cross-process lock serializes drains; each entry settles once
@@ -898,6 +1140,16 @@ class _HindsightStubHandler(BaseHTTPRequestHandler):
             with server.lock:
                 if op_id not in server.ops:
                     return self._json(404, {"detail": f"Operation {op_id} not found"})
+                if op_id in server.permanent_refusals:
+                    # The live server's never-retryable 409: a batch_retain
+                    # parent with nothing left to re-queue.
+                    server.retries.append(op_id)
+                    return self._json(409, {"detail": (
+                        f"Operation {op_id} is a batch_retain parent with no "
+                        "incomplete sub-batches to retry (its children have "
+                        "all completed, or it has none). Resubmit the source "
+                        "documents to re-run them."
+                    )})
                 server.retries.append(op_id)
                 server.ops[op_id] = "pending"
             return self._json(200, {"success": True, "operation_id": op_id})
@@ -928,6 +1180,10 @@ class _HindsightStubHandler(BaseHTTPRequestHandler):
                 })
             server.ops[op_id] = "pending"
             server.created.append(op_id)
+            # The SDK folds the batch-level document_id into each item.
+            items = request.get("items") or []
+            server.created_docs.append(
+                (op_id, (items[0] or {}).get("document_id") if items else None))
         return self._json(200, {
             "success": True, "bank_id": bank_id, "async": True,
             "items_count": 1, "operation_id": op_id,
@@ -939,11 +1195,12 @@ class _HindsightStubServer(ThreadingHTTPServer):
         super().__init__(("127.0.0.1", 0), _HindsightStubHandler)
         self.ops: dict[str, str] = {}
         self.created: list[str] = []
+        self.created_docs: list[tuple[str, str | None]] = []
         self.retries: list[str] = []
         self.deletes: list[str] = []
+        self.permanent_refusals: set[str] = set()
         self.lock = threading.Lock()
         self.quota_mode = False
-
 
 @requires_runtime
 class TestRealHttpContract:
@@ -1009,6 +1266,70 @@ class TestRealHttpContract:
                 retain_async=True, operation_id=op_id,
                 document_id=entry["document_id"]))
             assert stub.created == [op_id]
+        finally:
+            stub.shutdown()
+            stub.server_close()
+
+    def test_permanent_refusal_resubmits_under_new_operation_id(self, tmp_path):
+        """End-to-end over real HTTP + real SDK + real Go runtime: the
+        server's permanent retry refusal (batch parent, no incomplete
+        sub-batches) must resolve by replaying under a NEW operation id with
+        the SAME document id — never by deleting the dead row, never by
+        polling it forever."""
+        from hindsight_client import Hindsight
+
+        stub = _HindsightStubServer()
+        thread = threading.Thread(target=stub.serve_forever, daemon=True)
+        thread.start()
+        try:
+            client = Hindsight(base_url=f"http://127.0.0.1:{stub.server_port}", api_key="k")
+            stub.quota_mode = True
+            provider = _make_provider(tmp_path, client=client)
+
+            assert _retain(provider, "permanent refusal memory")["result"].startswith(
+                "Memory queued")
+            provider._retain_queue.join()
+            entry = _read_backlog(tmp_path)[0]
+            old_id = entry["id"]
+
+            stub.quota_mode = False
+            _flip_retry_after(tmp_path, _past_iso())
+            provider._drain_retain_backlog()
+            assert stub.created == [old_id]
+
+            # The op fails server-side and its batch-parent shape makes the
+            # server's retry endpoint refuse PERMANENTLY.
+            with stub.lock:
+                stub.ops[old_id] = "failed"
+                stub.permanent_refusals.add(old_id)
+            _flip_retry_after(tmp_path, _past_iso())
+            provider._drain_retain_backlog()
+
+            assert stub.retries == [old_id]           # asked exactly once
+            assert len(stub.created) == 2             # replay under a new id
+            new_id = stub.created[1]
+            assert new_id != old_id
+            assert stub.created_docs[1] == (new_id, entry["document_id"])
+            assert stub.deletes == []                 # the dead row stays
+            with stub.lock:
+                assert stub.ops[old_id] == "failed"
+            queued = _read_backlog(tmp_path)
+            assert [e["id"] for e in queued] == [new_id]
+            assert queued[0]["document_id"] == entry["document_id"]
+
+            # Not endless polling: the next pass observes the NEW op; the
+            # dead id is never retried again.
+            _flip_retry_after(tmp_path, _past_iso())
+            provider._drain_retain_backlog()
+            assert stub.retries == [old_id]
+            assert len(stub.created) == 2
+
+            with stub.lock:
+                stub.ops[new_id] = "completed"
+            _flip_retry_after(tmp_path, _past_iso())
+            provider._drain_retain_backlog()
+            assert _read_backlog(tmp_path) == []
+            assert stub.deletes == []
         finally:
             stub.shutdown()
             stub.server_close()

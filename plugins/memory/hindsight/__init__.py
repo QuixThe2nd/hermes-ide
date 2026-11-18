@@ -44,7 +44,8 @@ from .embedded import (
 )
 from .embedded_runtime import ensure_daemon_and_url as _start_sideenv_daemon
 from .retain_backlog import (
-    BacklogRuntimeUnavailable, RetainBacklog, classify_exception, format_retry_at,
+    RetainBacklog, _permanent_retry_refusal,
+    classify_exception, format_retry_at,
 )
 from .settings import (
     _DEFAULT_API_URL, _DEFAULT_IDLE_TIMEOUT, _DEFAULT_LOCAL_URL, _DEFAULT_RETAIN_SOURCE,
@@ -2854,8 +2855,12 @@ class HindsightMemoryProvider(MemoryProvider):
 
         def retry_operation(self, bank_id: str, op_id: str) -> str:
             """Re-queue a failed/cancelled row via the server's own retry;
-            never delete+resubmit. Batch-parent rows retry too (verified:
-            retry_operation accepts any terminal op)."""
+            never delete+resubmit. The two server 409s differ: the explicit
+            batch-parent refusal ("no incomplete sub-batches to retry") is
+            PERMANENT — the runtime replays the entry under a NEW operation
+            id (same document id + item, so server-side chunk-hash recovery
+            skips already-committed chunks); any other 409 (row moved to
+            pending/processing between read and retry) just polls."""
             from hindsight_client_api.exceptions import ApiException, NotFoundException
 
             try:
@@ -2870,7 +2875,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 if getattr(exc, "status", None) == 404:
                     return "gone"
                 if getattr(exc, "status", None) == 409:
-                    return "conflict"
+                    return "permanent" if _permanent_retry_refusal(exc) else "conflict"
                 raise
 
         def submit(self, entry: dict) -> None:
@@ -2979,14 +2984,10 @@ class HindsightMemoryProvider(MemoryProvider):
             if retry_at is None:
                 raise
             # Success, not an error: the memory IS persisted, just deferred —
-            # the backlog drains automatically once the provider limit resets.
-            try:
-                self._enqueue_backlog_entry(item, bank_id=self._bank_id,
-                                            retry_after=retry_at, document_id=document_id)
-            except BacklogRuntimeUnavailable as unavailable:
-                logger.warning("Hindsight retain-backlog runtime unavailable; "
-                               "rate-limited retain not queued: %s", unavailable)
-                raise exc from unavailable
+            # the backlog (or its emergency spool when the Go runtime is
+            # unproducible) drains automatically once the limit resets.
+            self._enqueue_backlog_entry(item, bank_id=self._bank_id,
+                                        retry_after=retry_at, document_id=document_id)
             return (f"Memory queued: provider rate limit; will be stored "
                     f"automatically after {format_retry_at(retry_at)}.")
         logger.debug("Tool hindsight_retain: success")

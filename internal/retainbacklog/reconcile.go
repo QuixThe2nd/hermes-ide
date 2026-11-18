@@ -48,9 +48,22 @@ func (e *RateLimitedError) Error() string {
 var ErrGoneFromRetry = errors.New("operation gone from retry")
 
 // ErrRetryConflict is what Remote.RetryOperation returns when the server
-// refuses the retry (409 — e.g. the row moved to pending/processing between
-// the status read and the retry call). The entry simply polls again.
+// refuses the retry with an AMBIGUOUS 409 (e.g. the row moved to
+// pending/processing between the status read and the retry call, or any 409
+// that is not the explicit permanent refusal). The entry simply polls again.
 var ErrRetryConflict = errors.New("retry refused")
+
+// ErrRetryPermanent is what Remote.RetryOperation returns when the server's
+// 409 explicitly says the operation can never be re-queued — the live
+// server's exact shape is the batch_retain parent "with no incomplete
+// sub-batches to retry (its children have all completed, or it has none)",
+// which instructs the caller to resubmit the source documents
+// (memory_engine.retry_operation). The drain complies: the entry mints a NEW
+// operation id (persisted atomically before any submission) and replays the
+// same item + document id — the server's chunk-hash recovery skips every
+// chunk the old operation already committed, so nothing duplicates. The old
+// server row is never deleted; there is no delete in this protocol.
+var ErrRetryPermanent = errors.New("retry permanently refused")
 
 // Remote is the host side of the drain: everything needing the Hindsight SDK,
 // the API key, and the provider's secret scope. The Go runtime owns the queue
@@ -158,6 +171,29 @@ func (q *Queue) Drain(now time.Time, remote Remote) (time.Time, error) {
 			err := remote.RetryOperation(ctx, entry.BankID, entry.ID)
 			if err != nil {
 				switch {
+				case errors.Is(err, ErrRetryPermanent):
+					newID, nerr := newOperationID()
+					if nerr != nil {
+						q.backOff(i, now)
+						return q.earliestRetry(), nerr
+					}
+					// The server will never re-run the old id (its children all
+					// completed or it has none). Swap to a fresh operation id and
+					// persist the swap BEFORE submitting: a crash in between
+					// leaves a not-yet-submitted entry whose new id replays
+					// cleanly (not_found -> submit). The old server row stays;
+					// the unchanged document id + item keep chunk-hash recovery
+					// intact, so committed chunks are never re-ingested.
+					q.entries[i].ID = newID
+					q.entries[i].Submitted = false
+					q.entries[i].Attempts = 0
+					q.entries[i].RetryAfter = now
+					if serr := q.save(); serr != nil {
+						return q.earliestRetry(), serr
+					}
+					entry.ID = newID
+					entry.Submitted = false
+					// fall through to a fresh submit below under the new id
 				case errors.Is(err, ErrGoneFromRetry):
 					// fall through to a fresh submit below
 				case errors.Is(err, ErrRetryConflict):
