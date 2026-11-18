@@ -672,7 +672,7 @@ class TurnRunner(_TurnRunnerCore):
         _progress_len_fn: Any
         _PROGRESS_TEXT_LIMIT: int
         _edit_accepts_metadata: bool
-        # Oversized-row chunking (codebox only): a boxed row sliced across
+        # Oversized-row chunking: a boxed row sliced across
         # several messages leaves only its tail slices editable; _row_head_len
         # counts the escaped chars of the CURRENT row already visible in the
         # earlier chunks, and _row_slices how many trailing buffer lines belong
@@ -722,14 +722,14 @@ class TurnRunner(_TurnRunnerCore):
         return await ctx.deliver_visible(lambda: st.adapter.edit_message(**kwargs))
 
     def _progress_text(self, st, lines: list) -> str:
-        # Code-box presentation (display.tool_progress_codebox): the whole
-        # accumulated group becomes ONE unlabelled fenced block, with inner ```
-        # escaped so already-fenced command/code previews render inside the box
-        # instead of breaking out. Applies to every lane: accumulated bubbles,
-        # "separate" per-row messages and non-editable fallback sends.
+        # Code-box presentation (always on): the whole accumulated group becomes
+        # ONE unlabelled fenced block, with inner ``` escaped so already-fenced
+        # command/code previews render inside the box instead of breaking out.
+        # Applies to every lane: accumulated bubbles, "separate" per-row
+        # messages and non-editable fallback sends.
         from gateway.display_config import format_progress_group
 
-        return format_progress_group(lines, self._codebox_active(st))
+        return format_progress_group(lines)
 
     async def _send_progress_row(self, st, row):
         """Send one row as its own message(s): "separate" grouping and non-editable fallbacks.
@@ -740,7 +740,7 @@ class TurnRunner(_TurnRunnerCore):
         from gateway.display_config import format_progress_row
 
         result = None
-        for text in format_progress_row(row, self._codebox_active(st), st._PROGRESS_TEXT_LIMIT, st._progress_len_fn):
+        for text in format_progress_row(row, st._PROGRESS_TEXT_LIMIT, st._progress_len_fn):
             result = await self._send_progress_text(st, text)
         return result
 
@@ -916,12 +916,10 @@ class TurnRunner(_TurnRunnerCore):
             agent_interrupted=self._agent_interrupted,
         )
 
-    def _codebox_active(self, st) -> bool:
-        return bool(self._ctx.progress_codebox)
 
     def _chunking_active(self, st) -> bool:
         # Buffer slicing only serves the editable lane; non-editable rows are chunked at send time.
-        return self._codebox_active(st) and st.can_edit
+        return st.can_edit
 
     def _progress_absorb(self, st, raw) -> Any:
         """Fold a queue item into the bubble buffer; returns the line to render this tick.
@@ -960,7 +958,7 @@ class TurnRunner(_TurnRunnerCore):
                 # only the editable tail with the counter instead of duplicating the head.
                 # Only the trailing lines of that row are replaced; earlier pending
                 # rows must stay visible.
-                tail = repeat_row_text(base_msg, count, self._codebox_active(st))[st._row_head_len:]
+                tail = repeat_row_text(base_msg, count)[st._row_head_len:]
                 if self._chunking_active(st):
                     slices = chunk_oversized_progress_row(tail, st._PROGRESS_TEXT_LIMIT, st._progress_len_fn)
                     if len(slices) > 1:

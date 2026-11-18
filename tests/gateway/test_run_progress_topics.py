@@ -710,6 +710,9 @@ def _extract_progress_preview(content: str) -> str | None:
     Handles both render styles:
     - Legacy / custom tools:  ``🔧 tool_name: "<preview>"`` (quoted)
     - Friendly built-in verb: ``💻 Running <preview>`` (verb prefix, no quotes)
+
+    Progress rows always render inside a fenced code box; the closing fence
+    is not part of the preview and is stripped here.
     """
     import re
 
@@ -721,7 +724,7 @@ def _extract_progress_preview(content: str) -> str | None:
     marker = " Running "
     idx = content.find(marker)
     if idx != -1:
-        return content[idx + len(marker):].strip()
+        return content[idx + len(marker):].removesuffix("\n```").strip()
     return None
 
 
@@ -745,8 +748,10 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
     fake_run_agent.AIAgent = LongPreviewAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
-    # Write config.yaml so _run_agent picks up tool_preview_length
-    # Tests preview length, not boxing: the code fence would add chars.
+    # Write config.yaml so _run_agent picks up tool_preview_length. The stale
+    # tool_progress_codebox key stays in on purpose: leftover config must be
+    # ignored (boxing is enforced in code), and _extract_progress_preview
+    # strips the always-on fence before lengths are measured.
     config = {"display": {"tool_preview_length": preview_length, "tool_progress_codebox": False}}
     (tmp_path / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
 
@@ -789,6 +794,16 @@ def test_all_mode_respects_custom_preview_length(monkeypatch, tmp_path):
     assert len(preview_text) > 40, f"Preview suspiciously short ({len(preview_text)}): {preview_text}"
     # But still capped at 120
     assert len(preview_text) <= 120, f"Preview too long ({len(preview_text)}): {preview_text}"
+
+
+def test_stale_codebox_config_is_ignored_progress_still_boxed(monkeypatch, tmp_path):
+    """A leftover ``tool_progress_codebox: false`` in config.yaml must be ignored:
+    boxing is enforced in code, every progress bubble still renders in a fence."""
+    adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0)
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    content = adapter.sent[0]["content"]
+    assert content.startswith("```\n") and content.endswith("\n```"), content
 
 
 def test_discord_truncated_tool_url_links_to_full_destination(monkeypatch, tmp_path):
