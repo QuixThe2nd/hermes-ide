@@ -1,20 +1,18 @@
-"""Shared-contract parity for Jev chat notice lines.
+"""Runtime-bridge contract for Jev chat notice lines.
 
-``internal/jevnotices`` (Go, canonical) and ``gateway/jev_notice.py`` (Python
-twin, what the runtime actually formats with) must render byte-identical
-lines. The twin is pinned against the RUNNING Go implementation, not merely
-the shared table: when a Go toolchain is available the real
-``cmd/jevnotice`` binary renders every shared-table record and the Python
-output must match it byte for byte. The record builders here are also
-pinned: a no-call outcome must produce NO record (no notice may claim an
-HTTP request that was never made).
+``gateway/jev_notice.py`` contains NO formatting logic: it builds record
+dicts and pipes them through the canonical Go formatter
+(``internal/jevnotices``, executed as ``cmd/jevnotice``). These tests run
+the real bridge — the binary is resolved/built exactly as the gateway
+runtime resolves it — against the shared table in
+``internal/jevnotices/testdata/notice_cases.json``, which the Go tests also
+execute. The record builders are pinned too: a no-call outcome must produce
+NO record (no notice may claim an HTTP request that was never made).
 """
 
 from __future__ import annotations
 
 import json
-import shutil
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,58 +21,35 @@ import pytest
 from gateway.jev_notice import (
     format_notice,
     goal_intent_attempt_record,
+    go_formatter_binary,
     reaction_gate_record,
     response_gate_record,
 )
 
-_REPO = Path(__file__).resolve().parents[2]
-_TABLE = _REPO / "internal" / "jevnotices" / "testdata" / "notice_cases.json"
+_TABLE = Path(__file__).resolve().parents[2] / "internal" / "jevnotices" / "testdata" / "notice_cases.json"
+
+requires_go = pytest.mark.skipif(
+    go_formatter_binary() is None,
+    reason="jev notices need the Go formatter binary (cached or built from the checkout)",
+)
 
 
 def _shared_cases():
     return json.loads(_TABLE.read_text(encoding="utf-8"))["cases"]
 
 
-def _go_binary(tmp_path_factory) -> str | None:
-    """Build cmd/jevnotice once per session; None when no Go toolchain."""
-    if shutil.which("go") is None:
-        return None
-    binary = tmp_path_factory.mktemp("jevnotice", numbered=True) / "jevnotice"
-    build = subprocess.run(
-        ["go", "build", "-o", str(binary), "./cmd/jevnotice"],
-        cwd=_REPO / "internal" / "jevnotices",
-        capture_output=True, text=True, timeout=300,
-    )
-    if build.returncode != 0:
-        pytest.fail(f"go build cmd/jevnotice failed:\n{build.stderr}")
-    return str(binary)
-
-
-@pytest.fixture(scope="session")
-def go_jevnotice(tmp_path_factory) -> str | None:
-    return _go_binary(tmp_path_factory)
-
-
+@requires_go
 @pytest.mark.parametrize("case", _shared_cases(), ids=lambda case: case["name"])
-def test_python_twin_matches_the_shared_table(case):
+def test_bridge_renders_the_shared_table(case):
     assert format_notice(case["record"]) == case["expect"]
 
 
-@pytest.mark.parametrize("case", _shared_cases(), ids=lambda case: case["name"])
-def test_python_twin_matches_the_running_go_formatter(case, go_jevnotice):
-    """The real Go binary renders the same record: Python twin == Go output.
-
-    Skipped only where no Go toolchain exists (CI builds it; the go-line-balance
-    lane runs the Go tests on the same table as a second cross-check).
-    """
-    if go_jevnotice is None:
-        pytest.skip("no Go toolchain available")
-    run = subprocess.run(
-        [go_jevnotice], input=json.dumps(case["record"]),
-        capture_output=True, text=True, timeout=30,
-    )
-    assert run.returncode == 0, run.stderr
-    assert format_notice(case["record"]) == run.stdout.rstrip("\n")
+@requires_go
+def test_format_notice_fails_closed_on_junk():
+    line = format_notice({"purpose": None, "subject": "", "confidence": "junk"})
+    assert line is not None
+    assert line.startswith("🔎 jev ")
+    assert "\n" not in line
 
 
 def test_shared_table_covers_every_purpose_and_failure():
@@ -84,12 +59,6 @@ def test_shared_table_covers_every_purpose_and_failure():
         case["record"]["purpose"] for case in _shared_cases() if "error" in case["record"]
     }
     assert failures == purposes
-
-
-def test_format_notice_fails_closed_on_junk():
-    line = format_notice({"purpose": None, "subject": "", "confidence": "junk"})
-    assert line.startswith("🔎 jev ")
-    assert "\n" not in line
 
 
 class TestGoalIntentAttemptRecord:
@@ -144,14 +113,11 @@ class TestNoCallProducesNoRecord:
         record = response_gate_record(decision, author="Tek")
         assert record["allowed"] is False
         assert record["scores"]["noise"] == 0.4
-        assert format_notice(record) == (
-            "🔎 jev response-gate user message from Tek: deny "
-            "(addresses_bot=0.10 continues_bot_thread=0.20 joins_bot_thread=0.30 noise=0.40)"
-        )
 
     def test_reaction_abstention_is_a_record(self):
         decision = SimpleNamespace(emoji=None, error=None, abstain_sum=0.63)
         record = reaction_gate_record(decision, author="Alice")
-        assert format_notice(record) == (
-            "🔎 jev reaction-gate user message from Alice: no reaction (abstain 0.63)"
-        )
+        assert record == {
+            "purpose": "reaction-gate", "subject": "user message",
+            "author": "Alice", "abstain": 0.63,
+        }

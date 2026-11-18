@@ -10,13 +10,15 @@
 // display names, label/score/confidence numbers and already-sanitized error
 // tokens.
 //
-// This package is the canonical formatter and is executable as
-// cmd/jevnotice (record JSON on stdin, notice line on stdout). The Python
-// twin (gateway/jev_notice.py) renders the lines the gateway actually sends
-// — deployments carry no Go toolchain — and is pinned against the RUNNING
-// Go binary by tests/gateway/test_jev_notice_contract.py, plus the shared
-// table in testdata/notice_cases.json which each side's tests execute, so
-// the two implementations cannot drift apart silently.
+// This package is the ONLY formatter for Jev chat notices. Production runs
+// it as cmd/jevnotice (record JSON on stdin, notice line on stdout):
+// gateway/jev_notice.py contains no formatting logic — it maps decision
+// objects to record dicts and pipes them through the binary, resolving it
+// from a content-hash-keyed cache under $HERMES_HOME/cache/jevnotices and
+// building it with the local Go toolchain when missing. When no binary can
+// be produced the gateway posts no notice. tests/gateway/
+// test_jev_notice_contract.py runs the same bridge against the shared table
+// in testdata/notice_cases.json, which the Go tests also execute.
 package jevnotices
 
 import (

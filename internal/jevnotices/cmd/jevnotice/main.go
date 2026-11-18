@@ -4,13 +4,12 @@
 // label, confidence, allowed, scores, emoji, abstain, error) and writes the
 // rendered notice line to stdout.
 //
-// This is the bridge the Python tree executes: the contract test in
-// tests/gateway/test_jev_notice_contract.py pipes every shared-table record
-// through this binary and asserts gateway/jev_notice.py renders the identical
-// line, so the twin is verified against the running Go implementation, not
-// merely against the table. Production gateways do not shell out to it —
-// deployments (pip, docker) carry no Go toolchain, the same reason every
-// other internal/* twin is executed by tests rather than at runtime.
+// This is the executable the production gateway runs for every Jev notice:
+// gateway/jev_notice.py resolves or builds this binary (content-hash-keyed
+// cache under $HERMES_HOME/cache/jevnotices) and pipes each record through
+// it — there is no Python formatter. The contract test in
+// tests/gateway/test_jev_notice_contract.py drives the same bridge over the
+// shared table in testdata/notice_cases.json.
 package main
 
 import (

@@ -19,8 +19,15 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform
+from gateway.jev_notice import go_formatter_binary
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
+
+pytestmark = pytest.mark.skipif(
+    go_formatter_binary() is None,
+    reason="jev notices are rendered by the Go formatter binary; no cached "
+           "binary and no Go toolchain to build one",
+)
 
 SESSION_KEY = "agent:main:telegram:dm:1001"
 

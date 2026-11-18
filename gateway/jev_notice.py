@@ -6,124 +6,142 @@ carrying purpose, classified subject, decision/confidence and a sanitized
 error class — never request/response bodies, credentials, message content or
 prompt text. Notices never enter model context and never change a decision.
 
-The canonical formatter is the Go package ``internal/jevnotices``. This
-Python twin is what the gateway hot path formats with: deployments (pip,
-docker) carry no Go toolchain and the repo has no runtime Go bridge — the
-same twin arrangement as internal/cronyield, internal/cronunreachable,
-internal/citationstrip and friends. The twin is pinned against the RUNNING
-Go implementation: tests/gateway/test_jev_notice_contract.py builds
-``internal/jevnotices/cmd/jevnotice`` and asserts byte-identical output for
-every record in the shared table ``internal/jevnotices/testdata/
-notice_cases.json`` (which the Go tests also execute), so the two sides
-cannot drift apart silently.
+The ONLY formatter is the Go package ``internal/jevnotices``, executed as the
+``cmd/jevnotice`` binary: this module contains no formatting logic, it maps
+decision objects to record dicts and pipes them through the binary
+(stdin JSON → stdout line). The binary is resolved once per process from the
+``$HERMES_HOME/cache/jevnotices`` cache, building it with the local Go
+toolchain from the repo checkout when missing (content-hashed filename, so a
+tree update can never serve a stale formatter). When no binary can be
+produced (no Go toolchain, build failure) the gateway posts NO notice and
+logs once — an omitted troubleshooting line is the safe failure; a wrong or
+duplicated formatter is not.
 """
 
 from __future__ import annotations
 
-import re
+import hashlib
+import json
+import logging
+import os
+import shutil
+import subprocess
+import threading
+from pathlib import Path
 from typing import Any, Dict, Optional
 
-PREFIX = "🔎 jev "
+logger = logging.getLogger(__name__)
 
 PURPOSE_GOAL_INTENT = "goal-intent"
 PURPOSE_RESPONSE_GATE = "response-gate"
 PURPOSE_REACTION_GATE = "reaction-gate"
 
-#: Fixed display order of the response gate's four component nouls (the
-#: judge's question order). Keys missing from ``scores`` render as 0.00.
-_SCORE_KEYS = ("addresses_bot", "continues_bot_thread", "joins_bot_thread", "noise")
+_BINARY_SOURCES = ("notice.go", "cmd/jevnotice/main.go")
 
-_TOKEN_DISALLOWED = re.compile(r"[^A-Za-z0-9_.\-]+")
-_MAX_TOKEN_CHARS = 48
-_MAX_TEXT_CHARS = 80
-
-
-def sanitize_token(raw: Any) -> str:
-    """Clean one error/label fragment (class token only; detail after ':' dropped)."""
-    head = str(raw or "").split(":", 1)[0].strip()
-    cleaned = _TOKEN_DISALLOWED.sub("_", head).strip("_")
-    if not cleaned:
-        return "error"
-    return cleaned[:_MAX_TOKEN_CHARS]
+_bridge_lock = threading.Lock()
+_bridge_binary: Optional[str] = None
+_bridge_resolved = False
+_unavailable_logged = False
 
 
-def sanitize_text(raw: Any) -> str:
-    """Clean one free-text fragment (the subject); ``"message"`` when unusable."""
-    cleaned = " ".join(str(raw or "").split())
-    return cleaned[:_MAX_TEXT_CHARS] or "message"
+def _repo_module_dir() -> Optional[Path]:
+    """The internal/jevnotices checkout this file's tree ships, when present."""
+    module_dir = Path(__file__).resolve().parents[1] / "internal" / "jevnotices"
+    if all((module_dir / name).is_file() for name in _BINARY_SOURCES):
+        return module_dir
+    return None
 
 
-def sanitize_author(raw: Any) -> str:
-    """Clean one display-name/emoji fragment; empty means omit.
+def _cached_binary_path() -> Path:
+    """Cache location, keyed by a hash of the Go sources (staleness-proof)."""
+    module_dir = _repo_module_dir()
+    digest = "built"
+    if module_dir is not None:
+        hasher = hashlib.sha256()
+        for name in _BINARY_SOURCES:
+            hasher.update((module_dir / name).read_bytes())
+        digest = hasher.hexdigest()[:12]
+    from hermes_constants import get_hermes_home
 
-    Controls, backticks and ``@`` are dropped: a notice fragment must never be
-    actionable chat syntax (ping, code fence).
+    return get_hermes_home() / "cache" / "jevnotices" / f"jevnotice-{digest}"
+
+
+def _resolve_go_binary() -> Optional[str]:
+    """Find a usable cmd/jevnotice binary: cached, or built from the checkout."""
+    binary = _cached_binary_path()
+    try:
+        if binary.is_file() and os.access(binary, os.X_OK):
+            return str(binary)
+    except OSError:
+        return None
+    module_dir = _repo_module_dir()
+    if module_dir is None or shutil.which("go") is None:
+        return None
+    try:
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        staging = binary.with_suffix(".tmp")
+        build = subprocess.run(
+            ["go", "build", "-o", str(staging), "./cmd/jevnotice"],
+            cwd=module_dir, capture_output=True, text=True, timeout=300,
+        )
+        if build.returncode == 0 and staging.is_file():
+            os.replace(staging, binary)  # atomic: concurrent gateways converge
+            return str(binary)
+        logger.warning(
+            "jev notice formatter build failed (go build exit %s); notices disabled "
+            "until it succeeds", build.returncode,
+        )
+    except Exception as exc:
+        logger.warning("jev notice formatter build failed: %s", exc)
+    return None
+
+
+def go_formatter_binary() -> Optional[str]:
+    """The resolved Go formatter binary path, or None when unavailable."""
+    global _bridge_binary, _bridge_resolved
+    with _bridge_lock:
+        if not _bridge_resolved:
+            _bridge_binary = _resolve_go_binary()
+            _bridge_resolved = True
+        return _bridge_binary
+
+
+def format_notice(record: Dict[str, Any]) -> Optional[str]:
+    """Render one record through the Go formatter binary.
+
+    Returns the notice line, or None when the binary is unavailable or the
+    render failed — callers skip the notice then; they never substitute a
+    local rendering.
     """
-    text = str(raw or "")
-    cleaned = "".join(ch if ch.isprintable() else " " for ch in text)
-    cleaned = re.sub(r"[`@]", "", cleaned)
-    cleaned = " ".join(cleaned.split())
-    return cleaned[:_MAX_TEXT_CHARS]
-
-
-def format_notice(record: Dict[str, Any]) -> str:
-    """Render one notice line from a record dict (see the shared case table).
-
-    Pure: no I/O, no clock; fails closed to a safe line on junk input.
-    """
-    purpose = sanitize_token(record.get("purpose"))
-    parts = [PREFIX, purpose]
-    attempt = int(record.get("attempt") or 0)
-    attempts = int(record.get("attempts") or 0)
-    if attempts > 1 and attempt > 0:
-        parts.append(f" (attempt {attempt}/{attempts})")
-    parts.append(" ")
-    parts.append(sanitize_text(record.get("subject")))
-    author = sanitize_author(record.get("author"))
-    if author:
-        parts.append(f" from {author}")
-    parts.append(": ")
-    parts.append(_verdict(record, purpose))
-    return "".join(parts)
-
-
-def _verdict(record: Dict[str, Any], purpose: str) -> str:
-    error = record.get("error")
-    if error:
-        return f"failed ({sanitize_token(error)})"
-    if purpose == PURPOSE_GOAL_INTENT:
-        label = sanitize_token(record.get("label"))
-        confidence = record.get("confidence")
-        if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
-            return f"{label} (confidence {float(confidence):.2f})"
-        return f"{label} (confidence unavailable)"
-    if purpose == PURPOSE_RESPONSE_GATE:
-        allowed = record.get("allowed")
-        if not isinstance(allowed, bool):
-            return "decision unavailable"
-        scores = record.get("scores") if isinstance(record.get("scores"), dict) else {}
-        rendered = list(_SCORE_KEYS)
-        extras = sorted(k for k in scores if k not in rendered)
-        rendered.extend(extras)
-        body = " ".join(f"{key}={float(scores.get(key, 0.0)):.2f}" for key in rendered)
-        return f"{'allow' if allowed else 'deny'} ({body})"
-    if purpose == PURPOSE_REACTION_GATE:
-        emoji = sanitize_author(record.get("emoji"))
-        abstain = record.get("abstain")
-        suffix = ""
-        if isinstance(abstain, (int, float)) and not isinstance(abstain, bool):
-            suffix = f" (abstain {float(abstain):.2f})"
-        if emoji:
-            return f"react {emoji}{suffix}"
-        return f"no reaction{suffix}"
-    return "decision unavailable"
+    global _unavailable_logged
+    binary = go_formatter_binary()
+    if binary is None:
+        if not _unavailable_logged:
+            _unavailable_logged = True
+            logger.warning(
+                "jev notices unavailable: no cached formatter binary and no Go "
+                "toolchain to build one (notices are skipped, decisions unaffected)"
+            )
+        return None
+    try:
+        run = subprocess.run(
+            [binary], input=json.dumps(record),
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception as exc:
+        logger.debug("jev notice render failed: %s", exc)
+        return None
+    if run.returncode != 0:
+        logger.debug("jev notice formatter exited %s: %s", run.returncode, run.stderr.strip())
+        return None
+    return run.stdout.rstrip("\n") or None
 
 
 # ── record builders: one per owning call site ────────────────────────────
-# Each builder turns one real decision object into a record for
-# :func:`format_notice`. The no-call paths (bypass, missing credential,
-# suppression) never construct a record — no notice may claim an HTTP request
-# that was not made.
+# Each builder turns one real decision object into a record dict for
+# :func:`format_notice` (the Go binary sanitizes every field). The no-call
+# paths (bypass, missing credential, suppression) never construct a record —
+# no notice may claim an HTTP request that was not made.
 
 
 def goal_intent_attempt_record(

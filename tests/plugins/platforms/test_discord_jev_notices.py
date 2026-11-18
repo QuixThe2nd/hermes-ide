@@ -20,6 +20,14 @@ import pytest
 
 discord = pytest.importorskip("discord")
 
+from gateway.jev_notice import go_formatter_binary  # noqa: E402
+
+pytestmark = pytest.mark.skipif(
+    go_formatter_binary() is None,
+    reason="jev notices are rendered by the Go formatter binary; no cached "
+           "binary and no Go toolchain to build one",
+)
+
 from gateway.config import PlatformConfig, ReactionGateConfig, ResponseGateConfig  # noqa: E402
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 from plugins.platforms.discord.reaction_gate import JevChoiceClient  # noqa: E402

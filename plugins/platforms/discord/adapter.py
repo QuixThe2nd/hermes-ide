@@ -1838,9 +1838,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # One visible notice per real judge request (echo channels already post
         # their judge-score line; a no-call outcome produces no record at all).
         record = response_gate_record(decision, author=self._jev_notice_author(message))
-        if record is not None:
+        line = format_notice(record) if record is not None else None
+        if line is not None:
             await self._send_jev_notice(
-                format_notice(record),
+                line,
                 str(candidate.get("conversation_id") or ""),
                 str(candidate.get("message_id") or ""),
             )
@@ -2265,9 +2266,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             notice_record = reaction_gate_record(
                 decision, author=self._jev_notice_author(message),
             )
-            if notice_record is not None:
+            notice_line = format_notice(notice_record) if notice_record is not None else None
+            if notice_line is not None:
                 await self._send_jev_notice(
-                    format_notice(notice_record),
+                    notice_line,
                     str(candidate.get("conversation_id") or ""),
                     str(candidate.get("message_id") or ""),
                 )
