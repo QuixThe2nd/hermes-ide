@@ -2178,7 +2178,7 @@ class GatewayShutdownMixin:
 
     def request_restart(
         self, *, detached: bool = False, via_service: bool = False, overlap: bool = True,
-        restart_platforms: bool = True, from_update: bool = False,
+        from_update: bool = False,
     ) -> bool:
         from gateway.run import _RESTART_WAIT_RETRY_SLEEP_S
         if self._restart_task_started:
@@ -2205,7 +2205,6 @@ class GatewayShutdownMixin:
         self._restart_detached = detached
         self._restart_via_service = via_service
         self._restart_from_update = bool(from_update)
-        self._restart_platforms = bool(restart_platforms)
         self._restart_task_started = True
         # Refuse new turns immediately while in-flight work finishes.
         # Keep ``_running`` True so adapters stay connected and the active
@@ -2225,7 +2224,6 @@ class GatewayShutdownMixin:
                     from gateway.overlap_restart import spawn_successor
                     await spawn_successor(
                         self, via_service=via_service,
-                        restart_platforms=bool(getattr(self, "_restart_platforms", True)),
                     )
             except Exception:
                 logger.exception("Overlapping restart successor could not start; using the legacy drain path")
@@ -2341,7 +2339,6 @@ class GatewayShutdownMixin:
             self._restart_detached = False
             self._restart_via_service = False
             self._restart_from_update = False
-            self._restart_platforms = True
             if not cycle_was_open:
                 # This request opened (or was opening) the restart cycle;
                 # a half-minted generation with no drain task behind it must

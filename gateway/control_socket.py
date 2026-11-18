@@ -364,23 +364,20 @@ def pause_gateway_for_update(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIM
     return query_gateway_control(home, "pause-for-update", timeout=timeout)
 
 
-def request_gateway_restart(home: Path, *, restart_platforms: bool = True,
-                             restart_hub: bool = False,
-                             requester: Optional[dict] = None,
-                             timeout: float = 15.0) -> Optional[dict[str, Any]]:
+def request_gateway_restart(home: Path, *, restart_hub: bool = False,
+                            requester: Optional[dict] = None,
+                            timeout: float = 15.0) -> Optional[dict[str, Any]]:
     """Ask the gateway serving ``home`` to run the ONE restart core in-process.
 
     This is the ``hermes gateway restart`` CLI's primary transport: the same
     overlap pipeline ``/restart`` and the agent ``restart`` tool use, triggered
-    out-of-process. ``restart_platforms`` carries the ``--no-platforms``
-    per-call override; ``restart_hub`` is the opt-in hub-unit bounce the
+    out-of-process. ``restart_hub`` is the opt-in hub-unit bounce the
     SUCCESSOR performs (missing/false never bounces — old clients are safe).
     Returns the ACK ``{"queued", "status", ...}`` or None when no gateway
     answers / the gateway predates the verb — the caller then falls back to
     the SIGUSR1 / service-manager transports.
     """
     params: dict[str, Any] = {
-        "restart_platforms": bool(restart_platforms),
         "restart_hub": bool(restart_hub),
     }
     if isinstance(requester, dict) and requester:

@@ -242,7 +242,7 @@ async def test_queue_user_restart_true_writes_pending_before_request_restart(
     assert isinstance(payload["requested_at"], float)
     # restart_hub never becomes a request_restart kwarg — the file is the hand-off.
     runner.request_restart.assert_called_once_with(
-        detached=True, via_service=False, restart_platforms=False
+        detached=True, via_service=False
     )
 
 
@@ -298,8 +298,7 @@ async def _queue(runner, *, restart_hub=False, message_id="m1"):
     from gateway.restart import queue_user_restart
 
     return await queue_user_restart(
-        runner, make_restart_source(), message_id,
-        restart_platforms=False, restart_hub=restart_hub,
+        runner, make_restart_source(), message_id, restart_hub=restart_hub,
     )
 
 

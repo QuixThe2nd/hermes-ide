@@ -392,7 +392,7 @@ def test_handler_uses_service_path_under_supervisor(gateway_loop, monkeypatch):
     assert result["via_service"] is True
     assert "active_agents" in result
     runner.request_restart.assert_called_once_with(
-        detached=False, via_service=True, restart_platforms=True
+        detached=False, via_service=True
     )
 
 
@@ -411,7 +411,7 @@ def test_handler_uses_detached_helper_when_unsupervised(gateway_loop, monkeypatc
     assert result["status"] == "restarting"
     assert result["via_service"] is False
     runner.request_restart.assert_called_once_with(
-        detached=True, via_service=False, restart_platforms=True
+        detached=True, via_service=False
     )
 
 
@@ -430,7 +430,7 @@ def test_handler_uses_service_path_in_container(gateway_loop, monkeypatch):
     assert result["success"] is True
     assert result["via_service"] is True
     runner.request_restart.assert_called_once_with(
-        detached=False, via_service=True, restart_platforms=True
+        detached=False, via_service=True
     )
 
 
@@ -629,9 +629,8 @@ def test_handler_queues_via_control_socket_when_no_runner(monkeypatch):
     _no_runner(monkeypatch)
     requested = {}
 
-    def _fake_restart(home, *, restart_platforms=True, restart_hub=False, timeout=15.0):
+    def _fake_restart(home, *, restart_hub=False, timeout=15.0):
         requested["home"] = home
-        requested["restart_platforms"] = restart_platforms
         requested["restart_hub"] = restart_hub
         return {
             "queued": True,
@@ -662,7 +661,6 @@ def test_handler_queues_via_control_socket_when_no_runner(monkeypatch):
     }
     assert set(result) == expected_fields
     assert requested["home"] == get_hermes_home()
-    assert requested["restart_platforms"] is True
     assert requested["restart_hub"] is False
 
 
@@ -672,7 +670,7 @@ def test_handler_socket_request_includes_worker_chat_identity(monkeypatch):
     _no_runner(monkeypatch)
     requested = {}
 
-    def _fake_restart(home, *, restart_platforms=True, restart_hub=False, timeout=15.0, requester=None):
+    def _fake_restart(home, *, restart_hub=False, timeout=15.0, requester=None):
         requested["requester"] = requester
         requested["restart_hub"] = restart_hub
         return {"queued": True, "status": "restarting"}
@@ -1369,7 +1367,7 @@ else:
         assert result["active_agents"] == 3
         assert result["process"] == "pid 3376901"
         assert "draining" not in result
-        assert acks == [{"restart_platforms": True, "restart_hub": False}], acks
+        assert acks == [{"restart_hub": False}], acks
         from agent.turn_control import turn_control_field_for
         assert set(result) == {
             "success", "status", "process", "active_agents", "via_service",

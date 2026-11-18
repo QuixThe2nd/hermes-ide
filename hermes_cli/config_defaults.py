@@ -1502,11 +1502,9 @@ DEFAULT_CONFIG = {
         # agent.cron_drain_timeout, agent.restart_after_turn_timeout (all
         # still read; env-var mirrors are deprecated).
         "drain_timeout": 86400,
-        # tool — one pipeline) also bounces platform gateway connections: the overlap
-        # successor takes over the platform transports and adapters reconnect on it.
-        # false = agent-core sessions restart without bouncing platform connections;
-        # `hermes gateway restart --no-platforms` overrides per call.
-        "restart_platforms": True,
+        # gateway.restart_platforms was removed: every restart hands over to the
+        # overlap successor through the platform-adapter hubs. Existing values
+        # in user config.yaml files are harmless leftovers and ignored.
         # Durable delivery-obligation ledger: final responses are recorded in state.db around the
         # platform send; a gateway that died between finalize and platform ACK redelivers on next
         # boot (ambiguous cases carry a "recovered reply — may be a duplicate" marker;
