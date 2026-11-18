@@ -24,7 +24,7 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 class TestCronCommandLifecycle:
 
-    def test_edit_persists_user_owned_inference_pins(self, tmp_cron_dir, capsys):
+    def test_edit_ignores_model_provider_pins_with_warning(self, tmp_cron_dir, capsys):
         job = create_job(prompt="Daily report", schedule="every 1h")
         parser = argparse.ArgumentParser(prog="hermes")
         subparsers = parser.add_subparsers(dest="command")
@@ -44,9 +44,11 @@ class TestCronCommandLifecycle:
         cron_command(args)
 
         updated = get_job(job["id"])
-        assert updated["model"] == "new-model"
-        assert updated["provider"] == "nous"
-        assert "Updated job" in capsys.readouterr().out
+        assert not updated.get("model")
+        assert not updated.get("provider")
+        out = capsys.readouterr().out
+        assert "Updated job" in out
+        assert "pins are removed" in out
 
     def test_edit_can_replace_and_clear_skills(self, tmp_cron_dir, capsys):
         job = create_job(
