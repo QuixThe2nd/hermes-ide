@@ -337,4 +337,4 @@ SUBAGENT_LABEL_CHARS = 200
 
 # The delegate tools whose spawn-shaped calls become dispatch cards.
 DELEGATE_SPAWN_NAMES = ("delegate_agent", "delegate_task",
-                        "delegate_claude_agent", "delegate_cursor_agent")
+                        "delegate_claude_agent")

@@ -1516,7 +1516,7 @@ class TurnRunner(_TurnRunnerCore):
 
     def _skip_context_files(self, platform_key) -> bool:
         """gateway.platforms.<plat>.skip_context_files: messaging platforms may opt out of
-        filesystem-heavy context-file discovery (SOUL.md, AGENTS.md, .cursorrules)."""
+        filesystem-heavy context-file discovery (SOUL.md, AGENTS.md, CLAUDE.md)."""
         platforms_cfg = (self._ctx.user_config.get("gateway") or {}).get("platforms") or {}
         # ``hermes gateway setup`` writes ``gateway.platforms`` as a LIST of enabled platform names,
         # not a dict; treat any non-dict shape as "no per-platform overrides" rather than crashing.
@@ -2014,14 +2014,10 @@ class TurnRunner(_TurnRunnerCore):
         # (tool_calls/tool_call_id/reasoning) pass through intact so the API sees valid assistant→tool
         # sequences. Observed group-context rows are withheld from replayable history and attached to
         # the current addressed message as API-only context.
-        agent_history, observed_group_context, cursor_recovery_note = _build_gateway_agent_history(
+        agent_history, observed_group_context = _build_gateway_agent_history(
             ctx.history, channel_prompt=ctx.channel_prompt,
             inject_timestamps=_message_timestamps_enabled(ctx.user_config),
-            hermes_session_id=ctx.session_id,
         )
-        # Recovery preparation decides whether this note is an ordinary new
-        # message or must yield to the pure continuation seam.
-        self._cursor_recovery_note = cursor_recovery_note
         self._live_history_selected = False
         self._live_replay_source = None
         # FTS write-corruption guard: if persistence failed silently the reloaded transcript is stale

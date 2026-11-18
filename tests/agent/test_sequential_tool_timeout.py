@@ -219,7 +219,7 @@ def _delegate_call(call_id: str = "delegate-1"):
     return SimpleNamespace(
         id=call_id,
         type="function",
-        function=SimpleNamespace(name="delegate_cursor_agent", arguments="{}"),
+        function=SimpleNamespace(name="delegate_claude_agent", arguments="{}"),
     )
 
 
@@ -231,7 +231,7 @@ def test_sequential_timeout_skips_unbounded_delegate_tools(tmp_path, monkeypatch
     included, since the delegate coding tools run with no stall watchdog of
     their own. The generic deadline must not fire for tools in
     timeouts.tools.unbounded_tools (fork default includes
-    delegate_cursor_agent / delegate_claude_agent).
+    delegate_claude_agent).
     """
     agent = _make_agent(tmp_path)
     terminal_events: list[dict] = []

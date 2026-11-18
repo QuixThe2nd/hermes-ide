@@ -48,12 +48,10 @@ def _rebuild_durable_history(turn, preparation: TurnMessagePreparation) -> None:
     (
         preparation.agent_history,
         preparation.observed_group_context,
-        turn._cursor_recovery_note,
     ) = _build_gateway_agent_history(
         ctx.history,
         channel_prompt=ctx.channel_prompt,
         inject_timestamps=_message_timestamps_enabled(ctx.user_config),
-        hermes_session_id=ctx.session_id,
     )
     preparation.history_media_paths = _collect_history_media_paths(
         preparation.agent_history
@@ -554,14 +552,6 @@ def _replay_interrupted_batch(turn, preparation: TurnMessagePreparation) -> None
     preparation.blocked_error = "forced_resume_text_tail_trim_failed"
 
 
-def _append_cursor_recovery_note(turn, preparation: TurnMessagePreparation) -> None:
-    ctx = turn._ctx
-    note = getattr(turn, "_cursor_recovery_note", None)
-    if not note:
-        return
-    ctx.message = f"{note}\n\n{ctx.message}" if ctx.message else note
-    preparation.continue_interrupted_turn = False
-
 
 def prepare_turn_message(
     turn,
@@ -636,8 +626,6 @@ def prepare_turn_message(
                         serving_identity=serving_identity,
                     )
                 )
-        if not restart_tool_continuation:
-            _append_cursor_recovery_note(turn, preparation)
     elif fresh_tool_tail:
         preparation.persist_user_message = ctx.message
         ctx.message = (
@@ -647,9 +635,6 @@ def prepare_turn_message(
             "below FIRST. Do NOT re-execute old tool calls from the history.]\n\n"
             + ctx.message
         )
-    elif not resume_pending:
-        # Preserve ordinary observed-group cursor recovery outside resume.
-        _append_cursor_recovery_note(turn, preparation)
 
     turn._prepend_pending_note("_pending_skills_reload_notes")
     if isinstance(ctx.message, str) and not ctx.message.strip() and resume_pending:

@@ -58,11 +58,11 @@ def test_build_history_injects_only_when_enabled():
     ]
 
     # Default (off): user content stays clean, no timestamp prefix.
-    agent_history, _, _ = _build_gateway_agent_history(history)
+    agent_history, _ = _build_gateway_agent_history(history)
     assert agent_history[0]["content"] == "hello"
 
     # Enabled: user content gets exactly one timestamp prefix.
-    agent_history, _, _ = _build_gateway_agent_history(history, inject_timestamps=True)
+    agent_history, _ = _build_gateway_agent_history(history, inject_timestamps=True)
     assert agent_history[0]["content"].startswith("[")
     assert agent_history[0]["content"].endswith("hello")
     # Assistant message is never timestamped.

@@ -881,10 +881,6 @@ def _describe_delegate_agent_phrase(tool_name: str, args: dict) -> str | None:
         if reason:
             return f"Delegated to Claude agent: {reason}"
         return _describe_delegate_child_phrase("Delegating to a Claude agent")(tool_name, args)
-    if backend == "cursor":
-        if reason:
-            return f"Delegated to Cursor agent: {reason}"
-        return _describe_delegate_child_phrase("Delegating to a Cursor agent")(tool_name, args)
     return _describe_delegate_phrase(tool_name, args)
 
 
@@ -1178,9 +1174,8 @@ _DESCRIBE_SUBJECT_BUILDERS.update({
     "memory": _describe_memory_phrase,
     "send_message": _describe_send_message_phrase,
     "delegate_task": _describe_delegate_phrase,  # legacy alias: subagent phrasing
-    "delegate_agent": _describe_delegate_agent_phrase,  # backend-aware (subagent/claude/cursor)
+    "delegate_agent": _describe_delegate_agent_phrase,  # backend-aware (subagent/claude)
     "delegate_claude_agent": _describe_delegate_child_phrase("Delegating to a Claude agent"),
-    "delegate_cursor_agent": _describe_delegate_child_phrase("Delegating to a Cursor agent"),
     "delegate_assistant": _describe_delegate_assistant_phrase,
     "delegate_research": _describe_delegate_research_phrase,
     "dispatch_agent": _describe_dispatch_agent_phrase,

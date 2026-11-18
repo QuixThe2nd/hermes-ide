@@ -1193,8 +1193,7 @@ PATCH_SCHEMA = {
         "Returns a unified diff. Auto-runs syntax checks after editing. "
         "Finds a unique string and replaces it. "
         "Source-code edits do not belong here — route code changes through "
-        "delegate_agent(backend=\"cursor\") (small/medium) or "
-        "delegate_agent(backend=\"claude\") with /goal (medium/large); "
+        "delegate_agent(backend=\"claude\") with /goal; "
         "this tool is for configs, docs, memory, and scratch."
     ),
     "parameters": {
@@ -1242,8 +1241,7 @@ _PATCH_V4A_DESCRIPTION = (
     "PATCH MODE (mode='patch'): apply V4A multi-file patches for bulk changes. "
     "REQUIRED PARAMETERS: mode, patch. "
     "Source-code edits do not belong here — route code changes through "
-    "delegate_agent(backend=\"cursor\") (small/medium) or "
-    "delegate_agent(backend=\"claude\") with /goal (medium/large); "
+    "delegate_agent(backend=\"claude\") with /goal; "
     "this tool is for configs, docs, memory, and scratch."
 )
 

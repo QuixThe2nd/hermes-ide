@@ -13,7 +13,7 @@ through ``tools.claude_viewer_url`` (the single host resolver), as one
 small receipt the moment the child spawns — for synchronous and
 background runs alike.
 
-Security shape (mirrors ``tools/cursor_run_receipts.py``):
+Security shape:
 
 * deterministic, hash-derived file name under the SAME Hermes home the
   run logs into — a reader never scans, and never touches another

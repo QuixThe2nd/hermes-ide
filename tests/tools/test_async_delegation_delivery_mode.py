@@ -317,10 +317,10 @@ class TestResolveBackgroundArg:
 
 
 class TestAllFourToolsShareTheResolver:
-    """No tool reimplements the matrix: all four model-facing entries consult
+    """No tool reimplements the matrix: every model-facing entry consults
     the SAME resolve_background_arg, with the raw args, before any work."""
 
-    @pytest.mark.parametrize("tool", ["delegate_agent", "delegate_claude_agent", "delegate_cursor_agent", "delegate_assistant"])
+    @pytest.mark.parametrize("tool", ["delegate_agent", "delegate_claude_agent", "delegate_assistant"])
     def test_every_delegate_tool_consults_the_shared_resolver(self, monkeypatch, tool):
         calls = []
 
@@ -351,11 +351,6 @@ class TestAllFourToolsShareTheResolver:
 
             monkeypatch.setattr(mod, "delegate_claude_agent", lambda *a, **kw: "{}")
             mod._handle_delegate_claude_agent({"task": "t", "workdir": "/w"})
-        elif tool == "delegate_cursor_agent":
-            import tools.cursor_agent_tool as mod
-
-            monkeypatch.setattr(mod, "delegate_cursor_agent", lambda *a, **kw: "{}")
-            mod._handle_delegate_cursor_agent({"task": "t", "workdir": "/w"})
         else:
             import plugins.missions as pm
 
@@ -642,7 +637,7 @@ def test_register_inline_wait_creates_durable_external_row(tmp_path, monkeypatch
     "kind,tool,expected",
     [
         ("cli_agent", "delegate_claude_agent", "ASYNC CLAUDE CODE RUN COMPLETE"),
-        ("cloud_agent", "delegate_cursor_agent", "ASYNC CURSOR CLOUD RUN COMPLETE"),
+        ("cloud_agent", None, "ASYNC DELEGATION COMPLETE"),  # unknown kind -> generic header
         ("mission", "delegate_assistant", "ASSISTANT MISSION COMPLETE"),
         (None, None, "ASYNC DELEGATION COMPLETE"),
     ],

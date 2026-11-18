@@ -446,7 +446,7 @@ class TestStoredPromptCwdDrift:
     def test_project_context_cannot_force_a_rebuild(self):
         """🔴 CACHE INVARIANT: user project text must never invalidate the prompt.
 
-        The prompt embeds AGENTS.md / CLAUDE.md / .cursorrules in the context
+        The prompt embeds AGENTS.md / CLAUDE.md in the context
         tier, which sits AFTER the host-info block. A whole-prompt scan for
         ``Current working directory:`` therefore matched the user's own file
         and compared runtime state against project prose. That mismatch never

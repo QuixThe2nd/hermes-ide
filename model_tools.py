@@ -552,7 +552,7 @@ def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disa
 _AGENT_LOOP_TOOLS = {"todo", "todo_list", "memory", "session_search"}
 
 # Delegate names are NOT stubbed: delegate_agent must execute its real handler
-# wherever delegation is legal - backend-routed (claude/cursor) calls that the
+# wherever delegation is legal - backend-routed (claude) calls that the
 # turn loop deliberately falls through to the registry, and child/cron/resumed
 # sessions that dispatch without any turn-loop interceptor. _execute_tool
 # forwards the ambient dispatch context's agent as ``parent_agent``; with no

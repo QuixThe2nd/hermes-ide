@@ -1581,7 +1581,7 @@ def cmd_chat(args):
 
     _start_chat_background_prefetch()
 
-    # --ignore-rules: skip AGENTS.md/SOUL.md/.cursorrules injection, memory
+    # --ignore-rules: skip AGENTS.md/SOUL.md injection, memory
     # entries and preloaded skills (AIAgent(skip_context_files, skip_memory)).
     if getattr(args, "ignore_rules", False):
         os.environ["HERMES_IGNORE_RULES"] = "1"

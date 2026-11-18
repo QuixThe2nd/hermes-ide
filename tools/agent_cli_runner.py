@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Shared runner for external coding-agent CLIs (Cursor Agent, claude-glm).
+"""Shared runner for external coding-agent CLIs (claude-glm / claude-kimi).
 
 One implementation of spawn / stream-to-log / watchdog used by
-``delegate_cursor_agent``, ``delegate_claude_agent``, and the dev-pipeline
+``delegate_claude_agent`` and the dev-pipeline
 executor's attempt runner — so behavior (timeouts, stall detection,
 process-group cleanup) cannot drift between callers.
 

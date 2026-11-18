@@ -2,10 +2,53 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 
 from gateway.platforms.base import SendResult
-from tests.gateway.test_discord_cursor_progress_embed import _make_discord_send_adapter
+
+
+def _make_discord_send_adapter(*, forum_parent: bool = False, send_side_effects=None):
+    from gateway.config import PlatformConfig
+    from plugins.platforms.discord.adapter import DiscordAdapter
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent_calls = []
+
+    async def _fake_send(**kwargs):
+        sent_calls.append(kwargs)
+        if send_side_effects:
+            effect = send_side_effects[len(sent_calls) - 1]
+            if isinstance(effect, Exception):
+                raise effect
+        return SimpleNamespace(id=9001)
+
+    channel_type = SimpleNamespace(value=15) if forum_parent else SimpleNamespace(value=0)
+    channel = SimpleNamespace(
+        send=AsyncMock(side_effect=_fake_send),
+        type=channel_type,
+    )
+    if forum_parent:
+        async def _create_thread(**kwargs):
+            thread_channel = SimpleNamespace(
+                send=AsyncMock(return_value=SimpleNamespace(id=9002)),
+                id=7777,
+            )
+            return SimpleNamespace(
+                thread=thread_channel,
+                message=SimpleNamespace(id=9001),
+                id=7777,
+            )
+        channel.create_thread = AsyncMock(side_effect=_create_thread)
+
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _cid: channel,
+        fetch_channel=AsyncMock(),
+    )
+    adapter._is_forum_parent = lambda ch: forum_parent
+    return adapter, channel, sent_calls
 
 
 # ---------------------------------------------------------------------------
@@ -41,7 +84,7 @@ def test_claude_agent_status_url_accepts_valid(content):
         "Claude Code Agent: ",
         "prefix Claude Code Agent: http://192.168.30.20:8787/",
         "Claude Code Agent: http://192.168.30.20:8787/ suffix",
-        "Claude Code Agent: https://cursor.com/agents/x",
+        "Claude Code Agent: https://example.com/agents/x",
         "Claude Code Agent: http://192.168.30.20:8787/watch live",
         "Claude Code Agent: http://192.168.30.20:8787/api/runs",
         "Claude Code Agent: http://192.168.30.20:8787/?x=1",
