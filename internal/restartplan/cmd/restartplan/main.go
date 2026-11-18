@@ -12,15 +12,18 @@
 // toolchain, the same reason every other internal/* twin is executed by
 // tests rather than at runtime.
 //
-// Request shape (one JSON object):
+// Request shapes (one JSON object, "op" selects; "" means "decide"):
 //
-//	{"trigger": "user" | "update_signal", "supervised": bool, "container": bool}
+//	{"op": "decide", "trigger": "user" | "update_signal",
+//	 "supervised": bool, "container": bool}
+//	  → prints the transport plan.
 //
-// Response (one JSON object on stdout):
+//	{"op": "exit_code", "restart_requested": bool, "via_service": bool,
+//	 "successor_started": bool, "supervised": bool,
+//	 "newer_live_generation": bool}
+//	  → prints the planned exit code as {"code": N, "special": bool}.
 //
-//	{"via_service": bool, "detached": bool, "spawns_successor": bool}
-//
-// An unknown trigger exits 2 with a message on stderr.
+// An unknown op or trigger exits 2 with a message on stderr.
 package main
 
 import (
@@ -33,25 +36,46 @@ import (
 
 func main() {
 	var request struct {
-		Trigger    string `json:"trigger"`
-		Supervised bool   `json:"supervised"`
-		Container  bool   `json:"container"`
+		Op                  string `json:"op"`
+		Trigger             string `json:"trigger"`
+		Supervised          bool   `json:"supervised"`
+		Container           bool   `json:"container"`
+		RestartRequested    bool   `json:"restart_requested"`
+		ViaService          bool   `json:"via_service"`
+		SuccessorStarted    bool   `json:"successor_started"`
+		NewerLiveGeneration bool   `json:"newer_live_generation"`
 	}
 	if err := json.NewDecoder(os.Stdin).Decode(&request); err != nil {
 		fmt.Fprintf(os.Stderr, "restartplan: unreadable request: %v\n", err)
 		os.Exit(2)
 	}
-	trigger, err := restartplan.ParseTrigger(request.Trigger)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	switch op := request.Op; op {
+	case "", "decide":
+		trigger, err := restartplan.ParseTrigger(request.Trigger)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		plan, err := restartplan.Decide(trigger, request.Supervised, request.Container)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		emit(plan)
+	case "exit_code":
+		emit(restartplan.ResolveExitCode(
+			request.RestartRequested, request.ViaService,
+			request.SuccessorStarted, request.Supervised,
+			request.NewerLiveGeneration,
+		))
+	default:
+		fmt.Fprintf(os.Stderr, "restartplan: unknown op %q\n", op)
 		os.Exit(2)
 	}
-	plan, err := restartplan.Decide(trigger, request.Supervised, request.Container)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
-	}
-	encoded, err := json.Marshal(plan)
+}
+
+func emit(value any) {
+	encoded, err := json.Marshal(value)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "restartplan: encode decision: %v\n", err)
 		os.Exit(2)

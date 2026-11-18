@@ -86,6 +86,60 @@ func ParseTrigger(raw string) (Trigger, error) {
 	}
 }
 
+// Exit codes shared with the Python twin (gateway/restart.py).
+const (
+	// ServiceRestartExitCode (75) asks the supervisor or container
+	// restart policy to relaunch this gateway.
+	ServiceRestartExitCode = 75
+	// OverlapRestartExitCode (76) tells the supervisor a live overlap
+	// successor already owns the unit (after a MAINPID handover).
+	OverlapRestartExitCode = 76
+)
+
+// ExitCode is the teardown half of the plan: what this dying process exits
+// with so exactly one replacement gateway exists afterwards.
+type ExitCode struct {
+	// Code is 75 (service restart), 76 (overlap handover), or 0 for an
+	// ordinary clean exit.
+	Code int `json:"code"`
+	// Special is false for the ordinary clean exit — Code 0 then carries
+	// no supervisor meaning.
+	Special bool `json:"special"`
+}
+
+// ResolveExitCode decides the planned exit code at teardown.
+//
+// restartRequested is this process's committed restart; viaService and
+// successorStarted come from the plan's execution (a successor may have
+// been spawned even when the request said via_service=false); supervised
+// re-checks live supervision, because a hub successor started by a
+// detached-flagged request still needs 76 under systemd — exiting 0 there
+// would make the supervisor start another gateway beside the successor,
+// and exiting 75 without a successor would kill the fleet unit while the
+// detached replay races it. An unsupervised, non-service restart exits
+// cleanly: the successor or the detached replay already owns the home.
+//
+// newerLiveGeneration is generation-array awareness (#844): a live NEWER
+// generation (hub registry) keeps the overlap exit code even when this
+// process's own successor died — the lineage continues in the newer
+// process and the supervisor must not start a second gateway. It matters
+// only on the service route; a manual host's exit stays clean either way.
+func ResolveExitCode(restartRequested, viaService, successorStarted, supervised, newerLiveGeneration bool) ExitCode {
+	if !restartRequested {
+		return ExitCode{}
+	}
+	if !viaService && !(successorStarted && supervised) {
+		return ExitCode{}
+	}
+	if successorStarted {
+		return ExitCode{Code: OverlapRestartExitCode, Special: true}
+	}
+	if viaService && newerLiveGeneration {
+		return ExitCode{Code: OverlapRestartExitCode, Special: true}
+	}
+	return ExitCode{Code: ServiceRestartExitCode, Special: true}
+}
+
 // Decide derives the transport plan for one restart request.
 //
 // supervised mirrors is_gateway_supervisor_process (a manager with a

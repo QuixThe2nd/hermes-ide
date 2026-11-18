@@ -446,8 +446,12 @@ def clear_pre_array_chain_marker() -> bool:
     return True
 
 
-def resolve_planned_restart_exit_code(runner: Any) -> Optional[int]:
-    """Return the supervisor restart code, or None for an ordinary clean exit.
+def planned_restart_exit_code(
+    *, restart_requested: bool, via_service: bool,
+    successor_started: bool, supervised: bool,
+    newer_live_generation: bool = False,
+) -> Optional[int]:
+    """Pure core of the planned-exit decision; Go twin: ``internal/restartplan``.
 
     A hub successor may have been started by a request whose ``via_service``
     flag was false. Re-check native supervision at teardown in that case:
@@ -460,21 +464,31 @@ def resolve_planned_restart_exit_code(runner: Any) -> Optional[int]:
     even when this process's own successor died — the lineage continues in
     the newer process and the supervisor must not start a second gateway.
     """
-    if not getattr(runner, "_restart_requested", False):
+    if not restart_requested:
         return None
-    successor_started = bool(getattr(runner, "_overlap_restart_successor_started", False))
-    if not getattr(runner, "_restart_via_service", False) and not (
-        successor_started and is_gateway_supervisor_process()
-    ):
+    if not via_service and not (successor_started and supervised):
         return None
     if successor_started:
         return GATEWAY_OVERLAP_RESTART_EXIT_CODE
+    if via_service and newer_live_generation:
+        return GATEWAY_OVERLAP_RESTART_EXIT_CODE
+    return GATEWAY_SERVICE_RESTART_EXIT_CODE
+
+
+def resolve_planned_restart_exit_code(runner: Any) -> Optional[int]:
+    """Return the supervisor restart code, or None for an ordinary clean exit."""
+    newer_live_generation = False
     if getattr(runner, "_restart_via_service", False):
         from gateway.overlap_restart import newest_live_other_pid
 
-        if newest_live_other_pid() is not None:
-            return GATEWAY_OVERLAP_RESTART_EXIT_CODE
-    return GATEWAY_SERVICE_RESTART_EXIT_CODE
+        newer_live_generation = newest_live_other_pid() is not None
+    return planned_restart_exit_code(
+        restart_requested=bool(getattr(runner, "_restart_requested", False)),
+        via_service=bool(getattr(runner, "_restart_via_service", False)),
+        successor_started=bool(getattr(runner, "_overlap_restart_successor_started", False)),
+        supervised=is_gateway_supervisor_process(),
+        newer_live_generation=newer_live_generation,
+    )
 
 
 def _restart_notify_payload(

@@ -20,7 +20,10 @@ from pathlib import Path
 
 import pytest
 
-from gateway.restart import restart_transport_plan
+from gateway.restart import (
+    planned_restart_exit_code,
+    restart_transport_plan,
+)
 
 _REPO = Path(__file__).resolve().parents[2]
 _TABLE = _REPO / "internal" / "restartplan" / "testdata" / "restart_cases.json"
@@ -29,6 +32,22 @@ _TABLE = _REPO / "internal" / "restartplan" / "testdata" / "restart_cases.json"
 def _shared_cases():
     return json.loads(_TABLE.read_text(encoding="utf-8"))["cases"]
 
+
+def _decide(case) -> dict:
+    return restart_transport_plan(
+        case["trigger"],
+        supervised=case["supervised"], container=case["container"],
+    )
+
+
+def _exit_code(case):
+    return planned_restart_exit_code(
+        restart_requested=case["restart_requested"],
+        via_service=case["via_service"],
+        successor_started=case["successor_started"],
+        supervised=case["supervised"],
+        newer_live_generation=case.get("newer_live_generation", False),
+    )
 
 @pytest.fixture(scope="session")
 def go_restartplan(tmp_path_factory) -> str | None:
@@ -46,13 +65,18 @@ def go_restartplan(tmp_path_factory) -> str | None:
     return str(binary)
 
 
+def _python_answer(case):
+    if case["op"] == "decide":
+        return _decide(case)
+    return _exit_code(case)
+
+def _expected(case):
+    return case["expect"] if case["op"] == "decide" else case["expect_exit_code"]
+
+
 @pytest.mark.parametrize("case", _shared_cases(), ids=lambda c: c["name"])
 def test_python_decides_the_shared_table(case):
-    got = restart_transport_plan(
-        case["trigger"],
-        supervised=case["supervised"], container=case["container"],
-    )
-    assert got == case["expect"]
+    assert _python_answer(case) == _expected(case)
 
 
 @pytest.mark.parametrize("case", _shared_cases(), ids=lambda c: c["name"])
@@ -61,15 +85,18 @@ def test_go_binary_decides_the_shared_table(case, go_restartplan):
         pytest.skip("no Go toolchain available")
     run = subprocess.run(
         [go_restartplan],
-        input=json.dumps({
-            "trigger": case["trigger"],
-            "supervised": case["supervised"],
-            "container": case["container"],
-        }),
+        input=json.dumps(case),
         capture_output=True, text=True, timeout=30,
     )
     assert run.returncode == 0, run.stderr
-    assert json.loads(run.stdout) == case["expect"]
+    answer = json.loads(run.stdout)
+    if case["op"] == "exit_code":
+        # {"code": N, "special": bool} ↔ the Python None-or-int answer.
+        want = _expected(case)
+        assert answer["special"] == (want is not None)
+        assert (answer["code"] if answer["special"] else None) == want
+    else:
+        assert answer == _expected(case)
 
 
 def test_trigger_never_changes_the_transport():
