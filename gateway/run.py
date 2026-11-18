@@ -4124,7 +4124,7 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
 # processing, *before* any await.  Prevents a second message for the same
 # session from bypassing the "already running" guard during the async gap
 # between the guard check and actual agent creation.
-_AGENT_PENDING_SENTINEL = object()
+from gateway.sentinels import AGENT_PENDING_SENTINEL as _AGENT_PENDING_SENTINEL  # noqa: E402  (shared across __main__/gateway.run copies)
 
 # Conversation-scoped per-session state registry (legacy contract).
 # The state itself now lives in ``SessionState.conversation`` (see

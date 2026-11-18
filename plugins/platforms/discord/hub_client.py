@@ -276,11 +276,11 @@ class DiscordHubClientAdapter(HubOverlapClientMixin, BasePlatformAdapter):
 
     async def _open_socket(self) -> None:
         try:
-            self._reader, self._writer = await asyncio.open_unix_connection(str(self._socket_path))
+            self._reader, self._writer = await asyncio.open_unix_connection(str(self._socket_path), limit=16 * 1024 * 1024)
         except (FileNotFoundError, ConnectionRefusedError, OSError):
             if not await self._start_hub():
                 raise
-            self._reader, self._writer = await asyncio.open_unix_connection(str(self._socket_path))
+            self._reader, self._writer = await asyncio.open_unix_connection(str(self._socket_path), limit=16 * 1024 * 1024)
 
     async def _start_hub(self) -> bool:
         """Start the installation hub when no service manager has done so.
