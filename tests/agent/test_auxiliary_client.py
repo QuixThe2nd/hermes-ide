@@ -3316,6 +3316,97 @@ class TestCodexAdapterPromptCacheKey:
         ])
         assert "prompt_cache_retention" not in captured
 
+    def test_litellm_route_sends_system_prompt_as_leading_input_item(self):
+        """Auxiliary Responses calls against a bridged (non-OpenAI-native) endpoint must
+        carry the system prompt as a leading system input item, matching the main
+        transport: LiteLLM's Anthropic bridge only injects cache_control on message-role
+        system rows, so an ``instructions`` payload stays cache-cold."""
+        adapter, captured = self._build_adapter(
+            base_url="http://192.168.30.21:4000/v1",
+            model="hermes",
+        )
+        adapter.create(messages=[
+            {"role": "system", "content": "Summarize faithfully."},
+            {"role": "user", "content": "hi"},
+        ])
+        assert "instructions" not in captured
+        assert captured["input"][0] == {"role": "system", "content": "Summarize faithfully."}
+        assert captured["input"][1] == {"role": "user", "content": "hi"}
+        # The cache key stays content-addressed over the real system text.
+        assert captured.get("prompt_cache_key", "").startswith("pck_")
+
+    def test_official_openai_route_keeps_instructions_wire(self):
+        adapter, captured = self._build_adapter(
+            base_url="https://api.openai.com/v1",
+            model="gpt-5.5",
+        )
+        adapter.create(messages=[
+            {"role": "system", "content": "Summarize faithfully."},
+            {"role": "user", "content": "hi"},
+        ])
+        assert captured["instructions"] == "Summarize faithfully."
+        assert not any(item.get("role") == "system" for item in captured["input"])
+
+    def test_shared_adapter_concurrent_bridged_calls_do_not_leak_prompts(self):
+        """Aux adapters are shared across concurrent auxiliary calls (compression, MoA,
+        titles). Overlapping bridged-route calls must each carry their own system prompt
+        as the leading input item — no cross-call bleed, no dropped row."""
+        import copy
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier, Lock
+        from types import SimpleNamespace
+
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        message_item = SimpleNamespace(
+            type="message", role="assistant", status="completed",
+            content=[SimpleNamespace(type="output_text", text="ok")],
+        )
+        events = [SimpleNamespace(type="response.created"),
+                  SimpleNamespace(type="response.output_item.done", item=message_item),
+                  SimpleNamespace(type="response.completed",
+                                  response=SimpleNamespace(status="completed", id="resp_t",
+                                                           usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2)))]
+
+        class _FakeStream:
+            def __iter__(self):
+                return iter(events)
+            def close(self):
+                pass
+
+        recorded: list = []
+        lock = Lock()
+
+        def _create(**kwargs):
+            effective = {**kwargs, **(kwargs.get("extra_body") or {})}
+            with lock:
+                recorded.append(effective)
+            return _FakeStream()
+
+        client = MagicMock()
+        client.base_url = "http://192.168.30.21:4000/v1"
+        client.responses.create = _create
+        adapter = _CodexCompletionsAdapter(client, "hermes")
+
+        prompts = [f"aux-system-{i}" for i in range(8)]
+        barrier = Barrier(len(prompts))
+
+        def _call(prompt):
+            barrier.wait(timeout=10)
+            adapter.create(messages=[{"role": "system", "content": prompt},
+                                     {"role": "user", "content": "hi"}])
+            return prompt
+
+        with ThreadPoolExecutor(max_workers=len(prompts)) as pool:
+            done = list(pool.map(_call, prompts))
+        assert sorted(done) == sorted(prompts)
+        assert len(recorded) == len(prompts)
+        seen = [payload["input"][0]["content"] for payload in recorded]
+        assert sorted(seen) == sorted(prompts)
+        for payload in recorded:
+            assert "instructions" not in payload
+            assert payload["input"][0]["role"] == "system"
+            assert payload["input"][1] == {"role": "user", "content": "hi"}
 
 
 class TestCodexAdapterGithubResponsesMessageIdDrop:
