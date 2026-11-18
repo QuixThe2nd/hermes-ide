@@ -4215,7 +4215,6 @@ function Invoke-Stage {
         }
     }
     if ($null -ne $rethrow) {
-        [Console]::Error.WriteLine("TRACE stage-rethrowing")
         throw $rethrow
     }
 }
@@ -4364,9 +4363,7 @@ try {
             exit 2
         }
         Step-OutOfInstallDir
-        [Console]::Error.WriteLine("TRACE entry-stage-branch EAP=$ErrorActionPreference")
         Invoke-Stage -StageDef $def
-        [Console]::Error.WriteLine("TRACE invoke-stage-returned-normally")
         exit 0
     }
 
@@ -4374,7 +4371,6 @@ try {
     # and -Json layered on by the params above).
     Main
 } catch {
-    [Console]::Error.WriteLine("TRACE entry-catch fired Json=$Json Stage=$Stage")
     if ($Json -or $Stage) {
         # Stage-driver mode: caller wants JSON they can parse.  Emit a
         # structured error frame and exit non-zero -- BUT only if
