@@ -1758,7 +1758,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _is_system_or_bridge_sender(sender: str) -> bool:
-        """True for appservice/bridge/system identities (``@_telegram_123:server``) or malformed IDs.
+        """True for appservice/bridge/system identities (``@_discord_123:server``) or malformed IDs.
         Never offer these a pairing code: an approved bridge would relay every outbound message
         back as an "authorized user message" (echo loop).
 
@@ -1946,7 +1946,7 @@ class MatrixAdapter(BasePlatformAdapter):
     ) -> tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
         """Return (body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name). Captures
         the inline reply fallback (``> <@user:srv> text\\n\\nreply``) BEFORE stripping it, so the
-        prompt layer can render "[Replying to: ...]" like Signal/Slack/Telegram."""
+        prompt layer can render "[Replying to: ...]" like Signal/Slack."""
         reply_to = (relates_to.get("m.in_reply_to") or {}).get("event_id")
         reply_to_text = reply_to_author_id = reply_to_author_name = None
         if reply_to and body.startswith("> "):

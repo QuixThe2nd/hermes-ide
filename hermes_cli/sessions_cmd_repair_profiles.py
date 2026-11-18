@@ -21,7 +21,6 @@ _KIND_LABELS = {
     "crossed_parent": "parent_session_id crossing profile namespaces",
     "routing_stray": "routing rows outside the default store",
     "routing_unclaimed": "routing rows for a profile that does not exist",
-    "topic_profile_less": "Telegram topic bindings without their bot's profile",
     "voice_profile_less": "voice-mode entries without their bot's profile",
     "sessions_json_unclaimed": "sessions.json entries for a profile that does not exist",
 }

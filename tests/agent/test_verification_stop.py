@@ -65,7 +65,7 @@ def clear_verify_env(monkeypatch):
 def test_verify_on_stop_env_can_enable(clear_verify_env):
     # Env "1" forces ON regardless of surface (here a messaging platform).
     clear_verify_env.setenv("HERMES_VERIFY_ON_STOP", "1")
-    clear_verify_env.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    clear_verify_env.setenv("HERMES_SESSION_PLATFORM", "discord")
     assert verify_on_stop_enabled({"agent": {}}) is True
 
 
@@ -113,7 +113,7 @@ def test_verify_on_stop_default_path_through_load_config(tmp_path, clear_verify_
     assert verify_on_stop_enabled() is False
 
     # A messaging platform also resolves OFF.
-    clear_verify_env.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    clear_verify_env.setenv("HERMES_SESSION_PLATFORM", "discord")
     assert verify_on_stop_enabled() is False
 
 

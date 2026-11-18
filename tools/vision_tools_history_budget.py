@@ -168,7 +168,7 @@ def native_turn_images(user_message: Any) -> Iterator[None]:
 def native_turn_duplicate(image_url: str, region: Optional[list]) -> Optional[str]:
     """Text tool result when ``image_url`` already rides the active user turn natively, else
     ``None``. A native re-embed would put the identical pixels into the same request twice
-    (the Telegram case in #76411); a ``region`` crop still embeds because it returns new detail."""
+    (#76411); a ``region`` crop still embeds because it returns new detail."""
     if region is not None or _image_key(image_url) not in _native_turn_images.get():
         return None
     return json.dumps({

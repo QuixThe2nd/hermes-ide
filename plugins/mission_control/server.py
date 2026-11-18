@@ -1354,7 +1354,7 @@ def _lineage_job_children(specs, dbs_by_profile):
     links to every spec whose window contains its started_at and whose
     prompts byte-contain its first user message, and ONLY when the
     candidate's own source is an explicitly non-human worker source
-    (LINEAGE_WORKER_SOURCES): a human-facing CLI/API/Discord/Telegram
+    (LINEAGE_WORKER_SOURCES): a human-facing CLI/API/Discord
     session keeps its inbox row even when its first prompt and start
     time match a job — prompt bytes plus a time window are inference,
     never proof a person did not type them. Multiple parents are

@@ -82,7 +82,7 @@ def _make_context(
         scope_id=guild_id,
         message_id=message_id,
     )
-    connected = connected if connected is not None else [Platform.DISCORD, Platform.TELEGRAM]
+    connected = connected if connected is not None else [Platform.DISCORD, Platform.WHATSAPP]
     if notification_channels is None:
         notification_channels = {
             Platform.DISCORD: DeliveryTarget(
@@ -134,7 +134,7 @@ class TestEphemeralChangeKeyParity:
         ("guild_id", dict(guild_id="123123123")),
         ("parent_chat_id", dict(parent_chat_id="999000111")),
         ("chat_id", dict(chat_id="999999999", parent_chat_id="999999999")),
-        ("platform", dict(platform=Platform.TELEGRAM)),
+        ("platform", dict(platform=Platform.DISCORD)),
         ("connected_platforms", dict(connected=[Platform.DISCORD])),
         ("message_id_cleared", dict(message_id=None)),
     ]
@@ -234,14 +234,14 @@ class TestConnectedPlatformsOrder:
     def test_sorted_regardless_of_insertion_order(self):
         cfg_a = GatewayConfig(
             platforms={
-                Platform.TELEGRAM: PlatformConfig(enabled=True, token="t"),
-                Platform.DISCORD: PlatformConfig(enabled=True, token="d"),
+                Platform.DISCORD: PlatformConfig(enabled=True, token="t"),
+                Platform.MATRIX: PlatformConfig(enabled=True, token="d"),
             }
         )
         cfg_b = GatewayConfig(
             platforms={
-                Platform.DISCORD: PlatformConfig(enabled=True, token="d"),
-                Platform.TELEGRAM: PlatformConfig(enabled=True, token="t"),
+                Platform.MATRIX: PlatformConfig(enabled=True, token="d"),
+                Platform.DISCORD: PlatformConfig(enabled=True, token="t"),
             }
         )
         assert cfg_a.get_connected_platforms() == cfg_b.get_connected_platforms()

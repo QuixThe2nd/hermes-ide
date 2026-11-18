@@ -46,7 +46,7 @@ _PROFILE_REJECTED = object()
 _UNPARSEABLE = object()
 
 _BUILTIN_DELIVER_PLATFORMS = {
-    "telegram", "discord", "slack", "signal", "sms", "whatsapp", "matrix",
+    "discord", "slack", "signal", "sms", "whatsapp", "matrix",
     "homeassistant", "email", "feishu", "weixin",
     "bluebubbles", "qqbot", "yuanbao"}
 
@@ -208,7 +208,7 @@ class WebhookAdapter(BasePlatformAdapter):
             deliver = route.get("deliver", "log")
             if not deliver or deliver == "log":
                 raise ValueError(f"[webhook] Route '{name}' has deliver_only=true but deliver is '{deliver}'. Direct "
-                                 f"delivery requires a real target (telegram, discord, slack, github_comment, etc.).")
+                                 f"delivery requires a real target (discord, slack, signal, github_comment, etc.).")
             if route.get("cron_job"):
                 raise ValueError(f"[webhook] Route '{name}' sets both deliver_only and cron_job. They are mutually "
                                  f"exclusive: deliver_only pushes the rendered template as a message, cron_job fires "
@@ -851,7 +851,7 @@ class WebhookAdapter(BasePlatformAdapter):
         return self.gateway_runner._authorization_adapter(target_platform, profile)
 
     async def _deliver_cross_platform(self, platform_name: str, content: str, delivery: dict) -> SendResult:
-        """Route response to another platform (telegram, discord, etc.)."""
+        """Route response to another platform (discord, slack, etc.)."""
         if not self.gateway_runner:
             return SendResult(success=False, error="No gateway runner for cross-platform delivery")
         try:
@@ -871,5 +871,5 @@ class WebhookAdapter(BasePlatformAdapter):
                     success=False,
                     error=f"No chat_id for {platform_name}; set an explicit delivery target",
                 )
-            thread_id = extra.get("message_thread_id") or extra.get("thread_id")  # Telegram forum topics
+            thread_id = extra.get("message_thread_id") or extra.get("thread_id")  # forum topics
             return await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)

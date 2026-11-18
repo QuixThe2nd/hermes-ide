@@ -40,12 +40,12 @@ class TestSessionLoadBoolCorruption:
 
     def _valid_entry(self, session_id: str = "20260101_120000_abc12345") -> dict:
         return {
-            "session_key": "agent:main:telegram:dm:123456",
+            "session_key": "agent:main:discord:dm:123456",
             "session_id": session_id,
             "created_at": "2026-01-01T12:00:00",
             "updated_at": "2026-01-01T12:30:00",
             "origin": {
-                "platform": "telegram",
+                "platform": "discord",
                 "chat_id": "123456",
                 "chat_type": "dm",
             },

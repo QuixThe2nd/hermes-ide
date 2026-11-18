@@ -288,7 +288,7 @@ def _write_record(path, *, ts, label, excerpt, session="s1"):
     record = {
         "ts": ts,
         "session_id": session,
-        "platform": "telegram",
+        "platform": "discord",
         "message_excerpt": excerpt,
         "label": label,
         "reason": f"reason for {excerpt}",

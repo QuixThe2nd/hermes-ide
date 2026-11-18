@@ -1101,7 +1101,6 @@ class TestTurnRunner:
         gateway_runner._refresh_fallback_model.return_value = None
         gateway_runner._consume_pending_native_image_paths.return_value = []
         gateway_runner._consume_pending_turn_sidecar_notes.return_value = []
-        gateway_runner._is_telegram_topic_lane.return_value = False
         gateway_runner._is_discord_auto_thread_lane.return_value = False
         gateway_runner._is_relay_discord_channel_lane.return_value = False
 

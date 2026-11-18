@@ -880,7 +880,7 @@ def write_runtime_status(
         platform_payload = payload["platforms"].get(platform, {})
         if platform_state == "connected":
             # Every writer that publishes ``connected`` (startup stamp, adapter ``_mark_connected``,
-            # Telegram's in-place polling recovery) ends the retry episode; only the watcher's
+            # an adapter's in-place polling recovery) ends the retry episode; only the watcher's
             # reconnect path used to say so, and a restart after a NEEDS_ATTENTION escalation
             # carried the flag into a healthy record for weeks.
             needs_attention = False if needs_attention is _UNSET else needs_attention
@@ -1210,7 +1210,7 @@ def _process_is_stopped(pid: int) -> bool:
 def acquire_scoped_lock(
     scope: str, identity: str, metadata: Optional[dict[str, Any]] = None
 ) -> tuple[bool, Optional[dict[str, Any]]]:
-    """Acquire a machine-local lock keyed by scope + identity (one Telegram token across homes)."""
+    """Acquire a machine-local lock keyed by scope + identity (one platform token across homes)."""
     lock_path = _get_scope_lock_path(scope, identity)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     record = {

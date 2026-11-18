@@ -269,7 +269,7 @@ class TestApiServerListenerGlobals:
         for name in self.LISTENER_VARS:
             monkeypatch.setenv(name, f"container-{name.lower()}")
         ss.set_multiplex_active(True)
-        token = ss.set_secret_scope({"TELEGRAM_BOT_TOKEN": "scoped"})
+        token = ss.set_secret_scope({"DISCORD_BOT_TOKEN": "scoped"})
         try:
             for name in self.LISTENER_VARS:
                 assert ss.get_secret(name) == f"container-{name.lower()}"
@@ -324,7 +324,7 @@ class TestRelayRoutingStampGlobals:
         for name in self.ROUTING_VARS:
             monkeypatch.setenv(name, f"deploy-{name.lower()}")
         ss.set_multiplex_active(True)
-        token = ss.set_secret_scope({"TELEGRAM_BOT_TOKEN": "scoped"})
+        token = ss.set_secret_scope({"DISCORD_BOT_TOKEN": "scoped"})
         try:
             for name in self.ROUTING_VARS:
                 assert ss.get_secret(name) == f"deploy-{name.lower()}", name

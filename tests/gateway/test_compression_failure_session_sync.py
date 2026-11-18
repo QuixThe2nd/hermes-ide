@@ -10,7 +10,7 @@ from gateway.config import Platform
 from gateway.session import SessionSource
 
 
-SESSION_KEY = "agent:main:telegram:dm:12345"
+SESSION_KEY = "agent:main:discord:dm:12345"
 
 
 class _SessionStore:
@@ -91,12 +91,11 @@ class _Adapter:
 
 def _runner(session_store):
     runner = object.__new__(gateway_run.GatewayRunner)
-    runner.adapters = {Platform.TELEGRAM: _Adapter()}
+    runner.adapters = {Platform.DISCORD: _Adapter()}
     runner.config = SimpleNamespace(streaming=None, group_sessions_per_user=True, thread_sessions_per_user=False)
     runner.hooks = SimpleNamespace(loaded_hooks=False, emit=AsyncMock())
     runner.session_store = session_store
     runner._session_db = MagicMock()
-    runner._session_db.get_telegram_topic_binding_by_session.return_value = None
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
     runner._running_agents = {}
@@ -122,7 +121,6 @@ def _runner(session_store):
     runner._agent_config_signature = lambda *_args, **_kwargs: ("sig",)
     runner._extract_cache_busting_config = lambda _config: ()
     runner._thread_metadata_for_source = lambda *_args, **_kwargs: None
-    runner._sync_telegram_topic_binding = MagicMock()
     runner._release_running_agent_state = MagicMock()
     return runner
 
@@ -163,7 +161,7 @@ def test_failed_turn_still_syncs_compression_session_split(monkeypatch):
 
     session_store = _SessionStore()
     runner = _runner(session_store)
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm", user_id="user-1")
+    source = SessionSource(platform=Platform.DISCORD, chat_id="12345", chat_type="dm", user_id="user-1")
 
     result = _run_compression_failure_turn(runner, source)
 
@@ -176,9 +174,6 @@ def test_failed_turn_still_syncs_compression_session_split(monkeypatch):
     assert session_store.peer_records == [
         ("session-after-compression", SESSION_KEY, source)
     ]
-    runner._sync_telegram_topic_binding.assert_called_once_with(
-        source, session_store.entry, reason="agent-run-compression"
-    )
 
 
 class _RateLimitFailureAgent(_CompressionThenFailureAgent):
@@ -223,7 +218,7 @@ def test_empty_rate_limit_response_preserves_failure_metadata(monkeypatch):
     session_store = _SessionStore()
     runner = _runner(session_store)
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="12345",
         chat_type="dm",
         user_id="user-1",

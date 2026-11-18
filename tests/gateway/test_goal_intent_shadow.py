@@ -15,12 +15,12 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 
 
-SESSION_KEY = "agent:main:telegram:dm:1001"
+SESSION_KEY = "agent:main:discord:dm:1001"
 
 
 def _source(*, bot: bool = False) -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="chat-1",
         user_id="user-1",
         user_name="operator",
@@ -124,7 +124,7 @@ async def test_classification_does_not_delay_or_change_reply_and_writes_bounded_
     # The audit row (and the parked decision) key by the REAL session id —
     # the one goal state lives under — not the inbound quick key.
     assert row["session_id"] and row["session_id"] != SESSION_KEY
-    assert row["platform"] == "telegram"
+    assert row["platform"] == "discord"
     assert row["message_excerpt"] == "x" * 300
     assert row["label"] == "chat"
     assert row["reason"] == "shadow only"
@@ -197,7 +197,7 @@ def test_chase_papercut_contains_goal_context_and_dedupes_for_thirty_minutes(her
         patch("plugins.papercuts.handle_papercuts", return_value='{"success":true}') as handle,
         patch("hermes_cli.goal_intent.time.time", return_value=1_000_000.0),
     ):
-        record_goal_intent_shadow("status?", SESSION_KEY, "telegram")
+        record_goal_intent_shadow("status?", SESSION_KEY, "discord")
 
     with (
         patch("hermes_cli.goal_intent.classify", return_value=classification),
@@ -205,7 +205,7 @@ def test_chase_papercut_contains_goal_context_and_dedupes_for_thirty_minutes(her
         patch("plugins.papercuts.handle_papercuts", return_value='{"success":true}') as second,
         patch("hermes_cli.goal_intent.time.time", return_value=1_000_100.0),
     ):
-        record_goal_intent_shadow("so u done?", SESSION_KEY, "telegram")
+        record_goal_intent_shadow("so u done?", SESSION_KEY, "discord")
     second.assert_not_called()
 
     with (
@@ -214,7 +214,7 @@ def test_chase_papercut_contains_goal_context_and_dedupes_for_thirty_minutes(her
         patch("plugins.papercuts.handle_papercuts", return_value='{"success":true}') as third,
         patch("hermes_cli.goal_intent.time.time", return_value=1_001_801.0),
     ):
-        record_goal_intent_shadow("howd it go", SESSION_KEY, "telegram")
+        record_goal_intent_shadow("howd it go", SESSION_KEY, "discord")
 
     assert handle.call_count == 1
     assert third.call_count == 1
@@ -252,7 +252,7 @@ def test_chase_papercut_requires_action_confidence(hermes_home, confidence):
         ),
         patch("plugins.papercuts.handle_papercuts", return_value='{"success":true}') as handle,
     ):
-        record_goal_intent_shadow("what's left?", session_id, "telegram")
+        record_goal_intent_shadow("what's left?", session_id, "discord")
 
     expected = 1 if confidence >= AUTO_GOAL_CONFIDENCE_MIN else 0
     assert handle.call_count == expected
@@ -274,7 +274,7 @@ def test_unavailable_papercuts_never_blocks_shadow_logging(hermes_home):
         patch("hermes_cli.goal_intent.build_goal_context", return_value={"goal_active": True}),
         patch("plugins.papercuts.handle_papercuts", side_effect=RuntimeError("unavailable")),
     ):
-        record_goal_intent_shadow("continue", SESSION_KEY, "telegram")
+        record_goal_intent_shadow("continue", SESSION_KEY, "discord")
 
     rows = _rows(hermes_home)
     assert len(rows) == 1

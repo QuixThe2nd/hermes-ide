@@ -11,9 +11,9 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.session import SessionSource, build_session_key
 
 
-class DummyTelegramAdapter(BasePlatformAdapter):
+class DummyTopicAdapter(BasePlatformAdapter):
     def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="fake-token"), Platform.TELEGRAM)
+        super().__init__(PlatformConfig(enabled=True, token="fake-token"), Platform.DISCORD)
         self._busy_text_mode = ""
         self.sent = []
         self.typing = []
@@ -57,7 +57,7 @@ def _make_event(chat_id: str, thread_id: str, message_id: str = "1") -> MessageE
     return MessageEvent(
         text="hello",
         source=SessionSource(
-            platform=Platform.TELEGRAM,
+            platform=Platform.DISCORD,
             chat_id=chat_id,
             chat_type="group",
             thread_id=thread_id,
@@ -70,7 +70,7 @@ class TestBasePlatformTopicSessions:
 
     @pytest.mark.asyncio
     async def test_handle_message_interrupts_same_topic(self, monkeypatch):
-        adapter = DummyTelegramAdapter()
+        adapter = DummyTopicAdapter()
         adapter.set_message_handler(lambda event: asyncio.sleep(0, result=None))
 
         active_event = _make_event("-1001", "10")
@@ -93,7 +93,7 @@ class TestBasePlatformTopicSessions:
 
     @pytest.mark.asyncio
     async def test_process_message_background_replies_in_same_topic(self):
-        adapter = DummyTelegramAdapter()
+        adapter = DummyTopicAdapter()
         typing_calls = []
 
         async def handler(_event):
@@ -114,7 +114,7 @@ class TestBasePlatformTopicSessions:
             {
                 "chat_id": "-1001",
                 "content": "ack",
-                "reply_to": None,
+                "reply_to": "1",
                 "metadata": {"thread_id": "17585", "notify": True},
             }
         ]

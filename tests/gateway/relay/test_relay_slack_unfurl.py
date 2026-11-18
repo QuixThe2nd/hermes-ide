@@ -314,7 +314,7 @@ class TestFreshFinalForForceOnUnfurl:
         a = RelayAdapter(
             PlatformConfig(extra={"slack": {"unfurl_links": True}}),
             make_desc(
-                platform="telegram",
+                platform="discord",
                 supports_draft_streaming=True,
                 supported_ops=("send", "draft"),
             ),
@@ -416,7 +416,7 @@ class TestMultiplexPerChatFreshFinalSeam:
     negotiated platform, not the relay's primary identity (the scalar-vs-
     per-chat descriptor seam).  Two failure directions:
 
-    - Slack PRIMARY + force-on unfurl: a fronted TELEGRAM chat must keep the
+    - Slack PRIMARY + force-on unfurl: a fronted non-Slack chat must keep the
       edit lane — its descriptor advertises no ``delete`` op, so a fresh
       final would deliver the answer twice (orphaned preview).
     - Non-Slack primary: a fronted SLACK chat must still get the fresh
@@ -428,8 +428,8 @@ class TestMultiplexPerChatFreshFinalSeam:
         def __init__(self):
             super().__init__()
             self.descriptors = {
-                "telegram": make_desc(
-                    platform="telegram",
+                "matrix": make_desc(
+                    platform="matrix",
                     supports_edit=True,
                     supported_ops=("send", "edit", "typing"),
                 ),
@@ -454,31 +454,31 @@ class TestMultiplexPerChatFreshFinalSeam:
         )
 
     @pytest.mark.asyncio
-    async def test_telegram_chat_on_slack_primary_keeps_edit_lane(self):
+    async def test_matrix_chat_on_slack_primary_keeps_edit_lane(self):
         transport = self._MultiplexTransport()
         a = RelayAdapter(
             PlatformConfig(extra={"slack": {"unfurl_links": True}}),
             make_desc(platform="slack", supports_edit=True),  # Slack PRIMARY
             transport=transport,
         )
-        # Relay learned this chat is Telegram from inbound traffic.
-        a._platform_by_chat["TG1"] = "telegram"
+        # Relay learned this chat is Matrix from inbound traffic.
+        a._platform_by_chat["MX1"] = "matrix"
 
-        consumer = self._consumer(a, "TG1")
+        consumer = self._consumer(a, "MX1")
         await consumer._send_or_edit("Working on it…")
         await consumer._send_or_edit("see https://studiotwin.ai", finalize=True)
 
         ops = [x.get("op") for x in transport.actions]
         assert ops[-1] == "edit", (
-            f"telegram chat misrouted through fresh-final: ops={ops}"
+            f"matrix chat misrouted through fresh-final: ops={ops}"
         )
 
     @pytest.mark.asyncio
-    async def test_slack_chat_on_telegram_primary_gets_fresh_final(self):
+    async def test_slack_chat_on_non_slack_primary_gets_fresh_final(self):
         transport = self._MultiplexTransport()
         a = RelayAdapter(
             PlatformConfig(extra={"slack": {"unfurl_links": True}}),
-            make_desc(platform="telegram", supports_edit=True),  # non-Slack primary
+            make_desc(platform="discord", supports_edit=True),  # non-Slack primary
             transport=transport,
         )
         a._platform_by_chat["D1"] = "slack"

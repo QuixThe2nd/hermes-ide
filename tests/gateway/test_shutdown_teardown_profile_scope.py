@@ -65,8 +65,8 @@ async def test_shutdown_teardown_commits_memory_under_the_owning_profile(tmp_pat
     try:
         # Shutdown runs on the main loop with NO scope installed.
         assert secret_scope.current_secret_scope() is None
-        await _runner({"agent:b:telegram:dm:1": prof_b})._cleanup_agent_resources_off_loop(
-            _recording_agent(seen), context="shutdown finalize", session_key="agent:b:telegram:dm:1",
+        await _runner({"agent:b:discord:dm:1": prof_b})._cleanup_agent_resources_off_loop(
+            _recording_agent(seen), context="shutdown finalize", session_key="agent:b:discord:dm:1",
         )
     finally:
         secret_scope.set_multiplex_active(False)

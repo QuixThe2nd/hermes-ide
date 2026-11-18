@@ -15,7 +15,7 @@ def test_load_env_preserves_concatenated_text_as_value_data():
 
     token = "0123456789:test"
     # Simulate concatenated line: TOKEN=xxx followed immediately by another key
-    corrupted = f"TELEGRAM_BOT_TOKEN={token}ANTHROPIC_API_KEY=sk-ant-test123\n"
+    corrupted = f"DISCORD_BOT_TOKEN={token}ANTHROPIC_API_KEY=sk-ant-test123\n"
 
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".env", delete=False, encoding="utf-8"
@@ -26,7 +26,7 @@ def test_load_env_preserves_concatenated_text_as_value_data():
     try:
         with patch("hermes_cli.config.get_env_path", return_value=env_path):
             result = load_env()
-        assert result.get("TELEGRAM_BOT_TOKEN") == (
+        assert result.get("DISCORD_BOT_TOKEN") == (
             f"{token}ANTHROPIC_API_KEY=sk-ant-test123"
         )
         assert "ANTHROPIC_API_KEY" not in result
@@ -39,7 +39,7 @@ def test_load_env_normal_file_unchanged():
     from hermes_cli.config import load_env
 
     content = (
-        "TELEGRAM_BOT_TOKEN=mytoken123\n"
+        "DISCORD_BOT_TOKEN=mytoken123\n"
         "ANTHROPIC_API_KEY=sk-ant-key\n"
         "# comment\n"
         "\n"
@@ -55,7 +55,7 @@ def test_load_env_normal_file_unchanged():
     try:
         with patch("hermes_cli.config.get_env_path", return_value=env_path):
             result = load_env()
-        assert result["TELEGRAM_BOT_TOKEN"] == "mytoken123"
+        assert result["DISCORD_BOT_TOKEN"] == "mytoken123"
         assert result["ANTHROPIC_API_KEY"] == "sk-ant-key"
         assert result["OPENAI_API_KEY"] == "sk-openai"
     finally:
@@ -67,7 +67,7 @@ def test_env_loader_does_not_split_concatenated_text():
     from hermes_cli.env_loader import _sanitize_env_file_if_needed
 
     token = "0123456789:test"
-    corrupted = f"TELEGRAM_BOT_TOKEN={token}ANTHROPIC_API_KEY=sk-ant-test\n"
+    corrupted = f"DISCORD_BOT_TOKEN={token}ANTHROPIC_API_KEY=sk-ant-test\n"
 
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".env", delete=False, encoding="utf-8"

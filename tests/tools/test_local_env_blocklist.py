@@ -202,7 +202,7 @@ class TestProviderEnvBlocklist:
     def test_tool_and_gateway_vars_are_stripped(self):
         """Tool and gateway secrets/config must not leak into subprocess env."""
         leaked_vars = {
-            "TELEGRAM_BOT_TOKEN": "bot-token",
+            "DISCORD_BOT_TOKEN": "bot-token",
             "SLACK_APP_TOKEN": "xapp-secret",
             "WHATSAPP_ALLOWED_USERS": "+15555550123",
             "SIGNAL_ACCOUNT": "+15555550124",

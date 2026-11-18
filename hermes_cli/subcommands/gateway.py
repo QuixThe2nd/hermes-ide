@@ -37,7 +37,7 @@ def build_gateway_parser(
 ) -> None:
     """Attach the ``gateway`` and ``proxy`` subcommands to ``subparsers``."""
     gateway_parser = subparsers.add_parser("gateway", help="Messaging gateway management",
-        description="Manage the messaging gateway (Telegram, Discord, WhatsApp, Weixin, and more)")
+        description="Manage the messaging gateway (Discord, WhatsApp, Weixin, and more)")
     gateway_subparsers = gateway_parser.add_subparsers(dest="gateway_command")
 
     gateway_run = gateway_subparsers.add_parser(

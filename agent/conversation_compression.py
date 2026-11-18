@@ -168,9 +168,9 @@ def _emit_compaction_done(agent: Any) -> None:
 # Every ROUTINE (non-failure, non-manual-/compress) compression status line the
 # agent emits lives here so the gateway noise filter and its tests can couple
 # to the real emitted wording instead of hand-copied literals. These are
-# suppressed on human-facing chat platforms by _TELEGRAM_NOISY_STATUS_RE
+# suppressed on human-facing chat platforms by _NOISY_STATUS_RE
 # (gateway/run.py) — when rewording ANY of them, update that regex and the
-# pinned data in tests/gateway/test_telegram_noise_filter.py in the same PR.
+# pinned data in tests/gateway/test_compression_progress_notices.py in the same PR.
 # Failure notices (⚠ Compression aborted / empty transcript / codex compaction
 # failed) and manual /compress feedback (manual_compression_feedback.py) are
 # deliberate carve-outs from silence and must NOT be added here.
@@ -205,8 +205,8 @@ COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE = (
 # session will keep growing until the hard provider token limit kills it.
 # This MUST stay visible on chat gateways. Do NOT add it to
 # ROUTINE_COMPRESSION_STATUS_SAMPLES or the gateway noise regex
-# (_TELEGRAM_NOISY_STATUS_RE); it is pinned un-swallowed in
-# tests/gateway/test_telegram_noise_filter.py::VISIBLE_COMPRESSION_MESSAGES.
+# (_NOISY_STATUS_RE); it is pinned un-swallowed in
+# tests/gateway/test_compression_progress_notices.py::VISIBLE_COMPRESSION_MESSAGES.
 CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE = (
     CONTEXT_OVERFLOW_BLOCKED_WARNING_PREFIX
     + " (~{tokens:,} tokens >= {threshold:,}) "
@@ -3531,7 +3531,7 @@ class _CompressionActivityHeartbeat:
 
         Routed through ``agent._emit_status`` like every other compaction
         status: same "lifecycle" key (the TUI gateway re-tags it to
-        ``compacting``; Telegram edits one bubble per key), same chat-platform
+        ``compacting``; chat platforms edit one bubble per key), same chat-platform
         filter, same CLI print path.
         """
         if not self._emit_client_status:
@@ -3945,7 +3945,7 @@ def replay_compression_warning(agent: Any) -> None:
     wired, so ``_emit_status`` only reaches ``_vprint`` (CLI).  This
     method is called once at the start of the first
     ``run_conversation()`` — by then the gateway has set the callback,
-    so every platform (Telegram, Discord, Slack, etc.) receives the
+    so every platform (Discord, Slack, etc.) receives the
     warning.
     """
     msg = getattr(agent, "_compression_warning", None)

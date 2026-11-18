@@ -269,7 +269,7 @@ class TestNativeWaits:
             # Native turns register through this same process-wide registry.
             clarify_gateway.register(
                 clarify_id="nat_clarify",
-                session_key="telegram:42",  # routing key, NOT the id
+                session_key="matrix:42",  # routing key, NOT the id
                 question="Continue?",
                 choices=["Yes", "No"],
                 owner_profile="default",
@@ -327,7 +327,7 @@ class TestNativeWaits:
         async with TestClient(TestServer(app)) as cli:
             clarify_gateway.register(
                 clarify_id="nat_live",
-                session_key="telegram:43",
+                session_key="matrix:43",
                 question="Q?",
                 choices=["A"],
                 owner_profile="default",
@@ -468,7 +468,7 @@ class TestProfileIsolation:
         async with TestClient(TestServer(app)) as cli:
             clarify_gateway.register(
                 clarify_id="nat_prof",
-                session_key="telegram:91",
+                session_key="matrix:91",
                 question="Q?",
                 choices=["A"],
                 owner_profile="owner",

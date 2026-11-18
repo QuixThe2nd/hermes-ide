@@ -6,7 +6,7 @@ A manual ``cronjob(action='run')`` finishes with a completion summary line
 
 that was appended UNCONDITIONALLY for non-local targets — even when
 ``run_one_job`` had just written ``last_delivery_error`` onto the refreshed
-job record because the post-run delivery (telegram/discord/…) failed. The
+job record because the post-run delivery (discord/slack/…) failed. The
 calling agent then relayed "all good" over a failed delivery.
 
 The note must follow the refreshed job record: a set ``last_delivery_error``
@@ -133,15 +133,15 @@ class TestDeliveryNote:
         assert _manual_run_delivery_note("local", {}) == expected
         # Local jobs never deliver — a stale delivery error must not leak in.
         assert (
-            _manual_run_delivery_note("local", {"last_delivery_error": "telegram 400"})
+            _manual_run_delivery_note("local", {"last_delivery_error": "discord 400"})
             == expected
         )
 
     def test_remote_without_error_keeps_legacy_wording(self):
         expected = " (output was delivered there by the job itself)"
-        assert _manual_run_delivery_note("telegram", {}) == expected
+        assert _manual_run_delivery_note("discord", {}) == expected
         assert (
-            _manual_run_delivery_note("telegram", {"last_delivery_error": None})
+            _manual_run_delivery_note("discord", {"last_delivery_error": None})
             == expected
         )
         assert (
@@ -170,13 +170,13 @@ class TestDeliveryNote:
 
     def test_remote_with_error_says_delivery_failed(self):
         note = _manual_run_delivery_note(
-            "telegram", {"last_delivery_error": "send failed: 400 Bad Request"}
+            "discord", {"last_delivery_error": "send failed: 400 Bad Request"}
         )
         assert "delivery FAILED" in note
         assert "send failed: 400 Bad Request" in note
 
     def test_remote_error_text_truncated_to_200_chars(self):
-        note = _manual_run_delivery_note("telegram", {"last_delivery_error": "E" * 500})
+        note = _manual_run_delivery_note("discord", {"last_delivery_error": "E" * 500})
         assert "E" * 200 in note
         assert "E" * 201 not in note
 
@@ -188,8 +188,8 @@ class TestRunnerSummaryWiring:
     def test_delivery_failure_surfaces_in_completion_summary(self):
         from tools.cronjob_tools import _try_dispatch_background_run
 
-        job = _job("job-dn-01", "telegram")
-        with _bound_session_key("agent:main:telegram:dm:83993"):
+        job = _job("job-dn-01", "discord")
+        with _bound_session_key("agent:main:discord:dm:83993"):
             with (
                 patch(
                     "tools.cronjob_tools.claim_job_for_fire",
@@ -203,7 +203,7 @@ class TestRunnerSummaryWiring:
                         # delivery_failed (not ok) when only delivery failed.
                         "last_status": "delivery_failed",
                         "last_error": None,
-                        "last_delivery_error": "telegram send failed: 400",
+                        "last_delivery_error": "discord send failed: 400",
                     },
                 ),
             ):
@@ -212,9 +212,9 @@ class TestRunnerSummaryWiring:
                 evt = _drain_completion_event(res["delegation_id"])
         assert evt is not None, "completion event never reached the queue"
         summary = evt.get("summary") or ""
-        assert "Delivery target: telegram" in summary
+        assert "Delivery target: discord" in summary
         assert "delivery FAILED" in summary
-        assert "telegram send failed: 400" in summary
+        assert "discord send failed: 400" in summary
         assert "delivered there by the job itself" not in summary
         # The headline must not read "Result: ok" over an undelivered run.
         assert "Result: FAILED" in summary
@@ -227,7 +227,7 @@ class TestRunnerSummaryWiring:
         from tools.cronjob_tools import _try_dispatch_background_run
 
         job = _job("job-dn-03", "")
-        with _bound_session_key("agent:main:telegram:dm:86622"):
+        with _bound_session_key("agent:main:discord:dm:86622"):
             with (
                 patch(
                     "tools.cronjob_tools.claim_job_for_fire",
@@ -250,8 +250,8 @@ class TestRunnerSummaryWiring:
     def test_delivery_success_wording_unchanged_in_completion_summary(self):
         from tools.cronjob_tools import _try_dispatch_background_run
 
-        job = _job("job-dn-02", "telegram")
-        with _bound_session_key("agent:main:telegram:dm:83994"):
+        job = _job("job-dn-02", "discord")
+        with _bound_session_key("agent:main:discord:dm:83994"):
             with (
                 patch(
                     "tools.cronjob_tools.claim_job_for_fire",
@@ -269,6 +269,6 @@ class TestRunnerSummaryWiring:
         assert evt is not None, "completion event never reached the queue"
         summary = evt.get("summary") or ""
         assert (
-            "Delivery target: telegram (output was delivered there by the job itself)"
+            "Delivery target: discord (output was delivered there by the job itself)"
         ) in summary
         assert "delivery FAILED" not in summary

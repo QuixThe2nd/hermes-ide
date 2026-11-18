@@ -117,7 +117,7 @@ Examples:
 
 ### Auto-Injection
 
-After discovery, MCP tools are automatically injected into all `hermes-*` platform toolsets (CLI, Discord, Telegram, etc.). This means MCP tools are available in every conversation without any additional configuration.
+After discovery, MCP tools are automatically injected into all `hermes-*` platform toolsets (CLI, Discord, Slack, etc.). This means MCP tools are available in every conversation without any additional configuration.
 
 ### Connection Lifecycle
 

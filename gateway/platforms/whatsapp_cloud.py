@@ -81,7 +81,7 @@ _WHATSAPP_MIME_EXTENSION_OVERRIDES: Dict[str, str] = {
 
 _INBOUND_MEDIA_KINDS = {"image", "video", "audio", "voice", "document", "sticker"}
 _TEXT_INJECT_EXTS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"}
-_MAX_TEXT_INJECT_BYTES = 100 * 1024  # matches Telegram/Discord/Slack
+_MAX_TEXT_INJECT_BYTES = 100 * 1024  # matches Discord/Slack media-inject budget
 _MESSAGE_TYPE_BY_KIND = {
     "text": MessageType.TEXT, "image": MessageType.PHOTO, "video": MessageType.VIDEO,
     "audio": MessageType.VOICE, "voice": MessageType.VOICE, "document": MessageType.DOCUMENT,

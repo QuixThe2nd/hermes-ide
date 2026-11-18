@@ -484,7 +484,6 @@ pytest-asyncio = false
 python-dotenv = false
 python-multipart = false
 python-olm = false
-python-telegram-bot = false
 pyyaml = false
 qrcode = false
 requests = false
@@ -517,11 +516,10 @@ include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*",
 
 [tool.setuptools.package-data]
 hermes_cli = ["observability/schemas/*.json", "data/*.json", "local_runtime/*.json"]
-# gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
-# screenshot. Without this, sealed venvs (uv2nix) silently lose both —
-# status phrases fall back to the tiny hardcoded set and the Telegram
-# topic-setup image disappears. Loaded via Path(__file__).parent / "assets"
-# in gateway/status_phrases.py and gateway/run.py.
+# gateway/assets/ ships status_phrases.yaml. Without this, sealed venvs
+# (uv2nix) silently lose it — status phrases fall back to the tiny
+# hardcoded set. Loaded via Path(__file__).parent / "assets"
+# in gateway/status_phrases.py.
 gateway = ["assets/**/*"]
 # prompts/*.txt are loaded verbatim by prompts.load via Path(__file__).parent;
 # without this declaration sealed wheels (uv2nix) ship the loader with zero

@@ -4,7 +4,7 @@ agent cache when the active ``session_id`` differs from the snapshot's
 
 Bug
 ---
-The cache key is the gateway ``session_key`` (e.g. ``agent:main:telegram:dm:USER_ID``)
+The cache key is the gateway ``session_key`` (e.g. ``agent:main:discord:dm:USER_ID``)
 which groups all DM sessions for that user. Different ``session_id``s (separate
 conversation threads) can share a ``session_key``. When the user switches
 between session_ids, the cached agent is shared, and the cross-process
@@ -109,8 +109,8 @@ class TestSessionIdCacheCoherence:
         from hermes_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "sessions.db")
-        db.create_session("sA", source="telegram")
-        db.create_session("sB", source="telegram")
+        db.create_session("sA", source="discord")
+        db.create_session("sB", source="discord")
         # Make counts differ to make the bug observable.
         db.append_message("sA", role="user", content="hello from A")
         db.append_message("sA", role="assistant", content="hi A")
@@ -122,17 +122,17 @@ class TestSessionIdCacheCoherence:
 
         # Build cache from session A (mc=3, sid=sA).
         with runner._agent_cache_lock:
-            runner._agent_cache["telegram:USER1"] = (agent, "sig", 3, "sA")
+            runner._agent_cache["discord:USER1"] = (agent, "sig", 3, "sA")
 
         # User switches to session B (mc=0, sid=sB) — same session_key.
         # Guard must NOT invalidate.
-        assert _guard_would_reuse(runner, "telegram:USER1", "sB") is True, (
+        assert _guard_would_reuse(runner, "discord:USER1", "sB") is True, (
             "BUG: cache was invalidated on session_id switch — "
             "the #54947 root cause is back."
         )
         # The original agent must still be in the cache.
         with runner._agent_cache_lock:
-            assert runner._agent_cache["telegram:USER1"][0] is agent
+            assert runner._agent_cache["discord:USER1"][0] is agent
 
     @pytest.mark.asyncio
     async def test_same_session_id_turns_still_reuse(self, tmp_path):
@@ -141,7 +141,7 @@ class TestSessionIdCacheCoherence:
         from hermes_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "sessions.db")
-        db.create_session("s1", source="telegram")
+        db.create_session("s1", source="discord")
         runner = _make_runner()
         runner._session_db = AsyncSessionDB(db)
         agent = object()
@@ -149,20 +149,20 @@ class TestSessionIdCacheCoherence:
         _row = db.get_session("s1")
         build_count = _row.get("message_count", 0) if _row else 0
         with runner._agent_cache_lock:
-            runner._agent_cache["telegram:s1"] = (agent, "sig", build_count, "s1")
+            runner._agent_cache["discord:s1"] = (agent, "sig", build_count, "s1")
 
         reuses = 0
         for _ in range(1, 6):
             db.append_message("s1", role="user", content="u")
             db.append_message("s1", role="assistant", content="a")
             # Post-turn re-baseline (the #46237 fix).
-            await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
-            if _guard_would_reuse(runner, "telegram:s1", "s1"):
+            await runner._refresh_agent_cache_message_count("discord:s1", "s1")
+            if _guard_would_reuse(runner, "discord:s1", "s1"):
                 reuses += 1
 
         assert reuses == 5
         with runner._agent_cache_lock:
-            assert runner._agent_cache["telegram:s1"][0] is agent
+            assert runner._agent_cache["discord:s1"][0] is agent
 
     @pytest.mark.asyncio
     async def test_cross_process_write_still_invalidates(self, tmp_path):
@@ -172,29 +172,29 @@ class TestSessionIdCacheCoherence:
         from hermes_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "sessions.db")
-        db.create_session("s1", source="telegram")
+        db.create_session("s1", source="discord")
         runner = _make_runner()
         runner._session_db = AsyncSessionDB(db)
         agent = object()
 
         with runner._agent_cache_lock:
             _row = db.get_session("s1")
-            runner._agent_cache["telegram:s1"] = (
+            runner._agent_cache["discord:s1"] = (
                 agent, "sig", (_row.get("message_count", 0) if _row else 0), "s1",
             )
 
         # Our own turn + re-baseline → reuse next turn.
         db.append_message("s1", role="user", content="u")
         db.append_message("s1", role="assistant", content="a")
-        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
-        assert _guard_would_reuse(runner, "telegram:s1", "s1") is True
+        await runner._refresh_agent_cache_message_count("discord:s1", "s1")
+        assert _guard_would_reuse(runner, "discord:s1", "s1") is True
 
         # ANOTHER process (e.g. the desktop dashboard backend) appends a
         # turn to the SAME session in the shared DB.
         db.append_message("s1", role="user", content="external from dashboard")
 
         # Guard must invalidate.
-        assert _guard_would_reuse(runner, "telegram:s1", "s1") is False
+        assert _guard_would_reuse(runner, "discord:s1", "s1") is False
 
 
     @pytest.mark.asyncio
@@ -210,7 +210,7 @@ class TestSessionIdCacheCoherence:
         from hermes_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "sessions.db")
-        db.create_session("s1", source="telegram")
+        db.create_session("s1", source="discord")
         db.append_message("s1", role="user", content="x")
         runner = _make_runner()
         runner._session_db = AsyncSessionDB(db)
@@ -218,14 +218,14 @@ class TestSessionIdCacheCoherence:
         # Existing entry in old 3-tuple shape, no session_id recorded.
         # Snapshot is mc=0; live is mc=1 — guard must fire (invalidate).
         with runner._agent_cache_lock:
-            runner._agent_cache["telegram:s1"] = (object(), "sig", 0)
+            runner._agent_cache["discord:s1"] = (object(), "sig", 0)
 
         # No session_id on cached entry → standard cross-process check
         # still runs.  live (1) != snapshot (0) → invalidates.
-        assert _guard_would_reuse(runner, "telegram:s1", "s1") is False
+        assert _guard_would_reuse(runner, "discord:s1", "s1") is False
 
         # After the re-baseline (same session_id) snapshot matches live.
-        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        await runner._refresh_agent_cache_message_count("discord:s1", "s1")
         with runner._agent_cache_lock:
-            assert runner._agent_cache["telegram:s1"][2] == 1
-        assert _guard_would_reuse(runner, "telegram:s1", "s1") is True
+            assert runner._agent_cache["discord:s1"][2] == 1
+        assert _guard_would_reuse(runner, "discord:s1", "s1") is True

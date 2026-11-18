@@ -831,7 +831,7 @@ class TestHealthDetailedEndpoint:
         app = _create_app(adapter)
         with patch("gateway.status.read_runtime_status", return_value={
             "gateway_state": "running",
-            "platforms": {"telegram": {"state": "connected"}},
+            "platforms": {"discord": {"state": "connected"}},
             "active_agents": 2,
             "exit_reason": None,
             "updated_at": "2026-04-14T00:00:00Z",
@@ -846,7 +846,7 @@ class TestHealthDetailedEndpoint:
                 assert data["status"] == "ok"
                 assert data["platform"] == "hermes-agent"
                 assert data["gateway_state"] == "running"
-                assert data["platforms"] == {"telegram": {"state": "connected"}}
+                assert data["platforms"] == {"discord": {"state": "connected"}}
                 assert data["active_agents"] == 2
                 # Derived busy/drainable: this endpoint is served BY the live
                 # gateway, so running + 2 agents ⇒ busy and drainable.

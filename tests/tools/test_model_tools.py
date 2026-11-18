@@ -375,25 +375,25 @@ class TestDisabledToolsetsPlatformBundle:
     must not remove core tools from other enabled toolsets."""
 
     def test_disabling_platform_bundle_preserves_core_tools(self):
-        """Disabling hermes-yuanbao should not strip core tools from hermes-telegram."""
+        """Disabling hermes-yuanbao should not strip core tools from hermes-discord."""
         from model_tools import get_tool_definitions
 
-        tools_telegram = get_tool_definitions(
-            enabled_toolsets=["hermes-telegram"],
+        tools_discord = get_tool_definitions(
+            enabled_toolsets=["hermes-discord"],
             quiet_mode=True,
         )
-        tools_telegram_no_yuanbao = get_tool_definitions(
-            enabled_toolsets=["hermes-telegram"],
+        tools_discord_no_yuanbao = get_tool_definitions(
+            enabled_toolsets=["hermes-discord"],
             disabled_toolsets=["hermes-yuanbao"],
             quiet_mode=True,
         )
-        names_telegram = {t["function"]["name"] for t in tools_telegram}
-        names_no_yuanbao = {t["function"]["name"] for t in tools_telegram_no_yuanbao}
+        names_discord = {t["function"]["name"] for t in tools_discord}
+        names_no_yuanbao = {t["function"]["name"] for t in tools_discord_no_yuanbao}
 
         # Disabling a *different* platform bundle must not remove any tools
-        assert names_telegram == names_no_yuanbao, (
+        assert names_discord == names_no_yuanbao, (
             f"Tools lost after disabling hermes-yuanbao: "
-            f"{names_telegram - names_no_yuanbao}"
+            f"{names_discord - names_no_yuanbao}"
         )
 
     def test_disabling_platform_bundle_removes_own_tools(self):

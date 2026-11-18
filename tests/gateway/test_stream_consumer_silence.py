@@ -7,7 +7,7 @@ this on the non-streaming delivery path, but the *streaming* path
 (``GatewayStreamConsumer``) previously had no silence awareness: it edited the
 raw marker onto the screen delta-by-delta and finalized it *before* the
 whole-response filter could run.  On any streaming-capable adapter (Slack,
-Telegram, Discord, …) users saw a literal ``NO_REPLY`` bubble.
+Discord, Matrix, …) users saw a literal ``NO_REPLY`` bubble.
 
 These tests pin the two halves of the fix:
 

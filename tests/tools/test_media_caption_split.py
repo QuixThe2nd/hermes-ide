@@ -6,13 +6,12 @@ accompanying text. Historically every standalone sender posted that text as a
 ``hermes send --to whatsapp "MEDIA:/x.png This Caption"`` into two parts.
 
 `_media_caption_split` is the single enforced decision point that all standalone
-senders (WhatsApp, Telegram, Discord) consult to decide whether the text should
+senders (WhatsApp, Discord) consult to decide whether the text should
 ride on the media bubble as a native caption. This test pins that contract so
 the platforms can't diverge.
 """
 
 from tools.send_message_tool import _DEFAULT_CAPTION_LIMIT, _media_caption_split
-from tools.send_message_senders import _TELEGRAM_CAPTION_LIMIT
 
 
 def test_single_image_short_text_becomes_caption():

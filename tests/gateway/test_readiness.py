@@ -23,7 +23,7 @@ def test_collect_runtime_readiness_reports_healthy_local_runtime(tmp_path, monke
         configured_model="test/model",
         runtime_status={
             "gateway_state": "running",
-            "platforms": {"telegram": {"state": "connected"}},
+            "platforms": {"discord": {"state": "connected"}},
             "updated_at": "2026-07-09T00:00:00Z",
         },
         active_api_runs=2,

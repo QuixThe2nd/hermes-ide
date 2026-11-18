@@ -30,10 +30,6 @@ def _ok(**fields: Any) -> Dict[str, Any]:
 # -- per-platform verb implementations (adapter, *args) -> result ------------
 
 
-async def _telegram_add_reaction(adapter, chat_id, message_id, emoji):
-    if await adapter._set_reaction(chat_id, message_id, emoji):
-        return _ok(action="add_reaction")
-    return _err("action_failed", "telegram set_message_reaction failed")
 
 
 async def _discord_add_reaction(adapter: Any, chat_id: str, message_id: str, emoji: str) -> Dict[str, Any]:
@@ -53,9 +49,6 @@ async def _discord_add_reaction(adapter: Any, chat_id: str, message_id: str, emo
     return _ok(action="add_reaction")
 
 
-async def _telegram_set_thread_title(adapter, chat_id, thread_id, title):
-    await adapter.rename_dm_topic(chat_id, int(thread_id), title)
-    return _ok(action="set_thread_title")
 
 
 async def _discord_set_thread_title(adapter, chat_id, thread_id, title):
@@ -65,8 +58,8 @@ async def _discord_set_thread_title(adapter, chat_id, thread_id, title):
 
 
 _VERBS = {
-    "add_reaction": {"telegram": _telegram_add_reaction, "discord": _discord_add_reaction},
-    "set_thread_title": {"telegram": _telegram_set_thread_title, "discord": _discord_set_thread_title},
+    "add_reaction": {"discord": _discord_add_reaction},
+    "set_thread_title": {"discord": _discord_set_thread_title},
 }
 
 

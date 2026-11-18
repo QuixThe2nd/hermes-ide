@@ -121,7 +121,7 @@ class GatewayGoalsMixin:
 
         The stored source's ``message_id`` is the message that registered the watch; a synthetic
         prompt is not a reply to it, so it is dropped or every progress bubble and final reply
-        would quote that stale message (Telegram DM topics route anchorless via the topic id).
+        would quote that stale message (some platforms route anchorless via the topic id).
         """
         source = dataclasses.replace(source, message_id=None) if getattr(source, "message_id", None) else source
         return MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=internal)
@@ -173,7 +173,7 @@ class GatewayGoalsMixin:
 
         The gateway message handler returns the agent response to the platform
         adapter, which sends it after this method's caller has returned.  For a
-        natural Discord/Telegram reading order, goal status belongs after that
+        natural Discord reading order, goal status belongs after that
         send.  Platform adapters provide a one-shot post-delivery callback for
         exactly this boundary; when unavailable, fall back to direct awaited
         delivery rather than silently dropping the notice.
@@ -469,7 +469,7 @@ class GatewayGoalsMixin:
         profile = route.get("profile") or profile
         # The loop's OWN profile's adapter map, fail closed: ``self.adapters`` is the default profile's,
         # so a secondary session's wakeup would inject via the default bot on a bare chat_id (a
-        # Telegram DM lands in the user's chat with the other bot).
+        # platform DM lands in the user's chat with the other bot).
         adapters = self._adapters_for_profile(profile)
         adapter = next((a for p, a in adapters.items() if p.value == platform_name), None)
         if adapter is None:
@@ -625,7 +625,7 @@ class GatewayGoalsMixin:
                     try:
                         # Fall back to the session's remembered last real user
                         # message id so the wakeup's reply still carries a
-                        # reply anchor (and pings) on Discord/Telegram.
+                        # reply anchor (and pings) on threaded platforms.
                         _anchor = None
                         if session_key:
                             try:

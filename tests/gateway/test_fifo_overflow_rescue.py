@@ -27,7 +27,7 @@ from gateway.run import GatewayRunner
 
 class _StubAdapter(BasePlatformAdapter):
     def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.DISCORD)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
@@ -48,7 +48,7 @@ def _text_event(text: str, msg_id: str) -> MessageEvent:
     return MessageEvent(
         text=text,
         message_type=MessageType.TEXT,
-        source=MagicMock(chat_id="123", platform=Platform.TELEGRAM, profile=None),
+        source=MagicMock(chat_id="123", platform=Platform.DISCORD, profile=None),
         message_id=msg_id,
     )
 
@@ -63,7 +63,7 @@ class TestRescueOrphanedOverflow:
     def test_single_orphan_is_returned_and_removed_from_both_stores(self):
         runner = _runner()
         adapter = _StubAdapter()
-        session_key = "telegram:user:1"
+        session_key = "discord:user:1"
         runner._session_state(session_key).conversation.queued_events.append(
             _text_event("orphan-1", "o1")
         )
@@ -80,7 +80,7 @@ class TestRescueOrphanedOverflow:
     def test_two_orphans_return_oldest_and_stage_next_in_slot(self):
         runner = _runner()
         adapter = _StubAdapter()
-        session_key = "telegram:user:1b"
+        session_key = "discord:user:1b"
         runner._session_state(session_key).conversation.queued_events.extend(
             [_text_event("orphan-1", "o1"), _text_event("orphan-2", "o2")]
         )
@@ -95,7 +95,7 @@ class TestRescueOrphanedOverflow:
     def test_noop_when_slot_occupied(self):
         runner = _runner()
         adapter = _StubAdapter()
-        session_key = "telegram:user:2"
+        session_key = "discord:user:2"
         runner._session_state(session_key).conversation.queued_events.append(
             _text_event("orphan", "o1")
         )
@@ -110,7 +110,7 @@ class TestRescueOrphanedOverflow:
     def test_noop_when_no_overflow(self):
         runner = _runner()
         adapter = _StubAdapter()
-        session_key = "telegram:user:3"
+        session_key = "discord:user:3"
 
         rescued = runner._rescue_orphaned_overflow(session_key, adapter)
 
@@ -124,7 +124,7 @@ class TestRescueOrphanedOverflow:
         """
         runner = _runner()
         adapter = _StubAdapter()
-        session_key = "telegram:user:4"
+        session_key = "discord:user:4"
         runner._session_state(session_key).conversation.queued_events.extend(
             [_text_event("orphan-1", "o1"), _text_event("orphan-2", "o2")]
         )
@@ -145,7 +145,7 @@ class TestRescueOrphanedOverflow:
         message must go to the slot (not overflow) or the drain never sees it."""
         runner = _runner()
         adapter = _StubAdapter()
-        session_key = "telegram:user:5"
+        session_key = "discord:user:5"
         runner._session_state(session_key).conversation.queued_events.append(
             _text_event("orphan-1", "o1")
         )

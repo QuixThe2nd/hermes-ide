@@ -67,12 +67,12 @@ class TestProfileRouteMatching:
 
     def test_sender_route_cannot_cross_the_receiving_bot_boundary(self):
         route = ProfileRoute(
-            name="owner", platform="telegram", profile="owner",
+            name="owner", platform="discord", profile="owner",
             user_id="640466638", bot_profile="team_b",
         )
-        assert route.matches("telegram", user_id="640466638", adapter_profile="team_b")
-        assert not route.matches("telegram", user_id="640466638", adapter_profile=None)
-        assert not route.matches("telegram", user_id="other", adapter_profile="team_b")
+        assert route.matches("discord", user_id="640466638", adapter_profile="team_b")
+        assert not route.matches("discord", user_id="640466638", adapter_profile=None)
+        assert not route.matches("discord", user_id="other", adapter_profile="team_b")
 
     def test_sender_routes_split_one_chat_and_outrank_its_location_route(self):
         routes = parse_profile_routes([
@@ -94,12 +94,12 @@ class TestParseProfileRoutes:
         assert parse_profile_routes([]) == []
 
     def test_coerces_yaml_native_int_ids_to_str(self):
-        # PyYAML loads unquoted snowflakes / negative Telegram ids as int;
+        # PyYAML loads unquoted snowflakes / negative chat ids as int;
         # inbound SessionSource ids are str, so un-coerced routes never match.
         routes = parse_profile_routes([
             {"name": "server", "platform": "discord", "profile": "p",
              "guild_id": 111, "chat_id": 222, "thread_id": 333, "user_id": 444},
-            {"name": "tg", "platform": "telegram", "profile": "p",
+            {"name": "group", "platform": "discord", "profile": "p",
              "chat_id": -1001234567890},
             {"name": "platform-only", "platform": "discord", "profile": "p"},
         ])
@@ -113,8 +113,8 @@ class TestParseProfileRoutes:
             user_id="444",
         ).name == "server"
         assert match_profile_route(
-            routes, "telegram", chat_id="-1001234567890",
-        ).name == "tg"
+            routes, "discord", chat_id="-1001234567890",
+        ).name == "group"
         assert (by_name["platform-only"].guild_id, by_name["platform-only"].chat_id,
                 by_name["platform-only"].thread_id) == (None, None, None)
 
@@ -168,9 +168,9 @@ class TestMatchProfileRoute:
 
     def test_no_match_returns_none(self):
         routes = [
-            ProfileRoute(name="r", platform="telegram", profile="p"),
+            ProfileRoute(name="r", platform="discord", profile="p"),
         ]
-        assert match_profile_route(routes, "discord") is None
+        assert match_profile_route(routes, "slack") is None
 
 
 class TestSessionKeyIntegration:
@@ -260,9 +260,9 @@ class TestWhatsAppChatIdIdentityMatching:
         assert not ProfileRoute(
             name="oops", platform="whatsapp", profile="owner", chat_id=group.split("@", 1)[0]
         ).matches("whatsapp", chat_id=group)
-        tg = ProfileRoute(name="tg", platform="telegram", profile="owner", chat_id="640466638")
-        assert tg.matches("telegram", chat_id="640466638")
-        assert not tg.matches("telegram", chat_id="640466638@s.whatsapp.net")
+        other = ProfileRoute(name="other", platform="discord", profile="owner", chat_id="640466638")
+        assert other.matches("discord", chat_id="640466638")
+        assert not other.matches("discord", chat_id="640466638@s.whatsapp.net")
 
 
 class TestGatewayConfigRoundtrip:

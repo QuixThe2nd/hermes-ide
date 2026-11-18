@@ -190,7 +190,7 @@ def test_primary_handler_rejected_route_falls_back_and_marks_sentinel(multiplex_
 def test_primary_route_keeps_transport_authorization_scope(multiplex_homes):
     """A shared bot authorizes with its own allowlist before using routed state.
 
-    Routed profiles commonly disable their Discord/Telegram adapters and carry
+    Routed profiles commonly disable their Discord/Slack adapters and carry
     no platform credentials or allowlists. Scoping the complete cold-message
     pipeline to that profile must not make the gateway reject a sender that the
     live primary transport already admitted.
@@ -505,7 +505,7 @@ def _multiplex_store(root: Path) -> SessionStore:
 
 def _profile_source() -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM, chat_id="555", user_id="u1", profile="fitness"
+        platform=Platform.DISCORD, chat_id="555", user_id="u1", profile="fitness"
     )
 
 
@@ -588,8 +588,8 @@ def test_default_namespace_keeps_ambient_resolution(multiplex_homes):
     root, _profile = multiplex_homes
     store = _make_store(root)  # multiplex off -> agent:main keys
 
-    assert store._profile_home_for_key("agent:main:telegram:dm:1") is None
-    assert store._db_for_key("agent:main:telegram:dm:1") is store._db
+    assert store._profile_home_for_key("agent:main:discord:dm:1") is None
+    assert store._db_for_key("agent:main:discord:dm:1") is store._db
     assert store._db_for_key(None) is store._db
 
 
@@ -600,7 +600,7 @@ def test_pinned_handle_still_wins_over_key_resolution(multiplex_homes):
 
     sentinel = object()
     store._db = sentinel
-    assert store._db_for_key("agent:fitness:telegram:dm:1") is sentinel
+    assert store._db_for_key("agent:fitness:discord:dm:1") is sentinel
     assert store._db_for_session_id("whatever") is sentinel
 
 
@@ -614,7 +614,7 @@ def test_profile_home_is_not_memoized_before_the_profile_exists(multiplex_homes)
     """
     root, _profile = multiplex_homes
     store = _multiplex_store(root)
-    key = "agent:latecomer:telegram:dm:9"
+    key = "agent:latecomer:discord:dm:9"
 
     assert store._profile_home_for_key(key) is None
 
@@ -637,7 +637,7 @@ def test_named_owner_without_a_home_never_falls_back_to_root(multiplex_homes):
     """
     root, _profile = multiplex_homes
     store = _multiplex_store(root)
-    key = "agent:latecomer:telegram:dm:9"
+    key = "agent:latecomer:discord:dm:9"
 
     assert store._named_profile_for_key(key) == "latecomer"
     assert store._db_for_key(key) is None
@@ -649,7 +649,7 @@ def test_named_owner_without_a_home_never_falls_back_to_root(multiplex_homes):
     (home / "config.yaml").write_text("{}\n", encoding="utf-8")  # identity marker
     db = store._db_for_key(key)
     assert db is not None
-    db.create_session("20260829_120000_abcdef01", "telegram")
+    db.create_session("20260829_120000_abcdef01", "discord")
 
     assert _session_ids(home / "state.db") == {"20260829_120000_abcdef01"}
     assert _session_ids(root / "state.db") == set()
@@ -666,7 +666,7 @@ def test_profile_resolution_failure_fails_closed(multiplex_homes, monkeypatch):
 
     root, _profile = multiplex_homes
     store = _multiplex_store(root)
-    key = "agent:fitness:telegram:dm:1"
+    key = "agent:fitness:discord:dm:1"
 
     # It resolves while the lookup works.
     assert store._db_for_key(key) is not None
@@ -696,15 +696,15 @@ def test_compression_child_write_stays_in_the_parents_profile_store(multiplex_ho
     """
     root, profile = multiplex_homes
     store = _multiplex_store(root)
-    key = "agent:fitness:telegram:dm:777"
+    key = "agent:fitness:discord:dm:777"
     parent_id = "20260830_100000_parent01"
     child_id = "20260830_100500_child001"
 
     token = set_hermes_home_override(str(profile))
     try:
         db = store._db
-        db.create_session(parent_id, "telegram")
-        db.create_session(child_id, "telegram", parent_session_id=parent_id)
+        db.create_session(parent_id, "discord")
+        db.create_session(child_id, "discord", parent_session_id=parent_id)
         db.end_session(parent_id, "compression")
     finally:
         reset_hermes_home_override(token)
@@ -790,7 +790,7 @@ def test_default_namespace_rows_stay_in_launch_store_under_secondary_scope(multi
 
     scope = set_hermes_home_override(str(profile))
     try:
-        db = store._db_for_key("agent:main:telegram:dm:1")
+        db = store._db_for_key("agent:main:discord:dm:1")
     finally:
         reset_hermes_home_override(scope)
 
@@ -810,7 +810,7 @@ def test_profile_named_main_keeps_its_own_namespace_and_store(multiplex_homes):
     main_home.mkdir(parents=True)
     (main_home / "config.yaml").write_text("{}\n", encoding="utf-8")  # identity marker
     store = _multiplex_store(root)
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="555", user_id="u1", profile="main")
+    source = SessionSource(platform=Platform.DISCORD, chat_id="555", user_id="u1", profile="main")
 
     main_key = build_session_key(source, profile="main")
     default_key = build_session_key(source, profile=None)

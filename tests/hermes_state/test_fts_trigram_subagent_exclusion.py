@@ -48,7 +48,7 @@ def _seed(db: SessionDB) -> dict[str, int]:
     # A child spawned under a gateway turn inherits the gateway's source but
     # still carries the marker.
     db.create_session(
-        "gw-kid", source="telegram", parent_session_id="root",
+        "gw-kid", source="discord", parent_session_id="root",
         model_config={"_delegate_from": "root"},
     )
     # Compression continuation: parent_session_id but NO marker -> indexed.

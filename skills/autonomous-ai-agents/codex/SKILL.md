@@ -81,7 +81,7 @@ process(action="kill", session_id="<id>")
 ## Hermes Gateway Caveat
 
 When invoking the Codex CLI from a Hermes gateway/service context (for example,
-Telegram-driven agent sessions), Codex `workspace-write` sandboxing may fail even
+Discord-driven agent sessions), Codex `workspace-write` sandboxing may fail even
 when the same command works in the user's interactive shell. A typical symptom is
 bubblewrap/user-namespace errors such as `setting up uid map: Permission denied`
 or `loopback: Failed RTM_NEWADDR: Operation not permitted`.

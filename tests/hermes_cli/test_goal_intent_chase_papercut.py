@@ -21,7 +21,7 @@ def _fresh_chase_dedupe():
 def _record(message="status?"):
     return {
         "session_id": "sess-1",
-        "platform": "telegram",
+        "platform": "discord",
         "message_excerpt": message,
         "label": "chase",
         "reason": "jev decision",

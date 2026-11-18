@@ -1192,7 +1192,7 @@ def apply_read_only_file_toolsets(profile_dir: Path) -> List[str]:
     * no platform lists at all (fresh create, or a clone whose source never
       touched ``hermes tools``): every platform the registry knows that
       resolves ``file`` gets a list matching its default-on toolsets except
-      for the swap. Writing only ``cli`` would leave discord/telegram/cron
+      for the swap. Writing only ``cli`` would leave discord/cron
       and the rest inheriting composites that carry the writable ``file``,
       so a "read-only" profile kept its write surface on every non-CLI
       platform.

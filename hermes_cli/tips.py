@@ -67,7 +67,7 @@ TIPS = [
     "hermes chat -q \"query\" runs a single non-interactive query and exits.",
     f"hermes chat --max-turns 1000 overrides the default {DEFAULT_MAX_TURNS}-iteration limit per turn.",
     "hermes chat --checkpoints enables filesystem snapshots before every destructive file change.",
-    "hermes chat --source telegram tags the session for filtering in hermes sessions list.",
+    "hermes chat --source discord tags the session for filtering in hermes sessions list.",
     "hermes -p work chat runs under a specific profile without changing your default.",
     # --- CLI Subcommands ---
     "hermes doctor --fix diagnoses and auto-repairs config and dependency issues.",
@@ -162,12 +162,12 @@ TIPS = [
     "/plan writes a markdown implementation plan to .hermes/plans/ without executing anything.",
     # --- Cron & Scheduling ---
     "Cron jobs can attach skills: hermes cron add --skill blogwatcher \"Check for new posts\".",
-    "Cron delivery targets include telegram, discord, slack, email, sms, and 12+ more platforms.",
+    "Cron delivery targets include discord, slack, email, sms, and 12+ more platforms.",
     "If a cron response starts with [SILENT], delivery is suppressed — useful for monitoring-only jobs.",
     "Cron supports relative delays (30m), intervals (every 2h), cron expressions, and ISO timestamps.",
     "Cron jobs run in completely fresh agent sessions — prompts must be self-contained.",
     # --- Gateway & Messaging ---
-    "Hermes runs on 21 messaging platforms: Telegram, Discord, Slack, WhatsApp, Signal, Matrix, IRC, Microsoft Teams, email, and more.",
+    "Hermes runs on 20+ messaging platforms: Discord, Slack, WhatsApp, Signal, Matrix, IRC, Microsoft Teams, email, and more.",
     "hermes gateway install sets it up as a system service that starts on boot.",
     "DingTalk uses Stream Mode — no webhooks or public URL needed.",
     "BlueBubbles brings iMessage to Hermes via a local macOS server.",
@@ -265,7 +265,7 @@ TIPS = [
     "Quick commands support two types: exec (run shell command directly) and alias (redirect to another command).",
     "Per-task delegation model: delegation.model and delegation.provider in config route subagents to cheaper models.",
     "delegation.reasoning_effort independently controls thinking depth for subagents.",
-    "display.platforms in config.yaml allows per-platform display overrides: {telegram: {tool_progress: all}}.",
+    "display.platforms in config.yaml allows per-platform display overrides: {discord: {tool_progress: all}}.",
     "Config version migrations run automatically on load — new config keys appear without manual intervention.",
     "GPT and Codex models get special system prompt guidance for tool discipline and mandatory tool use.",
     "Gemini models get tailored directives for absolute paths, parallel tool calls, and non-interactive commands.",
@@ -297,7 +297,6 @@ TIPS = [
     '/agents (alias /tasks) shows active agents and running background tasks across the current session.',
     '/footer toggles the gateway footer on final replies showing model, context, and API/tool/other timing.',
     '/busy queue|steer|interrupt controls what pressing Enter does while Hermes is working.',
-    '/topic in Telegram DMs enables user-managed multi-session topic mode — /topic <id> restores past sessions inline.',
     '/restart gracefully restarts the gateway after draining active runs, then pings the requester when back up.',
     '/reload reloads ~/.hermes/.env into the running session — pick up new API keys without restarting.',
     # --- Cron (no-agent & scripts) ---
@@ -339,7 +338,6 @@ TIPS = [
     'GATEWAY_PROXY_URL runs a split setup: platform I/O locally, agent work delegated to a remote API server.',
     # --- Platform-specific ---
     'MATRIX_DEVICE_ID pins a stable device ID for E2EE — without it, keys rotate every start and historic decrypt breaks.',
-    'TELEGRAM_WEBHOOK_SECRET is required whenever TELEGRAM_WEBHOOK_URL is set — generate with openssl rand -hex 32.',
     # --- Batch ---
     "batch_runner.py --resume content-matches completed prompts by text so dataset reorders don't re-run finished work.",
     # --- Less-Known Slash Commands ---

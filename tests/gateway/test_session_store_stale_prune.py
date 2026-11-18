@@ -26,7 +26,7 @@ def _make_entry(key: str, session_id: str) -> SessionEntry:
         session_id=session_id,
         created_at=now - timedelta(hours=2),
         updated_at=now - timedelta(hours=1),
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="dm",
     )
 
@@ -34,7 +34,7 @@ def _make_entry(key: str, session_id: str) -> SessionEntry:
 def _make_entry_with_origin(key: str, session_id: str) -> SessionEntry:
     entry = _make_entry(key, session_id)
     entry.origin = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="5140768830",
         chat_type="dm",
         user_id="5140768830",
@@ -93,7 +93,7 @@ class TestPruneStaleSessionsLocked:
         sessions.json entry loses the routing key entirely; keeping it lets the
         runtime stale guard retry recovery on the next message.
         """
-        key = "agent:main:telegram:dm:5140768830"
+        key = "agent:main:discord:dm:5140768830"
         db = _db_returning({"sid_parent": {"end_reason": "compression", "id": "sid_parent"}})
         db.find_latest_gateway_session_for_peer.side_effect = RuntimeError("db busy")
         store = _make_store_with_db(tmp_path, db)
@@ -115,7 +115,7 @@ class TestPruneStaleSessionsLocked:
         whenever the recovered id did not differ, deleting a perfectly valid
         resumable mapping (#95957).
         """
-        key = "agent:main:telegram:dm:5140768830"
+        key = "agent:main:discord:dm:5140768830"
         db = _db_returning(
             {"sid_parent": {"end_reason": "agent_close", "id": "sid_parent"}}
         )
@@ -186,7 +186,7 @@ class TestPruneStaleSessionsLocked:
         """
         from hermes_state import SessionDB
 
-        key = "agent:main:telegram:dm:5140768830"
+        key = "agent:main:discord:dm:5140768830"
         db = SessionDB(tmp_path / "state.db")
         peer = {
             "user_id": "5140768830",
@@ -194,9 +194,9 @@ class TestPruneStaleSessionsLocked:
             "chat_id": "5140768830",
             "chat_type": "dm",
         }
-        db.create_session("sid_before_reset", "telegram", **peer)
+        db.create_session("sid_before_reset", "discord", **peer)
         db.append_message("sid_before_reset", "user", "private old context")
-        db.create_session("sid_reset", "telegram", **peer)
+        db.create_session("sid_reset", "discord", **peer)
         db.append_message("sid_reset", "user", "/new")
         db.end_session("sid_reset", "session_reset")
 
@@ -226,7 +226,7 @@ class TestStartupRecovery:
 
     def test_startup_repoint_unchanged(self, tmp_path):
         """Startup repoints to the recovered row."""
-        key = "agent:main:telegram:dm:5140768830"
+        key = "agent:main:discord:dm:5140768830"
         db = _db_returning(
             {"sid_parent": {"end_reason": "compression", "id": "sid_parent"}}
         )

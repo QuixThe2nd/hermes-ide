@@ -246,17 +246,6 @@ gateway:
     current_with_title:    "📌 الجلسة: `{session_id}`\nالعنوان: **{title}**"
     current_no_title:      "📌 الجلسة: `{session_id}`\nلم يُضبط عنوان. الاستخدام: `/title My Session Name`"
 
-  topic:
-    not_telegram_dm:         "الأمر /topic متاح فقط في محادثات Telegram الخاصة."
-    no_session_db:           "قاعدة بيانات الجلسات غير متاحة."
-    unauthorized:            "غير مصرّح لك باستخدام /topic على هذا البوت."
-    restore_needs_topic:     "لاستعادة جلسة، أنشئ أو افتح موضوع Telegram أولًا، ثم أرسل /topic <session-id> داخل ذلك الموضوع. لإنشاء موضوع جديد، افتح All Messages وأرسل أي رسالة هناك."
-    topics_disabled:         "مواضيع Telegram غير مُفعّلة لهذا البوت بعد.\n\nكيفية تفعيلها:\n1. افتح @BotFather.\n2. اختر البوت الخاص بك.\n3. افتح Bot Settings → Threads Settings.\n4. فعّل Threaded Mode وتأكّد من السماح للمستخدمين بإنشاء خيوط جديدة.\n\nثم أرسل /topic مرة أخرى."
-    topics_user_disallowed:  "مواضيع Telegram مُفعّلة، لكن غير مسموح للمستخدمين بإنشاء مواضيع.\n\nافتح @BotFather → اختر البوت → Bot Settings → Threads Settings، ثم أوقف 'Disallow users to create new threads'.\n\nثم أرسل /topic مرة أخرى."
-    enable_failed:           "فشل تفعيل وضع مواضيع Telegram: {error}"
-    bound_status:            "هذا الموضوع مرتبط بـ:\nالجلسة: {label}\nالمعرّف: {session_id}\n\nاستخدم /new لاستبدال هذا الموضوع بجلسة جديدة.\nللعمل المتوازي، افتح All Messages وأرسل رسالة هناك لإنشاء موضوع آخر."
-    thread_ready:            "مواضيع Telegram متعددة الجلسات مُفعّلة.\n\nسيُستخدم هذا الموضوع كجلسة Hermes مستقلة. استخدم /new لاستبدال جلسة هذا الموضوع الحالية. للعمل المتوازي، افتح All Messages وأرسل رسالة هناك لإنشاء موضوع آخر."
-    untitled_session:        "جلسة دون عنوان"
 
   undo:
     nothing:               "لا شيء للتراجع عنه."

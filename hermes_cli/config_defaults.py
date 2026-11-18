@@ -74,8 +74,8 @@ DEFAULT_CONFIG = {
         # while calling tools or receiving API responses. 0 = unlimited.
         "gateway_timeout": 1800,
         # Max seconds an alias routing key waits for the active turn holding the same session lease;
-        # on expiry the message is rejected with a resend notice. Keep short: Telegram dispatches
-        # sequentially, so a waiter delays unrelated topics. Non-positive -> 5s.
+        # on expiry the message is rejected with a resend notice. Keep short: sequentially
+        # dispatching platforms let a waiter delay unrelated topics. Non-positive -> 5s.
         "gateway_turn_lease_timeout": 5,
         # Per-session AIAgent cache in the gateway. Each entry keeps a warm prompt prefix AND the
         # full transcript: too small re-pays uncached prompts, too large fills the heap.
@@ -569,7 +569,7 @@ DEFAULT_CONFIG = {
         "hygiene_total_ceiling_seconds": 600,
         "hygiene_failure_cooldown_seconds": 300,  # skip repeated failed hygiene attempts
         # Max seconds an ARRIVING user turn is held while a streaming hygiene summary finishes;
-        # bounds user-visible latency (keep under chat idle timeouts, Telegram ~30s). On expiry the
+        # bounds user-visible latency (keep under chat idle timeouts, ~30s). On expiry the
         # turn proceeds uncompressed; the detached worker keeps its watermark-fenced commit, so the
         # summary is adopted at the next safe boundary.
         "hygiene_max_turn_hold_seconds": 10,
@@ -862,12 +862,12 @@ DEFAULT_CONFIG = {
         # Per-platform: display.platforms.<platform>.status_phrases.
         "status_phrases": {},
         # Auto-delete EphemeralReply system notices ("✨ New session started!", …) after N seconds
-        # where deletion is supported (Telegram; others ignore). Agent responses are never touched.
+        # where deletion is supported; others ignore. Agent responses are never touched.
         # 0 = disabled.
         "ephemeral_system_ttl": 0,
-        # Per-platform display/streaming overrides; unset keys fall through to the global. Telegram
-        # has smooth native draft streaming (on); Discord/Slack only edit-based streaming, which
-        # flickers (off). Gap-fillers only: explicit user values win, and the global
+        # Per-platform display/streaming overrides; unset keys fall through to the global.
+        # Relay/fronted platforms have smooth native draft streaming (on); Discord/Slack only
+        # edit-based streaming, which flickers (off). Gap-fillers only: explicit user values win, and the global
         # streaming.enabled master switch still gates everything.
         "platforms": {
             "discord": {"streaming": False},
@@ -1245,7 +1245,7 @@ DEFAULT_CONFIG = {
     },
     # User-defined quick commands that bypass the agent loop (type: exec only).
     "quick_commands": {},
-    # Per-platform system-prompt hint overrides, keyed by platform name (whatsapp, slack, telegram,
+    # Per-platform system-prompt hint overrides, keyed by platform name (whatsapp, slack,
     # ...). Value: {"append": text} keeps the built-in hint and appends; {"replace": text}
     # substitutes it; a bare string is shorthand for append. `replace` wins over `append` if both
     # are given.
@@ -1352,14 +1352,14 @@ DEFAULT_CONFIG = {
         # message" footer. False = clean output.
         "wrap_response": True,
         "delivery": {  # Delivery behaviour for cron output sent through a live gateway adapter.
-            # Mark cron deliveries FINAL so the platform pushes them (Telegram's "important" mode
-            # otherwise sends with disable_notification=True and briefs look undelivered). False =
+            # Mark cron deliveries FINAL so the platform pushes them (a silent
+            # disable_notification send makes briefs look undelivered). False =
             # silent, no-push deliveries.
             "notify": True,
         },
         # Make cron deliveries CONTINUABLE (user can reply to a brief with it in context). False
         # keeps deliveries isolated to the job's session; per-job `attach_to_session` overrides.
-        # Thread-capable platforms (Telegram topics, Discord/Slack threads) get a seeded thread per
+        # Thread-capable platforms (Discord/Slack threads) get a seeded thread per
         # job via create_handoff_thread; DM-only platforms mirror the brief into the target DM
         # session. Appended at a turn boundary via mirror_to_session, cached system prompt
         # untouched. User-written bare platforms address home conversations, unlike `all`
@@ -1484,7 +1484,7 @@ DEFAULT_CONFIG = {
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
 
-    # Gateway settings — control how messaging platforms (Telegram, Discord,
+    # Gateway settings — control how messaging platforms (Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
         # After an unexpected SIGTERM interrupts a running gateway agent,
@@ -1599,7 +1599,7 @@ DEFAULT_CONFIG = {
         # Let adapters read HTTP_PROXY/HTTPS_PROXY/NO_PROXY/SSL_CERT_FILE from the environment and
         # auto-detect generic/macOS system proxies. False when the gateway inherits a proxy it must
         # not use (e.g. a scheduled task picking up a Clash/V2Ray HTTP_PROXY -> "Cannot connect to
-        # host 127.0.0.1:7890"). Per-platform vars (DISCORD_PROXY, TELEGRAM_PROXY, ...) are still
+        # host 127.0.0.1:7890"). Per-platform vars (DISCORD_PROXY, ...) are still
         # honored.
         "trust_env": True,
         # Media delivery. False: any emitted file path is delivered natively unless under the
@@ -1638,16 +1638,16 @@ DEFAULT_CONFIG = {
     # default: costs extra edit/draft API calls per response.
     "streaming": {
         "enabled": False,  # When false, each response is delivered as one final message.
-        # auto = native drafts where supported (Telegram DMs, Bot API 9.5+), edits elsewhere
-        # (Discord, Slack, Matrix, Telegram groups); draft = drafts with edit fallback; edit =
+        # auto = native drafts where supported (relay connectors), edits elsewhere
+        # (Discord, Slack, Matrix); draft = drafts with edit fallback; edit =
         # progressive editMessageText only; off = disabled.
         "transport": "auto",
-        # Minimum seconds between progressive edits (Telegram's ~1 edit/s flood envelope).
+        # Minimum seconds between progressive edits (platform flood-control envelopes).
         "edit_interval": 0.8,
         # Flush the buffer once this many chars accumulate, so short replies feel instant.
         "buffer_threshold": 24,
         "cursor": " \u2589",  # Cursor glyph appended to the in-progress message.
-        # Telegram only: when >0, if the preview was visible at least this many seconds the final
+        # When >0, if the preview was visible at least this many seconds the final
         # edit is sent as a fresh message so the timestamp reflects completion.
         "fresh_final_after_seconds": 0.0,
     },
@@ -2228,16 +2228,6 @@ OPTIONAL_ENV_VARS = {
         "Langfuse server URL (leave empty for cloud.langfuse.com)", None, password=False,
         advanced=True),
     # ── Messaging platforms ──
-    "TELEGRAM_BOT_TOKEN": _msg(
-        "Complete Telegram bot token created by @BotFather (numeric bot ID followed by a colon "
-        "and secret)", "Telegram bot token", "https://t.me/BotFather", password=True),
-    "TELEGRAM_ALLOWED_USERS": _msg(
-        "Optional comma-separated numeric Telegram user IDs allowed immediately; leave blank to "
-        "approve new users through DM pairing", "Allowed Telegram user IDs (comma-separated)",
-        "https://t.me/userinfobot"),
-    "TELEGRAM_PROXY": _msg(
-        "Proxy URL for Telegram connections (overrides HTTPS_PROXY). Supports http://, "
-        "https://, socks5://", "Telegram proxy URL (optional)"),
     "DISCORD_BOT_TOKEN": _msg("Discord bot token from Developer Portal", "Discord bot token",
         "https://discord.com/developers/applications", password=True),
     "DISCORD_ALLOWED_USERS": _msg("Comma-separated Discord user IDs allowed to use the bot",

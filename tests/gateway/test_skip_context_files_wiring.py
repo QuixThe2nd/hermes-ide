@@ -20,11 +20,11 @@ class TestSkipContextFilesSignature:
 
     def test_signature_differs_when_toggled(self):
         sig_off = GatewayRunner._agent_config_signature(
-            "claude-sonnet-4", self.RUNTIME, ["hermes-telegram"], "",
+            "claude-sonnet-4", self.RUNTIME, ["hermes-matrix"], "",
             skip_context_files=False,
         )
         sig_on = GatewayRunner._agent_config_signature(
-            "claude-sonnet-4", self.RUNTIME, ["hermes-telegram"], "",
+            "claude-sonnet-4", self.RUNTIME, ["hermes-matrix"], "",
             skip_context_files=True,
         )
         assert sig_off != sig_on, (
@@ -34,11 +34,11 @@ class TestSkipContextFilesSignature:
 
     def test_signature_stable_when_unchanged(self):
         sig_a = GatewayRunner._agent_config_signature(
-            "claude-sonnet-4", self.RUNTIME, ["hermes-telegram"], "",
+            "claude-sonnet-4", self.RUNTIME, ["hermes-matrix"], "",
             skip_context_files=True,
         )
         sig_b = GatewayRunner._agent_config_signature(
-            "claude-sonnet-4", self.RUNTIME, ["hermes-telegram"], "",
+            "claude-sonnet-4", self.RUNTIME, ["hermes-matrix"], "",
             skip_context_files=True,
         )
         assert sig_a == sig_b
@@ -47,10 +47,10 @@ class TestSkipContextFilesSignature:
         """Back-compat: omitting the param must hash like False so existing
         cached agents aren't all invalidated by this change."""
         sig_default = GatewayRunner._agent_config_signature(
-            "claude-sonnet-4", self.RUNTIME, ["hermes-telegram"], "",
+            "claude-sonnet-4", self.RUNTIME, ["hermes-matrix"], "",
         )
         sig_false = GatewayRunner._agent_config_signature(
-            "claude-sonnet-4", self.RUNTIME, ["hermes-telegram"], "",
+            "claude-sonnet-4", self.RUNTIME, ["hermes-matrix"], "",
             skip_context_files=False,
         )
         assert sig_default == sig_false
@@ -62,20 +62,20 @@ class TestSkipContextFilesConfigResolution:
     @pytest.mark.parametrize(
         ("cfg", "platform_key", "expected"),
         [
-            ({"gateway": {"platforms": {"telegram": {"skip_context_files": True}}}}, "telegram", True),
-            ({"gateway": {"platforms": {"telegram": {"skip_context_files": False}}}}, "telegram", False),
-            ({"gateway": {"platforms": {"telegram": {}}}}, "telegram", False),
-            ({"gateway": {"platforms": {}}}, "telegram", False),
-            ({"gateway": {}}, "telegram", False),
-            ({}, "telegram", False),
+            ({"gateway": {"platforms": {"whatsapp": {"skip_context_files": True}}}}, "whatsapp", True),
+            ({"gateway": {"platforms": {"whatsapp": {"skip_context_files": False}}}}, "whatsapp", False),
+            ({"gateway": {"platforms": {"whatsapp": {}}}}, "whatsapp", False),
+            ({"gateway": {"platforms": {}}}, "whatsapp", False),
+            ({"gateway": {}}, "whatsapp", False),
+            ({}, "whatsapp", False),
             # Set on a DIFFERENT platform — must not leak.
-            ({"gateway": {"platforms": {"discord": {"skip_context_files": True}}}}, "telegram", False),
+            ({"gateway": {"platforms": {"discord": {"skip_context_files": True}}}}, "whatsapp", False),
             # Truthy non-bool values coerce.
-            ({"gateway": {"platforms": {"telegram": {"skip_context_files": 1}}}}, "telegram", True),
+            ({"gateway": {"platforms": {"whatsapp": {"skip_context_files": 1}}}}, "whatsapp", True),
             # ``hermes gateway setup`` writes platforms as a LIST of enabled
             # platform names — must not crash and must default to False (#83185).
-            ({"gateway": {"platforms": ["telegram", "discord"]}}, "telegram", False),
-            ({"gateway": {"platforms": []}}, "telegram", False),
+            ({"gateway": {"platforms": ["whatsapp", "matrix"]}}, "whatsapp", False),
+            ({"gateway": {"platforms": []}}, "whatsapp", False),
         ],
     )
     def test_resolution(self, cfg, platform_key, expected):

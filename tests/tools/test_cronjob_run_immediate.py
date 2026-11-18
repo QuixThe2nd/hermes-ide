@@ -303,7 +303,7 @@ class TestManualRunReportsDeliveryFailure:
             "id": "job-run-1",
             "last_status": "delivery_failed",
             "last_error": None,
-            "last_delivery_error": "live adapter send failed: 502 (target telegram:123)",
+            "last_delivery_error": "live adapter send failed: 502 (target discord:123)",
         }
         with patch("tools.cronjob_tools.claim_job_for_fire",
                    return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \

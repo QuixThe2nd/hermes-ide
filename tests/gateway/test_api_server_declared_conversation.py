@@ -88,9 +88,9 @@ class TestDeclaredConversationResolution:
         assert a._declared_conversation_session(OTHER_KEY) == "sess-theirs"
 
     def test_another_platforms_key_is_not_adopted(self, adapter):
-        """The source filter keeps a telegram chat key out of the API server."""
+        """The source filter keeps a discord chat key out of the API server."""
         a, db = adapter
-        _seed(db, "sess-telegram", key=KEY, source="telegram")
+        _seed(db, "sess-discord", key=KEY, source="discord")
         assert a._declared_conversation_session(KEY) is None
 
     def test_db_failure_degrades_to_a_fresh_id(self, adapter):

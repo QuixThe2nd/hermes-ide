@@ -708,7 +708,7 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     """Save the selected toolset keys for a platform to config."""
     config.setdefault("platform_toolsets", {})
     # Drop platform-scoped toolsets that don't apply here, so the "Configure all platforms" checklist (or a
-    # hand-edited config.yaml) can't turn on `discord` for Telegram.
+    # hand-edited config.yaml) can't turn on a platform-scoped toolset for the wrong platform.
     enabled_toolset_keys = {ts for ts in enabled_toolset_keys if _toolset_allowed_for_platform(ts, platform)}
 
     # Never persist both sides of a swapped pair. Enforced here so every

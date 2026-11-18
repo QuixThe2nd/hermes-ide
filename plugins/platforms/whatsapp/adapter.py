@@ -251,7 +251,7 @@ _BRIDGE_PASSTHROUGH_ENV = (
     "WHATSAPP_CHUNK_DELAY_MS", "WHATSAPP_SEND_TIMEOUT_MS",
 )
 _TEXT_INJECT_EXTS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"}
-_MAX_TEXT_INJECT_BYTES = 100 * 1024  # matches Telegram/Discord/Slack
+_MAX_TEXT_INJECT_BYTES = 100 * 1024  # matches Discord/Slack
 _NATIVE_MEDIA_TYPES = {"location": MessageType.LOCATION, "live_location": MessageType.LOCATION, "sticker": MessageType.STICKER}
 # Inbound mediaType substring → kind; ptt = WhatsApp voice note, so "ptt" must precede "audio".
 _MEDIA_NEEDLES = (("image", MessageType.PHOTO), ("video", MessageType.VIDEO), ("ptt", MessageType.VOICE), ("audio", MessageType.AUDIO))

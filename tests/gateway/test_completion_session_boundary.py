@@ -56,7 +56,7 @@ def _runner(adapter, *, session_db=...):
     adapter.handle_message.side_effect = admit
     runner = object.__new__(GatewayRunner)
     runner._running = True
-    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.adapters = {Platform.DISCORD: adapter}
     runner.session_store = SimpleNamespace(
         _ensure_loaded=lambda: None,
         _entries={},
@@ -91,8 +91,8 @@ def _watcher(session_id, parent_session_id=None):
     watcher = {
         "session_id": session_id,
         "check_interval": 0,
-        "session_key": "agent:main:telegram:dm:123",
-        "platform": "telegram",
+        "session_key": "agent:main:discord:dm:123",
+        "platform": "discord",
         "chat_type": "dm",
         "chat_id": "123",
         "notify_on_complete": True,
@@ -114,8 +114,8 @@ def _completion_evt(parent_session_id=None, session_id="proc_x"):
     evt = {
         "type": "completion",
         "session_id": session_id,
-        "session_key": "agent:main:telegram:dm:123",
-        "platform": "telegram",
+        "session_key": "agent:main:discord:dm:123",
+        "platform": "discord",
         "chat_type": "dm",
         "chat_id": "123",
         "started_at": 1234.5,
@@ -292,7 +292,7 @@ def test_async_delegation_gate_unchanged():
     evt = {
         "type": "async_delegation",
         "delegation_id": "",
-        "session_key": "agent:main:telegram:dm:12345:678",
+        "session_key": "agent:main:discord:dm:12345:678",
         "parent_session_id": "sess-gone",
         "status": "completed",
     }
@@ -318,8 +318,8 @@ def test_parent_session_id_survives_checkpoint_recovery(tmp_path, monkeypatch):
         "host_start_time": 111.0,
         "started_at": 1234.5,
         "task_id": "task",
-        "session_key": "agent:main:telegram:dm:123",
-        "watcher_platform": "telegram",
+        "session_key": "agent:main:discord:dm:123",
+        "watcher_platform": "discord",
         "watcher_chat_id": "123",
         "watcher_interval": 5,
         "notify_on_complete": True,

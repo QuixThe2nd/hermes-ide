@@ -2620,7 +2620,7 @@ def refuses_container_user_scope_install(system: bool) -> bool:
         "The unit file and its enable symlink would be written to the home directory, which is",
         "commonly the host's own home bind-mounted in — the host's user manager then enables and",
         "starts the same unit, so a second gateway polls the same bot token outside the container",
-        "(Telegram: 'Conflict: terminated by other getUpdates request').",
+        "(platform error: 'Conflict: terminated by other poll request').",
         "",
         "  hermes gateway run                                # run as the container's main process",
         "  docker run --restart unless-stopped ...           # container restart policy",
@@ -5701,21 +5701,8 @@ def _clean_discord_ids(cleaned: str) -> str:
     return ",".join(parts)
 
 
-def _prompt_allowlist_var(var: dict, platform_key: str, auto_owner_user_id) -> str | None:
+def _prompt_allowlist_var(var: dict, platform_key: str) -> str | None:
     """Allowlist prompt for one var; returns the saved value or None (open-access prompt shown)."""
-    if "TELEGRAM" in var["name"] and auto_owner_user_id:
-        detected_id = str(auto_owner_user_id)
-        print_success(f"  Detected your Telegram user ID: {detected_id}")
-        if prompt_yes_no("  Allow this Telegram account to use the bot?", True):
-            extra = prompt("  Additional allowed user IDs (comma-separated, optional)", password=False)
-            ids = [detected_id]
-            for uid in extra.replace(" ", "").split(","):
-                if uid and uid not in ids:
-                    ids.append(uid)
-            cleaned = ",".join(ids)
-            save_env_value(var["name"], cleaned)
-            print_success("  Saved — only these users can interact with the bot.")
-            return cleaned
 
     _print_info_lines(
         "  The gateway DENIES all users by default for security.",
@@ -5735,7 +5722,7 @@ def _prompt_allowlist_var(var: dict, platform_key: str, auto_owner_user_id) -> s
 
 
 def _setup_standard_platform(platform: dict):
-    """Interactive setup for Telegram, Discord, or Slack."""
+    """Interactive setup for Discord, Slack, or other token platforms."""
     from hermes_cli.setup_hidden_env import is_setup_hidden_env as _is_setup_hidden_env
     emoji, label, token_var = platform["emoji"], platform["label"], platform["token_var"]
     _print_setup_header(f"{emoji} {label}")
@@ -5748,7 +5735,6 @@ def _setup_standard_platform(platform: dict):
     if not _confirm_reconfigure(label, token_var):
         return
 
-    auto_owner_user_id = None
     # Skip knobs the setup forms hide (reply mode, proxy...): they're self-configuring.
     setup_vars = [
         v for v in platform["vars"]
@@ -5763,7 +5749,7 @@ def _setup_standard_platform(platform: dict):
             print_info(f"  Current: {existing}")
 
         if var.get("is_allowlist"):
-            _prompt_allowlist_var(var, platform.get("key"), auto_owner_user_id)
+            _prompt_allowlist_var(var, platform.get("key"))
             continue
 
         value = prompt(f"  {var['prompt']}", password=var.get("password", False))

@@ -1,7 +1,7 @@
 """Regression test for #81335 — fatal-error handler must survive cancellation
 of the task that awaits ``_notify_fatal_error``.
 
-The Telegram adapter escalates exhausted polling retries from inside its own
+A polling adapter escalates exhausted polling retries from inside its own
 ``_polling_error_task``. The gateway's fatal handler tears the adapter down
 via ``disconnect()``, which cancels that very task. The handler used to be
 killed mid-flight by the propagating ``CancelledError``: the adapter was

@@ -297,7 +297,7 @@ def test_clarify_text_fallback_re_resolves_status_adapter_after_mid_turn_swap(lo
         stream_consumer_holder=[None],
         _loop_for_step=loop,
         _run_still_current=lambda: True,
-        source=SimpleNamespace(chat_id="42", platform="telegram"),
+        source=SimpleNamespace(chat_id="42", platform="discord"),
     )
     runner = TurnRunner(object(), ctx)
     runner._close_native_stream_boundary = lambda *a, **k: None

@@ -372,11 +372,6 @@ class TestMatrixMediaLiveAdapterReuse:
             ("disconnect",),
         ]
 
-# ---------------------------------------------------------------------------
-# HTML auto-detection in Telegram send
-# ---------------------------------------------------------------------------
-
-
 class TestSendToPlatformWhatsapp:
     def test_whatsapp_routes_via_local_bridge_sender(self):
         """WhatsApp delivery routes through the plugin's registry

@@ -33,7 +33,7 @@ class TestRelayFrontedDeliveryPlatforms:
 
     def test_ignores_non_fronted_platform(self):
         job = {"id": "j1", "deliver": "discord"}
-        with patch("gateway.relay.relay_fronted_platforms", return_value={"telegram"}), patch(
+        with patch("gateway.relay.relay_fronted_platforms", return_value={"slack"}), patch(
             "cron.scheduler._resolve_delivery_targets",
             return_value=[{"platform": "discord", "chat_id": "123"}],
         ):

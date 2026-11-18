@@ -476,7 +476,7 @@ def _ensure_codex_session(agent) -> None:
     from hermes_cli.config import load_config
     # Bridge codex JSON-RPC notifications (item/started, item/completed, item/agentMessage/delta, ...) into
     # Hermes' gateway UI callbacks (tool_progress_callback, _fire_stream_delta,
-    # _emit_interim_assistant_message). Without this, Discord/Telegram users see no live tool-progress or
+    # _emit_interim_assistant_message). Without this, gateway users see no live tool-progress or
     # interim commentary while codex_app_server is running — only the final answer (#33200). Supersedes the
     # narrower item/started-only bridge from #38835.
     # Hermes owns the prompt: the same composition the standard loop sends as its system message

@@ -206,14 +206,14 @@ class TestBuildBundleInvocationMessage:
         scan_bundles()
 
         def _fake_disabled(platform=None):
-            return {"skill-b"} if platform == "telegram" else set()
+            return {"skill-b"} if platform == "discord" else set()
 
         import agent.skill_utils as su_module
         monkeypatch.setattr(
             su_module, "get_disabled_skill_names", _fake_disabled
         )
 
-        result = build_bundle_invocation_message("/combo", platform="telegram")
+        result = build_bundle_invocation_message("/combo", platform="discord")
         assert result is not None
         msg, loaded, missing = result
         assert loaded == ["skill-a"]

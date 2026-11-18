@@ -1,7 +1,7 @@
 """Unit tests for relay voice-note + per-attachment media-type mapping.
 
 The relay contract gained ``message_type: "voice"`` (connector PR: voice
-notes on Discord/Telegram/WhatsApp classify distinctly from audio-file
+notes on messaging platforms classify distinctly from audio-file
 uploads). The gateway side has two obligations:
 
 1. ``MessageType("voice")`` must parse — it already does, since the enum

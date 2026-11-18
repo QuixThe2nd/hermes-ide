@@ -463,7 +463,7 @@ class TestCreationTimeEnforcement:
         assert result["deliver"] == "origin"
 
     def test_non_discord_origin_untouched(self, temp_cron_home, inbox_state):
-        tokens = self._session(platform="telegram", scope="TTEAM", chat="-100123")
+        tokens = self._session(platform="discord", scope="TTEAM", chat="-100123")
         try:
             result = _create()
         finally:

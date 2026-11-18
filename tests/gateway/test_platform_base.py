@@ -497,7 +497,7 @@ class TestMediaDeliveryPathValidation:
 class TestMediaDeliveryDefaultMode:
     """Default (non-strict) mode — denylist gates delivery, nothing else.
 
-    Symmetric with inbound delivery: Telegram/Discord/Slack accept any
+    Symmetric with inbound delivery: Discord/Slack/Matrix accept any
     document type the user uploads, and the agent can hand back any file
     that isn't a credential. Strict mode is opt-in for operators running
     public-facing gateways.
@@ -799,7 +799,7 @@ class TestIsSenderAuthorized:
         from gateway.config import Platform, PlatformConfig
 
         return StubAdapter(config=PlatformConfig(enabled=True, token="test"),
-                           platform=Platform.TELEGRAM)
+                           platform=Platform.DISCORD)
 
     def test_no_check_registered_is_unknown(self):
         assert self._adapter()._is_sender_authorized("user") is None
@@ -860,7 +860,7 @@ class TestTruncateMessage:
         from gateway.config import Platform, PlatformConfig
 
         config = PlatformConfig(enabled=True, token="test")
-        return StubAdapter(config=config, platform=Platform.TELEGRAM)
+        return StubAdapter(config=config, platform=Platform.DISCORD)
 
     def test_short_message_single_chunk(self):
         adapter = self._adapter()
@@ -929,7 +929,7 @@ class TestTruncateMessage:
 # ---------------------------------------------------------------------------
 # utf16_len / _prefix_within_utf16_limit / truncate_message with len_fn
 # ---------------------------------------------------------------------------
-# Ported from nearai/ironclaw#2304 — Telegram counts message length in UTF-16
+# Ported from nearai/ironclaw#2304 — some platforms count message length in UTF-16
 # code units, not Unicode code-points.  Astral-plane characters (emoji, CJK
 # Extension B) are surrogate pairs: 1 Python char but 2 UTF-16 units.
 
@@ -1055,14 +1055,14 @@ class _CapturingAdapter(BasePlatformAdapter):
     The four media-send fallbacks (send_voice, send_video, send_document,
     send_image_file) historically forwarded their *_path argument into the
     chat text. That argument is a host filesystem path inside the Hermes
-    cache, so any subclass that fell back to super() — like the Telegram
-    adapter on a rejected video — would leak the host's directory layout
+    cache, so any subclass that fell back to super() — like an adapter
+    on a rejected video — would leak the host's directory layout
     into the user's chat.
     """
 
     def __init__(self):
         from gateway.config import Platform, PlatformConfig
-        super().__init__(PlatformConfig(enabled=True), Platform.TELEGRAM)
+        super().__init__(PlatformConfig(enabled=True), Platform.DISCORD)
         self.sent: list[dict] = []
 
     async def connect(self) -> bool:  # pragma: no cover - not exercised
@@ -1088,7 +1088,7 @@ class _CapturingAdapter(BasePlatformAdapter):
 class TestMediaFallbackDoesNotLeakHostPath:
     """Regression: the four base-class media fallbacks must not echo *_path.
 
-    Telegram, Discord, and Slack adapters all fall back to these base
+    Discord, Slack, and Matrix adapters all fall back to these base
     implementations on native-send failure. When they did, the user saw
     a chat message like ``🎬 Video: /home/.../hermes/cache/video/abc.mp4``
     — a host filesystem path with no actionable information.

@@ -325,7 +325,7 @@ def test_stop_fails_closed_without_any_session_spine():
         tool="delegate_claude_agent",
         result_kind="cli_agent",
         parent_session_id="",
-        session_key="telegram:999:guard",
+        session_key="discord:999:guard",
     )
     rec["interrupt_fn"] = fn
     parent = _StubParent(session_id="")
@@ -378,11 +378,11 @@ def test_steer_ownership_via_current_session_key():
         tool="delegate_cursor_agent",
         result_kind="cloud_agent",
         parent_session_id="",
-        session_key="telegram:4242:curator",
+        session_key="discord:4242:curator",
     )
     rec["interrupt_fn"] = fn
     parent = _StubParent(session_id="")
-    token = set_current_session_key("telegram:4242:curator")
+    token = set_current_session_key("discord:4242:curator")
     try:
         out = _handle_control_action(
             "steer", "deleg_5dd10002", "Tighten the diff scope", parent

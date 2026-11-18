@@ -3,7 +3,7 @@
 Every adapter that batches inbound text used to carry its own ``_flush_text_batch``; only Discord
 shielded the dispatch (#12444) and only WeCom/Weixin checked task identity before the pop. Both
 fixes now live in the base flush; these tests pin them against the base class and sweep every
-adapter that still overrides the flush (Telegram keeps a hold-queue variant) for the same contract.
+adapter that still overrides the flush for the same contract.
 """
 
 import asyncio
@@ -19,7 +19,7 @@ from gateway.session import SessionSource
 
 class _Adapter(BasePlatformAdapter):
     def __init__(self):
-        super().__init__(PlatformConfig(enabled=True), Platform.TELEGRAM)
+        super().__init__(PlatformConfig(enabled=True), Platform.DISCORD)
         self._text_batch_delay_seconds = 0.0
         self._text_batch_split_delay_seconds = 0.0
         self.dispatched: list = []
@@ -46,7 +46,7 @@ class _Adapter(BasePlatformAdapter):
 
 def _event(text: str) -> MessageEvent:
     return MessageEvent(text=text, message_type=MessageType.TEXT,
-                        source=SessionSource(platform=Platform.TELEGRAM, chat_id="c", chat_type="dm"))
+                        source=SessionSource(platform=Platform.DISCORD, chat_id="c", chat_type="dm"))
 
 
 @pytest.mark.asyncio

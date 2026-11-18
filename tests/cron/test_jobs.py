@@ -503,7 +503,7 @@ class TestJobCRUD:
     def test_default_delivery_origin(self, tmp_cron_dir):
         job = create_job(
             prompt="Test", schedule="30m",
-            origin={"platform": "telegram", "chat_id": "123"},
+            origin={"platform": "discord", "chat_id": "123"},
         )
         assert job["deliver"] == "origin"
 
@@ -725,12 +725,12 @@ class TestMarkJobRun:
         job = create_job(prompt="Once", schedule="in 30m", repeat=1)
         mark_job_run(
             job["id"], success=True,
-            delivery_error="platform 'telegram' not configured",
+            delivery_error="platform 'discord' not configured",
         )
         updated = get_job(job["id"])
         assert updated is not None
         assert updated["state"] == "completed"
-        assert updated["last_delivery_error"] == "platform 'telegram' not configured"
+        assert updated["last_delivery_error"] == "platform 'discord' not configured"
         # A terminal completion that never reached the user is not a success.
         assert updated["last_status"] == "delivery_failed"
 

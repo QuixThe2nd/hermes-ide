@@ -19,7 +19,7 @@ from gateway.session import SessionSource, SessionStore, build_session_key
 
 
 def _src(**kw) -> SessionSource:
-    kw.setdefault("platform", Platform.TELEGRAM)
+    kw.setdefault("platform", Platform.DISCORD)
     kw.setdefault("chat_id", "99")
     kw.setdefault("chat_type", "dm")
     return SessionSource(**kw)
@@ -33,7 +33,7 @@ class TestSessionKeyByteIdenticalWhenOff:
     @pytest.mark.parametrize("profile", [None, "default"])
     def test_dm_with_chat_id(self, profile):
         s = _src(chat_id="99", chat_type="dm")
-        assert build_session_key(s, profile=profile) == "agent:main:telegram:dm:99"
+        assert build_session_key(s, profile=profile) == "agent:main:discord:dm:99"
 
 
     @pytest.mark.parametrize("profile", [None, "default"])
@@ -125,7 +125,7 @@ class TestSessionStoreProfileResolution:
     def test_flag_off_uses_legacy_namespace(self, tmp_path):
         store = self._store(tmp_path)  # multiplex_profiles defaults False
         s = _src(chat_id="99", chat_type="dm")
-        assert store._generate_session_key(s) == "agent:main:telegram:dm:99"
+        assert store._generate_session_key(s) == "agent:main:discord:dm:99"
         assert store._generate_session_key(s) == build_session_key(s)
 
 
@@ -157,28 +157,28 @@ class TestSessionStoreUnmultiplexedRecovery:
         row = {
             "id": "sess-coder",
             "started_at": 1700000000,
-            "session_key": "agent:coder:telegram:dm:99",
+            "session_key": "agent:coder:discord:dm:99",
         }
         store = self._store_with_row(tmp_path, row)
         source = _src(chat_id="99", chat_type="dm")
 
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="coder"):
             recovered = store._recover_session_from_db(
-                session_key="agent:main:telegram:dm:99",
+                session_key="agent:main:discord:dm:99",
                 source=source,
                 now=datetime.fromtimestamp(1700000001),
             )
 
         assert recovered is not None
         assert recovered.session_id == "sess-coder"
-        assert recovered.session_key == "agent:main:telegram:dm:99"
+        assert recovered.session_key == "agent:main:discord:dm:99"
         assert store._db.reopened == ["sess-coder"]
 
     @pytest.mark.parametrize(
         ("recovered_key", "adopted"),
         [
-            ("agent:coder:telegram:dm:99", False),  # sibling namespace → fail closed
-            ("agent:main:telegram:dm:99:v1", True),  # same namespace → adoptable
+            ("agent:coder:discord:dm:99", False),  # sibling namespace → fail closed
+            ("agent:main:discord:dm:99:v1", True),  # same namespace → adoptable
         ],
         ids=["sibling-profile", "same-profile"],
     )
@@ -192,7 +192,7 @@ class TestSessionStoreUnmultiplexedRecovery:
         store._db_pinned = store._db
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="coder"):
             recovered = store._recover_session_from_db(
-                session_key="agent:main:telegram:dm:99",
+                session_key="agent:main:discord:dm:99",
                 source=_src(chat_id="99", chat_type="dm"),
                 now=datetime.fromtimestamp(1700000001),
             )

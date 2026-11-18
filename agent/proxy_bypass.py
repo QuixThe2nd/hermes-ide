@@ -5,7 +5,7 @@ One matcher so "is this host in NO_PROXY" has one answer everywhere: exact hosts
 suffixes (``example.com``, ``.example.com``, ``*.example.com``), IP literals, CIDR ranges,
 optional ``host:port`` entries and ``*``. The stdlib ``proxy_bypass_environment`` understands
 none of the CIDR / ``*.`` forms, which is why the LLM path used to route ``10.x`` endpoints
-through the corporate proxy while Telegram/Discord bypassed it.
+through the corporate proxy while platform adapters bypassed it.
 
 Leaf module: stdlib only, importable during early boot.
 """

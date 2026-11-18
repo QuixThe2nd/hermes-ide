@@ -126,7 +126,7 @@ _PROFILE_GATE_ENV_MARKERS = (
 
 
 def is_profile_gate_env(name: str) -> bool:
-    """True for a platform authorization gate (``DISCORD_ALLOWED_CHANNELS``, ``TELEGRAM_ALLOW_ALL_USERS``,
+    """True for a platform authorization gate (``DISCORD_ALLOWED_CHANNELS``, ``DISCORD_ALLOW_ALL_USERS``,
     ``GATEWAY_ALLOWED_USERS``, ``WHATSAPP_GROUP_ALLOW_FROM`` ...) — profile-scoped policy a child acting
     for ANOTHER profile must never inherit."""
     upper = name.upper()
@@ -161,8 +161,8 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     # GitHub auth
     "GH_TOKEN", "GITHUB_TOKEN", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY_PATH",
     "GITHUB_APP_INSTALLATION_ID",
-    # Gateway / messaging bot tokens and access control
-    "TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN",
+    # Gateway / messaging bot tokens and access control.
+    "DISCORD_BOT_TOKEN", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN",
     "SLACK_SIGNING_SECRET", "GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS",
     # Gateway relay auth triplet. _SECRET/_DELIVERY_KEY are also matched by
     # _is_hermes_internal_secret, but _ID has no secret suffix, so it must be

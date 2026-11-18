@@ -8,7 +8,7 @@ from gateway.session import SessionSource, build_session_key
 class TestSessionSourceProfileField:
     def test_profile_roundtrips(self):
         s = SessionSource(
-            platform=Platform.WEBHOOK if hasattr(Platform, "WEBHOOK") else Platform.TELEGRAM,
+            platform=Platform.WEBHOOK if hasattr(Platform, "WEBHOOK") else Platform.DISCORD,
             chat_id="c1",
             chat_type="webhook",
             profile="coder",

@@ -81,7 +81,7 @@ class WireAdapter(BasePlatformAdapter):
     """Adapter that records only the frames a user could actually see."""
 
     def __init__(self, *, edit_behaviour, send_behaviour, prefers_fresh_final):
-        super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
+        super().__init__(PlatformConfig(enabled=True, token="***"), Platform.DISCORD)
         self._edit_behaviour = edit_behaviour
         self._send_behaviour = send_behaviour
         self._prefers_fresh_final = prefers_fresh_final

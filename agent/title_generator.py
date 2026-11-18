@@ -38,7 +38,7 @@ def wait_for_title_upgrades(timeout: float = 10.0) -> None:
 # (task_name, exception) -> None; surfaces auxiliary failures so silent drops don't pile up as NULL titles.
 FailureCallback = Callable[[str, BaseException], None]
 # (title, source) -> None; source is the persisted provenance (``derived`` / ``llm``). Consumers paying a
-# rate-limited remote rename per title (Discord thread, Telegram topic) should act on ``llm`` only.
+# rate-limited remote rename per title (e.g. a Discord thread rename) should act on ``llm`` only.
 TitleCallback = Callable[[str, str], None]
 # () -> bool, called right before the LLM request; False skips (e.g. the user switched models and
 # the request would reload one the runtime already evicted).

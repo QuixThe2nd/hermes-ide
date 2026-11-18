@@ -13,7 +13,6 @@ import os
 import shlex
 import sys
 import threading
-import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -36,7 +35,7 @@ from gateway.slash_commands_model import GatewayModelCommandsMixin
 from gateway.slash_commands_session import GatewaySessionCommandsMixin
 from gateway.slash_commands_status import HISTORY_UNREADABLE, GatewayStatusCommandsMixin
 from hermes_cli.config import atomic_config_write, cfg_get
-from utils import atomic_json_write, is_truthy_value
+from utils import is_truthy_value
 
 logger = logging.getLogger("gateway.run")
 
@@ -215,9 +214,6 @@ class GatewaySlashCommandsMixin(
             return None, None
         return self._delivery_adapter_for(event.source), self._session_key_for_source(event.source)
 
-    def _telegramized_command_reply(self, event: MessageEvent, text: str) -> str:
-        from gateway.run import _telegramize_command_mentions
-        return _telegramize_command_mentions(text, getattr(getattr(event, "source", None), "platform", None))
 
     def _checkpoint_manager(self):
         """A CheckpointManager from gateway config, or None when checkpoints are disabled."""
@@ -425,16 +421,6 @@ class GatewaySlashCommandsMixin(
         """Handle /restart command - drain active work, then restart the gateway."""
         from gateway.run import _hermes_home
         from gateway.restart import queue_user_restart
-        # Idempotency check: if the previous gateway process recorded this same /restart (platform +
-        # update_id) and we see it *again*, it's a redelivery from PTB's graceful-shutdown get_updates
-        # ACK failing on the way out. Ignoring it prevents a loop where every fresh gateway re-restarts.
-        if self._is_stale_restart_redelivery(event):
-            src = event.source
-            logger.info("Ignoring redelivered /restart (platform=%s, update_id=%s) — "
-                        "already processed by a previous gateway instance.",
-                        src.platform.value if src and src.platform else "?",
-                        event.platform_update_id)
-            return ""
         chain_pending = bool(
             self._draining
             and getattr(self, "_overlap_restart_successor_started", False)
@@ -443,23 +429,6 @@ class GatewaySlashCommandsMixin(
             count = self._running_agent_count()
             return t("gateway.draining", count=count) if count else EphemeralReply(t("gateway.restart.in_progress"))
 
-        def _dedup_payload() -> dict:
-            # Platform + update_id of the triggering /restart, for redelivery detection.
-            data = {"platform": event.source.platform.value if event.source.platform else None,
-                    "requested_at": time.time()}
-            if event.platform_update_id is not None:
-                data["update_id"] = event.platform_update_id
-            return data
-
-        # Record the triggering platform + update_id in a dedicated dedup marker BEFORE the restart
-        # is queued, so the bounce can never outrun it. Unlike .restart_notify.json (unlinked once
-        # the new gateway sends its notification) this persists so a delayed Telegram redelivery is
-        # still detectable. Overwritten on every /restart.
-        try:
-            await asyncio.to_thread(atomic_json_write, _hermes_home / ".restart_last_processed.json",
-                                    _dedup_payload(), indent=None)
-        except Exception as e:
-            logger.debug("Failed to write restart dedup marker: %s", e)
         # The requester-facing queue steps — comeback routing + notify marker, then the
         # request_restart drain hand-off (supervisor/container routing included) — live in
         # ONE gateway-owned helper shared with the agent-callable restart tool, so the two
@@ -486,13 +455,11 @@ class GatewaySlashCommandsMixin(
 
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
-        return self._telegramized_command_reply(event, _execute("help").text)
+        return _execute("help").text
 
     async def _handle_commands_command(self, event: MessageEvent) -> str:
-        # Page size is a surface parameter (Telegram messages are shorter).
-        page_size = 15 if event.source.platform == Platform.TELEGRAM else 20
-        reply = _execute("commands", args=event.get_command_args(), options={"page_size": page_size})
-        return self._telegramized_command_reply(event, reply.text)
+        reply = _execute("commands", args=event.get_command_args())
+        return reply.text
 
     def _logical_channel_from_source(self, source) -> tuple[Optional[DeliveryTarget], Optional[str]]:
         """Build the DeliveryTarget a channel-picking command should persist.

@@ -25,7 +25,7 @@ it leaks as literal `?[K` under prompt_toolkit's `patch_stdout`; space-pad inste
 
 `COMMAND_REGISTRY` (list of `CommandDef`) is the single source; everything derives from it: CLI
 dispatch (`resolve_command()`), gateway `GATEWAY_KNOWN_COMMANDS` + dispatch, `gateway_help_lines()`,
-`telegram_bot_commands()` (BotCommand menu), `slack_subcommand_map()`, `COMMANDS` (autocomplete),
+`slack_subcommand_map()`, `COMMANDS` (autocomplete),
 `COMMANDS_BY_CATEGORY` (`show_help()`). Fields: `name` (no slash), `description`, `category`
 (`Session | Configuration | Tools & Skills | Info | Exit`), `aliases` tuple, `args_hint`,
 `cli_only`, `gateway_only`, `gateway_config_gate` (config dotpath; a `cli_only` command becomes

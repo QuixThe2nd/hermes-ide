@@ -102,7 +102,7 @@ def test_mcp_probe_failure_unwraps_group_and_points_at_login_for_401():
 def test_cron_delivery_failure_lines_have_no_status_literals_and_name_the_fix():
     from hermes_cli.cron import _cron_doctor_issues_for_job, _job_warnings, _last_run_display
     job = {"id": "job42", "last_status": "delivery_failed", "last_error": None,
-           "last_delivery_error": "telegram: 502 Bad Gateway\nsecond raw line", "enabled": False,
+           "last_delivery_error": "discord: 502 Bad Gateway\nsecond raw line", "enabled": False,
            "last_fire_error": {"at": "2026-09-01T07:00:00+00:00",
                                "detail": "scheduled fire could not be forwarded to the gateway api_server"}}
     texts = [_last_run_display(job), *_job_warnings(job), *_cron_doctor_issues_for_job(job)]

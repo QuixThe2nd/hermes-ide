@@ -343,7 +343,7 @@ PARALLEL_TOOL_CALL_GUIDANCE = (
 )
 
 # Universal tool-call narration guidance.  Addresses a visibility failure
-# mode on chat platforms (Discord/Telegram/Slack): models silently fire long
+# mode on chat platforms (Discord/Slack): models silently fire long
 # chains of tool calls with no visible explanation, leaving the user staring
 # at a frozen chat with no idea what is happening or whether the agent went
 # off the rails.  This block instructs the model to narrate each tool call —
@@ -581,7 +581,7 @@ _LOCAL_CRON_DELIVERY_NOTE = (
     "Cron jobs scheduled from this session are LOCAL-ONLY: their output is saved (viewable via cronjob "
     "action='list') but is NOT delivered back into this session — there is no live-delivery channel here. If "
     "the user wants to be notified when a job runs, the job's `deliver` must target a gateway-connected "
-    "messaging platform (e.g. deliver='telegram' or 'all'). Do not promise that a deliver='origin' or "
+    "messaging platform (e.g. deliver='discord' or 'all'). Do not promise that a deliver='origin' or "
     "default-deliver cron job will message them in this session."
 )
 
@@ -598,13 +598,6 @@ PLATFORM_HINTS = {
         f"{_MEDIA_NATIVE}Images (.jpg, .png) send as photos, videos (.mp4) inline, other files (audio "
         "included) as documents; ![alt](url) works. NOTE: Meta refuses free-form replies when the user hasn't messaged in "
         "24h (error 131047) \u2014 relevant only for delayed/scheduled sends."
-    ),
-    "telegram": (
-        "You are on Telegram. Standard Markdown auto-converts: **bold**, "
-        "*italic*, ~~strikethrough~~, ||spoiler||, `code`, ```blocks```, "
-        "[links](url), ## headers. Prefer bullets or labeled lines for structured data (no tables). "
-        f"{_MEDIA_NATIVE}Images (.png, .jpg, .webp) send as photos, videos (.mp4) play inline; image URLs via ![alt](url) send as "
-        "photos. Audio and other files arrive as documents."
     ),
     "discord": (
         "You are in a Discord server or group chat communicating with your user. Discord renders standard "

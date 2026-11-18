@@ -47,7 +47,7 @@ def _codex_text_stream(text):
 
 def _source():
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         user_id="user-1",
         chat_id="chat-1",
         user_name="tester",
@@ -57,7 +57,7 @@ def _source():
 
 class _RecordingAdapter(BasePlatformAdapter):
     def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.DISCORD)
         self.sends = []
 
     async def connect(self, *, is_reconnect=False):
@@ -106,7 +106,7 @@ def gateway(hermes_home, monkeypatch):
         GatewayConfig(sessions_dir=hermes_home / "sessions")
     )
     adapter = _RecordingAdapter()
-    runner.adapters[Platform.TELEGRAM] = adapter
+    runner.adapters[Platform.DISCORD] = adapter
     monkeypatch.setattr(
         runner,
         "_resolve_session_agent_runtime",

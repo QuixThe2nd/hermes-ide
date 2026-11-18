@@ -1207,7 +1207,7 @@ def _run_review_in_thread(
         # other thread's console for the whole review.
         # A process-global ``contextlib.redirect_stdout(devnull)`` here would also blank
         # ``sys.stdout``/``sys.stderr`` for every other thread — including a gateway event-loop thread
-        # driving a Telegram long-poll — for the full duration of the review (tens of seconds), swallowing
+        # driving a platform long-poll — for the full duration of the review (tens of seconds), swallowing
         # their console output (#55769 / #55925). ``thread_scoped_silence`` routes only this thread's writes
         # to devnull and leaves all other threads on the real streams.
         with thread_scoped_silence():

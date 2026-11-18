@@ -706,7 +706,7 @@ class TurnRunner(_TurnRunnerCore):
             _progress_len_fn=len_fn,
             # Leave room for platform quirks / formatting; tiny test adapters keep a usable limit.
             _PROGRESS_TEXT_LIMIT=max(1, raw_limit - (64 if raw_limit > 128 else 0)),
-            # Overflow edits pass metadata (Telegram topic/thread routing) only when edit_message takes it.
+            # Overflow edits pass metadata (topic/thread routing) only when edit_message takes it.
             _edit_accepts_metadata=bool(ctx._progress_metadata) and _accepts_keyword(adapter.edit_message, "metadata"),
         )
 
@@ -1103,7 +1103,7 @@ class TurnRunner(_TurnRunnerCore):
         st = self._progress_edit_state(adapter)
         claude_delivery = self._claude_progress_delivery(st)
         last_edit_ts = 0.0
-        EDIT_INTERVAL = 1.5  # Minimum seconds between edits (Telegram flood control)
+        EDIT_INTERVAL = 1.5  # Minimum seconds between edits (platform flood control)
         pending = None
         dirty = False
 
@@ -1353,9 +1353,7 @@ class TurnRunner(_TurnRunnerCore):
             # Relay Discord predicate is shape-only: whether the connector auto-threaded our reply is
             # only knowable AFTER delivery, so register eagerly and let the rename lane look up the
             # cache at fire time — gating registration on the cache read meant it never registered.
-            if runner._is_telegram_topic_lane(source):
-                lane = "_schedule_telegram_topic_title_rename"
-            elif runner._is_matrix_inbox_room_lane(source):
+            if runner._is_matrix_inbox_room_lane(source):
                 lane = "_schedule_matrix_room_title_rename"
             elif runner._is_discord_auto_thread_lane(source) or runner._is_relay_discord_channel_lane(source):
                 lane = "_schedule_discord_semantic_thread_rename"
@@ -2004,7 +2002,7 @@ class TurnRunner(_TurnRunnerCore):
         ctx = self._ctx
         # Transcript rows ({role, content, timestamp}) lose timestamps; interrupt-path agent messages
         # (tool_calls/tool_call_id/reasoning) pass through intact so the API sees valid assistant→tool
-        # sequences. Telegram observed=True rows are withheld from replayable history and attached to
+        # sequences. Observed group-context rows are withheld from replayable history and attached to
         # the current addressed message as API-only context.
         agent_history, observed_group_context, cursor_recovery_note = _build_gateway_agent_history(
             ctx.history, channel_prompt=ctx.channel_prompt,
@@ -2205,22 +2203,6 @@ class TurnRunner(_TurnRunnerCore):
         except TypeError:
             stream_consumer.finish()
 
-    def _restore_telegram_thread_id_after_split(self, agent_session_id) -> None:
-        """Telegram DM whose source.thread_id was lost in the session split (synthetic/recovered
-        event): restore it from the binding so _thread_metadata_for_source yields the right
-        message_thread_id instead of the General thread (non-fatal)."""
-        ctx = self._ctx
-        try:
-            # run_sync is off-loop (executor); sync DB is fine.
-            binding = self._runner._session_db._db.get_telegram_topic_binding_by_session(session_id=agent_session_id)
-            if binding and binding.get("thread_id"):
-                ctx.source.thread_id = str(binding["thread_id"])
-                logger.debug(
-                    "Restored source.thread_id=%s from binding after session split %s → %s",
-                    ctx.source.thread_id, ctx.session_id, agent_session_id,
-                )
-        except Exception:
-            logger.debug("Failed to restore thread_id from binding after session split", exc_info=True)
 
     def _sync_session_after_run(self, agent_history):
         """Sync session_id right after run_conversation(): compression can rotate before a follow-up
@@ -2237,7 +2219,6 @@ class TurnRunner(_TurnRunnerCore):
         if session_was_split:
             logger.info("Session split detected: %s → %s (compression)", ctx.session_id, agent_session_id)
             entry = runner.session_store._entries.get(ctx.session_key)
-            persisted = False
             if entry:
                 entry_session_id = getattr(entry, "session_id", None)
                 if not ctx._run_still_current():
@@ -2247,7 +2228,7 @@ class TurnRunner(_TurnRunnerCore):
                         ctx.session_key or "?", ctx.run_generation,
                     )
                 elif entry_session_id == agent_session_id:
-                    persisted = True
+                    pass
                 elif entry_session_id != ctx.session_id:
                     logger.info(
                         "Skipping session split sync for %s because the "
@@ -2259,17 +2240,8 @@ class TurnRunner(_TurnRunnerCore):
                     entry.session_id = agent_session_id
                     runner.session_store._save()
                     runner.session_store._record_gateway_session_peer(agent_session_id, ctx.session_key, ctx.source)
-                    persisted = True
             # Only after this run published its split — a stale /stop→/new predecessor must not
-            # mutate routing state.
-            if persisted:
-                src = ctx.source
-                if (
-                    getattr(src, "platform", None) == Platform.TELEGRAM and getattr(src, "chat_type", None) == "dm"
-                    and getattr(src, "thread_id", None) is None and runner._session_db is not None
-                ):
-                    self._restore_telegram_thread_id_after_split(agent_session_id)
-                runner._sync_telegram_topic_binding(src, entry, reason="agent-run-compression")
+            # mutate routing state (the persisted guard above already gates entry mutation).
         runner._sync_session_model_from_agent(agent_session_id, agent)
         # history_offset=0 whenever the agent's message list lost the original history prefix
         # (split OR in-place compaction): the returned `messages` is the compacted set, persist all
@@ -2909,7 +2881,7 @@ class TurnRunner(_TurnRunnerCore):
         line the direct rail would have sent goes through the same
         ``_send_or_update_status_coro`` door with the same status wiring
         (adapter, chat id, thread metadata, cleanup tracking), so platform
-        rendering — Discord's branded embed conversion, Telegram's
+        rendering — Discord's branded embed conversion, a platform's
         status-bubble editing — is byte-identical. Only the scheduling
         changed: queue-ordered instead of independently scheduled. Returns
         the sent message id on success (``None`` otherwise) so correlated

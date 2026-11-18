@@ -1,7 +1,7 @@
 """Tests for native draft streaming in GatewayStreamConsumer.
 
-Telegram Bot API 9.5 (March 2026) introduced sendMessageDraft for native
-animated streaming previews in private chats.  This test suite covers the
+Adapters may expose native draft streaming for animated previews in
+private chats.  This test suite covers the
 consumer's transport-selection, fallback, and tool-boundary handling for
 that path.
 
@@ -31,7 +31,7 @@ def _make_draft_capable_adapter(
 
     The runtime subclass + cleared __abstractmethods__ pattern lets us
     construct an adapter without hauling in any platform's heavy state
-    (Telegram bot, Discord client, etc.) while still satisfying the
+    (Discord client, Slack client, etc.) while still satisfying the
     consumer's isinstance(BasePlatformAdapter) gate.
     """
     from gateway.platforms.base import BasePlatformAdapter, SendResult
@@ -260,7 +260,7 @@ class TestDraftIdLifecycle:
         assert len(all_ids) >= 2, (
             f"expected distinct draft_ids across responses; got {all_ids}"
         )
-        # Every draft_id must be non-zero (Telegram's contract).
+        # Every draft_id must be non-zero (the draft contract).
         assert all(did != 0 for did in all_ids)
 
 
@@ -302,7 +302,7 @@ class TestAlreadySentInDraftMode:
 def _make_fresh_final_adapter():
     """Build a non-draft adapter that prefers a fresh final send.
 
-    Mirrors Telegram's rich-message contract: REQUIRES_EDIT_FINALIZE so the
+    Mirrors a rich-message contract: REQUIRES_EDIT_FINALIZE so the
     final tick is routed through even when the text is unchanged, and
     prefers_fresh_final_streaming() True so the consumer delivers the final
     answer via a *fresh* send + preview delete instead of an edit.
@@ -325,7 +325,7 @@ def _make_fresh_final_adapter():
 
     # Edit-based path only — no native drafts.
     adapter.supports_draft_streaming = lambda chat_type=None, metadata=None: False
-    # Accepts the metadata kwarg the consumer passes; ignores it (like Telegram).
+    # Accepts the metadata kwarg the consumer passes; ignores it.
     adapter.prefers_fresh_final_streaming = lambda content, metadata=None: True
 
     adapter.send = AsyncMock(side_effect=[
@@ -338,8 +338,8 @@ def _make_fresh_final_adapter():
 
 
 class TestAdapterPrefersFreshFinal:
-    """An adapter whose send path is richer than its edit path (e.g. Telegram
-    rich messages) finalizes a streamed reply by sending a fresh final message
+    """An adapter whose send path is richer than its edit path (e.g. rich
+    messages) finalizes a streamed reply by sending a fresh final message
     and deleting the preview, instead of final-editing the preview."""
 
     @pytest.mark.asyncio
@@ -379,7 +379,7 @@ class TestAdapterPrefersFreshFinal:
 
 
 def _make_rich_capable_adapter(*, overflow_limit=32768, send_results=None):
-    """Non-draft adapter that mimics Telegram rich messages: REQUIRES_EDIT_FINALIZE,
+    """Non-draft adapter that mimics rich messages: REQUIRES_EDIT_FINALIZE,
     prefers a fresh (rich) final send, and reports a 32,768 streaming overflow
     limit so the consumer doesn't pre-split a reply that fits one rich message.
     """

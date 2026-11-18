@@ -35,7 +35,6 @@ _EXPLICIT_DISABLE_WARNED: set = set()
 
 # Env var(s) whose presence drives each platform's env-enable branch, named in the explicit-disable WARNING.
 _ENV_ENABLE_CREDENTIALS: dict = {
-    Platform.TELEGRAM: ("TELEGRAM_BOT_TOKEN",),
     Platform.DISCORD: ("DISCORD_BOT_TOKEN",),
     Platform.SLACK: ("SLACK_BOT_TOKEN",),
     Platform.WHATSAPP: ("WHATSAPP_ENABLED",),
@@ -234,10 +233,6 @@ def _ReplyMode(platform: Platform, env: str):
 
 # --- platform-unique branches ------------------------------------------------
 
-def _telegram_fallback_ips(config: GatewayConfig) -> None:
-    if ips := getenv("TELEGRAM_FALLBACK_IPS"):
-        config.platforms.setdefault(Platform.TELEGRAM, PlatformConfig()).extra["fallback_ips"] = _csv_list(ips)
-
 
 def _whatsapp(config: GatewayConfig) -> None:
     """WhatsApp (Baileys bridge) uses a flag, not credentials. WHATSAPP_ENABLED=false overrides YAML;
@@ -351,7 +346,7 @@ def _enable_plugin_platform(config: GatewayConfig, entry) -> None:
         # registered ``ensure_deps_fn`` still gets enabled here — the registry's ``create_adapter()`` runs
         # the active installer at gateway start, when the user actually wants the platform up. Historically
         # the ACTIVE installer was wired as ``check_fn`` and this sweep pip-installed
-        # Discord/Telegram/Slack/Feishu/Dingtalk SDKs on every ``load_gateway_config()`` call — including
+        # Discord/Slack/Feishu/Dingtalk SDKs on every ``load_gateway_config()`` call — including
         # the desktop/dashboard readiness probe (``GET /api/status``) — blocking startup until every install
         # finished and boot-looping the desktop app at 94%. The check_fn/ensure_deps_fn split (#79812) makes
         # that impossible by construction.
@@ -438,9 +433,6 @@ def _scrub_explicit_markers(config: GatewayConfig) -> None:
 # Order is significant (steps may depend on entries created by earlier ones). Relay disabling runs
 # after the plugin pass; the marker scrub must be last.
 _ENV_STEPS: tuple = (
-    _Cred(Platform.TELEGRAM, ("TELEGRAM_BOT_TOKEN",), token="TELEGRAM_BOT_TOKEN"),
-    _ReplyMode(Platform.TELEGRAM, "TELEGRAM_REPLY_TO_MODE"),
-    _telegram_fallback_ips,
     _Cred(Platform.DISCORD, ("DISCORD_BOT_TOKEN",), token="DISCORD_BOT_TOKEN"),
     _ReplyMode(Platform.DISCORD, "DISCORD_REPLY_TO_MODE"),
     _whatsapp,

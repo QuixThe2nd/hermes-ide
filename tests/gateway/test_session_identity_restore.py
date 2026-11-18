@@ -38,9 +38,9 @@ def _stub(platform, runner, label):
 
 _ROUTES = [
     # Satellite ``ops`` drains through the default bot for this chat ...
-    {"name": "admin-dm", "platform": "telegram", "profile": "ops", "chat_id": "72719239"},
+    {"name": "admin-dm", "platform": "discord", "profile": "ops", "chat_id": "72719239"},
     # ... and is ALSO the routed runtime for a chat that team_b's OWN bot receives.
-    {"name": "b-to-ops", "platform": "telegram", "profile": "ops", "chat_id": "555", "bot_profile": "team_b"},
+    {"name": "b-to-ops", "platform": "discord", "profile": "ops", "chat_id": "555", "bot_profile": "team_b"},
 ]
 
 
@@ -49,16 +49,16 @@ def _runner(home, *, multiplex=True):
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(multiplex_profiles=multiplex, sessions_dir=home / "sessions")
-    runner.config.platforms = {Platform.TELEGRAM: PlatformConfig(enabled=True, extra={})}
+    runner.config.platforms = {Platform.DISCORD: PlatformConfig(enabled=True, extra={})}
     runner.config.profile_routes = parse_profile_routes(list(_ROUTES) if multiplex else [])
     runner.pairing_store = PairingStore(profile="default")
     runner.pairing_stores = {}
     runner._primary_profile_name = "default"
-    primary = _stub(Platform.TELEGRAM, runner, "PRIMARY")
-    team_b = _stub(Platform.TELEGRAM, runner, "TEAM_B")
+    primary = _stub(Platform.DISCORD, runner, "PRIMARY")
+    team_b = _stub(Platform.DISCORD, runner, "TEAM_B")
     team_b.set_owner_profile("team_b")
-    runner.adapters = {Platform.TELEGRAM: primary}
-    runner._profile_adapters = {"team_b": {Platform.TELEGRAM: team_b}, "ops": {}}
+    runner.adapters = {Platform.DISCORD: primary}
+    runner._profile_adapters = {"team_b": {Platform.DISCORD: team_b}, "ops": {}}
     return SimpleNamespace(runner=runner, home=home, primary=primary, team_b=team_b)
 
 
@@ -144,11 +144,11 @@ def test_standalone_gateway_persists_nothing_and_keys_stay_agent_main(tmp_path, 
     source = solo.primary.build_source(chat_id="4040", chat_type="dm", user_id="4040")
     resolve_identity(source, runner=solo.runner)
     entry = store.get_or_create_session(source)
-    assert entry.session_key == "agent:main:telegram:dm:4040"
+    assert entry.session_key == "agent:main:discord:dm:4040"
     assert entry.transport_profile is None and "transport_profile" not in entry.to_dict()
     assert store._db_for_key(entry.session_key).get_session(entry.session_id)["transport_profile"] is None
     fresh = _runner(home, multiplex=False)
     restored = fresh.runner._restored_source(SessionEntry.from_dict(entry.to_dict()))
     assert identity_of(restored) is None
     assert fresh.runner._delivery_adapter_for(restored) is fresh.primary
-    assert fresh.runner._session_key_for_source(restored) == "agent:main:telegram:dm:4040"
+    assert fresh.runner._session_key_for_source(restored) == "agent:main:discord:dm:4040"

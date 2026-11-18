@@ -7,13 +7,13 @@ discarded the result: no delivery-ledger row was recorded, so a final refused th
 (flood control, a transport that had just died) was lost for good. Neither the boot
 sweep nor the runtime redelivery could see it, and the follow-up ran as if the answer
 had landed. On 5 Sep 2026 two long replies were lost this way within an hour, both
-refused by Telegram flood control while a delegation batch arrived the same second.
+refused by platform flood control while a delegation batch arrived the same second.
 
 Now the queued lane runs the same bracket as the normal lane: the obligation is
 recorded before the send, the send goes through the adapter's retrying transport, and
 the result finalizes the row. The obligation id is keyed on the raw inbound message id
 exactly as the normal lane keys it; the reply anchor is only the reply target and is
-None wherever replies are not used (Telegram forum topics), so it cannot identify the
+None wherever replies are not used (forum topics), so it cannot identify the
 turn. The reply is marked notify-worthy like every other final. The reconcile-by-edit
 path is unchanged. Adapters without the base contract and sends without a session key
 keep the plain send.
@@ -123,7 +123,7 @@ async def test_a_delivered_queued_final_is_recorded_and_marked_delivered():
 
 @pytest.mark.asyncio
 async def test_forum_topic_turns_are_identified_by_their_inbound_id_not_the_reply_anchor():
-    """Telegram forum topics route by topic metadata and never reply, so the anchor is None for
+    """Forum topics route by topic metadata and never reply, so the anchor is None for
     every message in the topic. Two turns answering with the same text must still get two rows,
     or the second would overwrite the first's outstanding obligation and retry state."""
     adapter = _discord_adapter()

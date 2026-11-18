@@ -2,7 +2,7 @@
 
 One class of bug, many crash sites: a lone UTF-16 surrogate (U+D800–U+DFFF)
 in model output or a request payload crashes whichever consumer encodes it
-first — oneshot stdout (#80366), Telegram's utf16_len check (#55309), Signal
+first — oneshot stdout (#80366), the gateway utf16_len check (#55309), Signal
 formatting (#55143), provider request bodies / tool descriptions (#50959),
 and NIM responses that bypass the Ollama-era sanitize pass (#19819).
 
@@ -110,7 +110,7 @@ def test_gateway_final_response_sanitized_for_chat_surfaces():
     from gateway.run import _sanitize_gateway_final_response
 
     dirty = f"Here is your answer {LONE_HIGH} done"
-    cleaned = _sanitize_gateway_final_response("telegram", dirty)
+    cleaned = _sanitize_gateway_final_response("discord", dirty)
 
     # The raw text raises; the sanitized boundary output must not.
     with pytest.raises(UnicodeEncodeError):

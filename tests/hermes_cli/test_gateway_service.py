@@ -2073,7 +2073,7 @@ class TestLegacyHermesUnitDetection:
     older install left a ``hermes.service`` unit behind when the service was
     renamed to ``hermes-gateway.service``. After PR #5646 (signal recovery
     via systemd), the two services began SIGTERM-flapping over the same
-    Telegram bot token in a 30-second cycle.
+    Discord bot token in a 30-second cycle.
 
     The detector must flag ``hermes.service`` ONLY when it actually runs our
     gateway, and must NEVER flag profile units

@@ -72,7 +72,7 @@ class TestJSONDecodeErrorIsRetryable:
 
 
 class TestNoneTypeNotIterableIsRetryable:
-    """Regression for #33136 / closes lingering Telegram \"Non-retryable error (HTTP None)\".
+    """Regression for #33136 / closes lingering gateway \"Non-retryable error (HTTP None)\".
 
     The chatgpt.com Codex backend (and any other upstream SDK / provider shim)
     can surface ``TypeError: 'NoneType' object is not iterable`` as a wire-shape

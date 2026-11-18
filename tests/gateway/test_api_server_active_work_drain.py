@@ -597,7 +597,7 @@ class TestShutdownSettleWindow:
         runner._restart_drain_timeout = 0.01  # force the drain-timeout path
         adapter.disconnect = _make_async_noop()
         api = _SettlingApiAdapter()
-        runner.adapters = {Platform.TELEGRAM: adapter, Platform.API_SERVER: api}
+        runner.adapters = {Platform.DISCORD: adapter, Platform.API_SERVER: api}
 
         settled_at_kill: list = []
 
@@ -642,7 +642,7 @@ class TestShutdownSettleWindow:
         runner._restart_drain_timeout = 0.01
         adapter.disconnect = _make_async_noop()
         api = _SettlingApiAdapter(polls_to_settle=10_000)  # never settles
-        runner.adapters = {Platform.TELEGRAM: adapter, Platform.API_SERVER: api}
+        runner.adapters = {Platform.DISCORD: adapter, Platform.API_SERVER: api}
 
         monkeypatch.setattr(_pr.process_registry, "kill_all", lambda task_id=None: 0)
         monkeypatch.setattr(_tt, "cleanup_all_environments", lambda: None)

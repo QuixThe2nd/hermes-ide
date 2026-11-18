@@ -80,7 +80,7 @@ WHERE role = 'tool'
 # (prompt bytes + time window against a durable job artifact), so it
 # may only ever claim a session whose source EXPLICITLY marks a
 # non-human worker run. A human-facing session — CLI, API, Discord,
-# Telegram, the mission-control composer itself — keeps its inbox row
+# the mission-control composer itself — keeps its inbox row
 # even when its first prompt and start time happen to match a job.
 LINEAGE_WORKER_CANDIDATES_SQL = """
 SELECT id, title, display_name, started_at, last_activity_at,

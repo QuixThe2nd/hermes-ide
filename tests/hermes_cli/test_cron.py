@@ -175,7 +175,7 @@ class TestCronDoctor:
         jobs = load_jobs()
         jobs[0]["last_status"] = "error"
         jobs[0]["last_error"] = "Provider returned error"
-        jobs[0]["last_delivery_error"] = "telegram timeout"
+        jobs[0]["last_delivery_error"] = "discord timeout"
         save_jobs(jobs)
 
         rc = cron_command(Namespace(cron_command="doctor"))
@@ -185,7 +185,7 @@ class TestCronDoctor:
         assert "Cron doctor found 3 issue(s)" in out
         assert job["id"] in out
         assert "last run failed: Provider returned error" in out
-        assert "was not delivered (telegram timeout)" in out
+        assert "was not delivered (discord timeout)" in out
         assert "hermes cron edit" in out
         assert "script not found" in out
 
@@ -212,14 +212,14 @@ class TestCronDoctor:
         jobs = load_jobs()
         jobs[0]["last_status"] = "delivery_failed"
         jobs[0]["last_error"] = None
-        jobs[0]["last_delivery_error"] = "telegram timeout"
+        jobs[0]["last_delivery_error"] = "discord timeout"
         save_jobs(jobs)
 
         rc = cron_command(Namespace(cron_command="doctor"))
 
         out = capsys.readouterr().out
         assert rc == 1
-        assert "was not delivered (telegram timeout)" in out
+        assert "was not delivered (discord timeout)" in out
         assert "hermes cron edit" in out
         assert "last run failed" not in out
         assert "unknown error" not in out
@@ -269,7 +269,7 @@ class TestCronListStatusRendering:
         jobs[0]["last_run_at"] = "2026-09-01T09:00:00+00:00"
         jobs[0]["last_status"] = "delivery_failed"
         jobs[0]["last_error"] = None
-        jobs[0]["last_delivery_error"] = "telegram timeout"
+        jobs[0]["last_delivery_error"] = "discord timeout"
         save_jobs(jobs)
 
         cron_command(Namespace(cron_command="list", all=True))
@@ -277,7 +277,7 @@ class TestCronListStatusRendering:
         out = capsys.readouterr().out
         last_run_line = next(l for l in out.splitlines() if "Last run:" in l)
         assert "was not delivered" in last_run_line
-        assert "telegram timeout" in last_run_line, (
+        assert "discord timeout" in last_run_line, (
             "the delivery detail lives in last_delivery_error, not last_error"
         )
         assert cron_cli.Colors.GREEN not in last_run_line
@@ -570,16 +570,16 @@ class TestSlashCronListLastStatus:
         return capsys.readouterr().out
 
     def test_delivery_failed_names_the_delivery_error(self, tmp_cron_dir, capsys):
-        create_job(prompt="Nightly brief", schedule="every 1h", deliver="telegram:1")
+        create_job(prompt="Nightly brief", schedule="every 1h", deliver="discord:1")
         jobs = load_jobs()
         jobs[0]["last_run_at"] = "2026-09-01T07:00:00+00:00"
         jobs[0]["last_status"] = "delivery_failed"
         jobs[0]["last_error"] = None
-        jobs[0]["last_delivery_error"] = "telegram: 502 Bad Gateway"
+        jobs[0]["last_delivery_error"] = "discord: 502 Bad Gateway"
         save_jobs(jobs)
 
         out = self._run_list(tmp_cron_dir, capsys)
-        assert "Last run: 2026-09-01T07:00:00+00:00 (delivery_failed: telegram: 502 Bad Gateway)" in out
+        assert "Last run: 2026-09-01T07:00:00+00:00 (delivery_failed: discord: 502 Bad Gateway)" in out
 
     def test_ok_stays_plain(self, tmp_cron_dir, capsys):
         create_job(prompt="Nightly brief", schedule="every 1h")

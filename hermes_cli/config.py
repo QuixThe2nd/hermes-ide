@@ -953,7 +953,7 @@ _ENV_CONFIG_KEYS = frozenset({
     'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_URL', 'CONNECTOR_GATEWAY_URL',
     'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
     'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY', 'PERPLEXITY_API_KEY', 'API_SERVER_KEY',
-    'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
+    'FAL_KEY', 'DISCORD_BOT_TOKEN',
     'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
     'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
     'GITHUB_TOKEN'})
@@ -3029,7 +3029,7 @@ def show_config():
     _show_aux_overrides(config)
 
     _section("Messaging Platforms")
-    for label, env_key in (("Telegram", "TELEGRAM_BOT_TOKEN"), ("Discord", "DISCORD_BOT_TOKEN")):
+    for label, env_key in (("Discord", "DISCORD_BOT_TOKEN"),):
         state = 'configured' if get_env_value(env_key) else color('not configured', Colors.DIM)
         print(f"  {label + ':':<13} {state}")
 
@@ -3523,7 +3523,7 @@ def _redirect_platform_display_key(key: str) -> tuple[str, Optional[str]]:
     Only known display settings (``OVERRIDEABLE_KEYS``) are redirected. Returns ``(key, note)``;
     the gateway import is guarded so the CLI works where the gateway package is unavailable.
 
-    Before #71047 a write such as ``hermes config set platforms.telegram.streaming false`` landed on a key
+    Before #71047 a write such as ``hermes config set platforms.discord.streaming false`` landed on a key
     the gateway never reads: ``config get`` echoed the new value back while the runtime kept the old
     ``display.platforms`` one — a silent no-op that looks like a duplicated key to the user.
     """

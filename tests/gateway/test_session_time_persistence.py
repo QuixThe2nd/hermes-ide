@@ -12,10 +12,10 @@ def test_old_reset_config_cannot_rotate_durable_conversation(tmp_path, mode):
     config = GatewayConfig.from_dict({
         "default_reset_policy": {"mode": mode, "idle_minutes": 1},
         "reset_by_type": {"dm": {"mode": mode, "idle_minutes": 1}},
-        "reset_by_platform": {"telegram": {"mode": mode, "idle_minutes": 1}},
+        "reset_by_platform": {"discord": {"mode": mode, "idle_minutes": 1}},
     })
     store = SessionStore(tmp_path / "sessions", config)
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="time-invariant", user_id="test")
+    source = SessionSource(platform=Platform.DISCORD, chat_id="time-invariant", user_id="test")
     old = store.get_or_create_session(source)
     messages = [{"role": "user", "content": "keep my conversation"},
                 {"role": "assistant", "content": "including after a restart"}]

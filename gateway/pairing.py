@@ -65,7 +65,7 @@ def _default_pairing_dir() -> Path:
 # configured) keep the pairing store as the sole grant record (authz union).
 # See #23778.
 _PLATFORM_ALLOWLIST_ENV = {
-    "telegram": "TELEGRAM_ALLOWED_USERS", "discord": "DISCORD_ALLOWED_USERS",
+    "discord": "DISCORD_ALLOWED_USERS",
     "whatsapp": "WHATSAPP_ALLOWED_USERS", "whatsapp_cloud": "WHATSAPP_CLOUD_ALLOWED_USERS",
     "slack": "SLACK_ALLOWED_USERS", "signal": "SIGNAL_ALLOWED_USERS",
     "email": "EMAIL_ALLOWED_USERS",    "weixin": "WEIXIN_ALLOWED_USERS", "bluebubbles": "BLUEBUBBLES_ALLOWED_USERS",

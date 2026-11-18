@@ -20,7 +20,7 @@ What makes Hermes different:
 
 - **Self-improving through skills** — Hermes learns from experience by saving reusable procedures as skills that load into future sessions.
 - **Persistent memory across sessions** — remembers who you are, your preferences, environment details, and lessons learned. Pluggable memory backends.
-- **Multi-platform gateway** — the same agent runs on Telegram, Discord, Slack, WhatsApp, iMessage, Signal, Matrix, Teams, Email, and a dozen more platforms with full tool access, not just chat.
+- **Multi-platform gateway** — the same agent runs on Discord, Slack, WhatsApp, iMessage, Signal, Matrix, Teams, Email, and a dozen more platforms with full tool access, not just chat.
 - **Many surfaces** — the same agent core drives the CLI, the Ink TUI, a web dashboard, and an ACP server for IDEs (VS Code / Zed / JetBrains).
 - **Provider-agnostic** — swap models and providers mid-workflow; credential pools rotate across multiple API keys automatically.
 - **Profiles** — run multiple independent Hermes instances with isolated configs, sessions, skills, and memory.
@@ -101,7 +101,7 @@ Profiles use `~/.hermes/profiles/<name>/` with the same layout. When a profile i
 | Debugging: tools missing, gateway, aux models | `references/troubleshooting.md` |
 | Contributing code: adding tools, slash commands, tests | `references/contributor-guide.md` |
 | delegate_agent "capped at N" reports | `references/delegate-task-concurrency-diagnosis.md` |
-| Connecting a messaging platform (Telegram, Discord, Slack, WhatsApp, …) | docs: `/user-guide/messaging` |
+| Connecting a messaging platform (Discord, Slack, WhatsApp, …) | docs: `/user-guide/messaging` |
 
 The reference list above is not the feature list — it is the set of topics that
 need more than their docs page. For everything else Hermes ships, fetch

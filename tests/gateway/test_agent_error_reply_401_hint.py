@@ -20,7 +20,7 @@ def _reply_for_401(provider):
     runner._hmwa_stop_typing_for_turn = stop_typing
     runner._session_state = lambda key: SimpleNamespace(
         turn=SimpleNamespace(agent=SimpleNamespace(provider=provider) if provider else None))
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="c", user_id="u")
+    source = SessionSource(platform=Platform.DISCORD, chat_id="c", user_id="u")
     prepared = runner._PreparedTurn([], "", None, None, None, None)
     err = RuntimeError("HTTP 401: token_revoked")
     err.status_code = 401

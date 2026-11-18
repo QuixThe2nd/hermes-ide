@@ -2412,7 +2412,7 @@ class TestMatrixSystemBridgeFilter:
     def test_appservice_underscore_prefix_is_bridge(self):
         # Conventional appservice namespace puppets
         assert self.adapter._is_system_or_bridge_sender(
-            "@_telegram_12345:bridge.example.org"
+            "@_discord_12345:bridge.example.org"
         ) is True
         assert self.adapter._is_system_or_bridge_sender(
             "@_discord_999:example.org"
@@ -2460,7 +2460,7 @@ class TestMatrixOnRoomMessageFilter:
 
     @pytest.mark.asyncio
     async def test_bridge_sender_dropped_before_pairing(self):
-        ev = self._mk_event(sender="@_telegram_12345:bridge.example.org")
+        ev = self._mk_event(sender="@_discord_12345:bridge.example.org")
         await self.adapter._on_room_message(ev)
         # Bridge / appservice identities must never flow through to the
         # gateway — otherwise they trigger pairing (#15763).

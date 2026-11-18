@@ -223,7 +223,7 @@ class TestGatewayRuntimeStatus:
         (tmp_path / "gateway_state.json").write_text(
             json.dumps({
                 "platforms": {
-                    "telegram": {"state": "connected"},
+                    "whatsapp": {"state": "connected"},
                     "reviewer:discord": {
                         "state": "fatal",
                         "error_code": "duplicate_credential",
@@ -236,7 +236,7 @@ class TestGatewayRuntimeStatus:
         status.write_runtime_status(clear_profile_platforms=True)
 
         payload = status.read_runtime_status()
-        assert payload["platforms"] == {"telegram": {"state": "connected"}}
+        assert payload["platforms"] == {"whatsapp": {"state": "connected"}}
 
     def test_clear_profile_platforms_and_write_are_one_atomic_update(
         self, tmp_path, monkeypatch
@@ -246,7 +246,7 @@ class TestGatewayRuntimeStatus:
             json.dumps({
                 "platforms": {
                     "old:discord": {"state": "fatal"},
-                    "telegram": {"state": "connected"},
+                    "whatsapp": {"state": "connected"},
                 }
             }),
             encoding="utf-8",
@@ -259,8 +259,8 @@ class TestGatewayRuntimeStatus:
         )
 
         platforms = status.read_runtime_status()["platforms"]
-        assert set(platforms) == {"telegram", "reviewer:slack"}
-        assert platforms["telegram"] == {"state": "connected"}
+        assert set(platforms) == {"whatsapp", "reviewer:slack"}
+        assert platforms["whatsapp"] == {"state": "connected"}
         assert platforms["reviewer:slack"]["state"] == "connected"
 
     def test_platform_writes_are_stamped_with_writer_identity(
@@ -275,9 +275,9 @@ class TestGatewayRuntimeStatus:
         # ownership is exact equality, not clock heuristics.
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-        status.write_runtime_status(platform="telegram", platform_state="connected")
+        status.write_runtime_status(platform="discord", platform_state="connected")
 
-        entry = status.read_runtime_status()["platforms"]["telegram"]
+        entry = status.read_runtime_status()["platforms"]["discord"]
         assert entry["writer_pid"] == os.getpid()
         assert entry["writer_start_time"] == status._get_process_start_time(
             os.getpid()
@@ -417,24 +417,24 @@ class TestGatewayRuntimeStatus:
         """The reconnect-loop escalation (needs_attention + retrying_since) must end on EVERY
         ``connected`` write, not only the watcher's. A gateway restart after an escalation stamps
         ``connected`` from the startup path / adapter, which left the flag sticky for weeks on a
-        healthy Telegram record."""
+        healthy platform record."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         status.write_runtime_status(
-            platform="telegram", platform_state="retrying", needs_attention=True,
+            platform="whatsapp", platform_state="retrying", needs_attention=True,
             retrying_since="2026-08-30T07:53:47+00:00",
         )
         if via == "startup_stamp":
             status.write_runtime_status(
-                platform="telegram", platform_state="connected", error_code=None, error_message=None)
+                platform="whatsapp", platform_state="connected", error_code=None, error_message=None)
         else:
             from gateway.platforms.base import BasePlatformAdapter
             adapter = object.__new__(type("_Adapter", (BasePlatformAdapter,), {
                 m: (lambda *a, **k: None) for m in ("connect", "disconnect", "get_chat_info", "send")}))
-            adapter._runtime_status_platform_key = "telegram"
+            adapter._runtime_status_platform_key = "whatsapp"
             adapter._fatal_error_code = adapter._fatal_error_message = None
             adapter._fatal_error_retryable = True
             adapter._mark_connected()
-        entry = status.read_runtime_status()["platforms"]["telegram"]
+        entry = status.read_runtime_status()["platforms"]["whatsapp"]
         assert entry["state"] == "connected"
         assert entry["needs_attention"] is False
         assert entry["retrying_since"] is None
@@ -579,7 +579,7 @@ class TestScopedLocks:
 
     def test_acquire_scoped_lock_rejects_live_other_process(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
-        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path = tmp_path / "locks" / "discord-bot-token-2bb80d537b1da3e3.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path.write_text(json.dumps({
             "pid": 99999,
@@ -592,7 +592,7 @@ class TestScopedLocks:
         monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
 
-        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+        acquired, existing = status.acquire_scoped_lock("discord-bot-token", "secret", metadata={"platform": "discord"})
 
         assert acquired is False
         assert existing["pid"] == 99999
@@ -606,7 +606,7 @@ class TestScopedLocks:
         must be treated as stale.
         """
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
-        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path = tmp_path / "locks" / "discord-bot-token-2bb80d537b1da3e3.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path.write_text(json.dumps({
             "pid": 873,
@@ -625,12 +625,12 @@ class TestScopedLocks:
         # unrelated process's name.  This confirms the PID was reused.
         monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "/usr/libexec/bluetoothuserd")
 
-        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+        acquired, existing = status.acquire_scoped_lock("discord-bot-token", "secret", metadata={"platform": "discord"})
 
         assert acquired is True
         payload = json.loads(lock_path.read_text())
         assert payload["pid"] == os.getpid()
-        assert payload["metadata"]["platform"] == "telegram"
+        assert payload["metadata"]["platform"] == "discord"
 
     def test_acquire_scoped_lock_self_reacquires_when_disk_start_time_null(
         self, tmp_path, monkeypatch
@@ -726,7 +726,7 @@ class TestScopedLocks:
         file) and the winner's FRESH lock must survive: the loser must fall
         through to O_EXCL and lose, not clobber it like the old unlink() did."""
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
-        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path = tmp_path / "locks" / "discord-bot-token-2bb80d537b1da3e3.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         stale_record = {
             "pid": 99999,
@@ -740,7 +740,7 @@ class TestScopedLocks:
             "pid": 424242,
             "start_time": 456,
             "kind": "hermes-gateway",
-            "scope": "telegram-bot-token",
+            "scope": "discord-bot-token",
         }
         real_replace = os.replace
 
@@ -754,7 +754,7 @@ class TestScopedLocks:
 
         monkeypatch.setattr(status.os, "replace", racing_replace)
 
-        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+        acquired, existing = status.acquire_scoped_lock("discord-bot-token", "secret", metadata={"platform": "discord"})
 
         assert acquired is False
         assert existing is not None
@@ -765,7 +765,7 @@ class TestScopedLocks:
 
     def test_acquire_scoped_lock_replaces_stale_record(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
-        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path = tmp_path / "locks" / "discord-bot-token-2bb80d537b1da3e3.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path.write_text(json.dumps({
             "pid": 99999,
@@ -776,12 +776,12 @@ class TestScopedLocks:
         # Post-#21561: simulate "PID gone" via _pid_exists returning False.
         monkeypatch.setattr(status, "_pid_exists", lambda pid: False)
 
-        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+        acquired, existing = status.acquire_scoped_lock("discord-bot-token", "secret", metadata={"platform": "discord"})
 
         assert acquired is True
         payload = json.loads(lock_path.read_text())
         assert payload["pid"] == os.getpid()
-        assert payload["metadata"]["platform"] == "telegram"
+        assert payload["metadata"]["platform"] == "discord"
 
 
     def test_release_all_scoped_locks_can_target_single_owner(self, tmp_path, monkeypatch):
@@ -789,7 +789,7 @@ class TestScopedLocks:
         lock_dir = tmp_path / "locks"
         lock_dir.mkdir(parents=True, exist_ok=True)
 
-        target_lock = lock_dir / "telegram-bot-token-target.lock"
+        target_lock = lock_dir / "discord-bot-token-target.lock"
         other_lock = lock_dir / "slack-app-token-other.lock"
         target_lock.write_text(json.dumps({
             "pid": 111,
@@ -817,12 +817,12 @@ class TestScopedLocks:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "lead-gen-outreach"))
 
         acquired, existing = status.acquire_scoped_lock(
-            "telegram-bot-token", "secret", metadata={"platform": "telegram"}
+            "discord-bot-token", "secret", metadata={"platform": "discord"}
         )
 
         assert acquired is True
         lock_path = tmp_path / "locks" / (
-            "telegram-bot-token-" + status._scope_hash("secret") + ".lock"
+            "discord-bot-token-" + status._scope_hash("secret") + ".lock"
         )
         payload = json.loads(lock_path.read_text())
         assert payload["profile"] == "lead-gen-outreach"
@@ -833,11 +833,11 @@ class TestScopedLocks:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "some-custom-dir"))
         monkeypatch.setattr(status, "_profile_label_for_home", lambda home: None)
 
-        acquired, _ = status.acquire_scoped_lock("telegram-bot-token", "secret")
+        acquired, _ = status.acquire_scoped_lock("discord-bot-token", "secret")
 
         assert acquired is True
         lock_path = tmp_path / "locks" / (
-            "telegram-bot-token-" + status._scope_hash("secret") + ".lock"
+            "discord-bot-token-" + status._scope_hash("secret") + ".lock"
         )
         payload = json.loads(lock_path.read_text())
         assert "profile" not in payload

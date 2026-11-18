@@ -52,7 +52,7 @@ def test_batch_runs_declare_their_surface():
 
 @pytest.mark.parametrize(
     "platform",
-    ["cli", "tui", "desktop", "batch", "acp", "api_server", "cron", "telegram"],
+    ["cli", "tui", "desktop", "batch", "acp", "api_server", "cron", "discord"],
 )
 def test_declared_platforms_resolve_to_a_named_surface(platform):
     """No production construction path should resolve to unknown/other.

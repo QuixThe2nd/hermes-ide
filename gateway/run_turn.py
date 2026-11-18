@@ -499,25 +499,12 @@ class GatewayTurnMixin:
             return False
 
     async def _hmwa_resolve_session(self, event, source):
-        """Resolve ``source`` to its session entry (topic recovery, internal-route guards, Telegram
-        topic-binding heal). Returns ``(source, session_entry, session_key)`` or ``None`` to drop
-        the event."""
+        """Resolve ``source`` to its session entry (internal-route guards). Returns
+        ``(source, session_entry, session_key)`` or ``None`` to drop the event."""
         from gateway.run import logger
 
-        # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's last-active topic so a
-        # cross-topic Reply doesn't fragment the conversation.
         event_metadata = getattr(event, "metadata", None) or {}
         expected_session_key = str(event_metadata.get("gateway_session_key") or "").strip()
-        recovered = (await asyncio.to_thread(self._recover_telegram_topic_thread_id, source)
-                     if not expected_session_key else None)
-        if recovered is not None:
-            logger.info(
-                "telegram topic recovery: chat=%s user=%s %r -> %s",
-                source.chat_id, source.user_id, source.thread_id, recovered,
-            )
-            source = dataclasses.replace(source, thread_id=recovered)
-            with suppress(Exception):
-                event.source = source
 
         if expected_session_key:
             derived_session_key = self._session_key_for_source(source)
@@ -551,60 +538,8 @@ class GatewayTurnMixin:
                 return
             session_entry = resolved_entry
         self._cache_session_source(session_key, source)
-        if await asyncio.to_thread(self._is_telegram_topic_lane, source):
-            session_entry = await self._hmwa_heal_telegram_topic_binding(source, session_entry, session_key)
         return source, session_entry, session_key
 
-    async def _hmwa_heal_telegram_topic_binding(self, source, session_entry, session_key):
-        """Follow the (chat_id, thread_id) topic binding — healed to its compression tip — or record
-        a fresh one. Returns the (possibly switched) session entry."""
-        from gateway.run import logger
-
-        binding = None
-        try:
-            if self._session_db:
-                binding = await self._session_db.get_telegram_topic_binding(
-                    chat_id=str(source.chat_id), thread_id=str(source.thread_id),
-                    profile_name=self._telegram_topic_profile_name(source),
-                )
-        except Exception:
-            logger.debug("Failed to read Telegram topic binding", exc_info=True)
-        if not binding:
-            try:
-                await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry)
-            except Exception:
-                logger.debug("Failed to record Telegram topic binding", exc_info=True)
-            return session_entry
-        stored_session_id = str(binding.get("session_id") or "")
-        bound_session_id = stored_session_id
-        # A binding pointing at a pre-compression parent is walked forward to the tip so the next
-        # message resumes the compressed child instead of reloading the oversized parent.
-        # Returns the input unchanged when the session isn't a compression parent, so this is cheap and
-        # safe. See #20470, #29712, #33414.
-        if bound_session_id and self._session_db is not None:
-            try:
-                canonical_session_id = await self._session_db.get_compression_tip(bound_session_id)
-            except Exception:
-                logger.debug("compression-tip lookup failed for %s", bound_session_id, exc_info=True)
-                canonical_session_id = bound_session_id
-            if canonical_session_id and canonical_session_id != bound_session_id:
-                bound_session_id = canonical_session_id
-        if bound_session_id and bound_session_id != session_entry.session_id:
-            # Route through SessionStore so the key → id mapping persists and the previous lane
-            # session ends cleanly (in-place mutation split-brained the JSON index). The two DB
-            # awaits above are a window for /new or /resume to move the route; the CAS on the
-            # snapshot id lets that win instead of being clobbered by a stale binding.
-            switched = await self.async_session_store.switch_session(
-                session_key, bound_session_id, expected_session_id=session_entry.session_id,
-            )
-            if switched is not None:
-                session_entry = switched
-        if bound_session_id and bound_session_id != stored_session_id:
-            # The stored binding pointed at a parent: rewrite it to the canonical descendant.
-            await asyncio.to_thread(
-                self._sync_telegram_topic_binding, source, session_entry, reason="compression-tip-walk",
-            )
-        return session_entry
 
     async def _hmwa_open_session(self, session_entry, session_key, source):
         """Consume auto-reset / fresh-reset flags and emit ``session:start`` for new sessions.
@@ -1254,9 +1189,6 @@ class GatewayTurnMixin:
                 # The held turn lease follows the rotation (alias keys still serialize on this turn).
                 self._rebind_turn_lease(_quick_key, run_generation, _hyg_new_sid)
                 await self.async_session_store._save()
-                await asyncio.to_thread(
-                    self._sync_telegram_topic_binding, source, session_entry, reason="hygiene-compression",
-                )
 
         if _hyg_rotated or _hyg_in_place:
             # Rewritten (rotation) or persisted by archive_and_compact() (in-place): reset token count.
@@ -1718,9 +1650,6 @@ class GatewayTurnMixin:
                 await self.async_session_store._record_gateway_session_peer(
                     session_entry.session_id, session_key, source,
                 )
-                await asyncio.to_thread(
-                    self._sync_telegram_topic_binding, source, session_entry, reason="agent-result-compression",
-                )
             else:
                 logger.info(
                     "Skipping agent-result session split sync for %s because the session binding "
@@ -1914,20 +1843,7 @@ class GatewayTurnMixin:
             # Conversation boundary: the funnel clears every conversation-scoped per-session dict.
             self._clear_conversation_scope(session_key, reason="compression_exhausted_reset")
             if new_entry is not None:
-                # Re-point the Telegram topic binding at the fresh session, or the binding-heal walk
-                # switches the next message back onto the bloated child and re-triggers exhaustion
-                # forever. No-op on non-topic lanes.
-                # Compression rotated session_entry.session_id to the oversized compressed child earlier
-                # this turn (the agent-result sync above), and that _sync also rewrote the (chat_id,
-                # thread_id) -> bloated-child binding. reset_session swaps in a clean, parentless session,
-                # but without re-syncing the binding the next inbound message in this topic gets
-                # switch_session'd back onto the bloated child by the binding-heal walk, reloads the
-                # oversized transcript, and re-triggers compression exhaustion forever (#35809 — regression
-                # of the #9893/#10063 auto-reset).
                 session_entry = new_entry
-                await asyncio.to_thread(
-                    self._sync_telegram_topic_binding, source, session_entry, reason="compression-exhausted-reset",
-                )
             response = (response or "") + (
                 "\n\n🔄 Session auto-reset — the conversation exceeded the maximum context size and "
                 "could not be compressed further. Your next message will start a fresh session."
@@ -1999,7 +1915,7 @@ class GatewayTurnMixin:
             if agent_failed_early or hidden_reasoning_incomplete:
                 # Transient failure / hidden-reasoning incomplete: persist the user message without
                 # the provider error text (a gateway hint, not model output). Dedupe on platform
-                # message_id (Telegram retries after transient failures).
+                # message_id (platforms retry after transient failures).
                 if event.message_id and await store.has_platform_message_id(sid, str(event.message_id)):
                     logger.info(
                         "Skipping duplicate user turn (message_id=%s) in session %s",
@@ -2312,21 +2228,6 @@ class GatewayTurnMixin:
             source.chat_id or "unknown", _msg_preview, _reply_id, _reply_txt,
         )
 
-        # Get or create session
-        # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's
-        # last-active topic so a cross-topic Reply or stripped plain reply
-        # doesn't fragment the conversation across sessions.
-        recovered = await asyncio.to_thread(self._recover_telegram_topic_thread_id, source)
-        if recovered is not None:
-            logger.info(
-                "telegram topic recovery: chat=%s user=%s %r -> %s",
-                source.chat_id, source.user_id, source.thread_id, recovered,
-            )
-            source = dataclasses.replace(source, thread_id=recovered)
-            try:
-                event.source = source
-            except Exception:
-                pass
 
         event_metadata = getattr(event, "metadata", None) or {}
         expected_session_key = str(
@@ -2385,7 +2286,7 @@ class GatewayTurnMixin:
         # session metadata, so it survives restarts). Synthetic injections —
         # async-delegation completions, background-process notifications, loop
         # wakeups — carry no platform message_id of their own, which left their
-        # turn-final replies without a Discord/Telegram reply anchor and
+        # turn-final replies without a Discord reply anchor and
         # therefore without a user ping. Those injections now fall back to this
         # remembered id (see _inject_watch_notification / _loop_wakeup_watcher).
         if not getattr(event, "internal", False) and getattr(event, "message_id", None):
@@ -2401,64 +2302,6 @@ class GatewayTurnMixin:
                     session_key, exc_info=True,
                 )
         await self._persist_resume_inbound_for_event(session_key, event)
-        if await asyncio.to_thread(self._is_telegram_topic_lane, source):
-            try:
-                binding = (await self._session_db.get_telegram_topic_binding(
-                    chat_id=str(source.chat_id),
-                    thread_id=str(source.thread_id),
-                    profile_name=self._telegram_topic_profile_name(source),
-                )) if self._session_db else None
-            except Exception:
-                logger.debug("Failed to read Telegram topic binding", exc_info=True)
-                binding = None
-            if binding:
-                bound_session_id = str(binding.get("session_id") or "")
-                # Heal bindings that point at a pre-compression parent: walk
-                # the compression-continuation chain forward to its tip so the
-                # next message resumes the compressed child instead of
-                # reloading the oversized parent transcript (#20470/#29712/
-                # #33414). Returns the input unchanged when the session isn't
-                # a compression parent, so this is cheap and safe.
-                if bound_session_id and self._session_db is not None:
-                    try:
-                        canonical_session_id = await self._session_db.get_compression_tip(
-                            bound_session_id,
-                        )
-                    except Exception:
-                        logger.debug(
-                            "compression-tip lookup failed for %s",
-                            bound_session_id, exc_info=True,
-                        )
-                        canonical_session_id = bound_session_id
-                    if (
-                        canonical_session_id
-                        and canonical_session_id != bound_session_id
-                    ):
-                        bound_session_id = canonical_session_id
-                if bound_session_id and bound_session_id != session_entry.session_id:
-                    # Route the override through SessionStore so the session_key
-                    # → session_id mapping is persisted to disk and the previous
-                    # lane session is ended cleanly. Mutating session_entry in
-                    # place here created a split-brain state where the JSON
-                    # index pointed at one id but code downstream used another.
-                    switched = await self.async_session_store.switch_session(session_key, bound_session_id)
-                    if switched is not None:
-                        session_entry = switched
-                # If the stored binding pointed at a parent, rewrite it to the
-                # canonical descendant now that we've followed the chain.
-                if (
-                    bound_session_id
-                    and bound_session_id != str(binding.get("session_id") or "")
-                ):
-                    await asyncio.to_thread(
-                        self._sync_telegram_topic_binding,
-                        source, session_entry, reason="compression-tip-walk",
-                    )
-            else:
-                try:
-                    await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry)
-                except Exception:
-                    logger.debug("Failed to record Telegram topic binding", exc_info=True)
         # Capture and immediately consume was_auto_reset so it does not
         # re-fire on subsequent messages — preventing the cleanup from
         # wiping model/reasoning overrides set between turns (Closes #48031).
@@ -2616,7 +2459,7 @@ class GatewayTurnMixin:
             # (single source of truth); only the reset reason needs clearing here.
             session_entry.auto_reset_reason = None
 
-        # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
+        # Auto-load skill(s) for topic/channel bindings (Matrix topic bindings,
         # Discord channel_skill_bindings).  Supports a single name or ordered list.
         # Only inject on NEW sessions — ongoing conversations already have the
         # skill content in their conversation history from the first message.
@@ -2754,7 +2597,7 @@ class GatewayTurnMixin:
             # detached; its commit is fenced (revoke_commit_admission) so a
             # stale result can never clobber turns appended after the wait was
             # abandoned. Capped well below typical transport idle-timeouts
-            # (Telegram ~30s) so the wire never goes silent long enough to sever.
+            # (transports idle out ~30s) so the wire never goes silent long enough to sever.
             _hyg_max_turn_hold_seconds = 10.0
             _hyg_failure_cooldown_seconds = 300.0
             _hyg_config_context_length = None
@@ -3850,11 +3693,6 @@ class GatewayTurnMixin:
                                                 _quick_key, run_generation, _hyg_new_sid
                                             )
                                             await self.async_session_store._save()
-                                            await asyncio.to_thread(
-                                                self._sync_telegram_topic_binding,
-                                                source, session_entry,
-                                                reason="hygiene-compression",
-                                            )
 
                                     if _hyg_rotated:
                                         # Reset stored token count — transcript rewritten
@@ -4386,10 +4224,6 @@ class GatewayTurnMixin:
                         session_key,
                         source,
                     )
-                    await asyncio.to_thread(
-                        self._sync_telegram_topic_binding,
-                        source, session_entry, reason="agent-result-compression",
-                    )
                 else:
                     logger.info(
                         "Skipping agent-result session split sync for %s because "
@@ -4579,23 +4413,7 @@ class GatewayTurnMixin:
                     session_key, reason="compression_exhausted_reset"
                 )
                 if new_entry is not None:
-                    # Drop the stale reference to the bloated compressed child and
-                    # re-point the Telegram topic binding at the fresh session.
-                    # Compression rotated session_entry.session_id to the oversized
-                    # compressed child earlier this turn (the agent-result sync
-                    # above), and that _sync also rewrote the (chat_id, thread_id)
-                    # -> bloated-child binding. reset_session swaps in a clean,
-                    # parentless session, but without re-syncing the binding the
-                    # next inbound message in this topic gets switch_session'd back
-                    # onto the bloated child by the binding-heal walk, reloads the
-                    # oversized transcript, and re-triggers compression exhaustion
-                    # forever (#35809 — regression of the #9893/#10063 auto-reset).
-                    # No-op on non-topic lanes.
                     session_entry = new_entry
-                    await asyncio.to_thread(
-                        self._sync_telegram_topic_binding,
-                        source, session_entry, reason="compression-exhausted-reset",
-                    )
                 response = (response or "") + (
                     "\n\n🔄 Session auto-reset — the conversation exceeded the "
                     "maximum context size and could not be compressed further. "
@@ -4678,7 +4496,7 @@ class GatewayTurnMixin:
                 if event.message_id and not getattr(event, "internal", False):
                     _user_entry["message_id"] = str(event.message_id)
                 # Dedupe: skip if this platform message_id is already in the
-                # transcript (prevents duplicate user turns on Telegram retries
+                # transcript (prevents duplicate user turns on platform retries
                 # after transient failures). #47237. Internal synthetic turns
                 # borrow the remembered anchor id, which IS already in the
                 # transcript — they must never be treated as duplicates.
@@ -4851,7 +4669,7 @@ class GatewayTurnMixin:
                         )
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
-                # Send it now as a small trailing message so Telegram/Discord/etc.
+                # Send it now as a small trailing message so chat platforms
                 # still surface the runtime metadata on the final reply.
                 if _footer_line:
                     try:
@@ -5562,14 +5380,10 @@ class GatewayTurnMixin:
     def _build_stream_consumer_config(
         self, source: "SessionSource", scfg: Any, adapter: Any, *, on_missing_cursor: str,
     ) -> "tuple[Any, Optional[Callable[[], None]]]":
-        """Build the shared ``StreamConsumerConfig`` and optional Telegram pause-typing closure.
+        """Build the shared ``StreamConsumerConfig``.
         For non-editing adapters ``on_missing_cursor="fallback"`` streams with an empty cursor;
         ``"raise"`` raises ``RuntimeError`` so the caller skips streaming entirely."""
         from gateway.stream_consumer import StreamConsumerConfig
-        _pause_typing_before_finalize = None
-        if source.platform == Platform.TELEGRAM and hasattr(adapter, "pause_typing_for_chat"):
-            def _pause_typing_before_finalize(_adapter=adapter, _chat_id=source.chat_id) -> None:
-                _adapter.pause_typing_for_chat(_chat_id)
         # Non-editing platforms (QQ, WeChat) skip streaming — the partial first message could never
         # be updated — unless they have a native-streaming transport (WeCom msgtype "stream").
         _adapter_supports_edit = getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
@@ -5581,21 +5395,17 @@ class GatewayTurnMixin:
         _buffer_only = source.platform == Platform.MATRIX
         if _buffer_only:
             _effective_cursor = ""
-        # Fresh-final applies to Telegram only (others edit in place cheaply).
-        # Fresh-final applies to Telegram only — other platforms either edit in place cheaply (Discord,
-        # Slack) or don't have the timestamp-on-edit / edit-timestamp-stays-stale problem. (Ported from
-        # openclaw/openclaw#72038.)
-        _fresh_final_secs = (
-            float(getattr(scfg, "fresh_final_after_seconds", 0.0) or 0.0)
-            if source.platform == Platform.TELEGRAM else 0.0
-        )
+        # Fresh-final applies to adapters that opt in via prefers_fresh_final_streaming; others
+        # edit in place cheaply (Discord, Slack) or don't have the timestamp-on-edit problem.
+        # (Ported from openclaw/openclaw#72038.)
+        _fresh_final_secs = float(getattr(scfg, "fresh_final_after_seconds", 0.0) or 0.0)
         _consumer_cfg = StreamConsumerConfig(
             edit_interval=scfg.edit_interval, buffer_threshold=scfg.buffer_threshold,
             cursor=_effective_cursor, buffer_only=_buffer_only,
             fresh_final_after_seconds=_fresh_final_secs, transport=scfg.transport or "edit",
             chat_type=getattr(source, "chat_type", "") or "",
         )
-        return _consumer_cfg, _pause_typing_before_finalize
+        return _consumer_cfg, None
 
     def _run_still_current_fn(self, session_key: Optional[str], run_generation: Optional[int]) -> Callable[[], bool]:
         """Predicate: does this run's generation still own ``session_key``? (always True when untracked)."""
@@ -7284,7 +7094,7 @@ class GatewayTurnMixin:
         # repeated "💻 terminal" header and render back-to-back blocks.
         last_was_terminal_block = [False]
 
-        # Auto-cleanup of temporary progress bubbles (Telegram + any adapter
+        # Auto-cleanup of temporary progress bubbles (any adapter
         # that implements ``delete_message``). When enabled via
         # ``display.platforms.<platform>.cleanup_progress: true``, message IDs
         # from the tool-progress / status-callback bubbles
@@ -7381,8 +7191,6 @@ class GatewayTurnMixin:
         #
         # Threading metadata is platform-specific:
         # - Slack DM threading needs event_message_id fallback (reply thread)
-        # - Telegram forum topics use message_thread_id; Hermes-created private
-        #   DM topic lanes require both thread metadata and a reply anchor
         # - Feishu only honors reply_in_thread when sending a reply, so topic
         #   progress uses the triggering event message as the reply target
         # - Other platforms should use explicit source.thread_id only
