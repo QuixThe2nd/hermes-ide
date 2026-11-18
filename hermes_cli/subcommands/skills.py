@@ -40,13 +40,15 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     skills_browse.add_argument("--page", type=int, default=1, help="Page number (default: 1)")
     skills_browse.add_argument(
         "--size", type=int, default=20, help="Results per page (default: 20)")
-    skills_browse.add_argument("--source", default="all", choices=_SOURCE_CHOICES,
-        help="Filter by source or provider (e.g. nvidia, openai) (default: all)")
+    skills_browse.add_argument("--source", default="official", choices=_SOURCE_CHOICES,
+        help="Filter by source or provider (default: official — this repo's catalog; "
+             "all searches every registry)")
 
     skills_search = skills_subparsers.add_parser("search", help="Search skill registries")
     skills_search.add_argument("query", help="Search query")
-    skills_search.add_argument("--source", default="all", choices=_SOURCE_CHOICES,
-        help="Filter by source or provider (e.g. nvidia, openai)")
+    skills_search.add_argument("--source", default="official", choices=_SOURCE_CHOICES,
+        help="Filter by source or provider (default: official — this repo's catalog; "
+             "all searches every registry)")
     skills_search.add_argument("--limit", type=int, default=25, help="Max results")
     add_json_flag(
         skills_search, "Output JSON instead of a table (full identifiers, scripting-friendly)")

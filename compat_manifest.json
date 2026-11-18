@@ -6532,24 +6532,6 @@
   },
   {
    "facade": "tools.skills_hub",
-   "name": "HERMES_INDEX_TTL",
-   "kind": "moved-lazy",
-   "target": "tools.skills_hub_search"
-  },
-  {
-   "facade": "tools.skills_hub",
-   "name": "HERMES_INDEX_URL",
-   "kind": "moved-lazy",
-   "target": "tools.skills_hub_search"
-  },
-  {
-   "facade": "tools.skills_hub",
-   "name": "HermesIndexSource",
-   "kind": "moved-lazy",
-   "target": "tools.skills_hub_official"
-  },
-  {
-   "facade": "tools.skills_hub",
    "name": "LobeHubSource",
    "kind": "moved-lazy",
    "target": "tools.skills_hub_sources"

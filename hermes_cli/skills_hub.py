@@ -23,16 +23,15 @@ _VALID_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 _VALID_CATEGORY_RE = re.compile(r"^[a-z][a-z0-9_/-]*$")
 _TRUST_STYLE = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow", "local": "dim"}
 _TRUST_RANK = {"builtin": 3, "trusted": 2, "community": 1}
-# Browse per-source limits. With the centralized index available, parallel_search_sources
-# serves everything from "hermes-index", so that entry MUST exceed the whole catalog or browse
-# silently caps the hub (50 and 5000 both truncated). The index is disk-cached and browse
-# paginates client-side. The external limits only apply when the index is unavailable.
+# Browse per-source limits. The DEFAULT catalog is the fork's own "official" optional-skills
+# set, so the official entry MUST exceed the whole catalog or browse silently caps the hub
+# (200 once truncated it). Other sources are reachable via an explicit --source flag.
 _BROWSE_LIMITS = {
-    "hermes-index": 1000000, "official": 200, "skills-sh": 200, "well-known": 50,
+    "official": 1000, "skills-sh": 200, "well-known": 50,
     "github": 200, "clawhub": 500, "lobehub": 500, "browse-sh": 500}
 # Programmatic (TUI gateway) browse keeps its own, lower caps.
 _BROWSE_API_LIMITS = {
-    "hermes-index": 5000, "official": 100, "skills-sh": 100, "well-known": 25,
+    "official": 500, "skills-sh": 100, "well-known": 25,
     "github": 100, "clawhub": 50, "lobehub": 50, "browse-sh": 500}
 _EXTRA_META_LABELS = (
     ("repo_url", "Repo"), ("detail_url", "Detail Page"), ("index_url", "Index"),
@@ -192,7 +191,7 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
     from tools.skills_hub_search import unified_search
     c = console or _console
     c.print(f"[dim]Resolving '{name}'...[/]")
-    results = unified_search(name, sources, source_filter="all", limit=20)
+    results = unified_search(name, sources, source_filter="official", limit=20)
     exact = [r for r in results if r.name.lower() == name.lower()]
 
     if len(exact) == 1:
@@ -314,9 +313,11 @@ def _prompt_for_category(c: Console, existing: List[str]) -> str:
 
 # --- search / browse / inspect ---
 
-def do_search(query: str, source: str = "all", limit: int = 10, console: Optional[Console] = None,
-              as_json: bool = False) -> None:
-    """Search registries -> Rich table, or a clean JSON array (``as_json``) for scripting."""
+def do_search(query: str, source: str = "official", limit: int = 10,
+              console: Optional[Console] = None, as_json: bool = False) -> None:
+    """Search the default (fork official) catalog -> Rich table, or a clean JSON
+    array (``as_json``) for scripting. An explicit ``source`` reaches community
+    registries; ``all`` queries everything."""
     from tools.skills_hub_search import unified_search
     c = console or _console
     sources = _sources()
@@ -330,7 +331,9 @@ def do_search(query: str, source: str = "all", limit: int = 10, console: Optiona
     with c.status("[bold]Searching registries..."):
         results = unified_search(query, sources, source_filter=source, limit=limit)
     if not results:
-        c.print("[dim]No skills found matching your query.[/]\n")
+        hint = ("" if source != "official" else
+                "  [dim](--source all also searches community registries)[/]")
+        c.print(f"[dim]No skills found matching your query.{hint}[/]\n")
         return
 
     table = _table(("Name", {"style": "bold cyan"}), ("Description", {"max_width": 60}), "Source",
@@ -413,9 +416,10 @@ def _render_browse_page(c: Console, deduped, page_items, page: int, total_pages:
             "'hermes skills search <query>' to search deeper[/]\n")
 
 
-def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
+def do_browse(page: int = 1, page_size: int = 20, source: str = "official",
               console: Optional[Console] = None) -> None:
-    """Browse all available skills across registries, paginated; official skills first."""
+    """Browse the default (fork official) catalog — or any source via an explicit
+    ``--source`` — paginated; official skills first."""
     page_size = max(1, min(page_size, 100))
     c = console or _console
     all_results, source_counts, timed_out = _fetch_browse_results(c, source)
@@ -433,12 +437,12 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
                         source_counts, timed_out)
 
 
-def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> dict:
+def browse_skills(page: int = 1, page_size: int = 20, source: str = "official") -> dict:
     """Paginated hub browse for programmatic callers (e.g. TUI gateway)."""
     from tools.skills_hub_search import parallel_search_sources
     page_size = max(1, min(page_size, 100))
-    # The shared parallel walker carries the index-aware source-skip logic — querying
-    # hermes-index AND the external APIs at once would double-count every skill.
+    # The shared parallel walker applies the --source filter; each adapter is
+    # queried directly (no proxy catalog stands in for the registries).
     all_results, _counts, _timed_out = parallel_search_sources(
         _sources(), query="", per_source_limits=_BROWSE_API_LIMITS,
         source_filter=source, overall_timeout=30)
@@ -1398,7 +1402,7 @@ def _opt_int(args: List[str], flag: str, default: int) -> int:
 
 
 def _slash_search(args, c):
-    source, limit, as_json, query_parts, i = "all", 25, False, [], 0
+    source, limit, as_json, query_parts, i = "official", 25, False, [], 0
     while i < len(args):
         flag, value = args[i], args[i + 1] if i + 1 < len(args) else None
         takes_value = flag in ("--source", "--limit") and value is not None
@@ -1434,7 +1438,7 @@ def _first_positional(args):
 _SLASH_ACTIONS = {
     "browse": lambda args, c: do_browse(
         page=_opt_int(args, "--page", 1), page_size=_opt_int(args, "--size", 20),
-        source=_opt_value(args, "--source", "all", last=True), console=c),
+        source=_opt_value(args, "--source", "official", last=True), console=c),
     "search": _slash_search,
     "install": lambda args, c: do_install(
         args[0], category=_opt_value(args, "--category", "", last=True),

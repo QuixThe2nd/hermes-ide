@@ -2917,9 +2917,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `GITHUB_TAP_PROVIDERS` | moved-lazy | `tools.skills_hub_github` |
 | `GitHubAuth` | moved-lazy | `tools.skills_hub_github` |
 | `GitHubSource` | moved-lazy | `tools.skills_hub_github` |
-| `HERMES_INDEX_TTL` | moved-lazy | `tools.skills_hub_search` |
-| `HERMES_INDEX_URL` | moved-lazy | `tools.skills_hub_search` |
-| `HermesIndexSource` | moved-lazy | `tools.skills_hub_official` |
 | `LobeHubSource` | moved-lazy | `tools.skills_hub_sources` |
 | `OptionalSkillSource` | moved-lazy | `tools.skills_hub_official` |
 | `PurePosixPath` | import | `pathlib` |
