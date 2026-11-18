@@ -607,7 +607,6 @@ async def spawn_successor(
         "falling back to the legacy drain path"
     )
     return None
-    return None
 
 
 def _predecessor_still_draining(runner: Any) -> bool:
