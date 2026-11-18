@@ -3347,6 +3347,66 @@ class TestCodexAdapterPromptCacheKey:
         assert captured["instructions"] == "Summarize faithfully."
         assert not any(item.get("role") == "system" for item in captured["input"])
 
+    def test_shared_adapter_concurrent_bridged_calls_do_not_leak_prompts(self):
+        """Aux adapters are shared across concurrent auxiliary calls (compression, MoA,
+        titles). Overlapping bridged-route calls must each carry their own system prompt
+        as the leading input item — no cross-call bleed, no dropped row."""
+        import copy
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier, Lock
+        from types import SimpleNamespace
+
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        message_item = SimpleNamespace(
+            type="message", role="assistant", status="completed",
+            content=[SimpleNamespace(type="output_text", text="ok")],
+        )
+        events = [SimpleNamespace(type="response.created"),
+                  SimpleNamespace(type="response.output_item.done", item=message_item),
+                  SimpleNamespace(type="response.completed",
+                                  response=SimpleNamespace(status="completed", id="resp_t",
+                                                           usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2)))]
+
+        class _FakeStream:
+            def __iter__(self):
+                return iter(events)
+            def close(self):
+                pass
+
+        recorded: list = []
+        lock = Lock()
+
+        def _create(**kwargs):
+            effective = {**kwargs, **(kwargs.get("extra_body") or {})}
+            with lock:
+                recorded.append(effective)
+            return _FakeStream()
+
+        client = MagicMock()
+        client.base_url = "http://192.168.30.21:4000/v1"
+        client.responses.create = _create
+        adapter = _CodexCompletionsAdapter(client, "hermes")
+
+        prompts = [f"aux-system-{i}" for i in range(8)]
+        barrier = Barrier(len(prompts))
+
+        def _call(prompt):
+            barrier.wait(timeout=10)
+            adapter.create(messages=[{"role": "system", "content": prompt},
+                                     {"role": "user", "content": "hi"}])
+            return prompt
+
+        with ThreadPoolExecutor(max_workers=len(prompts)) as pool:
+            done = list(pool.map(_call, prompts))
+        assert sorted(done) == sorted(prompts)
+        assert len(recorded) == len(prompts)
+        seen = [payload["input"][0]["content"] for payload in recorded]
+        assert sorted(seen) == sorted(prompts)
+        for payload in recorded:
+            assert "instructions" not in payload
+            assert payload["input"][0]["role"] == "system"
+            assert payload["input"][1] == {"role": "user", "content": "hi"}
 
 
 class TestCodexAdapterGithubResponsesMessageIdDrop:

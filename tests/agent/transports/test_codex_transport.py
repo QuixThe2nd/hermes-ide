@@ -1995,3 +1995,48 @@ class TestBridgedResponsesSystemPromptAsInputItem:
         normalized = transport.preflight_kwargs(kw)
         assert normalized["instructions"] == self.SYSTEM
         assert not any(item.get("role") == "system" for item in normalized["input"])
+
+    def test_litellm_route_changed_system_prompt_propagates(self, transport):
+        """The leading system item must track the CURRENT system prompt, not a memoized
+        first value: a conversation whose system prompt changed between sessions must send
+        the new text (and drop the old), or a stale prefix would poison the bridge cache."""
+        first = self._litellm_kwargs(transport)
+        assert first["input"][0]["content"] == self.SYSTEM
+        changed = "You are Hermes Agent v2. Different identity."
+        second = transport.build_kwargs(
+            model="hermes",
+            messages=[{"role": "system", "content": changed}, {"role": "user", "content": "Ping"}],
+            tools=[], provider="custom:litellm", base_url=self.LITELLM,
+        )
+        second = transport.preflight_kwargs(second)
+        assert second["input"][0] == {"role": "system", "content": changed}
+        assert changed not in first["input"][0]["content"]
+
+    def test_litellm_route_concurrent_builds_do_not_mutate_or_leak(self, transport):
+        """Concurrent turns against one shared transport must not share mutable state:
+        each payload's leading system item carries that call's own prompt, and the
+        caller's message lists are never mutated in place."""
+        import copy
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+
+        prompts = {f"system-prompt-{i}": [f"body-{i}"] for i in range(8)}
+        barrier = Barrier(len(prompts))
+        originals = {
+            key: [{"role": "system", "content": key}, {"role": "user", "content": body[0]}]
+            for key, body in prompts.items()
+        }
+        snapshots = {key: copy.deepcopy(msgs) for key, msgs in originals.items()}
+
+        def _build(key):
+            barrier.wait(timeout=10)
+            kw = self._litellm_kwargs(transport, messages=originals[key])
+            return key, kw
+
+        with ThreadPoolExecutor(max_workers=len(prompts)) as pool:
+            results = dict(pool.map(_build, prompts))
+        for key, kw in results.items():
+            assert kw["input"][0] == {"role": "system", "content": key}
+            assert kw["input"][1] == {"role": "user", "content": prompts[key][0]}
+            assert kw["input"][0]["content"] not in {k for k in prompts if k != key}
+        assert originals == snapshots
