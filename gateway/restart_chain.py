@@ -55,6 +55,20 @@ def _requesting_source_summary(
     return summary
 
 
+def peek_chained_restart() -> Optional[dict[str, Any]]:
+    """Read the chained-restart marker WITHOUT consuming it (status display only).
+
+    ``consume_chained_restart`` unlinks the marker because the successor acts
+    on it exactly once; status surfaces must only report that a chained
+    restart is pending.
+    """
+    try:
+        payload = json.loads(_restart_chain_path().read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def record_chained_restart(
     runner: Any,
     *,

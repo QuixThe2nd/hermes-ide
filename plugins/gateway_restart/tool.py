@@ -27,7 +27,10 @@ RESTART_SCHEMA = {
     "description": (
         "Restart hermes-ide through the same path as the /restart slash "
         "command. New turns and other sessions' long running turns "
-        "continue in a new instance. This call only requests the restart; "
+        "continue in a new instance. A success reply here only means the "
+        "restart was queued (status restarting/already_in_progress/chained), "
+        "never completed; completion is only the rewritten result below. "
+        "This call only requests the restart; "
         "the old process terminates this turn mechanically. The successor "
         "process rewrites this tool result with lines beginning 'Restarted "
         "successfully' plus 'Old process: <old_id>' and 'New process: "
@@ -99,6 +102,16 @@ _CRON_REFUSAL = (
     "not from cron."
 )
 
+# Self-describing queue state for every successful (committed) restart reply:
+# `success` means the restart was queued, never completed, and `process` is
+# the OLD gateway. Only the successor's rewrite claims completion.
+_QUEUED_NOTE = (
+    "Restart queued, not completed: 'process' names the OLD gateway. "
+    "The successor process rewrites this result with the "
+    "'Restarted successfully' completion notice and Old/New process "
+    "identity."
+)
+
 
 def check_restart_requirements() -> bool:
     """True when a restart target is reachable: this process OR its control socket.
@@ -136,6 +149,11 @@ def _result_json(runner: Any, status: dict) -> str:
         "process": f"pid {os.getpid()}",
         "active_agents": status.get("active_agents", 0),
         "via_service": status.get("via_service"),
+        # Self-describing queue state: `success` only means the restart was
+        # committed, never completed. `process` names the OLD gateway (this
+        # draining one); the successor rewrite is the completion claim.
+        "queued": True,
+        "note": _QUEUED_NOTE,
     }
     # Committed restart statuses stamp the reserved exact field so the tool
     # executor can arm the per-turn flag and end this turn (no further
@@ -221,6 +239,9 @@ def _socket_result_json(ack: dict) -> str:
         "status": ack.get("status"),
         "active_agents": ack.get("active_agents", 0),
         "via_service": ack.get("via_service"),
+        # Same self-describing queue state as `_result_json`.
+        "queued": True,
+        "note": _QUEUED_NOTE,
     }
     process = ack.get("pid")
     if isinstance(process, int) and not isinstance(process, bool) and process > 0:

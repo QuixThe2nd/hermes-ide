@@ -2227,6 +2227,7 @@ def build_resume_recovery_note(
     *,
     interactive: bool = True,
     continue_task: bool = False,
+    serving_identity: str = "",
 ) -> str:
     """Build the resume-pending recovery system note for an interrupted turn.
 
@@ -2244,10 +2245,10 @@ def build_resume_recovery_note(
     silently abandoned behind a "restored" acknowledgement that goes
     nowhere (#57056).
 
-    ``continue_task`` marks a restart_requester resume whose turn already
-    wrote its real assistant final: the restart was part of the task, so
-    the note says to continue that task and re-verify the pre-restart
-    claims instead of asking what next.
+    ``serving_identity`` (a short clause like ``pid N, build abcd1234``,
+    from ``gateway.serving_identity.serving_identity_clause``) names the
+    process now serving the conversation, so the resumed turn does not
+    trust the stale pids the supervisor files still show.
     """
     reason_phrase = (
         "a gateway restart"
@@ -2303,9 +2304,15 @@ def build_resume_recovery_note(
             "run — do NOT re-execute or verify it. "
         )
     )
+    identity_clause = (
+        f" — this conversation is now served by gateway {serving_identity}, "
+        "not any pid still shown by systemctl, the pid file, or status files"
+        if serving_identity
+        else ""
+    )
     return (
         f"[System note: The previous turn was interrupted by "
-        f"{reason_phrase}; the gateway is now back online. "
+        f"{reason_phrase}; the gateway is now back online{identity_clause}. "
         f"{already_ran}{resume_guidance} "
         f"{tail_guidance}]"
         + (f"\n\n{message}" if message else "")
@@ -2318,6 +2325,7 @@ def _prepare_resume_pending_message(
     *,
     interactive: bool = True,
     continue_task: bool = False,
+    serving_identity: str = "",
 ) -> tuple[str, str]:
     """Return the recovery message and the user text to persist.
 
@@ -2332,7 +2340,7 @@ def _prepare_resume_pending_message(
     """
     recovery_message = build_resume_recovery_note(
         reason, message or "", interactive=interactive,
-        continue_task=continue_task,
+        continue_task=continue_task, serving_identity=serving_identity,
     )
     persist_message = (
         message if isinstance(message, str) and message.strip() else recovery_message
@@ -11415,6 +11423,13 @@ async def _start_gateway_start_control_socket(runner):
             except concurrent.futures.TimeoutError:
                 return {"multiplex": True, "pending": True, "served_profiles": runner.served_profile_names()}
 
+        def _identify_verb() -> dict:
+            """Enrich the default identify answer with this runner's overlap role."""
+            from gateway.control_socket import build_identify_payload
+
+            return build_identify_payload(runner=runner)
+
+
         def _restart_verb_handler(params: dict) -> dict:
             """`hermes gateway restart` asks this process to run the ONE restart core.
 
@@ -11480,7 +11495,8 @@ async def _start_gateway_start_control_socket(runner):
             }
 
         _control_server = GatewayControlServer(
-            verb_handlers={"pause-for-update": _pause_for_update_handler,
+            verb_handlers={"identify": _identify_verb,
+                           "pause-for-update": _pause_for_update_handler,
                            "restart": _restart_verb_handler,
                            "rescan-profiles": _rescan_profiles_handler,
                            "migrate-profile-identity": migrate_profile_identity_verb(runner),

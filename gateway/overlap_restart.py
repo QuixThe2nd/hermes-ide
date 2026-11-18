@@ -101,6 +101,33 @@ def _runner_predecessor_pid(runner: Any) -> int:
     return predecessor
 
 
+def overlap_successor_readiness(runner: Any) -> str:
+    """Hub-attested readiness of this predecessor's spawned restart successor.
+
+    ``ready`` — a hub adapter confirmed the successor generation attached (the
+    same ack that gates real event handoff in ``admits_owned_work_while_draining``);
+    ``spawned`` — a successor PID is recorded but no hub has attested it yet;
+    ``none`` — no successor PID is recorded. Never raises: identity surfaces
+    consuming this must stay honest, not fail.
+    """
+    try:
+        pid = int(getattr(runner, "_overlap_restart_successor_pid", 0) or 0)
+    except (TypeError, ValueError):
+        return "none"
+    if pid <= 0:
+        return "none"
+    try:
+        for adapter in _iter_adapters(runner):
+            if (
+                getattr(adapter, "supports_overlap_restart", False) is True
+                and getattr(adapter, "_overlap_successor_ready", False) is True
+            ):
+                return "ready"
+    except Exception:
+        return "spawned"
+    return "spawned"
+
+
 def drop_inbound_session_refusal_during_overlap(
     runner: Any, refusal: Any, session_id: str = "",
 ) -> bool:

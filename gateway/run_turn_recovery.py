@@ -578,6 +578,9 @@ def prepare_turn_message(
         build_resume_recovery_note,
         is_forced_interruption_reason,
     )
+    from gateway.serving_identity import serving_identity_clause
+
+    serving_identity = serving_identity_clause(turn._runner)
 
     ctx = turn._ctx
     preparation = TurnMessagePreparation(
@@ -630,6 +633,7 @@ def prepare_turn_message(
                         continue_task=_restart_requester_task_final_resume(
                             resume_reason, ctx.message, ctx.history
                         ),
+                        serving_identity=serving_identity,
                     )
                 )
         if not restart_tool_continuation:
@@ -663,5 +667,6 @@ def prepare_turn_message(
                 continue_task=_restart_requester_task_final_resume(
                     resume_reason, "", ctx.history
                 ),
+                serving_identity=serving_identity,
             )
     return preparation

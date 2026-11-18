@@ -95,8 +95,14 @@ def _detect_supervisor() -> str:
     return "external" if "--external-supervisor" in sys.argv else "manual"
 
 
-def build_identify_payload() -> dict[str, Any]:
-    """Default ``identify`` answer, built from gateway.status primitives."""
+def build_identify_payload(runner: Any = None) -> dict[str, Any]:
+    """Default ``identify`` answer, built from gateway.status primitives.
+
+    ``runner`` (the live GatewayRunner) enriches the answer with the
+    serving-identity overlap role: a draining predecessor reports its
+    spawned successor so out-of-process consumers can tell it apart from
+    the process actually serving new turns.
+    """
     from gateway.status import _build_pid_record, _get_code_identity_fields, _profile_label_for_home, read_runtime_status
     record = _build_pid_record()
     payload: dict[str, Any] = {
@@ -109,6 +115,12 @@ def build_identify_payload() -> dict[str, Any]:
         served = (read_runtime_status() or {}).get("served_profiles")
         if isinstance(served, list) and served:
             payload["served_profiles"] = served
+    if runner is not None:
+        with contextlib.suppress(Exception):
+            from gateway.serving_identity import overlap_fields, serving_identity_snapshot
+            overlap = overlap_fields(serving_identity_snapshot(runner))
+            if overlap:
+                payload["overlap"] = overlap
     return payload
 
 
