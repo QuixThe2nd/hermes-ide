@@ -302,3 +302,153 @@ def test_continuation_internal_flag_survives_drain_queue_roundtrip(hermes_home):
     _key, restored = deserialize_drain_event(record)
     assert restored.internal is True
     assert restored.text.startswith("[Continuing toward your standing goal]")
+
+
+class TestHumanLookalikeIsNeverSynthetic:
+    """Regression (review, Nov 2026): the continuation guard recognized events by
+    a broad ``startswith("[Continuing toward your standing goal")`` text prefix,
+    so a HUMAN message quoting the banner — "[Continuing toward your standing
+    goal] is the banner I see; why is it repeating?" — was classified as a
+    synthetic continuation. ``_clear_goal_pending_continuations`` then deleted
+    the user's message from the pending slot and the run_turn stale guards could
+    drop it. Recognition must combine EXACT template matching with EVENT
+    PROVENANCE: text-shaped input is matched against the exact templates the
+    goal manager emits, and event-shaped input must additionally be internal."""
+
+    LOOKALIKE = (
+        "[Continuing toward your standing goal] is the banner I see; "
+        "why is it repeating?"
+    )
+
+    def test_human_lookalike_event_is_not_a_continuation(self):
+        from gateway.run import GatewayRunner
+
+        human = MessageEvent(
+            text=self.LOOKALIKE,
+            message_type=MessageType.TEXT,
+            source=_dm_source(),
+            message_id="msg-human-lookalike",
+        )
+        assert not GatewayRunner._is_goal_continuation_event(human)
+
+    def test_human_event_quoting_full_template_is_not_a_continuation(self):
+        """Even a byte-exact quote of a continuation template is human speech
+        when it arrives as a non-internal platform event with a message id."""
+        from gateway.run import GatewayRunner
+
+        human = MessageEvent(
+            text="[Continuing toward your standing goal]\nGoal: ship it",
+            message_type=MessageType.TEXT,
+            source=_dm_source(),
+            message_id="msg-human-quote",
+        )
+        assert not GatewayRunner._is_goal_continuation_event(human)
+
+    def test_clear_spares_human_lookalike_in_pending_slot(self):
+        from gateway.run import GatewayRunner
+
+        runner, adapter, _entry = _make_runner("sid-lookalike", "agent:main:discord:dm:C1")
+        human = MessageEvent(
+            text=self.LOOKALIKE,
+            message_type=MessageType.TEXT,
+            source=_dm_source(),
+            message_id="msg-human-lookalike",
+        )
+        adapter._pending_messages["agent:main:discord:dm:C1"] = human
+
+        removed = runner._clear_goal_pending_continuations(
+            "agent:main:discord:dm:C1", adapter
+        )
+
+        assert removed == 0
+        assert adapter._pending_messages["agent:main:discord:dm:C1"] is human
+
+    def test_clear_spares_human_lookalike_in_overflow(self):
+        from gateway.run import GatewayRunner
+
+        key = "agent:main:discord:dm:C1"
+        runner, adapter, _entry = _make_runner("sid-lookalike", key)
+        human = MessageEvent(
+            text=self.LOOKALIKE,
+            message_type=MessageType.TEXT,
+            source=_dm_source(),
+            message_id="msg-human-lookalike",
+        )
+        state = runner._session_state(key)
+        state.conversation.queued_events = [human]
+
+        removed = runner._clear_goal_pending_continuations(key, adapter)
+
+        assert removed == 0
+        assert list(state.conversation.queued_events) == [human]
+
+    def test_exact_template_text_is_recognized_for_every_template(self):
+        """Text-shaped input (the enqueue side in slash_commands_goals) has no
+        provenance to inspect; there the EXACT template prefixes decide."""
+        from gateway.run import GatewayRunner
+        from hermes_cli.goals import (
+            CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE,
+            CONTINUATION_PROMPT_TEMPLATE,
+            CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE,
+            CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE,
+        )
+
+        texts = [
+            CONTINUATION_PROMPT_TEMPLATE.format(goal="ship it"),
+            CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE.format(
+                goal="ship it", contract_block="- tests pass"
+            ),
+            CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE.format(
+                goal="ship it", subgoals_block="- no regressions"
+            ),
+            CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE.format(
+                goal="ship it", command="pytest -q", exit_code=1, attempt=1,
+                max_retries=3, output="2 failed",
+            ),
+        ]
+        for text in texts:
+            assert GatewayRunner._is_goal_continuation_event(text), (
+                f"exact template text must stay recognized: {text[:60]!r}..."
+            )
+        assert not GatewayRunner._is_goal_continuation_event(self.LOOKALIKE)
+
+    @pytest.mark.asyncio
+    async def test_real_resume_continuation_still_drains_as_internal(self, hermes_home):
+        """Positive control through the REAL path: ``/goal resume`` enqueues an
+        internal continuation on the adapter FIFO; the pause/clear guard must
+        still recognize and remove it (the drain this guard exists for)."""
+        from hermes_cli import goals
+
+        sid = "sid-drain-positive"
+        key = "agent:main:discord:dm:drainpos"
+        runner, adapter, _entry = _make_runner(sid, key)
+        mgr = goals.GoalManager(session_id=sid)
+        mgr.set("ship the fix", max_turns=1)
+        with patch(
+            "hermes_cli.goals.judge_goal",
+            return_value=("continue", "needs more steps", False, None, False),
+        ):
+            decision = mgr.evaluate_after_turn("worked a bit")
+        assert decision["status"] == "paused"
+
+        ev = MessageEvent(
+            text="/goal resume",
+            message_type=MessageType.TEXT,
+            source=SessionSource(
+                platform=Platform.DISCORD,
+                chat_id="drainpos",
+                chat_type="dm",
+                user_id="U9",
+            ),
+            message_id="m-resume",
+        )
+        await type(runner)._handle_goal_command(runner, ev)
+
+        pending = adapter._pending_messages.get(key)
+        assert pending is not None, "resume must enqueue the continuation"
+        assert pending.internal is True
+        assert runner._is_goal_continuation_event(pending)
+
+        removed = runner._clear_goal_pending_continuations(key, adapter)
+        assert removed == 1
+        assert key not in adapter._pending_messages
