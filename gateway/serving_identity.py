@@ -190,6 +190,7 @@ def serving_runtime_note(runner: Any) -> str:
             successor_clause = (
                 "new turns will be served by the replacement process once this one exits"
             )
+
         return (
             "[System note: This turn is served by Hermes gateway "
             f"{identity}. This process is draining for a queued restart; "
@@ -202,6 +203,16 @@ def serving_runtime_note(runner: Any) -> str:
         "pid file, or gateway status files — is the process running this "
         "conversation.]"
     )
+
+
+def serving_identity_clause(runner: Any) -> str:
+    """Short identity clause (``pid N, build abcd1234``) for recovery notes."""
+    fields = serving_identity_snapshot(runner)
+    clause = f"pid {fields.get('pid')}"
+    sha = fields.get("code_sha")
+    if sha:
+        clause += f", build {str(sha)[:8]}"
+    return clause
 
 
 def overlap_fields(snapshot: Mapping[str, Any]) -> dict[str, Any]:

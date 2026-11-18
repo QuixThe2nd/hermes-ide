@@ -1797,6 +1797,11 @@ class TurnRunner(_TurnRunnerCore):
         if runtime_note:
             turn_notes.append(runtime_note)
         agent._gateway_turn_context_notes = "\n\n".join(turn_notes)
+        # A transparent continuation defers the notes channel above, but a
+        # restart just moved the conversation to a new process mid-turn —
+        # stage the runtime note on its own one-shot channel so the
+        # continuation turn still learns which process serves it.
+        agent._gateway_continuation_note = runtime_note
         agent.background_review_callback, bg_release = self._make_bg_review_callbacks()
         # Register the release hook on the adapter so base.py's finally block fires it after the
         # main response is delivered.
