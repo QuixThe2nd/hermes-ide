@@ -21,12 +21,12 @@
 //	{"op": "resolve", "harness": "omp", "omp_binary": "omp"}
 //	  → {"reachable": true, "harness": "subagent"}
 //
-// With no "pin", the three external probes read the real host (PATH via
+// With no "pin", the two external probes read the real host (PATH via
 // exec.LookPath, CLAUDE_GLM_BIN, ~/.local/bin). A "pin" table freezes them
 // for hermetic runs: a string pins the probe reachable at that path, null
 // or "" pins it not-found, an absent key keeps the real lookup:
 //
-//	{"op": "resolve", "harness": "omp", "pin": {"omp": null, "claude": "/w/claude-glm", "cursor": null}}
+//	{"op": "resolve", "harness": "omp", "pin": {"omp": null, "claude": "/w/claude-glm"}}
 package main
 
 import (

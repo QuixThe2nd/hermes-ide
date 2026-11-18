@@ -26,15 +26,13 @@
 //     called with no model: the CLAUDE_GLM_BIN override (an executable
 //     file, "~" expanded), then ~/.local/bin/claude-glm, then claude-glm on
 //     PATH, then bare claude on PATH. The kimi wrapper is never consulted.
-//   - "cursor" is reachable when the Cursor Agent CLI resolves: agent on
-//     PATH, then ~/.local/bin/agent (executable file).
 //   - Any other harness name (empty, unknown, wrong case) is unreachable;
 //     probes never raise.
 //   - A lane whose configured harness is "omp" and whose omp binary is
 //     missing runs on the first reachable fallback, in order: claude, then
 //     the in-process subagent — so the ladder always ends runnable. A lane
-//     pinned to claude or cursor never falls back: it is simply hidden while
-//     that binary is unavailable.
+//     pinned to claude never falls back: it is simply hidden while that
+//     wrapper is unavailable.
 //   - Lane visibility is the reachability of the ladder-resolved harness.
 //
 // exec.LookPath is the Go-native PATH lookup; on Windows it resolves bare
@@ -54,7 +52,6 @@ import (
 const (
 	HarnessOMP      = "omp"
 	HarnessClaude   = "claude"
-	HarnessCursor   = "cursor"
 	HarnessSubagent = "subagent"
 )
 
@@ -63,11 +60,8 @@ const (
 // passes "" for an unset or empty setting).
 const DefaultOMpBinary = "omp"
 
-// The ~/.local/bin wrapper names the claude and cursor resolvers look for.
-const (
-	claudeLocalBin = "claude-glm"
-	cursorLocalBin = "agent"
-)
+// The ~/.local/bin wrapper name the claude resolver looks for.
+const claudeLocalBin = "claude-glm"
 
 // HarnessFallbacks is the ladder the bundled omp default steps down through
 // when the omp binary is missing, in order; mirrors _HARNESS_FALLBACKS.
@@ -133,20 +127,6 @@ func ResolveClaudeBinary(host Host) (string, bool) {
 	return "", false
 }
 
-// ResolveCursorBinary mirrors tools.cursor_agent_tool.resolve_cursor_agent_binary:
-// agent on PATH, then ~/.local/bin/agent as an executable file.
-func ResolveCursorBinary(host Host) (string, bool) {
-	if found, err := host.LookPath(cursorLocalBin); err == nil {
-		return found, true
-	}
-	if home, err := host.HomeDir(); err == nil {
-		if p := filepath.Join(home, ".local", "bin", cursorLocalBin); host.IsExecutableFile(p) {
-			return p, true
-		}
-	}
-	return "", false
-}
-
 // expandHome expands a leading "~" or "~/" like Python's Path.expanduser for
 // the override paths this contract reads; "~user" prefixes are left alone.
 func expandHome(host Host, path string) string {
@@ -164,19 +144,17 @@ func expandHome(host Host, path string) string {
 	return path
 }
 
-// probeSet is the three external reachability probes; pinning one replaces
+// probeSet is the two external reachability probes; pinning one replaces
 // its host lookup, which is how the shared table runs hermetically.
 type probeSet struct {
 	omp    func(configured string) (string, bool)
 	claude func() (string, bool)
-	cursor func() (string, bool)
 }
 
 func hostProbes(host Host) probeSet {
 	return probeSet{
 		omp:    func(configured string) (string, bool) { return ResolveOMPBinary(host, configured) },
 		claude: func() (string, bool) { return ResolveClaudeBinary(host) },
-		cursor: func() (string, bool) { return ResolveCursorBinary(host) },
 	}
 }
 
@@ -199,9 +177,6 @@ func pinnedProbes(host Host, pin map[string]*string) probeSet {
 	if v, ok := pin[HarnessClaude]; ok {
 		probe.claude = freeze(v)
 	}
-	if v, ok := pin[HarnessCursor]; ok {
-		probe.cursor = freeze(v)
-	}
 	return probe
 }
 
@@ -216,9 +191,6 @@ func (p probeSet) reachable(harness, ompConfigured string) bool {
 		return ok
 	case HarnessClaude:
 		_, ok := p.claude()
-		return ok
-	case HarnessCursor:
-		_, ok := p.cursor()
 		return ok
 	default:
 		return false
@@ -260,7 +232,7 @@ func LaneReachable(host Host, harness, ompConfigured string) bool {
 
 // Request is one cmd/lanereach invocation (JSON on stdin). OmpBinary is the
 // profile's omp.binary ("" = unset → "omp"). Pin, when non-nil, freezes the
-// three external probes for hermetic parity runs; an absent key keeps the
+// two external probes for hermetic parity runs; an absent key keeps the
 // real host lookup for that probe.
 type Request struct {
 	Op        string             `json:"op"`

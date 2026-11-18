@@ -124,47 +124,6 @@ func TestResolveClaudeBinaryMirrorsTheGLMOrder(t *testing.T) {
 	}
 }
 
-func TestResolveCursorBinaryMirrorsTheOrder(t *testing.T) {
-	localAgent := "/home/dev/.local/bin/agent"
-	cases := []struct {
-		name string
-		host fakeHost
-		want string
-	}{
-		{
-			name: "agent on PATH first",
-			host: fakeHost{
-				home:      "/home/dev",
-				onPath:    map[string]string{"agent": "/usr/local/bin/agent"},
-				execFiles: map[string]bool{localAgent: true},
-			},
-			want: "/usr/local/bin/agent",
-		},
-		{
-			name: "local bin when not on PATH",
-			host: fakeHost{home: "/home/dev", execFiles: map[string]bool{localAgent: true}},
-			want: localAgent,
-		},
-		{
-			name: "local bin must be executable",
-			host: fakeHost{home: "/home/dev"},
-			want: "",
-		},
-		{
-			name: "nothing resolves",
-			host: fakeHost{home: "/home/dev"},
-			want: "",
-		},
-	}
-	for _, c := range cases {
-		got, ok := ResolveCursorBinary(c.host)
-		if got != c.want || ok != (c.want != "") {
-			t.Errorf("%s: got (%q, %v), want (%q, %v)",
-				c.name, got, ok, c.want, c.want != "")
-		}
-	}
-}
-
 func TestResolveOMPBinaryHonorsConfiguration(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -228,10 +187,6 @@ func TestHarnessReachableMatrix(t *testing.T) {
 		home:      "/home/dev",
 		execFiles: map[string]bool{"/home/dev/.local/bin/claude-glm": true},
 	}
-	cursorHost := fakeHost{
-		home:      "/home/dev",
-		execFiles: map[string]bool{"/home/dev/.local/bin/agent": true},
-	}
 	cases := []struct {
 		name    string
 		host    fakeHost
@@ -243,8 +198,6 @@ func TestHarnessReachableMatrix(t *testing.T) {
 		{"omp missing", fakeHost{}, HarnessOMP, false},
 		{"claude wrapper found", claudeHost, HarnessClaude, true},
 		{"claude missing", fakeHost{}, HarnessClaude, false},
-		{"cursor found", cursorHost, HarnessCursor, true},
-		{"cursor missing", fakeHost{}, HarnessCursor, false},
 		{"unknown harness", ompHost, "codex", false},
 		{"empty harness", ompHost, "", false},
 		{"wrong case never matches", ompHost, "OMP", false},
@@ -258,8 +211,8 @@ func TestHarnessReachableMatrix(t *testing.T) {
 }
 
 func TestResolveRunnableLadder(t *testing.T) {
-	// hosts is a matrix over which of omp/claude are resolvable; subagent is
-	// always resolvable, cursor never influences the ladder.
+	// hosts is a matrix over which of omp/claude are resolvable; subagent
+	// is always resolvable.
 	hosts := map[string]fakeHost{
 		"omp+claude": {onPath: map[string]string{"omp": "/usr/bin/omp"},
 			execFiles: map[string]bool{"/home/dev/.local/bin/claude-glm": true}, home: "/home/dev"},
@@ -276,9 +229,7 @@ func TestResolveRunnableLadder(t *testing.T) {
 		{"reachable omp stays omp", "omp+claude", HarnessOMP, HarnessOMP},
 		{"omp missing prefers claude", "claude only", HarnessOMP, HarnessClaude},
 		{"omp and claude missing land subagent", "neither", HarnessOMP, HarnessSubagent},
-		{"omp missing still resolves when cursor present", "neither", HarnessOMP, HarnessSubagent},
 		{"pinned claude never falls back up to omp", "omp only", HarnessClaude, HarnessClaude},
-		{"pinned cursor never falls back", "omp+claude", HarnessCursor, HarnessCursor},
 		{"subagent stays subagent", "neither", HarnessSubagent, HarnessSubagent},
 	}
 	for _, c := range cases {
@@ -297,9 +248,6 @@ func TestLaneReachableIsTheResolvedHarness(t *testing.T) {
 	}
 	if LaneReachable(claude, HarnessClaude, "") != true {
 		t.Error("pinned claude with wrapper present must be visible")
-	}
-	if LaneReachable(empty, HarnessCursor, "") {
-		t.Error("pinned cursor without the CLI must be hidden")
 	}
 	if got := LaneReachable(empty, "codex", ""); got {
 		t.Error("unknown harness is never reachable")
@@ -376,11 +324,10 @@ func TestApplyPinOverridesTheHostLookup(t *testing.T) {
 	host := fakeHost{home: "/home/dev",
 		execFiles: map[string]bool{
 			"/home/dev/.local/bin/claude-glm": true,
-			"/home/dev/.local/bin/agent":      true,
 		}}
 	got, err := Apply(host, Request{
 		Op: OpResolve, Harness: HarnessOMP,
-		Pin: map[string]*string{"omp": nil, "claude": nil, "cursor": nil},
+		Pin: map[string]*string{"omp": nil, "claude": nil},
 	})
 	if err != nil || got != (Response{Reachable: true, Harness: HarnessSubagent}) {
 		t.Errorf("pinned-missing ladder: got (%+v, %v)", got, err)
@@ -394,13 +341,13 @@ func TestApplyPinOverridesTheHostLookup(t *testing.T) {
 	if err != nil || got != (Response{Reachable: false, Harness: HarnessClaude}) {
 		t.Errorf("empty-string pin: got (%+v, %v)", got, err)
 	}
-	// A partial pin leaves the other probes on the host: cursor unpinned
+	// A partial pin leaves the other probe on the host: claude unpinned
 	// resolves through the fake host.
 	got, err = Apply(host, Request{
-		Op: OpReachable, Harness: HarnessCursor,
+		Op: OpReachable, Harness: HarnessClaude,
 		Pin: map[string]*string{"omp": nil},
 	})
-	if err != nil || got != (Response{Reachable: true, Harness: HarnessCursor}) {
+	if err != nil || got != (Response{Reachable: true, Harness: HarnessClaude}) {
 		t.Errorf("partial pin: got (%+v, %v)", got, err)
 	}
 }
@@ -418,7 +365,7 @@ func TestSharedTableCoversTheLadderContract(t *testing.T) {
 		"steps_to_claude",
 		"land_subagent",
 		"pinned_claude_missing",
-		"pinned_cursor_missing",
+		"removed_cursor",
 		"unknown_harness",
 	}
 	for _, needle := range required {
@@ -429,7 +376,7 @@ func TestSharedTableCoversTheLadderContract(t *testing.T) {
 }
 
 func TestSharedTablePinsEveryProbe(t *testing.T) {
-	// The table must freeze all three probes per case, or the Go run would
+	// The table must freeze both probes per case, or the Go run would
 	// consult the real host and stop being reproducible.
 	for _, c := range loadSharedCases(t) {
 		keys := make([]string, 0, len(c.Pin))
@@ -437,8 +384,8 @@ func TestSharedTablePinsEveryProbe(t *testing.T) {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
-		if !reflect.DeepEqual(keys, []string{HarnessClaude, HarnessCursor, HarnessOMP}) {
-			t.Errorf("%s: pin keys = %v, want all of omp/claude/cursor", c.Name, keys)
+		if !reflect.DeepEqual(keys, []string{HarnessClaude, HarnessOMP}) {
+			t.Errorf("%s: pin keys = %v, want both omp/claude", c.Name, keys)
 		}
 	}
 }

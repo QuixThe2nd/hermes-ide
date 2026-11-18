@@ -9,8 +9,9 @@ test skips when no Go toolchain) and by the Python module with the same
 pinned probes, and all answers must agree exactly.
 
 Regression guard for the always-on lanes: a missing omp steps down to
-claude, then the in-process subagent; a lane pinned to claude or cursor
-hides only while that binary is unavailable; subagent is always reachable.
+claude, then the in-process subagent; a lane pinned to claude hides only
+while that wrapper is unavailable; subagent is always reachable; the
+removed cursor harness is rejected like any unknown harness.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ _REPO = Path(__file__).resolve().parents[2]
 _MODULE = _REPO / "internal" / "lanereach"
 _TABLE = _MODULE / "testdata" / "lane_cases.json"
 
-_PIN_KEYS = ("omp", "claude", "cursor")
+_PIN_KEYS = ("omp", "claude")
 
 
 def _shared_cases():
@@ -107,7 +108,7 @@ def test_python_module_matches_the_running_go_binary(case, go_lanereach):
 
 
 def test_shared_table_pins_every_probe():
-    """Every case freezes all three probes, or the Go run would consult the
+    """Every case freezes both probes, or the Go run would consult the
     real host and stop being reproducible."""
     for case in _shared_cases():
         assert set(case["pin"]) == set(_PIN_KEYS), case["name"]
@@ -123,7 +124,7 @@ def test_shared_table_covers_the_ladder_contract():
         "steps_to_claude",
         "land_subagent",
         "pinned_claude_missing",
-        "pinned_cursor_missing",
+        "removed_cursor",
         "unknown_harness",
     )
     for needle in required:
