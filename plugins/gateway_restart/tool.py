@@ -239,9 +239,11 @@ def _socket_result_json(ack: dict) -> str:
         "status": ack.get("status"),
         "active_agents": ack.get("active_agents", 0),
         "via_service": ack.get("via_service"),
-        # Same self-describing queue state as `_result_json`.
+        # Same self-describing queue state as `_result_json`, unless the
+        # caller already composed a serving-process-specific note (the
+        # chained-across-overlap rewrite).
         "queued": True,
-        "note": _QUEUED_NOTE,
+        "note": ack.get("note") or _QUEUED_NOTE,
     }
     process = ack.get("pid")
     if isinstance(process, int) and not isinstance(process, bool) and process > 0:
@@ -270,6 +272,121 @@ def _restart_requester_from_session() -> Optional[dict]:
         requester["delivered_via_upstream_relay"] = True
     return requester
 
+def _serving_identity_from_session() -> Optional[int]:
+    """The gateway pid serving THIS turn, from the session's serving stamp.
+
+    ``None`` when the stamp is absent (a gateway whose build predates it,
+    or a surface that never binds one) — callers must keep their legacy
+    behavior in that case, not refuse.
+    """
+    from gateway.session_context import get_session_env
+
+    try:
+        pid = int(get_session_env("HERMES_SESSION_GATEWAY_PID", "").strip() or 0)
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
+
+
+def socket_owner_action(serving_pid: Optional[int], identify: Any) -> str:
+    """Pure decision: may a restart be queued through this socket answerer?
+
+    ``"proceed"`` — the answerer is the serving process, or nothing is
+    provable (no stamp / unparseable probe keeps today's behavior rather
+    than refusing old installs);
+    ``"refuse"`` — a different process answered and cannot attest this
+    conversation's server as its hub-ready successor (the live incident:
+    the draining predecessor owning the socket while its successor serves);
+    ``"attested-chain"`` — a different process answered but attests the
+    serving process as its hub-ready successor: queueing is correct and the
+    result must name the serving process.
+
+    Shared contract with ``internal/servingidentity`` (Go twin); pinned by
+    the shared honesty table.
+    """
+    if not serving_pid or not isinstance(identify, dict):
+        return "proceed"
+    answer_pid = identify.get("pid")
+    if not isinstance(answer_pid, int) or isinstance(answer_pid, bool):
+        return "proceed"
+    if answer_pid == serving_pid:
+        return "proceed"
+    overlap = identify.get("overlap")
+    overlap = overlap if isinstance(overlap, dict) else {}
+    if (
+        overlap.get("role") == "draining-predecessor"
+        and overlap.get("successor_pid") == serving_pid
+        and overlap.get("successor_ready") is True
+    ):
+        return "attested-chain"
+    return "refuse"
+
+def socket_owner_refusal(serving_pid: int, identify: Any) -> str:
+    """The refusal message for an unprovable socket owner (pure builder).
+
+    Wording is a shared contract with ``internal/servingidentity`` (Go twin),
+    pinned byte-identical by the shared honesty table.
+    """
+    overlap = identify.get("overlap") if isinstance(identify, dict) else {}
+    overlap = overlap if isinstance(overlap, dict) else {}
+    owner_clause = (
+        "is draining for a restart whose successor is not confirmed as this "
+        "conversation's server"
+        if overlap.get("role") == "draining-predecessor"
+        else "reports no restart-handoff state (its build predates overlap reporting)"
+    )
+    answer_pid = identify.get("pid") if isinstance(identify, dict) else 0
+    return (
+        "No restart was queued: the gateway control socket is owned by pid "
+        f"{answer_pid}, which {owner_clause}, but this conversation is served by "
+        f"pid {serving_pid}. A restart queued through pid {answer_pid} would not "
+        f"target the process running this conversation. It is already served by "
+        f"pid {serving_pid}; if it still needs a restart, retry after the current "
+        "handoff completes or run `hermes gateway restart` from an operator shell."
+    )
+
+
+
+def _socket_owner_guard(serving_pid: Optional[int], identify: Any) -> Optional[str]:
+    """Refusal result when the socket owner is not the serving process.
+
+    The ack's ``pid`` names the ANSWERING process — the socket owner. During
+    an overlap restart that owner is the draining predecessor, and queueing a
+    restart there chains onto a drain this conversation cannot influence (the
+    field incident: the chained restart waited forever). Queueing is allowed
+    only when the answerer is the serving process itself, or positively
+    attests THIS serving process as its hub-ready successor.
+    """
+    if socket_owner_action(serving_pid, identify) != "refuse":
+        return None
+    return _error_json(socket_owner_refusal(serving_pid, identify))
+
+
+def _socket_chain_rewrites_serving_process(ack: dict, serving_pid: Optional[int], identify: Any) -> dict:
+    """Rewrite a chained ack so ``process`` names the process that will restart.
+
+    A chained restart recorded by the draining predecessor runs on its
+    hub-attested successor — the serving process. The ack's ``pid`` names the
+    predecessor (the answerer); rendering it as ``process`` would point the
+    agent at the dying process.
+    """
+    if not serving_pid or str(ack.get("status")) != "chained":
+        return ack
+    answer_pid = identify.get("pid") if isinstance(identify, dict) else None
+    if not isinstance(answer_pid, int) or isinstance(answer_pid, bool):
+        return ack
+    if answer_pid == serving_pid:
+        return ack
+    ack = dict(ack)
+    ack["pid"] = serving_pid
+    ack["note"] = (
+        f"Restart chained for the serving process: 'process' names pid {serving_pid}, "
+        f"the process serving this conversation. The control socket is still owned "
+        f"by the draining predecessor (pid {answer_pid}); the chained restart runs "
+        f"on pid {serving_pid} once that handoff completes."
+    )
+    return ack
+
 
 def _restart_via_control_socket(*, restart_hub: bool = False) -> str:
     """Queue the restart through the gateway's control socket (out-of-process path).
@@ -277,12 +394,28 @@ def _restart_via_control_socket(*, restart_hub: bool = False) -> str:
     The transport ``hermes gateway restart`` already uses: the socket verb
     runs the SAME ``queue_user_restart`` core on the gateway loop, so an
     agent turn in a restart-safe worker process (no in-process runner)
-    reaches the identical drain pipeline. Never raises — every failure maps
+    reaches the identical drain pipeline. The socket's owner is verified
+    against the session's serving stamp first: during an overlap handoff the
+    draining predecessor owns the socket, and queueing there would chain a
+    restart that waits on its drain. Never raises — every failure maps
     to a typed error result.
     """
-    try:
-        from hermes_constants import get_hermes_home
+    from hermes_constants import get_hermes_home
 
+    serving_pid = _serving_identity_from_session()
+    identify = None
+    if serving_pid:
+        try:
+            from gateway.control_socket import identify_gateway
+
+            identify = identify_gateway(
+                get_hermes_home(), timeout=_SOCKET_PROBE_TIMEOUT_S)
+        except Exception:
+            identify = None
+    guard = _socket_owner_guard(serving_pid, identify)
+    if guard is not None:
+        return guard
+    try:
         from gateway.control_socket import request_gateway_restart
 
         request_kwargs: dict[str, Any] = {
@@ -306,7 +439,8 @@ def _restart_via_control_socket(*, restart_hub: bool = False) -> str:
         return _error_json(
             f"The running gateway refused the restart: {ack.get('reason') or status or 'no reason given'}"
         )
-    return _socket_result_json(ack)
+    return _socket_result_json(
+        _socket_chain_rewrites_serving_process(ack, serving_pid, identify))
 
 
 def handle_restart(args: dict, **_: Any) -> str:

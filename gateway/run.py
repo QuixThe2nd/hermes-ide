@@ -10048,6 +10048,7 @@ class GatewayRunner(
         Returns a list of reset tokens; pass them to ``_clear_session_env``
         in a ``finally`` block.
         """
+        from gateway.serving_identity import _static_identity_fields
         from gateway.session_context import set_session_vars
         # Propagate the adapter's async-delivery capability so async tools
         # (terminal notify_on_complete / watch_patterns, delegate_agent
@@ -10059,6 +10060,11 @@ class GatewayRunner(
         _adapters = getattr(self, "adapters", None) or {}
         _adapter = _adapters.get(context.source.platform)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
+        # The serving identity of THIS process, so out-of-process consumers
+        # (agent turns run in restart-safe worker processes; the restart
+        # tool's owner guard) can tell the serving gateway from the socket
+        # owner during an overlap handoff.
+        _serving = _static_identity_fields()
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
@@ -10076,6 +10082,8 @@ class GatewayRunner(
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
             cron_session="",
+            gateway_pid=str(_serving.get("pid") or ""),
+            gateway_start_time=str(_serving.get("start_time") or ""),
             # Relay provenance must survive the context bridge: the source's
             # flag is what makes adapter resolution pick the relay adapter
             # over the underlying platform's native one, and a source rebuilt
@@ -11725,6 +11733,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             _start_gateway_start_cron_and_housekeeping(runner))
         # READY only once adapters, cron and housekeeping run; missing systemd state just disables watchdog.
         runner._start_systemd_watchdog()
+        # A DIRECT claim (not the pending-successor path) never runs
+        # run_chained_restart, so settle any leftover chain marker at the same
+        # lifecycle point the genuine path would: honor it when it provably
+        # targets this process, else clear it as orphaned by a dead
+        # generation — otherwise status would forever show a chained restart
+        # that can never run.
+        from gateway.restart_chain import settle_chained_restart_after_direct_claim
+
+        await settle_chained_restart_after_direct_claim(
+            runner, launched_as_overlap_successor=runner._launched_as_overlap_successor)
 
     await runner.wait_for_shutdown()
 

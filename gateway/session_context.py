@@ -38,6 +38,7 @@ _SESSION_VARS = (
     _SESSION_UI_SESSION_ID, _SESSION_MESSAGE_ID, _SESSION_PROFILE,
     _CRON_SESSION, _SESSION_PARENT_CHAT_ID,
     _SESSION_JOB_ID, _SESSION_JOB_NAME,
+    _SESSION_GATEWAY_PID, _SESSION_GATEWAY_START,
 ) = tuple(ContextVar(name, default=_UNSET) for name in (
     "HERMES_SESSION_PLATFORM", "HERMES_SESSION_SOURCE", "HERMES_SESSION_CHAT_ID",
     "HERMES_SESSION_CHAT_TYPE", "HERMES_SESSION_CHAT_NAME", "HERMES_SESSION_THREAD_ID",
@@ -50,6 +51,13 @@ _SESSION_VARS = (
     # chat routing keys above on purpose: a job id is attribution for the
     # usage ledger, never a deliverable chat, so routing must not see it.
     "HERMES_SESSION_JOB_ID", "HERMES_SESSION_JOB_NAME",
+    # The gateway process serving THIS turn (pid + start fingerprint),
+    # stamped by the runner at bind time. During an overlap restart the
+    # control socket is owned by the draining predecessor, so consumers
+    # comparing "who serves me" against "who answers the socket" (the
+    # restart tool's owner guard) need the serving identity, not the
+    # answerer's. The fingerprint exists because PIDs get reused.
+    "HERMES_SESSION_GATEWAY_PID", "HERMES_SESSION_GATEWAY_START",
 ))
 
 # Whether this channel can route an ASYNC completion back AFTER the turn ends (see
@@ -139,6 +147,7 @@ def set_session_vars(
     ui_session_id: str = "", cron_session: Any = _UNSET, parent_chat_id: str = "",
     session_history_delivery: str | None = None, delivered_via_upstream_relay: bool = False,
     job_id: str = "", job_name: str = "",
+    gateway_pid: str = "", gateway_start_time: str = "",
 ) -> list:
     """Set all session context variables and return reset tokens.  Call
     ``clear_session_vars(tokens)`` in a ``finally``; not nestable, clearing resets every var
@@ -159,7 +168,7 @@ def set_session_vars(
         platform, source, chat_id, chat_type, chat_name, thread_id, user_id, user_id_alt,
         user_name, scope_id, session_key, session_id, ui_session_id, message_id, profile,
         cron_session, parent_chat_id,
-        job_id, job_name,
+        job_id, job_name, gateway_pid, gateway_start_time,
     )
     tokens = [var.set(value) for var, value in zip(_SESSION_VARS, values)]
     tokens.append(_SESSION_ASYNC_DELIVERY.set(bool(async_delivery)))

@@ -406,12 +406,18 @@ def test_status_lines_plain_identify_names_answering_pid():
         ln.startswith("✓ Serving gateway:") and f"pid {_SUCCESSOR_PID}" in ln for ln in lines)
 
 
-def test_status_lines_legacy_identify_without_overlap_is_serving():
-    """A gateway old enough not to relay overlap state is a plain serving answer."""
+def test_status_lines_legacy_identify_without_overlap_is_never_green():
+    """CONTRACT CHANGE: a gateway old enough not to relay overlap state can
+    no longer be reported green. In the live overlap window the control
+    socket is owned by the draining predecessor, and a pre-overlap answer
+    cannot prove whether its process still serves turns — the incident
+    report showed exactly this green line naming the draining predecessor."""
     lines = serving_status_lines(
         identify=_identify(_SUCCESSOR_PID),
         successor_identity=_successor_identity(_SUCCESSOR_PID, _SUCCESSOR_START))
-    assert any(ln.startswith("✓ Serving gateway:") for ln in lines)
+    assert not any(ln.startswith("✓ Serving gateway:") for ln in lines)
+    assert any(ln.startswith("⚠ Serving gateway:") for ln in lines)
+    assert any(f"pid {_SUCCESSOR_PID}" in ln for ln in lines)
 
 
 def test_status_lines_overlap_successor_answer_is_green():
@@ -424,6 +430,46 @@ def test_status_lines_overlap_successor_answer_is_green():
         and f"pid {_SUCCESSOR_PID}" in ln
         and f"pid {_PREDECESSOR_PID}" in ln
         for ln in lines)
+
+
+def test_status_lines_legacy_identify_names_live_gateway_candidates():
+    """Legacy answer + a scan that finds two gateway processes: ambiguous,
+    naming every candidate — never a green serving pick between them."""
+    lines = serving_status_lines(
+        identify=_identify(_PREDECESSOR_PID),
+        gateway_pids=[_PREDECESSOR_PID, _SUCCESSOR_PID],
+        successor_identity=_successor_identity(_SUCCESSOR_PID, _SUCCESSOR_START))
+    assert not any(ln.startswith("✓ Serving gateway:") for ln in lines)
+    assert any(
+        ln.startswith("⚠ Serving gateway:")
+        and f"pid {_PREDECESSOR_PID}" in ln and f"pid {_SUCCESSOR_PID}" in ln
+        for ln in lines)
+
+
+def test_status_lines_state_file_with_two_gateway_processes_is_ambiguous():
+    """A state-file record is not a serving claim when more than one gateway
+    process is live — the record names one of them, not THE server."""
+    lines = serving_status_lines(
+        state_pid=_PREDECESSOR_PID, state_gateway_state="running",
+        state_pid_is_live=True,
+        gateway_pids=[_PREDECESSOR_PID, _SUCCESSOR_PID])
+    assert not any(ln.startswith("✓ Serving gateway:") for ln in lines)
+    assert any(
+        ln.startswith("⚠ Serving gateway:")
+        and f"pid {_PREDECESSOR_PID}" in ln and f"pid {_SUCCESSOR_PID}" in ln
+        for ln in lines)
+
+
+def test_status_lines_proven_successor_stays_green_beside_a_second_pid():
+    """Two live gateway pids is the normal overlap window: a proven
+    overlap-successor answer stays green — the scan corroborates, not
+    contradicts."""
+    lines = serving_status_lines(
+        identify=_identify(_SUCCESSOR_PID, role=ROLE_OVERLAP_SUCCESSOR,
+                           predecessor_pid=_PREDECESSOR_PID),
+        gateway_pids=[_PREDECESSOR_PID, _SUCCESSOR_PID],
+        successor_identity=_successor_identity(_SUCCESSOR_PID, _SUCCESSOR_START))
+    assert any(ln.startswith("✓ Serving gateway:") for ln in lines)
 
 
 def test_status_lines_state_file_fallback_when_socket_silent():
@@ -479,3 +525,85 @@ def test_status_lines_no_chained_line_without_marker():
         identify=_identify(_SUCCESSOR_PID, role=ROLE_SERVING),
         successor_identity=_successor_identity(_SUCCESSOR_PID, _SUCCESSOR_START))
     assert not any("Chained restart" in ln for ln in lines)
+
+
+# ── chained-marker staleness: a dead generation is not a pending restart ───
+
+
+def _generation_marker(*, predecessor_pid=_PREDECESSOR_PID, predecessor_start=111,
+                       successor_pid=_SUCCESSOR_PID, successor_start=123456):
+    """A marker stamped by this code: it names the generation that recorded it."""
+    return {
+        "source": "discord user 42 (restart)",
+        "predecessor": {"pid": predecessor_pid, "start_time": predecessor_start},
+        "successor_pid": successor_pid,
+        "successor_start_time": successor_start,
+    }
+
+
+def test_status_lines_chained_marker_pending_while_its_successor_serves():
+    """The marker's recorded successor IS the proven serving process: the
+    chain is live (it was recorded for exactly this handoff)."""
+    lines = serving_status_lines(
+        identify=_identify(_SUCCESSOR_PID, role=ROLE_SERVING),
+        chained=_generation_marker(successor_pid=_SUCCESSOR_PID, successor_start=123456),
+        successor_identity=_successor_identity(_SUCCESSOR_PID, _SUCCESSOR_START))
+    assert any("Chained restart queued" in ln for ln in lines)
+
+
+def test_status_lines_chained_marker_pending_while_its_predecessor_drains():
+    """During the genuine drain the proven serving process is the marker's
+    own successor (attested by its draining predecessor): pending."""
+    lines = serving_status_lines(
+        identify=_identify(_PREDECESSOR_PID, role=ROLE_DRAINING_PREDECESSOR,
+                           successor_pid=_SUCCESSOR_PID,
+                           successor_start_time=_SUCCESSOR_START, successor_ready=True),
+        chained=_generation_marker(successor_pid=_SUCCESSOR_PID,
+                                   successor_start=_SUCCESSOR_START),
+        successor_identity=_successor_identity(_SUCCESSOR_PID, _SUCCESSOR_START))
+    assert any("Chained restart queued" in ln for ln in lines)
+
+
+def test_status_lines_stale_chained_marker_is_never_pending():
+    """Live-incident shape: the marker's generation is gone and the proven
+    serving process is neither its predecessor nor its successor — nothing
+    will ever act on the marker, so status must not call it queued."""
+    lines = serving_status_lines(
+        identify=_identify(_SUCCESSOR_PID, role=ROLE_SERVING),
+        chained=_generation_marker(successor_pid=2295812, successor_start=424242),
+        successor_identity=_successor_identity(_SUCCESSOR_PID, _SUCCESSOR_START))
+    assert not any("Chained restart queued" in ln for ln in lines)
+    assert any(ln.startswith("⚠ Chained restart marker is stale") for ln in lines)
+    assert any("pid 2295812" in ln for ln in lines)
+
+
+def test_status_lines_stale_chained_marker_on_pid_reuse():
+    """The marker's successor pid equals the serving pid but the start
+    fingerprint differs: a recycled PID, not the chain's process."""
+    lines = serving_status_lines(
+        identify=_identify(_SUCCESSOR_PID, role=ROLE_SERVING),
+        chained=_generation_marker(successor_pid=_SUCCESSOR_PID, successor_start=424242),
+        successor_identity=_successor_identity(_SUCCESSOR_PID, _SUCCESSOR_START))
+    assert not any("Chained restart queued" in ln for ln in lines)
+    assert any(ln.startswith("⚠ Chained restart marker is stale") for ln in lines)
+
+
+def test_status_lines_stale_chained_marker_on_predecessor_pid_reuse():
+    lines = serving_status_lines(
+        identify=_identify(_SUCCESSOR_PID, role=ROLE_SERVING),
+        chained=_generation_marker(predecessor_pid=_SUCCESSOR_PID,
+                                   predecessor_start=424242,
+                                   successor_pid=2295812, successor_start=424242),
+        successor_identity=_successor_identity(_SUCCESSOR_PID, _SUCCESSOR_START))
+    assert not any("Chained restart queued" in ln for ln in lines)
+    assert any(ln.startswith("⚠ Chained restart marker is stale") for ln in lines)
+
+
+def test_status_lines_chained_marker_unproven_without_serving_identity():
+    """No provable serving process (state file only, no fingerprint): the
+    marker cannot be proven stale, so today's pending line stays — never a
+    staleness claim that cannot be backed."""
+    lines = serving_status_lines(
+        state_pid=_SUCCESSOR_PID, state_gateway_state="running", state_pid_is_live=True,
+        chained=_generation_marker(successor_pid=2295812, successor_start=424242))
+    assert any("Chained restart queued" in ln for ln in lines)

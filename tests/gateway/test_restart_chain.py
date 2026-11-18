@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -257,3 +258,143 @@ async def test_control_socket_ack_reports_chained_as_accepted(monkeypatch):
     result = json.loads(response)["result"]
     assert result["queued"] is True
     assert result["status"] == "chained"
+
+
+# ── stale markers: a direct authority claim settles chain leftovers ───────
+
+
+def _write_chain_marker(home, payload):
+    (home / ".restart_chain.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _read_chain_marker(home):
+    return json.loads((home / ".restart_chain.json").read_text(encoding="utf-8"))
+
+
+def test_recorded_marker_names_the_generation_it_belongs_to(isolated_chain_home):
+    """The marker must carry its own generation's identity (predecessor and
+    pending successor, pid + start fingerprint): without it, neither the
+    startup sweep nor status can tell a live chain from an orphaned one."""
+    from gateway.status import get_process_start_time
+
+    runner = _draining_runner()
+    runner._overlap_restart_successor_pid = 202
+    runner._overlap_restart_successor_start_time = 987654
+
+    from gateway.restart_chain import record_chained_restart
+
+    assert record_chained_restart(runner) is True
+    payload = _read_chain_marker(isolated_chain_home)
+    assert payload["successor_pid"] == 202
+    assert payload["successor_start_time"] == 987654
+    assert payload["predecessor"]["pid"] == os.getpid()
+    assert payload["predecessor"]["start_time"] == get_process_start_time(os.getpid())
+
+
+@pytest.mark.asyncio
+async def test_direct_claim_honors_a_marker_naming_this_process(isolated_chain_home):
+    """A successor whose predecessor died before the deferred claim still
+    owes the user the chained restart when the marker provably names it."""
+    from gateway.status import get_process_start_time
+
+    _write_chain_marker(isolated_chain_home, {
+        "requested_at": time.time() - 60, "source": {"kind": "user"},
+        "successor_pid": os.getpid(),
+        "successor_start_time": get_process_start_time(os.getpid()),
+    })
+    runner = _successor_runner()
+
+    from gateway.restart_chain import settle_chained_restart_after_direct_claim
+
+    await settle_chained_restart_after_direct_claim(
+        runner, launched_as_overlap_successor=False)
+    runner.request_restart.assert_called_once_with(overlap=True, via_service=False)
+    assert not (isolated_chain_home / ".restart_chain.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_direct_claim_clears_an_orphaned_marker(isolated_chain_home):
+    """Live incident: the marker's generation is gone (its successor never
+    claimed); the newly authoritative process is not that successor, so the
+    marker must be consumed before a future successor acts on it spuriously."""
+    _write_chain_marker(isolated_chain_home, {
+        "requested_at": time.time() - 7200, "source": {"kind": "user", "platform": "discord"},
+        "predecessor": {"pid": 709505, "start_time": 111111},
+        "successor_pid": 1531038, "successor_start_time": 222222,
+    })
+    runner = _successor_runner()
+
+    from gateway.restart_chain import settle_chained_restart_after_direct_claim
+
+    await settle_chained_restart_after_direct_claim(
+        runner, launched_as_overlap_successor=False)
+    runner.request_restart.assert_not_called()
+    assert not (isolated_chain_home / ".restart_chain.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_direct_claim_clears_a_legacy_marker_on_a_normal_start(isolated_chain_home):
+    """A marker written by pre-fingerprint code names no generation. A
+    normally started gateway (not the drainer's spawned successor) can never
+    be its target: clear it — the incident showed leaving it means forever."""
+    _write_chain_marker(isolated_chain_home, {
+        "requested_at": time.time() - 7200, "source": {"kind": "user"},
+    })
+    runner = _successor_runner()
+
+    from gateway.restart_chain import settle_chained_restart_after_direct_claim
+
+    await settle_chained_restart_after_direct_claim(
+        runner, launched_as_overlap_successor=False)
+    runner.request_restart.assert_not_called()
+    assert not (isolated_chain_home / ".restart_chain.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_direct_claim_honors_a_legacy_marker_when_spawned_as_successor(
+        isolated_chain_home):
+    """The OVERLAP_SUCCESSOR launch env proves the drainer spawned THIS
+    process, so a legacy marker it left behind is this process's chain."""
+    _write_chain_marker(isolated_chain_home, {
+        "requested_at": time.time() - 5, "source": {"kind": "user"},
+    })
+    runner = _successor_runner()
+
+    from gateway.restart_chain import settle_chained_restart_after_direct_claim
+
+    await settle_chained_restart_after_direct_claim(
+        runner, launched_as_overlap_successor=True)
+    runner.request_restart.assert_called_once_with(overlap=True, via_service=False)
+    assert not (isolated_chain_home / ".restart_chain.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_direct_claim_settle_is_a_noop_without_a_marker(isolated_chain_home):
+    runner = _successor_runner()
+
+    from gateway.restart_chain import settle_chained_restart_after_direct_claim
+
+    await settle_chained_restart_after_direct_claim(
+        runner, launched_as_overlap_successor=False)
+    runner.request_restart.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_direct_claim_sweep_survives_a_broken_marker_store(
+        isolated_chain_home, monkeypatch):
+    """Persistence trouble during the sweep must never break the startup."""
+    _write_chain_marker(isolated_chain_home, {
+        "requested_at": time.time() - 5, "source": {"kind": "user"},
+        "predecessor": {"pid": 709505, "start_time": 111111},
+        "successor_pid": 1531038, "successor_start_time": 222222,
+    })
+    runner = _successor_runner()
+    monkeypatch.setattr(
+        "gateway.restart_chain.consume_chained_restart",
+        lambda: (_ for _ in ()).throw(OSError("disk")))
+
+    from gateway.restart_chain import settle_chained_restart_after_direct_claim
+
+    await settle_chained_restart_after_direct_claim(
+        runner, launched_as_overlap_successor=False)
+    runner.request_restart.assert_not_called()

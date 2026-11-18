@@ -6292,6 +6292,11 @@ def _print_serving_identity() -> None:
             return "unknown" if current is None else (
                 "live" if current == expected_start else "dead")
 
+        # The live gateway.run process scan is evidence for the unproven
+        # rungs only (legacy identify / state-file fallback): systemd
+        # MainPID is never consulted here — during overlap it names the
+        # draining predecessor, and a supervisor's idea of "the" pid must
+        # not become a serving claim.
         state = read_runtime_status()
         lines = serving_status_lines(
             identify=identify_gateway(get_hermes_home()),
@@ -6302,6 +6307,7 @@ def _print_serving_identity() -> None:
             state_restart_requested=(state or {}).get("restart_requested"),
             chained=peek_chained_restart(),
             successor_identity=_successor_identity,
+            gateway_pids=find_gateway_pids(),
         )
     except Exception:
         return

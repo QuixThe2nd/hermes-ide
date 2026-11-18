@@ -36,11 +36,12 @@ def _patch_sources(monkeypatch, *, identify=None, state=None, chained=None,
     monkeypatch.setattr(status_mod, "runtime_status_pid_is_live", lambda record: state_pid_is_live)
     monkeypatch.setattr(status_mod, "runtime_status_is_stale", lambda record, ttl_s=None: state_is_stale)
     monkeypatch.setattr(restart_chain, "peek_chained_restart", lambda: chained)
-    if successor_identity is not None:
-        monkeypatch.setattr(status_mod, "_pid_exists", lambda pid: successor_identity(pid) != "dead")
-        monkeypatch.setattr(
-            status_mod, "get_process_start_time",
-            lambda pid: successor_identity(pid) == "live" and 999 or None)
+    # The gateway.run process scan is host evidence: patch it so tests are
+    # hermetic (the dev host may run a live gateway — including a real
+    # overlap pair).
+    from hermes_cli import gateway as gateway_cli
+
+    monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda: [])
 
 
 def test_status_prints_unknown_when_no_identity_source_answers(monkeypatch, capsys):
@@ -166,9 +167,9 @@ def quiet_state(monkeypatch):
     """Keep the state-file and chained-restart ladders out of the socket tests' way."""
     from gateway import restart_chain
     from gateway import status as status_mod
-
+    monkeypatch.setattr(
+        "hermes_cli.gateway.find_gateway_pids", lambda: [])
     monkeypatch.setattr(status_mod, "read_runtime_status", lambda path=None: None)
-    monkeypatch.setattr(restart_chain, "peek_chained_restart", lambda: None)
     return monkeypatch
 
 
@@ -192,3 +193,35 @@ def test_status_via_real_socket_spawned_but_unattested_never_green(
     assert "✓ Serving gateway:" not in out
     assert f"successor pid {os.getpid()} is starting" in out
     assert "readiness is not yet confirmed" in out
+
+
+def test_status_legacy_socket_answer_with_two_gateway_processes_is_ambiguous(
+        monkeypatch, capsys, quiet_state):
+    """Live incident shape: a pre-overlap answerer still owns the control
+    socket while the overlap successor serves turns. A green line naming
+    the answerer is wrong; the block must be ambiguous naming both."""
+    from gateway import control_socket
+    from hermes_cli import gateway as gateway_cli
+
+    monkeypatch.setattr(
+        control_socket, "identify_gateway",
+        lambda home, **kw: {"pid": 709505, "start_time": 850305})
+    monkeypatch.setattr(gateway_cli, "find_gateway_pids",
+                        lambda: [709505, 1531038])
+    _print_serving_identity()
+    out = capsys.readouterr().out
+    assert "✓ Serving gateway:" not in out
+    assert "pid 709505" in out and "pid 1531038" in out
+
+
+def test_status_never_serves_from_systemd_main_pid(monkeypatch, capsys, quiet_state):
+    """systemd MainPID is supervisor evidence: during overlap it names the
+    draining predecessor, so it must never become a serving claim."""
+    from hermes_cli import gateway as gateway_cli
+
+    monkeypatch.setattr(gateway_cli, "_systemd_main_pid", lambda system=True: 709505)
+    monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda: [709505, 1531038])
+    _print_serving_identity()
+    out = capsys.readouterr().out
+    assert "✓ Serving gateway:" not in out
+    assert "pid 709505" in out and "pid 1531038" in out
