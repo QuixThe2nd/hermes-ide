@@ -695,3 +695,50 @@ class TestSlashCronRunSkipped:
         out = capsys.readouterr().out
         assert "Job is paused/disabled; resume it before running." in out
         assert "Triggered" not in out and "next scheduler tick" not in out
+
+
+class TestCronListJson:
+    """``hermes cron list --json`` emits the cronjob tool's machine-readable
+    payload so audits never scrape the human table (#pc_cdaa7a0971747a9b9)."""
+
+    def _parse(self, *argv):
+        parser = argparse.ArgumentParser(prog="hermes")
+        subparsers = parser.add_subparsers(dest="command")
+        build_cron_parser(subparsers, cmd_cron=cron_command)
+        return parser.parse_args(["cron", *argv])
+
+    def test_list_json_emits_parseable_payload(self, tmp_cron_dir, capsys):
+        import json as _json
+
+        job = create_job(prompt="Daily report", schedule="every 1h")
+        cron_command(self._parse("list", "--json"))
+        payload = _json.loads(capsys.readouterr().out)
+
+        assert payload["success"] is True
+        assert payload["count"] == 1
+        assert payload["jobs"][0]["job_id"] == job["id"]
+
+    def test_list_json_honours_all_flag(self, tmp_cron_dir, capsys):
+        import json as _json
+
+        create_job(prompt="Active", schedule="every 1h")
+        disabled = create_job(prompt="Parked", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[[j["id"] for j in jobs].index(disabled["id"])]["enabled"] = False
+        save_jobs(jobs)
+
+        cron_command(self._parse("list", "--json"))
+        assert _json.loads(capsys.readouterr().out)["count"] == 1
+
+        cron_command(self._parse("list", "--all", "--json"))
+        assert _json.loads(capsys.readouterr().out)["count"] == 2
+
+    def test_list_without_json_stays_human(self, tmp_cron_dir, capsys):
+        import json as _json
+
+        create_job(prompt="Daily report", schedule="every 1h")
+        cron_command(self._parse("list"))
+        out = capsys.readouterr().out
+        assert "Scheduled Jobs" in out
+        with pytest.raises(_json.JSONDecodeError):
+            _json.loads(out)
