@@ -295,9 +295,14 @@ goals:
   max_turns: 20
 ```
 
-Automatic goals are always on — there is no mode setting. A `goals.auto` key
-left over in a config.yaml from an older install is ignored, not an error;
-you can delete it. Every eligible human message is classified by one Jev
+Automatic goals are on by default — there is no mode setting. A
+`goals.auto.mode` key left over in a config.yaml from an older install is
+ignored, not an error; you can delete it. To turn the automatic layer off for
+one profile (for example a secondary profile served by the same multiplexed
+gateway), set `goals.auto.enabled: false` in that profile's config.yaml:
+nothing is classified and no goal starts automatically, while `/goal` still
+works. Likewise `display.jev_notices: false` stops that profile posting the
+`🔎 jev ...` classification lines into its chats. Every eligible human message is classified by one Jev
 Decisions POST to the litellm Jev endpoint (`jev-1.14.0`, 8s timeout, one retry,
 then fail closed as `unknown`). The classifier needs `LITELLM_API_KEY` (a litellm virtual key)
 (in `.env` or the platform's secret scope); without a key, goals simply never
