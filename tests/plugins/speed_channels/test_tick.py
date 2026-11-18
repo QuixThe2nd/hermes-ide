@@ -261,10 +261,10 @@ def test_default_ping_parses_iputils_output(monkeypatch):
     assert seen["kwargs"]["timeout"] == 3
 
 
+@pytest.mark.macos_only
 def test_default_ping_darwin_drops_the_wait_flag(monkeypatch):
     from plugins.speed_channels import core
 
-    monkeypatch.setattr(core.sys, "platform", "darwin")
     seen = _fake_ping_run(monkeypatch, stdout=IPUTILS_LINE)
 
     assert core.default_ping() == pytest.approx(33.338)

@@ -86,7 +86,7 @@ class TestArchFilter:
 
 class TestAnyOfSemantics:
     def test_multiple_specs_are_any_of(self, monkeypatch):
-        monkeypatch.setattr("tests.conftest.sys.platform", "darwin")
+        monkeypatch.setattr("tests.conftest.sys.platform", "darwin")  # os-marker: ok — self-test of the platforms gate; the faked platform is the input under test
         ok, _ = _host_matches_platforms(("linux", "macos"))
         assert ok is True
 
