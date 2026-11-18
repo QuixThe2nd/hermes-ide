@@ -55,6 +55,7 @@ def test_venv_launcher_bypasses_uv_console_script_that_requires_realpath(tmp_pat
     # setup_path also installs the bundled claude-glm wrapper from
     # $INSTALL_DIR/scripts (delegate_claude_agent drives Claude Code through
     # it), so the staged venv install must carry a stub for the copy to find.
+    (install_dir / "scripts").mkdir()
     _make_executable(
         install_dir / "scripts" / "claude-glm",
         "#!/bin/sh\nexit 0\n",
