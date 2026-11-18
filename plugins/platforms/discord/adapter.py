@@ -363,6 +363,15 @@ _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS = (
     ),
     re.compile(r"^\s*♻️?\s+Gateway\s+(?:restarted successfully|online\b)[\s\S]*$", re.IGNORECASE),
 )
+# Jev classification notices (the Go formatter's fixed "🔎 jev " prefix) are a
+# SEPARATE, provenance-scoped fallback: the pattern drops a notice line only
+# when the OWNING BOT authored the message. A human pasting/quoting a notice
+# verbatim is genuine conversational history and must survive cold recovery
+# (no-prefix-blanket-suppression contract). The trusted exclusions (metadata
+# flags, tracked message ids) are author-independent and stay in force.
+_DISCORD_SELF_NOTICE_HISTORY_MESSAGE_PATTERNS = (
+    re.compile(r"^\s*🔎\s+jev\s+\S", re.IGNORECASE),
+)
 try:
     import discord
     from discord import Message as DiscordMessage, Intents
@@ -644,6 +653,12 @@ def _looks_like_nonconversational_history_message(content: str) -> bool:
     """Fallback recognizer for legacy status bumps missing persisted IDs."""
     text = content or ""
     return any(pattern.match(text) for pattern in _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS)
+
+
+def _looks_like_self_notice_history_message(content: str) -> bool:
+    """Jev-notice fallback; callers must first prove owning-bot authorship."""
+    text = content or ""
+    return any(pattern.match(text) for pattern in _DISCORD_SELF_NOTICE_HISTORY_MESSAGE_PATTERNS)
 
 
 def _clean_discord_id(entry: str) -> str:
@@ -1077,6 +1092,11 @@ from plugins.platforms.discord.reaction_gate import (
 )
 from plugins.platforms.discord.reaction_gate_reload import (
     start_reaction_gate_reload_watcher,
+)
+from gateway.jev_notice import (
+    format_notice_async,
+    reaction_gate_record,
+    response_gate_record,
 )
 
 #: Component display order for gate echoes/logs (matches the judge's question order).
@@ -1705,6 +1725,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         channel policy admits it, an explicit trigger (mention/reply/command/wake pattern)
         did not author it and it is not bot chatter. Every caller — live dispatch, recovered
         dispatch and the admission prefilters — goes through here, so they cannot disagree.
+
+        Recursion exclusion is provenance-based only (bot authors, trusted non-conversational
+        history metadata): diagnostic-generated messages never consult the judge again. A
+        HUMAN-authored copy of a notice line carries no diagnostic provenance — it is a fresh
+        human message and is consulted; content prefixes are never suppressed.
         """
         gate = self._response_gate
         if gate is None:
@@ -1734,44 +1759,64 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         keys = candidate.get("channel_keys") or ()
         return bool(gate.echo_keys.intersection(keys))
 
-    def _response_gate_echo_text(self, decision: GateDecision) -> str:
-        if decision.error:
-            return f"gate error ({decision.error})"
-        if decision.scores:
-            verdict = "allow" if decision.allowed else "deny"
-            parts = " ".join(
-                f"{key}={decision.scores.get(key, 0.0):.2f}" for key in _RESPONSE_GATE_SCORE_KEYS
-            )
-            return f"{verdict} ({parts})"
-        # Legacy single-score decision (no component nouls): keep the threshold readout.
-        gate = self._response_gate
-        threshold = float(gate.config.threshold) if gate is not None else 0.8
-        score = decision.score if decision.score is not None else 0.0
-        if score >= threshold:
-            return f"{score:.2f}"
-        return f"{score:.2f} (below {threshold:g})"
-
     async def _response_gate_echo(
         self, message: Any, candidate: Dict[str, Any], decision: GateDecision,
     ) -> bool:
-        """Post one judge echo line and drop normal dispatch (echo channels only)."""
+        """Post the judge's notice line and drop normal dispatch (echo channels only).
+
+        Same notice owner as every other lane: the record builders apply the
+        no-call rule (a ``missing_credential`` decision never made an HTTP
+        request and posts NOTHING — never a fake "gate error" diagnostic), the
+        Go binary renders, and the line goes out unpinged and
+        non-conversational through ``_send_jev_notice``.
+        """
         self._response_gate_log(decision, candidate, outcome="echo")
         chat_id = candidate.get("conversation_id") or GateRuntime.conversation_id(message.channel)
         message_id = candidate.get("message_id") or ""
-        text = self._response_gate_echo_text(decision)
-        try:
-            result = await self.send(chat_id, text, reply_to=message_id or None)
-            if not result.success:
-                logger.warning(
-                    "[%s] response_gate echo send failed channel=%s message=%s error=%s",
-                    self.name, chat_id, message_id, result.error,
-                )
-        except Exception as exc:
-            logger.warning(
-                "[%s] response_gate echo send failed channel=%s message=%s error=%s",
-                self.name, chat_id, message_id, type(exc).__name__, exc_info=True,
-            )
+        record = response_gate_record(decision, author=self._jev_notice_author(message))
+        if record is None:
+            return False  # no HTTP request was made: no notice, no echo line
+        line = await format_notice_async(record)
+        if line is not None:
+            await self._send_jev_notice(line, str(chat_id), str(message_id))
         return False
+
+    async def _send_jev_notice(self, line: str, chat_id: str, message_id: str = "") -> None:
+        """Post one Jev classification notice line into the originating conversation.
+
+        Outbound-only troubleshooting surface (default-visible): purpose,
+        subject, decision/confidence or the sanitized failure class for every
+        REAL judge request. Never enters evidence (the observe seam takes final
+        replies only). Sent as an UNPINGED plain message — a Discord reply
+        would mention the user, and a troubleshooting line must not ping
+        anyone; correlation comes from the channel plus the sanitized author
+        fragment already inside the line ("user message from Alice"). A send
+        failure is logged without touching any gate decision. The metadata
+        markers let tests and future lanes distinguish notices from
+        conversational sends AND mark them non-conversational for history
+        recovery: a notice must never become the last-self-message boundary
+        or leak into the model's recovered context; ``message_id`` is
+        correlation for the log only.
+        """
+        try:
+            result = await self.send(
+                chat_id, line,
+                metadata={"jev_notice": True, "non_conversational_history": True},
+            )
+            if result is not None and not getattr(result, "success", True):
+                logger.warning(
+                    "[%s] jev notice send failed channel=%s message=%s error=%s",
+                    self.name, chat_id, message_id, getattr(result, "error", "unknown"),
+                )
+        except Exception:
+            logger.warning(
+                "[%s] jev notice send failed channel=%s message=%s",
+                self.name, chat_id, message_id, exc_info=True,
+            )
+
+    def _jev_notice_author(self, message: Any) -> str:
+        author = getattr(message, "author", None)
+        return str(getattr(author, "display_name", None) or getattr(author, "name", "") or "")
 
     async def _response_gate_decide(self, message: Any, candidate: Dict[str, Any]) -> Optional[bool]:
         """Run the gate for one candidate.
@@ -1799,6 +1844,18 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if is_echo:
             return await self._response_gate_echo(message, candidate, decision)
         self._response_gate_log(decision, candidate)
+        # One visible notice per real judge request (echo channels already post
+        # their judge-score line; a no-call outcome produces no record at all).
+        record = response_gate_record(decision, author=self._jev_notice_author(message))
+        # Off the event loop: the cold go build / render subprocess and the
+        # bridge lock are blocking work a diagnostic must not stall the loop on.
+        line = await format_notice_async(record) if record is not None else None
+        if line is not None:
+            await self._send_jev_notice(
+                line,
+                str(candidate.get("conversation_id") or ""),
+                str(candidate.get("message_id") or ""),
+            )
         if gate.mode != "enforce":
             return None  # shadow: the legacy decision always stands
         if not decision.allowed:
@@ -2215,6 +2272,20 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 bot_id=getattr(user, "id", None),
                 recent=recent,
             )
+            # One visible notice per real judge request (react, abstain or
+            # failure); a no-call outcome produces no record at all.
+            notice_record = reaction_gate_record(
+                decision, author=self._jev_notice_author(message),
+            )
+            notice_line = (
+                await format_notice_async(notice_record) if notice_record is not None else None
+            )
+            if notice_line is not None:
+                await self._send_jev_notice(
+                    notice_line,
+                    str(candidate.get("conversation_id") or ""),
+                    str(candidate.get("message_id") or ""),
+                )
             emoji = decision.emoji
             if emoji is None:
                 self._reaction_gate_log(decision, candidate)
@@ -4319,7 +4390,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         _target_id = thread_id or chat_id
                         if nonconversational:
                             self._nonconversational_messages.mark_many([message_id])
-                        elif not _looks_like_nonconversational_history_message(content):
+                        elif not (
+                            _looks_like_nonconversational_history_message(content)
+                            or _looks_like_self_notice_history_message(content)
+                        ):
                             self._last_self_message_id[_target_id] = message_id
                         # Inbox contract: every top-level bot message in the
                         # Hermes Starts inbox channel anchors a public thread.
@@ -4441,7 +4515,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 _target_id = thread_id or chat_id
                 if nonconversational:
                     await self._nonconversational_messages.mark_many(message_ids)
-                elif not _looks_like_nonconversational_history_message(content):
+                elif not (
+                    _looks_like_nonconversational_history_message(content)
+                    or _looks_like_self_notice_history_message(content)
+                ):
                     self._last_self_message_id[_target_id] = message_ids[-1]
             # Inbox contract: every top-level bot message in the Hermes
             # Starts inbox channel anchors a public thread.
@@ -4805,7 +4882,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             prev_msg = sent
         last_id = continuation_ids[-1] if continuation_ids else message_id
         # Point the history-backfill fast path at the final visible chunk.
-        if not _looks_like_nonconversational_history_message(content):
+        if not (
+            _looks_like_nonconversational_history_message(content)
+            or _looks_like_self_notice_history_message(content)
+        ):
             self._last_self_message_id[str(channel.id)] = last_id
         logger.debug(
             "[%s] Overflow split delivered %d chunks; last_id=%s", self.name, delivered, last_id,
@@ -6242,6 +6322,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 if (
                     str(getattr(msg, "id", "")) in self._nonconversational_messages
                     or _looks_like_nonconversational_history_message(content)
+                    or (
+                        msg.author == self._client.user
+                        and _looks_like_self_notice_history_message(content)
+                    )
                 ):
                     return None
                 # DISCORD_ALLOW_BOTS: for history, "mentions" counts as "all" (context, not response).
@@ -6291,6 +6375,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 if (
                     str(getattr(msg, "id", "")) in self._nonconversational_messages
                     or _looks_like_nonconversational_history_message(_content)
+                    or (
+                        msg.author == self._client.user
+                        and _looks_like_self_notice_history_message(_content)
+                    )
                 ):
                     continue
                 # Partition point: our own conversational message (needed for cold start).

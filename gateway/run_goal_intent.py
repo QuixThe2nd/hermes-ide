@@ -56,7 +56,15 @@ class GatewayGoalIntentMixin:
     def _schedule_auto_goal_intent(
         self: "GatewayRunner", event, session_key: str
     ) -> None:
-        """Classify an eligible inbound message off-path; park the decision."""
+        """Classify an eligible inbound message off-path; park the decision.
+
+        Eligibility is PROVENANCE-based, never content-based: internal events
+        and bot-authored sources are excluded (a gateway-generated diagnostic —
+        including the 🔎 jev notice lines — must never classify itself), while
+        a human-authored copy of diagnostic text is a fresh human message and
+        IS classified: quoting a notice is human speech, not autonomous
+        recursion, so no prefix suppression exists here.
+        """
         coro = None
         try:
             source = event.source
@@ -108,9 +116,11 @@ class GatewayGoalIntentMixin:
             sid = str(getattr(session_entry, "session_id", "") or "")
         except Exception as exc:
             logger.debug("auto-goal session resolution failed: %s", exc)
+        loop = asyncio.get_running_loop()
+        on_attempt = self._jev_attempt_notifier(source, loop)
         try:
             decision = await self._run_in_executor_with_context(
-                evaluate_goal_intent, text, sid, platform
+                evaluate_goal_intent, text, sid, platform, on_attempt
             )
         except asyncio.CancelledError:
             raise
@@ -122,3 +132,50 @@ class GatewayGoalIntentMixin:
             decision.setdefault("message", text)
             return decision
         return None
+
+    def _jev_attempt_notifier(self: "GatewayRunner", source, loop: asyncio.AbstractEventLoop):
+        """Per-attempt Jev notice callback for one inbound message's classification.
+
+        Runs on the executor thread (inside the source's profile scope, carried
+        by ``_run_in_executor_with_context``); each real HTTP attempt posts one
+        concise line back to the originating chat through a DIRECT outbound
+        send on the source's owning adapter — outbound-only, never model
+        context, and a delivery failure is logged without touching the
+        classification or the turn.
+
+        Deliberately NOT the post-delivery registry: the registry slot is
+        keyed by session while the classifier is detached from the turn, so
+        ordering behind the turn's delivery boundary both strands late
+        notices (no live boundary left to fire them) and silently drops the
+        older notice when two overlapped turns each register one. A status
+        line may therefore arrive before the answer; that is intended.
+        """
+        author = str(getattr(source, "user_name", "") or "")
+
+        def on_attempt(attempt: int, attempts: int, label, confidence, error) -> None:
+            from gateway.jev_notice import format_notice, goal_intent_attempt_record
+
+            line = format_notice(
+                goal_intent_attempt_record(
+                    attempt=attempt, attempts=attempts, label=label,
+                    confidence=confidence, error=error, author=author,
+                )
+            )
+            if line is None:
+                return  # formatter binary unavailable: skip, never a local twin
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._send_goal_status_notice(source, line, non_conversational=True),
+                    loop,
+                )
+
+                def _drain(fut) -> None:
+                    exc = fut.exception()
+                    if exc is not None:
+                        logger.debug("jev notice delivery failed: %s", exc)
+
+                future.add_done_callback(_drain)
+            except Exception as exc:
+                logger.debug("jev notice delivery scheduling failed: %s", exc)
+
+        return on_attempt

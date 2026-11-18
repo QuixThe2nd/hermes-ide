@@ -132,8 +132,16 @@ class GatewayGoalsMixin:
             logger.debug("goal continuation: no adapter for %s", getattr(source, "platform", None))
         return adapter
 
-    async def _send_goal_status_notice(self, source: Any, message: str) -> None:
-        """Send a /goal judge status line back to the originating chat/thread."""
+    async def _send_goal_status_notice(
+        self, source: Any, message: str, *, non_conversational: bool = False
+    ) -> None:
+        """Send a /goal judge status line back to the originating chat/thread.
+
+        ``non_conversational=True`` (the Jev notice lines) marks the send as
+        non-conversational history: a troubleshooting notice must never become
+        the last-self-message boundary or leak into the model's recovered
+        context on platforms that honor the flag (Discord).
+        """
         adapter = self._adapter_for_source(source)
         if not adapter:
             logger.debug("goal continuation: no adapter for %s", getattr(source, "platform", None))
@@ -143,6 +151,15 @@ class GatewayGoalsMixin:
             metadata = self._thread_metadata_for_source(source)
         except Exception:
             metadata = None
+        if non_conversational:
+            metadata = dict(metadata or {})
+            # A diagnostic is never the turn's final message: the interim
+            # marker keeps a live native stream (relay seal-interception)
+            # from sealing on notice text, and non-conversational history
+            # keeps it out of the model's recovered context and off the
+            # last-self-message boundary.
+            metadata["non_conversational_history"] = True
+            metadata["_interim_send"] = True
 
         result = await adapter.send(source.chat_id, message, metadata=metadata)
         if result is not None and not getattr(result, "success", True):

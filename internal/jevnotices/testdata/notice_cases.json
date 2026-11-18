@@ -1,0 +1,177 @@
+{
+  "comment": "Shared contract between internal/jevnotices (Go, canonical) and gateway/jev_notice.py (Python twin). Each case is one notice record and the exact line BOTH implementations must produce. Both sides' tests execute this table.",
+  "cases": [
+    {
+      "name": "goal-intent task success first attempt",
+      "record": {
+        "purpose": "goal-intent",
+        "subject": "user message",
+        "author": "Alice",
+        "attempt": 1,
+        "attempts": 2,
+        "label": "task",
+        "confidence": 0.82
+      },
+      "expect": "🔎 jev goal-intent (attempt 1/2) user message from Alice: task (confidence 0.82)"
+    },
+    {
+      "name": "goal-intent chat label is visible",
+      "record": {
+        "purpose": "goal-intent",
+        "subject": "user message",
+        "author": "Alice",
+        "attempt": 1,
+        "attempts": 2,
+        "label": "chat",
+        "confidence": 0.2
+      },
+      "expect": "🔎 jev goal-intent (attempt 1/2) user message from Alice: chat (confidence 0.20)"
+    },
+    {
+      "name": "goal-intent transport failure on first attempt",
+      "record": {
+        "purpose": "goal-intent",
+        "subject": "user message",
+        "author": "Alice",
+        "attempt": 1,
+        "attempts": 2,
+        "error": "transport_error"
+      },
+      "expect": "🔎 jev goal-intent (attempt 1/2) user message from Alice: failed (transport_error)"
+    },
+    {
+      "name": "goal-intent schema failure detail collapses to class token",
+      "record": {
+        "purpose": "goal-intent",
+        "subject": "user message",
+        "author": "Bob",
+        "attempt": 2,
+        "attempts": 2,
+        "error": "schema_mismatch: no answers object"
+      },
+      "expect": "🔎 jev goal-intent (attempt 2/2) user message from Bob: failed (schema_mismatch)"
+    },
+    {
+      "name": "goal-intent without author omits the fragment",
+      "record": {
+        "purpose": "goal-intent",
+        "subject": "user message",
+        "attempt": 1,
+        "attempts": 2,
+        "label": "task",
+        "confidence": 1.0
+      },
+      "expect": "🔎 jev goal-intent (attempt 1/2) user message: task (confidence 1.00)"
+    },
+    {
+      "name": "response-gate allow with all four nouls",
+      "record": {
+        "purpose": "response-gate",
+        "subject": "user message",
+        "author": "Alice",
+        "allowed": true,
+        "scores": {
+          "addresses_bot": 0.91,
+          "continues_bot_thread": 0.12,
+          "joins_bot_thread": 0.03,
+          "noise": 0.05
+        }
+      },
+      "expect": "🔎 jev response-gate user message from Alice: allow (addresses_bot=0.91 continues_bot_thread=0.12 joins_bot_thread=0.03 noise=0.05)"
+    },
+    {
+      "name": "response-gate deny below threshold is visible",
+      "record": {
+        "purpose": "response-gate",
+        "subject": "user message",
+        "author": "Tek",
+        "allowed": false,
+        "scores": {
+          "addresses_bot": 0.09,
+          "continues_bot_thread": 0.88,
+          "joins_bot_thread": 0.02,
+          "noise": 0.75
+        }
+      },
+      "expect": "🔎 jev response-gate user message from Tek: deny (addresses_bot=0.09 continues_bot_thread=0.88 joins_bot_thread=0.02 noise=0.75)"
+    },
+    {
+      "name": "response-gate http failure after a real request",
+      "record": {
+        "purpose": "response-gate",
+        "subject": "user message",
+        "author": "Tek",
+        "error": "http_502"
+      },
+      "expect": "🔎 jev response-gate user message from Tek: failed (http_502)"
+    },
+    {
+      "name": "response-gate timeout failure",
+      "record": {
+        "purpose": "response-gate",
+        "subject": "user message",
+        "author": "Tek",
+        "error": "timeout"
+      },
+      "expect": "🔎 jev response-gate user message from Tek: failed (timeout)"
+    },
+    {
+      "name": "reaction-gate react with abstention mass",
+      "record": {
+        "purpose": "reaction-gate",
+        "subject": "user message",
+        "author": "Alice",
+        "emoji": "🔥",
+        "abstain": 0.2
+      },
+      "expect": "🔎 jev reaction-gate user message from Alice: react 🔥 (abstain 0.20)"
+    },
+    {
+      "name": "reaction-gate no-reaction abstention is visible",
+      "record": {
+        "purpose": "reaction-gate",
+        "subject": "user message",
+        "author": "Alice",
+        "abstain": 0.63
+      },
+      "expect": "🔎 jev reaction-gate user message from Alice: no reaction (abstain 0.63)"
+    },
+    {
+      "name": "reaction-gate judge failure",
+      "record": {
+        "purpose": "reaction-gate",
+        "subject": "user message",
+        "author": "Tek",
+        "error": "incoherent_distribution"
+      },
+      "expect": "🔎 jev reaction-gate user message from Tek: failed (incoherent_distribution)"
+    },
+    {
+      "name": "hostile author name cannot ping or format",
+      "record": {
+        "purpose": "response-gate",
+        "subject": "user message",
+        "author": "@everyone `code\ninjection",
+        "allowed": true,
+        "scores": {
+          "addresses_bot": 0.9,
+          "continues_bot_thread": 0.1,
+          "joins_bot_thread": 0.0,
+          "noise": 0.1
+        }
+      },
+      "expect": "🔎 jev response-gate user message from everyone code injection: allow (addresses_bot=0.90 continues_bot_thread=0.10 joins_bot_thread=0.00 noise=0.10)"
+    },
+    {
+      "name": "single-attempt caller hides the attempt fragment",
+      "record": {
+        "purpose": "reaction-gate",
+        "subject": "user message",
+        "author": "Tek",
+        "emoji": "👍",
+        "abstain": 0.1
+      },
+      "expect": "🔎 jev reaction-gate user message from Tek: react 👍 (abstain 0.10)"
+    }
+  ]
+}
