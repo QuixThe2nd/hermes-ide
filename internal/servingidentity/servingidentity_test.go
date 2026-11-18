@@ -451,10 +451,10 @@ func TestTransitionNoteSilence(t *testing.T) {
 // TestMetaKeyAndSessionID pins the durable-record key namespace and the
 // session-id validity gate (blank/whitespace ids claim nothing).
 func TestMetaKeyAndSessionID(t *testing.T) {
-	if got := MetaKey("telegram:12345"); got != "served_by:telegram:12345" {
+	if got := MetaKey("discord:12345"); got != "served_by:discord:12345" {
 		t.Errorf("meta key: got %q", got)
 	}
-	for _, id := range []string{"telegram:12345", " spaced-but-real "} {
+	for _, id := range []string{"discord:12345", " spaced-but-real "} {
 		if !ValidSessionID(id) {
 			t.Errorf("session id %q must be valid", id)
 		}

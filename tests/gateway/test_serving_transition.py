@@ -220,7 +220,7 @@ class _SeamAgent:
 def _seam_ctx(session_id):
     ctx = MagicMock()
     ctx.user_config = {}
-    ctx.source = SimpleNamespace(platform="telegram", is_bot=False)
+    ctx.source = SimpleNamespace(platform="discord", is_bot=False)
     ctx._native_slack_task_cards = False
     ctx._hooks_ref = SimpleNamespace(loaded_hooks=False)
     ctx._status_callback_sync = None

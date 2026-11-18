@@ -97,14 +97,14 @@ func TestSessionStampParsing(t *testing.T) {
 // and this process's record replaces it (write-on-change).
 func TestApplyServedByFirstTurnAfterHandoff(t *testing.T) {
 	store := newMapStore(map[string]string{
-		MetaKey("telegram:42"): EncodeRecord(Snapshot{PID: 709505, StartTime: 3001234}),
+		MetaKey("discord:42"): EncodeRecord(Snapshot{PID: 709505, StartTime: 3001234}),
 	})
 	current := Snapshot{PID: 1531038, StartTime: 3005678}
-	notes := ApplyServedBy("telegram:42", current, store.get, store.set)
+	notes := ApplyServedBy("discord:42", current, store.get, store.set)
 	if len(notes) != 2 {
 		t.Fatalf("handoff turn: got %d notes, want 2 (%q)", len(notes), notes)
 	}
-	if stored, ok := ParseRecord(store.records[MetaKey("telegram:42")]); !ok ||
+	if stored, ok := ParseRecord(store.records[MetaKey("discord:42")]); !ok ||
 		stored.PID != current.PID || stored.StartTime != current.StartTime {
 		t.Errorf("record must be rewritten to the serving process, got %v", stored)
 	}
