@@ -961,6 +961,23 @@ class TestTurnRunner:
         assert messages == [expected_heading]
         assert "Remembering" not in "\n".join(messages)
 
+    def test_context_injection_non_memory_source_heading_is_sentence_case(self):
+        from gateway.run import _format_context_injection_progress
+
+        content = "<plugin-context>injected plugin context</plugin-context>"
+        messages = _format_context_injection_progress(
+            content=content,
+            injected_chars=len(content),
+            sources=["plugin"],
+            message_limit=2000,
+            supports_code_blocks=True,
+            include_content=False,
+        )
+
+        assert messages
+        assert messages[0].startswith("🧠 Context injected")
+        assert "🧠 Context Injection" not in "\n".join(messages)
+
     def test_context_injection_mixed_timestamp_and_memory_splits_standalone_time_line(self):
         from gateway.run import _format_context_injection_progress
 
