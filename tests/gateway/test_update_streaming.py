@@ -132,7 +132,7 @@ class TestUpdateCommandGatewayFlag:
     async def test_spawns_with_gateway_flag(self, tmp_path):
         """The spawned update command includes --gateway and PYTHONUNBUFFERED."""
         runner = _make_runner()
-        event = _make_event()
+        event = _make_event(platform=Platform.SLACK)
 
         fake_root = tmp_path / "project"
         fake_root.mkdir()

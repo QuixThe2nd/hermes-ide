@@ -858,7 +858,7 @@ class TestDeliverCrossPlatformThreadId:
                 "thread_id": "999",
             }
         }
-        await adapter._deliver_cross_platform("matrix", "hello", delivery)
+        await adapter._deliver_cross_platform("discord", "hello", delivery)
         mock_target.send.assert_awaited_once_with(
             "12345", "hello", metadata={"thread_id": "999"}
         )
