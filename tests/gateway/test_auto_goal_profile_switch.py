@@ -1,5 +1,5 @@
-"""``display.jev_notices`` on the goal-intent lane, read from the profile that owns the
-source (real ``_resolve_profile_home_for_source``), never the default."""
+"""``goals.auto.enabled`` and ``display.jev_notices`` on the goal-intent lane, read from the
+profile that owns the source (real ``_resolve_profile_home_for_source``), never the default."""
 
 import asyncio
 from unittest.mock import patch
@@ -8,6 +8,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform
 from gateway.jev_notice import go_formatter_binary
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 
 WINNIE_OFF = "display:\n  jev_notices: false\ngoals:\n  auto:\n    enabled: false\n"
@@ -15,7 +16,7 @@ WINNIE_OFF = "display:\n  jev_notices: false\ngoals:\n  auto:\n    enabled: fals
 
 @pytest.fixture
 def runner(tmp_path, monkeypatch):
-    """Multiplexed runner serving ``default`` (switches unset) and ``winnie`` (switched off)."""
+    """Multiplexed runner serving ``default`` (switches unset) and ``winnie`` (both off)."""
     from gateway.run import GatewayRunner
 
     root = tmp_path / "hh"
@@ -41,6 +42,32 @@ def runner(tmp_path, monkeypatch):
 def _source(profile):
     return SessionSource(platform=Platform.DISCORD, chat_id="c1", user_id="u1", user_name="Alice",
                          profile=profile)
+
+
+def _schedule(runner, profile, text="please refactor the parser"):
+    event = MessageEvent(text=text, message_type=MessageType.TEXT, source=_source(profile))
+    with patch("hermes_cli.goal_intent.evaluate_goal_intent") as evaluate:
+        runner._schedule_auto_goal_intent(event, f"agent:{profile}:discord:c1")
+    evaluate.assert_not_called()  # scheduling never classifies inline
+
+
+@pytest.mark.parametrize("profile, text, spawned", [
+    ("default", "please refactor the parser", [("default", True)]),
+    ("winnie", "please refactor the parser", []),  # no Jev call, no parked decision
+    ("winnie", "stop", []),  # the whole automatic layer is off, its stop pause included
+])
+def test_auto_goal_schedules_only_where_the_owning_profile_enables_it(runner, profile, text, spawned):
+    _schedule(runner, profile, text)
+
+    assert runner.spawned == spawned
+
+
+def test_leftover_auto_mode_key_keeps_auto_goals_on(runner):
+    runner.winnie_config.write_text("goals:\n  auto:\n    mode: off\n", encoding="utf-8")
+
+    _schedule(runner, "winnie")
+
+    assert runner.spawned == [("winnie", True)]
 
 
 @pytest.mark.skipif(go_formatter_binary() is None, reason="jev notices need the Go formatter binary")

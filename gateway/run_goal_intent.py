@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 if TYPE_CHECKING:
@@ -53,6 +54,17 @@ class GatewayGoalIntentMixin:
             coro.close()
             raise
 
+    def _auto_goals_enabled(self: "GatewayRunner", source) -> bool:
+        """``goals.auto.enabled`` (default on) from the routed profile home, never the default's.
+        A leftover ``goals.auto.mode`` (or scalar ``goals.auto``) keeps auto-goals on."""
+        from gateway.run import _load_gateway_config
+        from hermes_cli.config import cfg_get
+        from utils import is_truthy_value
+
+        home = Path(self._resolve_profile_home_for_source(source))
+        enabled = cfg_get(_load_gateway_config(home / "config.yaml"), "goals", "auto", "enabled")
+        return is_truthy_value(enabled, default=True)
+
     def _schedule_auto_goal_intent(
         self: "GatewayRunner", event, session_key: str
     ) -> None:
@@ -63,7 +75,8 @@ class GatewayGoalIntentMixin:
         including the 🔎 jev notice lines — must never classify itself), while
         a human-authored copy of diagnostic text is a fresh human message and
         IS classified: quoting a notice is human speech, not autonomous
-        recursion, so no prefix suppression exists here.
+        recursion, so no prefix suppression exists here. The owning profile's
+        ``goals.auto.enabled: false`` skips everything below; explicit ``/goal`` is unaffected.
         """
         coro = None
         try:
@@ -75,6 +88,8 @@ class GatewayGoalIntentMixin:
                 or not text.strip()
                 or text.lstrip().startswith("/")
             ):
+                return
+            if not self._auto_goals_enabled(source):
                 return
             platform = str(getattr(getattr(source, "platform", None), "value", "") or "")
 

@@ -1052,12 +1052,15 @@ DEFAULT_CONFIG = {
     # done, budget exhausted, or paused. Goals are always automatic: every eligible
     # message is classified by Jev Decisions and task-like messages start/extend a
     # goal at the end of the turn (see `hermes goals`). Judge failures fail OPEN; the
-    # budget is the backstop. A leftover `goals.auto` key from older installs is
+    # budget is the backstop. A leftover `goals.auto.mode` key from older installs is
     # ignored — there is no mode setting.
     "goals": {
         # Max continuation turns before auto-pause — guards against judge false
         # negatives and unbounded spend.
         "max_turns": 20,
+        # Read from the profile that owns the session: false skips the automatic layer entirely
+        # (no Jev intent call, no parked decision, no "stop" auto-pause); /goal keeps working.
+        "auto": {"enabled": True},
     },
     # Loops — /loop re-runs a prompt or slash command on a cadence in-session. Fixed interval fires
     # on the user's clock; self-paced (no interval) starts at the floor and backs off exponentially
