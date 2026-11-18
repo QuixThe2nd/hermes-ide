@@ -248,7 +248,7 @@ def test_omp_real_runner_reaches_argv_and_system_file(monkeypatch, tmp_path, ski
     secrets.write_text("LITELLM_API_KEY=test-key\n", encoding="utf-8")
     _configure_lane(monkeypatch, "ui_dev", "omp", skills)
     monkeypatch.setattr(lane_tool, "_cfg", lambda: {
-        "omp": {"binary": "omp", "secrets_file": str(secrets)}
+        "omp": {"binary": sys.executable, "secrets_file": str(secrets)}
     })
     captured = {}
 

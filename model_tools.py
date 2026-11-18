@@ -437,8 +437,8 @@ _LANE_TOOL_NAMES = (
 
 def _rewrite_delegate_agent_lanes(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
     """Point lane-shaped work at the lane tools, but only when one is actually present —
-    the lane tools are availability-gated (lanes must be configured), and naming absent
-    tools teaches the model ghost vocabulary (same rule as _rewrite_browser_navigate)."""
+    the lane tools are harness-reachability-gated, and naming absent tools teaches the
+    model ghost vocabulary (same rule as _rewrite_browser_navigate)."""
     if not any(name in available for name in _LANE_TOOL_NAMES):
         return td
     fn = td["function"]

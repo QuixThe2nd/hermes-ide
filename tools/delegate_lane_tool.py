@@ -1,4 +1,4 @@
-"""Four opt-in delegation lane tools, thinly routed over existing backends."""
+"""Four delegation lane tools, thinly routed over existing backends."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from typing import Any, Dict, Mapping
 
 from tools.delegate_lane_specs import (
     LANE_NAMES, LANE_TOOL_NAMES, RECEIPT_FIELDS,
-    canonical_lane_name, lanes_configured, read_soul, resolve_lane_path,
-    resolve_lane_spec,
+    canonical_lane_name, lane_harness_reachable, read_soul, resolve_lane_path,
+    resolve_runnable_spec,
 )
 from tools.delegate_tool_config import _cfg
 from tools.delegate_tool_omp import is_quota_error, run_omp_lane
@@ -206,12 +206,8 @@ def delegate_lane(
     timeout_seconds: int = 0, **dispatch_context,
 ) -> str:
     """Execute a lane's ordered model chain, advancing only on quota failures."""
-    if not lanes_configured():
-        return _configuration_error(
-            lane_name, ValueError("delegation.lanes is empty; configure it to enable lane tools")
-        )
     try:
-        spec = resolve_lane_spec(lane_name)
+        spec = resolve_runnable_spec(lane_name, omp_config=_cfg().get("omp") or {})
     except (OSError, ValueError) as exc:
         return _configuration_error(lane_name, exc)
     if not task.strip() or not workdir.strip():
@@ -284,9 +280,9 @@ def _handle_registered_lane(lane_name, args, **kwargs):
     )
 
 
-@no_cache_check_fn
-def check_lane_requirements() -> bool:
-    return lanes_configured()
+def check_lane_requirements(lane_name: str) -> bool:
+    """A lane is visible whenever its resolved harness can actually run."""
+    return lane_harness_reachable(lane_name, omp_config=_cfg().get("omp") or {})
 
 
 _DESCRIPTIONS = {
@@ -351,7 +347,8 @@ def _schema(lane_name: str) -> dict:
 for _lane_name in LANE_NAMES:
     registry.register(
         name=f"delegate_{_lane_name}", toolset="delegation", schema=_schema(_lane_name),
-        handler=partial(_handle_registered_lane, _lane_name), check_fn=check_lane_requirements,
+        handler=partial(_handle_registered_lane, _lane_name),
+        check_fn=no_cache_check_fn(partial(check_lane_requirements, _lane_name)),
         emoji="🔀", max_result_size_chars=100_000,
     )
 

@@ -146,7 +146,7 @@ _DEFAULT_UNBOUNDED_TOOLS = frozenset(
         "delegate_claude_agent",
         "delegate_cursor_agent",
         "delegate_assistant",
-        # Opt-in lane tools — a foreground lane run (especially an OMP RPC
+        # Coding lane tools — a foreground lane run (especially an OMP RPC
         # goal-mode reverse-engineer pass) legitimately blocks for a long time.
         "delegate_ui_dev",
         "delegate_client_dev",
