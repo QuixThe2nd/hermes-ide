@@ -468,7 +468,7 @@ def _restart_notify_payload(
     return data
 
 
-def _forward_restart_if_superseded(
+async def _forward_restart_if_superseded(
     runner: Any, source: Optional[SessionSource], message_id: Optional[str],
     *, restart_hub: bool,
 ) -> Optional[dict]:
