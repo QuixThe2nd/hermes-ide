@@ -114,6 +114,10 @@ class DiscordSessionRouter:
         self._undelivered.append(record)
         self._save_undelivered()
 
+    def owners_snapshot(self) -> Dict[str, str]:
+        """Copy of the session-key → generation ownership map (diagnostics)."""
+        return dict(self._owners)
+
     def owner_for(self, session_key: str) -> Optional[str]:
         return self._owners.get(session_key)
 
@@ -628,9 +632,11 @@ class DiscordHubServer:
                             client.platform = "matrix"
                         elif platform_name == "browser_sidebar":
                             client.platform = "browser_sidebar"
-                            token_key, router = "", None
-                            attach_result = await self.browser_sidebar.attach(
+                            token_key = ""
+                            attach_result, router = await self.browser_sidebar.attach(
                                 client, config_data, str(params.get("profile") or "default"),
+                                store_dir=self.socket_path.parent,
+                                session_key=str(params.get("session_key") or ""),
                             )
                         elif platform_name == "discord":
                             token_key = _token_key(str(config_data.get("token") or ""))
@@ -663,7 +669,7 @@ class DiscordHubServer:
                         if client.router is not None:
                             await client.router.replay_undelivered()
                         continue
-                    if client is None and method not in {"sync_rpc", "overlap_successors"}:
+                    if client is None and method not in {"sync_rpc", "overlap_successors", "browser_sidebar_status"}:
                         raise RuntimeError("attach is required before hub RPC")
                     if client is not None and method in _CONCURRENT_RPC_METHODS:
                         # Platform API calls (Discord REST, Matrix) can sit in a
@@ -729,6 +735,8 @@ class DiscordHubServer:
     async def _dispatch(self, client: _Client, method: str, params: Dict[str, Any]) -> Any:
         if method == "overlap_successors":
             return {"successors": self._successors.snapshot()}
+        if method == "browser_sidebar_status":
+            return self.browser_sidebar.status()
         if method == "browser_send":
             if client is None or client.platform != "browser_sidebar":
                 raise ValueError("an attached browser sidebar generation is required")

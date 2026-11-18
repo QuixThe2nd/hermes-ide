@@ -1,7 +1,8 @@
 # Browser sidebar platform
 
 The Brave extension sidebar talks to the installation-wide Discord hub over a WebSocket.
-The hub routes its frames to the currently attached gateway for this Hermes profile.
+The hub routes each sidebar session to one attached gateway generation for this Hermes
+profile (see "Hub lifecycle and deployment" for the restart-handoff contract).
 The extension offers the configured token as its sole subprotocol, and the
 server authenticates and selects it during the handshake. There is no
 allow-all switch.
@@ -15,9 +16,16 @@ The hub listens on port **8796**, path `/ws`. Point the extension at
 ## Hub lifecycle and deployment
 
 `hermes-discord-hub` owns the authenticated extension socket; gateway processes attach
-over the hub's same-user Unix socket. Gateway replacement changes the current routing
-generation without closing the extension connection. Detached or superseded gateways
-cannot send frames or reclaim ownership by reconnecting.
+over the hub's same-user Unix socket. The sidebar rides the same instant-overlap restart
+machinery as Discord: a successor gateway attaches while the predecessor drains, and the
+hub's session router picks the delivery generation per session. A session with a turn
+still running on the predecessor stays there (follow-ups queue on the running owner);
+after that turn completes the next new turn routes to the successor immediately — the
+browser socket never drops. A pending `run_tab_js` result returns to the generation that
+issued the request. Events that arrive while no gateway generation can take them are
+retained at the hub and replayed on the next attach. A still-attached predecessor may
+finish its in-flight outbound (drafts/finals) after the successor attaches; a detached or
+superseded gateway cannot send frames or reclaim ownership by reconnecting.
 
 The attaching profile resolves `BROWSER_SIDEBAR_TOKEN` in its own secret scope and passes
 the resolved value only in the local attach request. The hub does not read another

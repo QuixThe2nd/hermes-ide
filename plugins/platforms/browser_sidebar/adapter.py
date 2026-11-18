@@ -33,9 +33,16 @@ from gateway.session import SessionSource
 # which sys.modules caches exactly once per process — every module instance
 # of this plugin converges on ONE registry (see runtime.py).
 from plugins.platforms.browser_sidebar import runtime as sidebar_runtime
-from plugins.platforms.browser_sidebar.protocol import DEFAULT_PORT, is_valid_token as _is_valid_token
+from plugins.platforms.browser_sidebar.protocol import (
+    DEFAULT_PORT,
+    chat_frame_to_event as _chat_frame_to_event,
+    is_valid_token as _is_valid_token,
+)
+from plugins.platforms.discord.hub_client import (
+    DiscordHubClientAdapter,
+    HubOverlapClientMixin,
+)
 from plugins.platforms.discord.hub import default_socket_path
-from plugins.platforms.discord.hub_client import DiscordHubClientAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -155,8 +162,12 @@ async def _run_tab_js_on(adapter: "BrowserSidebarAdapter", code: str) -> str:
     return json.dumps({"success": True, "result": result})
 
 
-class BrowserSidebarAdapter(BasePlatformAdapter):
+class BrowserSidebarAdapter(HubOverlapClientMixin, BasePlatformAdapter):
     """Gateway-generation client for the hub-owned Brave sidebar socket."""
+
+    _hub_label = "Browser sidebar hub"
+    _hub_version_field = "_sidebar_hub_version"
+    _hub_version_handoff_field = "_sidebar_hub_version_handoffs"
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("browser_sidebar"))
@@ -178,6 +189,24 @@ class BrowserSidebarAdapter(BasePlatformAdapter):
         self._browser_connected = False
         self._typing_active = False
         self.hub_pid: Optional[int] = None
+        self._release_tasks: set[asyncio.Task] = set()
+        self._inbound_tasks: set[asyncio.Task] = set()
+        self._overlap_successor_ready = False
+        self._session_versions: Dict[str, int] = {}
+        self._last_overlap_successor_pid: Optional[int] = None
+        self._last_overlap_successor_start_time: Optional[float] = None
+        self._last_overlap_successor_service_managed = False
+
+    def _sidebar_session_key(self) -> str:
+        """The one sidebar session key, profile-namespaced like the agent run.
+
+        Computed at attach time and shipped with the attach payload so the
+        hub router and this adapter agree on the key (it fences ownership
+        versions across the handoff).
+        """
+        return self._source_session_key(SessionSource(
+            platform=self.platform, chat_id="brave", chat_type="dm",
+            user_id="brave-sidebar"))
 
     # ── identity / surface ──────────────────────────────────────────────────
 
@@ -207,6 +236,7 @@ class BrowserSidebarAdapter(BasePlatformAdapter):
         if not self.token:
             logger.error("browser_sidebar: %s is not set; refusing to attach", TOKEN_ENV)
             return False
+        self._overlap_successor_ready = False
         try:
             await self._open_socket()
             self._read_task = asyncio.create_task(self._read_loop())
@@ -221,6 +251,7 @@ class BrowserSidebarAdapter(BasePlatformAdapter):
                 "generation_id": self._generation_id,
                 "platform": "browser_sidebar",
                 "profile": self._owner_profile or "default",
+                "session_key": self._sidebar_session_key(),
                 "config": config,
                 **overlap_attachment(),
             })
@@ -248,6 +279,9 @@ class BrowserSidebarAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._running = False
+        self._overlap_successor_ready = False
+        if self._release_tasks:
+            await asyncio.gather(*list(self._release_tasks), return_exceptions=True)
         await self._close_socket()
         self._draft_prev.clear()
         # Identity-safe: never evicts a newer adapter that re-registered
@@ -304,6 +338,10 @@ class BrowserSidebarAdapter(BasePlatformAdapter):
                             future.set_exception(RuntimeError(message["error"]))
                         else:
                             future.set_result(message.get("result"))
+                elif message.get("type") == "event":
+                    task = asyncio.create_task(self._receive_event(message))
+                    self._inbound_tasks.add(task)
+                    task.add_done_callback(self._inbound_tasks.discard)
                 elif message.get("type") == "browser_frame":
                     await self._receive_browser_frame(message.get("frame"))
                 elif message.get("type") == "browser_connection":
@@ -351,31 +389,18 @@ class BrowserSidebarAdapter(BasePlatformAdapter):
             self._resolve_tool(frame)
 
     async def _handle_chat(self, frame: dict) -> None:
-        tab = frame.get("tab")
-        if not isinstance(tab, dict):
-            tab = {}
-        # Missing/untrusted tab fields degrade to "?" — never crash on page data.
-        title = str(tab.get("title") or "?")
-        url = str(tab.get("url") or "?")
-        text = str(frame.get("text") or "")
+        # Local fallback for directly-delivered chat frames; the hub normally
+        # routes chat through the session router instead (see hub.py).
         message_id = str(frame.get("id") or "")
         if message_id:
             self._last_inbound_id = message_id
-        event = MessageEvent(
-            text=f"[browser tab: {title} — {url}]\n\n{text}",
-            message_type=MessageType.TEXT,
-            source=SessionSource(
-                platform=self.platform,
-                chat_id="brave",
-                chat_type="dm",
-                user_id="brave-sidebar",
-                message_id=message_id or None,
-                # The authenticated socket IS the user (token subprotocol).
-                role_authorized=True,
-            ),
-            message_id=message_id or None,
-        )
-        await self.handle_message(event)
+        await self.handle_message(_chat_frame_to_event(frame, platform=self.platform))
+
+    def _decorate_hub_event(self, event: MessageEvent, record: Dict[str, Any]) -> None:
+        # Outbound finals reference the latest inbound id; keep tracking it
+        # for hub-delivered (router-routed) events too.
+        if event.message_id:
+            self._last_inbound_id = str(event.message_id)
 
     def _resolve_tool(self, frame: dict) -> None:
         future = self._pending_tools.get(str(frame.get("request_id") or ""))

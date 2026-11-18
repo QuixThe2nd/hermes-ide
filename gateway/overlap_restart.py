@@ -381,7 +381,7 @@ def _has_overlap_adapter(runner: Any) -> bool:
     )
 
 
-_HUB_TRANSPORTS = frozenset({"discord", "matrix"})
+_HUB_TRANSPORTS = frozenset({"discord", "matrix", "browser_sidebar"})
 
 
 def _reconnecting_overlap_adapter(runner: Any) -> bool:
