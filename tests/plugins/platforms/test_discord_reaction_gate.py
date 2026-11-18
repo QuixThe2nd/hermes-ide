@@ -51,7 +51,7 @@ BASE_DISTRIBUTION = {"👍": 0.50, "❤️": 0.30, "😂": 0.00, NONE_OPTION: 0.
 def _choice_client(*, emojis=EMOJIS, criteria=None) -> JevChoiceClient:
     """A real client; only its transport is ever stubbed, never its validation."""
     return JevChoiceClient(
-        credential="test-credential", model="jev-1.13.0", timeout_seconds=3.0,
+        credential="test-credential", model="jev-1.14.0", timeout_seconds=3.0,
         emojis=emojis, criteria=build_reaction_criteria(emojis, criteria),
         instructions=build_reaction_instructions(),
     )
@@ -94,8 +94,8 @@ class TestJevLitellmContract:
         from gateway.config import ResponseGateConfig
         import hermes_cli.goal_intent as goal_intent
 
-        assert ResponseGateConfig().model == "jev-1.13.0"
-        assert ReactionGateConfig().model == "jev-1.13.0"
+        assert ResponseGateConfig().model == "jev-1.14.0"
+        assert ReactionGateConfig().model == "jev-1.14.0"
         assert goal_intent.JEV_MODEL == ResponseGateConfig().model
 
     def test_gate_credential_env_is_litellm_api_key(self, monkeypatch):
@@ -383,7 +383,7 @@ class TestReactionGateConfigFromDict:
             "timeout_seconds": 2.5,
             "context_messages": 5,
             "context_chars": 4096,
-            "model": "jev-1.13.0",
+            "model": "jev-1.14.0",
             "decisions_url": "http://127.0.0.1:9000/decisions",
         })
         assert config.active is True
@@ -401,7 +401,7 @@ class TestReactionGateConfigFromDict:
         assert config.include_threads is True
         assert config.emojis == DEFAULT_REACTION_EMOJIS
         assert config.criteria == {}
-        assert config.model == "jev-1.13.0"
+        assert config.model == "jev-1.14.0"
         assert config.timeout_seconds == 3.0
         assert config.context_messages == 10
         assert config.context_chars == 8000
