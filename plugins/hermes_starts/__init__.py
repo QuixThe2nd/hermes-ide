@@ -1868,3 +1868,13 @@ def register(ctx) -> None:
         position="after_memory",
         max_chars=STRUCTURAL_ASKS_MAX_CHARS,
     )
+
+    def _on_gateway_start(**_kwargs: Any) -> None:
+        # Seed the default inbox-sparks cron job (idempotent, profile-scoped,
+        # opt-out aware) off the startup path — a cold Go build must never
+        # block GatewayRunner.start().
+        from plugins.hermes_starts import sparks_cron as _sparks_cron
+
+        _sparks_cron.start_ensure_thread(prereq=check_requirements)
+
+    ctx.register_hook("on_gateway_start", _on_gateway_start)
