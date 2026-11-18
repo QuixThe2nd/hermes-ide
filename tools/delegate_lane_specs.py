@@ -152,14 +152,8 @@ def _claude_reachable(_omp_config: Optional[Mapping[str, Any]] = None) -> bool:
     return resolve_claude_binary() is not None
 
 
-def _cursor_reachable(_omp_config: Optional[Mapping[str, Any]] = None) -> bool:
-    from tools.cursor_agent_tool import resolve_cursor_agent_binary
-
-    return resolve_cursor_agent_binary() is not None
-
-
 _HARNESS_PROBES = {
-    "omp": _omp_reachable, "claude": _claude_reachable, "cursor": _cursor_reachable,
+    "omp": _omp_reachable, "claude": _claude_reachable,
 }
 
 
