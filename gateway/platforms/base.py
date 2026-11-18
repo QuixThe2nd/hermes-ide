@@ -2916,24 +2916,36 @@ class BasePlatformAdapter(ABC):
         await self._stop_typing_quietly(chat_id, metadata)
 
     def register_post_delivery_callback(
-        self, session_key: str, callback: Callable, *, generation: int | None = None) -> None:
+        self, session_key: str, callback: Callable, *, generation: int | None = None) -> bool:
         """Register a deferred callback to fire after the main response. Same-key registrations are
         chained (both fire in order, per-callback exception isolation) so independent features
         coexist; ``generation`` ties it to a gateway run — stale generations never overwrite a
-        fresher slot."""
+        fresher slot.
+
+        Returns True when a live run's delivery boundary will fire the callback, and False —
+        registering nothing — when no run is active for ``session_key`` or its boundary already
+        fired (``_fire_post_delivery_callback`` in the turn task's finally is the registry's only
+        consumer, so registering there would strand the payload until an unrelated future turn).
+        The caller must then deliver or dispose of the payload itself; deferring is an ordering
+        choice, never a delivery requirement.
+        """
         if not session_key or not callable(callback):
-            return
+            return False
+        active = self._active_sessions.get(session_key)
+        if active is None or getattr(active, "_hermes_post_delivery_fired", False):
+            return False
         existing = self._post_delivery_callbacks.get(session_key)
         if existing is not None:
             existing_gen, existing_cb = _split_post_delivery_entry(existing)
             if existing_gen is not None and generation is not None and int(generation) < int(existing_gen):
-                return
+                return False
             # Same-or-newer generation: chain so both fire in registration order.
             if callable(existing_cb) and (
                 existing_gen is None or generation is None or int(existing_gen) == int(generation)):
                 callback = self._chain_callbacks(existing_cb, callback)
         self._post_delivery_callbacks[session_key] = (
             callback if generation is None else (int(generation), callback))
+        return True
 
     @staticmethod
     def _chain_callbacks(*callbacks: Callable) -> Callable[[], Awaitable[None]]:
@@ -3742,6 +3754,11 @@ class BasePlatformAdapter(ABC):
         """Run the one-shot post-delivery callback (bounded, errors swallowed). The generation is
         read HERE — stamped on the interrupt event DURING the handler await; an earlier snapshot
         would let stale runs fire a fresher run's callbacks."""
+        # Mark the boundary fired BEFORE popping/running: a registration landing while a
+        # chained callback awaits must learn no boundary remains this run, not re-register
+        # into a registry nothing will read again.
+        if interrupt_event is not None:
+            interrupt_event._hermes_post_delivery_fired = True  # type: ignore[attr-defined]
         _post_cb = self.pop_post_delivery_callback(
             session_key, generation=getattr(interrupt_event, "_hermes_run_generation", None))
         if callable(_post_cb):
@@ -3797,6 +3814,9 @@ class BasePlatformAdapter(ABC):
         # Reuse the interrupt event handle_message() installed; new Event only if removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
+        # A queued-follow-up handoff reuses this Event across runs; the previous
+        # run's fired marker must not refuse THIS run's registrations.
+        interrupt_event._hermes_post_delivery_fired = False  # type: ignore[attr-defined]
         _thread_metadata = _thread_metadata_for_event(event)
         # A new turn starts: stop any post-turn delegation typing supervisor
         # left running for this session before per-turn typing takes over.

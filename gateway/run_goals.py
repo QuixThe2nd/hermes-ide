@@ -173,6 +173,15 @@ class GatewayGoalsMixin:
         send.  Platform adapters provide a one-shot post-delivery callback for
         exactly this boundary; when unavailable, fall back to direct awaited
         delivery rather than silently dropping the notice.
+
+        The registry is only consumed by the turn task's delivery boundary, so
+        it is used ONLY while a live run will still fire one (the goal
+        classifier is detached from the turn and can outlive it — the boundary
+        waits at most 20s for a decision while a cold formatter build can take
+        minutes). With no live run, or after its boundary already fired (turn
+        completed, errored or interrupted), the notice delivers directly: the
+        originating turn's response is already out, so reading order is
+        preserved without waiting for an unrelated future turn.
         """
         adapter = self._adapter_for_source(source)
         if not adapter:
@@ -198,12 +207,10 @@ class GatewayGoalsMixin:
                 active = getattr(adapter, "_active_sessions", {}).get(session_key)
                 if active is not None:
                     generation = getattr(active, "_hermes_run_generation", None)
-                adapter.register_post_delivery_callback(
-                    session_key,
-                    _deliver,
-                    generation=generation,
-                )
-                return
+                if adapter.register_post_delivery_callback(
+                    session_key, _deliver, generation=generation
+                ):
+                    return  # a live run's boundary will fire it
             except Exception as exc:
                 logger.debug("goal continuation: post-delivery callback registration failed: %s", exc)
 

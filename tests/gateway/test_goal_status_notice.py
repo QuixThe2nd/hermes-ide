@@ -30,6 +30,7 @@ class FakeAdapter:
 
     def register_post_delivery_callback(self, session_key, callback, *, generation=None):
         self.callbacks[session_key] = (generation, callback)
+        return True  # this fake models an adapter with a live turn: registration accepted
 
 
 def _goal_continuation_event(source, goal="finish the task"):
