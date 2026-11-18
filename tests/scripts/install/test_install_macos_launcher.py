@@ -52,6 +52,13 @@ def test_venv_launcher_bypasses_uv_console_script_that_requires_realpath(tmp_pat
         '#!/bin/sh\nprintf "%s\\n" "$@" > "$LAUNCH_RESULT"\n',
     )
     (install_dir / "hermes").write_text("# source entrypoint\n", encoding="utf-8")
+    # setup_path also installs the bundled claude-glm wrapper from
+    # $INSTALL_DIR/scripts (delegate_claude_agent drives Claude Code through
+    # it), so the staged venv install must carry a stub for the copy to find.
+    _make_executable(
+        install_dir / "scripts" / "claude-glm",
+        "#!/bin/sh\nexit 0\n",
+    )
     _make_executable(
         venv_bin / "hermes",
         "#!/bin/sh\n"
@@ -91,3 +98,7 @@ def test_venv_launcher_bypasses_uv_console_script_that_requires_realpath(tmp_pat
         str(install_dir / "hermes"),
         "--version",
     ]
+
+    # The bundled wrapper rides along into the command link dir, executable.
+    wrapper = command_dir / "claude-glm"
+    assert wrapper.is_file() and wrapper.stat().st_mode & stat.S_IXUSR
