@@ -391,12 +391,12 @@
           }
         },
         "state": null,
-        "chained_source": "telegram user 42 (restart)",
+        "chained_source": "discord user 42 (restart)",
         "successor_identity": null
       },
       "expect_lines": [
         "✓ Serving gateway: pid 709505, start 3001234 — answering on the gateway control socket",
-        "⏳ Chained restart queued: another restart will run once the current handoff completes (requested by telegram user 42 (restart))"
+        "⏳ Chained restart queued: another restart will run once the current handoff completes (requested by discord user 42 (restart))"
       ]
     }
   ]

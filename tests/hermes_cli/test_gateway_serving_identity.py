@@ -70,13 +70,13 @@ def test_status_reports_pending_chained_restart(monkeypatch, capsys):
         monkeypatch,
         identify={"pid": 709505, "start_time": 123457, "kind": "hermes-gateway",
                   "overlap": {"role": "serving"}},
-        chained={"source": "telegram user 42 (restart)"},
+        chained={"source": "discord user 42 (restart)"},
     )
     _print_serving_identity()
     out = capsys.readouterr().out
     assert "✓ Serving gateway: pid 709505" in out
     assert "Chained restart queued" in out
-    assert "telegram user 42" in out
+    assert "discord user 42" in out
 
 
 def test_status_silent_when_nothing_to_say(monkeypatch, capsys):

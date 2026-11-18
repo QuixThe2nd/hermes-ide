@@ -130,7 +130,6 @@ def _gateway_runner(store):
     runner._refresh_fallback_model.return_value = None
     runner._consume_pending_native_image_paths.return_value = []
     runner._consume_pending_turn_sidecar_notes.return_value = []
-    runner._is_telegram_topic_lane.return_value = False
     runner._is_discord_auto_thread_lane.return_value = False
     runner._is_relay_discord_channel_lane.return_value = False
     # Real attribute reads for the serving-identity snapshot: this harness

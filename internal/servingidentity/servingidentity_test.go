@@ -241,7 +241,7 @@ func TestChainedSourceFallback(t *testing.T) {
 	if got := ChainedSource("   "); got != "an earlier restart request" {
 		t.Errorf("blank source: got %q", got)
 	}
-	if got := ChainedSource("telegram user 42 (restart)"); got != "telegram user 42 (restart)" {
+	if got := ChainedSource("discord user 42 (restart)"); got != "discord user 42 (restart)" {
 		t.Errorf("recorded source: got %q", got)
 	}
 }
