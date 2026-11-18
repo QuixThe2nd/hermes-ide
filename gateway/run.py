@@ -11269,8 +11269,9 @@ async def _start_gateway_start_control_socket(runner):
         # (same path as SIGUSR1). Handler runs on the socket executor thread, so marshal onto the loop.
         # pause-for-update (#92091 step 2): the updater asks this gateway to drain in-flight turns and exit
         # cleanly — releasing every venv file handle — instead of being tree-killed mid-turn. Same drain
-        # path as SIGUSR1/service restarts (request_restart(via_service=True)); the updater (or the service
-        # manager) relaunches after the code swap.
+        # core as SIGUSR1/service restarts, but deliberately overlap-less (request_restart(via_service=True,
+        # overlap=False)): this fires pre-swap, so a successor would run the OLD tree; the updater (or the
+        # service manager) relaunches after the code swap.
         _main_loop = asyncio.get_running_loop()
 
         def _pause_for_update_handler() -> dict:
@@ -11568,17 +11569,17 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         runner, _signal_initiated_shutdown)
 
     def restart_signal_handler():
-        # SIGUSR1 (`hermes gateway restart`, `hermes update`) is a thin trigger of
-        # the ONE restart core — same overlap pipeline as /restart and the agent
-        # restart tool. A consumed update-restart marker says the SIGUSR1 came
-        # from `hermes update` restarting this gateway onto new code, so the
-        # drain adopts update semantics (idle-past-timeout units stop holding it).
-        from gateway.status import consume_update_restart_marker_for_self
+        # SIGUSR1 (`hermes update` after the code swap, `hermes gateway
+        # restart` when the control socket cannot answer) is a thin trigger of
+        # the ONE restart core: the same queue_user_restart sequence /restart
+        # and the agent restart tool use, with transport flags derived from
+        # live supervision instead of hardcoded, so manual gateways spawn the
+        # overlap successor too. A consumed update-restart marker makes the
+        # drain adopt update semantics (idle-past-timeout units stop holding
+        # it).
+        from gateway.restart import queue_signal_restart
 
-        runner.request_restart(
-            detached=False, via_service=True,
-            from_update=consume_update_restart_marker_for_self(),
-        )
+        queue_signal_restart(runner)
 
     loop = asyncio.get_running_loop()
 

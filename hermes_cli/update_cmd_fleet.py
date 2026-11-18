@@ -1232,7 +1232,7 @@ def _restart_one_systemd_gateway_unit(
     # entirely or polkit prompts inside the captured subprocess.
     _manage_cmd = _resolve_manage_cmd(_manage_cmd_cache, scope, scope_cmd, svc_name)
 
-    # Graceful SIGUSR1 first so in-flight runs drain: handler → request_restart(via_service=True)
+    # Graceful SIGUSR1 first so in-flight runs drain: handler → queue_signal_restart (the shared /restart core)
     # → drain → exit, Restart=always respawns. hermes-serve has no handler → blunt restart below.
     _main_pid = 0
     if _service_unit_supports_graceful_sigusr1_restart(svc_name):

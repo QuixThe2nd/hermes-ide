@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 import math
@@ -521,19 +522,25 @@ async def handle_forwarded_restart(
     )
 async def queue_user_restart(
     runner: Any, source: Optional[SessionSource], message_id: Optional[str],
-    *, restart_hub: bool = False,
+    *, restart_hub: bool = False, from_update: bool = False,
 ) -> dict:
     """Queue a user-requested restart — the ONE shared ``/restart`` sequence.
 
-    Every user-restart entry point (the ``/restart`` slash command and the
-    agent-callable ``restart`` tool) funnels through this helper so their
-    requester setup can never drift apart: warn about uncommitted runtime
-    source (the warning-only preflight below), persist the comeback routing
-    (the in-memory command source plus the ``.restart_notify.json`` marker the
-    next gateway process consumes), then
+    Every restart entry point with a requester (the ``/restart`` slash command,
+    the agent-callable ``restart`` tool, the control-socket ``restart`` verb)
+    funnels through this helper so their requester setup can never drift
+    apart; the signal entry (:func:`queue_signal_restart`, no requester)
+    rides the same sequence so a SIGUSR1 cannot drift either: warn about
+    uncommitted runtime source (the warning-only preflight below), persist
+    the comeback routing (the in-memory command source plus the
+    ``.restart_notify.json`` marker the next gateway process consumes), then
     hand off to ``request_restart``, which opens the shared drain. Must run on
     the gateway event loop — ``request_restart`` schedules its drain task
     there.
+
+    ``from_update`` adopts update-drain semantics (idle-past-timeout units
+    stop holding the drain) and skips the requester preflight: the update
+    path has no requester to warn and owns the tree state it just swapped.
 
     The notify-marker write is deliberately synchronous on that loop: an
     unsuspended write cannot keep running after the calling hand-off times out
@@ -579,9 +586,13 @@ async def queue_user_restart(
     # uncommitted runtime source. Bounded (scan + delivery budgets), coalesced
     # across concurrent callers, and never a restart blocker — inspection or
     # delivery failures only downgrade the notice. Cancellation still
-    # propagates: a cancelled setup must not reach request_restart.
-    preflight_attempt = await restart_preflight.warn_before_user_restart(
-        runner, source
+    # propagates: a cancelled setup must not reach request_restart. Skipped
+    # for an update-triggered restart: no requester exists to deliver a
+    # notice to, and the updater owns the tree state it just swapped.
+    preflight_attempt = (
+        None
+        if from_update
+        else await restart_preflight.warn_before_user_restart(runner, source)
     )
     try:
         # Ownership recheck after the preflight's awaits: another entry point
@@ -646,6 +657,7 @@ async def queue_user_restart(
         via_service = user_restart_via_service()
         started = runner.request_restart(
             detached=not via_service, via_service=via_service,
+            from_update=from_update,
         )
 
         return {
@@ -657,6 +669,42 @@ async def queue_user_restart(
         # Setup resolved (started, failed, or cancelled): drop the provisional
         # preflight state so a later attempt retries it, and wake any rider.
         restart_preflight.release_restart_preflight(preflight_attempt)
+
+
+def queue_signal_restart(runner: Any) -> "asyncio.Task[dict]":
+    """SIGUSR1 entry onto the ONE shared restart core (``queue_user_restart``).
+
+    ``hermes update`` signals every gateway after the code swap and
+    ``hermes gateway restart`` falls back to the same signal when the control
+    socket cannot answer. Both must behave exactly like ``/restart`` on the
+    same host — transport flags derived from live supervision, the overlap
+    successor spawned by the hub adapters — instead of a hardcoded
+    service-manager exit that leaves hosts with no supervisor draining
+    successor-less. A consumed update-restart marker adopts update-drain
+    semantics; the marker is consumed synchronously here so a racing second
+    signal cannot read it twice.
+
+    Must run on the gateway event loop (like every ``queue_user_restart``
+    caller). Returns the queued task; its exceptions are logged, never
+    raised into the signal callback.
+    """
+    from gateway.status import consume_update_restart_marker_for_self
+
+    from_update = consume_update_restart_marker_for_self()
+
+    async def _queue() -> dict:
+        try:
+            return await queue_user_restart(
+                runner, None, None, from_update=from_update
+            )
+        except Exception:
+            logger.exception(
+                "signal-triggered restart could not enter the shared restart "
+                "core; the gateway keeps serving until the next trigger"
+            )
+            return {"status": "failed", "active_agents": None, "via_service": None}
+
+    return asyncio.create_task(_queue())
 
 
 def restart_committed(runner: Any) -> bool:

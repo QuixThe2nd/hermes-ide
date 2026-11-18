@@ -242,7 +242,7 @@ async def test_queue_user_restart_true_writes_pending_before_request_restart(
     assert isinstance(payload["requested_at"], float)
     # restart_hub never becomes a request_restart kwarg — the file is the hand-off.
     runner.request_restart.assert_called_once_with(
-        detached=True, via_service=False
+        detached=True, via_service=False, from_update=False
     )
 
 
