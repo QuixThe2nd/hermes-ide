@@ -211,16 +211,18 @@ func TestStatusLinesAmbiguityBranches(t *testing.T) {
 	}
 }
 
-// TestChainRewriteNamesServingProcess pins the chained-across-overlap
-// rewrite: the ack's pid names the socket owner (the draining predecessor);
-// the rewrite points the agent at the serving process that will actually
-// restart, and leaves every other ack shape untouched.
-func TestChainRewriteNamesServingProcess(t *testing.T) {
+// TestAckRewriteNamesRestartingProcess pins the ack rewrite: the ack's pid
+// names the socket owner, which during an overlap is a dying generation —
+// the rewrite points the agent at the process that will actually restart
+// (the serving process for a chained ack; the newest generation for a
+// forwarded or registry-proven forward ask), and leaves every unproven
+// ack shape untouched.
+func TestAckRewriteNamesRestartingProcess(t *testing.T) {
 	predecessor := &Identify{PID: 709505, Role: RoleDrainingPredecessor,
 		SuccessorPID: 1531038, SuccessorReady: true}
 	ack := map[string]any{"queued": true, "pid": 709505, "status": "chained",
 		"active_agents": 1}
-	rewritten := ChainRewrite(ack, 1531038, predecessor)
+	rewritten := AckRewrite(ack, 1531038, predecessor, nil)
 	if rewritten["pid"] != 1531038 {
 		t.Errorf("rewritten pid: got %v", rewritten["pid"])
 	}
@@ -232,13 +234,40 @@ func TestChainRewriteNamesServingProcess(t *testing.T) {
 		t.Error("source ack must not be mutated")
 	}
 	// Owner is the server: untouched.
-	if same := ChainRewrite(map[string]any{"status": "chained", "pid": 1531038},
-		1531038, &Identify{PID: 1531038}); same["note"] != nil {
+	if same := AckRewrite(map[string]any{"status": "chained", "pid": 1531038},
+		1531038, &Identify{PID: 1531038}, nil); same["note"] != nil {
 		t.Errorf("same-owner chained ack must stay untouched: %v", same)
 	}
-	if plain := ChainRewrite(map[string]any{"status": "restarting", "pid": 709505},
-		1531038, predecessor); plain["pid"] != 709505 {
-		t.Errorf("non-chained ack must stay untouched: %v", plain)
+	if plain := AckRewrite(map[string]any{"status": "restarting", "pid": 709505},
+		1531038, predecessor, nil); plain["pid"] != 709505 {
+		t.Errorf("unproven restarting ack must stay untouched: %v", plain)
+	}
+	// A forwarded ack names the newest generation, not the forwarder.
+	forwarded := AckRewrite(map[string]any{"queued": true, "pid": 709505,
+		"status": "forwarded", "forwarded_to": 1531038}, 0, nil, nil)
+	if forwarded["pid"] != 1531038 {
+		t.Errorf("forwarded pid: got %v", forwarded["pid"])
+	}
+	// A restart asked from an older draining generation of the array: the
+	// registry proves the newest answerer, and the note names the
+	// conversation's own (superseded) process as the forwarder.
+	rows := []RegistryRow{{PID: 424242, PredecessorPID: 134659},
+		{PID: 557728, PredecessorPID: 424242}}
+	attested := AckRewrite(map[string]any{"queued": true, "pid": 557728,
+		"status": "restarting"}, 134659,
+		&Identify{PID: 557728, Role: RoleServing}, rows)
+	if attested["pid"] != 557728 {
+		t.Errorf("attested-forward pid: got %v", attested["pid"])
+	}
+	attestedNote, _ := attested["note"].(string)
+	if !strings.Contains(attestedNote, "pid 134659") {
+		t.Errorf("attested-forward note must name the forwarder: %q", attestedNote)
+	}
+	// No registry rows: the forward ask stays unproven, untouched.
+	if untouched := AckRewrite(map[string]any{"queued": true, "pid": 557728,
+		"status": "restarting"}, 134659,
+		&Identify{PID: 557728, Role: RoleServing}, nil); untouched["note"] != nil {
+		t.Errorf("unproven forward ask must stay untouched: %v", untouched)
 	}
 }
 
@@ -362,7 +391,14 @@ func TestSharedTableCoversTheHonestyContract(t *testing.T) {
 		"record_process_change_write",
 		"owner_guard_legacy_predecessor_refuse",
 		"owner_guard_attested_chain",
+		"owner_guard_attested_forward",
+		"owner_guard_forward_requester_unlisted_refuse",
+		"owner_guard_forward_answerer_not_newest_refuse",
 		"owner_refusal_legacy_answerer",
+		"owner_refusal_serving_answerer",
+		"ack_rewrite_forwarded_names_newest",
+		"ack_rewrite_attested_forward_names_newest",
+		"ack_rewrite_chained_names_serving_process",
 		"turn_notes_first_turn_after_handoff",
 	} {
 		if !names[required] {

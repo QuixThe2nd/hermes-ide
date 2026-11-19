@@ -67,10 +67,15 @@
 //     guess.
 //   - The restart-tool owner gate (OwnerAction/OwnerRefusal): a restart
 //     queued through the control socket must target the process serving THIS
-//     conversation. The socket's answerer must be that process, or attest it
-//     as a hub-ready successor; anything else is a refusal naming both pids.
-//     No serving stamp on the session keeps pre-fix behavior exactly (old
-//     installs never refused).
+//     conversation. The socket's answerer must be that process, attest it
+//     as a hub-ready successor, or — when the answerer is a serving-role
+//     NEWEST generation and the generation registry positively lists the
+//     requester in its array — take the request as the array's forward
+//     target (a restart asked from an older draining generation forwards to
+//     the newest); anything else is a refusal naming both pids, with the
+//     owner clause truthful per reported overlap role. No serving stamp on
+//     the session keeps pre-fix behavior exactly (old installs never
+//     refused).
 package servingidentity
 
 import (

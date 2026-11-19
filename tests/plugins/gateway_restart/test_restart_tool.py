@@ -923,6 +923,184 @@ def test_handler_socket_forwarded_restart_names_newest_generation(monkeypatch):
     assert "709505" in result["note"]
 
 
+def _live_registry_rows(monkeypatch, rows):
+    """Point the hub's live generation-registry mirror read at fixed rows
+    (spawn order — the shape gateway.overlap_registry.read_live_rows
+    yields: live fingerprint-verified successor records)."""
+    monkeypatch.setattr("gateway.overlap_registry.read_live_rows", lambda *a, **kw: rows)
+
+
+# The #844 live incident shape: generation 134659 drained into 424242,
+# which drained into the newest 557728 — and the conversation is still
+# served by the OLDEST one while the NEWEST owns the control socket.
+_DRAINING_FORWARD_IDENTIFY = {
+    "pid": 557728, "start_time": 910339, "code_sha": "c638cb7f02b",
+    "overlap": {"role": "serving"},
+}
+_DRAINING_FORWARD_ROWS = [
+    {"pid": 424242, "start_time": 910211, "predecessor_pid": 134659,
+     "state": "attached"},
+    {"pid": 557728, "start_time": 910339, "predecessor_pid": 424242,
+     "state": "attached"},
+]
+
+
+def test_handler_socket_restart_from_draining_generation_forwards_to_newest(monkeypatch):
+    """Live #844 incident: the conversation is served by an OLDER draining
+    generation while the NEWEST owns the socket and reports role 'serving'.
+    The generation registry proves the array line, so the request proceeds
+    against the newest and the result names IT as the process that will
+    restart, noting the conversation's own process is superseded."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    _live_registry_rows(monkeypatch, _DRAINING_FORWARD_ROWS)
+    _bind_serving_stamp(serving_pid="134659")
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway",
+        lambda home, **kw: dict(_DRAINING_FORWARD_IDENTIFY),
+    )
+    requested = []
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart",
+        lambda home, **kw: requested.append(1) or {
+            "queued": True, "pid": 557728, "status": "restarting",
+            "active_agents": 2, "via_service": False,
+        })
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    assert requested == [1], "the proven forward must queue through the newest"
+    assert result["process"] == "pid 557728"
+    assert "newest" in result["note"]
+    assert "134659" in result["note"], "the note must name the draining asker"
+
+
+def test_handler_socket_forward_refuses_when_requester_not_in_array(monkeypatch):
+    """The registry proves nothing about a requester it does not list: an
+    unrelated serving pid must never borrow the newest's socket."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    _live_registry_rows(monkeypatch, [
+        {"pid": 424242, "start_time": 910211, "predecessor_pid": 999001,
+         "state": "attached"},
+        {"pid": 557728, "start_time": 910339, "predecessor_pid": 424242,
+         "state": "attached"},
+    ])
+    _bind_serving_stamp(serving_pid="134659")
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway",
+        lambda home, **kw: dict(_DRAINING_FORWARD_IDENTIFY),
+    )
+    requested = []
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart",
+        lambda home, **kw: requested.append(1) or {"queued": True, "pid": 557728})
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert requested == []
+    dumped = json.dumps(result)
+    assert "134659" in dumped and "557728" in dumped
+    assert "predates overlap reporting" not in dumped
+
+
+def test_handler_socket_forward_refuses_when_answerer_not_newest(monkeypatch):
+    """A serving-role answerer that is NOT the newest registered generation
+    (a newer row exists) is not the authoritative forward target."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    _live_registry_rows(monkeypatch, [
+        {"pid": 557728, "start_time": 910339, "predecessor_pid": 134659,
+         "state": "attached"},
+        {"pid": 888999, "start_time": 910444, "predecessor_pid": 557728,
+         "state": "attached"},
+    ])
+    _bind_serving_stamp(serving_pid="134659")
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway",
+        lambda home, **kw: dict(_DRAINING_FORWARD_IDENTIFY),
+    )
+    requested = []
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart",
+        lambda home, **kw: requested.append(1) or {"queued": True, "pid": 557728})
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert requested == []
+
+
+def test_socket_owner_action_forward_matrix():
+    """The pure decision over registry evidence: only a serving-role
+    answerer proven the NEWEST listed generation forwards; junk and empty
+    rows tolerate without proving."""
+    from plugins.gateway_restart.tool import socket_owner_action
+
+    identify = dict(_DRAINING_FORWARD_IDENTIFY)
+    assert socket_owner_action(134659, identify, _DRAINING_FORWARD_ROWS) == "attested-forward"
+    # Same array, but the answerer sits mid-array with a newer live row.
+    assert socket_owner_action(134659, identify, [
+        {"pid": 557728, "predecessor_pid": 134659},
+        {"pid": 888999, "predecessor_pid": 557728},
+    ]) == "refuse"
+    # No registry evidence / junk rows: unprovable keeps refusing.
+    assert socket_owner_action(134659, identify, None) == "refuse"
+    assert socket_owner_action(134659, identify, []) == "refuse"
+    assert socket_owner_action(134659, identify, ["junk", {"pid": 0}, 42]) == "refuse"
+    # The requester listed only as a predecessor (the original gateway).
+    assert socket_owner_action(134659, identify, [{"pid": 557728, "predecessor_pid": 134659}]) == "attested-forward"
+    # Registry proof never overrides the draining-predecessor rules.
+    assert socket_owner_action(134659, {
+        "pid": 557728, "overlap": {"role": "draining-predecessor"},
+    }, _DRAINING_FORWARD_ROWS) == "refuse"
+
+
+def test_socket_owner_refusal_wording_per_role():
+    """The refusal clause must tell the truth about the answerer's role:
+    'predates overlap reporting' ONLY for an answerer with no overlap
+    block, never for a current-build serving answerer."""
+    from plugins.gateway_restart.tool import socket_owner_refusal
+
+    serving = socket_owner_refusal(134659, dict(_DRAINING_FORWARD_IDENTIFY))
+    assert "is serving, not draining for a restart" in serving
+    assert "predates overlap reporting" not in serving
+
+    successor = socket_owner_refusal(134659, {
+        "pid": 557728,
+        "overlap": {"role": "overlap-successor", "predecessor_pid": 134659},
+    })
+    assert "overlap successor" in successor
+    assert "predates overlap reporting" not in successor
+
+    unknown = socket_owner_refusal(134659, {
+        "pid": 557728, "overlap": {"role": "unknown"},
+    })
+    assert "could not classify" in unknown
+    assert "predates overlap reporting" not in unknown
+
+    # A role the twins do not know still refuses honestly.
+    foreign = socket_owner_refusal(134659, {
+        "pid": 557728, "overlap": {"role": "banana"},
+    })
+    assert "could not classify" in foreign
+
+    # Legacy answerer (no overlap block at all) keeps its truthful clause.
+    legacy = socket_owner_refusal(134659, {"pid": 709505})
+    assert "predates overlap reporting" in legacy
+
+
 def test_handler_socket_owner_is_the_serving_process_proceeds(monkeypatch):
     """Steady state: the socket owner is the serving process — unchanged
     queue path, identify consulted, ack rendered as before."""

@@ -261,8 +261,8 @@ def _socket_result_json(ack: dict) -> str:
         "active_agents": ack.get("active_agents", 0),
         "via_service": ack.get("via_service"),
         # Same self-describing queue state as `_result_json`, unless the
-        # caller already composed a serving-process-specific note (the
-        # chained-across-overlap rewrite).
+        # caller already composed a process-specific note (the ack
+        # rewrite's chained / forwarded note).
         "queued": True,
         "note": ack.get("note") or _QUEUED_NOTE,
     }
@@ -311,8 +311,62 @@ def _serving_identity_from_session() -> Optional[int]:
         return None
     return pid if pid > 0 else None
 
+def _live_generation_rows() -> Optional[list]:
+    """Live generation-registry rows (the hub's mirror file), or None.
 
-def socket_owner_action(serving_pid: Optional[int], identify: Any) -> str:
+    The same spawn-ordered, fingerprint-verified snapshot the gateway's own
+    forward decision reads — one bounded file read. None on any failure:
+    an unreadable registry proves nothing, and the owner guard keeps
+    refusing rather than guessing.
+    """
+    try:
+        from gateway.overlap_registry import read_live_rows
+
+        return read_live_rows()
+    except Exception:
+        return None
+
+
+def _positive_pid(value: Any) -> bool:
+    """True for a usable process id (bools are ints — exclude them)."""
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _registry_rows_attest_forward(rows: Any, serving_pid: int, answer_pid: int) -> bool:
+    """Does the live generation registry prove the array forward?
+
+    Rows are the spawn-ordered, fingerprint-verified successor records of
+    ``gateway.overlap_registry.read_live_rows``, so the LAST row is the
+    newest live generation. The forward is proven when the answerer IS
+    that newest registered generation and the requesting serving pid is
+    positively listed — as a registered successor or as some row's
+    predecessor (the original generation that spawned the line). A
+    requester the registry never mentions is an unrelated process:
+    unprovable, keep refusing.
+
+    Shared contract with ``internal/servingidentity`` (Go twin), pinned by
+    the shared honesty table.
+    """
+    row_pids: list = []
+    listed: set = set()
+    for row in rows if isinstance(rows, list) else ():
+        if not isinstance(row, dict):
+            continue
+        pid = row.get("pid")
+        if not _positive_pid(pid):
+            continue
+        row_pids.append(pid)
+        listed.add(pid)
+        predecessor = row.get("predecessor_pid")
+        if _positive_pid(predecessor):
+            listed.add(predecessor)
+    if not row_pids:
+        return False
+    return row_pids[-1] == answer_pid and serving_pid in listed
+
+
+def socket_owner_action(serving_pid: Optional[int], identify: Any,
+                        registry_rows: Any = None) -> str:
     """Pure decision: may a restart be queued through this socket answerer?
 
     ``"proceed"`` — the answerer is the serving process, or nothing is
@@ -323,10 +377,18 @@ def socket_owner_action(serving_pid: Optional[int], identify: Any) -> str:
     the draining predecessor owning the socket while its successor serves);
     ``"attested-chain"`` — a different process answered but attests the
     serving process as its hub-ready successor: queueing is correct and the
-    result must name the serving process.
+    result must name the serving process;
+    ``"attested-forward"`` — a different, NEWER process answered: it
+    reports role ``"serving"`` and the generation registry proves it the
+    newest live generation of an array that positively lists the
+    requesting server, so this is a forward to the newest — the array
+    design (a restart on a draining generation forwards to the newest);
+    queueing is correct and the result must name the newest answerer.
 
-    Shared contract with ``internal/servingidentity`` (Go twin); pinned by
-    the shared honesty table.
+    ``registry_rows`` are the live generation-registry rows
+    (``gateway.overlap_registry.read_live_rows``). Shared contract with
+    ``internal/servingidentity`` (Go twin); pinned by the shared honesty
+    table.
     """
     if not serving_pid or not isinstance(identify, dict):
         return "proceed"
@@ -343,22 +405,48 @@ def socket_owner_action(serving_pid: Optional[int], identify: Any) -> str:
         and overlap.get("successor_ready") is True
     ):
         return "attested-chain"
+    if (
+        overlap.get("role") == "serving"
+        and _registry_rows_attest_forward(registry_rows, serving_pid, answer_pid)
+    ):
+        return "attested-forward"
     return "refuse"
+
+# Refusal clause per reported overlap role. Both twins render the same
+# table byte-identically (pinned by the shared honesty table); a role the
+# table does not know renders the unknown-role clause — never a claim about
+# the answerer's build. The empty-role entry is the legacy answerer: no
+# overlap block at all.
+_SOCKET_REFUSAL_CLAUSES = {
+    "": "reports no restart-handoff state (its build predates overlap reporting)",
+    "draining-predecessor": (
+        "is draining for a restart whose successor is not confirmed as this "
+        "conversation's server"
+    ),
+    "serving": (
+        "is serving, not draining for a restart, and is not proven to share "
+        "this conversation's generation array"
+    ),
+    "overlap-successor": (
+        "is an overlap successor that does not attest this conversation's server"
+    ),
+    "unknown": "could not classify its own restart-handoff state",
+}
+_UNKNOWN_ROLE_CLAUSE = _SOCKET_REFUSAL_CLAUSES["unknown"]
 
 def socket_owner_refusal(serving_pid: int, identify: Any) -> str:
     """The refusal message for an unprovable socket owner (pure builder).
 
-    Wording is a shared contract with ``internal/servingidentity`` (Go twin),
-    pinned byte-identical by the shared honesty table.
+    The owner clause is truthful per reported role — "its build predates
+    overlap reporting" only for an answerer with no overlap block, never
+    for a current-build serving answerer. Wording is a shared contract
+    with ``internal/servingidentity`` (Go twin), pinned byte-identical by
+    the shared honesty table.
     """
     overlap = identify.get("overlap") if isinstance(identify, dict) else {}
     overlap = overlap if isinstance(overlap, dict) else {}
-    owner_clause = (
-        "is draining for a restart whose successor is not confirmed as this "
-        "conversation's server"
-        if overlap.get("role") == "draining-predecessor"
-        else "reports no restart-handoff state (its build predates overlap reporting)"
-    )
+    role = str(overlap.get("role") or "")
+    owner_clause = _SOCKET_REFUSAL_CLAUSES.get(role, _UNKNOWN_ROLE_CLAUSE)
     answer_pid = identify.get("pid") if isinstance(identify, dict) else 0
     return (
         "No restart was queued: the gateway control socket is owned by pid "
@@ -371,61 +459,72 @@ def socket_owner_refusal(serving_pid: int, identify: Any) -> str:
 
 
 
-def _socket_owner_guard(serving_pid: Optional[int], identify: Any) -> Optional[str]:
+def _socket_owner_guard(
+    serving_pid: Optional[int], identify: Any, registry_rows: Any = None
+) -> Optional[str]:
     """Refusal result when the socket owner is not the serving process.
 
     The ack's ``pid`` names the ANSWERING process — the socket owner. During
     an overlap restart that owner is the draining predecessor, and queueing a
     restart there chains onto a drain this conversation cannot influence (the
     field incident: the chained restart waited forever). Queueing is allowed
-    only when the answerer is the serving process itself, or positively
-    attests THIS serving process as its hub-ready successor.
+    only when the answerer is the serving process itself, positively
+    attests THIS serving process as its hub-ready successor, or is proven
+    the newest generation of this conversation's array (a draining
+    generation's forward — ``registry_rows``).
     """
-    if socket_owner_action(serving_pid, identify) != "refuse":
+    if socket_owner_action(serving_pid, identify, registry_rows) != "refuse":
         return None
     return _error_json(socket_owner_refusal(serving_pid, identify))
 
 
 def _socket_ack_names_restarting_process(
-    ack: dict, serving_pid: Optional[int], identify: Any
+    ack: dict, serving_pid: Optional[int], identify: Any, registry_rows: Any = None
 ) -> dict:
     """Rewrite an overlap ack so ``process`` names the process that will restart.
 
     The ack's ``pid`` names the ANSWERING process — the socket owner, which
-    during an overlap restart is a draining generation. A ``forwarded`` ack
-    already names the newest generation (``forwarded_to`` — the one that
-    took the request and spawns its own successor); a ``chained`` ack from
-    an older build is proven by the identify attestation (the guard's
-    ``attested-chain``). Either way rendering the answerer as ``process``
-    would point the agent at a dying process.
+    during an overlap restart is a draining generation. Three proven shapes
+    rename it: a ``forwarded`` ack already names the newest generation
+    (``forwarded_to`` — the one that took the request and spawns its own
+    successor); a ``chained`` ack from an older build is proven by the
+    identify attestation (the guard's ``attested-chain``); and an
+    ``attested-forward`` ask — a restart requested from an OLDER draining
+    generation of the array — names the newest answerer, with the note
+    stating the conversation's own process is the superseded forwarder.
+    Either way rendering the answerer as ``process`` would point the agent
+    at a dying process.
     """
     status = str(ack.get("status") or "")
+    action = socket_owner_action(serving_pid, identify, registry_rows)
     if status == "forwarded":
         target = ack.get("forwarded_to")
-        proven = isinstance(target, int) and not isinstance(target, bool) and target > 0
+        proven = _positive_pid(target)
     elif status == "chained":
         target = serving_pid
-        proven = socket_owner_action(serving_pid, identify) == "attested-chain"
+        proven = action == "attested-chain"
+    elif action == "attested-forward":
+        target = identify.get("pid") if isinstance(identify, dict) else None
+        proven = _positive_pid(target)
     else:
         return ack
     if not proven:
         return ack
     answer_pid = ack.get("pid")
-    if not isinstance(answer_pid, int) or isinstance(answer_pid, bool) or answer_pid <= 0:
+    if not _positive_pid(answer_pid):
         answer_pid = identify.get("pid") if isinstance(identify, dict) else None
-    if answer_pid == target:
-        return ack
     ack = dict(ack)
     ack["pid"] = target
-    if status == "forwarded":
-        ack["note"] = _forwarded_process_note(target, answer_pid)
-    else:
+    if status == "chained":
         ack["note"] = (
             f"Restart chained for the serving process: 'process' names pid {target}, "
             f"the process serving this conversation. The control socket is still "
             f"owned by the draining predecessor (pid {answer_pid}); the chained "
             f"restart runs on pid {target} once that handoff completes."
         )
+    else:
+        forwarder = serving_pid if action == "attested-forward" else answer_pid
+        ack["note"] = _forwarded_process_note(target, forwarder)
     return ack
 
 
@@ -438,8 +537,11 @@ def _restart_via_control_socket(*, restart_hub: bool = False) -> str:
     reaches the identical drain pipeline. The socket's owner is verified
     against the session's serving stamp first: during an overlap handoff the
     draining predecessor owns the socket, and queueing there would chain a
-    restart that waits on its drain. Never raises — every failure maps
-    to a typed error result.
+    restart that waits on its drain. A contested owner is re-tried once
+    with the live generation-registry evidence — a restart asked from an
+    OLDER draining generation of the same array forwards to the NEWEST
+    owner (the array design). Never raises — every failure maps to a typed
+    error result.
     """
     from hermes_constants import get_hermes_home
 
@@ -453,7 +555,14 @@ def _restart_via_control_socket(*, restart_hub: bool = False) -> str:
                 get_hermes_home(), timeout=_SOCKET_PROBE_TIMEOUT_S)
         except Exception:
             identify = None
+    registry_rows = None
     guard = _socket_owner_guard(serving_pid, identify)
+    if guard is not None:
+        # The refusal may be a draining-generation ask the hub's registry
+        # can prove: re-decide once with the live generation evidence, and
+        # keep it for the ack rewrite (it names the newest answerer).
+        registry_rows = _live_generation_rows()
+        guard = _socket_owner_guard(serving_pid, identify, registry_rows)
     if guard is not None:
         return guard
     try:
@@ -480,7 +589,7 @@ def _restart_via_control_socket(*, restart_hub: bool = False) -> str:
             f"The running gateway refused the restart: {ack.get('reason') or status or 'no reason given'}"
         )
     return _socket_result_json(
-        _socket_ack_names_restarting_process(ack, serving_pid, identify))
+        _socket_ack_names_restarting_process(ack, serving_pid, identify, registry_rows))
 
 
 def handle_restart(args: dict, **_: Any) -> str:
