@@ -5,8 +5,9 @@
 // agent-initiated conversations without a hand-created job. The Python side
 // (plugins/hermes_starts/sparks_cron.py) only gathers per-profile facts —
 // which job names exist in the store, whether the seeding marker is present,
-// the plugins.entries.hermes_starts.settings.sparks_cron flag, and whether
-// the plugin's prerequisite (a Discord bot token) holds — and executes the
+// the plugins.entries.hermes_starts.settings.sparks_cron flag, whether
+// plugins.disabled opts the home out, and whether the plugin's prerequisite
+// (a Discord bot token) holds — and executes the
 // verdict this package returns. It never decides and never carries the spec:
 // there is exactly one copy of the job name, schedule, prompt, and toolset
 // list, and exactly one create/skip table.
@@ -21,8 +22,11 @@
 //     anomaly: skip rather than guess which one is "the" job.
 //   - A job this seeder created and the user then deleted must stay deleted
 //     (the marker the Python side writes after a successful create is the
-//     signal), and plugins.entries.hermes_starts.settings.sparks_cron=false
-//     opts a profile out entirely.
+//     signal), plugins.entries.hermes_starts.settings.sparks_cron=false
+//     opts a profile out entirely, and plugins.disabled naming
+//     hermes_starts or inbox_sparks opts the home out before every other
+//     gate — the loader's deny-list is these bundled plugins' only opt-out,
+//     so seeding honors it as well.
 //   - The job's toolsets are the generic, always-present ones. Host-specific
 //     toolsets (e.g. tabctl) are deliberately absent: a default job must
 //     resolve its toolset on every install.

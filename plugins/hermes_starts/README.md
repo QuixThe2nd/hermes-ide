@@ -68,6 +68,10 @@ Seeding is idempotent and deferential:
 - `plugins.entries.hermes_starts.settings.sparks_cron: false` opts a profile
   out entirely (per-profile: under `gateway.multiplex_profiles` each served
   profile's own flag and own store apply);
+- `plugins.disabled` naming `hermes_starts` or `inbox_sparks` opts the home
+  out the same way (spelling normalized, so `inbox-sparks` counts): no job
+  is created and no marker written — the deny-list is the loader's own
+  opt-out for these bundled plugins, so seeding honors it too;
 - seeding also requires a configured `DISCORD_BOT_TOKEN` for that profile —
   without the token the wake's only tool cannot resolve, so no job is
   created until the token exists.

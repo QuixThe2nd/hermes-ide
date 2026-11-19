@@ -119,6 +119,46 @@ def test_fresh_home_seeds_job_once(_isolate_env, sparks_cron, real_binary):
     assert (home / "hermes_starts" / "sparks_cron_seeded").is_file()
 
 
+def test_plugin_disabled_launch_home_not_seeded(_isolate_env, sparks_cron, real_binary):
+    home = _isolate_env
+    _write_token(home)
+    _write_config(home, {"plugins": {"disabled": ["hermes_starts"]}})
+
+    _ensure(sparks_cron)
+    _ensure(sparks_cron)
+
+    assert _sparks_jobs(home) == []
+    assert not (home / "hermes_starts" / "sparks_cron_seeded").exists()
+
+
+@pytest.mark.parametrize("deny", [
+    ["hermes_starts"],
+    ["inbox_sparks"],
+    ["Inbox-Sparks"],  # case + hyphen spelling must count as the same plugin
+    ["unrelated_plugin", "hermes-starts"],
+])
+def test_multiplex_plugin_disabled_home_not_seeded(
+    tmp_path, monkeypatch, sparks_cron, real_binary, deny
+):
+    home = tmp_path / ".hermes"
+    home.mkdir(exist_ok=True)
+    beta = home / "profiles" / "beta"
+    beta.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    _write_token(home)
+    _write_token(beta)
+    _write_config(home, {"gateway": {"multiplex_profiles": True}})
+    _write_config(beta, {"plugins": {"disabled": deny}})
+
+    _ensure(sparks_cron)
+
+    assert len(_sparks_jobs(home)) == 1
+    assert (home / "hermes_starts" / "sparks_cron_seeded").is_file()
+    assert _sparks_jobs(beta) == []
+    assert not (beta / "hermes_starts" / "sparks_cron_seeded").exists()
+
+
 def test_existing_job_untouched_byte_identical(_isolate_env, sparks_cron, real_binary):
     from cron.jobs import create_job
 

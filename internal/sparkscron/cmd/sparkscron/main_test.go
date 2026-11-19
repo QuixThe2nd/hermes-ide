@@ -33,6 +33,13 @@ func TestRunRoundTrip(t *testing.T) {
 			wantReason: "job-exists",
 		},
 		{
+			name:       "plugin_disabled in the request skips with that reason",
+			stdin:      `{"job_names":[],"seeded":false,"plugin_disabled":true,"sparks_cron":true,"prereq_ok":true}`,
+			wantExit:   0,
+			wantAction: "skip",
+			wantReason: "plugin-disabled",
+		},
+		{
 			name:       "unknown JSON fields are ignored",
 			stdin:      `{"job_names":[],"seeded":false,"sparks_cron":true,"prereq_ok":true,"future_field":{"a":1}}`,
 			wantExit:   0,
