@@ -120,7 +120,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("context", "Show detailed context window view with usage gauge, category breakdown, compression stats, and throughput", "Session",
                aliases=("ctx",), args_hint="[all]", subcommands=("all",), busy_policy="dispatch"),
     CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
-               args_hint="[model] [--provider name] [--reasoning level] [--global|--session] [--refresh]",
+               args_hint="[model] [--provider name] [--global|--session|--once] [--refresh]",
                busy_policy="reject", busy_handler="model", desktop="hidden"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info",
