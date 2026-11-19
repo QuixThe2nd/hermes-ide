@@ -109,7 +109,6 @@ _TERMINAL_ENV_ROWS = {
 }
 
 _PLATFORMS = {  # name -> token env var
-    "Telegram": "TELEGRAM_BOT_TOKEN",
     "Discord": "DISCORD_BOT_TOKEN", "WhatsApp": "WHATSAPP_ENABLED",
     "Signal": "SIGNAL_HTTP_URL",
     "Slack": "SLACK_BOT_TOKEN", "Email": "EMAIL_ADDRESS",

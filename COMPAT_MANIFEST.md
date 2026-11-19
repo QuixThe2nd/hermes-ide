@@ -30,18 +30,17 @@ name per process. Fix the import and it goes away. To silence during migration:
 `python -W ignore::hermes_cli.plugin_compat.HermesPluginCompatWarning` or `warnings.filterwarnings("ignore", category=HermesPluginCompatWarning)`.
 
 **Scope.** Only PUBLIC names (no leading underscore) that were defined or imported at module top level
-before the decomposition are covered. Private names (`_foo`, `_TG_NAME_LIMIT`, `_clamp_telegram_names`,
-...) were never part of any surface and are NOT restored; a plugin that patched or imported one must move
+before the decomposition are covered. Private names (`_foo`, ...) were never part of any surface and are NOT restored; a plugin that patched or imported one must move
 to the public equivalent or the new module. Test monkeypatch seams are likewise not preserved.
 
 | kind | count | meaning |
 |---|---|---|
 | moved | 0 | name now defined in `new location`; re-exported from the old module |
-| moved-lazy | 1148 | same, resolved lazily via `__getattr__` to avoid an import cycle |
-| import | 592 | a third-party/stdlib name the old module used to expose; original import restored |
-| restored-def | 290 | public name that was deleted as unused; its pre-decomposition definition is restored verbatim |
-| restored-helper | 41 | private helper restored only because a restored-def above depends on it |
-| restored-import | 17 | import re-added only because a restored-def above depends on it |
+| moved-lazy | 1136 | same, resolved lazily via `__getattr__` to avoid an import cycle |
+| import | 589 | a third-party/stdlib name the old module used to expose; original import restored |
+| restored-def | 281 | public name that was deleted as unused; its pre-decomposition definition is restored verbatim |
+| restored-helper | 39 | private helper restored only because a restored-def above depends on it |
+| restored-import | 15 | import re-added only because a restored-def above depends on it |
 | module-stub | 3 | whole module deleted; stub re-exports from its replacement |
 | unrestorable | 34 | not restorable (e.g. leaked loop variables); listed for completeness |
 
@@ -865,7 +864,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `is_shared_multi_user_session` | moved-lazy | `gateway.session` |
 | `is_truthy_value` | moved-lazy | `utils` |
 | `load_dotenv` | import | `dotenv` |
-| `looks_like_telegram_private_chat_id` | moved-lazy | `gateway.delivery` |
 | `loop_heartbeat_forever` | moved-lazy | `gateway.shutdown_watchdog` |
 | `merge_pending_message_event` | moved-lazy | `gateway.platforms.base` |
 | `neutralize_untrusted_inline_text` | moved-lazy | `gateway.session` |
@@ -1047,9 +1045,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `slack_native_slashes` | moved-lazy | `hermes_cli.commands_platforms` |
 | `slack_subcommand_map` | moved-lazy | `hermes_cli.commands_platforms` |
 | `subprocess` | import | `subprocess` |
-| `telegram_bot_commands` | moved-lazy | `hermes_cli.commands_platforms` |
-| `telegram_menu_commands` | moved-lazy | `hermes_cli.commands_platforms` |
-| `telegram_menu_max_commands` | moved-lazy | `hermes_cli.commands_platforms` |
 | `time` | import | `time` |
 
 ### `hermes_cli.config`
@@ -1427,25 +1422,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `redact_key` | moved-lazy | `hermes_cli.config` |
 | `subprocess` | import | `subprocess` |
 
-### `hermes_cli.telegram_managed_bot`
-
-| name | kind | new location |
-|---|---|---|
-| `DEFAULT_MANAGER_BOT` | restored-def | `(deleted; BASE body restored)` |
-| `_USERNAME_SLUG_ALPHABET` | restored-helper | `(deleted; restored as a dependency of generate_bot_username)` |
-| `auto_setup_telegram_bot` | restored-def | `(deleted; BASE body restored)` |
-| `generate_bot_username` | restored-def | `(deleted; BASE body restored)` |
-| `generate_deep_link` | restored-def | `(deleted; BASE body restored)` |
-| `generate_pairing_nonce` | restored-def | `(deleted; BASE body restored)` |
-| `generate_username_slug` | restored-helper | `(deleted; restored as a dependency of generate_bot_username)` |
-| `generate_username_slug` | restored-def | `(deleted; BASE body restored)` |
-| `poll_for_token` | restored-def | `(deleted; BASE body restored)` |
-| `poll_pairing_once` | restored-def | `(deleted; BASE body restored)` |
-| `secrets` | restored-import | `secrets` |
-| `secrets` | import | `secrets` |
-| `urllib` | restored-import | `urllib.parse` |
-| `urllib` | import | `urllib.parse` |
-
 ### `hermes_cli.tools_config`
 
 | name | kind | new location |
@@ -1607,8 +1583,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `StaticFiles` | unrestorable | `no top-level definition on BASE` |
 | `TTSLeaseRequest` | moved-lazy | `hermes_cli.web_models` |
 | `TTSSpeakRequest` | moved-lazy | `hermes_cli.web_models` |
-| `TelegramOnboardingApply` | moved-lazy | `hermes_cli.web_models` |
-| `TelegramOnboardingStart` | moved-lazy | `hermes_cli.web_models` |
 | `TerminalBackendSelect` | moved-lazy | `hermes_cli.web_models` |
 | `ThemeSetBody` | moved-lazy | `hermes_cli.web_models` |
 | `ToolsetEnvUpdate` | moved-lazy | `hermes_cli.web_models` |
@@ -1626,7 +1600,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `activate_custom_endpoint` | moved-lazy | `hermes_cli.web_routers.config_env` |
 | `add_credential_pool_entry` | moved-lazy | `hermes_cli.web_routers.ops` |
 | `add_mcp_server` | moved-lazy | `hermes_cli.web_routers.mcp` |
-| `apply_telegram_onboarding` | moved-lazy | `hermes_cli.web_routers.messaging` |
 | `apply_whatsapp_onboarding` | moved-lazy | `hermes_cli.web_routers.messaging` |
 | `approve_pairing` | moved-lazy | `hermes_cli.web_routers.ops` |
 | `atexit` | import | `atexit` |
@@ -1636,7 +1609,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `build_cron_model_impact` | moved-lazy | `hermes_cli.config` |
 | `bulk_delete_sessions_endpoint` | moved-lazy | `hermes_cli.web_routers.sessions` |
 | `cancel_oauth_session` | moved-lazy | `hermes_cli.web_routers.oauth` |
-| `cancel_telegram_onboarding` | moved-lazy | `hermes_cli.web_routers.messaging` |
 | `cancel_whatsapp_onboarding` | moved-lazy | `hermes_cli.web_routers.messaging` |
 | `cfg_get` | moved-lazy | `hermes_cli.config` |
 | `check_config_version` | moved-lazy | `hermes_cli.config` |
@@ -1746,7 +1718,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `get_ssh_ownership` | moved-lazy | `hermes_cli.web_routers.status` |
 | `get_status` | moved-lazy | `hermes_cli.web_routers.status` |
 | `get_system_stats` | moved-lazy | `hermes_cli.web_routers.status` |
-| `get_telegram_onboarding_status` | moved-lazy | `hermes_cli.web_routers.messaging` |
 | `get_terminal_backends` | moved-lazy | `hermes_cli.web_routers.tools` |
 | `get_toolset_config` | moved-lazy | `hermes_cli.web_routers.tools` |
 | `get_toolset_models` | moved-lazy | `hermes_cli.web_routers.tools` |
@@ -1880,7 +1851,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `speak_text` | moved-lazy | `hermes_cli.web_routers.audio` |
 | `start_gateway` | moved-lazy | `hermes_cli.web_routers.ops` |
 | `start_oauth_login` | moved-lazy | `hermes_cli.web_routers.oauth` |
-| `start_telegram_onboarding` | moved-lazy | `hermes_cli.web_routers.messaging` |
 | `start_whatsapp_onboarding` | moved-lazy | `hermes_cli.web_routers.messaging` |
 | `stat` | import | `stat` |
 | `stop_gateway` | moved-lazy | `hermes_cli.web_routers.ops` |
@@ -2216,24 +2186,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | name | kind | new location |
 |---|---|---|
 | `asyncio` | import | `asyncio` |
-
-
-### `plugins.platforms.telegram.adapter`
-
-| name | kind | new location |
-|---|---|---|
-| `atomic_replace` | moved-lazy | `utils` |
-| `cache_document_from_bytes` | moved-lazy | `gateway.platforms.base` |
-| `threading` | import | `threading` |
-
-### `plugins.platforms.telegram.telegram_ids`
-
-| name | kind | new location |
-|---|---|---|
-| `telegram_chat_id_key` | restored-def | `(deleted; BASE body restored)` |
-
-
-
 
 
 ### `plugins.teams_pipeline.cli`
@@ -2917,9 +2869,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `GITHUB_TAP_PROVIDERS` | moved-lazy | `tools.skills_hub_github` |
 | `GitHubAuth` | moved-lazy | `tools.skills_hub_github` |
 | `GitHubSource` | moved-lazy | `tools.skills_hub_github` |
-| `HERMES_INDEX_TTL` | moved-lazy | `tools.skills_hub_search` |
-| `HERMES_INDEX_URL` | moved-lazy | `tools.skills_hub_search` |
-| `HermesIndexSource` | moved-lazy | `tools.skills_hub_official` |
 | `LobeHubSource` | moved-lazy | `tools.skills_hub_sources` |
 | `OptionalSkillSource` | moved-lazy | `tools.skills_hub_official` |
 | `PurePosixPath` | import | `pathlib` |

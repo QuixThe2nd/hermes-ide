@@ -151,7 +151,7 @@ def test_mismatched_platform_does_not_authorize(monkeypatch):
             {
                 "mission_id": "m1",
                 "status": "active",
-                "platform": "telegram",
+                "platform": "discord",
                 "chat_id": user_id,
             }
         ],

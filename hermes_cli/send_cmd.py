@@ -1,5 +1,5 @@
 """CLI subcommand: ``hermes send`` — pipe text from shell scripts to any configured messaging platform
-(Telegram, Discord, Slack, Signal, SMS, etc.).
+(Discord, Slack, Signal, SMS, etc.).
 """
 
 from __future__ import annotations
@@ -40,10 +40,10 @@ def _read_message_body(positional: Optional[str], file_path: Optional[str]) -> O
                 "message *body* (logs, reports, markdown).\n"
                 "To send an image/document/audio file as a native attachment, "
                 "reference it with MEDIA: in the message text instead:\n"
-                f'  hermes send --to telegram "MEDIA:{file_path}"\n'
-                f'  hermes send --to telegram "optional caption MEDIA:{file_path}"\n'
+                f'  hermes send --to discord "MEDIA:{file_path}"\n'
+                f'  hermes send --to discord "optional caption MEDIA:{file_path}"\n'
                 "Add [[as_document]] to deliver an image as an uncompressed file:\n"
-                f'  hermes send --to telegram "[[as_document]] MEDIA:{file_path}"',
+                f'  hermes send --to discord "[[as_document]] MEDIA:{file_path}"',
                 _USAGE_EXIT)
         except OSError as exc:
             _fail(f"hermes send: cannot read {file_path}: {exc}", _USAGE_EXIT)
@@ -195,7 +195,7 @@ def cmd_send(args: argparse.Namespace) -> None:
     """Entry point wired into the top-level argparse dispatcher."""
     _load_hermes_env()  # the downstream gateway config loader reads credentials from os.environ
     if getattr(args, "list_targets", False):  # --list short-circuits everything else
-        # `hermes send --list telegram` lands "telegram" in the `message` positional.
+        # `hermes send --list discord` lands "discord" in the `message` positional.
         exit_code = _list_targets(getattr(args, "message", None), json_mode=getattr(args, "json", False))
         sys.exit(exit_code)
     target = (getattr(args, "to", None) or "").strip()
@@ -203,7 +203,7 @@ def cmd_send(args: argparse.Namespace) -> None:
         _fail(
             "hermes send: --to PLATFORM[:channel[:thread]] is required\n"
             "Examples:\n"
-            "  hermes send --to telegram \"hello\"\n"
+            "  hermes send --to discord \"hello\"\n"
             "  hermes send --to discord:#ops --file report.md\n"
             "  hermes send --list      # list available targets",
             _USAGE_EXIT)
@@ -246,7 +246,7 @@ _SEND_ARGUMENTS = (
         "Delivery target. Format: "
         "'platform:chat_id', 'platform:chat_id:thread_id', or "
         "'platform:#channel-name'. Examples: "
-        "telegram:-1001234567890:17585, discord:#ops, slack:C0123ABCD, signal:+15551234567."))),
+        "discord:1234567890:17585, discord:#ops, slack:C0123ABCD, signal:+15551234567."))),
     (("message",), dict(nargs="?", default=None, help="Message text. If omitted, read from --file or stdin.")),
     (("-f", "--file"), dict(metavar="PATH", default=None, help=(
         "Read message body from PATH (text only). Use '-' to force stdin. "
@@ -256,7 +256,7 @@ _SEND_ARGUMENTS = (
         "WhatsApp only: add a native participant mention. Repeat for multiple recipients; "
         "bare phone numbers are normalized to JIDs. Include each matching @<number> near the start of the message text."))),
     (("-l", "--list"), dict(dest="list_targets", action="store_true", default=False,
-                            help="List available targets. Optional positional filter: `hermes send --list telegram`.")),
+                            help="List available targets. Optional positional filter: `hermes send --list discord`.")),
     (("-q", "--quiet"), dict(action="store_true", default=False, help="Suppress stdout on success (exit code only).")),
     (("--json",), dict(action="store_true", default=False, help="Emit raw JSON result instead of human-readable output.")),
 )
@@ -275,18 +275,18 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
             f"credentials ({hermes_home / '.env'} + "
             f"{hermes_home / 'config.yaml'}) — no LLM, "
             "no agent loop, no running gateway required for bot-token "
-            "platforms like Telegram/Discord/Slack/Signal."
+            "platforms like Discord/Slack/Signal."
         ),
         epilog=(
             "Examples:\n"
-            "  hermes send --to telegram \"deploy finished\"\n"
-            "  echo \"RAM 92%\" | hermes send --to telegram:-1001234567890\n"
+            "  hermes send --to discord \"deploy finished\"\n"
+            "  echo \"RAM 92%\" | hermes send --to discord:1234567890\n"
             "  hermes send --to discord:#ops --file ./report.md\n"
             "  hermes send --to slack:#eng --subject \"[CI]\" --file build.log\n"
             "  hermes send --to whatsapp:GROUP@g.us --mention 15551234567 \"@15551234567 hello\"\n"
-            "  hermes send --to telegram \"MEDIA:./chart.png\"   # send a media attachment\n"
+            "  hermes send --to discord \"MEDIA:./chart.png\"   # send a media attachment\n"
             "  hermes send --list                  # all platforms\n"
-            "  hermes send --list telegram         # filter by platform\n"
+            "  hermes send --list discord         # filter by platform\n"
             "\n"
             "Exit codes: 0 ok, 1 delivery/backend error, 2 usage error."
         ),

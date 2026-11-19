@@ -713,14 +713,14 @@ class TestWebhookSilenceSuppression:
         mock_target = AsyncMock()
         mock_target.send = AsyncMock(return_value=SendResult(success=True))
         mock_runner = MagicMock()
-        mock_runner.adapters = {Platform("telegram"): mock_target}
+        mock_runner.adapters = {Platform("discord"): mock_target}
         mock_runner._authorization_adapter = lambda platform, profile=None: mock_runner.adapters.get(platform)
         mock_runner.config.get_home_channel.return_value = None
         adapter.gateway_runner = mock_runner
 
         chat_id = "webhook:helper-events:d-1"
         adapter._delivery_info[chat_id] = {
-            "deliver": "telegram",
+            "deliver": "discord",
             "deliver_extra": {"chat_id": "-100123"},
         }
         adapter._delivery_info_created[chat_id] = time.time()
@@ -841,7 +841,7 @@ class TestDeliverCrossPlatformThreadId:
         mock_target.send = AsyncMock(return_value=SendResult(success=True))
 
         mock_runner = MagicMock()
-        mock_runner.adapters = {Platform("telegram"): mock_target}
+        mock_runner.adapters = {Platform("discord"): mock_target}
         mock_runner._authorization_adapter = lambda platform, profile=None: mock_runner.adapters.get(platform)
         mock_runner.config.get_home_channel.return_value = None
 
@@ -858,7 +858,7 @@ class TestDeliverCrossPlatformThreadId:
                 "thread_id": "999",
             }
         }
-        await adapter._deliver_cross_platform("telegram", "hello", delivery)
+        await adapter._deliver_cross_platform("discord", "hello", delivery)
         mock_target.send.assert_awaited_once_with(
             "12345", "hello", metadata={"thread_id": "999"}
         )

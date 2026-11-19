@@ -15,6 +15,7 @@ import json
 import os
 import time
 import threading
+from functools import lru_cache
 from agent.i18n import t
 from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
@@ -30,6 +31,28 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+@lru_cache(maxsize=1)
+def _goal_continuation_prefixes() -> tuple:
+    """Exact text prefixes (up to the ``{goal}`` slot) of every continuation
+    template ``GoalManager`` emits — plain, contract, subgoals, and the
+    quality-gate-failed variant. Derived from the templates so they cannot drift."""
+    from hermes_cli.goals import (
+        CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE,
+        CONTINUATION_PROMPT_TEMPLATE,
+        CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE,
+        CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE,
+    )
+    return tuple(
+        t.split("{goal}", 1)[0]
+        for t in (
+            CONTINUATION_PROMPT_TEMPLATE,
+            CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE,
+            CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE,
+            CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE,
+        )
+    )
 
 
 def _strip_slot(text: str, slot: str) -> Optional[str]:
@@ -254,11 +277,13 @@ class GatewayBusySessionMixin:
                 from gateway.platforms.event import transfer_replay_completion
 
                 return transfer_replay_completion(queued_copy, queued_event)
-        if session_key in pending_slot or getattr(queued_event, "internal", False):
-            # Internal events (resume wakes, background completions) never take the
-            # human head slot: the slot's text-merge semantics would collapse a wake
-            # into the next user message (mirrors the adapter-side rule that a wake
-            # must not merge into an occupied human slot).
+        if session_key in pending_slot or (
+            getattr(queued_event, "internal", False)
+            and not self._is_goal_continuation_event(queued_event)
+        ):
+            # Overflow preserves FIFO when the head is occupied. Other internal
+            # events always use overflow so text merging cannot collapse them
+            # into a human turn; goal continuations retain their pending-slot drain.
             self._session_state(session_key).conversation.queued_events.append(queued_event)
         else:
             pending_slot[session_key] = queued_event
@@ -368,9 +393,24 @@ class GatewayBusySessionMixin:
 
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
-        """True for synthetic /goal continuation turns (so pause/clear can spare real /queue items)."""
-        text = getattr(event_or_text, "text", event_or_text) or ""
-        return str(text).startswith("[Continuing toward your standing goal]\nGoal:")
+        """True for synthetic /goal continuation turns (so pause/clear can spare real /queue items).
+
+        Two-part check, never a loose text prefix: the text must match the EXACT
+        prefix of a template ``GoalManager`` emits, and an *event* must additionally
+        carry internal provenance. A human quoting the banner — or even a full
+        template — arrives as a non-internal platform event and must be preserved,
+        not drained as synthetic. Text-only input (the enqueue side) is decided by
+        the exact prefixes alone.
+        """
+        text = getattr(event_or_text, "text", None)
+        raw = event_or_text if text is None else text
+        if not raw:
+            return False
+        if not str(raw).startswith(_goal_continuation_prefixes()):
+            return False
+        if text is None:
+            return True  # bare template text: no event provenance to inspect
+        return bool(getattr(event_or_text, "internal", False))
 
     def _clear_goal_pending_continuations(self, session_key: str, adapter: Any) -> int:
         """Remove queued synthetic /goal continuations for one session; real /queue items are kept."""
@@ -937,13 +977,7 @@ class GatewayBusySessionMixin:
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
                 content=message,
-                reply_to=(
-                    reply_anchor
-                    if event.source.platform == Platform.TELEGRAM
-                    and event.source.chat_type == "dm"
-                    and event.source.thread_id
-                    else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
-                ),
+                reply_to=event.message_id,
                 metadata=thread_meta,
             )
         except Exception as e:
@@ -955,7 +989,7 @@ class GatewayBusySessionMixin:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
         # creating a session.  The busy path must enforce the same check;
-        # otherwise unauthorized users in shared threads (Slack/Telegram/Discord)
+        # otherwise unauthorized users in shared threads (Slack/Discord)
         # can inject messages into an active session they don't own.
         if not self._is_user_authorized(event.source):
             logger.warning(
@@ -988,13 +1022,7 @@ class GatewayBusySessionMixin:
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
                 content=message,
-                reply_to=(
-                    reply_anchor
-                    if event.source.platform == Platform.TELEGRAM
-                    and event.source.chat_type == "dm"
-                    and event.source.thread_id
-                    else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
-                ),
+                reply_to=event.message_id,
                 metadata=thread_meta,
             )
             return True
@@ -1137,7 +1165,7 @@ class GatewayBusySessionMixin:
 
     # busy_handler key (hermes_cli/commands.py CommandDef) → mid-run variant ``_busy_<key>_command``.
     _BUSY_SPECIAL_HANDLERS: Dict[str, str] = {
-        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "incognito", "queue", "loop")
+        k: f"_busy_{k}_command" for k in ("stop", "new", "incognito", "queue", "loop")
     }
 
     async def _dispatch_busy_slash_command(self, event: MessageEvent, cmd_def, quick_key: str, source):
@@ -1197,11 +1225,6 @@ class GatewayBusySessionMixin:
             f"⏸️ Paused{suffix}. New cron/gateway work is on hold; "
             "in-flight work finishes normally. Use `/pause off` to resume."
         )
-
-    async def _busy_start_command(self, event: MessageEvent, quick_key: str, source):
-        # Telegram's /start is a platform ping (bot launch/deep-link), not a user command.
-        logger.info("Ignoring /start platform ping for active session %s", quick_key)
-        return ""
 
     async def _busy_stop_command(self, event: MessageEvent, quick_key: str, source):
         # Hard-kill: a soft interrupt can't reach a truly hung executor thread.
@@ -1365,60 +1388,6 @@ class GatewayBusySessionMixin:
             if not thread_id or not tail or _tail_has_slot(tail, thread_id)
         ]
 
-    def _is_stale_restart_redelivery(self, event: MessageEvent) -> bool:
-        """True if this /restart is a Telegram re-delivery we already handled.
-
-        The previous gateway wrote ``.restart_last_processed.json`` (platform + update_id). A
-        /restart with update_id <= that value is a redelivery when this process booted from that
-        restart; otherwise the marker must be < 5 minutes old. Telegram only (numeric ordering).
-        """
-        from gateway.run import _hermes_home
-        if event is None or event.source is None or event.platform_update_id is None:
-            return False
-        try:
-            if event.source.platform.value != "telegram":
-                return False
-        except Exception:
-            return False
-
-        try:
-            marker_path = _hermes_home / ".restart_last_processed.json"
-            if not marker_path.exists():
-                # Missing marker: a redelivered /restart would otherwise re-restart forever. Suppress
-                # ONLY when this process booted from a chat /restart AND is within a short post-boot
-                # window; consume the flag one-shot so a later legitimate /restart is honored.
-                if (
-                    # Belt-and-suspenders for when the dedup marker goes missing (manually cleaned up, or
-                    # the previous cycle's write failed). Without a marker the update_id comparison below
-                    # can't run, so a redelivered /restart would sail through and re-restart the gateway —
-                    # an infinite loop (issue #18528).
-                    getattr(self, "_booted_from_restart", False)
-                    and time.time() - getattr(self, "_startup_time", 0.0) < 60
-                ):
-                    self._booted_from_restart = False
-                    return True
-                return False
-            data = json.loads(marker_path.read_text(encoding="utf-8-sig"))
-        except Exception:
-            return False
-
-        recorded_uid = data.get("update_id")
-        if (
-            data.get("platform") != "telegram"
-            or not isinstance(recorded_uid, int)
-            or event.platform_update_id > recorded_uid
-        ):
-            return False
-
-        # A service-managed restart can outlast the 5-minute trust window; consume the boot
-        # signal one-shot.
-        if getattr(self, "_booted_from_restart", False):
-            self._booted_from_restart = False
-            return True
-
-        # Staleness guard: an old marker (crash recovery) must not swallow a fresh /restart.
-        requested_at = data.get("requested_at")
-        return not (isinstance(requested_at, (int, float)) and time.time() - requested_at > 300)
 
     async def _handle_suggestions_command(self, event: MessageEvent) -> str:
         """/suggestions via the shared handler (origin = event source so jobs deliver back here)."""

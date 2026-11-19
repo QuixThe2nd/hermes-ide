@@ -50,40 +50,13 @@ def _make_source(path: Path) -> dict[str, int]:
                 )
 
         db.set_meta("goal:recovery-session-0", '{"status":"active"}')
-        db.apply_telegram_topic_migration()
-        db._conn.execute(
-            """
-            INSERT INTO telegram_dm_topic_mode (
-                chat_id, user_id, enabled, activated_at, updated_at
-            ) VALUES (?, ?, 1, ?, ?)
-            """,
-            ("chat-1", "user-1", 1.0, 2.0),
-        )
-        db._conn.execute(
-            """
-            INSERT INTO telegram_dm_topic_bindings (
-                chat_id, thread_id, user_id, session_key, session_id,
-                managed_mode, linked_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "chat-1",
-                "thread-1",
-                "user-1",
-                "telegram:user-1:chat-1",
-                "recovery-session-0",
-                "auto",
-                1.0,
-                2.0,
-            ),
-        )
         db._conn.execute(
             """
             INSERT INTO gateway_routing (
                 scope, session_key, entry_json, updated_at
             ) VALUES (?, ?, ?, ?)
             """,
-            ("telegram", "telegram:user-1:chat-1", "{}", 2.0),
+            ("discord", "discord:user-1:chat-1", "{}", 2.0),
         )
         db._conn.execute(
             """
@@ -680,8 +653,8 @@ def test_recovery_copies_delivery_obligations(tmp_path: Path) -> None:
         [
             (
                 "ob-pending",
-                "telegram:1:chat-1",
-                "telegram",
+                "discord:1:chat-1",
+                "discord",
                 "chat-1",
                 None,
                 "owed reply",
@@ -696,8 +669,8 @@ def test_recovery_copies_delivery_obligations(tmp_path: Path) -> None:
             ),
             (
                 "ob-delivered",
-                "telegram:1:chat-1",
-                "telegram",
+                "discord:1:chat-1",
+                "discord",
                 "chat-1",
                 None,
                 "already sent",
@@ -795,8 +768,8 @@ def test_recovery_flags_delivery_obligation_count_mismatch_as_loss(
     _insert_delivery_obligations(
         source,
         [
-            ("ob-a", "k", "telegram", "chat-1", None, "a", "pending", 0, now, now, None, None, None, "default"),
-            ("ob-b", "k", "telegram", "chat-1", None, "b", "pending", 0, now, now, None, None, None, "default"),
+            ("ob-a", "k", "discord", "chat-1", None, "a", "pending", 0, now, now, None, None, None, "default"),
+            ("ob-b", "k", "discord", "chat-1", None, "b", "pending", 0, now, now, None, None, None, "default"),
         ],
     )
 
@@ -832,8 +805,8 @@ def test_lost_and_found_direct_copy_creates_lazy_delivery_ledger(tmp_path: Path)
     _insert_delivery_obligations(
         recovered_source,
         [
-            ("ob-1", "k", "telegram", "chat-1", None, "one", "pending", 0, now, now, None, None, None, "default"),
-            ("ob-2", "k", "telegram", "chat-1", None, "two", "failed", 3, now, now, None, None, "boom", "default"),
+            ("ob-1", "k", "discord", "chat-1", None, "one", "pending", 0, now, now, None, None, None, "default"),
+            ("ob-2", "k", "discord", "chat-1", None, "two", "failed", 3, now, now, None, None, "boom", "default"),
         ],
     )
     output = tmp_path / "rebuilt.db"

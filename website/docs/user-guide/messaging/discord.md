@@ -489,7 +489,7 @@ discord:
     timeout_seconds: 3.0      # per-request budget; over budget means deny
     context_messages: 10      # recent same-channel messages sent as evidence
     context_chars: 8000       # total character budget for that evidence block
-    model: jev-1.13.0  # judge model; fixed default, no fallback chain
+    model: jev-1.14.0  # judge model; fixed default, no fallback chain
     threads_require_membership: true  # threads stay silent until the bot has participated (default)
 ```
 
@@ -533,7 +533,7 @@ discord:
     timeout_seconds: 3.0       # per-request budget; over budget means no reaction
     context_messages: 10       # recent same-channel messages sent as evidence
     context_chars: 8000        # total character budget for that evidence block
-    model: jev-1.13.0  # judge model; fixed default, no fallback chain
+    model: jev-1.14.0  # judge model; fixed default, no fallback chain
     decision_formula: 'abstain < 0.5 or (emoji_count >= 2 and top > 5 * second)'  # the default rule, spelled out
     include_threads: true            # a listed parent channel id also selects its threads (default)
     threads_require_membership: true  # in-scope threads stay silent until the bot has participated (default)
@@ -753,7 +753,7 @@ Controls whether the bot sends progress messages in the chat while processing (e
 
 ```yaml
 display:
-  tool_progress: "describe"    # off | new | all | verbose | describe (default: describe; rows render in code boxes, tool_progress_codebox: false for plain text)
+  tool_progress: "describe"    # off | new | all | verbose | describe (default: describe; rows always render in code boxes)
 ```
 
 - `off` — no progress messages
@@ -762,7 +762,7 @@ display:
 - `verbose` — show full tool call details (can produce long messages)
 - `describe` — one short line saying what each tool call is for (the call's own description), instead of the raw command/code
 
-When a `delegate_agent(backend="cursor")` (or legacy `delegate_cursor_agent`) call reports live progress, Discord posts a Cursor-branded embed with a **Watch live session** hyperlink instead of dumping the raw URL.
+When a `delegate_agent(backend="claude")` call reports live progress, Discord posts a Claude-branded embed with a **Watch live session** hyperlink into the local viewer instead of dumping the raw URL.
 
 #### `display.tool_progress_command`
 

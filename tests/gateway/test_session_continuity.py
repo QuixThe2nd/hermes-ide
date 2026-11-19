@@ -39,9 +39,9 @@ def db(tmp_path):
 
 
 PEER = dict(
-    source="telegram",
+    source="discord",
     user_id="6308981865",
-    session_key="agent:main:telegram:dm:6308981865",
+    session_key="agent:main:discord:dm:6308981865",
     chat_id="6308981865",
     chat_type="dm",
     thread_id=None,
@@ -56,7 +56,7 @@ def _mk_session(db, session_id, *, key=True, started_at=None, last_activity_at=N
             session_key=PEER["session_key"], chat_id=PEER["chat_id"],
             chat_type=PEER["chat_type"],
         )
-    db.create_session(session_id, "telegram", **kwargs)
+    db.create_session(session_id, "discord", **kwargs)
     for i in range(msgs):
         db.append_message(session_id, "user" if i % 2 == 0 else "assistant", f"m{i}")
     with db._lock:
@@ -74,9 +74,9 @@ def _mk_session(db, session_id, *, key=True, started_at=None, last_activity_at=N
 
 class TestIdentityAtInsert:
     def test_insert_session_row_persists_origin_and_display_name(self, db):
-        origin = json.dumps({"platform": "telegram", "chat_id": "6308981865"})
+        origin = json.dumps({"platform": "discord", "chat_id": "6308981865"})
         db.create_session(
-            "s1", "telegram",
+            "s1", "discord",
             session_key=PEER["session_key"], chat_id=PEER["chat_id"],
             chat_type="dm", origin_json=origin, display_name="Teknium",
         )
@@ -86,14 +86,14 @@ class TestIdentityAtInsert:
         assert row["session_key"] == PEER["session_key"]
 
     def test_conflict_backfills_origin_without_overwriting(self, db):
-        db.create_session("s2", "telegram", session_key=PEER["session_key"])
+        db.create_session("s2", "discord", session_key=PEER["session_key"])
         # Second insert (agent-side upsert) backfills origin_json on the
         # existing row...
-        db.create_session("s2", "telegram", origin_json='{"a":1}', display_name="X")
+        db.create_session("s2", "discord", origin_json='{"a":1}', display_name="X")
         row = db.get_session("s2")
         assert row["origin_json"] == '{"a":1}'
         # ...but never overwrites a value already set.
-        db.create_session("s2", "telegram", origin_json='{"b":2}', display_name="Y")
+        db.create_session("s2", "discord", origin_json='{"b":2}', display_name="Y")
         row = db.get_session("s2")
         assert row["origin_json"] == '{"a":1}'
         assert row["display_name"] == "X"
@@ -108,19 +108,19 @@ class TestPeerRecorderSelfHeal:
         assert db.get_session(sid) is None
         db.record_gateway_session_peer(
             sid,
-            source="telegram",
+            source="discord",
             user_id=PEER["user_id"],
             session_key=PEER["session_key"],
             chat_id=PEER["chat_id"],
             chat_type="dm",
             display_name="Teknium",
-            origin_json='{"platform": "telegram"}',
+            origin_json='{"platform": "discord"}',
         )
         row = db.get_session(sid)
         assert row is not None, "peer refresh must self-heal the missing row"
         assert row["session_key"] == PEER["session_key"]
         assert row["chat_id"] == PEER["chat_id"]
-        assert row["origin_json"] == '{"platform": "telegram"}'
+        assert row["origin_json"] == '{"platform": "discord"}'
 
     def test_lazy_writer_then_peer_refresh_repairs_identity(self, db):
         """Orphan-factory shape: update_token_counts materializes the row
@@ -131,7 +131,7 @@ class TestPeerRecorderSelfHeal:
         assert row is not None and row["session_key"] is None  # the orphan
         db.record_gateway_session_peer(
             sid,
-            source="telegram",
+            source="discord",
             user_id=PEER["user_id"],
             session_key=PEER["session_key"],
             chat_id=PEER["chat_id"],
@@ -192,7 +192,7 @@ class TestPeerResolutionRecency:
         assert found["id"] == "zombie2"  # unstamped rows are invisible
         # Self-heal stamps the real row (any later peer refresh):
         db.record_gateway_session_peer(
-            "real", source="telegram", user_id=PEER["user_id"],
+            "real", source="discord", user_id=PEER["user_id"],
             session_key=PEER["session_key"], chat_id=PEER["chat_id"],
             chat_type="dm",
         )
@@ -232,8 +232,8 @@ class TestLoadTranscriptReroutes:
         store = SessionStore(sessions_dir=tmp_path / "gw", config=GatewayConfig())
         db = store._db
         assert db is not None
-        db.create_session("parent", "telegram", session_key=PEER["session_key"])
-        db.create_session("child", "telegram", session_key=PEER["session_key"])
+        db.create_session("parent", "discord", session_key=PEER["session_key"])
+        db.create_session("child", "discord", session_key=PEER["session_key"])
         db.append_message("child", "user", "hello from the child")
         # Write-side reroute installed after a compression rotation:
         store._transcript_reroutes["parent"] = "child"
@@ -250,12 +250,12 @@ class TestLoadTranscriptReroutes:
         store = SessionStore(sessions_dir=tmp_path / "gw2", config=GatewayConfig())
         db = store._db
         assert db is not None
-        db.create_session("p2", "telegram", session_key=PEER["session_key"])
+        db.create_session("p2", "discord", session_key=PEER["session_key"])
         db.append_message("p2", "user", "old")
         db.publish_compression_child(
             parent_session_id="p2",
             child_session_id="c2",
-            source="telegram",
+            source="discord",
             messages=[{"role": "user", "content": "compressed history"}],
             require_compression_lease=False,
         )

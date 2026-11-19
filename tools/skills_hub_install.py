@@ -241,7 +241,12 @@ def bundle_content_hash(bundle: SkillBundle) -> str:
     return f"sha256:{h.hexdigest()[:16]}"
 
 
-_SOURCE_ID_ALIASES = {"skills.sh": "skills-sh"}
+_SOURCE_ID_ALIASES = {
+    "skills.sh": "skills-sh",
+    # Lock entries recorded by the removed hermes-index adapter: its fetch
+    # resolved identifiers to GitHub paths, so GitHubSource serves them.
+    "hermes-index": "github",
+}
 
 
 def _source_matches(source: SkillSource, source_name: str) -> bool:

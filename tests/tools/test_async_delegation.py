@@ -916,7 +916,7 @@ def _make_async_evt(**over):
     evt = {
         "type": "async_delegation",
         "delegation_id": "deleg_x1",
-        "session_key": "agent:main:telegram:dm:12345:678",
+        "session_key": "agent:main:discord:dm:12345:678",
         "goal": "Investigate flaky test",
         "context": "repo /tmp/p",
         "toolsets": ["terminal"],

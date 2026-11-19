@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import importlib
 import queue
 import threading
 import time
@@ -124,7 +123,6 @@ def _make_turn_context(progress_q: queue.Queue, still: list[bool]) -> TurnContex
         _run_still_current=lambda: still[0],
         progress_queue=progress_q,
         progress_grouping="accumulate",
-        progress_codebox=False,
         _progress_metadata=None,
         _progress_reply_to=None,
         _native_slack_task_cards=False,
@@ -133,17 +131,9 @@ def _make_turn_context(progress_q: queue.Queue, still: list[bool]) -> TurnContex
     )
 
 
-@pytest.mark.parametrize(
-    "turn_runner_path",
-    [
-        pytest.param("gateway.run", id="live"),
-        pytest.param("gateway.run_turn_runner", id="shadow"),
-    ],
-)
 @pytest.mark.asyncio
-async def test_progress_pump_re_resolves_adapter_after_mid_turn_swap(turn_runner_path):
-    mod = importlib.import_module(turn_runner_path)
-    TurnRunner = mod.TurnRunner
+async def test_progress_pump_re_resolves_adapter_after_mid_turn_swap():
+    from gateway.run_turn_runner import TurnRunner
 
     progress_q: queue.Queue = queue.Queue()
     still = [True]
@@ -307,7 +297,7 @@ def test_clarify_text_fallback_re_resolves_status_adapter_after_mid_turn_swap(lo
         stream_consumer_holder=[None],
         _loop_for_step=loop,
         _run_still_current=lambda: True,
-        source=SimpleNamespace(chat_id="42", platform="telegram"),
+        source=SimpleNamespace(chat_id="42", platform="discord"),
     )
     runner = TurnRunner(object(), ctx)
     runner._close_native_stream_boundary = lambda *a, **k: None

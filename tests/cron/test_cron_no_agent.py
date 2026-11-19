@@ -212,7 +212,7 @@ def test_timed_out_no_agent_script_delivery_is_not_mislabeled_as_provider_failur
         schedule="every 5m",
         script="slow.py",
         no_agent=True,
-        deliver="telegram",
+        deliver="discord",
         name="slow watchdog",
     )
     delivered = []
@@ -268,7 +268,7 @@ def test_agent_provider_timeout_delivery_keeps_fallback_guidance(hermes_env, mon
     job = create_job(
         prompt="Summarize the overnight logs.",
         schedule="every 5m",
-        deliver="telegram",
+        deliver="discord",
         name="provider-backed report",
     )
     delivered = []

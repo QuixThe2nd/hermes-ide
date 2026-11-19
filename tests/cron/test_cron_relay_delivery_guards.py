@@ -3,7 +3,7 @@
 Two related behaviors on relay-fronted Slack deployments:
 
 1. ``deliver=origin`` replays the captured origin thread verbatim (Slack
-   thread-per-message keys, Telegram forum topics alike), and an explicit
+   thread-per-message keys, Discord forum topics alike), and an explicit
    ``slack:<chat_id>`` target addressed to the origin chat re-attaches the
    origin's thread so the reply lands in the same thread.
 
@@ -50,8 +50,8 @@ class TestOriginThreadRouting:
         assert target["thread_id"] is None
 
     def test_non_slack_origin_thread_untouched(self):
-        """Telegram forum-topic origins replay their thread verbatim."""
-        job = {"origin": {"platform": "telegram", "chat_id": "-1003941067111",
+        """Discord forum-topic origins replay their thread verbatim."""
+        job = {"origin": {"platform": "discord", "chat_id": "-1003941067111",
                           "thread_id": "2203"}}
         target = _resolve_single_delivery_target(job, "origin")
         assert target["thread_id"] == "2203"
@@ -104,7 +104,7 @@ class TestPreflightRelayFronted:
         """No relay configured: the native credential check is unchanged."""
         monkeypatch.delenv("GATEWAY_RELAY_PLATFORMS", raising=False)
         with patch("gateway.config.load_gateway_config",
-                   return_value=_gateway_config({"telegram"})):
+                   return_value=_gateway_config({"discord"})):
             reason = _preflight_check_delivery(
                 {"deliver": "slack:D0BJTDCSR7C"})
             assert reason is not None

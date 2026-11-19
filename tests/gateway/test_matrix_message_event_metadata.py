@@ -1,7 +1,7 @@
 """Tests for Matrix MessageEvent metadata (sender, reply context).
 
 The matrix adapter builds MessageEvent from inbound room events. Other adapters
-(Signal, Slack, Telegram, Discord, Mattermost, IRC) populate the sender /
+(Signal, Slack, Discord, Mattermost, IRC) populate the sender /
 reply_to_* fields on MessageEvent so the gateway can:
   - prepend "[Name] message" to user prompt text in shared-multi-user sessions
   - render "[Replying to: ...]" with the replied-to author's name
@@ -151,7 +151,7 @@ async def test_text_message_carries_sender_for_different_user(monkeypatch):
 async def test_reply_carries_target_text_and_author(monkeypatch):
     """Reply messages must carry the replied-to message's text + author MXID/name.
 
-    Other adapters (Signal, Slack, Telegram) already populate these fields.
+    Other adapters (Signal, Slack, Discord) already populate these fields.
     Matrix historically did not, so "[Replying to: ...]" rendered only the
     quoted text without any indicator of *who* the user was replying to.
     """

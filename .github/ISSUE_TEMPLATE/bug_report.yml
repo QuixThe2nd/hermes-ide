@@ -60,7 +60,7 @@ body:
       multiple: true
       options:
         - CLI (interactive chat)
-        - Gateway (Telegram/Discord/Slack/WhatsApp)
+        - Gateway (Discord/Slack/WhatsApp)
         - Setup / Installation
         - Tools (terminal, file ops, web, code execution, etc.)
         - Skills (skill loading, skill hub, skill guard)
@@ -78,7 +78,6 @@ body:
       multiple: true
       options:
         - N/A (CLI only)
-        - Telegram
         - Discord
         - Slack
         - WhatsApp

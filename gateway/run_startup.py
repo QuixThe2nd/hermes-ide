@@ -20,7 +20,6 @@ from contextvars import copy_context
 from datetime import datetime
 from pathlib import Path
 from gateway.config import Platform
-from gateway.delivery import looks_like_telegram_private_chat_id
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
@@ -325,7 +324,7 @@ class GatewayStartupMixin:
         return _report
 
     async def _await_startup_boot_sends(self, *, planned_restart_notification_pending: bool) -> None:
-        """Run boot-path sends without letting them pin the inbound restore gate (one Telegram
+        """Run boot-path sends without letting them pin the inbound restore gate (a slow
         flood-control sleep must not freeze inbound on every platform): same bounded wait as the
         resume gate, sends finish in the background on timeout. The ledger claim + ``resume_pending``
         clear run INLINE before the send task exists — deferring it let a hung notification expire the
@@ -883,7 +882,7 @@ class GatewayStartupMixin:
 
             # Validate the session owner against the current allowlist
             # before auto-resuming. A session created before
-            # TELEGRAM_ALLOWED_USERS (or equivalent) was configured, or
+            # DISCORD_ALLOWED_USERS (or equivalent) was configured, or
             # before the owner was removed from it, must not silently
             # receive a full agent response on gateway restart just
             # because it has a resume-pending marker (issue #23778).
@@ -1185,13 +1184,12 @@ class GatewayStartupMixin:
     # Builtin platforms whose ``<P>_ALLOWED_USERS`` / ``<P>_ALLOW_ALL_USERS`` env vars count as an
     # allowlist / open-access opt-in; plugin platforms are appended at check time.
     _ALLOWLIST_ENV_PLATFORMS = (
-        "TELEGRAM", "DISCORD", "WHATSAPP", "WHATSAPP_CLOUD", "SLACK", "SIGNAL", "EMAIL", "SMS",
+        "DISCORD", "WHATSAPP", "WHATSAPP_CLOUD", "SLACK", "SIGNAL", "EMAIL", "SMS",
         "MATRIX", "FEISHU", "WEIXIN",
         "BLUEBUBBLES", "QQ", "YUANBAO",
     )
     _BUILTIN_ALLOWED_USERS_VARS = tuple(f"{p}_ALLOWED_USERS" for p in _ALLOWLIST_ENV_PLATFORMS) + (
-        "SIGNAL_GROUP_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_USERS",
-        "TELEGRAM_GROUP_ALLOWED_CHATS", "GATEWAY_ALLOWED_USERS",
+        "SIGNAL_GROUP_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS",
     )
     _BUILTIN_ALLOW_ALL_VARS = tuple(f"{p}_ALLOW_ALL_USERS" for p in _ALLOWLIST_ENV_PLATFORMS)
 
@@ -1214,7 +1212,7 @@ class GatewayStartupMixin:
             logger.warning(
                 "No env user allowlists configured. Messaging platforms default to pairing/allowlist "
                 "policies and will deny unknown senders unless you configure platform allowlists (e.g., "
-                "TELEGRAM_ALLOWED_USERS=your_id) or explicitly opt in with GATEWAY_ALLOW_ALL_USERS=true "
+                "DISCORD_ALLOWED_USERS=your_id) or explicitly opt in with GATEWAY_ALLOW_ALL_USERS=true "
                 "plus dm_policy/group_policy: open on the platform."
             )
         reason = _own_policy_open_startup_violation(self.config)
@@ -1597,8 +1595,8 @@ class GatewayStartupMixin:
             # over a blip. Log the fatal side loudly and fall through to the degraded/retry path.
             self._startup_parked_platforms = True
             logger.error(
-                # WhatsApp enabled but never paired) while others hit merely transient errors (e.g. Telegram
-                # TimedOut during polling startup). Exiting with GATEWAY_FATAL_CONFIG_EXIT_CODE here is
+                # WhatsApp enabled but never paired) while others hit merely transient network errors
+                # during polling startup). Exiting with GATEWAY_FATAL_CONFIG_EXIT_CODE here is
                 # wrong in both supervision worlds: under supervisors that honor the exit-78 contract
                 # (systemd RestartPreventExitStatus, s6 finish→125 since #51228) the gateway goes
                 # PERMANENTLY down over a network blip; under anything else it crash-loops. Either way the
@@ -1667,12 +1665,8 @@ class GatewayStartupMixin:
         # Let fresh adapters settle before lifecycle sends (helps Discord thread deliveries).
         if connected_count > 0:
             await asyncio.sleep(1.0)
-        # Before _send_restart_notification() unlinks the marker: did we boot from a chat /restart?
-        # One-shot signal for _is_stale_restart_redelivery.
-        if _restart_notification_pending():
-            self._booted_from_restart = True
-        # Boot-path adapter.send() calls must not pin the inbound restore gate (a Telegram flood-
-        # control sleep here once froze every platform).
+        # Boot-path adapter.send() calls must not pin the inbound restore gate (a slow
+        # transport sleep must not freeze every platform).
         # Restart notification, notification-channel startup notice, and obligation redelivery all call
         # adapter.send(). Bound them the same way _finish_startup_restore bounds resume turns. See #91969.
         await self._await_startup_boot_sends(
@@ -1807,18 +1801,9 @@ class GatewayStartupMixin:
             logger.debug("Handoff: create_handoff_thread raised on %s: %s", platform_name, exc, exc_info=True)
             new_thread_id = None
         effective_thread_id = new_thread_id or (str(channel.thread_id) if channel.thread_id else None)
-        # Telegram private-chat DM topics use the DM-topic source shape (user_id == chat_id) so the
-        # synthetic turn binds the same key later inbound turns arrive on (`dm`, not `thread`).
-        is_telegram_private_chat = (
-            platform == Platform.TELEGRAM and looks_like_telegram_private_chat_id(channel_chat_id)
-        )
-        is_thread = bool(new_thread_id) and not is_telegram_private_chat
+        is_thread = bool(new_thread_id)
         chat_type = "thread" if is_thread else "dm"
         scope_id = None
-        if platform == Platform.TELEGRAM and not is_telegram_private_chat:
-            # The Telegram adapter keys forum-topic replies ``group:<chat>:<topic>`` (never
-            # ``thread``); bind the handoff on the same slot.
-            chat_type = "group"
         if platform == Platform.SLACK:
             # Slack keys a thread reply on the parent channel's type ("dm" for a D… channel, else
             # "group") plus the workspace id — never on a "thread" slot. Mirror the adapter's inbound
@@ -1838,7 +1823,7 @@ class GatewayStartupMixin:
             ) else channel_chat_id,
             chat_name=channel.name,
             chat_type=chat_type,
-            user_id=channel_chat_id if is_telegram_private_chat else "system:handoff",
+            user_id="system:handoff",
             user_name="Handoff", thread_id=effective_thread_id, profile=profile_name,
             scope_id=scope_id,
         )

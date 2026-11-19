@@ -120,22 +120,22 @@ async def test_planned_restart_notice_reaches_notification_channel(boot_notice, 
 @pytest.mark.asyncio
 async def test_partial_delivery_is_persisted_and_not_repeated(boot_notice):
     runner, _, marker = boot_notice
-    telegram, discord = _adapter(), _adapter()
-    runner.config.platforms[Platform.TELEGRAM] = PlatformConfig(
+    matrix_adapter, discord = _adapter(), _adapter()
+    runner.config.platforms[Platform.MATRIX] = PlatformConfig(
         enabled=True,
-        notification_channel=DeliveryTarget(platform=Platform.TELEGRAM, chat_id="other-home", thread_id="7", name="Other"),
+        notification_channel=DeliveryTarget(platform=Platform.MATRIX, chat_id="other-home", thread_id="7", name="Other"),
     )
     runner.config.platforms[Platform.SLACK] = PlatformConfig(
         enabled=True, gateway_restart_notification=False,
         notification_channel=DeliveryTarget(platform=Platform.SLACK, chat_id="muted-home", name="Muted"),
     )
-    runner.adapters[Platform.TELEGRAM] = telegram
+    runner.adapters[Platform.MATRIX] = matrix_adapter
 
     await _boot(runner)
 
-    telegram.send.assert_awaited_once()
+    matrix_adapter.send.assert_awaited_once()
     discord.send.assert_not_called()
-    assert json.loads(marker.read_text(encoding="utf-8"))["delivered_targets"] == [["telegram", "other-home", "7"]]
+    assert json.loads(marker.read_text(encoding="utf-8"))["delivered_targets"] == [["matrix", "other-home", "7"]]
 
     # A fresh process has no in-memory history: dedupe must come from the marker. The opted-out
     # Slack notification channel is never owed a notice, so Discord's delivery completes the set.
@@ -144,7 +144,7 @@ async def test_partial_delivery_is_persisted_and_not_repeated(boot_notice):
     await _reconnect(recovered, Platform.DISCORD, discord)
 
     discord.send.assert_awaited_once()
-    telegram.send.assert_awaited_once()
+    matrix_adapter.send.assert_awaited_once()
     assert not marker.exists()
 
     # Nothing pending: a later reconnect stays silent.
@@ -160,9 +160,9 @@ async def test_partial_notice_delivery_survives_restart_and_concurrent_replay(bo
     other = SimpleNamespace(send=AsyncMock(return_value=SendResult(success=True)))
     # Deliver one destination first, then encounter an unavailable/failing/hung transport.
     runner.config.platforms = {
-        Platform.TELEGRAM: PlatformConfig(
+        Platform.MATRIX: PlatformConfig(
             enabled=True,
-            notification_channel=DeliveryTarget(platform=Platform.TELEGRAM, chat_id="other-home", thread_id="7", name="Other home"),
+            notification_channel=DeliveryTarget(platform=Platform.MATRIX, chat_id="other-home", thread_id="7", name="Other home"),
         ),
         **runner.config.platforms,
         Platform.SLACK: PlatformConfig(
@@ -170,7 +170,7 @@ async def test_partial_notice_delivery_survives_restart_and_concurrent_replay(bo
             notification_channel=DeliveryTarget(platform=Platform.SLACK, chat_id="muted-home", name="Muted home"),
         ),
     }
-    runner.adapters[Platform.TELEGRAM] = other
+    runner.adapters[Platform.MATRIX] = other
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -193,7 +193,7 @@ async def test_partial_notice_delivery_survives_restart_and_concurrent_replay(bo
         await asyncio.wait_for(started.wait(), timeout=5)
         # Acknowledgments must already be on disk while a later destination is hung.
         marker_data = json.loads(marker.read_text())
-        assert marker_data["delivered_targets"] == [["telegram", "other-home", "7"]]
+        assert marker_data["delivered_targets"] == [["matrix", "other-home", "7"]]
         assert marker_data["pending_targets"] == [["discord", "unit-test-home", None]]
         boot.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -201,7 +201,7 @@ async def test_partial_notice_delivery_survives_restart_and_concurrent_replay(bo
     else:
         await boot
     data = json.loads(marker.read_text())
-    assert data["delivered_targets"] == [["telegram", "other-home", "7"]]
+    assert data["delivered_targets"] == [["matrix", "other-home", "7"]]
     assert data["pending_targets"] == [["discord", "unit-test-home", None]]
     other.send.assert_awaited_once()
 

@@ -52,7 +52,7 @@ class TestLoadDirectory:
 class TestBuildChannelDirectoryWrites:
     def test_failed_write_preserves_previous_cache(self, tmp_path, monkeypatch):
         cache_file = _write_directory(tmp_path, {
-            "telegram": [{"id": "123", "name": "Alice", "type": "dm"}]
+            "slack": [{"id": "123", "name": "Alice", "type": "dm"}]
         })
         previous = json.loads(cache_file.read_text())
 
@@ -85,9 +85,9 @@ class TestBuildChannelDirectoryWrites:
 
         cache_file = tmp_path / "channel_directory.json"
         with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
-            directory = asyncio.run(build_channel_directory({Platform.TELEGRAM: AdapterWithChannels()}))
+            directory = asyncio.run(build_channel_directory({Platform.DISCORD: AdapterWithChannels()}))
 
-        assert directory["platforms"]["telegram"] == [
+        assert directory["platforms"]["discord"] == [
             {"id": "default", "name": "主对话", "type": "dm"},
             {"id": "family_1", "name": "达拉崩吧", "type": "group"},
         ]
@@ -173,10 +173,10 @@ class TestResolveChannelName:
 
     def test_no_match_returns_none(self, tmp_path):
         platforms = {
-            "telegram": [{"id": "123", "name": "John", "type": "dm"}]
+            "matrix": [{"id": "123", "name": "John", "type": "dm"}]
         }
         with self._setup(tmp_path, platforms):
-            assert resolve_channel_name("telegram", "nonexistent") is None
+            assert resolve_channel_name("matrix", "nonexistent") is None
 
 
 class TestBuildFromSessions:
@@ -190,7 +190,7 @@ class TestBuildFromSessions:
         self._write_sessions(tmp_path, {
             "session_1": {
                 "origin": {
-                    "platform": "telegram",
+                    "platform": "discord",
                     "chat_id": "12345",
                     "chat_name": "Alice",
                 },
@@ -198,7 +198,7 @@ class TestBuildFromSessions:
             },
             "session_2": {
                 "origin": {
-                    "platform": "telegram",
+                    "platform": "discord",
                     "chat_id": "67890",
                     "user_name": "Bob",
                 },
@@ -206,14 +206,14 @@ class TestBuildFromSessions:
             },
             "session_3": {
                 "origin": {
-                    "platform": "discord",
+                    "platform": "slack",
                     "chat_id": "99999",
                 },
             },
         })
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            entries = _build_from_sessions("telegram")
+            entries = _build_from_sessions("discord")
 
         assert len(entries) == 2
         names = {e["name"] for e in entries}
@@ -232,11 +232,11 @@ class TestFormatDirectoryForDisplay:
         a hint instead of being hidden entirely."""
         result = format_directory_for_display({
             "simplex": [],
-            "telegram": [{"id": "1", "name": "home", "type": "dm"}],
+            "slack": [{"id": "1", "name": "home", "type": "dm"}],
         })
         assert "Simplex:" in result
         assert "no channels discovered yet" in result
-        assert "telegram:home" in result
+        assert "slack:home" in result
 
     def test_explicit_platforms_override_disk(self, tmp_path):
         with patch("gateway.channel_directory.DIRECTORY_PATH", tmp_path / "nope.json"):

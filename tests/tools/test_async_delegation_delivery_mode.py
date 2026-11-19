@@ -317,10 +317,10 @@ class TestResolveBackgroundArg:
 
 
 class TestAllFourToolsShareTheResolver:
-    """No tool reimplements the matrix: all four model-facing entries consult
+    """No tool reimplements the matrix: every model-facing entry consults
     the SAME resolve_background_arg, with the raw args, before any work."""
 
-    @pytest.mark.parametrize("tool", ["delegate_agent", "delegate_claude_agent", "delegate_cursor_agent", "delegate_assistant"])
+    @pytest.mark.parametrize("tool", ["delegate_agent", "delegate_claude_agent", "delegate_assistant"])
     def test_every_delegate_tool_consults_the_shared_resolver(self, monkeypatch, tool):
         calls = []
 
@@ -351,11 +351,6 @@ class TestAllFourToolsShareTheResolver:
 
             monkeypatch.setattr(mod, "delegate_claude_agent", lambda *a, **kw: "{}")
             mod._handle_delegate_claude_agent({"task": "t", "workdir": "/w"})
-        elif tool == "delegate_cursor_agent":
-            import tools.cursor_agent_tool as mod
-
-            monkeypatch.setattr(mod, "delegate_cursor_agent", lambda *a, **kw: "{}")
-            mod._handle_delegate_cursor_agent({"task": "t", "workdir": "/w"})
         else:
             import plugins.missions as pm
 
@@ -509,19 +504,19 @@ def test_register_background_delegation_makes_completion_durable(tmp_path, monke
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     res = ad.register_background_delegation(
         delegation_id="mission-abc123def456",
-        session_key="agent:main:telegram:dm:1",
+        session_key="agent:main:discord:dm:1",
         goal="Reach out to Sam",
         tool="delegate_assistant",
         result_kind=ad.RESULT_KIND_MISSION,
     )
     assert res["status"] == "dispatched"
-    assert ad.has_live_for_session(session_key="agent:main:telegram:dm:1")
+    assert ad.has_live_for_session(session_key="agent:main:discord:dm:1")
 
     ok = ad.publish_terminal_event(
         {
             "type": "async_delegation",
             "delegation_id": "mission-abc123def456",
-            "session_key": "agent:main:telegram:dm:1",
+            "session_key": "agent:main:discord:dm:1",
             "status": "completed",
             "summary": "Sam agreed",
             "tool": "delegate_assistant",
@@ -536,7 +531,7 @@ def test_register_background_delegation_makes_completion_durable(tmp_path, monke
     durable = ad.get_durable_delegation("mission-abc123def456")
     assert durable is not None
     assert durable["delivery_state"] == "pending"
-    assert durable["origin_session"] == "agent:main:telegram:dm:1"
+    assert durable["origin_session"] == "agent:main:discord:dm:1"
 
 
 # ---------------------------------------------------------------------------
@@ -642,7 +637,7 @@ def test_register_inline_wait_creates_durable_external_row(tmp_path, monkeypatch
     "kind,tool,expected",
     [
         ("cli_agent", "delegate_claude_agent", "ASYNC CLAUDE CODE RUN COMPLETE"),
-        ("cloud_agent", "delegate_cursor_agent", "ASYNC CURSOR CLOUD RUN COMPLETE"),
+        ("cloud_agent", None, "ASYNC DELEGATION COMPLETE"),  # unknown kind -> generic header
         ("mission", "delegate_assistant", "ASSISTANT MISSION COMPLETE"),
         (None, None, "ASYNC DELEGATION COMPLETE"),
     ],

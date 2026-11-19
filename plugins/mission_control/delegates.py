@@ -56,7 +56,7 @@ FROM messages
 WHERE session_id IN ({placeholders})
   AND role = 'tool'
   AND tool_name IN ('delegate_agent', 'delegate_task',
-                    'delegate_claude_agent', 'delegate_cursor_agent')
+                    'delegate_claude_agent')
 ORDER BY id ASC
 LIMIT ?
 """
@@ -94,7 +94,6 @@ DELEGATE_TOOL_LABELS = {
     "delegate_agent": "Sub-agent",
     "delegate_task": "Sub-agent",
     "delegate_claude_agent": "Claude agent",
-    "delegate_cursor_agent": "Cursor agent",
 }
 DELEGATION_STATE_KEYS = {
     "completed": "done",
@@ -183,7 +182,7 @@ def delegate_spawn_calls(name, args_raw):
     yields whatever partial tasks are still recoverable.
 
     Batch shapes (delegate_agent/delegate_task with a tasks list) yield
-    one descriptor per recovered task; Claude/Cursor calls always yield
+    one descriptor per recovered task; Claude calls always yield
     exactly one (they take a single task and have no control actions).
     A delegate_agent whose action reads list/steer/stop — parsed whole
     or recovered from a truncated slice — yields nothing, and one with
@@ -198,7 +197,7 @@ def delegate_spawn_calls(name, args_raw):
             obj = json.loads(args_raw)
         except (ValueError, TypeError):
             obj = None
-    if name in ("delegate_claude_agent", "delegate_cursor_agent"):
+    if name == "delegate_claude_agent":
         label = _task_label(obj)
         if not label:
             label = _scan_string_field(args_raw, "task") or \
@@ -254,8 +253,7 @@ def delegate_spawn_calls(name, args_raw):
 # recovery scans for when the outer tool_calls array is truncated past
 # whole-document parsing.
 DELEGATE_NAME_RE = re.compile(
-    r'"(delegate_agent|delegate_task|delegate_claude_agent|'
-    r'delegate_cursor_agent)"')
+    r'"(delegate_agent|delegate_task|delegate_claude_agent)"')
 DELEGATE_NAME_KEY_RE = re.compile(r'"name"\s*:\s*$')
 DELEGATE_CALL_ID_RE = re.compile(r'"call_id"\s*:\s*$')
 DELEGATE_ID_KEY_RE = re.compile(r'"id"\s*:\s*$')
@@ -555,7 +553,7 @@ def activity_state_label(name, args_raw):
         if action == "wait":
             return "Waiting for process"
         return "Running process"
-    if name in ("delegate_claude_agent", "delegate_cursor_agent"):
+    if name == "delegate_claude_agent":
         return "Waiting for coding agent"
     if name == "delegate_task":
         return "Dispatching subagent"

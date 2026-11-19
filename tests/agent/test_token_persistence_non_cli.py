@@ -43,9 +43,9 @@ def _make_agent(session_db, *, platform: str):
     return agent
 
 
-def test_run_conversation_persists_tokens_for_telegram_sessions():
+def test_run_conversation_persists_tokens_for_discord_sessions():
     session_db = MagicMock()
-    agent = _make_agent(session_db, platform="telegram")
+    agent = _make_agent(session_db, platform="discord")
 
     result = agent.run_conversation("hello")
 
@@ -53,7 +53,7 @@ def test_run_conversation_persists_tokens_for_telegram_sessions():
     # Per-call deltas are enqueued for the SessionDB background writer
     # (queue_token_counts) rather than written inline on the turn thread.
     session_db.queue_token_counts.assert_called_once()
-    assert session_db.queue_token_counts.call_args.args[0] == "telegram-session"
+    assert session_db.queue_token_counts.call_args.args[0] == "discord-session"
 
 
 

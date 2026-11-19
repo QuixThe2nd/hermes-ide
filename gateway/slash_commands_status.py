@@ -472,7 +472,7 @@ class GatewayStatusCommandsMixin:
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:
         """Handle /insights [N | --days N] [--source S] -- usage insights and analytics."""
-        # Normalize Unicode dashes (Telegram/iOS auto-converts -- to em/en dash)
+        # Normalize Unicode dashes (mobile keyboards auto-convert -- to em/en dash)
         args = re.sub(r'[\u2012\u2013\u2014\u2015](days|source)', r'--\1', event.get_command_args().strip())
         days, source = 30, None
         parts = args.split()

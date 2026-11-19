@@ -39,6 +39,7 @@ global.chrome = {
   },
   commands: { onCommand: event },
   runtime: {
+    onConnect: event,
     onMessage: event,
     sendMessage() { return Promise.resolve(); },
   },
@@ -46,7 +47,7 @@ global.chrome = {
     onChanged: event,
     sync: { async get() { return {}; } },
   },
-  windows: { onFocusChange: event },
+  windows: { onFocusChanged: event },
 };
 
 require(backgroundScript);

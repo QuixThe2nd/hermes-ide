@@ -116,7 +116,7 @@ def test_codex_turn_persists_each_message_exactly_once():
     try:
         db = SessionDB(Path(tmp) / "state.db")
         sid = "sess-codex-once"
-        db.create_session(session_id=sid, source="telegram", model="codex")
+        db.create_session(session_id=sid, source="discord", model="codex")
 
         # Real agent bound to this DB/session, minimal construction.
         agent = AIAgent(

@@ -40,7 +40,7 @@ async def test_aborted_hygiene_retains_cooldown_across_restart_and_final_result(
             return messages, None
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
-        db.create_session(sid, "telegram")
+        db.create_session(sid, "discord")
         for iteration in range(2):
             runner, adapter, event = _make_cooldown_runner(monkeypatch, tmp_path, CompressorAgent, db, sid)
             cfg = {"compression": {"enabled": True, "hygiene_failure_cooldown_seconds": 300}}

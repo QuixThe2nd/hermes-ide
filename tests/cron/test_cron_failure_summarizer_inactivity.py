@@ -92,7 +92,7 @@ def test_rate_limit_classification_still_takes_priority_over_inactivity_text(mon
     job = {"name": "some-job", "id": "abc123"}
     error = "HTTP 429: weekly usage limit exceeded"
     msg = _summarize_cron_failure_for_delivery(job, error)
-    # A usage-limit wall is a billing verdict: it names the limit and the provider-pin fix,
-    # never the transient "backup provider" retry clause.
+    # A usage-limit wall is a billing verdict: it names the limit and the fleet-provider fix
+    # (per-job pins are gone), never the transient "backup provider" retry clause.
     assert "usage or credit limit" in msg
-    assert "hermes cron edit abc123 --provider" in msg
+    assert "cron.model_provider" in msg

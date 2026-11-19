@@ -22,9 +22,6 @@ _SECONDARY_YAML = """\
 require_mention: false
 gateway:
   allow_all_users: true
-telegram:
-  mention_patterns: ['^bot2']
-  reactions: false
 matrix:
   require_mention: false
   allowed_users: ['@b2:example.org']
@@ -45,7 +42,6 @@ signal:
 """
 
 _BRIDGED_ENV = (
-    "TELEGRAM_REQUIRE_MENTION", "TELEGRAM_MENTION_PATTERNS", "TELEGRAM_REACTIONS",
     "MATRIX_REQUIRE_MENTION", "MATRIX_ALLOWED_USERS", "MATRIX_SESSION_SCOPE",
     "WHATSAPP_DM_POLICY", "WHATSAPP_ALLOWED_USERS", "FEISHU_ALLOW_BOTS",
     "SLACK_ALLOW_BOTS", "SLACK_IGNORED_CHANNELS",
@@ -53,7 +49,7 @@ _BRIDGED_ENV = (
 )
 
 _EXPECTED_EXTRA = (
-    ("telegram", "mention_patterns"), ("telegram", "reactions"), ("matrix", "session_scope"),
+    ("matrix", "session_scope"),
     ("matrix", "allowed_users"), ("whatsapp", "dm_policy"), ("feishu", "allow_bots"),
     ("slack", "allow_bots"), ("slack", "ignored_channels"),
     ("discord", "auto_thread"), ("signal", "require_mention"),
@@ -72,7 +68,7 @@ def secondary_scope(tmp_path, monkeypatch):
         monkeypatch.delenv(name, raising=False)
     set_multiplex_active(True)
     home_token = set_hermes_home_override(str(secondary))
-    secret_token = set_secret_scope({"TELEGRAM_BOT_TOKEN": "222:b2"})
+    secret_token = set_secret_scope({"DISCORD_BOT_TOKEN": "222:b2"})
     try:
         yield
     finally:

@@ -87,28 +87,6 @@ func TestSteerOwnedLiveClaudeRunIsNotSteerable(t *testing.T) {
 	}
 }
 
-func TestSteerOwnedLiveCursorRunIsNotSteerable(t *testing.T) {
-	fn, calls := spyInterrupt()
-	reg := NewRegistry()
-	reg.Put(cliRecord("deleg_9d13aa02", "delegate_cursor_agent", KindCloudAgent, "sess-cli-steer-2",
-		func(r *Record) { r.InterruptFn = fn }))
-	caller := &Caller{SessionID: "sess-cli-steer-2"}
-
-	reply, err := reg.Steer("deleg_9d13aa02", "Use the staging project", caller)
-	if err != nil {
-		t.Fatalf("steer of an owned live cloud run must not error: %v", err)
-	}
-	if reply.Status != StatusNotSteerable {
-		t.Fatalf("status = %q, want %q", reply.Status, StatusNotSteerable)
-	}
-	if !strings.Contains(strings.ToLower(reply.Note), "cloud run") {
-		t.Fatalf("note must name the cloud-run constraint: %q", reply.Note)
-	}
-	if n := atomic.LoadInt32(calls); n != 0 {
-		t.Fatalf("steer must never fire the interrupt channel; fired %d time(s)", n)
-	}
-}
-
 func TestSteerEmptyMessageIsRejectedBeforeOutcome(t *testing.T) {
 	reg := NewRegistry()
 	reg.Put(cliRecord("deleg_steer-empty", "delegate_claude_agent", KindCLIAgent, "sess-a"))
@@ -133,11 +111,11 @@ func TestListShowsOwnedLiveCodingRunsAndExcludesTheRest(t *testing.T) {
 	reg := NewRegistry()
 	reg.Put(cliRecord("deleg_3aa10001", "delegate_claude_agent", KindCLIAgent, "sess-cli-list-1",
 		withGoal("Claude: refactor auth module")))
-	reg.Put(cliRecord("deleg_3aa10002", "delegate_cursor_agent", KindCloudAgent, "sess-cli-list-1",
-		withGoal("Cursor: migrate the endpoint")))
+	reg.Put(cliRecord("deleg_3aa10002", "delegate_claude_agent", KindCLIAgent, "sess-cli-list-1",
+		withGoal("Claude: migrate the endpoint")))
 	reg.Put(cliRecord("deleg_3aa10003", "delegate_claude_agent", KindCLIAgent, "sess-someone-else",
 		withGoal("Someone else's claude run")))
-	reg.Put(cliRecord("deleg_3aa10004", "delegate_cursor_agent", KindCloudAgent, "sess-cli-list-1",
+	reg.Put(cliRecord("deleg_3aa10004", "delegate_claude_agent", KindCLIAgent, "sess-cli-list-1",
 		withStatus(StatusCompleted), withGoal("Already finished")))
 	reg.Put(cliRecord("deleg_3aa10005", "delegate_agent", KindSubagentBatch, "sess-cli-list-1",
 		withGoal("Native batch unit")))
@@ -164,9 +142,9 @@ func TestListShowsOwnedLiveCodingRunsAndExcludesTheRest(t *testing.T) {
 	if claude.Tool != "delegate_claude_agent" || claude.AcceptingSteer || claude.Status != StatusRunning || claude.Goal == "" {
 		t.Fatalf("claude entry wrong: %+v", claude)
 	}
-	cursor := got["deleg_3aa10002"]
-	if cursor.Tool != "delegate_cursor_agent" || cursor.AcceptingSteer || cursor.Goal == "" || cursor.Status == "" {
-		t.Fatalf("cursor entry wrong: %+v", cursor)
+	second := got["deleg_3aa10002"]
+	if second.Tool != "delegate_claude_agent" || second.AcceptingSteer || second.Goal == "" || second.Status == "" {
+		t.Fatalf("second claude entry wrong: %+v", second)
 	}
 	if payload.Note != "" {
 		t.Fatalf("empty-registry note must be suppressed when a coding run is listed: %q", payload.Note)
@@ -197,7 +175,7 @@ func TestListEmptyRegistryKeepsTheNote(t *testing.T) {
 
 func TestListMergesNativeEntriesWithCodingRuns(t *testing.T) {
 	reg := NewRegistry()
-	reg.Put(cliRecord("deleg_mix-1", "delegate_cursor_agent", KindCloudAgent, "sess-mix"))
+	reg.Put(cliRecord("deleg_mix-1", "delegate_claude_agent", KindCLIAgent, "sess-mix"))
 	native := []ListEntry{{
 		SubagentID: "sid-native-1", Tool: "delegate_agent", Goal: "native goal",
 		Status: StatusRunning, AcceptingSteer: true,
@@ -247,7 +225,7 @@ func TestStopOwnedLiveCodingRunInterruptsExactlyOnce(t *testing.T) {
 func TestStopForeignCodingRunIsRefusedWithoutInterrupt(t *testing.T) {
 	fn, calls := spyInterrupt()
 	reg := NewRegistry()
-	reg.Put(cliRecord("deleg_4bb10002", "delegate_cursor_agent", KindCloudAgent, "sess-someone-else-2",
+	reg.Put(cliRecord("deleg_4bb10002", "delegate_claude_agent", KindCLIAgent, "sess-someone-else-2",
 		func(r *Record) { r.InterruptFn = fn }))
 	caller := &Caller{SessionID: "sess-cli-stop-2"}
 
@@ -267,7 +245,7 @@ func TestStopFailsClosedWithoutAnySessionSpine(t *testing.T) {
 	fn, calls := spyInterrupt()
 	reg := NewRegistry()
 	reg.Put(cliRecord("deleg_4bb10003", "delegate_claude_agent", KindCLIAgent, "",
-		withSessionKey("telegram:999:guard"), func(r *Record) { r.InterruptFn = fn }))
+		withSessionKey("discord:999:guard"), func(r *Record) { r.InterruptFn = fn }))
 	caller := &Caller{SessionID: "", CurrentSessionKey: ""}
 
 	if _, err := reg.Stop("deleg_4bb10003", caller); !errors.Is(err, ErrNoLiveSubagent) {
@@ -300,7 +278,7 @@ func TestStopWithOnlyThreadBitChannelStillSignals(t *testing.T) {
 func TestStopCompletedRunIsRefused(t *testing.T) {
 	fn, calls := spyInterrupt()
 	reg := NewRegistry()
-	reg.Put(cliRecord("deleg_stop-done", "delegate_cursor_agent", KindCloudAgent, "sess-done",
+	reg.Put(cliRecord("deleg_stop-done", "delegate_claude_agent", KindCLIAgent, "sess-done",
 		withStatus(StatusCompleted), func(r *Record) { r.InterruptFn = fn }))
 	if _, err := reg.Stop("deleg_stop-done", &Caller{SessionID: "sess-done"}); !errors.Is(err, ErrNoLiveSubagent) {
 		t.Fatalf("err = %v, want ErrNoLiveSubagent (completed runs are not live)", err)
@@ -362,7 +340,7 @@ func TestStopOwnershipResolvesCompressionLineage(t *testing.T) {
 
 func TestSteerOwnershipViaCurrentSessionKey(t *testing.T) {
 	reg := NewRegistry()
-	reg.Put(cliRecord("deleg_5dd10002", "delegate_cursor_agent", KindCloudAgent, "",
+	reg.Put(cliRecord("deleg_5dd10002", "delegate_claude_agent", KindCLIAgent, "",
 		withSessionKey("telegram:4242:curator")))
 	caller := &Caller{SessionID: "", CurrentSessionKey: "telegram:4242:curator"}
 
@@ -375,8 +353,8 @@ func TestSteerOwnershipViaCurrentSessionKey(t *testing.T) {
 func TestSessionKeyMismatchIsRefused(t *testing.T) {
 	reg := NewRegistry()
 	reg.Put(cliRecord("deleg_key-miss", "delegate_claude_agent", KindCLIAgent, "",
-		withSessionKey("telegram:4242:curator")))
-	caller := &Caller{SessionID: "", CurrentSessionKey: "telegram:777:other"}
+		withSessionKey("discord:4242:curator")))
+	caller := &Caller{SessionID: "", CurrentSessionKey: "discord:777:other"}
 	if _, err := reg.Steer("deleg_key-miss", "text", caller); !errors.Is(err, ErrNoLiveSubagent) {
 		t.Fatalf("err = %v, want ErrNoLiveSubagent", err)
 	}
@@ -388,8 +366,8 @@ func TestForeignSessionIDStaysRefusedDespiteMatchingSessionKey(t *testing.T) {
 	fn, calls := spyInterrupt()
 	reg := NewRegistry()
 	reg.Put(cliRecord("deleg_foreign-key", "delegate_claude_agent", KindCLIAgent, "sess-someone-else",
-		withSessionKey("telegram:4242:curator"), func(r *Record) { r.InterruptFn = fn }))
-	caller := &Caller{SessionID: "", CurrentSessionKey: "telegram:4242:curator"}
+		withSessionKey("discord:4242:curator"), func(r *Record) { r.InterruptFn = fn }))
+	caller := &Caller{SessionID: "", CurrentSessionKey: "discord:4242:curator"}
 
 	if _, err := reg.Stop("deleg_foreign-key", caller); !errors.Is(err, ErrNoLiveSubagent) {
 		t.Fatalf("err = %v, want ErrNoLiveSubagent (foreign session id never falls through to a key match)", err)
@@ -401,7 +379,7 @@ func TestForeignSessionIDStaysRefusedDespiteMatchingSessionKey(t *testing.T) {
 
 func TestParentSessionWithoutRecordSessionIsRefused(t *testing.T) {
 	reg := NewRegistry()
-	reg.Put(cliRecord("deleg_half-spine", "delegate_cursor_agent", KindCloudAgent, "",
+	reg.Put(cliRecord("deleg_half-spine", "delegate_claude_agent", KindCLIAgent, "",
 		withSessionKey("telegram:1:x")))
 	caller := &Caller{SessionID: "sess-parent", CurrentSessionKey: "telegram:1:x"}
 	if _, err := reg.Stop("deleg_half-spine", caller); !errors.Is(err, ErrNoLiveSubagent) {
@@ -467,8 +445,8 @@ func TestOwnershipMatrix(t *testing.T) {
 
 func TestKindAndStatusClassification(t *testing.T) {
 	for kind, coding := range map[string]bool{
-		KindCLIAgent: true, KindCloudAgent: true,
-		KindSubagentBatch: false, KindMission: false, "": false, "cli": false,
+		KindCLIAgent:      true,
+		KindSubagentBatch: false, KindMission: false, "": false, "cli": false, "cloud_agent": false,
 	} {
 		if IsCodingKind(kind) != coding {
 			t.Errorf("IsCodingKind(%q) = %v, want %v", kind, IsCodingKind(kind), coding)
@@ -484,7 +462,7 @@ func TestKindAndStatusClassification(t *testing.T) {
 	}
 }
 
-// cli_agent and cloud_agent are listed ONLY when owned AND live — the full
+// cli_agent runs are listed ONLY when owned AND live — the full
 // inclusion matrix over kind x status x ownership.
 func TestListInclusionMatrix(t *testing.T) {
 	ownedCaller := &Caller{SessionID: "sess-matrix"}
@@ -496,11 +474,9 @@ func TestListInclusionMatrix(t *testing.T) {
 	}{
 		{"deleg_m1", KindCLIAgent, StatusRunning},
 		{"deleg_m2", KindCLIAgent, StatusStalling},
-		{"deleg_m3", KindCloudAgent, StatusRunning},
-		{"deleg_m4", KindCloudAgent, StatusStalling},
 		{"deleg_m5", KindCLIAgent, StatusFinalize},
 		{"deleg_m6", KindCLIAgent, StatusCompleted},
-		{"deleg_m7", KindCloudAgent, StatusCompleted},
+		{"deleg_m7", "cloud_agent", StatusCompleted},
 		{"deleg_m8", KindSubagentBatch, StatusRunning},
 		{"deleg_m9", KindMission, StatusRunning},
 	}
@@ -513,7 +489,7 @@ func TestListInclusionMatrix(t *testing.T) {
 	for _, e := range reg.ListCodingRuns(ownedCaller) {
 		owned[e.SubagentID] = true
 	}
-	for _, want := range []string{"deleg_m1", "deleg_m2", "deleg_m3", "deleg_m4"} {
+	for _, want := range []string{"deleg_m1", "deleg_m2"} {
 		if !owned[want] {
 			t.Errorf("%s (owned, live, coding kind) missing from list: %v", want, owned)
 		}
@@ -558,9 +534,9 @@ func TestEnvelopeControlHandleForClaudeRun(t *testing.T) {
 	}
 }
 
-func TestEnvelopeControlHandleForCursorRunKeepsCallerHint(t *testing.T) {
+func TestEnvelopeControlHandleKeepsCallerHint(t *testing.T) {
 	callerHint := "The run's live progress page URL is delivered with the result."
-	payload := AttachControlHandle(nil, "delegate_cursor_agent", KindCloudAgent, "deleg_9d13aa02", callerHint)
+	payload := AttachControlHandle(nil, "delegate_claude_agent", KindCLIAgent, "deleg_9d13aa02", callerHint)
 
 	handle, ok := payload["control"].(ControlHandle)
 	if !ok || handle.SubagentID != "deleg_9d13aa02" {

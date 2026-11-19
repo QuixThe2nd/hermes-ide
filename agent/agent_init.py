@@ -1955,14 +1955,14 @@ def _warn_nonagentic_hermes_model(agent):
 def _inject_context_engine_tools(agent):
     # Context engine tool schemas (lcm_*), deduped against existing names (plugins may
     # register the same schemas; duplicates 400 provider-side) and gated on enabled_toolsets
-    # so `platform_toolsets: telegram: []` can't leak them.
+    # so `platform_toolsets: <platform>: []` can't leak them.
     # Skip names that are already present — the model_tools.get_tool_definitions() quiet_mode cache returned a
     # shared list pre-#17335, so a stray mutation here would poison subsequent agent inits in the same
     # Gateway process and trip provider-side 'duplicate tool name' errors. Even with the cache fix, dedup is
     # the right defense against plugin paths that may register the same schemas via ctx.register_tool().
     # Mirrors the memory tools dedup above. Respect the platform's enabled_toolsets configuration (#5544):
     # context engine tools follow the same gating pattern as memory provider tools — without the gate,
-    # `platform_toolsets: telegram: []` would still leak lcm_* tools into the tool surface and incur the
+    # `platform_toolsets: <platform>: []` would still leak lcm_* tools into the tool surface and incur the
     # same local-model latency penalty.
     agent._context_engine_tool_names: set = set()
     if (
@@ -2188,7 +2188,7 @@ _PASSTHROUGH_PARAMS = (
     "max_tokens", "reasoning_config", "service_tier",
 )
 # Gateway identity params stored as ``agent._<name>``. gateway_session_key is the stable
-# per-chat key (e.g. agent:main:telegram:dm:123).
+# per-chat key (e.g. agent:main:discord:dm:123).
 _GATEWAY_IDENTITY_PARAMS = (
     "user_id", "user_id_alt", "user_name", "chat_id", "chat_name", "chat_type", "thread_id",
     "gateway_session_key",
@@ -2253,7 +2253,7 @@ def init_agent(
       reasoning_config: None → ``{"enabled": True, "effort": "medium"}`` on OpenRouter.
       prefill_messages: priming history. Anthropic Sonnet/Opus 4.6+ 400 on a trailing
         assistant message — use structured outputs there instead.
-      skip_context_files: skip SOUL.md/.hermes.md/AGENTS.md/CLAUDE.md/.cursorrules injection;
+      skip_context_files: skip SOUL.md/.hermes.md/AGENTS.md/CLAUDE.md injection;
         load_soul_identity keeps ~/.hermes/SOUL.md as identity regardless.
     """
     _install_safe_stdio()

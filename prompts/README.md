@@ -15,7 +15,6 @@ The chat system prompt is NOT stored here — it stays assembled at runtime in
 | `title_generator_system.txt` | `agent/title_generator.py` | `_TITLE_PROMPT_TEMPLATE` (unformatted; `__LANGUAGE_RULE__` substituted at call site) |
 | `trajectory_system.txt` | `agent/agent_runtime_helpers.py` | `_TRAJECTORY_SYSTEM_PROMPT` (unformatted; `{tools}` substituted at call site) |
 | `memory_query_rewrite_system.txt` | `plugins/memory/query_rewrite.py` | `_SYSTEM_PROMPT` |
-| `papercuts_opening_system.txt` | `plugins/papercuts/threads.py` | `_OPENING_SYSTEM_PROMPT` |
 | `hermes_starts_dedup_system.txt` | `plugins/hermes_starts/__init__.py` | `_DEDUP_SYSTEM_PROMPT` |
 | `mini_swe_bash_agent_system.txt` | `mini_swe_runner.py` | `SYSTEM_PROMPT` |
 | `micro_compaction_summarization_system.txt` | `agent/micro_compaction.py` | `_SUMMARY_SYSTEM_PROMPT` |

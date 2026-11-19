@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Big Steve",
-  "version": "1.0.0",
+  "version": "1.1.1",
   "description": "Side panel chat with Big Steve.",
-  "permissions": ["sidePanel", "scripting", "activeTab", "storage", "alarms", "tabs"],
+  "permissions": ["sidePanel", "scripting", "activeTab", "storage", "alarms", "tabs", "debugger"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"
@@ -21,7 +21,7 @@
         "default": "Ctrl+B",
         "mac": "Command+B"
       },
-      "description": "Open the Big Steve sidebar"
+      "description": "Toggle the Big Steve sidebar"
     }
   },
   "content_scripts": [

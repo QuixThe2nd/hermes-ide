@@ -337,11 +337,11 @@ def test_live_replay_preserves_summary_boundary_without_changing_display(tmp_pat
 
     db_path = tmp_path / "state.db"
     db = SessionDB(db_path)
-    db.create_session("summary-replay", source="telegram")
+    db.create_session("summary-replay", source="discord")
     db.append_message("summary-replay", "user", "Derivative context", _compressed_summary=True)
     db.append_message("summary-replay", "user", "Original request")
     db.append_message("summary-replay", "assistant", "Original answer")
-    db.create_session("plain-replay", source="telegram")
+    db.create_session("plain-replay", source="discord")
     db.append_message("plain-replay", "user", "First request")
     db.append_message("plain-replay", "user", "Second request")
 

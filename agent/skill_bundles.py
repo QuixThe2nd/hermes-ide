@@ -107,7 +107,7 @@ def get_skill_bundles() -> Dict[str, Dict[str, Any]]:
 
 
 def resolve_bundle_command_key(command: str) -> Optional[str]:
-    """Resolve a user-typed command to its ``/slug`` key (``_`` ≡ ``-``, as Telegram rewrites hyphens)."""
+    """Resolve a user-typed command to its ``/slug`` key (``_`` ≡ ``-``, as platform menus rewrite hyphens)."""
     return resolve_slash_key(command, get_skill_bundles())
 
 

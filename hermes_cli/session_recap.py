@@ -11,8 +11,8 @@ Differences from Claude Code:
     - Pure local computation from the in-memory conversation history. No
       LLM call, no auxiliary model, no prompt-cache invalidation. A
       recap should be instant and free.
-    - Works unchanged on CLI and every gateway platform (Telegram,
-      Discord, Slack, …) because both call into the same ``build_recap``
+    - Works unchanged on CLI and every gateway platform (Discord,
+      Slack, …) because both call into the same ``build_recap``
       helper. Claude Code only shows this on the CLI.
     - Tailored to hermes-agent's tool vocabulary (``terminal``, ``patch``,
       ``write_file``, ``delegate_agent``, ``browser_*``, ``web_*``) — the

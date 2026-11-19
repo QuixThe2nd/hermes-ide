@@ -244,17 +244,6 @@ A ressincronização roda automaticamente no máximo uma vez por hora."
     current_with_title:    "📌 Sessão: `{session_id}`\nTítulo: **{title}**"
     current_no_title:      "📌 Sessão: `{session_id}`\nSem título. Uso: `/title O meu nome de sessão`"
 
-  topic:
-    not_telegram_dm:         "O comando /topic só está disponível em chats privados do Telegram."
-    no_session_db:           "Base de dados de sessões indisponível."
-    unauthorized:            "Não tens autorização para usar /topic neste bot."
-    restore_needs_topic:     "Para restaurar uma sessão, cria ou abre primeiro um topic do Telegram, depois envia /topic <session-id> dentro desse topic. Para criar um novo topic, abre All Messages e envia qualquer mensagem aí."
-    topics_disabled:         "Os topics do Telegram ainda não estão ativados para este bot.\n\nComo ativá-los:\n1. Abre @BotFather.\n2. Escolhe o teu bot.\n3. Abre Bot Settings → Threads Settings.\n4. Ativa Threaded Mode e garante que os utilizadores podem criar novas threads.\n\nDepois envia /topic novamente."
-    topics_user_disallowed:  "Os topics do Telegram estão ativados, mas os utilizadores não podem criá-los.\n\nAbre @BotFather → escolhe o teu bot → Bot Settings → Threads Settings, depois desativa 'Disallow users to create new threads'.\n\nDepois envia /topic novamente."
-    enable_failed:           "Falha ao ativar o modo topic do Telegram: {error}"
-    bound_status:            "Este topic está associado a:\nSessão: {label}\nID: {session_id}\n\nUsa /new para substituir este topic por uma sessão nova.\nPara trabalho paralelo, abre All Messages e envia uma mensagem aí para criar outro topic."
-    thread_ready:            "Os topics multi-sessão do Telegram estão ativados.\n\nEste topic será usado como uma sessão independente do Hermes. Usa /new para substituir a sessão atual deste topic. Para trabalho paralelo, abre All Messages e envia uma mensagem aí para criar outro topic."
-    untitled_session:        "Sessão sem título"
 
   undo:
     nothing:               "Nada para anular."

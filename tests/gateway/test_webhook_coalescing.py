@@ -48,7 +48,7 @@ def _payload(pr_number=None, action: str = "synchronize") -> bytes:
     ({**_coalesce_route(), "coalesce": "pull_request.number"}, "coalesce block"),
     (_coalesce_route(key="pull_request.number", window_seconds=0), "window_seconds"),
     (_coalesce_route(key="pull_request.number", max_wait_seconds=True), "max_wait_seconds"),
-    ({**_coalesce_route(), "deliver_only": True, "deliver": "telegram"}, "deliver_only"),
+    ({**_coalesce_route(), "deliver_only": True, "deliver": "discord"}, "deliver_only"),
     ({**_coalesce_route(), "cron_job": "sweeper"}, "cron_job"),
 ])
 async def test_invalid_coalesce_config_rejected_at_connect(route, match, tmp_path, monkeypatch):

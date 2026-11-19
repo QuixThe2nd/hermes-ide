@@ -6,7 +6,7 @@ Historically ``PlatformEntry.check_fn`` doubled as the lazy-installer
 in ``_apply_env_overrides`` used to call ``check_fn`` for *every* registered
 plugin platform unconditionally, so a single ``load_gateway_config()`` —
 which the desktop/dashboard readiness probe (``GET /api/status``) awaits
-synchronously — pip-installed Discord, Telegram, Slack, Feishu and Dingtalk
+synchronously — pip-installed Discord, Slack, Feishu and Dingtalk
 even with ``platforms: none``.  That blocked startup until every install
 finished and made the desktop app time out and boot-loop (stuck at 94%).
 

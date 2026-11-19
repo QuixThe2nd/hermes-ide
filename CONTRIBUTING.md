@@ -229,7 +229,7 @@ hermes-agent/
 ├── run_agent.py              # AIAgent facade (~1.5k LOC) — the turn loop lives in agent/conversation_loop.py + agent/turn_*.py
 ├── cli.py                    # HermesCLI class — interactive CLI orchestrator (~4.6k LOC + hermes_cli/cli_*_mixin.py)
 ├── model_tools.py            # Tool orchestration (thin layer over tools/registry.py)
-├── toolsets.py               # Tool groupings and presets (hermes-cli, hermes-telegram, etc.)
+├── toolsets.py               # Tool groupings and presets (hermes-cli, hermes-discord, etc.)
 ├── hermes_state.py           # SessionDB facade (~1.4k LOC); implementation in hermes_state_*.py (21 siblings) — FTS5 search, session titles
 ├── batch_runner.py           # Parallel batch processing for trajectory generation
 │
@@ -284,7 +284,7 @@ hermes-agent/
 │   ├── config.py                 # Platform configuration resolution
 │   ├── session.py                # Session store, context prompts, explicit resets (+ session_*.py siblings)
 │   └── platforms/                # Platform adapters
-│       ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
+│       ├── discord.py, slack.py, whatsapp.py
 │
 ├── scripts/                  # Installer and bridge scripts
 │   ├── install.sh                # Linux/macOS installer

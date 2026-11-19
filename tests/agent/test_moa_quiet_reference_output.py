@@ -25,7 +25,7 @@ def test_quiet_cli_emits_no_moa_display_events():
     relay("moa.aggregating", aggregator="agg")
 
 
-@pytest.mark.parametrize("platform", ["cli", "telegram"])
+@pytest.mark.parametrize("platform", ["cli", "discord"])
 def test_interactive_surfaces_receive_moa_events(platform):
     cb = MagicMock()
     agent = SimpleNamespace(platform=platform, tool_progress_mode="all", tool_progress_callback=cb, provider="moa", model="default")

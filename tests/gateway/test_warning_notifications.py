@@ -43,7 +43,7 @@ class Emitter(StatusOutputMixin):
     log_prefix = ""
 
 
-@pytest.mark.parametrize("platform", [Platform.SLACK, Platform.TELEGRAM, Platform.LOCAL])
+@pytest.mark.parametrize("platform", [Platform.SLACK, Platform.DISCORD, Platform.LOCAL])
 @pytest.mark.parametrize("thread_id", [None, "1700.1"])
 @pytest.mark.parametrize("configured,enabled", [
     ("", True), ("display: null", True),

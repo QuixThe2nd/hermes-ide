@@ -47,7 +47,7 @@ def _Runner():
 
 
 BASE = 300.0
-KEY = "agent:main:telegram:private:123"
+KEY = "agent:main:discord:private:123"
 
 
 # ---------------------------------------------------------------------------
@@ -95,14 +95,14 @@ class TestCooldownLadder:
 
         db = SessionDB(db_path=tmp_path / "state.db")
         try:
-            db.create_session("before-rotation", "telegram", session_key=KEY)
+            db.create_session("before-rotation", "discord", session_key=KEY)
             first_runner = _Runner()
             first_runner._session_db = db
             assert _hygiene_cooldown_for_failure(first_runner, KEY, BASE) == BASE
 
             db.create_session(
                 "after-rotation",
-                "telegram",
+                "discord",
                 session_key=KEY,
                 parent_session_id="before-rotation",
             )
@@ -115,7 +115,7 @@ class TestCooldownLadder:
             other_chat_runner = _Runner()
             other_chat_runner._session_db = db
             assert _hygiene_cooldown_for_failure(
-                other_chat_runner, "agent:main:telegram:private:999", BASE
+                other_chat_runner, "agent:main:discord:private:999", BASE
             ) == BASE
         finally:
             db.close()
@@ -168,7 +168,7 @@ class TestCooldownLadder:
     def test_streaks_are_per_session(self):
         """One wedged session must not penalize every other chat."""
         runner = _Runner()
-        other = "agent:main:telegram:private:999"
+        other = "agent:main:discord:private:999"
         for _ in range(3):
             _hygiene_cooldown_for_failure(runner, KEY, BASE)
         assert _hygiene_cooldown_for_failure(runner, other, BASE) == BASE

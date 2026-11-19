@@ -11,9 +11,7 @@ and settles what an earlier release left crossed. This does, for six kinds of cr
 4. ``gateway_routing`` rows in a named profile's store (the routing index lives in the gateway's
    home; #66887 copied every profile's rows into whichever store was scoped) — moved to the routing
    store when absent there, dropped otherwise — and root rows for a namespace no profile claims;
-5. profile-less Telegram topic bindings owned by a non-default bot — relabelled from the
-   evidence of the rows themselves;
-6. ``sessions.json`` mirror entries whose key namespace no served profile claims — dropped, since
+5. ``sessions.json`` mirror entries whose key namespace no served profile claims — dropped, since
    the legacy import re-injects any key the routing DB lacks on every boot.
 
 Legacy ``agent:main:`` rows inside a named profile's store are reported but NOT repaired unless
@@ -106,8 +104,6 @@ class _EmptyStore:
     def find_crossed_profile_sessions(self, owner):
         return {"mislabelled": [], "foreign": [], "crossed_parents": []}
 
-    def find_profile_less_telegram_topic_rows(self):
-        return []
 
     def list_gateway_routing_rows(self):
         return []
@@ -180,7 +176,6 @@ class RepairPlan:
     def scan(self, session: _Session) -> "RepairPlan":
         for store in self.stores:
             self._scan_sessions(session, store)
-            self._scan_topics(session, store)
         for store in self.stores:
             self._scan_routing(session, store)
         if self.routing_store is not None:
@@ -249,15 +244,6 @@ class RepairPlan:
 
     def _move_batch(self, src: Store, dst: Store) -> "_MoveBatch":
         return self._moves.setdefault((src.db_path, dst.db_path), _MoveBatch(src, dst))
-
-    def _scan_topics(self, session: _Session, store: Store) -> None:
-        rows = session.db(store).find_profile_less_telegram_topic_rows()
-        for row in rows:
-            self._add(Finding(
-                "topic_profile_less", store.profile, f"chat {row['chat_id']} thread {row['thread_id']}",
-                f"telegram topic binding labelled 'default' but keyed {row['session_key']!r}",
-                action=f"relabel to {row['key_profile']!r}",
-                _fix=lambda s, st=store, r=row: s.db(st).relabel_telegram_topic_rows([r])))
 
     def _scan_routing(self, session: _Session, store: Store) -> None:
         from hermes_state_profile_repair import session_key_profile

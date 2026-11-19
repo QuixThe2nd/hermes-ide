@@ -26,7 +26,7 @@ DAY = 86400
 BULLET = "\u2022"
 
 
-def _five_id_section() -> dict:
+def _four_id_section() -> dict:
     return {
         "guild_id": "guild",
         "category_id": "cat",
@@ -34,7 +34,6 @@ def _five_id_section() -> dict:
             "codex": "c1",
             "kimi": "c2",
             "zai": "c3",
-            "cursor": "c4",
             "grok": "c5",
         },
     }
@@ -121,7 +120,6 @@ def wallet_env(monkeypatch, tmp_path):
         {
             "codex": lambda http_fn=None, now_fn=None: (95, DAY),
             "kimi": lambda http_fn=None, now_fn=None: (60, DAY),
-            "cursor": lambda http_fn=None, now_fn=None: (38, 50, 22 * DAY),
             "grok": lambda http_fn=None, now_fn=None: (81, 5 * DAY),
             "zai": lambda http_fn=None, now_fn=None: (23, 3 * DAY),
         },
@@ -338,7 +336,7 @@ class TestEnvSeededPoolEntries:
 
 
 class TestWalletTick:
-    def test_two_wallets_independent_ranks(self, wallet_env):
+    def test_two_wallets_independent_ranks(self, wallet_env, monkeypatch):
         _write_pool(
             wallet_env,
             [
@@ -346,18 +344,29 @@ class TestWalletTick:
                 {"id": "w2", "access_token": "sk-secret-wallet-bbb"},
             ],
         )
+        # grok ranks below both wallets here so the created w2 channel
+        # (appended at position 21) must be re-slotted — proving both
+        # wallets rank independently of the provider rows
+        monkeypatch.setattr(
+            core,
+            "QUOTA_METRICS",
+            {
+                "codex": lambda http_fn=None, now_fn=None: (95, DAY),
+                "kimi": lambda http_fn=None, now_fn=None: (60, DAY),
+                "grok": lambda http_fn=None, now_fn=None: (20, 5 * DAY),
+                "zai": lambda http_fn=None, now_fn=None: (23, 3 * DAY),
+            },
+        )
         discord = _WalletDiscord(
             [
                 {"id": "c1", "position": 10},
                 {"id": "c2", "position": 11},
-                {"id": "c3", "position": 15},
-                {"id": "c4", "position": 13},
                 {"id": "c5", "position": 14},
-                {"id": "new901", "position": 12},
+                {"id": "c3", "position": 15},
             ],
             existing={"c3", "new901"},
         )
-        config = validate_quota_config(_five_id_section())
+        config = validate_quota_config(_four_id_section())
         now = datetime(2026, 8, 25, 14, 0, 0).timestamp()
         result = run_tick(
             config, force=True, now_fn=lambda: now, http_fn=discord, sleep_fn=lambda _: None

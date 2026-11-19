@@ -505,7 +505,7 @@ def _run_claimed_job_with_mid_run_action(
 
     with jobs.use_cron_store(tmp_path):
         job = jobs.create_job(
-            prompt="work", schedule="every 5m", name="remove self", deliver="telegram")
+            prompt="work", schedule="every 5m", name="remove self", deliver="discord")
         assert jobs.claim_job_for_fire(job["id"])
         claimed = jobs.get_job(job["id"])
         claimed["execution_id"] = execution_id

@@ -440,7 +440,7 @@ def _under_gateway_supervisor(argv: list) -> bool:
     means "the root HERMES_HOME profile". If a supervised default-profile
     child read active_profile, switching the active profile (dashboard,
     ``hermes profile use``) would silently redirect the default gateway into
-    that profile — adopting its credentials and double-polling a Telegram
+    that profile — adopting its credentials and double-polling a bot
     token already owned by that profile's own gateway (#74872).
 
     Markers (see gateway/restart.py ``is_gateway_supervisor_process``):
@@ -1581,7 +1581,7 @@ def cmd_chat(args):
 
     _start_chat_background_prefetch()
 
-    # --ignore-rules: skip AGENTS.md/SOUL.md/.cursorrules injection, memory
+    # --ignore-rules: skip AGENTS.md/SOUL.md injection, memory
     # entries and preloaded skills (AIAgent(skip_context_files, skip_memory)).
     if getattr(args, "ignore_rules", False):
         os.environ["HERMES_IGNORE_RULES"] = "1"

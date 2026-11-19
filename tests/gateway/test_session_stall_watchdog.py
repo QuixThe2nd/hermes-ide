@@ -167,7 +167,7 @@ def _runner_for_stall(adapter: _FakeAdapter) -> GatewayRunner:
 def _pending_event(chat_id: str = "chat-1", thread_id: str | None = None):
     from gateway.session import SessionSource
     from gateway.config import Platform
-    source = SessionSource(chat_id=chat_id, thread_id=thread_id, platform=Platform.TELEGRAM)
+    source = SessionSource(chat_id=chat_id, thread_id=thread_id, platform=Platform.DISCORD)
     return SimpleNamespace(text="follow-up", source=source, timestamp=time.time())
 
 
@@ -176,7 +176,7 @@ async def test_check_session_stalls_notifies_once(monkeypatch):
     adapter = _FakeAdapter()
     runner = _runner_for_stall(adapter)
     monkeypatch.setenv("HERMES_SESSION_STALL_TIMEOUT", "60")
-    session_key = "agent:main:telegram:dm:1"
+    session_key = "agent:main:discord:dm:1"
     adapter._pending_messages[session_key] = _pending_event()
     runner._running_agents[session_key] = _FakeAgent(time.time() - 120)
 
@@ -196,7 +196,7 @@ async def test_check_session_stalls_notifies_once(monkeypatch):
 async def test_check_session_stalls_skips_fresh_activity():
     adapter = _FakeAdapter()
     runner = _runner_for_stall(adapter)
-    session_key = "agent:main:telegram:dm:2"
+    session_key = "agent:main:discord:dm:2"
     adapter._pending_messages[session_key] = _pending_event()
     runner._running_agents[session_key] = _FakeAgent(time.time() - 5)
 
@@ -209,7 +209,7 @@ async def test_check_session_stalls_skips_fresh_activity():
 async def test_check_session_stalls_skips_without_pending():
     adapter = _FakeAdapter()
     runner = _runner_for_stall(adapter)
-    session_key = "agent:main:telegram:dm:3"
+    session_key = "agent:main:discord:dm:3"
     runner._running_agents[session_key] = _FakeAgent(time.time() - 999)
 
     sent = await runner._check_session_stalls(60)
@@ -221,7 +221,7 @@ async def test_check_session_stalls_skips_without_pending():
 async def test_check_session_stalls_clears_latch_when_pending_drains():
     adapter = _FakeAdapter()
     runner = _runner_for_stall(adapter)
-    session_key = "agent:main:telegram:dm:4"
+    session_key = "agent:main:discord:dm:4"
     adapter._pending_messages[session_key] = _pending_event()
     runner._running_agents[session_key] = _FakeAgent(time.time() - 200)
 
@@ -238,7 +238,7 @@ async def test_check_session_stalls_skips_pending_sentinel_without_activity():
     """Pending construction has no shared activity snapshot — no parallel clocks."""
     adapter = _FakeAdapter()
     runner = _runner_for_stall(adapter)
-    session_key = "agent:main:telegram:dm:5"
+    session_key = "agent:main:discord:dm:5"
     adapter._pending_messages[session_key] = _pending_event()
     runner._running_agents[session_key] = _AGENT_PENDING_SENTINEL
     runner._running_agents_ts[session_key] = time.time() - 90
@@ -253,7 +253,7 @@ async def test_check_session_stalls_ignores_raw_clock_without_summary():
     """Do not fall back to agent._last_activity_ts outside get_activity_summary()."""
     adapter = _FakeAdapter()
     runner = _runner_for_stall(adapter)
-    session_key = "agent:main:telegram:dm:raw"
+    session_key = "agent:main:discord:dm:raw"
     adapter._pending_messages[session_key] = _pending_event()
     runner._running_agents[session_key] = _AgentWithoutSummary(time.time() - 999)
     runner._running_agents_ts[session_key] = time.time() - 999
@@ -268,7 +268,7 @@ async def test_session_stall_watcher_disabled_when_timeout_zero(monkeypatch):
     adapter = _FakeAdapter()
     runner = _runner_for_stall(adapter)
     monkeypatch.setenv("HERMES_SESSION_STALL_TIMEOUT", "0")
-    session_key = "agent:main:telegram:dm:6"
+    session_key = "agent:main:discord:dm:6"
     adapter._pending_messages[session_key] = _pending_event()
     runner._running_agents[session_key] = _FakeAgent(time.time() - 999)
 
@@ -285,7 +285,7 @@ async def test_session_stall_watcher_disabled_when_timeout_zero(monkeypatch):
 async def test_check_session_stalls_queued_events_overflow_notifies():
     adapter = _FakeAdapter()
     runner = _runner_for_stall(adapter)
-    session_key = "agent:main:telegram:dm:overflow"
+    session_key = "agent:main:discord:dm:overflow"
     event = _pending_event()
     runner._queued_events[session_key] = [event]
     runner._running_agents[session_key] = _FakeAgent(time.time() - 120)
@@ -301,7 +301,7 @@ async def test_check_session_stalls_scans_profile_adapters():
     runner = _runner_for_stall(_FakeAdapter())  # empty primary path unused
     runner.adapters = {}
     runner._profile_adapters = {"coder": {"fake": adapter}}
-    session_key = "agent:coder:telegram:dm:1"
+    session_key = "agent:coder:discord:dm:1"
     adapter._pending_messages[session_key] = _pending_event()
     runner._running_agents[session_key] = _FakeAgent(time.time() - 120)
 
@@ -316,7 +316,7 @@ async def test_check_session_stalls_logs_compression_provenance(caplog):
 
     adapter = _FakeAdapter()
     runner = _runner_for_stall(adapter)
-    session_key = "agent:main:telegram:dm:compress"
+    session_key = "agent:main:discord:dm:compress"
     adapter._pending_messages[session_key] = _pending_event()
     runner._running_agents[session_key] = _FakeAgent(
         time.time() - 120,
@@ -335,7 +335,7 @@ async def test_check_session_stalls_skips_active_compression_heartbeat():
     """Fresh agent.compression heartbeats are progress, not a silent stall."""
     adapter = _FakeAdapter()
     runner = _runner_for_stall(adapter)
-    session_key = "agent:main:telegram:dm:compacting"
+    session_key = "agent:main:discord:dm:compacting"
     adapter._pending_messages[session_key] = _pending_event()
     runner._running_agents[session_key] = _FakeAgent(
         time.time() - 5,
@@ -352,7 +352,7 @@ async def test_check_session_stalls_skips_active_compression_heartbeat():
 async def test_check_session_stalls_does_not_renotify_after_summary_gap():
     adapter = _FakeAdapter()
     runner = _runner_for_stall(adapter)
-    session_key = "agent:main:telegram:dm:gap"
+    session_key = "agent:main:discord:dm:gap"
     adapter._pending_messages[session_key] = _pending_event()
     runner._running_agents[session_key] = _FakeAgent(time.time() - 120)
 
@@ -384,7 +384,7 @@ async def test_check_session_stalls_retries_after_send_failure():
 
     adapter = _FailThenOk()
     runner = _runner_for_stall(adapter)
-    session_key = "agent:main:telegram:dm:retry"
+    session_key = "agent:main:discord:dm:retry"
     adapter._pending_messages[session_key] = _pending_event()
     runner._running_agents[session_key] = _FakeAgent(time.time() - 120)
 
@@ -413,7 +413,7 @@ async def test_check_session_stalls_retries_after_soft_send_failure():
 
     adapter = _SoftFailThenOk()
     runner = _runner_for_stall(adapter)
-    session_key = "agent:main:telegram:dm:soft"
+    session_key = "agent:main:discord:dm:soft"
     adapter._pending_messages[session_key] = _pending_event()
     runner._running_agents[session_key] = _FakeAgent(time.time() - 120)
 
@@ -428,7 +428,7 @@ async def test_check_session_stalls_retries_after_soft_send_failure():
 async def test_check_session_stalls_renotifies_after_resume_then_restall():
     adapter = _FakeAdapter()
     runner = _runner_for_stall(adapter)
-    session_key = "agent:main:telegram:dm:episode"
+    session_key = "agent:main:discord:dm:episode"
     adapter._pending_messages[session_key] = _pending_event()
     runner._running_agents[session_key] = _FakeAgent(time.time() - 120)
 
@@ -507,7 +507,7 @@ async def test_check_session_stalls_bounds_wedged_send(monkeypatch):
     runner = _runner_for_stall(wedged)
     runner.adapters = {"wedged": wedged, "healthy": healthy}
 
-    wedged_key = "agent:main:telegram:dm:wedged"
+    wedged_key = "agent:main:discord:dm:wedged"
     healthy_key = "agent:main:discord:dm:healthy"
     wedged._pending_messages[wedged_key] = _pending_event(chat_id="chat-w")
     healthy._pending_messages[healthy_key] = _pending_event(chat_id="chat-h")
@@ -546,7 +546,7 @@ async def test_stall_policy_owner_latch_and_source_log_conservation(tmp_path, mo
         adapter = _FakeAdapter()
         runner = _runner_for_stall(adapter)
         runner._resolve_profile_home_for_source = lambda source: home
-        key = "agent:default:telegram:dm:policy"
+        key = "agent:default:discord:dm:policy"
         adapter._pending_messages[key] = _pending_event()
         agent = _FakeAgent(time.time() - 120)
         runner._running_agents[key] = agent

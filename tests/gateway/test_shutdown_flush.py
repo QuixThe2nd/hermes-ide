@@ -29,17 +29,17 @@ def test_flush_writes_string_pending_to_file(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
     )
-    pending = {"agent:main:telegram:supergroup:123": "hello world"}
+    pending = {"agent:main:discord:supergroup:123": "hello world"}
     count = flush_pending_to_file(pending, reason="shutdown")
     assert count == 1
     files = list(flush_dir.glob("*.json"))
     assert len(files) == 1
     payload = json.loads(files[0].read_text(encoding="utf-8"))
-    assert payload["session_key"] == "agent:main:telegram:supergroup:123"
+    assert payload["session_key"] == "agent:main:discord:supergroup:123"
     assert payload["reason"] == "shutdown"
     assert payload["data"]["text"] == "hello world"
     assert ":" not in files[0].name
-    assert "telegram" not in files[0].name
+    assert "discord" not in files[0].name
 
 
 def test_flush_writes_message_event_to_file(tmp_path, monkeypatch):
@@ -50,7 +50,7 @@ def test_flush_writes_message_event_to_file(tmp_path, monkeypatch):
     event = MagicMock()
     event.text = "user message"
     event.session_id = "20260728_120000_abc"
-    event.platform = "telegram"
+    event.platform = "discord"
     event.sender_id = "456"
     event.sender_name = "Alice"
     event.reply_to = None
@@ -74,7 +74,7 @@ def test_recover_inserts_via_append_message_and_deletes_file(tmp_path, monkeypat
     ts = int(time.time())
     # Write a flush file with session_id
     payload = {
-        "session_key": "agent:main:telegram:supergroup:123",
+        "session_key": "agent:main:discord:supergroup:123",
         "reason": "shutdown",
         "ts": ts,
         "data": {
@@ -149,7 +149,7 @@ def test_recover_closes_owned_db_when_unexpected_exception_escapes(
     (flush_dir / "pending.json").write_text(
         json.dumps(
             {
-                "session_key": "agent:main:telegram:123",
+                "session_key": "agent:main:discord:123",
                 "data": {"text": "message", "session_id": "sid"},
             }
         ),
@@ -180,7 +180,7 @@ def _write_flush_file(flush_dir: Path, name: str, session_id: str, text: str) ->
     path.write_text(
         json.dumps(
             {
-                "session_key": "agent:main:telegram:supergroup:123",
+                "session_key": "agent:main:discord:supergroup:123",
                 "reason": "shutdown",
                 "ts": 1700000000,
                 "data": {"text": text, "session_id": session_id},
@@ -267,7 +267,7 @@ def _overflow_event(text: str, session_id: str = "20260901_120000_fifo"):
     event = MagicMock()
     event.text = text
     event.session_id = session_id
-    event.platform = "telegram"
+    event.platform = "discord"
     event.sender_id = "1572286605"
     event.sender_name = "tester"
     event.reply_to = None
@@ -287,11 +287,11 @@ def test_flush_overflow_writes_one_payload_per_event_in_arrival_order(tmp_path, 
 
     count = flush_overflow_to_file(
         {
-            "agent:main:telegram:dm:1": [
+            "agent:main:discord:dm:1": [
                 _overflow_event("follow-up B"),
                 _overflow_event("follow-up C"),
             ],
-            "agent:main:telegram:dm:2": [],
+            "agent:main:discord:dm:2": [],
             "": [_overflow_event("keyless — skipped")],
         },
         reason="shutdown",
@@ -302,7 +302,7 @@ def test_flush_overflow_writes_one_payload_per_event_in_arrival_order(tmp_path, 
         key=lambda p: p["seq"],
     )
     assert [p["data"]["text"] for p in payloads] == ["follow-up B", "follow-up C"]
-    assert {p["session_key"] for p in payloads} == {"agent:main:telegram:dm:1"}
+    assert {p["session_key"] for p in payloads} == {"agent:main:discord:dm:1"}
     assert all(p["reason"] == "shutdown" for p in payloads)
 
 
@@ -311,7 +311,7 @@ def test_flushed_overflow_is_replayed_by_recover_pending_to_db(tmp_path, monkeyp
     startup recovery inserts them as user rows without any new reader."""
     flush_dir = _make_flush_dir(tmp_path)
     monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
-    flush_overflow_to_file({"agent:main:telegram:dm:1": [_overflow_event("orphan-1")]})
+    flush_overflow_to_file({"agent:main:discord:dm:1": [_overflow_event("orphan-1")]})
 
     db = MagicMock()
     recovered = recover_pending_to_db(session_db=db)

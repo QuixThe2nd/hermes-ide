@@ -295,8 +295,8 @@ def test_main_skips_reconcile_in_dashboard_container_s6v3(
     ``/bin/sh -e .../rc.init top .../main-wrapper.sh dashboard ...`` — not a
     bare ``/init`` prefix. Before the fix, the prefix-strip left ``/bin/sh``
     at args[0], so the role read as non-dashboard, the dashboard container
-    reconciled, and it started its own gateway-default (dual Telegram
-    getUpdates 409). Asserting the slot is absent proves the skip fires.
+    reconciled, and it started its own gateway-default (two pollers fighting
+    over one platform token). Asserting the slot is absent proves the skip fires.
     """
     from hermes_cli import container_boot
 

@@ -347,8 +347,8 @@ def _core_constraints_file() -> Optional[Path]:
 
 
 def _installed_dist_roots(spec: str, target: Optional[Path]) -> set[Path]:
-    """Package dirs a freshly installed *spec* owns, from the dist's file list (``python-telegram-bot``
-    ships ``telegram``; some ship several)."""
+    """Package dirs a freshly installed *spec* owns, from the dist's file list (``slack-bolt``
+    ships ``slack_bolt``; some ship several)."""
     name = _pkg_name_from_spec(spec)
     roots: set[Path] = set()
     try:

@@ -1988,16 +1988,6 @@ def check_requirements() -> bool:
         return False
 
 
-# Public inbox-thread surface for other in-tree plugins (papercuts). The
-# sibling module late-imports this package's internals, so this re-export
-# cannot cycle.
-from plugins.hermes_starts.threads import (  # noqa: E402,F401
-    open_inbox_thread,
-    post_to_thread,
-    update_inbox_thread,
-)
-
-
 def register(ctx) -> None:
     ctx.register_tool(
         name="start_conversation",
@@ -2015,3 +2005,13 @@ def register(ctx) -> None:
         position="after_memory",
         max_chars=STRUCTURAL_ASKS_MAX_CHARS,
     )
+
+    def _on_gateway_start(**_kwargs: Any) -> None:
+        # Seed the default inbox-sparks cron job (idempotent, profile-scoped,
+        # opt-out aware) off the startup path — a cold Go build must never
+        # block GatewayRunner.start().
+        from plugins.hermes_starts import sparks_cron as _sparks_cron
+
+        _sparks_cron.start_ensure_thread(prereq=check_requirements)
+
+    ctx.register_hook("on_gateway_start", _on_gateway_start)

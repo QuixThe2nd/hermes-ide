@@ -16,7 +16,6 @@ from gateway.run_config_loaders import GatewayConfigLoadersMixin
 from gateway.run_inbound import GatewayInboundMixin
 from gateway.run_shutdown import GatewayShutdownMixin
 from gateway.run_startup import GatewayStartupMixin
-from gateway.run_topics import GatewayTopicThreadsMixin
 from gateway.run_turn_runner import TurnRunner, _TurnRunnerCore
 
 # (method name, module-level mixin class) pairs that were byte-identical duplicates of
@@ -32,9 +31,6 @@ CONSOLIDATED_MIXIN_METHODS = (
     ("_clear_plugin_message_injector", GatewayInboundMixin),
     ("_stop_systemd_watchdog", GatewayShutdownMixin),
     ("wait_for_shutdown", GatewayShutdownMixin),
-    ("_telegram_topic_root_lobby_message", GatewayTopicThreadsMixin),
-    ("_telegram_topic_root_new_message", GatewayTopicThreadsMixin),
-    ("_telegram_topic_help_text", GatewayTopicThreadsMixin),
     ("_current_session_run_generation", GatewayAgentCacheMixin),
     ("_is_session_run_current", GatewayAgentCacheMixin),
     ("_set_pending_turn_sidecar_notes", GatewayAgentCacheMixin),

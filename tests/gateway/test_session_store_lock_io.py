@@ -82,7 +82,7 @@ def _make_store(tmp_path, db_mock=None) -> SessionStore:
 
 def _source() -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="12345",
         chat_type="dm",
         user_id="12345",
@@ -96,7 +96,7 @@ def _seed_entry(store, key, session_id) -> SessionEntry:
         session_id=session_id,
         created_at=now - timedelta(hours=2),
         updated_at=now - timedelta(hours=1),
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="dm",
     )
     store._entries[key] = entry

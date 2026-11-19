@@ -84,7 +84,7 @@ def test_secretless_provision_response_is_not_an_error(monkeypatch):
         provision_url="https://connector.example/relay/provision",
         access_token="tok",
         gateway_id="gw-1",
-        platform="telegram",
+        platform="discord",
         bot_id="BOT",
         gateway_endpoint="",
         route_keys=["k"],
@@ -121,7 +121,7 @@ def test_malformed_response_still_raises(monkeypatch, body):
             provision_url="https://connector.example/relay/provision",
             access_token="tok",
             gateway_id="gw-1",
-            platform="telegram",
+            platform="discord",
             bot_id="BOT",
             gateway_endpoint="",
             route_keys=["k"],
@@ -162,14 +162,14 @@ def test_multiplatform_boot_survives_a_secretless_second_platform(monkeypatch):
     monkeypatch.setattr(
         relay,
         "relay_platform_identities",
-        lambda: [("telegram", "BOT_T"), ("discord", "BOT_D")],
+        lambda: [("matrix", "BOT_M"), ("discord", "BOT_D")],
         raising=False,
     )
 
     ok = relay.self_provision_relay()
 
     assert ok is True
-    assert calls == ["telegram", "discord"], "the secret-less platform must not abort the loop"
+    assert calls == ["matrix", "discord"], "the secret-less platform must not abort the loop"
     # THE POINT: platform 2's withheld response must not blank platform 1's creds.
     assert os.environ["GATEWAY_RELAY_SECRET"] == "a" * 64
     assert os.environ["GATEWAY_RELAY_DELIVERY_KEY"] == "b" * 64
@@ -209,7 +209,7 @@ def test_a_secretless_first_platform_does_not_write_empty_creds(monkeypatch):
     monkeypatch.setattr(
         relay,
         "relay_platform_identities",
-        lambda: [("telegram", "BOT_T"), ("discord", "BOT_D")],
+        lambda: [("matrix", "BOT_M"), ("discord", "BOT_D")],
         raising=False,
     )
 
@@ -254,13 +254,13 @@ def test_a_withheld_response_never_overwrites_credentials_in_hand(monkeypatch):
     monkeypatch.setattr(
         relay,
         "relay_platform_identities",
-        lambda: [("telegram", "BOT_T"), ("discord", "BOT_D")],
+        lambda: [("matrix", "BOT_M"), ("discord", "BOT_D")],
         raising=False,
     )
 
     ok = relay.self_provision_relay()
 
-    assert calls == ["telegram", "discord"]
+    assert calls == ["matrix", "discord"]
     # Nothing was written, because nothing was issued.
     assert not os.environ.get("GATEWAY_RELAY_SECRET")
     assert not os.environ.get("GATEWAY_RELAY_DELIVERY_KEY")
@@ -286,7 +286,7 @@ def test_all_platforms_withheld_warns_with_the_recovery_path(monkeypatch, caplog
     )
     monkeypatch.setattr(relay, "_resolve_relay_identity_token", lambda: "tok", raising=True)
     monkeypatch.setenv("GATEWAY_RELAY_URL", "https://connector.example")
-    monkeypatch.setattr(relay, "relay_platform_identities", lambda: [("telegram", "BOT_T")], raising=False)
+    monkeypatch.setattr(relay, "relay_platform_identities", lambda: [("matrix", "BOT_M")], raising=False)
 
     import logging
 

@@ -40,16 +40,16 @@ def _runner(*, multiplex, routes=()):
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(multiplex_profiles=multiplex)
-    runner.config.platforms = {Platform.TELEGRAM: PlatformConfig(enabled=True, extra={})}
+    runner.config.platforms = {Platform.DISCORD: PlatformConfig(enabled=True, extra={})}
     runner.config.profile_routes = parse_profile_routes(list(routes))
     runner.pairing_store = PairingStore(profile="default")
     runner.pairing_stores = {}
     runner._primary_profile_name = "default"
-    primary = _stub(Platform.TELEGRAM, runner, "PRIMARY")
-    team_b = _stub(Platform.TELEGRAM, runner, "TEAM_B")
+    primary = _stub(Platform.DISCORD, runner, "PRIMARY")
+    team_b = _stub(Platform.DISCORD, runner, "TEAM_B")
     team_b.set_owner_profile("team_b")
-    runner.adapters = {Platform.TELEGRAM: primary}
-    runner._profile_adapters = {"team_b": {Platform.TELEGRAM: team_b}, "ops": {}}
+    runner.adapters = {Platform.DISCORD: primary}
+    runner._profile_adapters = {"team_b": {Platform.DISCORD: team_b}, "ops": {}}
     return SimpleNamespace(runner=runner, primary=primary, team_b=team_b)
 
 
@@ -62,11 +62,11 @@ def mux(tmp_path, monkeypatch):
     served = [("default", home), ("ops", home / "profiles" / "ops"), ("team_b", home / "profiles" / "team_b")]
     rig = _runner(multiplex=True, routes=[
         # shared credential → satellite (#69246)
-        {"name": "ops-dm", "platform": "telegram", "profile": "ops", "chat_id": "72719239"},
+        {"name": "ops-dm", "platform": "discord", "profile": "ops", "chat_id": "72719239"},
         # per-credential source → a profile that owns its own bot (#70625, decision D1)
-        {"name": "team-b-via-shared", "platform": "telegram", "profile": "team_b", "chat_id": "555"},
+        {"name": "team-b-via-shared", "platform": "discord", "profile": "team_b", "chat_id": "555"},
         # secondary-owned transport → default (the inverse row)
-        {"name": "default-via-team-b", "platform": "telegram", "profile": "default", "chat_id": "999",
+        {"name": "default-via-team-b", "platform": "discord", "profile": "default", "chat_id": "999",
          "bot_profile": "team_b"},
     ])
     rig.home = home
@@ -96,7 +96,7 @@ def test_live_rows_reply_through_the_receiving_bot_whatever_the_runtime(mux):
     sat, sat_id = _live(mux, mux.primary, "72719239")
     assert (sat_id.transport_profile, sat_id.runtime_profile) == ("default", "ops")
     assert r._intake_adapter_for(sat) is r._delivery_adapter_for(sat) is mux.primary
-    assert r._session_key_for_source(sat) == "agent:ops:telegram:dm:72719239"
+    assert r._session_key_for_source(sat) == "agent:ops:discord:dm:72719239"
 
     # per-credential source routed to a profile that owns a bot: runtime team_b, reply via the
     # bot that received it — conversation continuity (D1), not the routed profile's bot (#70625).
@@ -110,11 +110,11 @@ def test_live_rows_reply_through_the_receiving_bot_whatever_the_runtime(mux):
     assert (inverse_id.transport_profile, inverse_id.runtime_profile) == ("team_b", "default")
     assert inverse_id.runtime_home == mux.home and inverse_id.namespace == "agent:main"
     assert r._intake_adapter_for(inverse) is r._delivery_adapter_for(inverse) is mux.team_b
-    assert mux.team_b._source_session_key(inverse) == "agent:main:telegram:dm:999"
+    assert mux.team_b._source_session_key(inverse) == "agent:main:discord:dm:999"
 
     # Provenance survives a reconnect: the transport ref dies, the identity still names the bot.
-    replacement = _stub(Platform.TELEGRAM, r, "PRIMARY2")
-    r.adapters = {Platform.TELEGRAM: replacement}
+    replacement = _stub(Platform.DISCORD, r, "PRIMARY2")
+    r.adapters = {Platform.DISCORD: replacement}
     assert r._intake_adapter_for(sat) is r._delivery_adapter_for(sat) is replacement
 
 
@@ -126,7 +126,7 @@ def test_restored_rows_fail_closed_on_intake_and_deliver_only_via_a_unique_owner
     r = mux.runner
 
     def restored(profile):
-        return SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm", user_id="42", profile=profile)
+        return SessionSource(platform=Platform.DISCORD, chat_id="42", chat_type="dm", user_id="42", profile=profile)
 
     for profile, owner in ((None, mux.primary), ("ops", mux.primary), ("team_b", mux.team_b)):
         assert r._intake_adapter_for(restored(profile)) is None, profile
@@ -138,19 +138,19 @@ def test_restored_rows_fail_closed_on_intake_and_deliver_only_via_a_unique_owner
     # team_b's bot failed to connect and is queued for reconnect: it owns a credential, so the
     # route that also names it through the shared bot must not turn it into a satellite.
     r._profile_adapters["team_b"] = {}
-    r._profile_failed_platforms = {"team_b": {Platform.TELEGRAM: {}}}
+    r._profile_failed_platforms = {"team_b": {Platform.DISCORD: {}}}
     assert r._delivery_adapter_for(restored("team_b")) is None
     assert r._authorization_home_for_source(restored("team_b")) is None
 
     # A dead transport ref with no identity is a restored row too, never a lookup by runtime.
     stale = restored("ops")
-    stale._transport_adapter_ref = weakref.ref(_stub(Platform.TELEGRAM, r, "GONE"))
+    stale._transport_adapter_ref = weakref.ref(_stub(Platform.DISCORD, r, "GONE"))
     assert r._intake_adapter_for(stale) is None and r._delivery_adapter_for(stale) is mux.primary
 
     solo_home = tmp_path / "solo"
     solo_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(solo_home))
     solo = _runner(multiplex=False)
-    bare = SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm", user_id="42")
+    bare = SessionSource(platform=Platform.DISCORD, chat_id="42", chat_type="dm", user_id="42")
     assert solo.runner._intake_adapter_for(bare) is solo.runner._delivery_adapter_for(bare) is solo.primary
     assert solo.runner._intake_adapter_for(None) is None and solo.runner._delivery_adapter_for(None) is None

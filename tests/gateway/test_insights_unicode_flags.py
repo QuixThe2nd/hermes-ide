@@ -1,6 +1,6 @@
 """Tests for Unicode dash normalization in /insights command flag parsing.
 
-Telegram on iOS auto-converts -- to em/en dashes. The /insights handler
+Mobile keyboards (e.g. iOS) auto-convert -- to em/en dashes. The /insights handler
 normalizes these before parsing --days and --source flags.
 """
 import re
@@ -22,13 +22,13 @@ class TestInsightsUnicodeDashFlags:
     @pytest.mark.parametrize("input_str,expected", [
         # Standard double hyphen (baseline)
         ("--days 7", "--days 7"),
-        ("--source telegram", "--source telegram"),
+        ("--source discord", "--source discord"),
         # Em dash (U+2014)
         ("\u2014days 7", "--days 7"),
-        ("\u2014source telegram", "--source telegram"),
+        ("\u2014source discord", "--source discord"),
         # En dash (U+2013)
         ("\u2013days 7", "--days 7"),
-        ("\u2013source telegram", "--source telegram"),
+        ("\u2013source discord", "--source discord"),
         # Figure dash (U+2012)
         ("\u2012days 7", "--days 7"),
         # Horizontal bar (U+2015)

@@ -113,7 +113,7 @@ def extra_or_secret(extra: Optional[dict], key: str, env: str, default: Any = ""
     process's ``os.environ`` (which holds the default profile's bridged values); single-profile
     and default-profile installs read ``os.environ`` there, keeping the documented env-over-YAML
     contract (an explicit ``DISCORD_ALLOW_MENTION_EVERYONE=false`` beats ``everyone: true``,
-    #108440; ``TELEGRAM_REACTIONS=true`` beats the stock ``reactions: false``, #109032). A blank
+    #108440). A blank
     env value is unset. An explicit ``False``/``0`` in YAML is a real value (``require_mention:
     false`` must not fall to ``default``). A blank YAML string is unset by default; readers whose
     YAML key means "clear it" (``allowed_channels: "" `` = no whitelist) pass

@@ -126,7 +126,6 @@ _GLOBAL_ENV_EXACT = frozenset({
     "GATEWAY_RELAY_WAKE_URL", "GATEWAY_RELAY_DISPLAY_NAME",
 })
 _GLOBAL_ENV_PREFIXES = (
-    "HERMES_TELEGRAM_",   # tuning knobs (batch delays, fallback toggles) — NOT the token
     "TERMINAL_",          # terminal/sandbox backend settings
 )
 

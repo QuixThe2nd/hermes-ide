@@ -35,10 +35,10 @@ def project(tmp_path):
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "README.md").write_text("Documentation", encoding="utf-8")
 
-    # deep/nested/path/ — has .cursorrules
+    # deep/nested/path/ — has agents.md (lowercase variant)
     deep = tmp_path / "deep" / "nested" / "path"
     deep.mkdir(parents=True)
-    (deep / ".cursorrules").write_text("Cursor rules for nested path", encoding="utf-8")
+    (deep / "agents.md").write_text("Agents rules for nested path", encoding="utf-8")
 
     return tmp_path
 

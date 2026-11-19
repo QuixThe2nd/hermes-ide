@@ -24,7 +24,7 @@ def _make_sessions(n=5):
     for i in range(n):
         sessions.append({
             "id": f"20260308_{i:06d}_abcdef",
-            "source": "cli" if i % 2 == 0 else "telegram",
+            "source": "cli" if i % 2 == 0 else "discord",
             "model": "test/model",
             "title": f"Session {i}" if i % 3 != 0 else None,
             "preview": f"Hello from session {i}",

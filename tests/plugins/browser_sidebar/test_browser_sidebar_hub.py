@@ -10,6 +10,7 @@ pytest.importorskip("websockets")
 
 from gateway.config import PlatformConfig
 from plugins.platforms.browser_sidebar import adapter as bs
+from plugins.platforms.browser_sidebar import runtime as sidebar_runtime
 from plugins.platforms.discord.hub import DiscordHubServer
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.platforms("posix")]
@@ -61,7 +62,7 @@ class _HubSidebar:
         for gateway in reversed(self.gateways):
             await gateway.disconnect()
         await self.server.stop()
-        bs._ACTIVE_ADAPTER = None
+        sidebar_runtime.reset()
 
     def add_gateway(self, name: str) -> _Gateway:
         gateway = _Gateway(self, name)
@@ -88,7 +89,10 @@ async def _chat(ws, text="hello", message_id="m1") -> None:
     }))
 
 
-async def test_attach_replacement_routes_all_traffic_only_to_current_gateway(short_af_unix_path):
+async def test_attach_replacement_routes_new_turns_only_to_current_gateway(short_af_unix_path):
+    """New turns go to the newest generation; a still-attached predecessor may
+    finish its in-flight turn (overlap drain), but once detached it is gone:
+    no sends, no re-attach, no traffic."""
     async with _HubSidebar(short_af_unix_path) as hub:
         old = hub.add_gateway("old")
         await old.connect()
@@ -96,9 +100,14 @@ async def test_attach_replacement_routes_all_traffic_only_to_current_gateway(sho
         current = hub.add_gateway("current")
         await current.connect()
 
+        # Still attached: the predecessor's mid-turn outbound must flow.
         stale_send = await old.adapter.send("brave", "stale")
-        assert not stale_send.success
+        assert stale_send.success
+        assert await _recv(ws) == {"type": "final", "id": "", "text": "stale"}
+
         await old.disconnect()
+        late_send = await old.adapter.send("brave", "late")
+        assert not late_send.success
         assert not await old.adapter.connect(), "a superseded generation must not reclaim the hub"
         await _chat(ws)
         await asyncio.wait_for(current.message_arrived.wait(), 2)

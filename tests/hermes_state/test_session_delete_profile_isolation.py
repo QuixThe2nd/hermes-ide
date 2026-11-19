@@ -26,7 +26,7 @@ def test_delete_against_default_does_not_remove_winefox_messaging_session(tmp_pa
     winefox_db = _profile_db(home, "winefox")
     sid = "tg-winefox-realpath"
 
-    winefox_db.create_session(sid, source="telegram")
+    winefox_db.create_session(sid, source="discord")
     winefox_db.append_message(sid, "user", "hello from winefox")
 
     assert winefox_db.resolve_session_id(sid)

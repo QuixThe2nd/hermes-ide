@@ -12,6 +12,7 @@ Layout::
     launcher.py     systemd transient user service (+ detached fallback)
     runner.py       the host-owned job runner (python -m …runner)
     notify.py       completion re-entry + stale-job recovery watcher
+    provision.py    on-demand worker-profile provisioning (Go decision table)
 
 See README.md in this directory for the operator view.
 """
@@ -32,10 +33,33 @@ logger = logging.getLogger("hermes.plugins.deep_research")
 WRITER_NO_FILE_TOOLSET = "research_writer"
 
 
+def _on_gateway_start(**_kwargs) -> None:
+    """Provision the worker profile (best-effort), then start the watcher.
+
+    Provisioning happens both here and lazily at ``start``: this covers the
+    common case before the first job, while the lazy path is the authority.
+    A provisioning failure never takes the watcher down — ``start`` reports
+    the error to the caller instead.
+    """
+    from plugins.deep_research import notify, provision
+    from plugins.deep_research.config import load_deep_research_config
+
+    config = load_deep_research_config()
+    try:
+        provision.ensure_worker_profile(config.worker_profile)
+    except provision.ProvisionError as exc:
+        logger.warning("deep_research: %s", exc)
+    started = notify.start_gateway_watcher(interval_seconds=config.notify_interval_seconds)
+    if started:
+        logger.info(
+            "deep_research: completion watcher started (profile=%s)",
+            config.worker_profile,
+        )
+
+
 def register(ctx) -> None:
     from plugins.deep_research import jobs, tool
     from plugins.deep_research.evidence import handle_post_tool_call
-    from plugins.deep_research.notify import start_gateway_watcher
 
     ctx.register_tool(
         name=tool.TOOL_NAME,
@@ -62,17 +86,6 @@ def register(ctx) -> None:
 
     # Evidence ledger: a strict no-op outside a runner-spawned worker session.
     ctx.register_hook("post_tool_call", handle_post_tool_call)
-
-    def _on_gateway_start(**_kwargs) -> None:
-        from plugins.deep_research.config import load_deep_research_config
-
-        config = load_deep_research_config()
-        started = start_gateway_watcher(interval_seconds=config.notify_interval_seconds)
-        if started:
-            logger.info(
-                "deep_research: completion watcher started (profile=%s)",
-                config.worker_profile,
-            )
 
     register_hook = getattr(ctx, "register_hook", None)
     if callable(register_hook):

@@ -26,9 +26,273 @@ logger = logging.getLogger(__name__)
 
 _OVERLAP_SUCCESSOR_ATTACH_TIMEOUT_SECONDS = 300.0
 _OVERLAP_SUCCESSOR_ATTACH_POLL_SECONDS = 0.5
+# StreamReader limit for the hub connection: asyncio's 64 KiB default makes
+# readline() raise LimitOverrunError and drop frames on large Discord
+# payloads (embeds, long messages, attachment batches), so frames up to
+# 16 MiB must pass through whole. Go twin: internal/hubframe (shared
+# testdata contract test).
+_HUB_STREAM_LIMIT = 16 * 1024 * 1024
 
 
-class DiscordHubClientAdapter(BasePlatformAdapter):
+class HubOverlapClientMixin:
+    """Client half of the instant-overlap hub protocol, shared by hub-attached
+    adapters (Discord, browser sidebar).
+
+    Owns the session-ownership release fence, hub-parked event handoff, hub
+    event admission, and the overlap-successor lifecycle (spawn, readiness
+    ping, drain admission). Hosts parametrize wire field names and log labels
+    via the ``_hub_*`` class attributes and must provide ``_call``,
+    ``_generation_id``, ``_session_versions``, ``_release_tasks`` and the
+    ``BasePlatformAdapter`` session-state maps. Compose BEFORE
+    ``BasePlatformAdapter`` so the release hooks wrap the base lifecycle.
+    """
+
+    supports_overlap_restart = True
+    # Read by gateway.overlap_restart.handoff_overlap_event: how long a
+    # draining predecessor keeps retrying a hub-parked handoff before the
+    # durable drain queue may claim the event.
+    overlap_successor_attach_timeout = _OVERLAP_SUCCESSOR_ATTACH_TIMEOUT_SECONDS
+    _hub_label = "Discord hub"
+    _hub_version_field = "_discord_hub_version"
+    _hub_version_handoff_field = "_discord_hub_version_handoffs"
+
+    async def _receive_event(self, message: Dict[str, Any]) -> None:
+        from gateway.run_drain_queue import deserialize_drain_event
+
+        try:
+            record = message["record"]
+            session_key = str(message.get("session_key") or record.get("session_key") or "")
+            version = record.get(self._hub_version_field)
+            if session_key and version is not None:
+                self._session_versions[session_key] = int(version)
+            session_key, event = deserialize_drain_event(record)
+            event._hub_delivered = True
+            event._hub_handoffs = list(record.get(self._hub_version_handoff_field) or [])
+            # Restart-resume (router-set, owner-change turn only): the gateway
+            # turns this into an ephemeral per-turn system note.
+            if record.get("_hub_generation_changed"):
+                event._hub_generation_restart = {
+                    "previous_generation": str(record.get("_hub_previous_generation") or ""),
+                    "previous_pid": record.get("_hub_previous_pid"),
+                    "generation": self._generation_id,
+                    "pid": os.getpid(),
+                }
+            self._decorate_hub_event(event, record)
+            await self.handle_message(event)
+        except Exception:
+            logger.exception("[%s] Could not admit %s event", self.name, self._hub_label)
+
+    def _decorate_hub_event(self, event: MessageEvent, record: Dict[str, Any]) -> None:
+        """Stamp platform-specific metadata onto a hub-delivered event."""
+
+    def _schedule_ownership_release(self, session_key: str) -> None:
+        version = self._session_versions.get(session_key, 0)
+        task = asyncio.create_task(self._release_ownership(session_key, version))
+        self._release_tasks.add(task)
+        task.add_done_callback(self._release_tasks.discard)
+
+    def _cleanup_finished_session_task(self, session_key: str, interrupt_event) -> None:
+        super()._cleanup_finished_session_task(session_key, interrupt_event)
+        if (
+            session_key not in self._active_sessions
+            and session_key not in self._pending_messages
+            and session_key not in self._session_tasks
+        ):
+            self._schedule_ownership_release(session_key)
+
+    async def cancel_session_processing(self, session_key: str, *, release_guard: bool = True,
+                                        discard_pending: bool = True) -> None:
+        await super().cancel_session_processing(
+            session_key, release_guard=release_guard, discard_pending=discard_pending,
+        )
+        if (
+            session_key not in self._active_sessions
+            and session_key not in self._pending_messages
+            and session_key not in self._session_tasks
+        ):
+            self._schedule_ownership_release(session_key)
+
+    def _heal_stale_session_lock(self, session_key: str) -> bool:
+        healed = super()._heal_stale_session_lock(session_key)
+        if healed:
+            self._schedule_ownership_release(session_key)
+        return healed
+
+    async def _drain_pending_after_session_command(self, session_key: str, command_guard) -> None:
+        await super()._drain_pending_after_session_command(session_key, command_guard)
+        if (
+            session_key not in self._active_sessions
+            and session_key not in self._pending_messages
+            and session_key not in self._session_tasks
+        ):
+            self._schedule_ownership_release(session_key)
+
+    async def _release_ownership(self, session_key: str, version: int) -> None:
+        try:
+            released = await self._call("unregister", {
+                "session_key": session_key,
+                "version": version,
+            })
+            if released and self._session_versions.get(session_key) == version:
+                self._session_versions.pop(session_key, None)
+        except (ConnectionError, RuntimeError) as exc:
+            logger.debug("[%s] %s ownership release failed: %s",
+                         self.name, self._hub_label, exc)
+
+    async def handoff_event(self, event: MessageEvent, session_key: str, *,
+                            target_pid: Optional[int] = None) -> bool:
+        """Return an event to the hub; only an accepted RPC transfers its outcome."""
+        from gateway.run_drain_queue import serialize_drain_event
+
+        try:
+            record = serialize_drain_event(session_key, event)
+            handoffs = list(getattr(event, "_hub_handoffs", None) or [])
+            if handoffs:
+                record[self._hub_version_handoff_field] = handoffs
+            accepted = await self._call("handoff", {
+                "session_key": session_key,
+                "version": self._session_versions.get(session_key, 0),
+                "record": record,
+                "target_pid": target_pid,
+            })
+            if accepted is not True:
+                event._gateway_accepted = False
+                return False
+            event._gateway_accepted = True
+            return True
+        except (ConnectionError, OSError, RuntimeError, ValueError) as exc:
+            event._gateway_accepted = False
+            logger.error("[%s] %s handoff failed for %s: %s",
+                         self.name, self._hub_label, session_key, exc)
+            return False
+
+    async def _handle_message_while_active(self, event: MessageEvent, session_key: str) -> None:
+        runner = self.gateway_runner
+        if runner is not None and getattr(runner, "_draining", False):
+            from gateway.overlap_restart import admits_owned_work, handoff_overlap_event
+
+            if not admits_owned_work(runner, event.source) and await handoff_overlap_event(
+                runner, event, session_key, require_successor_ready=True,
+            ):
+                return
+        await super()._handle_message_while_active(event, session_key)
+
+    def mark_overlap_successor_ready(self) -> None:
+        self._overlap_successor_ready = True
+
+    def mark_overlap_successor_lost(self) -> None:
+        self._overlap_successor_ready = False
+
+    def admits_owned_work_while_draining(self, source: Any = None) -> bool:
+        # The hub has already selected this generation for the event. Once the
+        # successor is attached, new keys go there and only owned follow-ups
+        # arrive here. Before that attach, the ordinary drain gate stays shut.
+        return self._running and self._overlap_successor_ready
+
+    async def wait_for_overlap_successor(self) -> None:
+        timeout = float(self.overlap_successor_attach_timeout)
+        deadline = time.monotonic() + timeout
+        while True:
+            status = await self._call("ping")
+            current = status.get("current_generation")
+            if current and current != self._generation_id:
+                self.mark_overlap_successor_ready()
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"{self._hub_label} successor did not attach within {timeout:g} seconds")
+            await asyncio.sleep(min(_OVERLAP_SUCCESSOR_ATTACH_POLL_SECONDS, remaining))
+
+    def set_restart_request_handler(self, handler) -> None:
+        """Wire the runner's forwarded-restart entry (gateway/run.py)."""
+        self._restart_request_handler = handler
+
+    async def forward_restart_to_newest(self, *, restart_hub: bool = False,
+                                        requester: Optional[dict] = None,
+                                        timeout: float = 30.0) -> Optional[dict]:
+        """Ask the hub to deliver a restart request to the newest generation.
+
+        The hub routes the control to the router's current (newest attached)
+        generation; that generation runs its own restart queue and spawns its
+        own successor. ``requester`` is the ``/restart`` notify payload so the
+        target persists the comeback routing for its own successor. None when
+        the hub cannot forward (no newer generation attached, control timed
+        out) — the caller then falls back to its own restart decision.
+        """
+        params: Dict[str, Any] = {"restart_hub": bool(restart_hub)}
+        if requester:
+            params["requester"] = requester
+        try:
+            result = await self._call("generation_control", {
+                "method": "restart_request",
+                "params": params,
+                "timeout": timeout,
+            })
+        except Exception as exc:
+            logger.debug("[%s] %s restart forward unavailable: %s",
+                         self.name, self._hub_label, exc)
+            return None
+        return result if isinstance(result, dict) else None
+
+    async def _restart_request_control(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Hub-control entry: a newer-generation restart was forwarded here."""
+        handler = getattr(self, "_restart_request_handler", None)
+        if not callable(handler):
+            raise RuntimeError("gateway restart handler is not wired")
+        requester = params.get("requester")
+        result = await handler(
+            restart_hub=bool(params.get("restart_hub")),
+            requester=requester if isinstance(requester, dict) else None,
+        )
+        return result if isinstance(result, dict) else {"status": "restarting"}
+
+    async def spawn_overlap_successor(
+        self, *, via_service: bool = False, predecessor_pid: Optional[int] = None
+    ) -> Optional[int]:
+        self._last_overlap_successor_pid = None
+        self._last_overlap_successor_start_time = None
+        self._last_overlap_successor_service_managed = False
+        predecessor = predecessor_pid or os.getpid()
+        home = str(get_hermes_home())
+        systemd_managed = bool(os.environ.get("INVOCATION_ID"))
+        if systemd_managed:
+            # The predecessor must spawn inside the gateway unit so MAINPID can
+            # move to this exact child, regardless of the caller's request flag.
+            from plugins.platforms.discord.overlap_spawn import spawn_gateway_successor
+
+            process = await asyncio.to_thread(
+                spawn_gateway_successor,
+                home=home, predecessor_pid=predecessor, preserve_supervisor=True,
+            )
+            pid = int(process.pid)
+        elif via_service:
+            # Other supervisors retain drain-then-relaunch; a hub child would
+            # belong to the hub's cgroup rather than the gateway supervisor.
+            return None
+        else:
+            result = await self._call("spawn_gateway", {
+                "hermes_home": home,
+                "predecessor_pid": predecessor,
+            })
+            pid = int(result["pid"])
+
+        # Latch the child before any fallible hub registration or readiness
+        # wait. The runner reads these fields even if a later step raises.
+        from gateway.status import get_process_start_time
+
+        self._last_overlap_successor_pid = pid
+        self._last_overlap_successor_start_time = get_process_start_time(pid)
+        self._last_overlap_successor_service_managed = systemd_managed
+        if systemd_managed:
+            await self._call("register_spawned_gateway", {
+                "pid": pid, "hermes_home": home, "predecessor_pid": predecessor,
+            })
+        await self.wait_for_overlap_successor()
+        return pid
+
+
+class DiscordHubClientAdapter(HubOverlapClientMixin, BasePlatformAdapter):
     """Attach to Discord's shared hub; never open a token websocket locally."""
 
     MAX_MESSAGE_LENGTH = 2000
@@ -37,11 +301,6 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
     supports_code_blocks = True
     splits_long_messages = True
     _delegation_typing_enabled = True
-    supports_overlap_restart = True
-    # Read by gateway.overlap_restart.handoff_overlap_event: how long a
-    # draining predecessor keeps retrying a hub-parked handoff before the
-    # durable drain queue may claim the event.
-    overlap_successor_attach_timeout = _OVERLAP_SUCCESSOR_ATTACH_TIMEOUT_SECONDS
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
@@ -66,11 +325,15 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
 
     async def _open_socket(self) -> None:
         try:
-            self._reader, self._writer = await asyncio.open_unix_connection(str(self._socket_path))
+            self._reader, self._writer = await asyncio.open_unix_connection(
+                str(self._socket_path), limit=_HUB_STREAM_LIMIT
+            )
         except (FileNotFoundError, ConnectionRefusedError, OSError):
             if not await self._start_hub():
                 raise
-            self._reader, self._writer = await asyncio.open_unix_connection(str(self._socket_path))
+            self._reader, self._writer = await asyncio.open_unix_connection(
+                str(self._socket_path), limit=_HUB_STREAM_LIMIT
+            )
 
     async def _start_hub(self) -> bool:
         """Start the installation hub when no service manager has done so.
@@ -295,40 +558,19 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
                 self.name, exc,
             )
 
-    async def _receive_event(self, message: Dict[str, Any]) -> None:
-        from gateway.run_drain_queue import deserialize_drain_event
-
-        try:
-            record = message["record"]
-            session_key = str(message.get("session_key") or record.get("session_key") or "")
-            version = record.get("_discord_hub_version")
-            if session_key and version is not None:
-                self._session_versions[session_key] = int(version)
-            session_key, event = deserialize_drain_event(record)
-            event._hub_delivered = True
-            event._hub_handoffs = list(record.get("_discord_hub_version_handoffs") or [])
-            # Restart-resume (router-set, owner-change turn only): the gateway
-            # turns this into an ephemeral per-turn system note.
-            if record.get("_hub_generation_changed"):
-                event._hub_generation_restart = {
-                    "previous_generation": str(record.get("_hub_previous_generation") or ""),
-                    "previous_pid": record.get("_hub_previous_pid"),
-                    "generation": self._generation_id,
-                    "pid": os.getpid(),
-                }
-            event.raw_message = {
-                "discord_hub_message_id": event.message_id,
-                "discord_hub_token": self._token_key,
-            }
-            await self.handle_message(event)
-        except Exception:
-            logger.exception("[%s] Could not admit Discord hub event", self.name)
+    def _decorate_hub_event(self, event: MessageEvent, record: Dict[str, Any]) -> None:
+        event.raw_message = {
+            "discord_hub_message_id": event.message_id,
+            "discord_hub_token": self._token_key,
+        }
 
     async def _receive_control(self, message: Dict[str, Any]) -> None:
         try:
             method = message.get("method")
             params = message.get("params") or {}
-            if method == "invoke_picker_callback":
+            if method == "restart_request":
+                result = await self._restart_request_control(params)
+            elif method == "invoke_picker_callback":
                 picker_id = str(params.get("picker_id") or "")
                 callback = self._picker_callbacks.pop(picker_id, None)
                 if not callable(callback):
@@ -346,167 +588,6 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
                 self._writer.write((json.dumps(response, separators=(",", ":")) + "\n").encode())
                 await self._writer.drain()
 
-    def _schedule_ownership_release(self, session_key: str) -> None:
-        version = self._session_versions.get(session_key, 0)
-        task = asyncio.create_task(self._release_ownership(session_key, version))
-        self._release_tasks.add(task)
-        task.add_done_callback(self._release_tasks.discard)
-
-    def _cleanup_finished_session_task(self, session_key: str, interrupt_event) -> None:
-        super()._cleanup_finished_session_task(session_key, interrupt_event)
-        if (
-            session_key not in self._active_sessions
-            and session_key not in self._pending_messages
-            and session_key not in self._session_tasks
-        ):
-            self._schedule_ownership_release(session_key)
-
-    async def cancel_session_processing(self, session_key: str, *, release_guard: bool = True,
-                                        discard_pending: bool = True) -> None:
-        await super().cancel_session_processing(
-            session_key, release_guard=release_guard, discard_pending=discard_pending,
-        )
-        if (
-            session_key not in self._active_sessions
-            and session_key not in self._pending_messages
-            and session_key not in self._session_tasks
-        ):
-            self._schedule_ownership_release(session_key)
-
-    def _heal_stale_session_lock(self, session_key: str) -> bool:
-        healed = super()._heal_stale_session_lock(session_key)
-        if healed:
-            self._schedule_ownership_release(session_key)
-        return healed
-
-    async def _drain_pending_after_session_command(self, session_key: str, command_guard) -> None:
-        await super()._drain_pending_after_session_command(session_key, command_guard)
-        if (
-            session_key not in self._active_sessions
-            and session_key not in self._pending_messages
-            and session_key not in self._session_tasks
-        ):
-            self._schedule_ownership_release(session_key)
-
-    async def _release_ownership(self, session_key: str, version: int) -> None:
-        try:
-            released = await self._call("unregister", {
-                "session_key": session_key,
-                "version": version,
-            })
-            if released and self._session_versions.get(session_key) == version:
-                self._session_versions.pop(session_key, None)
-        except (ConnectionError, RuntimeError) as exc:
-            logger.debug("[%s] Discord ownership release failed: %s", self.name, exc)
-
-    async def handoff_event(self, event: MessageEvent, session_key: str, *,
-                            target_pid: Optional[int] = None) -> bool:
-        """Return an event to the hub; only an accepted RPC transfers its outcome."""
-        from gateway.run_drain_queue import serialize_drain_event
-
-        try:
-            record = serialize_drain_event(session_key, event)
-            handoffs = list(getattr(event, "_hub_handoffs", None) or [])
-            if handoffs:
-                record["_discord_hub_version_handoffs"] = handoffs
-            accepted = await self._call("handoff", {
-                "session_key": session_key,
-                "version": self._session_versions.get(session_key, 0),
-                "record": record,
-                "target_pid": target_pid,
-            })
-            if accepted is not True:
-                event._gateway_accepted = False
-                return False
-            event._gateway_accepted = True
-            return True
-        except (ConnectionError, OSError, RuntimeError, ValueError) as exc:
-            event._gateway_accepted = False
-            logger.error("[%s] Discord hub handoff failed for %s: %s", self.name, session_key, exc)
-            return False
-
-    async def _handle_message_while_active(self, event: MessageEvent, session_key: str) -> None:
-        runner = self.gateway_runner
-        if runner is not None and getattr(runner, "_draining", False):
-            from gateway.overlap_restart import admits_owned_work, handoff_overlap_event
-
-            if not admits_owned_work(runner, event.source) and await handoff_overlap_event(
-                runner, event, session_key, require_successor_ready=True,
-            ):
-                return
-        await super()._handle_message_while_active(event, session_key)
-
-    def mark_overlap_successor_ready(self) -> None:
-        self._overlap_successor_ready = True
-
-    def mark_overlap_successor_lost(self) -> None:
-        self._overlap_successor_ready = False
-
-    def admits_owned_work_while_draining(self, source: Any = None) -> bool:
-        # The hub has already selected this generation for the event. Once the
-        # successor is attached, new keys go there and only owned follow-ups
-        # arrive here. Before that attach, the ordinary drain gate stays shut.
-        return self._running and self._overlap_successor_ready
-
-    async def wait_for_overlap_successor(self) -> None:
-        deadline = time.monotonic() + _OVERLAP_SUCCESSOR_ATTACH_TIMEOUT_SECONDS
-        while True:
-            status = await self._call("ping")
-            current = status.get("current_generation")
-            if current and current != self._generation_id:
-                self.mark_overlap_successor_ready()
-                return
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise RuntimeError(
-                    "Discord hub successor did not attach within "
-                    f"{_OVERLAP_SUCCESSOR_ATTACH_TIMEOUT_SECONDS:g} seconds"
-                )
-            await asyncio.sleep(min(_OVERLAP_SUCCESSOR_ATTACH_POLL_SECONDS, remaining))
-
-    async def spawn_overlap_successor(
-        self, *, via_service: bool = False, predecessor_pid: Optional[int] = None
-    ) -> Optional[int]:
-        self._last_overlap_successor_pid = None
-        self._last_overlap_successor_start_time = None
-        self._last_overlap_successor_service_managed = False
-        predecessor = predecessor_pid or os.getpid()
-        home = str(get_hermes_home())
-        systemd_managed = bool(os.environ.get("INVOCATION_ID"))
-        if systemd_managed:
-            # The predecessor must spawn inside the gateway unit so MAINPID can
-            # move to this exact child, regardless of the caller's request flag.
-            from plugins.platforms.discord.overlap_spawn import spawn_gateway_successor
-
-            process = await asyncio.to_thread(
-                spawn_gateway_successor,
-                home=home, predecessor_pid=predecessor, preserve_supervisor=True,
-            )
-            pid = int(process.pid)
-        elif via_service:
-            # Other supervisors retain drain-then-relaunch; a hub child would
-            # belong to the hub's cgroup rather than the gateway supervisor.
-            return None
-        else:
-            result = await self._call("spawn_gateway", {
-                "hermes_home": home,
-                "predecessor_pid": predecessor,
-            })
-            pid = int(result["pid"])
-
-        # Latch the child before any fallible hub registration or readiness
-        # wait. The runner reads these fields even if a later step raises.
-        from gateway.status import get_process_start_time
-
-        self._last_overlap_successor_pid = pid
-        self._last_overlap_successor_start_time = get_process_start_time(pid)
-        self._last_overlap_successor_service_managed = systemd_managed
-        if systemd_managed:
-            await self._call("register_spawned_gateway", {
-                "pid": pid, "hermes_home": home, "predecessor_pid": predecessor,
-            })
-        await self.wait_for_overlap_successor()
-        return pid
 
     async def _rpc(self, method: str, *args: Any, **kwargs: Any) -> Any:
         return await self._call("rpc", {

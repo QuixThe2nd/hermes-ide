@@ -64,7 +64,7 @@ class TestConfigRegistrationAgreementUnderMultiplexScope:
         (hermes_home / "config.yaml").write_text(
             "gateway:\n"
             "  platforms:\n"
-            "    telegram:\n"
+            "    discord:\n"
             "      enabled: true\n"
             "      bot_token: '123:abc'\n",
             encoding="utf-8",
@@ -88,7 +88,7 @@ class TestConfigRegistrationAgreementUnderMultiplexScope:
             ss.set_multiplex_active(False)
 
         assert config.platforms[Platform.RELAY].enabled is True
-        assert config.platforms[Platform.TELEGRAM].enabled is False
+        assert config.platforms[Platform.DISCORD].enabled is False
         # The registered factory actually constructs an adapter with a live
         # transport dialing the same URL — the connect loop's contract.
         adapter = platform_registry.create_adapter(
@@ -111,7 +111,7 @@ class TestConfigRegistrationAgreementUnderMultiplexScope:
         (hermes_home / "config.yaml").write_text(
             "gateway:\n"
             "  platforms:\n"
-            "    telegram:\n"
+            "    discord:\n"
             "      enabled: true\n"
             "      bot_token: '123:abc'\n",
             encoding="utf-8",
@@ -137,4 +137,4 @@ class TestConfigRegistrationAgreementUnderMultiplexScope:
 
         relay_cfg = config.platforms.get(Platform.RELAY)
         assert relay_cfg is None or relay_cfg.enabled is False
-        assert config.platforms[Platform.TELEGRAM].enabled is True
+        assert config.platforms[Platform.DISCORD].enabled is True

@@ -24,13 +24,12 @@ from gateway.restart import EXTERNAL_GATEWAY_SUPERVISOR_ENV
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
 
-def _make_restart_event(update_id: int | None = 100) -> MessageEvent:
+def _make_restart_event() -> MessageEvent:
     return MessageEvent(
         text="/restart",
         message_type=MessageType.TEXT,
         source=make_restart_source(),
         message_id="m1",
-        platform_update_id=update_id,
     )
 
 
@@ -62,7 +61,12 @@ async def test_restart_with_external_supervisor_marker_uses_service_path(
 
     await runner._handle_restart_command(_make_restart_event())
 
-    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+    # Routing contract only: the unified restart flow (#613) passes further
+    # kwargs (restart_platforms) that are not this test's subject.
+    runner.request_restart.assert_called_once()
+    kwargs = runner.request_restart.call_args.kwargs
+    assert kwargs.get("detached") is False
+    assert kwargs.get("via_service") is True
 
 
 @pytest.mark.asyncio
@@ -75,7 +79,10 @@ async def test_false_external_supervisor_marker_keeps_detached_path(
 
     await runner._handle_restart_command(_make_restart_event())
 
-    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+    runner.request_restart.assert_called_once()
+    kwargs = runner.request_restart.call_args.kwargs
+    assert kwargs.get("detached") is True
+    assert kwargs.get("via_service") is False
 
 
 def test_supervised_child_marker_is_a_launch_not_a_restart_route():

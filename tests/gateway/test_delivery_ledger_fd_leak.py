@@ -70,7 +70,7 @@ def test_ledger_operations_close_every_connection(monkeypatch, tmp_path):
 
     oid = dl.compute_obligation_id("sess", "msg", "content")
     dl.record_obligation(
-        obligation_id=oid, session_key="sess", platform="telegram",
+        obligation_id=oid, session_key="sess", platform="discord",
         chat_id="123", thread_id=None, content="hello",
     )
     dl.mark_attempting(oid)

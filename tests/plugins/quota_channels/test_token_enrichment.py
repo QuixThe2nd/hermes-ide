@@ -17,7 +17,6 @@ from plugins.quota_channels.core import (
     fetch_codex_tokens_7d,
     format_codex_name,
     format_compact_tokens,
-    format_cursor_name,
     format_zai_name,
     redact_secrets,
     run_tick,
@@ -102,10 +101,9 @@ def _base_section(**overrides):
             "codex": "301",
             "kimi": "302",
             "zai": "303",
-            "cursor": "304",
             "grok": "305",
         },
-        "enabled_providers": ["codex", "kimi", "zai", "cursor", "grok"],
+        "enabled_providers": ["codex", "kimi", "zai", "grok"],
     }
     section.update(overrides)
     return section
@@ -138,18 +136,12 @@ def _write_tick_credentials(monkeypatch, tmp_path):
             }
         )
     )
-    cursor_dir = tmp_path / ".config" / "cursor"
-    cursor_dir.mkdir(parents=True)
-    (cursor_dir / "auth.json").write_text(
-        json.dumps({"accessToken": "cursor-access-token"})
-    )
     monkeypatch.setattr("plugins.quota_channels.core.Path.home", lambda: tmp_path)
 
 
 TOKEN_ENDPOINT_MARKERS = (
     "profiles/me",
     "model-usage",
-    "GetAggregatedUsageEvents",
 )
 
 
@@ -157,7 +149,6 @@ def _provider_http_router(
     *,
     codex_tokens: int = 2_234_567_890,
     zai_tokens: int = 250_000_000,
-    cursor_tokens: int = 49_000_000,
     channel_names: dict[str, str] | None = None,
     fail_token: set[str] | None = None,
     fail_quota: set[str] | None = None,
@@ -210,16 +201,6 @@ def _provider_http_router(
                 }
             ).encode()
 
-        if "GetCurrentPeriodUsage" in url:
-            if "cursor" in fail_quota:
-                return 500, b"cursor quota down"
-            return 200, json.dumps(
-                {
-                    "planUsage": {"autoPercentUsed": 12, "apiPercentUsed": 15},
-                    "billingCycleEnd": int((fixed_ts + 2332800) * 1000),
-                }
-            ).encode()
-
         if "GetGrokCreditsConfig" in url:
             if "grok" in fail_quota:
                 return 500, b"grok quota down"
@@ -259,24 +240,12 @@ def _provider_http_router(
             ).encode()
             return 200, body
 
-        if "GetAggregatedUsageEvents" in url:
-            if "cursor" in fail_token:
-                return 503, b"cursor token down"
-            body = json.dumps(
-                {
-                    "totalInputTokens": cursor_tokens - 1_000_000,
-                    "totalOutputTokens": 1_000_000,
-                }
-            ).encode()
-            return 200, body
-
         if method == "GET" and url.endswith("/guilds/100/channels"):
             return 200, json.dumps(
                 [
                     {"id": "301", "position": 10},
                     {"id": "302", "position": 11},
                     {"id": "303", "position": 12},
-                    {"id": "304", "position": 13},
                     {"id": "305", "position": 14},
                 ]
             ).encode()
@@ -346,11 +315,9 @@ class TestV1ConfigAutoEnrichment:
         names = [body["name"] for body in rename_bodies]
         assert "Codex: 99% \u2022 2.2B tok/7d \u2022 7d left" in names
         assert "z.ai: 74% \u2022 250.0M tok/7d \u2022 4d left" in names
-        assert "Cursor: 88%/85% \u2022 49.0M tok/7d \u2022 27d left" in names
         assert "Kimi: 74% \u2022 4d left" in names
         assert result["providers"]["Codex"]["tokens_7d"] == 2_234_567_890
         assert result["providers"]["z.ai"]["tokens_7d"] == 250_000_000
-        assert result["providers"]["Cursor"]["tokens_7d"] == 49_000_000
         assert "tokens_7d" not in result["providers"]["Kimi"]
         assert "tokens_7d" not in result["providers"]["Grok"]
 
@@ -366,12 +333,6 @@ class TestCombinedLabelFormats:
         assert (
             format_zai_name(74, 345600, tokens_7d=250_000_000)
             == "z.ai: 74% \u2022 250.0M tok/7d \u2022 4d left"
-        )
-
-    def test_format_cursor_with_tokens(self):
-        assert (
-            format_cursor_name(88, 85, 2_332_800, tokens_7d=49_000_000)
-            == "Cursor: 88%/85% \u2022 49.0M tok/7d \u2022 27d left"
         )
 
     def test_quota_only_when_tokens_none(self):
@@ -418,7 +379,7 @@ class TestKimiGrokNoTokenHttp:
         assert not any(u for u in recorder.urls if "profiles/me" in u and "grok" in u)
         assert len([u for u in recorder.urls if "profiles/me" in u]) == 1
         assert len([u for u in recorder.urls if "model-usage" in u and "quota" not in u]) == 1
-        assert len([u for u in recorder.urls if "GetAggregatedUsageEvents" in u]) == 1
+        assert not any(u for u in recorder.urls if "GetAggregatedUsageEvents" in u)
 
 
 class TestTokenFailurePreservesSegment:
@@ -571,19 +532,18 @@ class TestSortingUnchanged:
             now_fn=lambda: fixed_now.timestamp(),
         )
 
-        assert len(sort_entries) == 5
+        assert len(sort_entries) == 4
         ordered = sorted(sort_entries, key=lambda item: item[2])
         assert ordered[0][1] == "305"
-        assert ordered[-1][1] == "304"
+        assert ordered[-1][1] == "301"
         assert set(cid for _, cid, _ in sort_entries) == {
             "301",
             "302",
             "303",
-            "304",
             "305",
         }
         channel_ids = {entry[1] for entry in sort_entries}
-        assert channel_ids == {"301", "302", "303", "304", "305"}
+        assert channel_ids == {"301", "302", "303", "305"}
 
 
 class TestNoTokenUsageReferences:

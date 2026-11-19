@@ -44,14 +44,14 @@ def discord_source():
 
 
 @pytest.fixture
-def telegram_source():
-    """Create a basic Telegram SessionSource for testing.
+def slack_source():
+    """Create a basic Slack SessionSource for testing.
 
-    Telegram (like Slack/Feishu/etc.) has no ``guild_id`` — only ``chat_id``.
+    Slack (like Feishu/etc.) has no ``guild_id`` — only ``chat_id``.
     Used to prove profile routing is platform-generic, not Discord-only.
     """
     return SessionSource(
-        platform=MagicMock(value="telegram"),
+        platform=MagicMock(value="slack"),
         chat_id="-1001234567890",
         guild_id=None,
         thread_id=None,
@@ -159,57 +159,57 @@ class TestNonDiscordProfileRouting:
 
     Regression coverage for the ``gateway_runner`` injection gap: previously
     only Discord's adapter pre-declared ``gateway_runner``, so only Discord
-    ever had ``build_source`` call ``_profile_name_for_source``. Telegram /
-    Feishu / Slack / etc. silently fell through to the default profile. These
-    tests pin the resolution half for a non-Discord platform (Telegram).
+    ever had ``build_source`` call ``_profile_name_for_source``. Matrix /
+    Feishu / WhatsApp / etc. silently fell through to the default profile. These
+    tests pin the resolution half for a non-Discord platform (Slack).
     """
 
-    def test_telegram_route_resolves(self, mock_runner, telegram_source):
-        """A configured Telegram route resolves to its profile via the real
+    def test_slack_route_resolves(self, mock_runner, slack_source):
+        """A configured Slack route resolves to its profile via the real
         ``_profile_name_for_source`` (bound onto the mock runner)."""
         mock_runner.config.profile_routes = [
-            ProfileRoute(name="tg", platform="telegram", profile="tg-profile",
+            ProfileRoute(name="slack", platform="slack", profile="slack-profile",
                          chat_id="-1001234567890"),
         ]
-        telegram_source.profile = None
+        slack_source.profile = None
 
         with patch(
             "hermes_cli.profiles.profiles_to_serve",
             return_value=[("default", Path("/profiles/default")),
-                          ("tg-profile", Path("/profiles/tg-profile"))],
+                          ("slack-profile", Path("/profiles/slack-profile"))],
         ):
-            assert mock_runner._profile_name_for_source(telegram_source) == "tg-profile"
+            assert mock_runner._profile_name_for_source(slack_source) == "slack-profile"
 
-    def test_route_to_served_profile_resolves(self, mock_runner, telegram_source):
+    def test_route_to_served_profile_resolves(self, mock_runner, slack_source):
         mock_runner.config.profile_routes = [
             ProfileRoute(
                 name="worker-route",
-                platform="telegram",
+                platform="slack",
                 profile="worker",
                 chat_id="route-chat",
             )
         ]
-        telegram_source.chat_id = "route-chat"
+        slack_source.chat_id = "route-chat"
 
         with patch(
             "hermes_cli.profiles.profiles_to_serve",
             return_value=[("default", Path("/profiles/default")),
                           ("worker", Path("/profiles/worker"))],
         ) as enumerate_profiles:
-            assert mock_runner._profile_name_for_source(telegram_source) == "worker"
+            assert mock_runner._profile_name_for_source(slack_source) == "worker"
 
         enumerate_profiles.assert_called_once_with(multiplex=True)
 
-    def test_route_to_unserved_profile_rejects(self, mock_runner, telegram_source, caplog):
+    def test_route_to_unserved_profile_rejects(self, mock_runner, slack_source, caplog):
         mock_runner.config.profile_routes = [
             ProfileRoute(
                 name="restricted-route",
-                platform="telegram",
+                platform="slack",
                 profile="restricted",
                 chat_id="route-chat",
             )
         ]
-        telegram_source.chat_id = "route-chat"
+        slack_source.chat_id = "route-chat"
 
         with patch(
             "hermes_cli.profiles.profiles_to_serve",
@@ -217,23 +217,23 @@ class TestNonDiscordProfileRouting:
                           ("worker", Path("/profiles/worker"))],
         ), caplog.at_level(logging.WARNING, logger="gateway.run"):
             with pytest.raises(ProfileRouteRejected):
-                mock_runner._profile_name_for_source(telegram_source)
+                mock_runner._profile_name_for_source(slack_source)
 
         assert "target profile 'restricted' is not served" in caplog.text
 
-    def test_no_route_match_preserves_default_sentinel(self, mock_runner, telegram_source):
+    def test_no_route_match_preserves_default_sentinel(self, mock_runner, slack_source):
         mock_runner.config.profile_routes = [
             ProfileRoute(
                 name="other-chat",
-                platform="telegram",
+                platform="slack",
                 profile="worker",
                 chat_id="different-chat",
             )
         ]
-        telegram_source.chat_id = "route-chat"
+        slack_source.chat_id = "route-chat"
 
-        assert mock_runner._profile_name_for_source(telegram_source) is None
-        adapter = _stub_adapter(Platform.TELEGRAM, mock_runner)
+        assert mock_runner._profile_name_for_source(slack_source) is None
+        adapter = _stub_adapter(Platform.SLACK, mock_runner)
         source = adapter.build_source(chat_id="route-chat", chat_type="group")
         assert source.profile is None
 
@@ -342,7 +342,7 @@ class TestAdapterToSessionKeyIntegration:
     (BasePlatformAdapter) with an injected ``gateway_runner``, assert the
     matched route's profile is stamped on the source, and that the resulting
     session key is profile-scoped (``agent:<profile>:...`` rather than the
-    shared ``agent:main:...``). The Telegram case is the bug-#2 regression:
+    shared ``agent:main:...``). The Slack case is the bug-#2 regression:
     pre-fix it never received ``gateway_runner`` and fell through to default.
     """
 
@@ -351,7 +351,7 @@ class TestAdapterToSessionKeyIntegration:
         return [
             ProfileRoute(name="dc", platform="discord", profile="coder",
                          guild_id="111", chat_id="222"),
-            ProfileRoute(name="tg", platform="telegram", profile="ops",
+            ProfileRoute(name="slack", platform="slack", profile="ops",
                          chat_id="-1001234567890"),
         ]
 
@@ -393,12 +393,12 @@ class TestAdapterToSessionKeyIntegration:
         mock_runner.config.profile_routes = [
             ProfileRoute(
                 name="restricted-route",
-                platform="telegram",
+                platform="slack",
                 profile="restricted",
                 chat_id="route-chat",
             )
         ]
-        adapter = _stub_adapter(Platform.TELEGRAM, mock_runner)
+        adapter = _stub_adapter(Platform.SLACK, mock_runner)
 
         with patch(
             "hermes_cli.profiles.profiles_to_serve",
@@ -444,12 +444,12 @@ class TestAdapterToSessionKeyIntegration:
         mock_runner.config.profile_routes = [
             ProfileRoute(
                 name="restricted-route",
-                platform="telegram",
+                platform="slack",
                 profile="restricted",
                 chat_id="route-chat",
             )
         ]
-        source = SessionSource(platform=Platform.TELEGRAM, chat_id="route-chat")
+        source = SessionSource(platform=Platform.SLACK, chat_id="route-chat")
 
         with patch(
             "hermes_cli.profiles.profiles_to_serve",

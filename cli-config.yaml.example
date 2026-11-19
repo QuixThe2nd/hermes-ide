@@ -614,7 +614,7 @@ compression:
 
   # Opt-in compression progress notices on chat platforms (default: false).
   # By design, routine automatic compression is SILENT on human-facing chat
-  # gateways (Telegram, Discord, Slack, ...) — it happens in the background
+  # gateways (Discord, Slack, ...) — it happens in the background
   # with server-side logging only. Set true to also deliver the routine
   # progress statuses (compacting started, preflight/pre-API compression,
   # idle compaction, retry progress, and the compaction-complete notice) to
@@ -726,8 +726,8 @@ compression:
   # Gateway session-hygiene turn-hold budget (default: 10). Max seconds an
   # arriving user turn is held while a still-streaming hygiene summary
   # finishes. Distinct from hygiene_timeout_seconds (compressor inactivity
-  # budget): this bounds user-visible latency so chat transports (Telegram
-  # ~30s) do not drop a silent connection. On expiry the turn proceeds
+  # budget): this bounds user-visible latency so chat transports (~30s
+  # timeouts) do not drop a silent connection. On expiry the turn proceeds
   # uncompressed; the detached worker keeps its commit admission (when the
   # commit is watermark-fenced) and the summary is adopted at the next safe
   # boundary. Thinking-model summarizers often need longer than 10s to emit
@@ -884,7 +884,7 @@ prompt_caching:
 #                           #     enable_thinking: false
 #
 #   # Auto-generated short session titles after the first exchange.
-#   # Each active Discord/Telegram channel can spawn a background title
+#   # Each active Discord/Slack channel can spawn a background title
 #   # call.  Cap concurrency to keep retries during provider incidents
 #   # from amplifying the request burst.  Leave unset for legacy behavior
 #   # (unlimited).
@@ -1013,7 +1013,7 @@ group_sessions_per_user: true
 # WS sidecar — tui/desktop/subagent rows whose start time AND newest
 # message are both older than the session TTL (HERMES_TUI_SESSION_TTL_S,
 # default 6h) are closed with end_reason "startup_orphan_reap".
-# Messaging-platform sessions (Telegram, Discord, ...) are never touched;
+# Messaging-platform sessions (Discord, Slack, ...) are never touched;
 # live in-memory sessions are excluded; swept sessions stay resumable.
 #
 # dashboard:
@@ -1059,8 +1059,7 @@ group_sessions_per_user: true
 # ─────────────────────────────────────────────────────────────────────────────
 # Stream tokens to messaging platforms in real-time. The bot sends a message
 # on first token, then progressively edits it as more tokens arrive.
-# Disabled by default — enable to try the streaming UX on Telegram/Discord/Slack.
-# For Telegram, partial edits are sent as plain text and only the final edit uses MarkdownV2.
+# Disabled by default — enable to try the streaming UX on Discord/Slack.
 streaming:
   enabled: false
   # transport: edit           # "edit" = progressive editMessageText
@@ -1194,7 +1193,7 @@ agent:
   # verify before finishing. Off by default (false). Set true to force it on
   # everywhere, or "auto" for the surface-aware mode: on for interactive
   # coding surfaces (CLI, TUI, desktop) and programmatic callers, off on
-  # conversational messaging surfaces (Telegram, Discord, etc.) where the
+  # conversational messaging surfaces (Discord, Slack, etc.) where the
   # verification summary would reach a human as chat noise. The
   # HERMES_VERIFY_ON_STOP env var (1/0) takes precedence.
   # verify_on_stop: false
@@ -1297,21 +1296,21 @@ gateway:
 # If a platform isn't listed here, its built-in default is used.
 #
 # You can use EITHER:
-#   - A preset like "hermes-cli" or "hermes-telegram" (curated tool set)
+#   - A preset like "hermes-cli" or "hermes-discord" (curated tool set)
 #   - A list of individual toolsets to compose your own (see list below)
 #
-# Supported platform keys: cli, telegram, discord, whatsapp, slack, qqbot, teams, google_chat
+# Supported platform keys: cli, discord, whatsapp, slack, qqbot, teams, google_chat
 #
 # Examples:
 #
 #   # Use presets (same as defaults):
 #   platform_toolsets:
 #     cli: [hermes-cli]
-#     telegram: [hermes-telegram]
+#     discord: [hermes-discord]
 #
-#   # Custom: give Telegram only web + terminal + file + planning:
+#   # Custom: give Slack only web + terminal + file + planning:
 #   platform_toolsets:
-#     telegram: [web, terminal, file, todo]
+#     slack: [web, terminal, file, todo]
 #
 #   # Custom: CLI without browser or image gen:
 #   platform_toolsets:
@@ -1323,19 +1322,17 @@ gateway:
 #
 # If not set, defaults are:
 #   cli:           hermes-cli            (everything + cronjob management)
-#   telegram:      hermes-telegram       (terminal, file, web, vision, image, browser, skills, todo, cronjob, messaging)
-#   discord:       hermes-discord        (same as telegram)
-#   whatsapp:      hermes-whatsapp       (same as telegram)
-#   slack:         hermes-slack          (same as telegram)
-#   signal:        hermes-signal         (same as telegram)
-#   homeassistant: hermes-homeassistant  (same as telegram)
-#   qqbot:            hermes-qqbot            (same as telegram)
-#   teams:            hermes-teams            (same as telegram)
-#   google_chat:      hermes-google_chat      (same as telegram)
+#   discord:       hermes-discord        (terminal, file, web, vision, image, browser, skills, todo, cronjob, messaging)
+#   whatsapp:      hermes-whatsapp       (same as discord)
+#   slack:         hermes-slack          (same as discord)
+#   signal:        hermes-signal         (same as discord)
+#   homeassistant: hermes-homeassistant  (same as discord)
+#   qqbot:            hermes-qqbot            (same as discord)
+#   teams:            hermes-teams            (same as discord)
+#   google_chat:      hermes-google_chat      (same as discord)
 #
 platform_toolsets:
   cli: [hermes-cli]
-  telegram: [hermes-telegram]
   discord: [hermes-discord]
   whatsapp: [hermes-whatsapp]
   slack: [hermes-slack]
@@ -1353,31 +1350,6 @@ platform_toolsets:
 # Platform-specific knobs live under `extra`.
 #
 # platforms:
-#   telegram:
-#     reply_to_mode: "first"  # off | first | all
-#     # guest_mode lets explicit @mentions from non-allowlisted groups through.
-#     # Default false; ordinary messages, replies, and regex wake words stay blocked.
-#     guest_mode: false
-#     # allowed_chats: ["-1001234567890"]
-#     extra:
-#       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
-#       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default false for copyable legacy MarkdownV2, set true to opt in
-#       rich_drafts: false            # Experimental rich draft previews during Telegram DM streaming; default false because Telegram Desktop/macOS can visually overlay draft frames
-#       allow_cjk_rich_messages: false # Keep CJK content on the safe MarkdownV2 path unless an unaffected client explicitly opts in to native rich rendering
-#       command_menu:
-#         # Telegram allows up to 100 BotCommands; Hermes defaults to 60 so
-#         # all built-in commands plus common skill commands stay visible
-#         # while remaining under Telegram's payload-size limit. Clamped 1..100.
-#         max_commands: 60
-#         # prepend = user priority first, then Hermes defaults
-#         # append  = Hermes defaults first, then user priority
-#         # replace = only the list below defines priority
-#         priority_mode: prepend
-#         # Priority is applied across core + plugin + skill commands before
-#         # the cap, so a listed skill command always keeps a menu slot.
-#         priority:
-#           - my_plugin_command
-#           - my-important-skill
 #   slack:
 #     extra:
 #       # Render live tool calls as Slack-native plan/task cards. This explicit
@@ -1435,11 +1407,10 @@ platform_toolsets:
 #
 # PRESETS (curated bundles):
 #   hermes-cli       - All of the above except send_message
-#   hermes-telegram  - terminal, file, web, vision, image_gen, browser,
+#   hermes-discord   - terminal, file, web, vision, image_gen, browser,
 #                      skills, todo, cronjob, send_message
-#   hermes-discord   - Same as hermes-telegram
-#   hermes-whatsapp  - Same as hermes-telegram
-#   hermes-slack     - Same as hermes-telegram
+#   hermes-whatsapp  - Same as hermes-discord
+#   hermes-slack     - Same as hermes-discord
 #
 # COMPOSITE:
 #   debugging    - terminal + web + file
@@ -1617,35 +1588,28 @@ display:
   #   off:     Silent — no tool activity shown, just the final response
   #   new:     Show a tool indicator only when the tool changes (skip repeats)
   #   all:     Show every tool call with a short preview (CLI default)
-  #   describe: One short human sentence per call (gateway default; rows render in code boxes,
-  #            set display.tool_progress_codebox: false for plain text)
+  #   describe: One short human sentence per call (gateway default; rows always render in code boxes)
   #   verbose: Full args, results, and debug logs (same as /verbose)
   #   log:     Silent in chat; append every tool call to ~/.hermes/logs/tool_calls.log (gateway only)
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
 
-  # Per-platform defaults can be quieter than the global setting. Telegram
-  # tunes for mobile: tool_progress and busy_ack_detail default off (no
-  # per-tool breadcrumb stream, no "iteration 21/60" debug detail in busy
-  # acks or heartbeats), but interim_assistant_messages and
-  # long_running_notifications STAY ON so the user has real signal between
-  # turn start and final answer (mid-turn assistant commentary + a single
-  # edit-in-place "⏳ Working — N min" heartbeat). Override under
-  # display.platforms.telegram.
+  # Per-platform defaults can be quieter than the global setting. Override
+  # under display.platforms.<platform>.
 
   # Auto-cleanup of temporary progress bubbles after the final response lands.
-  # On platforms that support message deletion (currently Telegram), this
+  # On platforms that support message deletion, this
   # removes the tool-progress bubble, "⏳ Still working..." notices, and
   # context-pressure status messages once the final reply has been delivered —
   # keeping long-running turns visible live, then tidy afterward. Failed runs
   # leave the bubbles in place as breadcrumbs. Off by default.
-  # Per-platform override: display.platforms.telegram.cleanup_progress
+  # Per-platform override: display.platforms.<platform>.cleanup_progress
   #   true:  Delete tracked progress/status bubbles on successful turn
   #   false: Leave everything in place (default)
   # Example:
   #   display:
   #     platforms:
-  #       telegram:
+  #       discord:
   #         cleanup_progress: true
   cleanup_progress: false
 
@@ -1686,14 +1650,14 @@ display:
   # updates, commentary, streamed output), so continuous visible output
   # suppresses the heartbeat; a genuinely quiet turn gets one after
   # agent.gateway_notify_interval of silence.
-  # Default: true everywhere, including Telegram (silent agents are worse
-  # than a single edit-in-place heartbeat).
+  # Default: true everywhere (silent agents are worse than a single
+  # edit-in-place heartbeat).
   long_running_notifications: true
 
   # Include detailed iteration/tool/status context in busy acknowledgments
   # and long-running heartbeats. When true, busy acks show "iteration 21/60,
   # terminal, 10 min" and the heartbeat shows "⏳ Working — 12 min,
-  # iteration 21/60, terminal". When false (Telegram default), both stay
+  # iteration 21/60, terminal". When false, both stay
   # terse: "Interrupting current task" and "⏳ Working — 12 min, terminal".
   busy_ack_detail: true
 
@@ -1709,7 +1673,7 @@ display:
 
   # Background process notifications (gateway/messaging only).
   # Controls how chatty the process watcher is when you use
-  # terminal(background=true, notify_on_complete=true) from Telegram/Discord/etc.
+  # terminal(background=true, notify_on_complete=true) from Discord/Slack/etc.
   #   concise: One-line status message on completion; failures include a short
   #            output tail (default)
   #   off:     No watcher messages at all

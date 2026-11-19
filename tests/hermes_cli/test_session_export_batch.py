@@ -4,7 +4,7 @@ from hermes_state import SessionDB
 def test_export_all_batches_message_reads_without_changing_export_rows(tmp_path, monkeypatch):
     db = SessionDB(tmp_path / "state.db")
     try:
-        for index, source in enumerate(("cli", "telegram", "cli", "cli")):
+        for index, source in enumerate(("cli", "discord", "cli", "cli")):
             session_id = f"session-{index}"
             db.create_session(session_id=session_id, source=source)
             db.append_messages_batch(

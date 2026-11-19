@@ -1,8 +1,8 @@
 """Regression coverage for #71643 — stale streamed finalize suppression.
 
-A *successful* Telegram finalize edit can carry only the last streamed
+A *successful* streamed finalize edit can carry only the last streamed
 preview snapshot: deltas generated between the last preview edit and stream
-completion never reach any Bot API call, yet ``final_response_sent`` /
+completion never reach any platform API call, yet ``final_response_sent`` /
 ``final_content_delivered`` are set from the call's success and suppress the
 gateway's normal final send. The missing tail is then lost with no retry.
 
@@ -42,7 +42,7 @@ from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 class FinalizeCaptureAdapter(BasePlatformAdapter):
     """Adapter that records every send/edit with its finalize flag."""
 
-    def __init__(self, platform=Platform.TELEGRAM):
+    def __init__(self, platform=Platform.DISCORD):
         super().__init__(PlatformConfig(enabled=True, token="***"), platform)
         self.sent = []
         self.edits = []
@@ -191,7 +191,7 @@ async def _run_streaming_turn(monkeypatch, tmp_path, agent_cls, session_id):
     )
 
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="-1001",
         chat_type="group",
     )
@@ -201,7 +201,7 @@ async def _run_streaming_turn(monkeypatch, tmp_path, agent_cls, session_id):
         history=[],
         source=source,
         session_id=session_id,
-        session_key="agent:main:telegram:group:-1001",
+        session_key="agent:main:discord:group:-1001",
     )
     return adapter, result
 
@@ -327,7 +327,7 @@ async def test_payload_less_split_does_not_suppress_complete_response(
     adapter = FinalizeCaptureAdapter()
     runner = _make_runner(adapter)
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="-1004492624436",
         chat_type="group",
         thread_id="1",
@@ -338,7 +338,7 @@ async def test_payload_less_split_does_not_suppress_complete_response(
         history=[],
         source=source,
         session_id="sess-78541-payload-less-split",
-        session_key="agent:main:telegram:group:-1004492624436:1",
+        session_key="agent:main:discord:group:-1004492624436:1",
     )
 
     assert result["final_response"] == FULL_RESPONSE
@@ -461,7 +461,7 @@ class _SplittingAdapter(FinalizeCaptureAdapter):
 
     MAX_MESSAGE_LENGTH = 220
 
-    def __init__(self, platform=Platform.TELEGRAM):
+    def __init__(self, platform=Platform.DISCORD):
         super().__init__(platform)
         self.deleted = []
         self.fail_edits = False

@@ -16,13 +16,13 @@
   <a href="README.ur-pk.md"><img src="https://img.shields.io/badge/Lang-اردو-green?style=for-the-badge" alt="اردو"></a>
 </p>
 
-**El agente de IA con mejora continua creado por [Nous Research](https://nousresearch.com).** Es el único agente con un bucle de aprendizaje integrado: crea habilidades a partir de la experiencia, las mejora durante el uso, se impulsa a sí mismo a persistir el conocimiento, busca en sus propias conversaciones pasadas y construye un modelo cada vez más profundo de quién eres a lo largo de las sesiones. Ejecútalo en un VPS de $5, un clúster de GPUs o infraestructura sin servidor que cuesta casi nada cuando está inactivo. No está atado a tu laptop — habla con él desde Telegram mientras trabaja en una VM en la nube.
+**El agente de IA con mejora continua creado por [Nous Research](https://nousresearch.com).** Es el único agente con un bucle de aprendizaje integrado: crea habilidades a partir de la experiencia, las mejora durante el uso, se impulsa a sí mismo a persistir el conocimiento, busca en sus propias conversaciones pasadas y construye un modelo cada vez más profundo de quién eres a lo largo de las sesiones. Ejecútalo en un VPS de $5, un clúster de GPUs o infraestructura sin servidor que cuesta casi nada cuando está inactivo. No está atado a tu laptop — habla con él desde Discord mientras trabaja en una VM en la nube.
 
 Usa cualquier modelo que quieras — [OpenRouter](https://openrouter.ai) (más de 200 modelos), [NovitaAI](https://novita.ai), [NVIDIA NIM](https://build.nvidia.com) (Nemotron), [Xiaomi MiMo](https://platform.xiaomimimo.com), [z.ai/GLM](https://z.ai), [Kimi/Moonshot](https://platform.moonshot.ai), [MiniMax](https://www.minimax.io), [Hugging Face](https://huggingface.co), OpenAI, o tu propio endpoint. Cambia con `hermes model` — sin cambios de código, sin dependencias.
 
 <table>
 <tr><td><b>Una interfaz de terminal real</b></td><td>TUI completa con edición multilínea, autocompletado de comandos, historial de conversaciones, interrupción y redirección, y salida de herramientas en streaming.</td></tr>
-<tr><td><b>Vive donde tú vives</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal y CLI — todo desde un único proceso gateway. Transcripción de notas de voz, continuidad de conversación entre plataformas.</td></tr>
+<tr><td><b>Vive donde tú vives</b></td><td>Discord, Slack, WhatsApp, Signal y CLI — todo desde un único proceso gateway. Transcripción de notas de voz, continuidad de conversación entre plataformas.</td></tr>
 <tr><td><b>Un bucle de aprendizaje cerrado</b></td><td>Memoria curada por el agente con recordatorios periódicos. Creación autónoma de habilidades tras tareas complejas. Las habilidades mejoran solas durante el uso. Búsqueda FTS5 de sesiones con resumención por LLM para recuperación entre sesiones. Compatible con el estándar abierto de <a href="https://agentskills.io">agentskills.io</a>.</td></tr>
 <tr><td><b>Automatizaciones programadas</b></td><td>Planificador cron integrado con entrega a cualquier plataforma. Informes diarios, copias de seguridad nocturnas, auditorías semanales — todo en lenguaje natural, ejecutándose de forma autónoma.</td></tr>
 <tr><td><b>Delega y paraleliza</b></td><td>Lanza subagentes aislados para flujos de trabajo paralelos. Escribe scripts de Python que llaman a herramientas vía RPC, convirtiendo pipelines de múltiples pasos en turnos de coste cero de contexto.</td></tr>
@@ -74,7 +74,7 @@ hermes              # CLI interactiva — inicia una conversación
 hermes model        # Elige tu proveedor y modelo LLM
 hermes tools        # Configura qué herramientas están habilitadas
 hermes config set   # Establece valores de configuración individuales
-hermes gateway      # Inicia el gateway de mensajería (Telegram, Discord, etc.)
+hermes gateway      # Inicia el gateway de mensajería (Discord, Slack, etc.)
 hermes setup        # Ejecuta el asistente de configuración completo
 hermes update       # Actualiza a la última versión
 hermes doctor       # Diagnostica cualquier problema
@@ -86,7 +86,7 @@ hermes doctor       # Diagnostica cualquier problema
 
 ## Referencia rápida: CLI vs Mensajería
 
-Hermes tiene dos puntos de entrada: inicia la interfaz de terminal con `hermes`, o ejecuta el gateway y habla con él desde Telegram, Discord, Slack, WhatsApp, Signal o Email. Una vez en una conversación, muchos comandos de barra son compartidos entre ambas interfaces.
+Hermes tiene dos puntos de entrada: inicia la interfaz de terminal con `hermes`, o ejecuta el gateway y habla con él desde Discord, Slack, WhatsApp, Signal o Email. Una vez en una conversación, muchos comandos de barra son compartidos entre ambas interfaces.
 
 | Acción                              | CLI                                           | Plataformas de mensajería                                                         |
 | ----------------------------------- | --------------------------------------------- | --------------------------------------------------------------------------------- |
@@ -113,7 +113,7 @@ Toda la documentación está en **[hermes-agent.nousresearch.com/docs](https://h
 | [Inicio rápido](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart)              | Instalar → configurar → primera conversación en 2 minutos   |
 | [Uso de CLI](https://hermes-agent.nousresearch.com/docs/user-guide/cli)                             | Comandos, atajos de teclado, personalidades, sesiones        |
 | [Configuración](https://hermes-agent.nousresearch.com/docs/user-guide/configuration)               | Archivo de configuración, proveedores, modelos, todas las opciones |
-| [Gateway de Mensajería](https://hermes-agent.nousresearch.com/docs/user-guide/messaging)           | Telegram, Discord, Slack, WhatsApp, Signal, Home Assistant   |
+| [Gateway de Mensajería](https://hermes-agent.nousresearch.com/docs/user-guide/messaging)           | Discord, Slack, WhatsApp, Signal, Home Assistant   |
 | [Seguridad](https://hermes-agent.nousresearch.com/docs/user-guide/security)                        | Aprobación de comandos, emparejamiento por DM, aislamiento en contenedor |
 | [Herramientas y Toolsets](https://hermes-agent.nousresearch.com/docs/user-guide/features/tools)   | Más de 40 herramientas, sistema de toolsets, backends de terminal |
 | [Sistema de Habilidades](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)   | Memoria procedimental, Skills Hub, creación de habilidades   |

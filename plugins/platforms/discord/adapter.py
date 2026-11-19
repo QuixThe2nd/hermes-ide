@@ -26,7 +26,7 @@ import traceback
 from collections import defaultdict, OrderedDict
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
-from urllib.parse import quote, unquote, urljoin, urlparse
+from urllib.parse import quote, urljoin
 
 from agent.async_utils import (consume_detached_task_result as _consume_background_task_result)
 from agent.display import ToolPreview
@@ -69,83 +69,6 @@ def _format_discord_markdown_link(label: str, url: str) -> str:
     escaped_label = _DISCORD_MARKDOWN_LINK_LABEL_RE.sub(r"\\\1", label)
     escaped_url = quote(url, safe=":/?#[]@!$&'*+,;=%")
     return f"[{escaped_label}](<{escaped_url}>)"
-
-
-_CURSOR_CLOUD_AGENT_STATUS_PREFIX = "Cursor Cloud Agent: "
-_CURSOR_CLOUD_AGENT_ICON_URL = "https://cursor.com/apple-touch-icon.png"
-_CURSOR_CLOUD_AGENT_BRAND_URL = "https://cursor.com"
-_CURSOR_CLOUD_AGENT_ALLOWED_HOSTS = frozenset({"cursor.com", "www.cursor.com"})
-
-
-def _cursor_cloud_agent_status_url(content: str) -> Optional[str]:
-    """Return the watch URL when *content* is exactly a Cursor Cloud Agent status line."""
-    if content is None:
-        return None
-    text = content.strip()
-    if not text.startswith(_CURSOR_CLOUD_AGENT_STATUS_PREFIX):
-        return None
-    url = text[len(_CURSOR_CLOUD_AGENT_STATUS_PREFIX) :].strip()
-    if not url or any(ch.isspace() for ch in url):
-        return None
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        return None
-    if parsed.username or parsed.password or "@" in parsed.netloc:
-        return None
-    hostname = parsed.hostname
-    if hostname not in _CURSOR_CLOUD_AGENT_ALLOWED_HOSTS:
-        return None
-    decoded_path = unquote(parsed.path)
-    if ".." in decoded_path:
-        return None
-    if not re.fullmatch(r"/agents/[^/]+", decoded_path):
-        return None
-    return url
-
-
-def _cursor_cloud_agent_embed_spec(url: str) -> Dict[str, Any]:
-    """Pure-data embed fields for a Cursor Cloud Agent live-progress card."""
-    return {
-        "title": "Cursor Cloud Agent",
-        "url": url,
-        "description": _format_discord_markdown_link("Watch live session", url),
-        "author": {
-            "name": "Cursor",
-            "icon_url": _CURSOR_CLOUD_AGENT_ICON_URL,
-            "url": _CURSOR_CLOUD_AGENT_BRAND_URL,
-        },
-        "thumbnail": _CURSOR_CLOUD_AGENT_ICON_URL,
-        "color": 0x000000,
-        "footer": "Cursor · Cloud Agent",
-    }
-
-
-def _build_cursor_cloud_agent_embed(url: str) -> Any:
-    """Build a discord.Embed for a Cursor Cloud Agent live-progress URL."""
-    spec = _cursor_cloud_agent_embed_spec(url)
-    embed = discord.Embed(
-        title=spec["title"],
-        url=spec["url"],
-        description=spec["description"],
-        color=spec["color"],
-    )
-    author = spec["author"]
-    embed.set_author(
-        name=author["name"],
-        icon_url=author["icon_url"],
-        url=author["url"],
-    )
-    embed.set_thumbnail(url=spec["thumbnail"])
-    embed.set_footer(text=spec["footer"])
-    return embed
-
-
-def _cursor_cloud_agent_markdown_progress(url: str) -> str:
-    """Forum/fail-soft markdown form — no raw dumped URL."""
-    return (
-        f"{_CURSOR_CLOUD_AGENT_STATUS_PREFIX}"
-        f"{_format_discord_markdown_link('Watch live session', url)}"
-    )
 
 
 _CLAUDE_AGENT_STATUS_PREFIX = "Claude Code Agent: "
@@ -229,13 +152,6 @@ def _agent_progress_embed_payload(content: str) -> Optional[Tuple[str, str, Call
     claude_url = _claude_agent_status_url(content)
     if claude_url:
         return claude_url, _claude_agent_markdown_progress(claude_url), _build_claude_agent_embed
-    cursor_url = _cursor_cloud_agent_status_url(content)
-    if cursor_url:
-        return (
-            cursor_url,
-            _cursor_cloud_agent_markdown_progress(cursor_url),
-            _build_cursor_cloud_agent_embed,
-        )
     return None
 
 
@@ -362,6 +278,25 @@ _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(r"^\s*♻️?\s+Gateway\s+(?:restarted successfully|online\b)[\s\S]*$", re.IGNORECASE),
+)
+# Jev classification notices are a SEPARATE, provenance-scoped fallback: the
+# patterns drop a notice only when the OWNING BOT authored the message (or the
+# message is our own outbound send, where authorship is by construction). A
+# human pasting/quoting a notice verbatim is genuine conversational history
+# and must survive cold recovery (no-prefix-blanket-suppression contract). The
+# trusted exclusions (metadata flags, tracked message ids) are
+# author-independent and stay in force.
+# The second pattern is the goal-intent fenced status, pinned to the exact
+# shape the Go formatter emits (notice.go goalIntentStatus) so the bot's
+# ordinary fenced code answers never match.
+_DISCORD_SELF_NOTICE_HISTORY_MESSAGE_PATTERNS = (
+    re.compile(r"^\s*🔎\s+jev\s+\S", re.IGNORECASE),
+    re.compile(
+        r"^\s*```\s*\n🔍 Goal Intent: (?:[0-9]+\.[0-9]{2} Confidence"
+        r"|failed \([A-Za-z0-9_.\-]{1,48}\)"
+        r"|confidence unavailable)\n```\s*$",
+        re.IGNORECASE,
+    ),
 )
 try:
     import discord
@@ -644,6 +579,12 @@ def _looks_like_nonconversational_history_message(content: str) -> bool:
     """Fallback recognizer for legacy status bumps missing persisted IDs."""
     text = content or ""
     return any(pattern.match(text) for pattern in _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS)
+
+
+def _looks_like_self_notice_history_message(content: str) -> bool:
+    """Jev-notice fallback; callers must first prove owning-bot authorship."""
+    text = content or ""
+    return any(pattern.match(text) for pattern in _DISCORD_SELF_NOTICE_HISTORY_MESSAGE_PATTERNS)
 
 
 def _clean_discord_id(entry: str) -> str:
@@ -1078,6 +1019,11 @@ from plugins.platforms.discord.reaction_gate import (
 from plugins.platforms.discord.reaction_gate_reload import (
     start_reaction_gate_reload_watcher,
 )
+from gateway.jev_notice import (
+    format_notice_async,
+    reaction_gate_record,
+    response_gate_record,
+)
 
 #: Component display order for gate echoes/logs (matches the judge's question order).
 _RESPONSE_GATE_SCORE_KEYS = (ADDRESSES_BOT_KEY, CONTINUES_THREAD_KEY, JOINS_BOT_THREAD_KEY, NOISE_KEY)
@@ -1175,7 +1121,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._vault_prompt_requests: Dict[str, Any] = {}
         self._vault_prompt_sessions: Dict[tuple[str, str], str] = {}
         self._vault_prompt_lock = threading.RLock()
-        # Text batching: merge rapid successive messages (Telegram-style)
+        # Text batching: merge rapid successive messages
         self._text_batch_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", 0.6)
         self._text_batch_split_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0)
         # A tagged bot may emit one logical response as several Discord
@@ -1257,7 +1203,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Once an oversized streaming edit saturates at the 2000-char preview cap, every subsequent
         # progressive edit truncates to the SAME text; re-sending it is a no-op that still counts against
         # Discord's edit rate limit (~1 edit per stream tick for the rest of a long reply). Mirrors the
-        # Telegram #58563 fix.
+        # #58563 fix, first shipped in a since-removed adapter.
         self._last_overflow_preview: Dict[tuple, str] = {}
         self._warned_fail_closed_default = False
 
@@ -1705,6 +1651,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         channel policy admits it, an explicit trigger (mention/reply/command/wake pattern)
         did not author it and it is not bot chatter. Every caller — live dispatch, recovered
         dispatch and the admission prefilters — goes through here, so they cannot disagree.
+
+        Recursion exclusion is provenance-based only (bot authors, trusted non-conversational
+        history metadata): diagnostic-generated messages never consult the judge again. A
+        HUMAN-authored copy of a notice line carries no diagnostic provenance — it is a fresh
+        human message and is consulted; content prefixes are never suppressed.
         """
         gate = self._response_gate
         if gate is None:
@@ -1734,44 +1685,102 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         keys = candidate.get("channel_keys") or ()
         return bool(gate.echo_keys.intersection(keys))
 
-    def _response_gate_echo_text(self, decision: GateDecision) -> str:
-        if decision.error:
-            return f"gate error ({decision.error})"
-        if decision.scores:
-            verdict = "allow" if decision.allowed else "deny"
-            parts = " ".join(
-                f"{key}={decision.scores.get(key, 0.0):.2f}" for key in _RESPONSE_GATE_SCORE_KEYS
-            )
-            return f"{verdict} ({parts})"
-        # Legacy single-score decision (no component nouls): keep the threshold readout.
-        gate = self._response_gate
-        threshold = float(gate.config.threshold) if gate is not None else 0.8
-        score = decision.score if decision.score is not None else 0.0
-        if score >= threshold:
-            return f"{score:.2f}"
-        return f"{score:.2f} (below {threshold:g})"
-
     async def _response_gate_echo(
         self, message: Any, candidate: Dict[str, Any], decision: GateDecision,
     ) -> bool:
-        """Post one judge echo line and drop normal dispatch (echo channels only)."""
+        """Post the judge's notice line and drop normal dispatch (echo channels only).
+
+        Same notice owner as every other lane: the record builders apply the
+        no-call rule (a ``missing_credential`` decision never made an HTTP
+        request and posts NOTHING — never a fake "gate error" diagnostic), the
+        Go binary renders, and the line goes out unpinged and
+        non-conversational through ``_send_jev_notice``.
+        """
         self._response_gate_log(decision, candidate, outcome="echo")
-        chat_id = candidate.get("conversation_id") or GateRuntime.conversation_id(message.channel)
-        message_id = candidate.get("message_id") or ""
-        text = self._response_gate_echo_text(decision)
-        try:
-            result = await self.send(chat_id, text, reply_to=message_id or None)
-            if not result.success:
-                logger.warning(
-                    "[%s] response_gate echo send failed channel=%s message=%s error=%s",
-                    self.name, chat_id, message_id, result.error,
-                )
-        except Exception as exc:
-            logger.warning(
-                "[%s] response_gate echo send failed channel=%s message=%s error=%s",
-                self.name, chat_id, message_id, type(exc).__name__, exc_info=True,
-            )
+        await self._post_jev_notice(
+            message, candidate, response_gate_record(decision, author=self._jev_notice_author(message)),
+        )
         return False
+
+    async def _post_jev_notice(
+        self, message: Any, candidate: Dict[str, Any], record: Optional[Dict[str, Any]],
+    ) -> None:
+        """The one notice owner for every lane: ``None`` (no HTTP request) or an unresolvable
+        owning profile posts nothing; ``display.jev_notices`` is that owner's, never the default's."""
+        if record is None:
+            return
+        try:
+            home = self._jev_notice_home(message)
+        except Exception:
+            logger.debug("[%s] jev notice owner unresolved; notice skipped", self.name, exc_info=True)
+            return
+        # Off the event loop: the cold go build / render subprocess and the
+        # bridge lock are blocking work a diagnostic must not stall the loop on.
+        line = await format_notice_async(record, home)
+        if line is not None:
+            await self._send_jev_notice(
+                line,
+                str(candidate.get("conversation_id") or GateRuntime.conversation_id(message.channel)),
+                str(candidate.get("message_id") or ""),
+            )
+
+    def _jev_notice_home(self, message: Any) -> _Path:
+        """Home of the profile owning *message* — its routed identity, resolved as dispatch does.
+        A hub-side resolver only stamps ``source.profile``, so that profile's directory serves."""
+        channel = message.channel
+        thread_id, chat_id = self._thread_id_and_chat_for_channel(channel)
+        guild = getattr(message, "guild", None)
+        source = self.build_source(
+            chat_id=chat_id, user_id=str(message.author.id), thread_id=thread_id,
+            chat_type="dm" if isinstance(channel, discord.DMChannel) else "thread" if thread_id else "group",
+            guild_id=str(guild.id) if guild else None, parent_chat_id=self._get_parent_channel_id(channel),
+        )
+        resolve = getattr(self.gateway_runner, "_resolve_profile_home_for_source", None)
+        if callable(resolve):
+            self._canonicalize(source)
+            return _Path(resolve(source))
+        if source.profile:
+            from hermes_cli.profiles import get_profile_dir
+            return _Path(get_profile_dir(source.profile))
+        from hermes_constants import get_hermes_home
+        return get_hermes_home()
+
+    async def _send_jev_notice(self, line: str, chat_id: str, message_id: str = "") -> None:
+        """Post one Jev classification notice line into the originating conversation.
+
+        Outbound-only troubleshooting surface (default-visible): purpose,
+        subject, decision/confidence or the sanitized failure class for every
+        REAL judge request. Never enters evidence (the observe seam takes final
+        replies only). Sent as an UNPINGED plain message — a Discord reply
+        would mention the user, and a troubleshooting line must not ping
+        anyone; correlation comes from the channel plus the sanitized author
+        fragment already inside the line ("user message from Alice"). A send
+        failure is logged without touching any gate decision. The metadata
+        markers let tests and future lanes distinguish notices from
+        conversational sends AND mark them non-conversational for history
+        recovery: a notice must never become the last-self-message boundary
+        or leak into the model's recovered context; ``message_id`` is
+        correlation for the log only.
+        """
+        try:
+            result = await self.send(
+                chat_id, line,
+                metadata={"jev_notice": True, "non_conversational_history": True},
+            )
+            if result is not None and not getattr(result, "success", True):
+                logger.warning(
+                    "[%s] jev notice send failed channel=%s message=%s error=%s",
+                    self.name, chat_id, message_id, getattr(result, "error", "unknown"),
+                )
+        except Exception:
+            logger.warning(
+                "[%s] jev notice send failed channel=%s message=%s",
+                self.name, chat_id, message_id, exc_info=True,
+            )
+
+    def _jev_notice_author(self, message: Any) -> str:
+        author = getattr(message, "author", None)
+        return str(getattr(author, "display_name", None) or getattr(author, "name", "") or "")
 
     async def _response_gate_decide(self, message: Any, candidate: Dict[str, Any]) -> Optional[bool]:
         """Run the gate for one candidate.
@@ -1799,6 +1808,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if is_echo:
             return await self._response_gate_echo(message, candidate, decision)
         self._response_gate_log(decision, candidate)
+        # One visible notice per real judge request (echo channels already post
+        # their judge-score line; a no-call outcome produces no record at all).
+        await self._post_jev_notice(
+            message, candidate, response_gate_record(decision, author=self._jev_notice_author(message)),
+        )
         if gate.mode != "enforce":
             return None  # shadow: the legacy decision always stands
         if not decision.allowed:
@@ -2214,6 +2228,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 bot_name=str(getattr(user, "display_name", "") or getattr(user, "name", "") or ""),
                 bot_id=getattr(user, "id", None),
                 recent=recent,
+            )
+            # One visible notice per real judge request (react, abstain or
+            # failure); a no-call outcome produces no record at all.
+            await self._post_jev_notice(
+                message, candidate, reaction_gate_record(decision, author=self._jev_notice_author(message)),
             )
             emoji = decision.emoji
             if emoji is None:
@@ -4319,7 +4338,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         _target_id = thread_id or chat_id
                         if nonconversational:
                             self._nonconversational_messages.mark_many([message_id])
-                        elif not _looks_like_nonconversational_history_message(content):
+                        elif not (
+                            _looks_like_nonconversational_history_message(content)
+                            or _looks_like_self_notice_history_message(content)
+                        ):
                             self._last_self_message_id[_target_id] = message_id
                         # Inbox contract: every top-level bot message in the
                         # Hermes Starts inbox channel anchors a public thread.
@@ -4441,7 +4463,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 _target_id = thread_id or chat_id
                 if nonconversational:
                     await self._nonconversational_messages.mark_many(message_ids)
-                elif not _looks_like_nonconversational_history_message(content):
+                elif not (
+                    _looks_like_nonconversational_history_message(content)
+                    or _looks_like_self_notice_history_message(content)
+                ):
                     self._last_self_message_id[_target_id] = message_ids[-1]
             # Inbox contract: every top-level bot message in the Hermes
             # Starts inbox channel anchors a public thread.
@@ -4572,7 +4597,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
         Mid-stream (``finalize=False``) we keep editing the original message with a truncated preview —
         splitting mid-stream would move the edit target to a continuation and the next accumulated-token
-        tick would re-split, looping forever (the Telegram #48648 lesson).
+        tick would re-split, looping forever (the #48648 lesson, first learned in a since-removed adapter).
         """
         if not self._client:
             return SendResult(success=False, error="Not connected")
@@ -4602,7 +4627,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 _saturated_preview = True
                 # Saturated-preview dedup: past the cap every edit is the same text; skip until finalize.
                 # Re-sending it is a visual no-op that still counts against Discord's edit rate limit — skip
-                # silently until finalize (mirrors the Telegram #58563 fix).
+                # silently until finalize (same dedup as #58563).
                 if self._last_overflow_preview.get(_preview_key) == formatted:
                     return SendResult(success=True, message_id=message_id)
             elif not finalize:
@@ -4805,7 +4830,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             prev_msg = sent
         last_id = continuation_ids[-1] if continuation_ids else message_id
         # Point the history-backfill fast path at the final visible chunk.
-        if not _looks_like_nonconversational_history_message(content):
+        if not (
+            _looks_like_nonconversational_history_message(content)
+            or _looks_like_self_notice_history_message(content)
+        ):
             self._last_self_message_id[str(channel.id)] = last_id
         logger.debug(
             "[%s] Overflow split delivered %d chunks; last_id=%s", self.name, delivered, last_id,
@@ -5075,7 +5103,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         except Exception as e:
             # Interaction may already be responded to (caller deferred, Discord retry).
             logger.debug("[Discord] Could not send unauthorized ephemeral: %s", e)
-        # Fire-and-forget: don't block the interaction handler on Telegram I/O.
+        # Fire-and-forget: don't block the interaction handler on platform I/O.
         try:
             asyncio.create_task(self._notify_unauthorized_slash(
                 user_name, user_id, chan_id, guild_id, command_text, reason,
@@ -6242,6 +6270,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 if (
                     str(getattr(msg, "id", "")) in self._nonconversational_messages
                     or _looks_like_nonconversational_history_message(content)
+                    or (
+                        msg.author == self._client.user
+                        and _looks_like_self_notice_history_message(content)
+                    )
                 ):
                     return None
                 # DISCORD_ALLOW_BOTS: for history, "mentions" counts as "all" (context, not response).
@@ -6291,6 +6323,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 if (
                     str(getattr(msg, "id", "")) in self._nonconversational_messages
                     or _looks_like_nonconversational_history_message(_content)
+                    or (
+                        msg.author == self._client.user
+                        and _looks_like_self_notice_history_message(_content)
+                    )
                 ):
                     continue
                 # Partition point: our own conversational message (needed for cold start).

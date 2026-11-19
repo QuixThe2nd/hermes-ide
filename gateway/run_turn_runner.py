@@ -265,6 +265,8 @@ class TurnRunner(_TurnRunnerCore):
             message_len_fn=message_len_fn,
             include_content=include_content,
             recalled_count=args.get("recalled_count"),
+            kinds=args.get("kinds"),
+            triggering_message_id=getattr(ctx, "inbound_message_id", None),
         )
         for message in messages:
             ctx.progress_queue.put(message)
@@ -672,7 +674,7 @@ class TurnRunner(_TurnRunnerCore):
         _progress_len_fn: Any
         _PROGRESS_TEXT_LIMIT: int
         _edit_accepts_metadata: bool
-        # Oversized-row chunking (codebox only): a boxed row sliced across
+        # Oversized-row chunking: a boxed row sliced across
         # several messages leaves only its tail slices editable; _row_head_len
         # counts the escaped chars of the CURRENT row already visible in the
         # earlier chunks, and _row_slices how many trailing buffer lines belong
@@ -706,7 +708,7 @@ class TurnRunner(_TurnRunnerCore):
             _progress_len_fn=len_fn,
             # Leave room for platform quirks / formatting; tiny test adapters keep a usable limit.
             _PROGRESS_TEXT_LIMIT=max(1, raw_limit - (64 if raw_limit > 128 else 0)),
-            # Overflow edits pass metadata (Telegram topic/thread routing) only when edit_message takes it.
+            # Overflow edits pass metadata (topic/thread routing) only when edit_message takes it.
             _edit_accepts_metadata=bool(ctx._progress_metadata) and _accepts_keyword(adapter.edit_message, "metadata"),
         )
 
@@ -722,14 +724,14 @@ class TurnRunner(_TurnRunnerCore):
         return await ctx.deliver_visible(lambda: st.adapter.edit_message(**kwargs))
 
     def _progress_text(self, st, lines: list) -> str:
-        # Code-box presentation (display.tool_progress_codebox): the whole
-        # accumulated group becomes ONE unlabelled fenced block, with inner ```
-        # escaped so already-fenced command/code previews render inside the box
-        # instead of breaking out. Applies to every lane: accumulated bubbles,
-        # "separate" per-row messages and non-editable fallback sends.
+        # Code-box presentation (always on): the whole accumulated group becomes
+        # ONE unlabelled fenced block, with inner ``` escaped so already-fenced
+        # command/code previews render inside the box instead of breaking out.
+        # Applies to every lane: accumulated bubbles, "separate" per-row
+        # messages and non-editable fallback sends.
         from gateway.display_config import format_progress_group
 
-        return format_progress_group(lines, self._codebox_active(st))
+        return format_progress_group(lines)
 
     async def _send_progress_row(self, st, row):
         """Send one row as its own message(s): "separate" grouping and non-editable fallbacks.
@@ -740,7 +742,7 @@ class TurnRunner(_TurnRunnerCore):
         from gateway.display_config import format_progress_row
 
         result = None
-        for text in format_progress_row(row, self._codebox_active(st), st._PROGRESS_TEXT_LIMIT, st._progress_len_fn):
+        for text in format_progress_row(row, st._PROGRESS_TEXT_LIMIT, st._progress_len_fn):
             result = await self._send_progress_text(st, text)
         return result
 
@@ -916,12 +918,10 @@ class TurnRunner(_TurnRunnerCore):
             agent_interrupted=self._agent_interrupted,
         )
 
-    def _codebox_active(self, st) -> bool:
-        return bool(self._ctx.progress_codebox)
 
     def _chunking_active(self, st) -> bool:
         # Buffer slicing only serves the editable lane; non-editable rows are chunked at send time.
-        return self._codebox_active(st) and st.can_edit
+        return st.can_edit
 
     def _progress_absorb(self, st, raw) -> Any:
         """Fold a queue item into the bubble buffer; returns the line to render this tick.
@@ -960,7 +960,7 @@ class TurnRunner(_TurnRunnerCore):
                 # only the editable tail with the counter instead of duplicating the head.
                 # Only the trailing lines of that row are replaced; earlier pending
                 # rows must stay visible.
-                tail = repeat_row_text(base_msg, count, self._codebox_active(st))[st._row_head_len:]
+                tail = repeat_row_text(base_msg, count)[st._row_head_len:]
                 if self._chunking_active(st):
                     slices = chunk_oversized_progress_row(tail, st._PROGRESS_TEXT_LIMIT, st._progress_len_fn)
                     if len(slices) > 1:
@@ -1105,7 +1105,7 @@ class TurnRunner(_TurnRunnerCore):
         st = self._progress_edit_state(adapter)
         claude_delivery = self._claude_progress_delivery(st)
         last_edit_ts = 0.0
-        EDIT_INTERVAL = 1.5  # Minimum seconds between edits (Telegram flood control)
+        EDIT_INTERVAL = 1.5  # Minimum seconds between edits (platform flood control)
         pending = None
         dirty = False
 
@@ -1355,9 +1355,7 @@ class TurnRunner(_TurnRunnerCore):
             # Relay Discord predicate is shape-only: whether the connector auto-threaded our reply is
             # only knowable AFTER delivery, so register eagerly and let the rename lane look up the
             # cache at fire time — gating registration on the cache read meant it never registered.
-            if runner._is_telegram_topic_lane(source):
-                lane = "_schedule_telegram_topic_title_rename"
-            elif runner._is_matrix_inbox_room_lane(source):
+            if runner._is_matrix_inbox_room_lane(source):
                 lane = "_schedule_matrix_room_title_rename"
             elif runner._is_discord_auto_thread_lane(source) or runner._is_relay_discord_channel_lane(source):
                 lane = "_schedule_discord_semantic_thread_rename"
@@ -1520,7 +1518,7 @@ class TurnRunner(_TurnRunnerCore):
 
     def _skip_context_files(self, platform_key) -> bool:
         """gateway.platforms.<plat>.skip_context_files: messaging platforms may opt out of
-        filesystem-heavy context-file discovery (SOUL.md, AGENTS.md, .cursorrules)."""
+        filesystem-heavy context-file discovery (SOUL.md, AGENTS.md, CLAUDE.md)."""
         platforms_cfg = (self._ctx.user_config.get("gateway") or {}).get("platforms") or {}
         # ``hermes gateway setup`` writes ``gateway.platforms`` as a LIST of enabled platform names,
         # not a dict; treat any non-dict shape as "no per-platform overrides" rather than crashing.
@@ -1787,7 +1785,39 @@ class TurnRunner(_TurnRunnerCore):
         self._merge_turn_request_overrides(agent, turn_route)
         # Must-deliver notes for THIS turn ride the current user message (api_content sidecar), never
         # the system prompt. Assigned unconditionally so a reused agent never replays a stale note.
-        agent._gateway_turn_context_notes = "\n\n".join(runner._consume_pending_turn_sidecar_notes(ctx.session_key))
+        # The serving-identity runtime note rides the same channel: during an overlap restart every
+        # externally visible pid (systemd MainPID, pid file, gateway_state.json) names the draining
+        # predecessor, so each turn must be able to trust which process is actually serving it.
+        # When the session's DURABLE last-served record names a different process, a transition
+        # note rides beside it: persisted conversation/task context carried over (not a new task),
+        # process-local state (terminals, background processes, kernels, caches, pids) did not and
+        # must be revalidated.
+        from gateway.serving_transition import session_turn_notes
+        from gateway.context_injection_labels import join_turn_notes, tag_turn_note
+
+        turn_notes = list(runner._consume_pending_turn_sidecar_notes(ctx.session_key))
+        runtime_note, transition_note = session_turn_notes(
+            getattr(runner, "session_store", None),
+            getattr(ctx, "session_id", None), runner)
+        if runtime_note:
+            turn_notes.append(runtime_note)
+        if transition_note:
+            # "Conversation moved processes" (#829) is a restart notice; the
+            # per-turn serving-identity runtime note names the serving process
+            # on every turn and is NOT one — it stays unclassified.
+            turn_notes.append(tag_turn_note("restart", transition_note))
+        # Joined text is byte-identical to the legacy "\n\n".join; kinds are
+        # additive display metadata aligned 1:1 with the staged entries.
+        agent._gateway_turn_context_notes, agent._gateway_turn_note_kinds = (
+            join_turn_notes(turn_notes)
+        )
+        # A transparent continuation defers the notes channel above, but a
+        # restart just moved the conversation to a new process mid-turn —
+        # stage the runtime notes on their own one-shot channel so the
+        # continuation turn still learns which process serves it AND that the
+        # process changed.
+        continuation_notes = [note for note in (runtime_note, transition_note) if note]
+        agent._gateway_continuation_note = "\n\n".join(continuation_notes)
         agent.background_review_callback, bg_release = self._make_bg_review_callbacks()
         # Register the release hook on the adapter so base.py's finally block fires it after the
         # main response is delivered.
@@ -1992,16 +2022,12 @@ class TurnRunner(_TurnRunnerCore):
         ctx = self._ctx
         # Transcript rows ({role, content, timestamp}) lose timestamps; interrupt-path agent messages
         # (tool_calls/tool_call_id/reasoning) pass through intact so the API sees valid assistant→tool
-        # sequences. Telegram observed=True rows are withheld from replayable history and attached to
+        # sequences. Observed group-context rows are withheld from replayable history and attached to
         # the current addressed message as API-only context.
-        agent_history, observed_group_context, cursor_recovery_note = _build_gateway_agent_history(
+        agent_history, observed_group_context = _build_gateway_agent_history(
             ctx.history, channel_prompt=ctx.channel_prompt,
             inject_timestamps=_message_timestamps_enabled(ctx.user_config),
-            hermes_session_id=ctx.session_id,
         )
-        # Recovery preparation decides whether this note is an ordinary new
-        # message or must yield to the pure continuation seam.
-        self._cursor_recovery_note = cursor_recovery_note
         self._live_history_selected = False
         self._live_replay_source = None
         # FTS write-corruption guard: if persistence failed silently the reloaded transcript is stale
@@ -2193,22 +2219,6 @@ class TurnRunner(_TurnRunnerCore):
         except TypeError:
             stream_consumer.finish()
 
-    def _restore_telegram_thread_id_after_split(self, agent_session_id) -> None:
-        """Telegram DM whose source.thread_id was lost in the session split (synthetic/recovered
-        event): restore it from the binding so _thread_metadata_for_source yields the right
-        message_thread_id instead of the General thread (non-fatal)."""
-        ctx = self._ctx
-        try:
-            # run_sync is off-loop (executor); sync DB is fine.
-            binding = self._runner._session_db._db.get_telegram_topic_binding_by_session(session_id=agent_session_id)
-            if binding and binding.get("thread_id"):
-                ctx.source.thread_id = str(binding["thread_id"])
-                logger.debug(
-                    "Restored source.thread_id=%s from binding after session split %s → %s",
-                    ctx.source.thread_id, ctx.session_id, agent_session_id,
-                )
-        except Exception:
-            logger.debug("Failed to restore thread_id from binding after session split", exc_info=True)
 
     def _sync_session_after_run(self, agent_history):
         """Sync session_id right after run_conversation(): compression can rotate before a follow-up
@@ -2225,7 +2235,6 @@ class TurnRunner(_TurnRunnerCore):
         if session_was_split:
             logger.info("Session split detected: %s → %s (compression)", ctx.session_id, agent_session_id)
             entry = runner.session_store._entries.get(ctx.session_key)
-            persisted = False
             if entry:
                 entry_session_id = getattr(entry, "session_id", None)
                 if not ctx._run_still_current():
@@ -2235,7 +2244,7 @@ class TurnRunner(_TurnRunnerCore):
                         ctx.session_key or "?", ctx.run_generation,
                     )
                 elif entry_session_id == agent_session_id:
-                    persisted = True
+                    pass
                 elif entry_session_id != ctx.session_id:
                     logger.info(
                         "Skipping session split sync for %s because the "
@@ -2247,17 +2256,8 @@ class TurnRunner(_TurnRunnerCore):
                     entry.session_id = agent_session_id
                     runner.session_store._save()
                     runner.session_store._record_gateway_session_peer(agent_session_id, ctx.session_key, ctx.source)
-                    persisted = True
             # Only after this run published its split — a stale /stop→/new predecessor must not
-            # mutate routing state.
-            if persisted:
-                src = ctx.source
-                if (
-                    getattr(src, "platform", None) == Platform.TELEGRAM and getattr(src, "chat_type", None) == "dm"
-                    and getattr(src, "thread_id", None) is None and runner._session_db is not None
-                ):
-                    self._restore_telegram_thread_id_after_split(agent_session_id)
-                runner._sync_telegram_topic_binding(src, entry, reason="agent-run-compression")
+            # mutate routing state (the persisted guard above already gates entry mutation).
         runner._sync_session_model_from_agent(agent_session_id, agent)
         # history_offset=0 whenever the agent's message list lost the original history prefix
         # (split OR in-place compaction): the returned `messages` is the compacted set, persist all
@@ -2897,7 +2897,7 @@ class TurnRunner(_TurnRunnerCore):
         line the direct rail would have sent goes through the same
         ``_send_or_update_status_coro`` door with the same status wiring
         (adapter, chat id, thread metadata, cleanup tracking), so platform
-        rendering — Discord's branded embed conversion, Telegram's
+        rendering — Discord's branded embed conversion, a platform's
         status-bubble editing — is byte-identical. Only the scheduling
         changed: queue-ordered instead of independently scheduled. Returns
         the sent message id on success (``None`` otherwise) so correlated

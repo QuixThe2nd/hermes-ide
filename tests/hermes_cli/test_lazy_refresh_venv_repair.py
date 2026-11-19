@@ -105,8 +105,8 @@ def test_refresh_uses_pre_rebuild_snapshot_when_provided(monkeypatch):
     ensure = importlib.import_module("pm.ensure")
     calls = []
     monkeypatch.setattr(ensure, "sync_venv", lambda extras, **kwargs: calls.append((extras, kwargs)))
-    assert m._refresh_active_lazy_features(["telegram"]) is True
-    assert calls == [(["telegram"], {"explicit": True})]
+    assert m._refresh_active_lazy_features(["matrix"]) is True
+    assert calls == [(["matrix"], {"explicit": True})]
 
 
 def test_capture_active_tool_dependencies_uses_tools_status_probes(monkeypatch):
@@ -128,7 +128,7 @@ def test_cmd_update_captures_and_propagates_pre_rebuild_snapshot(
     from hermes_cli import managed_uv, update_cmd
 
     (tmp_path / ".git").mkdir()
-    snapshot = ["platform.telegram"]
+    snapshot = ["platform.matrix"]
     tool_snapshot = ["langfuse"]
     refresh_calls = []
 

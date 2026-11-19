@@ -489,7 +489,7 @@ def _export_markdown(db, args, filters, redact):
         return _export_markdown_single(db, args, _export_one, output_dir, lineage_is_logical)
     if not filters:
         print("Refusing bulk export without a filter. Pass --session-id or "
-              "at least one filter (e.g. --older-than 90, --source telegram).")
+              "at least one filter (e.g. --older-than 90, --source discord).")
         return
     candidates = db.list_prune_candidates(**filters)
     if args.dry_run:
@@ -953,7 +953,7 @@ def _cmd_repair_routing(db, args):
 
 def _cmd_stats(db, args):
     print(f"Total sessions: {db.session_count()}\nTotal messages: {db.message_count()}")
-    for src in ("cli", "telegram", "discord", "whatsapp", "slack"):
+    for src in ("cli", "discord", "whatsapp", "slack"):
         if (c := db.session_count(source=src)) > 0:
             print(f"  {src}: {c} sessions")
     if db.db_path.exists():

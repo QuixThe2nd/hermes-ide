@@ -241,17 +241,6 @@ La resincronización se ejecuta automáticamente como máximo una vez por hora."
     current_with_title:    "📌 Sesión: `{session_id}`\nTítulo: **{title}**"
     current_no_title:      "📌 Sesión: `{session_id}`\nSin título. Uso: `/title Mi nombre de sesión`"
 
-  topic:
-    not_telegram_dm:         "El comando /topic solo está disponible en chats privados de Telegram."
-    no_session_db:           "Base de datos de sesiones no disponible."
-    unauthorized:            "No tienes autorización para usar /topic en este bot."
-    restore_needs_topic:     "Para restaurar una sesión, primero crea o abre un topic de Telegram, luego envía /topic <session-id> dentro de ese topic. Para crear un topic nuevo, abre All Messages y envía cualquier mensaje allí."
-    topics_disabled:         "Los topics de Telegram aún no están habilitados para este bot.\n\nCómo habilitarlos:\n1. Abre @BotFather.\n2. Elige tu bot.\n3. Abre Bot Settings → Threads Settings.\n4. Activa Threaded Mode y asegúrate de permitir que los usuarios creen nuevos threads.\n\nLuego envía /topic de nuevo."
-    topics_user_disallowed:  "Los topics de Telegram están habilitados, pero los usuarios no pueden crearlos.\n\nAbre @BotFather → elige tu bot → Bot Settings → Threads Settings, luego desactiva 'Disallow users to create new threads'.\n\nLuego envía /topic de nuevo."
-    enable_failed:           "No se pudo habilitar el modo topic de Telegram: {error}"
-    bound_status:            "Este topic está vinculado a:\nSesión: {label}\nID: {session_id}\n\nUsa /new para reemplazar este topic con una sesión nueva.\nPara trabajo paralelo, abre All Messages y envía un mensaje allí para crear otro topic."
-    thread_ready:            "Los topics multisesión de Telegram están habilitados.\n\nEste topic se usará como una sesión independiente de Hermes. Usa /new para reemplazar la sesión actual de este topic. Para trabajo paralelo, abre All Messages y envía un mensaje allí para crear otro topic."
-    untitled_session:        "Sesión sin título"
 
   undo:
     nothing:               "Nada que deshacer."

@@ -83,7 +83,7 @@ def test_run_one_job_agent_declared_failure_uses_failure_bookkeeping(monkeypatch
         final="[CRON_FAILURE]\nThe delegated child could not finish the report.",
     )
 
-    ok = s.run_one_job({"id": "declared-failure", "name": "delegate", "deliver": "telegram"})
+    ok = s.run_one_job({"id": "declared-failure", "name": "delegate", "deliver": "discord"})
 
     assert ok is True
     assert [call[0] for call in calls] == ["run_job", "save", "deliver", "mark"]
@@ -99,7 +99,7 @@ def test_run_one_job_agent_declared_failure_is_delivered_verbatim(monkeypatch):
     monkeypatch.setattr(
         s, "_deliver_result", lambda job, content, **kw: delivered.append(content))
 
-    s.run_one_job({"id": "verbatim", "name": "nightly export", "deliver": "telegram"})
+    s.run_one_job({"id": "verbatim", "name": "nightly export", "deliver": "discord"})
 
     assert len(delivered) == 1
     assert evidence.rstrip(".") in delivered[0]
@@ -113,7 +113,7 @@ def test_run_one_job_marker_mentioned_in_report_stays_successful(monkeypatch):
         final="The child documentation says [CRON_FAILURE], but this run recovered.",
     )
 
-    s.run_one_job({"id": "quoted-marker", "name": "delegate", "deliver": "telegram"})
+    s.run_one_job({"id": "quoted-marker", "name": "delegate", "deliver": "discord"})
 
     assert calls[-1] == ("mark", "quoted-marker", True)
 
@@ -152,7 +152,7 @@ def test_run_one_job_exception_delivers_failure_alert(monkeypatch):
         lambda *args, **kwargs: finished.append((args, kwargs)),
     )
 
-    ok = s.run_one_job({"id": "j3", "name": "morning", "deliver": "telegram"})
+    ok = s.run_one_job({"id": "j3", "name": "morning", "deliver": "discord"})
 
     assert ok is False
     assert len(delivered) == 1 and delivered[0][0] == "j3"
@@ -200,7 +200,7 @@ def test_run_one_job_exception_records_failure_alert_delivery_error(monkeypatch)
     )
     monkeypatch.setattr(s, "finish_execution", lambda *_a, **_kw: None)
 
-    assert s.run_one_job({"id": "j4", "deliver": "telegram"}) is False
+    assert s.run_one_job({"id": "j4", "deliver": "discord"}) is False
     assert marked == [
         (("j4", False, "provider failed"), {"delivery_error": "send failed: 502"})
     ]
@@ -248,7 +248,7 @@ def test_escaped_failure_delivery_carries_the_streak_nudge(monkeypatch):
         {
             "id": "j5",
             "name": "scout",
-            "deliver": "telegram",
+            "deliver": "discord",
             "schedule": {"kind": "interval"},
             "failure_streak": 2,  # + this run = 3 = default threshold
         }
@@ -272,7 +272,7 @@ def test_escaped_failure_delivery_stays_quiet_below_the_threshold(monkeypatch):
         {
             "id": "j6",
             "name": "scout",
-            "deliver": "telegram",
+            "deliver": "discord",
             "schedule": {"kind": "interval"},
             "failure_streak": 0,
         }
@@ -314,7 +314,7 @@ def test_run_one_job_exception_after_delivery_does_not_redeliver(monkeypatch):
     monkeypatch.setattr(s, "mark_job_run", fake_mark)
     monkeypatch.setattr(s, "finish_execution", lambda *_a, **_kw: None)
 
-    ok = s.run_one_job({"id": "j5", "name": "once", "deliver": "telegram"})
+    ok = s.run_one_job({"id": "j5", "name": "once", "deliver": "discord"})
 
     assert ok is False
     assert delivered == [("j5", "final response")]
@@ -358,7 +358,7 @@ def test_run_one_job_keyboard_interrupt_skips_delivery_and_reraises(monkeypatch)
     )
 
     with pytest.raises(KeyboardInterrupt):
-        s.run_one_job({"id": "j6", "name": "interrupt", "deliver": "telegram"})
+        s.run_one_job({"id": "j6", "name": "interrupt", "deliver": "discord"})
 
     assert delivered == []
     assert marked == [(("j6", False, "KeyboardInterrupt"), {})]

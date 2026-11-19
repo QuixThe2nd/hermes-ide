@@ -167,7 +167,6 @@ def _gateway_runner(store):
     runner._refresh_fallback_model.return_value = None
     runner._consume_pending_native_image_paths.return_value = []
     runner._consume_pending_turn_sidecar_notes.return_value = []
-    runner._is_telegram_topic_lane.return_value = False
     runner._is_discord_auto_thread_lane.return_value = False
     runner._is_relay_discord_channel_lane.return_value = False
     return runner
@@ -486,7 +485,7 @@ _EXPECTED_RESTART_RESULT_WITHOUT_OLD = (
     "verified, then reply to the user about that work."
 )
 
-def _restart_tool_tail_history(*, timestamp=None, process=_OLD_PROCESS):
+def _restart_tool_tail_history(*, timestamp=None, process=_OLD_PROCESS, status=None):
     """The exact durable shape left by the dying process's restart control."""
     from plugins.gateway_restart.tool import _result_json
 
@@ -495,7 +494,7 @@ def _restart_tool_tail_history(*, timestamp=None, process=_OLD_PROCESS):
     arguments = "{}"
     result = _result_json(
         SimpleNamespace(_draining=True),
-        {"status": "restarting", "active_agents": 1, "via_service": False},
+        status or {"status": "restarting", "active_agents": 1, "via_service": False},
     )
     payload = json.loads(result)
     if process is None:
@@ -560,6 +559,59 @@ def test_restart_tool_tail_continues_with_process_identity(monkeypatch):
     assert rewritten[-1]["content"] == _EXPECTED_RESTART_RESULT
     assert rewritten[-1]["tool_call_id"] == "call_restart"
     assert all(row.get("content") != _RESTART_CLOSE_ROW for row in rewritten)
+
+
+def test_chained_restart_tail_continues_with_process_identity(monkeypatch):
+    """A chained (overlap-queued) restart carries the same Old/New identity contract.
+
+    The chained ack names the draining predecessor as ``process``; the
+    successor rewrite must still present Old process = predecessor and
+    New process = itself, never a bare success without identity.
+    """
+    from gateway.run_turn_recovery import _repair_restart_tool_tail
+
+    history = _restart_tool_tail_history(
+        process=_OLD_PROCESS,
+        status={"status": "chained", "active_agents": 1, "via_service": True},
+    )[:-1]
+    monkeypatch.setattr(os, "getpid", lambda: _NEW_PID)
+
+    repair = _repair_restart_tool_tail(history)
+
+    assert repair is not None
+    rewritten, changed = repair
+    assert changed is True
+    assert rewritten[-1]["content"] == _EXPECTED_RESTART_RESULT
+
+
+def test_forwarded_restart_tail_continues_with_process_identity(monkeypatch):
+    """A forwarded (array-overlap) restart carries the same Old/New identity contract.
+
+    The forwarded result names the newest generation that took the request
+    (``forwarded_to``) as ``process``; the successor rewrite must still
+    present Old process = that generation and New process = itself, never a
+    bare success without identity.
+    """
+    from gateway.run_turn_recovery import _repair_restart_tool_tail
+
+    forwarded_pid = _NEW_PID - 1
+    history = _restart_tool_tail_history(
+        process=f"pid {forwarded_pid}",
+        status={
+            "status": "forwarded",
+            "active_agents": 1,
+            "via_service": True,
+            "forwarded_to": forwarded_pid,
+        },
+    )[:-1]
+    monkeypatch.setattr(os, "getpid", lambda: _NEW_PID)
+
+    repair = _repair_restart_tool_tail(history)
+
+    assert repair is not None
+    rewritten, changed = repair
+    assert changed is True
+    assert rewritten[-1]["content"] == _EXPECTED_RESTART_RESULT
 
 
 def test_rich_restart_result_is_trusted_and_idempotent(monkeypatch):

@@ -20,7 +20,7 @@ from tools.environments.local_env_policy import _ALWAYS_STRIP_KEYS, _HERMES_PROV
 
 _TIER1_SAMPLE = {
     "GH_TOKEN": "ghp_secret",
-    "TELEGRAM_BOT_TOKEN": "bot-token",
+    "DISCORD_BOT_TOKEN": "bot-token",
     "SLACK_APP_TOKEN": "xapp-secret",
     "MODAL_TOKEN_SECRET": "modal-secret",
     "HERMES_DASHBOARD_SESSION_TOKEN": "dash-secret",
@@ -101,7 +101,7 @@ class TestTierInvariants:
             )
 
     def test_tier1_covers_gateway_bot_token(self):
-        assert "TELEGRAM_BOT_TOKEN" in _ALWAYS_STRIP_KEYS
+        assert "DISCORD_BOT_TOKEN" in _ALWAYS_STRIP_KEYS
 
     def test_tier1_covers_github_auth(self):
         assert {"GH_TOKEN", "GITHUB_TOKEN"} <= _ALWAYS_STRIP_KEYS

@@ -24,7 +24,7 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 class TestCronCommandLifecycle:
 
-    def test_edit_persists_user_owned_inference_pins(self, tmp_cron_dir, capsys):
+    def test_edit_ignores_model_provider_pins_with_warning(self, tmp_cron_dir, capsys):
         job = create_job(prompt="Daily report", schedule="every 1h")
         parser = argparse.ArgumentParser(prog="hermes")
         subparsers = parser.add_subparsers(dest="command")
@@ -44,9 +44,11 @@ class TestCronCommandLifecycle:
         cron_command(args)
 
         updated = get_job(job["id"])
-        assert updated["model"] == "new-model"
-        assert updated["provider"] == "nous"
-        assert "Updated job" in capsys.readouterr().out
+        assert not updated.get("model")
+        assert not updated.get("provider")
+        out = capsys.readouterr().out
+        assert "Updated job" in out
+        assert "pins are removed" in out
 
     def test_edit_can_replace_and_clear_skills(self, tmp_cron_dir, capsys):
         job = create_job(
@@ -175,7 +177,7 @@ class TestCronDoctor:
         jobs = load_jobs()
         jobs[0]["last_status"] = "error"
         jobs[0]["last_error"] = "Provider returned error"
-        jobs[0]["last_delivery_error"] = "telegram timeout"
+        jobs[0]["last_delivery_error"] = "discord timeout"
         save_jobs(jobs)
 
         rc = cron_command(Namespace(cron_command="doctor"))
@@ -185,7 +187,7 @@ class TestCronDoctor:
         assert "Cron doctor found 3 issue(s)" in out
         assert job["id"] in out
         assert "last run failed: Provider returned error" in out
-        assert "was not delivered (telegram timeout)" in out
+        assert "was not delivered (discord timeout)" in out
         assert "hermes cron edit" in out
         assert "script not found" in out
 
@@ -212,14 +214,14 @@ class TestCronDoctor:
         jobs = load_jobs()
         jobs[0]["last_status"] = "delivery_failed"
         jobs[0]["last_error"] = None
-        jobs[0]["last_delivery_error"] = "telegram timeout"
+        jobs[0]["last_delivery_error"] = "discord timeout"
         save_jobs(jobs)
 
         rc = cron_command(Namespace(cron_command="doctor"))
 
         out = capsys.readouterr().out
         assert rc == 1
-        assert "was not delivered (telegram timeout)" in out
+        assert "was not delivered (discord timeout)" in out
         assert "hermes cron edit" in out
         assert "last run failed" not in out
         assert "unknown error" not in out
@@ -269,7 +271,7 @@ class TestCronListStatusRendering:
         jobs[0]["last_run_at"] = "2026-09-01T09:00:00+00:00"
         jobs[0]["last_status"] = "delivery_failed"
         jobs[0]["last_error"] = None
-        jobs[0]["last_delivery_error"] = "telegram timeout"
+        jobs[0]["last_delivery_error"] = "discord timeout"
         save_jobs(jobs)
 
         cron_command(Namespace(cron_command="list", all=True))
@@ -277,7 +279,7 @@ class TestCronListStatusRendering:
         out = capsys.readouterr().out
         last_run_line = next(l for l in out.splitlines() if "Last run:" in l)
         assert "was not delivered" in last_run_line
-        assert "telegram timeout" in last_run_line, (
+        assert "discord timeout" in last_run_line, (
             "the delivery detail lives in last_delivery_error, not last_error"
         )
         assert cron_cli.Colors.GREEN not in last_run_line
@@ -570,16 +572,16 @@ class TestSlashCronListLastStatus:
         return capsys.readouterr().out
 
     def test_delivery_failed_names_the_delivery_error(self, tmp_cron_dir, capsys):
-        create_job(prompt="Nightly brief", schedule="every 1h", deliver="telegram:1")
+        create_job(prompt="Nightly brief", schedule="every 1h", deliver="discord:1")
         jobs = load_jobs()
         jobs[0]["last_run_at"] = "2026-09-01T07:00:00+00:00"
         jobs[0]["last_status"] = "delivery_failed"
         jobs[0]["last_error"] = None
-        jobs[0]["last_delivery_error"] = "telegram: 502 Bad Gateway"
+        jobs[0]["last_delivery_error"] = "discord: 502 Bad Gateway"
         save_jobs(jobs)
 
         out = self._run_list(tmp_cron_dir, capsys)
-        assert "Last run: 2026-09-01T07:00:00+00:00 (delivery_failed: telegram: 502 Bad Gateway)" in out
+        assert "Last run: 2026-09-01T07:00:00+00:00 (delivery_failed: discord: 502 Bad Gateway)" in out
 
     def test_ok_stays_plain(self, tmp_cron_dir, capsys):
         create_job(prompt="Nightly brief", schedule="every 1h")
@@ -695,3 +697,50 @@ class TestSlashCronRunSkipped:
         out = capsys.readouterr().out
         assert "Job is paused/disabled; resume it before running." in out
         assert "Triggered" not in out and "next scheduler tick" not in out
+
+
+class TestCronListJson:
+    """``hermes cron list --json`` emits the cronjob tool's machine-readable
+    payload so audits never scrape the human table (#pc_cdaa7a0971747a9b9)."""
+
+    def _parse(self, *argv):
+        parser = argparse.ArgumentParser(prog="hermes")
+        subparsers = parser.add_subparsers(dest="command")
+        build_cron_parser(subparsers, cmd_cron=cron_command)
+        return parser.parse_args(["cron", *argv])
+
+    def test_list_json_emits_parseable_payload(self, tmp_cron_dir, capsys):
+        import json as _json
+
+        job = create_job(prompt="Daily report", schedule="every 1h")
+        cron_command(self._parse("list", "--json"))
+        payload = _json.loads(capsys.readouterr().out)
+
+        assert payload["success"] is True
+        assert payload["count"] == 1
+        assert payload["jobs"][0]["job_id"] == job["id"]
+
+    def test_list_json_honours_all_flag(self, tmp_cron_dir, capsys):
+        import json as _json
+
+        create_job(prompt="Active", schedule="every 1h")
+        disabled = create_job(prompt="Parked", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[[j["id"] for j in jobs].index(disabled["id"])]["enabled"] = False
+        save_jobs(jobs)
+
+        cron_command(self._parse("list", "--json"))
+        assert _json.loads(capsys.readouterr().out)["count"] == 1
+
+        cron_command(self._parse("list", "--all", "--json"))
+        assert _json.loads(capsys.readouterr().out)["count"] == 2
+
+    def test_list_without_json_stays_human(self, tmp_cron_dir, capsys):
+        import json as _json
+
+        create_job(prompt="Daily report", schedule="every 1h")
+        cron_command(self._parse("list"))
+        out = capsys.readouterr().out
+        assert "Scheduled Jobs" in out
+        with pytest.raises(_json.JSONDecodeError):
+            _json.loads(out)

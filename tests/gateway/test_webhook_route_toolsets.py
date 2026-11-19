@@ -64,7 +64,7 @@ class TestWebhookAdapterToolsetsForSource:
 
     def test_non_webhook_chat_id_returns_none(self):
         wa = _make_adapter({"mon": {"secret": "x", "toolsets": ["terminal"]}})
-        assert wa.toolsets_for_source(_Src("telegram:123")) is None
+        assert wa.toolsets_for_source(_Src("discord:123")) is None
 
     def test_empty_or_non_list_toolsets_returns_none(self):
         wa = _make_adapter(

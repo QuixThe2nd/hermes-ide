@@ -1677,7 +1677,7 @@ def _run_conversation_inlined(
         persist_user_display_metadata: Optional payload for that event
             (e.g. a delegation's task count).
         persist_user_platform_id: Optional platform-side message id (e.g. the
-            Discord/Telegram message id) to store as metadata on that
+            Discord message id) to store as metadata on that
             persisted user message, so restart drain-window recovery can
             dedup an interrupted turn against the transcript.
 
@@ -1888,6 +1888,10 @@ def _run_conversation_inlined(
     # reused as the final response — not merely because any interim was
     # streamed. (#65919 review: response-loss blocker)
     _pending_verification_response_previewed = False
+    # Answer composed before a `pre_turn_end` continuation. That continuation
+    # answers a meta directive (start a conversation?), so its text must not
+    # replace the user-facing answer — this is what gets delivered.
+    _pre_turn_end_prior_response = None
     # If pre-API compression fires after MoA advisors have produced guidance,
     # retain that ephemeral output and rebase it onto the compacted transcript
     # on the next loop iteration. This prevents a second advisor fan-out.
@@ -6210,7 +6214,7 @@ def _run_conversation_inlined(
                     # can still surface this shape via TypeError.  Treat
                     # them as retryable so the error classifier's normal
                     # retry/fallback path runs instead of killing the turn
-                    # as non-retryable (which left Telegram users staring
+                    # as non-retryable (which left gateway users staring
                     # at a bare "Non-retryable error" with no recovery).
                     and not (
                         isinstance(api_error, TypeError)
@@ -8650,6 +8654,9 @@ def _run_conversation_inlined(
                     _pending_verification_response_previewed = (
                         agent._interim_content_was_streamed(final_response or "")
                     )
+                    # Answer composed before this continuation: it answers the
+                    # meta directive, so it must not replace the user-facing answer.
+                    _pre_turn_end_prior_response = final_response
                     final_response = None
                     continue
 
@@ -8837,6 +8844,13 @@ def _run_conversation_inlined(
                 # break sites that set final_response without appending.
                 break
     
+    # The pre_turn_end gate's continuation answers a meta directive (start a
+    # conversation?), never the user's question. Deliver the answer composed
+    # before it instead of the verdict — otherwise the user sees only e.g.
+    # "nothing worth starting" and the real answer is lost.
+    if _pre_turn_end_prior_response and (final_response or "").strip() and not failed:
+        final_response = _pre_turn_end_prior_response
+
     # Post-loop turn finalization extracted to agent/turn_finalizer.finalize_turn
     # (god-file decomposition Phase 1 step 4). Behavior-neutral: the assembled
     # result dict is returned exactly as before.
@@ -8917,7 +8931,7 @@ def run_conversation(
         persist_user_display_metadata: Optional payload for that event
             (e.g. a delegation's task count).
         persist_user_platform_id: Optional platform-side message id (e.g. the
-            Discord/Telegram message id) to store as metadata on that
+            Discord message id) to store as metadata on that
             persisted user message, so restart drain-window recovery can
             dedup an interrupted turn against the transcript.
 

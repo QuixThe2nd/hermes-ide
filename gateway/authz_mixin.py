@@ -33,8 +33,8 @@ logger = logging.getLogger(__name__)
 # store's allowlist mirror (single source of truth); plugin platforms are added per-call from the registry.
 _ALLOWED_USERS_ENV = {Platform(k): v for k, v in _PLATFORM_ALLOWLIST_ENV.items()}
 _ALLOW_ALL_ENV = {p: v.replace("_ALLOWED_USERS", "_ALLOW_ALL_USERS") for p, v in _ALLOWED_USERS_ENV.items()}
-_GROUP_USER_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS"}
-_GROUP_CHAT_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS", Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS"}
+_GROUP_USER_ENV: dict = {}
+_GROUP_CHAT_ENV = {Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS"}
 _ALLOW_BOTS_ENV = {
     # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466). Checked before the
     # no-user-id guard below: some platforms deliver bot/automation traffic with no user_id at all -- e.g.
@@ -42,7 +42,6 @@ _ALLOW_BOTS_ENV = {
     # guard would reject them outright (the same reason the chat-scoped allowlist above runs early).
     Platform.DISCORD: "DISCORD_ALLOW_BOTS",
     Platform.FEISHU: "FEISHU_ALLOW_BOTS",
-    Platform.TELEGRAM: "TELEGRAM_ALLOW_BOTS",
     Platform.SLACK: "SLACK_ALLOW_BOTS",
 }
 
@@ -524,7 +523,7 @@ class GatewayAuthorizationMixin:
         return True
 
     def _adapter_extra_allowlist_authorizes(self, source, user_id, is_group) -> bool:
-        """Adapters (e.g. Telegram) that gate via config.extra.allow_from / group_allow_from
+        """Adapters that gate via config.extra.allow_from / group_allow_from
         without setting enforces_own_access_policy."""
         adapter = self._delivery_adapter_for(source)
         if adapter is None:
@@ -610,15 +609,15 @@ class GatewayAuthorizationMixin:
             chat_allowlist_env = _GROUP_CHAT_ENV.get(source.platform, "")
             if chat_allowlist_env and _allows(_coerce_allow_set(_auth_env(chat_allowlist_env)), source.chat_id):
                 return True
-            # config.yaml fallback (``extra.group_allowed_chats``): Telegram observe-unmentioned mode
+            # config.yaml fallback (``extra.group_allowed_chats``): observe-unmentioned mode
             # strips user_id, so the env-only check above misses it.
             with contextlib.suppress(Exception):
                 adapter_group_allowed = self._adapter_extra_for_source(source).get("group_allowed_chats")
                 if adapter_group_allowed and _allows(_coerce_allow_set(adapter_group_allowed), source.chat_id):
                     return True
         # WhatsApp observe-unmentioned group sessions key on the group chat
-        # with a shared source (user_id=None), exactly like Telegram's
-        # observe mode. WhatsApp has no group_allowed_chats env var — its
+        # with a shared source (user_id=None). WhatsApp has no
+        # group_allowed_chats env var — its
         # group allowlist is ``group_allow_from`` (``@g.us`` JIDs), honored
         # by adapter intake (_is_group_allowed) and bridged from
         # ``platforms.whatsapp.extra.group_allow_from``. Admit an allowlisted
@@ -665,23 +664,6 @@ class GatewayAuthorizationMixin:
                     return True
         return False
 
-    def _legacy_telegram_chat_grant(self, source, group_user_allowlist: str) -> bool:
-        """TELEGRAM_GROUP_ALLOWED_USERS was once (mis)used as a chat-ID allowlist; "-"-prefixed
-        values are chat IDs, honor them and warn once."""
-        from gateway.run import logger
-        legacy_chat_ids = {v.strip() for v in group_user_allowlist.split(",") if v.strip().startswith("-")}
-        if not legacy_chat_ids:
-            return False
-        if not getattr(self, "_warned_telegram_group_users_legacy", False):
-            logger.warning(
-                "TELEGRAM_GROUP_ALLOWED_USERS contains chat-ID-shaped values "
-                "(%s). Treating them as chat IDs for backward compatibility. "
-                "Move chat IDs to TELEGRAM_GROUP_ALLOWED_CHATS — the _USERS var "
-                "is now for sender user IDs.",
-                ",".join(sorted(legacy_chat_ids)),
-            )
-            self._warned_telegram_group_users_legacy = True
-        return source.chat_id in legacy_chat_ids
 
     def _bot_loop_guard_instance(self) -> BotLoopGuard:
         guard = getattr(self, "_bot_loop_guard", None)
@@ -852,17 +834,11 @@ class GatewayAuthorizationMixin:
                 return True
             return _env_truthy("GATEWAY_ALLOW_ALL_USERS")
 
-        if is_group_or_forum and source.chat_id:
-            # Telegram group traffic authorized by chat ID (TELEGRAM_GROUP_ALLOWED_USERS gates the sender).
-            if group_chat_allowlist and _allows(_coerce_allow_set(group_chat_allowlist), source.chat_id):
-                return True
-            if (
-                source.platform == Platform.TELEGRAM and group_user_allowlist
-                and self._legacy_telegram_chat_grant(source, group_user_allowlist)
-            ):
-                return True
+        if is_group_or_forum and source.chat_id and group_chat_allowlist \
+                and _allows(_coerce_allow_set(group_chat_allowlist), source.chat_id):
+            return True
 
-        # TELEGRAM_GROUP_ALLOWED_USERS is group-scoped (no DM access); TELEGRAM_ALLOWED_USERS is platform-wide.
+        # {PLATFORM}_GROUP_ALLOWED_USERS is group-scoped (no DM access); {PLATFORM}_ALLOWED_USERS is platform-wide.
         allowed_ids = (
             _coerce_allow_set(platform_allowlist)
             | _coerce_allow_set(group_user_allowlist)

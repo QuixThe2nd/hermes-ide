@@ -597,7 +597,7 @@ def _sessions_stats(_engine: HermesConsoleEngine, args: list[str]) -> str:
             f"Total sessions: {total}",
             f"Listable sessions: {listable}",
             f"Total messages: {db.message_count()}"]
-        for source in ["cli", "tui", "telegram", "discord", "slack", "cron"]:
+        for source in ["cli", "tui", "discord", "slack", "cron"]:
             count = db.session_count(source=source)
             if count:
                 lines.append(f"  {source}: {count}")

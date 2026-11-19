@@ -38,6 +38,38 @@ class TestBuildPreloadedSkillsPrompt:
         with pytest.raises(ValueError, match="Unknown skill"):
             _build_preloaded_skills_prompt("not-a-skill")
 
+    def test_all_missing_error_lists_available_profile_skills(self, monkeypatch):
+        """pc_e08d2fc3eab2: a profile missing the named skill must fail closed with the
+        skills that profile *does* have, not a bare Unknown skill after spawn."""
+        import agent.skill_commands as sc
+
+        monkeypatch.setattr(
+            sc, "build_preloaded_skills_prompt",
+            lambda parsed, **kw: ("", [], list(parsed)),
+        )
+        monkeypatch.setattr(
+            sc, "scan_skill_commands",
+            lambda: {"/alpha": {}, "/beta": {}},
+        )
+        with pytest.raises(ValueError, match=r"Available skills on this profile: alpha, beta"):
+            _build_preloaded_skills_prompt("not-a-skill")
+
+    def test_all_missing_error_tolerates_scan_failure(self, monkeypatch):
+        """The enriched message must never turn the fail-closed raise into a new crash."""
+        import agent.skill_commands as sc
+
+        monkeypatch.setattr(
+            sc, "build_preloaded_skills_prompt",
+            lambda parsed, **kw: ("", [], list(parsed)),
+        )
+
+        def _boom():
+            raise OSError("disk gone")
+
+        monkeypatch.setattr(sc, "scan_skill_commands", _boom)
+        with pytest.raises(ValueError, match=r"^Unknown skill\(s\): not-a-skill\.$"):
+            _build_preloaded_skills_prompt("not-a-skill")
+
     def test_partial_success_returns_prompt(self, monkeypatch):
         import agent.skill_commands as sc
 

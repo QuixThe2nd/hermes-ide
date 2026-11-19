@@ -89,8 +89,8 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
     def _whatsapp_observe_unmentioned_group_messages(self) -> bool:
         """Return whether skipped unmentioned group messages are stored as context.
 
-        When enabled with ``require_mention``, WhatsApp groups match the
-        Telegram observe-unmentioned UX: ordinary group chatter is stored on
+        When enabled with ``require_mention``, WhatsApp groups use the
+        observe-unmentioned UX: ordinary group chatter is stored on
         the shared group session transcript, but the agent only dispatches
         when the bot is explicitly addressed (mention / reply-to-bot /
         wake-word pattern / slash command).
@@ -318,7 +318,7 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
     def _should_observe_unmentioned_group_message(self, data: Dict[str, Any]) -> bool:
         """Return True when a group message should be stored but not dispatched.
 
-        Mirrors Telegram's observe-unmentioned gate: only messages that the
+        Mirrors the observe-unmentioned gate: only messages that the
         ``require_mention`` gate is about to DROP are observable. Anything the
         gate would dispatch (mention, reply-to-bot, wake-word pattern, slash
         command) belongs to the normal dispatcher, and DMs / broadcasts /
@@ -462,7 +462,7 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
             # slash-access control (_check_slash_access / policy_for_source)
             # can identify the sender — a shared user_id=None source is never
             # an admin. Still inject the channel prompt for group context.
-            # (Same contract as Telegram's COMMAND branch, #67816.)
+            # (Same contract as the COMMAND branch, #67816.)
             return dataclasses.replace(event, channel_prompt=channel_prompt)
         return dataclasses.replace(
             event,

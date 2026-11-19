@@ -5,10 +5,8 @@ Wires one behaviour:
 * ``pre_tool_call`` hook — refuses ``write_file`` / ``patch`` /
   ``execute_code`` calls that would edit *source code* — wherever the
   file lives, git repo or not — so coding work lands in the dedicated
-  delegate lanes
-  (``delegate_agent(backend="cursor")`` for small/medium tasks,
-  ``delegate_agent(backend="claude")`` with ``/goal`` for medium/large)
-  instead of the in-context file tools.
+  delegate lane (``delegate_agent(backend="claude")``, optionally with
+  ``/goal``) instead of the in-context file tools.
 
 On by default: the gate evaluates unless ``CODE_LANE_GATE_E2E`` carries
 an explicit opt-out (``0``, ``false``, ``no``, ``off`` —
@@ -140,9 +138,8 @@ _V4A_MOVE_HEADER_RE = re.compile(
 
 # Steering note appended to every block reason.
 _BLOCK_STEER = (
-    "Source-code edits go through delegate_agent(backend=\"cursor\") "
-    "(small/medium) or delegate_agent(backend=\"claude\") with /goal "
-    "(medium/large). Set CODE_LANE_GATE_E2E=0 to disable."
+    "Source-code edits go through delegate_agent(backend=\"claude\") "
+    "with /goal. Set CODE_LANE_GATE_E2E=0 to disable."
 )
 
 

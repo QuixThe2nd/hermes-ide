@@ -32,7 +32,7 @@ Use `imsg` to read and send iMessage/SMS via macOS Messages.app.
 
 ## When NOT to Use
 
-- Telegram/Discord/Slack/WhatsApp messages → use the appropriate gateway channel
+- Discord/Slack/WhatsApp messages → use the appropriate gateway channel
 - Group chat management (adding/removing members) → not supported
 - Bulk/mass messaging → always confirm with user first
 

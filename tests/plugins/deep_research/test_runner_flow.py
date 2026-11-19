@@ -24,7 +24,6 @@ INVENTED_URL = "https://example.com/i-made-this-up"
 
 def _config(**overrides) -> DeepResearchConfig:
     kwargs = dict(
-        enabled=True,
         worker_profile="researcher",
         default_timeout_minutes=10,
         max_parallel=2,

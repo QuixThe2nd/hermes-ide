@@ -32,24 +32,24 @@ def test_standalone_fallback_pool_keeps_profile_scope(tmp_path, monkeypatch):
     sec_home = tmp_path / "profiles" / "ops"
     for home in (default_home, sec_home):
         (home / "cron").mkdir(parents=True)
-        (home / "config.yaml").write_text("platforms:\n  telegram:\n    enabled: true\n")
+        (home / "config.yaml").write_text("platforms:\n  discord:\n    enabled: true\n")
     monkeypatch.setenv("HERMES_HOME", str(default_home))
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "DEFAULT-TOKEN")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "DEFAULT-TOKEN")
     set_multiplex_active(True)
 
     seen = {}
 
     async def fake_send(platform, pconfig, chat_id, message, **kwargs):
         seen["home"] = str(get_hermes_home())
-        seen["token"] = get_secret("TELEGRAM_BOT_TOKEN", None)
+        seen["token"] = get_secret("DISCORD_BOT_TOKEN", None)
         return {"success": True, "message_id": "1"}
 
-    job = {"id": "j1", "name": "probe", "deliver": "telegram:12345", "schedule": {"kind": "cron"}}
+    job = {"id": "j1", "name": "probe", "deliver": "discord:12345", "schedule": {"kind": "cron"}}
 
     async def _inside_running_loop():
         # Emulate the multiplex ticker's per-profile scope on the caller.
         set_hermes_home_override(str(sec_home))
-        set_secret_scope({"TELEGRAM_BOT_TOKEN": "OPS-TOKEN"})
+        set_secret_scope({"DISCORD_BOT_TOKEN": "OPS-TOKEN"})
         return sched._deliver_result(job, "hello", adapters={}, loop=None)
 
     try:

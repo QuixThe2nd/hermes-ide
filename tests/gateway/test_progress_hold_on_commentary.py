@@ -100,9 +100,6 @@ def _make():
         _run_still_current=lambda: True,
         progress_mode="describe",
         progress_grouping="accumulate",
-        # Assertions match the raw row string (``r1 in contents``), not a
-        # fenced codebox wrapper. Codebox wrapping is covered elsewhere.
-        progress_codebox=False,
         tool_progress_enabled=True,
         progress_queue=queue_mod.Queue(),
     )
@@ -216,7 +213,7 @@ async def test_empty_assistant_step_does_not_split():
     await _quiet(ctx)
     await _cancel(sc)
     await _cancel(pump)
-    assert r1 in adapter.contents
+    assert any(r1 in txt for txt in adapter.contents), adapter.contents
     assert len(adapter.bubbles) == 1, adapter.bubbles
 
 

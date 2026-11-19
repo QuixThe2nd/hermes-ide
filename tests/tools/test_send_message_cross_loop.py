@@ -25,7 +25,7 @@ class TestSendViaAdapterCrossLoopDispatch:
         from tools.send_message_tool import _send_via_adapter
 
         send_loop_id = {}
-        platform = Platform("telegram")
+        platform = Platform("discord")
 
         class FakeAdapter:
             async def send(self, *, chat_id, content, metadata=None):
@@ -75,7 +75,7 @@ class TestSendViaAdapterCrossLoopDispatch:
         from tools.send_message_tool import _send_via_adapter
 
         current_loop = asyncio.get_running_loop()
-        platform = Platform("telegram")
+        platform = Platform("discord")
         called_directly = {}
 
         class FakeAdapter:
@@ -109,7 +109,7 @@ class TestSendViaAdapterCrossLoopDispatch:
 
         stopped_loop = asyncio.new_event_loop()
         stopped_loop.close()
-        platform = Platform("telegram")
+        platform = Platform("discord")
 
         class FakeAdapter:
             async def send(self, *, chat_id, content, metadata=None):
@@ -141,7 +141,7 @@ class TestSendViaAdapterCrossLoopDispatch:
 
         send_completed = asyncio.Event()
         send_result_holder = {}
-        platform = Platform("telegram")
+        platform = Platform("discord")
 
         class FakeAdapter:
             async def send(self, *, chat_id, content, metadata=None):

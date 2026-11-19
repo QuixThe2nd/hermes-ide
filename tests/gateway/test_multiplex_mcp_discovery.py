@@ -86,7 +86,7 @@ async def test_reload_mcp_only_touches_requesting_profile(
     event = MessageEvent(
         text="/reload-mcp", message_id="m1",
         source=SessionSource(
-            platform=Platform.TELEGRAM, user_id="u1", chat_id="c1",
+            platform=Platform.DISCORD, user_id="u1", chat_id="c1",
             chat_type="dm", profile="worker",
         ),
     )
@@ -138,7 +138,7 @@ async def test_reload_mcp_formats_scoped_connection_keys_before_refreshing_cache
     event = MessageEvent(
         text="/reload-mcp", message_id="m1",
         source=SessionSource(
-            platform=Platform.TELEGRAM, user_id="u1", chat_id="c1",
+            platform=Platform.DISCORD, user_id="u1", chat_id="c1",
             chat_type="dm", profile="worker",
         ),
     )
@@ -195,7 +195,7 @@ async def test_reload_mcp_reports_a_shared_server_to_a_non_owner_profile(
     event = MessageEvent(
         text="/reload-mcp", message_id="m1",
         source=SessionSource(
-            platform=Platform.TELEGRAM, user_id="u1", chat_id="c1",
+            platform=Platform.DISCORD, user_id="u1", chat_id="c1",
             chat_type="dm", profile="worker",
         ),
     )

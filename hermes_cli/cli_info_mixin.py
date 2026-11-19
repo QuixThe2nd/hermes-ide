@@ -500,7 +500,6 @@ class CLIInfoMixin:
             print("  Messaging Platform Configuration:")
             print("  " + "-" * 55)
             platform_status = {
-                Platform.TELEGRAM: ("Telegram", "TELEGRAM_BOT_TOKEN"),
                 Platform.DISCORD: ("Discord", "DISCORD_BOT_TOKEN"),
                 Platform.SLACK: ("Slack", "SLACK_BOT_TOKEN"),
                 Platform.WHATSAPP: ("WhatsApp", "WHATSAPP_ENABLED")}
@@ -526,7 +525,6 @@ class CLIInfoMixin:
             print()
             print("  To configure the gateway:")
             print("    1. Set environment variables:")
-            print("       TELEGRAM_BOT_TOKEN=your_token")
             print("       DISCORD_BOT_TOKEN=your_token")
             print(f"    2. Or configure settings in {display_hermes_home()}/config.yaml")
             print()

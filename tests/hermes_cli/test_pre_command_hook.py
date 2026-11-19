@@ -190,7 +190,7 @@ def _make_source():
     from gateway.session import SessionSource
 
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         user_id="u1",
         chat_id="c1",
         user_name="tester",
@@ -219,7 +219,7 @@ def _session_entry():
         session_id="sess-1",
         created_at=datetime.now(),
         updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="dm",
         total_tokens=0,
     )
@@ -231,12 +231,12 @@ def _make_runner():
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="***")}
     )
     adapter = MagicMock()
     adapter.send = AsyncMock()
     adapter._pending_messages = {}
-    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.adapters = {Platform.DISCORD: adapter}
     runner.hooks = SimpleNamespace(
         emit=AsyncMock(),
         emit_collect=AsyncMock(return_value=[]),
@@ -276,8 +276,6 @@ def _make_runner():
     runner._goal_state_by_session = {}
     runner._goal_runs_in_progress = set()
     runner._goal_queued_by_session = set()
-    runner._is_telegram_topic_root_lobby = lambda _source: False
-    runner._should_send_telegram_lobby_reminder = lambda _source: False
     runner._check_slash_access = lambda _source, _command: None
     runner._begin_session_run_generation = lambda _key: 1
     runner._release_running_agent_state = (
@@ -309,7 +307,7 @@ async def test_gateway_fires_for_recognized_command(monkeypatch):
     assert captured["command"] == "queue"
     assert captured["alias_used"] == "queue"
     assert captured["args_raw"] == "do it later"
-    assert captured["platform"] == "telegram"
+    assert captured["platform"] == "discord"
     assert captured["session_key"]
 
 
