@@ -1,18 +1,9 @@
-"""Regression tests for the restored /model slash command.
+"""Regression tests for the restored /model slash command (PR #674 removed the
+surface, kept the switch machinery). Pins: registration + dispatch on the
+gateway, CLI, Discord and the relay manifest; the no-arg listing; and the
+switch commit — override set, cached agent swapped in place, a failed swap
+rolls the whole commit back."""
 
-PR #674 (e5b347e4989) removed the /model surface across the registry, gateway
-handlers, Discord registration and the relay manifest while keeping the switch
-machinery (hermes_cli/model_switch.py, session overrides, agent.switch_model).
-These tests pin the restoration contract:
-
-- /model is a registered command the gateway dispatches to a handler
-- a no-arg /model returns the current model
-- ``/model <name>`` sets the session override and calls the cached agent's
-  switch_model
-- the Discord native command list and the relay manifest expose /model
-"""
-
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -34,11 +25,7 @@ def _make_source() -> SessionSource:
 
 
 def _make_event(text: str) -> MessageEvent:
-    return MessageEvent(
-        text=text,
-        message_type=MessageType.TEXT,
-        source=_make_source(),
-    )
+    return MessageEvent(text=text, message_type=MessageType.TEXT, source=_make_source())
 
 
 def _make_runner():
@@ -47,18 +34,11 @@ def _make_runner():
     runner.config = GatewayConfig(
         platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="tok")}
     )
-    runner.adapters = {}
-    runner._voice_mode = {}
     runner._session_model_overrides = {}
     runner._pending_one_turn_model_restores = {}
     runner._pending_model_notes = {}
-    runner._running_agents = {}
-    runner._pending_messages = {}
     runner._session_db = None
-    runner._agent_cache = {}
-    runner._agent_cache_lock = None
     runner._async_session_store = AsyncMock()
-    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner._delivery_adapter_for = lambda source: None
     return runner
 
@@ -67,21 +47,18 @@ def _switch_result(**over):
     from hermes_cli.model_switch import ModelSwitchResult
 
     return ModelSwitchResult(
-        success=True,
-        new_model="new-model-x",
-        target_provider="litellm",
-        provider_changed=True,
-        api_key="sk-test",
-        base_url="https://litellm.example/v1",
-        api_mode="chat_completions",
-        provider_label="LiteLLM",
-        **over,
-    )
+        success=True, new_model="new-model-x", target_provider="litellm",
+        provider_changed=True, api_key="sk-test", base_url="https://litellm.example/v1",
+        api_mode="chat_completions", provider_label="LiteLLM", **over)
 
 
-# ---------------------------------------------------------------------------
-# Registration and dispatch
-# ---------------------------------------------------------------------------
+def _patch_config(monkeypatch, tmp_path, model="current-model-y"):
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path, raising=False)
+    monkeypatch.setattr(
+        gateway_run, "_load_gateway_config",
+        lambda config_path=None: {"model": {"default": model, "provider": "litellm"}})
 
 
 def test_model_is_a_registered_command():
@@ -89,122 +66,90 @@ def test_model_is_a_registered_command():
 
     cmd = resolve_command("model")
     assert cmd is not None and cmd.name == "model"
-    assert cmd.busy_policy == "reject"
-    assert cmd.busy_handler == "model"
+    assert cmd.busy_policy == "reject" and cmd.busy_handler == "model"
     assert not cmd.cli_only and not cmd.gateway_only
 
 
 def test_gateway_dispatches_model_to_idle_handler():
     runner = _make_runner()
     handlers = runner._gateway_idle_command_handlers()
-    assert "model" in handlers
     assert handlers["model"] == runner._handle_model_command
-    # Mid-run the command is rejected with a model-specific message, not the
-    # generic catch-all.
+    # Mid-run the command is rejected with a model-specific message, not the generic catch-all.
     assert "model" in GatewayRunner._BUSY_REJECT_TEXT
 
 
 def test_cli_resolves_model_to_a_handler():
     from cli import HermesCLI
-
     entry = HermesCLI._slash_handler("model")
     assert entry is not None
     method_name, pass_arg = entry
-    assert callable(getattr(HermesCLI, method_name))
-    assert pass_arg is True
+    assert callable(getattr(HermesCLI, method_name)) and pass_arg is True
 
 
-def test_discord_native_commands_include_model():
-    from tests.gateway.test_discord_slash_commands import _ensure_discord_mock
+@pytest.mark.parametrize("surface", ["discord", "relay"])
+def test_native_surfaces_expose_model(surface):
+    if surface == "discord":
+        from tests.gateway.test_discord_slash_commands import _ensure_discord_mock
 
-    _ensure_discord_mock()
-    from plugins.platforms.discord.adapter import _NATIVE_SLASH_COMMANDS
+        _ensure_discord_mock()
+        from plugins.platforms.discord.adapter import _NATIVE_SLASH_COMMANDS
 
-    model_rows = [row for row in _NATIVE_SLASH_COMMANDS if row[0] == "model"]
-    assert len(model_rows) == 1
-    _name, _desc, options, template, _followup = model_rows[0]
-    assert (options[0][0], template) == ("name", "/model {name}")
+        rows = [row for row in _NATIVE_SLASH_COMMANDS if row[0] == "model"]
+        assert len(rows) == 1
+        _name, _desc, options, template, _followup = rows[0]
+        assert (options[0][0], template) == ("name", "/model {name}")
+    else:
+        from gateway.relay.command_manifest import build_relay_command_manifest
 
-
-def test_relay_manifest_includes_model():
-    from gateway.relay.command_manifest import build_relay_command_manifest
-
-    rows = [c for c in build_relay_command_manifest() if c["name"] == "model"]
-    assert len(rows) == 1
-    assert rows[0]["options"][0]["name"] == "name"
-
-
-# ---------------------------------------------------------------------------
-# No-arg listing
-# ---------------------------------------------------------------------------
+        rows = [c for c in build_relay_command_manifest() if c["name"] == "model"]
+        assert len(rows) == 1
+        assert rows[0]["options"][0]["name"] == "name"
 
 
 @pytest.mark.asyncio
 async def test_no_arg_model_returns_current_model(monkeypatch, tmp_path):
-    import gateway.run as gateway_run
-
-    runner = _make_runner()
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path, raising=False)
-    monkeypatch.setattr(
-        gateway_run, "_load_gateway_config",
-        lambda config_path=None: {
-            "model": {"default": "current-model-y", "provider": "litellm"}},
-    )
+    _patch_config(monkeypatch, tmp_path)
 
     def _fake_listing(**kwargs):
-        return [
-            {"slug": "litellm", "name": "LiteLLM", "is_current": True,
-             "models": ["current-model-y", "other-model-z"], "total_models": 2},
-        ]
+        return [{"slug": "litellm", "name": "LiteLLM", "is_current": True,
+                 "models": ["current-model-y", "other-model-z"], "total_models": 2}]
 
     monkeypatch.setattr(
         "hermes_cli.model_switch_providers.list_authenticated_providers", _fake_listing)
 
-    reply = await runner._handle_model_command(_make_event("/model"))
-    assert isinstance(reply, str)
-    assert "current-model-y" in reply  # current model is shown
+    reply = await _make_runner()._handle_model_command(_make_event("/model"))
+    assert isinstance(reply, str) and "current-model-y" in reply  # current model is shown
     assert "other-model-z" in reply  # selectable models are listed
 
 
 @pytest.mark.asyncio
-async def test_model_flag_errors_are_decorated():
-    runner = _make_runner()
-    reply = await runner._handle_model_command(_make_event("/model --once --global"))
+@pytest.mark.parametrize(
+    "raw, marker",
+    [("/model --once --global", "--once"),
+     ("/model new-model-x --reasoning high", "--reasoning")],
+)
+async def test_model_flag_errors_are_rejected_with_gateway_decoration(raw, marker):
+    reply = await _make_runner()._handle_model_command(_make_event(raw))
     assert isinstance(reply, str) and reply.startswith("❌")
-    assert "--once" in reply
-
-
-# ---------------------------------------------------------------------------
-# Switching
-# ---------------------------------------------------------------------------
+    assert marker in reply
 
 
 @pytest.mark.asyncio
 async def test_model_switch_sets_override_and_swaps_cached_agent(monkeypatch, tmp_path):
-    import gateway.run as gateway_run
     import hermes_cli.model_switch as ms
+
+    _patch_config(monkeypatch, tmp_path)
+    monkeypatch.setattr(ms, "switch_model", lambda *a, **k: _switch_result())
 
     runner = _make_runner()
     source = _make_source()
     session_key = build_session_key(source)
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path, raising=False)
-    monkeypatch.setattr(
-        gateway_run, "_load_gateway_config",
-        lambda config_path=None: {
-            "model": {"default": "current-model-y", "provider": "litellm"}},
-    )
-    monkeypatch.setattr(ms, "switch_model", lambda *a, **k: _switch_result())
-    import hermes_cli.model_selection_guards as guards
-    monkeypatch.setattr(guards, "combined_selection_warning", lambda *a, **k: None)
-
     agent = MagicMock()
-    agent.switch_model = MagicMock()
     runner._cached_agent_for = lambda sk: agent if sk == session_key else None
 
     reply = await runner._handle_model_command(_make_event("/model new-model-x"))
 
     # The cached agent was swapped in place (new route forwarded).
-    assert agent.switch_model.called
     kwargs = agent.switch_model.call_args.kwargs
     assert kwargs["new_model"] == "new-model-x"
     assert kwargs["new_provider"] == "litellm"
@@ -217,19 +162,36 @@ async def test_model_switch_sets_override_and_swaps_cached_agent(monkeypatch, tm
 
 @pytest.mark.asyncio
 async def test_model_switch_failure_reports_error(monkeypatch, tmp_path):
-    import gateway.run as gateway_run
     import hermes_cli.model_switch as ms
 
-    runner = _make_runner()
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path, raising=False)
-    monkeypatch.setattr(
-        gateway_run, "_load_gateway_config",
-        lambda config_path=None: {"model": {"default": "m", "provider": "litellm"}},
-    )
+    _patch_config(monkeypatch, tmp_path, model="m")
     monkeypatch.setattr(
         ms, "switch_model",
         lambda *a, **k: ms.ModelSwitchResult(success=False, error_message="nope"))
 
+    runner = _make_runner()
     reply = await runner._handle_model_command(_make_event("/model missing-model"))
     assert isinstance(reply, str) and "nope" in reply
     assert not runner._session_model_overrides
+
+
+@pytest.mark.asyncio
+async def test_failed_agent_swap_rolls_back_and_keeps_override_out(monkeypatch, tmp_path):
+    """A cached-agent switch failure aborts the commit: no override, error mentions rollback."""
+    import hermes_cli.model_switch as ms
+
+    _patch_config(monkeypatch, tmp_path, model="m")
+    monkeypatch.setattr(ms, "switch_model", lambda *a, **k: _switch_result())
+
+    runner = _make_runner()
+    source = _make_source()
+    session_key = build_session_key(source)
+    agent = MagicMock()
+    agent.switch_model = MagicMock(side_effect=RuntimeError("provider rejected the swap"))
+    runner._cached_agent_for = lambda sk: agent if sk == session_key else None
+
+    reply = await runner._handle_model_command(_make_event("/model new-model-x"))
+
+    assert isinstance(reply, str) and "staying on" in reply
+    assert session_key not in runner._session_model_overrides
+    assert not runner._pending_model_notes

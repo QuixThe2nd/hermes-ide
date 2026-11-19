@@ -1,16 +1,9 @@
-"""Contract: the Python /model twin answers exactly like the Go core.
-
-``internal/modelcmd`` (Go) is the canonical pure logic of the /model slash
-command (argument/flag parsing, no-arg listing text, picker rows);
-``hermes_cli/modelcmd.py`` is the twin the runtime calls (parsing stays in
-``hermes_cli.model_switch.parse_model_switch_args`` — the ONE parser every
-surface shares). This test pipes every shared-table case
-(testdata/cases.json) through the RUNNING Go binary (cmd/modelcmd) when a
-Go toolchain exists and asserts the Python twin computes identical answers.
-
-Without a toolchain the table still runs against the Python twin alone, so
-a table edit can never silently diverge from the documented expectations.
-"""
+"""Contract: the Python /model twin (``hermes_cli/modelcmd.py``) answers exactly
+like the Go core (``internal/modelcmd``) on every shared-table case
+(``testdata/cases.json``): parsing, listing text, picker rows, confirmation.
+Without a Go toolchain the table still runs against the Python twin alone;
+with one, the cases are piped through the RUNNING Go binary (cmd/modelcmd) and
+must match, so the twins cannot drift."""
 
 import json
 import shutil
@@ -95,33 +88,17 @@ def test_twin_matches_running_go_core():
         assert got == _python_parse(case["raw"]), f"parse {case['raw']!r}"
     for case in table["listing"]:
         got = _go_answers({"op": "listing", **case["record"]})
-        assert got.rstrip("\n") == render_model_listing(case["record"]), (
-            f"listing {case['name']}"
-        )
+        assert got.rstrip("\n") == render_model_listing(case["record"]), f"listing {case['name']}"
     for case in table["picker"]:
-        got = json.loads(
-            _go_answers(
-                {
-                    "op": "picker",
-                    "providers": case["providers"],
-                    "current_provider": case["current_provider"],
-                    "max_providers": case["max_providers"],
-                    "max_models": case["max_models"],
-                }
-            )
-        )
+        req = {k: case[k] for k in ("providers", "current_provider", "max_providers", "max_models")}
+        got = json.loads(_go_answers({"op": "picker", **req}))
         want = build_picker_rows(
-            case["providers"],
-            current_provider=case["current_provider"],
-            max_providers=case["max_providers"],
-            max_models=case["max_models"],
-        )
+            case["providers"], current_provider=case["current_provider"],
+            max_providers=case["max_providers"], max_models=case["max_models"])
         assert got == want, f"picker {case['name']}: go={got!r} python={want!r}"
     for case in table["confirmation"]:
         got = _go_answers({"op": "confirmation", **case["record"]})
-        assert got.rstrip("\n") == render_confirmation(case["record"]), (
-            f"confirmation {case['name']}"
-        )
+        assert got.rstrip("\n") == render_confirmation(case["record"]), f"confirmation {case['name']}"
     # The CLI flavor preset must render through Go too — it feeds the same op.
     rec = {"model": "kimi-k2", "provider": "Moonshot", "scope": "session",
            "labels": CLI_CONFIRM_LABELS}
