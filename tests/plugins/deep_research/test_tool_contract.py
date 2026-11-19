@@ -376,19 +376,38 @@ class TestCheckFn:
         assert tool.availability_error() is None
         assert tool.check_requirements() is True
 
-    def test_hidden_when_profile_missing(self, tmp_path: Path, monkeypatch) -> None:
-        home = tmp_path / "bare-home"
+    def test_visible_when_worker_profile_is_missing(self, tmp_path: Path, monkeypatch) -> None:
+        """Fresh install: no researcher profile yet — the tool stays visible."""
+        home = tmp_path / "fresh-home"
         home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(home))
-        error = tool.availability_error()
-        assert error is not None and "researcher" in error
-        assert tool.check_requirements() is False
+        assert tool.availability_error() is None
+        assert tool.check_requirements() is True
 
-    def test_hidden_when_disabled_in_config(self, profile_home: Path) -> None:
-        (profile_home / "config.yaml").write_text(
+    def test_registry_check_fn_admits_the_tool_on_a_fresh_home(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The registry's own check_fn (what hides tools from the model) admits it."""
+        home = tmp_path / "fresh-home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        from hermes_cli.plugins import _ensure_plugins_discovered
+        from tools.registry import registry
+
+        _ensure_plugins_discovered()
+        entry = registry.get_entry("delegate_research")
+        assert entry is not None and entry.check_fn is not None
+        assert entry.check_fn() is True
+
+    def test_visible_when_stale_config_sets_enabled_false(self, tmp_path: Path, monkeypatch) -> None:
+        """``deep_research.enabled`` no longer exists; a stale ``false`` must not hide the tool."""
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / "config.yaml").write_text(
             "deep_research:\n  enabled: false\n", encoding="utf-8"
         )
-        assert tool.check_requirements() is False
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        assert tool.check_requirements() is True
 
     def test_hidden_inside_a_research_worker(self, profile_home: Path, monkeypatch) -> None:
         monkeypatch.setenv("HERMES_RESEARCH_JOB", "rj_0123456789ab")
@@ -398,6 +417,141 @@ class TestCheckFn:
     def test_hidden_when_hermes_bin_is_broken(self, profile_home: Path, monkeypatch) -> None:
         monkeypatch.setenv("HERMES_BIN", "/nonexistent/hermes-wrapper")
         assert tool.check_requirements() is False
+
+
+class TestWorkerProfileAutoProvision:
+    """A missing worker profile is provisioned on demand; the tool stays visible either way."""
+
+    def test_start_clones_the_active_profile_config(
+        self, tmp_path: Path, monkeypatch, launcher_stub
+    ) -> None:
+        # ``launcher_stub`` already made ``tmp_path/home`` (with the researcher
+        # profile); this test needs a bare home without it.
+        home = tmp_path / "bare-home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        created: list[dict] = []
+
+        def _create_profile(name, **kwargs):
+            created.append({"name": name, **kwargs})
+            profile = home / "profiles" / name
+            profile.mkdir(parents=True, exist_ok=True)
+            (profile / "config.yaml").touch()
+            return profile
+
+        monkeypatch.setattr("hermes_cli.profiles.create_profile", _create_profile)
+        result = _start(launcher_stub)
+        assert result["ok"] is True and result["job_id"].startswith("rj_")
+        assert [call["name"] for call in created] == ["researcher"]
+        assert created[0]["clone_config"] is True
+
+    def test_existing_worker_profile_is_never_recreated(
+        self, profile_home: Path, monkeypatch, launcher_stub
+    ) -> None:
+        def _fail(name, **kwargs):
+            raise AssertionError("an existing worker profile must not be re-created")
+
+        monkeypatch.setattr("hermes_cli.profiles.create_profile", _fail)
+        assert _start(launcher_stub)["ok"] is True
+
+    def test_start_reports_a_clear_error_when_provisioning_fails(
+        self, tmp_path: Path, monkeypatch, launcher_stub
+    ) -> None:
+        home = tmp_path / "bare-home"  # launcher_stub's fixture home already exists
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        def _boom(name, **kwargs):
+            raise OSError("profiles root is read-only")
+
+        monkeypatch.setattr("hermes_cli.profiles.create_profile", _boom)
+        result = _start(launcher_stub)
+        assert result["ok"] is False
+        assert result["error"] == "worker_profile_provision_failed"
+        assert "researcher" in result["message"]
+        assert launcher_stub == []  # no runner was spawned
+        assert tool.check_requirements() is True  # the tool stays visible
+
+    def test_ensure_worker_profile_clones_via_the_real_profile_code(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """No mocks: the real ``create_profile`` path provisions from the active home."""
+        import yaml
+
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "model:\n  provider: openai\n  name: gpt-x\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        from plugins.deep_research import provision
+
+        provision.ensure_worker_profile("researcher")
+
+        from hermes_cli.profiles import profile_exists
+
+        assert profile_exists("researcher") is True
+        cloned = yaml.safe_load((home / "profiles" / "researcher" / "config.yaml").read_text(encoding="utf-8"))
+        assert cloned["model"]["provider"] == "openai"
+
+    def test_lost_creation_race_counts_as_provisioned(self, tmp_path: Path, monkeypatch) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        def _race(name, **kwargs):
+            raise FileExistsError(f"profile '{name}' already exists")
+
+        monkeypatch.setattr("hermes_cli.profiles.create_profile", _race)
+        from plugins.deep_research import provision
+
+        provision.ensure_worker_profile("researcher")  # must not raise
+
+
+class TestGatewayStartHook:
+    def test_gateway_start_provisions_then_watches(self, tmp_path: Path, monkeypatch) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        events: list[str] = []
+        monkeypatch.setattr(
+            "plugins.deep_research.notify.start_gateway_watcher",
+            lambda **kw: events.append("watcher") or True,
+        )
+
+        def _create_profile(name, **kwargs):
+            events.append("provision")
+            profile = home / "profiles" / name
+            profile.mkdir(parents=True, exist_ok=True)
+            (profile / "config.yaml").touch()
+            return profile
+
+        monkeypatch.setattr("hermes_cli.profiles.create_profile", _create_profile)
+        from plugins.deep_research import _on_gateway_start
+
+        _on_gateway_start()
+        assert events == ["provision", "watcher"]
+
+    def test_gateway_start_keeps_watching_when_provisioning_fails(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        watched: list[bool] = []
+        monkeypatch.setattr(
+            "plugins.deep_research.notify.start_gateway_watcher",
+            lambda **kw: watched.append(True) or True,
+        )
+
+        def _boom(name, **kwargs):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr("hermes_cli.profiles.create_profile", _boom)
+        from plugins.deep_research import _on_gateway_start
+
+        _on_gateway_start()  # must not raise
+        assert watched == [True]
 
 
 class TestRealRegistration:
