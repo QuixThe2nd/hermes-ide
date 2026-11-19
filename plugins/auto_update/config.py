@@ -80,6 +80,7 @@ def load_auto_update_config(raw: Mapping[str, Any] | None = None) -> dict[str, A
 
     return {
         "enabled": _coerce_bool(raw.get("enabled"), True),
+        "systemd_takeover": _coerce_bool(raw.get("systemd_takeover"), False),
         "idle_minutes": _coerce_int(
             raw.get("idle_minutes"), DEFAULT_IDLE_MINUTES, minimum=1
         ),
