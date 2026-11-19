@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from agent.model_metadata import estimate_tokens_rough
-from hermes_cli._subprocess_compat import IS_WINDOWS, harden_git_argv, noninteractive_git_env, windows_hide_flags
+from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
 from hermes_cli.sizefmt import format_bytes
 
 # ── Plugin context-reference provider API ────────────────────────────────────
@@ -303,10 +303,9 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
 
 
 def _run_quiet(cmd: list[str], cwd: Path, timeout: int, env: dict | None = None) -> subprocess.CompletedProcess:
-    """subprocess.run with captured text output, no stdin, and no console flash on Windows."""
-    popen_kwargs: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
+    """subprocess.run with captured text output and no stdin."""
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding='utf-8', errors='replace',
-                          timeout=timeout, stdin=subprocess.DEVNULL, **popen_kwargs, **({} if env is None else {"env": env}))
+                          timeout=timeout, stdin=subprocess.DEVNULL, **({} if env is None else {"env": env}))
 
 
 def _expand_git_reference(ref: ContextReference, cwd: Path, args: list[str], label: str) -> Expansion:

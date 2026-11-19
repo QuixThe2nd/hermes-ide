@@ -10,7 +10,6 @@ from urllib.parse import quote
 
 import httpx
 
-from hermes_cli._subprocess_compat import windows_hide_flags
 from agent.retry_utils import parse_retry_after_seconds
 from tools.skills_guard import TRUSTED_REPOS
 from tools.skills_hub_models import (
@@ -116,7 +115,7 @@ class GitHubAuth:
         try:
             result = subprocess.run(
                 ["gh", "auth", "token"], capture_output=True, text=True, encoding='utf-8', errors='replace',
-                timeout=5, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags(),
+                timeout=5, stdin=subprocess.DEVNULL,
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()

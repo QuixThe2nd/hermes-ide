@@ -12,7 +12,7 @@ from hermes_cli.cli_output import (
     print_warning as _print_warning)
 from hermes_cli.config import get_env_value
 from hermes_cli.tools_config_cua import (
-    _cua_driver_install_ready, _pip_install, _post_setup_no_window_flags, _run_text, install_cua_driver,
+    _cua_driver_install_ready, _pip_install, _run_text, install_cua_driver,
 )
 
 logger = logging.getLogger("hermes_cli.tools_config")
@@ -39,7 +39,7 @@ def _post_setup_camofox() -> None:
         _print_info("    Installing Camofox browser server...")
         # Absolute npm path so the .cmd shim executes on Windows; --workspaces=false avoids resolving apps/desktop.
         result = _run_text([_npm_bin, "install", "--silent", "--workspaces=false"], timeout=None,
-                           cwd=str(PROJECT_ROOT), creationflags=_post_setup_no_window_flags())
+                           cwd=str(PROJECT_ROOT))
         if result.returncode == 0:
             _print_success("    Camofox installed")
         else:

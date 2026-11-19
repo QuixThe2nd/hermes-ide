@@ -21,13 +21,11 @@ import time
 import uuid
 from pathlib import Path
 
-_IS_WINDOWS = platform.system() == "Windows"
 # systemd transient scopes exist only on Linux; gate every scope-path branch on this
 # (not merely "not Windows") so macOS and other POSIX platforms never touch systemd.
 # See #70716.
 _IS_LINUX = platform.system() == "Linux"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
-from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, NamedTuple, Optional
 
@@ -162,7 +160,7 @@ def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:
 
 def _default_user_runtime_dir() -> Path:
     """``/run/user/<uid>``; a function so tests can point it at a temp dir with a real socket."""
-    return Path(f"/run/user/{os.getuid()}")  # windows-footgun: ok — only reached behind the _IS_LINUX gate in systemd_user_bus_env
+    return Path(f"/run/user/{os.getuid()}")
 
 
 def _secure_user_runtime_dir(path: Path) -> bool:
@@ -172,7 +170,7 @@ def _secure_user_runtime_dir(path: Path) -> bool:
         return (
             path.is_absolute()
             and stat.S_ISDIR(metadata.st_mode)
-            and metadata.st_uid == os.getuid()  # windows-footgun: ok — only reached behind the _IS_LINUX gate in systemd_user_bus_env
+            and metadata.st_uid == os.getuid()
             and metadata.st_mode & 0o022 == 0
         )
     except OSError:
@@ -208,7 +206,7 @@ def systemd_user_bus_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
         bus_metadata = bus_path.lstat()
     except OSError:
         return env
-    if not stat.S_ISSOCK(bus_metadata.st_mode) or bus_metadata.st_uid != os.getuid():  # windows-footgun: ok — behind the _IS_LINUX gate above
+    if not stat.S_ISSOCK(bus_metadata.st_mode) or bus_metadata.st_uid != os.getuid():
         return env
 
     env["XDG_RUNTIME_DIR"] = str(runtime_dir)
@@ -427,7 +425,7 @@ def restart_safe_gateway_child_argv(
     if not _systemd_run_user_scope_available():
         return _degrade(
             "systemd-run --user --scope is unavailable (usually no reachable user D-Bus session at "
-            f"/run/user/{os.getuid()}/bus). On a system-level service install, run "  # windows-footgun: ok — behind the _IS_LINUX return above
+            f"/run/user/{os.getuid()}/bus). On a system-level service install, run "
             "`sudo loginctl enable-linger <gateway-user>` and restart the gateway."
         )
     scoped = _build_systemd_scope_argv(command, unit_suffix=unit_suffix)
@@ -898,15 +896,6 @@ class ProcessRegistry(ProcessCheckpointMixin):
         def _sigterm_quietly():
             with suppress(OSError, ProcessLookupError, PermissionError):
                 os.kill(pid, signal.SIGTERM)
-        if _IS_WINDOWS:
-            try:
-                subprocess.run(
-                    ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True,
-                    encoding='utf-8', errors='replace', timeout=10, creationflags=windows_hide_flags(),
-                    stdin=subprocess.DEVNULL)
-            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-                _sigterm_quietly()
-            return
         import psutil
         gone = (psutil.NoSuchProcess, psutil.AccessDenied, OSError)
         try:
@@ -1040,10 +1029,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         """PTY spawn for interactive CLI tools (Codex, Claude Code, REPLs).
         Raises ImportError when no PTY backend is installed and re-raises any spawn
         failure; ``spawn_local`` falls back to pipe mode in both cases."""
-        if _IS_WINDOWS:
-            from winpty import PtyProcess as _PtyProcessCls
-        else:
-            from ptyprocess import PtyProcess as _PtyProcessCls
+        from ptyprocess import PtyProcess as _PtyProcessCls
         pty_argv = self._scope_argv(session, safe_command, session.id, "PTY")
         pty_env = self._spawn_env(env_vars)
         if session.systemd_unit:
@@ -1063,7 +1049,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         self, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
         env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "") -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends use
-        spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
+        spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess
         for interactive CLIs, falling back to a plain pipe when unavailable or failing."""
         # Bash parses ``A && B &`` as ``(A && B) &`` — a subshell that holds our stdout
         # pipe open forever when B is a long-running server. The rewriter turns it into
@@ -1090,7 +1076,6 @@ class ProcessRegistry(ProcessCheckpointMixin):
                         ) from e
                     session.systemd_unit = ""
         # Pipe path (non-PTY or PTY fallback).
-        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
         unit_suffix = f"{session.id}-pipe-fallback" if pty_scope_attempted else session.id
         spawn_argv = self._scope_argv(session, safe_command, unit_suffix, "Local")
         spawn_env = self._spawn_env(env_vars)
@@ -1104,7 +1089,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         proc = subprocess.Popen(
             spawn_argv, text=True, cwd=session.cwd, env=spawn_env, encoding="utf-8",
             errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-            start_new_session=True, **_popen_kwargs)
+            start_new_session=True)
         session.process = proc
         session.pid = proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
@@ -1127,14 +1112,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 # own session. Stop the scope (kills every process in the worker cgroup), then terminate the
                 # systemd-run wrapper PID as fallback.
                 self._terminate_host_pid(proc.pid, session.host_start_time)
-            elif not _IS_WINDOWS:
+            else:
                 try:
                     kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
-                    os.killpg(os.getpgid(proc.pid), kill_signal)  # windows-footgun: ok - guarded by _IS_WINDOWS above
+                    os.killpg(os.getpgid(proc.pid), kill_signal)
                 except (ProcessLookupError, PermissionError, OSError):
                     proc.kill()
-            else:
-                proc.kill()
         with suppress(Exception):
             proc.wait(timeout=5)
 
@@ -1240,7 +1223,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # select() needs a real OS fd; mocked streams (tests, adapters) may lack
             # fileno() and use the blocking read instead.
             try:
-                fd = stdout.fileno() if raw_read is not None and not _IS_WINDOWS else None
+                fd = stdout.fileno() if raw_read is not None else None
             except Exception:
                 fd = None
             if not (isinstance(fd, int) and fd >= 0):
@@ -1398,18 +1381,15 @@ class ProcessRegistry(ProcessCheckpointMixin):
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         # Programs in a PTY can block waiting for replies to device-status / window-size /
         # cursor-position / DEC private-mode queries. Answer the bounded set and strip the
-        # queries from captured output. POSIX only: Windows ConPTY is a real console host that
-        # answers itself (and pywinpty yields str chunks, not bytes).
-        responder = None
-        if not _IS_WINDOWS:
-            from tools.pty_query_responder import PtyQueryResponder
-            responder = PtyQueryResponder(rows=30, cols=120)
+        # queries from captured output."""
+        from tools.pty_query_responder import PtyQueryResponder
+        responder = PtyQueryResponder(rows=30, cols=120)
         try:
             while pty.isalive():
                 try:
                     chunk = pty.read(4096)
                     if chunk:
-                        # ptyprocess returns bytes; pywinpty returns str
+                        # ptyprocess returns bytes
                         if responder is not None and isinstance(chunk, bytes):
                             chunk, replies = responder.process(chunk)
                             if replies:
@@ -1515,7 +1495,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     with suppress(OSError, ValueError):  # a stdin flush can hit EPIPE
                         stream.close()
         if session._pty is not None:
-            # ptyprocess/pywinpty close() is idempotent (``closed`` flag) and
+            # ptyprocess close() is idempotent (``closed`` flag) and
             # closes the master fd exactly once; it raises only if the child
             # ignores SIGKILL, which we don't want to surface on the finish path.
             with suppress(Exception):
@@ -1776,7 +1756,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             return  # Direct child still running — reader block is legitimate.
         # Best-effort non-blocking drain of whatever the reader hasn't consumed.
         stdout = getattr(proc, "stdout", None)
-        if stdout is not None and not _IS_WINDOWS:
+        if stdout is not None:
             try:
                 import fcntl
                 fd = stdout.fileno()
@@ -2072,13 +2052,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
         """Send raw data to a running process's stdin (no newline appended)."""
 
         def via_pty(pty):
-            # pywinpty expects str on Windows; ptyprocess expects bytes on POSIX.
-            if _IS_WINDOWS:
-                pty.write(data.decode("utf-8") if isinstance(data, bytes) else str(data))
-            else:
-                # surrogateescape: a PTY is a byte stream — round-trip the original
-                # bytes instead of crashing on surrogate content.
-                pty.write(data.encode("utf-8", "surrogateescape") if isinstance(data, str) else data)
+            # surrogateescape: a PTY is a byte stream — round-trip the original
+            # bytes instead of crashing on surrogate content.
+            pty.write(data.encode("utf-8", "surrogateescape") if isinstance(data, str) else data)
 
         def via_pipe(stdin):
             stdin.write(data)
@@ -2086,13 +2062,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
         return self._stdin_op(session_id, via_pty, via_pipe, {"status": "ok", "bytes_written": len(data)})
 
     def submit_stdin(self, session_id: str, data: str = "") -> dict:
-        """Send data + newline to stdin (like pressing Enter).
-        On a Windows PTY, Enter is a carriage return: ConPTY treats ``\\r`` as
-        end-of-line and a bare ``\\n`` through pywinpty is NOT a line terminator — the
-        child's blocking line read (``readline()``, Go ``bufio.Scanner``) never returns
-        and the process hangs looking healthy. ``\\r\\n`` gives it both; POSIX keeps ``\\n``."""
-        session = self.get(session_id)
-        return self.write_stdin(session_id, data + ("\r\n" if _IS_WINDOWS and session and session._pty else "\n"))
+        """Send data + newline to stdin (like pressing Enter)."""
+        return self.write_stdin(session_id, data + "\n")
 
     def request_close_terminal(self, session_id: str) -> dict:
         """Ask the desktop GUI to close this process's read-only terminal tab. Does NOT

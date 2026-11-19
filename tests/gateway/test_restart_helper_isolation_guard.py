@@ -1,12 +1,11 @@
 """Detached restart/gateway spawns are fenced off under HERMES_TEST_ISOLATION.
 
 The hermetic conftest exports ``HERMES_TEST_ISOLATION`` to mark the whole
-process tree as a test run. The three detached launchers — the gateway's
-restart watcher (``GatewayRunner._launch_detached_restart_watcher``), the
-macOS launchd fallback (``hermes_cli.gateway._spawn_detached_gateway``), and
-the Windows hidden-console spawn (``hermes_cli.gateway_windows._spawn_detached``)
+process tree as a test run. The detached launchers — the gateway's
+restart watcher (``GatewayRunner._launch_detached_restart_watcher``) and the
+macOS launchd fallback (``hermes_cli.gateway._spawn_detached_gateway``)
 — each leave behind a process that outlives their caller, so one that fires
-inside a test escapes the sandbox and leaks past the session. All three
+inside a test escapes the sandbox and leaks past the session. Both
 consult ``gateway.restart.detached_restart_spawn_blocked`` before any latch
 or spawn and no-op with a warning instead.
 """
@@ -109,19 +108,6 @@ def test_cli_detached_gateway_never_spawns_under_isolation(monkeypatch, caplog):
     assert _warned_about_isolation(caplog)
 
 
-def test_windows_detached_spawn_never_spawns_under_isolation(monkeypatch, caplog):
-    from hermes_cli import gateway_windows
-
-    monkeypatch.setenv("HERMES_TEST_ISOLATION", "/tmp/pytest-isolation-root")
-    popen = _no_spawn_popen(monkeypatch)
-
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.gateway_windows"):
-        # 0 = "no PID spawned", and on POSIX the call must not even reach
-        # the _assert_windows() platform guard that follows the guard.
-        assert gateway_windows._spawn_detached() == 0
-
-    popen.assert_not_called()
-    assert _warned_about_isolation(caplog)
 
 
 # --- negative controls: the marker is what blocks, nothing else ----------
@@ -136,18 +122,3 @@ def test_cli_detached_gateway_spawns_again_once_marker_is_gone(monkeypatch):
     assert popen.call_count == 1
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX-only: probes the platform guard"
-)
-def test_windows_detached_spawn_reaches_platform_guard_without_marker(monkeypatch):
-    from hermes_cli import gateway_windows
-
-    monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
-    popen = _no_spawn_popen(monkeypatch)
-
-    # Past the isolation guard, the next statement on POSIX is the Windows
-    # platform assertion — proving the spawn path is genuinely reachable
-    # and the marker is the only thing that stopped it.
-    with pytest.raises(RuntimeError, match="Windows-only"):
-        gateway_windows._spawn_detached()
-    popen.assert_not_called()

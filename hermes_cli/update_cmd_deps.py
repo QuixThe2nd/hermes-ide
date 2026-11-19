@@ -87,7 +87,7 @@ def _critical_module_import_failures(
         with suppress(Exception):
             from hermes_cli import runtime_paths
             venv_dir = runtime_paths.selected_venv(Path(root))
-            venv_python = venv_python_path(venv_dir, windows=_m()._is_windows())
+            venv_python = venv_python_path(venv_dir)
             if venv_python.exists():
                 interpreter = str(venv_python)
         result = bounded_probe_run(
@@ -484,7 +484,7 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
         # An unreadable/invalid committed selection is a KNOWN-unhealthy state (the repair
         # flow below re-syncs and re-commits); never raise.
         return False, str(exc)
-    venv_python = venv_python_path(venv_dir, windows=_m()._is_windows())
+    venv_python = venv_python_path(venv_dir)
     if not venv_python.exists():
         # No venv: normal for a dev checkout (healthy), but on a MANAGED install (bootstrap
         # stamp or `.update-incomplete`) the venv IS the install — absence means an interrupted repair.
@@ -530,7 +530,7 @@ def _venv_dependency_set_stale() -> tuple[bool, str]:
     from hermes_cli.update_cmd import _m, _read_project_version
     expected = _read_project_version()
     venv_dir = project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv"
-    venv_python = venv_python_path(venv_dir, windows=_m()._is_windows())
+    venv_python = venv_python_path(venv_dir)
     if not expected or not venv_python.exists():
         return False, ""
     try:
@@ -577,8 +577,8 @@ def _venv_foreign_owned_paths(venv_root, limit: int = 5) -> list:
     from hermes_cli.update_cmd import _path_uid
     try:
         if not hasattr(os, "geteuid"):
-            return []  # windows-footgun: ok — POSIX ownership concept only
-        euid = os.geteuid()  # windows-footgun: ok — guarded by hasattr above
+            return []
+        euid = os.geteuid()
         if euid == 0:
             return []  # root can rewrite anything; nothing to refuse
 
@@ -652,7 +652,7 @@ def _refuse_update_if_venv_foreign_owned(project_root) -> None:
 
 def _sync_python_dependencies_after_pull(
     git_cmd, branch, pre_pull_sha, *, active_lazy_features, active_tool_dependencies,
-    _windows_gateway_resume, deferred_defects=None):
+    deferred_defects=None):
     """Reinstall Python deps for the pulled checkout in the post-swap interpreter.
     Ownership preflight and the transactional pm sync run before the bytecode
     sweep and feature/plugin repair; deferred defects are reported by the caller."""

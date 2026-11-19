@@ -19,8 +19,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli._subprocess_compat import windows_hide_flags
-
 logger = logging.getLogger(__name__)
 
 _NAME_RE = r"[A-Za-z0-9_][A-Za-z0-9_.\-]*"
@@ -230,7 +228,6 @@ def _run_installer(command: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(
         command,
         **_SUBPROCESS_KW,
-        creationflags=windows_hide_flags(),
         **kwargs,
     )
 

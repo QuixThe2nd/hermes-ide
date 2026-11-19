@@ -211,7 +211,6 @@ class TestProviderEnvBlocklist:
             "FIRECRAWL_API_KEY": "fc-secret",
             "HERMES_DASHBOARD_SESSION_TOKEN": "dashboard-session-secret",
             "CAMOFOX_API_KEY": "camofox-secret",
-            "ELEVENLABS_API_KEY": "el-secret",
             "GITHUB_TOKEN": "ghp_secret",
             "GH_TOKEN": "gh_alias_secret",
             "GATEWAY_ALLOW_ALL_USERS": "true",
@@ -867,10 +866,9 @@ class TestPythonpathSelectiveStrip:
         assert "/home/user/my-lib" in entries
 
     def test_configured_home_alias_matches_launcher_output(self, tmp_path, monkeypatch):
-        """The real producer spelling is derived and consumed end to end."""
+        """The launcher spelling is derived and consumed end to end."""
         import tools.environments.local as local
         from tools.environments import local_pythonpath
-        from hermes_cli.gateway_windows import _preserve_hermes_home_path
 
         physical_home = tmp_path / "physical-home"
         physical_root = _physical_repo_root(tmp_path)
@@ -881,14 +879,15 @@ class TestPythonpathSelectiveStrip:
             pytest.skip(f"directory link unavailable on this host: {exc}")
         monkeypatch.setenv("HERMES_HOME", str(configured_home))
 
-        launcher_entry = Path(_preserve_hermes_home_path(physical_root))
+        # Launcher contract: a child spawned under the configured home carries the
+        # home-relative repo-root spelling in PYTHONPATH.
+        launcher_entry = configured_home / "hermes-agent"
         aliases = local_pythonpath._build_hermes_repo_root_aliases(
             physical_root.resolve(),
             physical_root,
             configured_home,
         )
 
-        assert launcher_entry == configured_home / "hermes-agent"
         assert launcher_entry in aliases
 
         monkeypatch.setattr(local, "_hermes_repo_root_aliases", aliases)
@@ -1370,18 +1369,12 @@ class TestSanePathIncludesHomebrew:
         assert "/opt/homebrew/bin" in _SANE_PATH
 
 
-    def test_make_run_env_appends_homebrew_on_minimal_path(self, monkeypatch):
+    def test_make_run_env_appends_homebrew_on_minimal_path(self):
         """When PATH is minimal, _make_run_env appends missing sane entries.
 
-        POSIX: the sane-path merge appends the Homebrew dirs.  Windows:
-        _append_missing_sane_path_entries is a documented passthrough (the
-        native PATH must not be touched), so the assertion is the unchanged
-        input.  Git Bash dir prepending is neutralised so the merged PATH
-        layout is deterministic on every host.
+        The sane-path merge appends the Homebrew dirs after the input PATH.
         """
-        from tools.environments import local as local_mod
         from tools.environments.local import _SANE_PATH, _make_run_env
-        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", lambda: [])
         minimal_env = {"PATH": "/some/custom/bin"}
         if hh := os.environ.get("HERMES_HOME"):
             minimal_env = {**minimal_env, "HERMES_HOME": hh}
@@ -1389,11 +1382,8 @@ class TestSanePathIncludesHomebrew:
             result = _make_run_env({})
         path_entries = result["PATH"].split(os.pathsep)
         assert path_entries[0] == "/some/custom/bin"
-        if sys.platform == "win32":
-            assert result["PATH"] == "/some/custom/bin"
-        else:
-            for entry in _SANE_PATH.split(os.pathsep):
-                assert entry in path_entries
+        for entry in _SANE_PATH.split(os.pathsep):
+            assert entry in path_entries
 
 
     @pytest.mark.platforms("macos")

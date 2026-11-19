@@ -113,14 +113,9 @@ class CodexAppServerClient:
         # Codex emits tracing to stderr; default WARN keeps it quiet for users.
         spawn_env.setdefault("RUST_LOG", "warn")
 
-        # Hide the console the codex child would otherwise flash on Windows (#56747).
-        # Hide-only — stdio pipes stay intact for the app-server wire.
-        # See #56747.
-        from hermes_cli._subprocess_compat import windows_hide_flags
-
         self._proc = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            bufsize=0, env=spawn_env, creationflags=windows_hide_flags(),
+            bufsize=0, env=spawn_env,
         )
         self._next_id = 1
         self._pending: dict[int, queue.Queue] = {}  # request id -> single-slot reply queue

@@ -23,21 +23,14 @@ from typing import Any, Callable, NamedTuple, Optional
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
 from utils import atomic_json_write
 
-if sys.platform == "win32":
-    import msvcrt
-else:
-    import fcntl
+import fcntl
 
 _GATEWAY_KIND = "hermes-gateway"
 _RUNTIME_STATUS_FILE = "gateway_state.json"
 _LOCKS_DIRNAME = "gateway-locks"
-_IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
 _gateway_lock_handle = None
-# Windows byte-range locks are mandatory for other readers: lock a byte well past
-# the JSON payload so status/PID readers can read while another process holds it.
-_WINDOWS_LOCK_OFFSET = 1024 * 1024
 _GATEWAY_RUNNING_PID_CACHE_TTL_SECONDS = 1.0
 _gateway_running_pid_cache_lock = threading.Lock()
 # key: (pid_path, cleanup_stale, include_runtime_status) -> (cached_at, file signature, pid)
@@ -239,15 +232,12 @@ def retained_gateway_state(runtime: Any) -> str:
 def terminate_pid(
     pid: int, *, force: bool = False, expected_start_time: Optional[float] = None
 ) -> None:
-    """Terminate a PID; POSIX SIGTERM/SIGKILL, Windows taskkill /T /F for force. Identity guard:
-    Windows ``force`` REQUIRES a matching ``expected_start_time`` (taskkill on a recycled PID has
-    killed svchost.exe); POSIX optional, but a provided mismatch refuses the kill everywhere.
-
-    On POSIX an expectation is optional, but when the caller provides one and it no longer matches the live
-    process, the kill is refused on every platform — a mismatched fingerprint always means the PID was
-    recycled. See #89614.
+    """Terminate a PID: SIGTERM, or SIGKILL with ``force``. Identity guard: a ``force`` kill
+    REQUIRES a matching ``expected_start_time`` (a recycled PID must never be signalled; see
+    #89614), and a provided mismatch refuses the kill — a mismatched fingerprint always means
+    the PID was recycled.
     """
-    if force and (_IS_WINDOWS or expected_start_time is not None):
+    if force:
         if expected_start_time is None:
             raise OSError(f"refusing to force-kill PID {pid} without a process start-time guard")
         current_start_time = _get_process_start_time(pid)
@@ -258,23 +248,7 @@ def terminate_pid(
                 raise OSError(f"refusing to force-kill PID {pid}; process identity changed")
         except (TypeError, ValueError) as exc:
             raise OSError(f"refusing to force-kill PID {pid}; malformed start time") from exc
-    if not (force and _IS_WINDOWS):
-        os.kill(pid, signal.SIGTERM if not force else getattr(signal, "SIGKILL", signal.SIGTERM))
-        return
-    # Hide flags: a bare taskkill spawn from windowless pythonw.exe would flash a conhost window.
-    from hermes_cli._subprocess_compat import windows_hide_flags
-
-    try:
-        result = subprocess.run(
-            ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=10, creationflags=windows_hide_flags(),
-        )
-    except FileNotFoundError:
-        os.kill(pid, signal.SIGTERM)
-        return
-    if result.returncode != 0:
-        details = (result.stderr or result.stdout or "").strip()
-        raise OSError(details or f"taskkill failed for PID {pid}")
+    os.kill(pid, signal.SIGTERM if not force else getattr(signal, "SIGKILL", signal.SIGTERM))
 
 
 def _start_times_agree(current: Any, *recorded: Any) -> bool:
@@ -296,7 +270,7 @@ def _get_process_start_time(pid: int) -> Optional[int]:
     on Linux, else psutil ``create_time()`` in centiseconds. Units differ per platform; the guard
     only compares same-host values."""
     with contextlib.suppress(IndexError, ValueError, OSError):
-        return int(Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21])  # windows-footgun: ok (/proc is BOM-free)
+        return int(Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21])
     try:
         import psutil  # type: ignore
         return int(round(psutil.Process(pid).create_time() * 100))
@@ -310,19 +284,18 @@ def get_process_start_time(pid: int) -> Optional[int]:
 
 
 def _read_process_cmdline(pid: int) -> Optional[str]:
-    """Process command line as one string: /proc, then ``ps``, then psutil (Windows)."""
+    """Process command line as one string: /proc, then ``ps``, then psutil."""
     with contextlib.suppress(OSError):
         raw = Path(f"/proc/{pid}/cmdline").read_bytes()
         if raw:
             return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
-    if not _IS_WINDOWS:
-        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
-            result = subprocess.run(
-                ["ps", "-p", str(pid), "-o", "command="],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip()
+    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
     with contextlib.suppress(Exception):
         import psutil  # type: ignore
         cmdline_parts = psutil.Process(pid).cmdline()
@@ -584,15 +557,7 @@ def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
 
 def _try_acquire_file_lock(handle) -> bool:
     try:
-        if _IS_WINDOWS:
-            handle.seek(0, os.SEEK_END)
-            if handle.tell() == 0:
-                handle.write("\n")
-                handle.flush()
-            handle.seek(_WINDOWS_LOCK_OFFSET)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         return True
     except (BlockingIOError, OSError):
         return False
@@ -625,12 +590,10 @@ def _pid_exists(pid: int) -> bool:
         return bool(psutil.pid_exists(pid))
     except ImportError:
         pass  # Fall through to stdlib fallback.
-    if _IS_WINDOWS:
-        return _pid_exists_win32_ctypes(pid)
     if _posix_is_zombie(pid):  # a zombie still answers os.kill(pid, 0)
         return False
     try:
-        os.kill(pid, 0)  # windows-footgun: ok — POSIX-only branch (the whole point of _pid_exists)
+        os.kill(pid, 0)
     except PermissionError:
         return True  # Exists but we can't signal it.
     except OSError:  # ProcessLookupError included
@@ -641,7 +604,7 @@ def _pid_exists(pid: int) -> bool:
 def _posix_is_zombie(pid: int) -> bool:
     """Zombie via ``/proc/<pid>/stat`` field 3, or ``ps -o state=`` without /proc (macOS/BSD)."""
     try:
-        stat_fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()  # windows-footgun: ok (/proc is BOM-free)
+        stat_fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()
         return len(stat_fields) > 2 and stat_fields[2] == "Z"
     except FileNotFoundError:
         with contextlib.suppress(Exception):
@@ -662,38 +625,10 @@ def _posix_is_zombie(pid: int) -> bool:
     return False
 
 
-def _pid_exists_win32_ctypes(pid: int) -> bool:
-    """psutil-free Windows liveness probe via OpenProcess/WaitForSingleObject."""
-    try:
-        import ctypes
-        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-        # Pin restypes: default c_int mangles WAIT_* DWORDs into negatives.
-        kernel32.OpenProcess.restype = ctypes.c_void_p
-        kernel32.WaitForSingleObject.restype = ctypes.c_uint
-        kernel32.GetLastError.restype = ctypes.c_uint
-        PROCESS_QUERY_LIMITED_INFORMATION, SYNCHRONIZE = 0x1000, 0x100000  # SYNCHRONIZE: for Wait*
-        WAIT_TIMEOUT, ERROR_ACCESS_DENIED = 0x00000102, 5
-        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, pid)
-        if not handle:
-            # ERROR_INVALID_PARAMETER (87): PID definitely gone. ACCESS_DENIED: exists
-            # but owned by another user/session. Any other error: conservative False.
-            return kernel32.GetLastError() == ERROR_ACCESS_DENIED
-        try:
-            # WAIT_TIMEOUT = still running; anything else = gone.
-            return kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
-        finally:
-            kernel32.CloseHandle(handle)
-    except (OSError, AttributeError):
-        return False
-
 
 def _release_file_lock(handle) -> None:
     with contextlib.suppress(OSError):
-        if _IS_WINDOWS:
-            handle.seek(_WINDOWS_LOCK_OFFSET)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def acquire_gateway_runtime_lock() -> bool:
@@ -1264,7 +1199,7 @@ def _scoped_lock_record_is_stale(existing: dict[str, Any], existing_pid: Optiona
 def _process_is_stopped(pid: int) -> bool:
     """True for a stopped / tracing-stop state (T/t) in ``/proc/<pid>/status``."""
     with contextlib.suppress(OSError):
-        for line in Path(f"/proc/{pid}/status").read_text(encoding="utf-8").splitlines():  # windows-footgun: ok (/proc is BOM-free)
+        for line in Path(f"/proc/{pid}/status").read_text(encoding="utf-8").splitlines():
             if line.startswith("State:"):
                 return line.split()[1] in {"T", "t"}
     return False
@@ -1538,11 +1473,8 @@ def _wait_for_scoped_lock_owner_exit(
 
 
 def _snapshot_gateway_children(pid: int) -> list:
-    """Best-effort snapshot of ``pid``'s live descendants (POSIX only; never raises). Take it while
-    the parent is alive -- once it exits the children are reparented and undiscoverable. ``[]`` on
-    Windows (taskkill /T tree-kills)."""
-    if _IS_WINDOWS:
-        return []
+    """Best-effort snapshot of ``pid``'s live descendants (never raises). Take it while
+    the parent is alive -- once it exits the children are reparented and undiscoverable."""
     try:
         import psutil  # type: ignore
         return psutil.Process(int(pid)).children(recursive=True)
@@ -1558,7 +1490,7 @@ def reap_gateway_children(children: list, *, parent_pid: int, timeout: float = 5
     identity-aware so a recycled child PID is never signalled; a child whose ppid still equals
     ``parent_pid`` is skipped (parent alive => not an orphan). SIGTERM, bounded wait, SIGKILL
     survivors. Never raises."""
-    if _IS_WINDOWS or not children:
+    if not children:
         return 0
     reaped = 0
     try:
@@ -1782,20 +1714,7 @@ def get_running_pid_identity_strict(pid_path: Path) -> Optional[tuple[int, float
         raise RuntimeError("gateway creation time is malformed") from exc
     if not all(_record_matches_live_gateway_pid(record, pid) for record in records):
         raise RuntimeError("runtime metadata does not identify a live gateway")
-    current = float(current_start)
-    if not _IS_WINDOWS:
-        return pid, current
-    # Windows persists a centisecond fingerprint; SCM checks need the exact psutil epoch.
-    # Re-read only after validation and prove it rounds to the same value.
-    try:
-        import psutil  # type: ignore
-
-        exact_create_time = float(psutil.Process(pid).create_time())
-    except Exception as exc:
-        raise RuntimeError("exact gateway creation time is unavailable") from exc
-    if int(round(exact_create_time * 100)) != int(current):
-        raise RuntimeError("gateway process identity changed")
-    return pid, exact_create_time
+    return pid, float(current_start)
 
 
 def get_running_pid_cached(

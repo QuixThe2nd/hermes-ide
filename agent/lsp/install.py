@@ -18,7 +18,6 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_constants import find_node_executable
 
 logger = logging.getLogger("agent.lsp.install")
@@ -172,7 +171,7 @@ def _run_installer(tool: str, pkg: str, cmd: list, *, timeout: int, env: Optiona
     try:
         proc = subprocess.run(
             cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=timeout, env=env, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags(),
+            timeout=timeout, env=env, stdin=subprocess.DEVNULL,
         )
         if proc.returncode != 0:
             # pnpm reports ERR_PNPM_* on stdout with an empty stderr; log whichever stream carries the reason.

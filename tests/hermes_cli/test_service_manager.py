@@ -1,6 +1,6 @@
 """Tests for hermes_cli.service_manager — the abstract ServiceManager
 protocol, the detect_service_manager() entry point, and the host-side
-adapter wrappers (Systemd / Launchd / Windows).
+adapter wrappers (Systemd / Launchd).
 
 The s6 backend is added in Phase 3; its tests live alongside the
 implementation in this same file once that phase ships.
@@ -15,7 +15,6 @@ from hermes_cli.service_manager import (
     ServiceManager,
     ServiceManagerKind,
     SystemdServiceManager,
-    WindowsServiceManager,
     detect_service_manager,
     get_service_manager,
     validate_profile_name,
@@ -100,38 +99,6 @@ def test_systemd_manager_kind_and_registration_unsupported() -> None:
 # ---------------------------------------------------------------------------
 # Lifecycle delegation — wrappers must call through to module-level fns
 # ---------------------------------------------------------------------------
-
-
-
-
-def test_windows_manager_lifecycle_delegates(monkeypatch: pytest.MonkeyPatch) -> None:
-    called: list[str] = []
-    # Force-import the submodule so monkeypatch's attribute lookup
-    # against the `hermes_cli` package succeeds — gateway_windows is
-    # imported lazily inside the wrapper and may not yet be loaded.
-    import hermes_cli.gateway_windows  # noqa: F401
-
-    class _FakeWindowsModule:
-        @staticmethod
-        def start() -> None: called.append("start")
-        @staticmethod
-        def stop() -> None: called.append("stop")
-        @staticmethod
-        def restart() -> None: called.append("restart")
-        @staticmethod
-        def is_installed() -> bool: return True
-
-    monkeypatch.setattr("hermes_cli.gateway_windows", _FakeWindowsModule)
-    monkeypatch.setattr(
-        "hermes_cli.gateway.find_gateway_pids",
-        lambda **kw: [12345],
-    )
-    mgr = WindowsServiceManager()
-    mgr.start("ignored")
-    mgr.stop("ignored")
-    mgr.restart("ignored")
-    assert called == ["start", "stop", "restart"]
-    assert mgr.is_running("ignored") is True
 
 
 

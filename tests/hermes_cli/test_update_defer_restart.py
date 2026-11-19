@@ -99,12 +99,6 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
         hermes_main, "_record_bytecode_fingerprint", lambda *a, **k: None
     )
     monkeypatch.setattr(hermes_main, "_run_pre_update_backup", lambda *a, **k: None)
-    monkeypatch.setattr(
-        hermes_main, "_pause_windows_gateways_for_update", lambda: None
-    )
-    monkeypatch.setattr(
-        hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None
-    )
     monkeypatch.setattr(hermes_main, "_write_update_incomplete_marker", lambda: None)
     monkeypatch.setattr(hermes_main, "_clear_update_incomplete_marker", lambda: None)
     monkeypatch.setattr(
@@ -336,7 +330,7 @@ def test_failed_reprepare_preserves_the_prior_prepared_record_byte_identical(
         "run",
         _make_head_moved_side_effect(POST_SHA, THIRD_SHA),
     )
-    monkeypatch.setattr(hermes_main, "_build_web_ui", lambda *a, **k: False)
+    monkeypatch.setattr(hermes_main, "_refresh_active_lazy_features", lambda *a, **k: False)
 
     with pytest.raises(SystemExit) as excinfo:
         hermes_main.cmd_update(_update_args(defer_restart=True))
@@ -408,9 +402,6 @@ _REQUIRED_STEP_FAILURES = {
     ),
     "node_partial": lambda mp: mp.setattr(
         update_cmd, "_update_node_dependencies", lambda: ["Node.js dependencies"]
-    ),
-    "web_build": lambda mp: mp.setattr(
-        hermes_main, "_build_web_ui", lambda *a, **k: False
     ),
     "skill_sync": lambda mp: mp.setattr(
         "tools.skills_sync.sync_skills",
@@ -698,64 +689,6 @@ def test_deferred_true_noop_with_no_obligation_creates_none(monkeypatch, tmp_pat
     assert not update_cmd._fleet_restart_pending_marker_path().exists()
 
 
-# ---------------------------------------------------------------------------
-# ZIP fallback: never under --defer-restart
-# ---------------------------------------------------------------------------
-
-
-def _patch_windows_zip_shape(monkeypatch):
-    """Windows + a git-shaped failure after the pull = the ZIP fallback case."""
-    monkeypatch.setattr(hermes_main, "_is_windows", lambda: True)
-    monkeypatch.setattr(hermes_main, "_venv_scripts_dir", lambda: None)
-    monkeypatch.setattr(
-        hermes_main, "_detect_venv_python_processes", lambda: []
-    )
-    zips = {"n": 0}
-    monkeypatch.setattr(
-        update_cmd,
-        "_update_via_zip",
-        lambda *a, **k: zips.__setitem__("n", zips["n"] + 1) or True,
-    )
-    return zips
-
-
-def test_deferred_never_falls_back_to_zip(monkeypatch, tmp_path, capsys):
-    """The ZIP fallback restarts the fleet — a deferred run keeps the failure."""
-    _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())
-    calls = _forbid_restart_paths(monkeypatch)
-    zips = _patch_windows_zip_shape(monkeypatch)
-
-    def _git_pull_dies(*_a, **_k):
-        raise subprocess.CalledProcessError(1, ["git", "pull"], stderr="fatal")
-
-    monkeypatch.setattr(hermes_main, "_clear_bytecode_cache", _git_pull_dies)
-
-    with pytest.raises(SystemExit) as excinfo:
-        hermes_main.cmd_update(_update_args(defer_restart=True))
-
-    assert excinfo.value.code == 1
-    assert zips["n"] == 0, "--defer-restart must not take the ZIP fallback"
-    assert calls["restart"] == 0
-    assert calls["catchup"] == 0
-    out = capsys.readouterr().out
-    assert "--defer-restart: ZIP fallback skipped" in out
-
-
-def test_default_update_still_falls_back_to_zip(monkeypatch, tmp_path):
-    """Control: without --defer-restart the git-failure fallback still runs."""
-    _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())
-    _forbid_restart_paths(monkeypatch)
-    zips = _patch_windows_zip_shape(monkeypatch)
-
-    def _git_pull_dies(*_a, **_k):
-        raise subprocess.CalledProcessError(1, ["git", "pull"], stderr="fatal")
-
-    monkeypatch.setattr(hermes_main, "_clear_bytecode_cache", _git_pull_dies)
-
-    hermes_main.cmd_update(_update_args())
-
-    assert zips["n"] == 1
-
 
 # ---------------------------------------------------------------------------
 # Deferred run on an already-current checkout
@@ -801,119 +734,3 @@ def test_default_up_to_date_still_catches_up_pending_restart(
     update_cmd._clear_fleet_restart_pending_marker()
 
 
-# ---------------------------------------------------------------------------
-# Windows: a deferred run refuses rather than stop/kill a venv holder
-# ---------------------------------------------------------------------------
-
-# One fake holder: a network-bound `serve` backend, the shape every rung of
-# the venv-holder sweep exists to reap.
-_HOLDER_CMDLINE = "venv\\Scripts\\python.exe -m hermes serve --host 10.0.0.4"
-_HOLDERS = [(4242, "python.exe", _HOLDER_CMDLINE)]
-
-# rung name → (classifier the rung consults, shape it must claim). Each rung
-# reaps holders through a different stop/kill entry point; the classifiers of
-# the other rungs are neutralised so exactly one rung can fire.
-_VENV_STOP_RUNGS = {
-    "pausable_gateway": "_leftover_pausable_gateway_pids",
-    "ledger_orphan": "_ledger_reapable_backend_pids",
-    "desktop_orphan": "_orphaned_desktop_backend_pids",
-    "manual_serve": "_ledger_manual_serve_holders",
-}
-
-
-def _claim_pids(matches):
-    return [pid for pid, _name, _cmdline in matches]
-
-
-def _claim_serve_entries(matches):
-    return [{"pid": pid, "purpose": "serve"} for pid, _name, _cmdline in matches]
-
-
-def _claim_nothing(_matches):
-    return None
-
-
-def _claim_no_serves(_matches):
-    return []
-
-
-def _claim_only(monkeypatch, rung: str) -> None:
-    """Make exactly one sweep rung claim the fake holders."""
-    for name, classifier in _VENV_STOP_RUNGS.items():
-        if name == rung:
-            # The claiming answer: PIDs for the per-PID kill rungs, ledger
-            # entries for the manual serve/dashboard rung.
-            claim = _claim_serve_entries if name == "manual_serve" else _claim_pids
-        else:
-            # The "not mine" answer that moves the sweep on to the next rung.
-            claim = _claim_no_serves if name == "manual_serve" else _claim_nothing
-        monkeypatch.setattr(hermes_main, classifier, claim)
-
-
-def _patch_windows_venv_guard(monkeypatch) -> dict:
-    """Wire the Windows venv-holder guard to a fake process table.
-
-    The re-scan after a rung reports an empty table, which is what lets the
-    DEFAULT (non-deferred) path proceed past the guard. Returns the spies on
-    every stop/kill entry point the sweep can reach.
-    """
-    monkeypatch.setattr(hermes_main, "_is_windows", lambda: True)
-    # None skips the concurrent-hermes.exe shim guard above the sweep.
-    monkeypatch.setattr(hermes_main, "_venv_scripts_dir", lambda: None)
-    scans = {"n": 0}
-
-    def _scan():
-        scans["n"] += 1
-        return [] if scans["n"] > 1 else list(_HOLDERS)
-
-    monkeypatch.setattr(hermes_main, "_detect_venv_python_processes", _scan)
-    stops = {"terminate": 0, "trees": 0, "relaunch": 0}
-
-    def _count(key):
-        def _record(*_args, **_kwargs):
-            stops[key] += 1
-
-        return _record
-
-    monkeypatch.setattr("gateway.status.terminate_pid", _count("terminate"))
-    monkeypatch.setattr(hermes_main, "_stop_process_trees", _count("trees"))
-    monkeypatch.setattr(hermes_main, "_relaunch_stopped_serves", _count("relaunch"))
-    return stops
-
-
-@pytest.mark.parametrize("rung", sorted(_VENV_STOP_RUNGS))
-def test_deferred_never_stops_windows_venv_holders(
-    rung, monkeypatch, tmp_path, capsys
-):
-    """Every stop/kill rung refuses under --defer-restart instead of reaping."""
-    _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())
-    calls = _forbid_restart_paths(monkeypatch)
-    stops = _patch_windows_venv_guard(monkeypatch)
-    _claim_only(monkeypatch, rung)
-
-    with pytest.raises(SystemExit) as excinfo:
-        hermes_main.cmd_update(_update_args(defer_restart=True))
-
-    assert excinfo.value.code == 2, "a deferred run refuses, never reaps"
-    assert stops == {"terminate": 0, "trees": 0, "relaunch": 0}
-    assert calls["restart"] == 0
-    assert calls["catchup"] == 0
-    out = capsys.readouterr().out
-    assert "--defer-restart never stops a running Hermes runtime" in out
-    # The refusal precedes the pull, so nothing was prepared either.
-    assert not update_cmd._fleet_restart_pending_marker_path().exists()
-
-
-@pytest.mark.parametrize("rung", sorted(_VENV_STOP_RUNGS))
-def test_default_update_still_reaps_windows_venv_holders(rung, monkeypatch, tmp_path):
-    """Control: without --defer-restart each rung still stops its holders."""
-    _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())
-    _forbid_restart_paths(monkeypatch)
-    stops = _patch_windows_venv_guard(monkeypatch)
-    _claim_only(monkeypatch, rung)
-
-    hermes_main.cmd_update(_update_args())
-
-    # Exactly one stop/kill entry point fired — the pausable-gateway rung
-    # terminates per PID, the others stop one process tree.
-    assert stops["terminate"] + stops["trees"] == 1

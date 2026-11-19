@@ -90,7 +90,7 @@ def _run_helper(command: str, secret_key: str, timeout_seconds: float, max_outpu
         # Kill the whole group: a helper may have forked children that would
         # otherwise keep the pipe open. POSIX-only by the early return above.
         try:
-            os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)  # windows-footgun: ok
+            os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):
             proc.kill()
         try:

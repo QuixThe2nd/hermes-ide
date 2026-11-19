@@ -1,7 +1,7 @@
 """Post-swap hand-off: finish ``hermes update`` in an interpreter born on the pulled code.
 
 ``hermes update`` starts in an interpreter that imported the PRE-pull tree. Once ``git merge``
-(or the ZIP swap) has replaced the checkout, every later phase — dependency sync, Node/web
+has replaced the checkout, every later phase — dependency sync, Node/web
 work, maintenance, fleet restart, verification, receipt — used to keep running in
 that stale process and lazily import NEW source into an OLD ``sys.modules`` graph. Any rename
 between the two commits then surfaced as an ``ImportError``/``AttributeError`` inside the
@@ -23,30 +23,14 @@ import logging
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 from typing import Any
 
-from hermes_cli.update_cmd_common import _best_effort
 
 logger = logging.getLogger("hermes_cli.update_cmd")
 
 # Set on the post-swap child: the receipt header says "continued", the lock is the parent's.
 POST_SWAP_ENV = "HERMES_UPDATE_POST_SWAP"
-# Set on a child spawned DETACHED off the Windows console shim: the pid of the process that
-# still holds ``hermes.exe`` open (the launcher, or the interpreter it ran). The child waits
-# for it before it touches the venv —
-# the shim quarantine is a single rename with sub-second retries, and the reporter's runs
-# (#101600) reached it while the parent was still alive (relaunching gateways, or just
-# tearing down), so the rename failed and the whole install was deferred.
-SHIM_PARENT_PID_ENV = "HERMES_UPDATE_SHIM_PARENT_PID"
-# Legacy re-exec (``_reexec_dependency_sync_off_windows_shim``, no hand-off file): the Windows
-# pause token travels here so the child resumes exactly the fleet the parent stopped instead
-# of re-running pause discovery — which found the parent's freshly relaunched gateway before
-# its pid file existed and force-killed it as "unmapped" (#101600).
-GATEWAY_RESUME_ENV = "HERMES_UPDATE_GATEWAY_RESUME"
-
-SHIM_PARENT_EXIT_TIMEOUT_SECONDS = 30.0
 
 
 def _json_default(value: Any):
@@ -79,24 +63,8 @@ def is_post_swap_child() -> bool:
     return os.environ.get(POST_SWAP_ENV) == "1"
 
 
-def _running_from_windows_shim() -> bool:
-    from hermes_cli.main_install_repair import _windows_shim_in_process_chain
-
-    return _windows_shim_in_process_chain() is not None
-
-
 def post_swap_python() -> Path:
-    """Interpreter for the child: the project venv's python (the console shim can never be
-    re-executed on Windows — it holds itself open), else the running interpreter."""
-    from hermes_cli.main_install_repair import _windows_shim_in_process_chain
-
-    shim = _windows_shim_in_process_chain()
-    if shim is not None:
-        from hermes_constants import venv_python_path
-
-        candidate = venv_python_path(shim.parent.parent, windows=True)
-        if candidate.is_file():
-            return candidate
+    """Interpreter for the child: the project venv's python, else the running interpreter."""
     return Path(sys.executable)
 
 
@@ -106,74 +74,13 @@ def post_swap_command(handoff_path: Path, argv_tail: list[str]) -> list[str]:
 
 
 def post_swap_child_env() -> dict[str, str]:
-    """Environment for the child. ``HERMES_UPDATE_REEXEC`` marks it as already off the Windows
-    shim (no second re-exec at the sync boundary; ``cmd_update`` hard-exits it when its receipt
-    is durable instead of waiting on a leftover non-daemon thread). The lock hand-off pid is
-    only claimed when nobody upstream (an external updater) already named theirs."""
-    from hermes_cli.main_install_repair import _UPDATE_REEXEC_ENV
+    """Environment for the child. The lock hand-off pid is only claimed when nobody
+    upstream (an external updater) already named theirs."""
     from hermes_cli.update_lock import HANDOFF_PID_ENV
 
-    env = {**os.environ, POST_SWAP_ENV: "1", _UPDATE_REEXEC_ENV: "1"}
+    env = {**os.environ, POST_SWAP_ENV: "1"}
     env.setdefault(HANDOFF_PID_ENV, str(os.getpid()))
     return env
-
-
-def detached_shim_child_env(env: dict[str, str], gateway_resume: dict | None = None) -> dict[str, str]:
-    """Env for a child that outlives this shim-run process: names the process holding the shim
-    open (the ``hermes.exe`` launcher above us when psutil sees it, else this interpreter) and,
-    for the legacy re-exec (no hand-off file), carries the Windows pause token."""
-    from hermes_cli.main_install_repair import _windows_shim_holder_pid
-
-    env = {**env, SHIM_PARENT_PID_ENV: str(_windows_shim_holder_pid())}
-    if gateway_resume is not None:
-        env[GATEWAY_RESUME_ENV] = json.dumps(gateway_resume, default=_json_default)
-    return env
-
-
-def adopt_handed_off_gateway_resume() -> dict | None:
-    """The pause token a shim-run parent handed to this legacy re-exec child, or ``None``.
-    Consumed on read so nothing this run spawns (relaunched gateways) inherits it."""
-    raw = os.environ.pop(GATEWAY_RESUME_ENV, None)
-    if not raw:
-        return None
-    try:
-        token = json.loads(raw)
-    except ValueError:
-        logger.warning("Ignoring malformed %s from the update hand-off", GATEWAY_RESUME_ENV)
-        return None
-    return token if isinstance(token, dict) else None
-
-
-def wait_for_shim_parent_exit(timeout: float = SHIM_PARENT_EXIT_TIMEOUT_SECONDS) -> bool:
-    """Block until the shim-run parent named in :data:`SHIM_PARENT_PID_ENV` has exited.
-
-    Returns True when it is gone (or none was named), False when it outlived ``timeout``; the
-    caller proceeds either way — the strict shim quarantine refuses if it still holds the exe.
-    A pid younger than this process is a recycled pid, never our parent. Consumed on read.
-    """
-    raw = os.environ.pop(SHIM_PARENT_PID_ENV, "")
-    try:
-        pid = int(raw.strip())
-    except ValueError:
-        return True
-    if pid <= 0 or pid == os.getpid():
-        return True
-    import psutil
-
-    try:
-        parent = psutil.Process(pid)  # pins (pid, create_time): a recycled pid reads as gone
-        if parent.create_time() > psutil.Process().create_time():
-            return True
-        deadline = time.monotonic() + timeout
-        while parent.is_running() and parent.status() != psutil.STATUS_ZOMBIE:
-            if time.monotonic() >= deadline:
-                print(f"  ⚠ The hermes.exe process that started this update (PID {pid}) is still "
-                      f"running after {int(timeout)}s; continuing.")
-                return False
-            time.sleep(0.2)
-    except psutil.Error:
-        pass
-    return True
 
 
 def _print_manual_continuation(cmd: list[str], exc: OSError) -> None:
@@ -188,15 +95,11 @@ def continue_update_in_fresh_interpreter(payload: dict[str, Any], *, argv_tail: 
 
     Returns the child's exit code, or ``None`` when no child could be started (the caller then
     owns the failure bookkeeping). The parent has already detached from the receipt (the child
-    resumes it) and only relays the exit code. On Windows, when this process runs from
-    ``hermes.exe``, the child cannot be awaited: the shim is one of the files the dependency
-    sync must replace and it stays open for as long as this process lives (#88838, #89599).
-    That case spawns detached, prints where the run continues and returns 0 — the child prints
-    its own result and ``--gateway`` writes the true exit code to ``.update_exit_code``.
+    resumes it) and only relays the exit code.
 
-    Ctrl-C reaches parent and child together; the child owns the receipt and the Windows
-    gateway resume, so the parent keeps waiting for it instead of ``subprocess.run``'s
-    kill-on-interrupt, which would cut it off mid-cleanup.
+    Ctrl-C reaches parent and child together; the child owns the receipt, so the parent keeps
+    waiting for it instead of ``subprocess.run``'s kill-on-interrupt, which would cut it off
+    mid-cleanup.
     """
     handoff_path = write_handoff(payload)
     cmd = post_swap_command(handoff_path, argv_tail)
@@ -204,17 +107,6 @@ def continue_update_in_fresh_interpreter(payload: dict[str, Any], *, argv_tail: 
     logger.debug("Post-swap hand-off → %s", subprocess.list2cmdline(cmd))
     sys.stdout.flush()
     sys.stderr.flush()
-
-    if _running_from_windows_shim():
-        try:
-            subprocess.Popen(cmd, env=detached_shim_child_env(env), stdin=subprocess.DEVNULL)
-        except OSError as exc:
-            _print_manual_continuation(cmd, exc)
-            return None
-        print("→ Windows: hermes.exe cannot replace itself while it runs; the update")
-        print("  continues under the venv Python. The code update is already applied and")
-        print("  this shell returns right away; the install finishes below.")
-        return 0
 
     try:
         child = subprocess.Popen(cmd, env=env, stdin=sys.stdin)

@@ -207,7 +207,7 @@ def _reap_orphaned_server(sd: Path) -> bool:
         return False
     launcher = _recorded_launcher_pid()
     try:
-        pgid = os.getpgid(pid)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
+        pgid = os.getpgid(pid)
         cmdline = psutil.Process(pid).cmdline()
     except (ProcessLookupError, psutil.Error):
         return False
@@ -228,7 +228,7 @@ def _kill_group_then_wait(pgid: Optional[int], pid: int, grace: float = 2.0) -> 
     def _signal(sig: int) -> None:
         with contextlib.suppress(ProcessLookupError, PermissionError):
             if pgid is not None:
-                os.killpg(pgid, sig)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
+                os.killpg(pgid, sig)
             else:
                 os.kill(pid, sig)
     def _anything_left() -> bool:
@@ -237,7 +237,7 @@ def _kill_group_then_wait(pgid: Optional[int], pid: int, grace: float = 2.0) -> 
         if pgid is None:
             return _pid_alive(pid)
         try:
-            os.killpg(pgid, 0)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
+            os.killpg(pgid, 0)
         except ProcessLookupError:
             return False
         except PermissionError:
@@ -248,7 +248,7 @@ def _kill_group_then_wait(pgid: Optional[int], pid: int, grace: float = 2.0) -> 
         # The launcher was Popen'd by whichever gateway started it; a later gateway that stops it holds
         # no Popen, so the dead leader would sit as a zombie in our table (and count as "left").
         with contextlib.suppress(ChildProcessError, OSError):
-            os.waitpid(pid, os.WNOHANG)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
+            os.waitpid(pid, os.WNOHANG)
 
     _signal(signal.SIGTERM)
     deadline = time.monotonic() + grace
@@ -257,7 +257,7 @@ def _kill_group_then_wait(pgid: Optional[int], pid: int, grace: float = 2.0) -> 
         if not _anything_left():
             return
         time.sleep(0.05)
-    _signal(signal.SIGKILL)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
+    _signal(signal.SIGKILL)
     time.sleep(0.1)
     _reap_if_ours()
 
@@ -269,8 +269,8 @@ _ALLOC_LOCK = Path(os.environ.get("XDG_RUNTIME_DIR") or Path.home() / ".cache") 
 
 @contextlib.contextmanager
 def _flocked(path: Path):
-    import fcntl  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start)
-    with open(path, "a+", encoding="utf-8") as fh:  # windows-footgun: ok — Linux-only runtime
+    import fcntl
+    with open(path, "a+", encoding="utf-8") as fh:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
         try:
             yield fh
@@ -435,7 +435,7 @@ def _spawn_and_wait(sd: Path, num: int, wait_seconds: float) -> DesktopStatus:
         child_env["HERMES_BD_BROWSER_EXEC_LINE"] = dock_exec_line(*browser)
     # Truncated per start: the log is a diagnostic for THIS launch, and nothing rotates it otherwise.
     log = open(sd / "launcher.log", "wb")  # noqa: SIM115 — handed to the child, closed by it
-    proc = subprocess.Popen(  # windows-footgun: ok — Linux-only runtime (is_supported_host)
+    proc = subprocess.Popen(
         ["bash", str(_LAUNCHER)], env=child_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
         start_new_session=True, close_fds=True)
     log.close()

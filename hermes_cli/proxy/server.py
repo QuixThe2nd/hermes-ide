@@ -198,7 +198,7 @@ async def run_server(
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
-                loop.add_signal_handler(sig, stop_event.set)  # windows-footgun: ok
+                loop.add_signal_handler(sig, stop_event.set)
             except NotImplementedError:
                 pass  # Windows / restricted envs — Ctrl+C still raises KeyboardInterrupt
     try:

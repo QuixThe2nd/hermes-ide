@@ -648,7 +648,7 @@ def resolve_in_tree(module: str, symbol: str | None, root: Path) -> tuple[bool, 
     if symbol is None:
         return True, ""
 
-    # `from hermes_cli import gateway_windows` names a SUBMODULE, not an
+    # `from hermes_cli import service_manager` names a SUBMODULE, not an
     # attribute of the package body.
     submodule = root / rel / symbol
     if submodule.with_suffix(".py").is_file() or (submodule / "__init__.py").is_file():

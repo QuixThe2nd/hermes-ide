@@ -37,35 +37,8 @@ def _append_row(rows: list[tuple[int, str]], pid_text: str, command: str) -> Non
 
 
 def _iter_process_table() -> list[tuple[int, str]]:
-    """``(pid, cmdline)`` for every process, via wmic (Windows) or ps. Raises on scan failure."""
+    """``(pid, cmdline)`` for every process, via ps. Raises on scan failure."""
     rows: list[tuple[int, str]] = []
-    if sys.platform == "win32":
-        # errors="ignore": wmic may emit the system code page. bounded_probe_run, not run():
-        # run()'s post-timeout cleanup joins pipe readers unbounded and a conhost descendant
-        # holding duplicated handles wedges it forever.
-        # In text mode, subprocess output decoding depends on Python's configuration (locale-dependent by
-        # default, or UTF-8 in UTF-8 mode). The important protection here is errors="ignore": it prevents a
-        # reader-thread UnicodeDecodeError from leaving result.stdout=None and turning the later .split()
-        # into an AttributeError (#17049). bounded_probe_run (rather than subprocess.run with a timeout)
-        # keeps a slow scan from wedging the caller forever: run()'s post-timeout cleanup joins the pipe
-        # reader threads unbounded, and a conhost.exe descendant holding duplicated pipe handles blocks that
-        # join indefinitely (#87134). It also passes CREATE_NO_WINDOW: this scan can run from the windowless
-        # pythonw.exe desktop/gateway backend during an update, where a bare wmic spawn would pop a console
-        # window.
-        from hermes_cli._subprocess_compat import bounded_probe_run
-        result = bounded_probe_run(
-            ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
-            timeout=10, errors="ignore")
-        if result is None or result.returncode != 0 or result.stdout is None:
-            return rows
-        current_cmd = ""
-        for line in result.stdout.split("\n"):
-            line = line.strip()
-            if line.startswith("CommandLine="):
-                current_cmd = line[len("CommandLine=") :]
-            elif line.startswith("ProcessId="):
-                _append_row(rows, line[len("ProcessId=") :], current_cmd)
-        return rows
     # ps, not `pgrep -f "hermes.*dashboard"` (greedy regex; consistent with gateway pid scan).
     result = subprocess.run(["ps", "-A", "-o", "pid=,command="], timeout=10, **_PS_RUN_KWARGS)
     if result.returncode == 0:
@@ -152,12 +125,7 @@ def _hermes_home_for_pid(pid: int) -> str | None:
         Path(env_home).parent.name == "profiles" or env.get("HERMES_UPDATE_POST_SWAP") == "1"
     ):
         return env_home
-    if sys.platform == "win32":
-        local_appdata = env.get("LOCALAPPDATA", "").strip()
-        base = Path(local_appdata) if local_appdata else Path(env.get("USERPROFILE") or Path.home()) / "AppData" / "Local"
-        default_home = base / "hermes"
-    else:
-        default_home = Path(env.get("HOME") or Path.home()) / ".hermes"
+    default_home = Path(env.get("HOME") or Path.home()) / ".hermes"
     root = profile_root_for_env_home(env_home, default_home)
     fixed_identity = any(env.get(k) for k in ("HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD",
                                                "HERMES_GATEWAY_EXTERNAL_SUPERVISOR")) or "--ssh-session-token-file" in argv
@@ -374,31 +342,6 @@ def _is_caller_wrapper_shell(pid: int, ancestors: set[int]) -> bool:
     return (_argv_head_command(pid) or "") in _WRAPPER_HEAD_COMMANDS
 
 
-def _kill_pids_windows(pids: list[int], killed: list[int], failed: list[tuple[int, str]]) -> None:
-    """``taskkill /F`` each PID after re-verifying its identity."""
-    from gateway.status import get_process_start_time
-    from hermes_cli._subprocess_compat import pid_is_hermes, windows_hide_flags
-    # Identity captured right after discovery: a PID reused before the kill fails the check.
-    pid_start_times = {pid: get_process_start_time(pid) for pid in pids}
-    for pid in pids:
-        try:
-            expected_start_time = pid_start_times.get(pid)
-            if expected_start_time is None:
-                failed.append((pid, "could not verify process identity"))
-            elif not pid_is_hermes(pid, expected_start_time=expected_start_time):
-                failed.append((pid, "not hermes-owned or process identity changed"))
-            else:
-                result = subprocess.run(
-                    ["taskkill", "/PID", str(pid), "/F"], stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True, encoding="utf-8",
-                    errors="replace", timeout=10, creationflags=windows_hide_flags())
-                if result.returncode == 0:
-                    killed.append(pid)
-                else:
-                    failed.append((pid, (result.stderr or result.stdout or "").strip()))
-        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
-            failed.append((pid, str(e)))
-
 
 # SIGTERM → SIGKILL grace for the dashboard/serve backend. Must outlast the lifespan teardown in
 # hermes_cli/web_server.py::_lifespan: stop_hosted_room_service(timeout=5.0) + the startup-thread
@@ -445,9 +388,9 @@ def _posix_descendants(roots: list[int]) -> dict[int, tuple[int, int | None]]:
     Detached session leaders (see ``_is_detached_session_leader``) are pruned together with their own
     subtrees. So is the calling process with its subtree and its ancestor chain: ``hermes dashboard
     --stop`` / ``hermes update`` run from a shell escape inside the hosted Chat TUI are same-session
-    descendants of the backend, and sweeping them would SIGTERM the caller mid-run (POSIX twin of the
-    Windows #98814 hazard). The start-time fingerprint is the PID-reuse guard (same one
-    ``_kill_pids_windows`` uses). Empty on scan failure → root-only kill, the historical behaviour.
+    descendants of the backend, and sweeping them would SIGTERM the caller mid-run. The start-time
+    fingerprint is the PID-reuse guard (same one ``_kill_pids_posix`` uses). Empty on scan failure
+    → root-only kill, the historical behaviour.
     """
     from gateway.status import get_process_start_time
     try:
@@ -585,12 +528,12 @@ def _kill_stale_dashboard_processes(
     # job then fails every KeepAlive restart with "port already in use", and the running backend
     # is left unsupervised. Snapshot the loaded jobs once, before the kill; ``--stop`` reads them
     # too, so it can say that a KeepAlive job will undo the stop.
-    launchd_jobs = _loaded_launchd_backend_jobs() if sys.platform != "win32" else []
+    launchd_jobs = _loaded_launchd_backend_jobs()
 
     def _launchd_owner(pid: int, cmdline: list[str] | None):
         return _launchd_job_owning_backend(pid, cmdline, launchd_jobs, ancestors=_process_ancestors(pid))
 
-    if restart_managed and sys.platform != "win32":
+    if restart_managed:
         for pid in pids:
             pid_cgroup[pid] = _get_pid_cgroup_path(pid)
             pid_service[pid] = _get_systemd_service_for_pid(pid)
@@ -618,7 +561,7 @@ def _kill_stale_dashboard_processes(
     print(f"\n⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
     killed: list[int] = []
     failed: list[tuple[int, str]] = []
-    (_kill_pids_windows if sys.platform == "win32" else _kill_pids_posix)(pids, killed, failed)
+    _kill_pids_posix(pids, killed, failed)
     for pid in killed:
         print(f"    ✓ stopped PID {pid}")
     for pid, err_msg in failed:
@@ -680,7 +623,7 @@ def _restart_killed_backends(
             else:
                 # A LaunchDaemon (system domain) can only be kickstarted by root; the hint must
                 # be the command that works from the shell the operator is actually in.
-                sudo = "sudo " if domain.startswith("system") and os.geteuid() != 0 else ""  # windows-footgun: ok — launchd jobs exist only on macOS
+                sudo = "sudo " if domain.startswith("system") and os.geteuid() != 0 else ""
                 failed_restarts.append(
                     (target, f"launchd is not supervising a fresh process; run: {sudo}launchctl kickstart -k {target}"))
                 unrecovered.append(pid)
@@ -770,7 +713,7 @@ def _is_desktop_local_serve_cmdline(command: str) -> bool:
     Long-lived headless serves (``--host <tailscale-ip> --port 9119``) must never match —
     those are operator-managed remote backends that legitimately run with ppid 1.
     """
-    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+    from hermes_cli.process_identity import _hermes_holder_subcommand
     # Canonical token matcher, never argv substrings: ``chat --preserve-cache`` contains "serve" and
     # ``vim notes about hermes serve`` contains both markers — this predicate decides a kill.
     if _hermes_holder_subcommand(command) != "serve":
@@ -804,10 +747,8 @@ def _process_ancestors(pid: int, *, max_depth: int = 8) -> list[int]:
 
 
 def _process_ppid(pid: int) -> int | None:
-    """Best-effort parent pid; None on failure (always None on Windows: desktop tree-kill reaps)."""
+    """Best-effort parent pid; None on failure."""
     try:
-        if sys.platform == "win32":
-            return None
         result = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], timeout=5, **_PS_RUN_KWARGS)
         if result.returncode != 0 or not result.stdout:
             return None
@@ -937,8 +878,6 @@ def _reap_orphaned_desktop_local_serves(
     sleep_fn = sleep_fn or _time.sleep
     lock_owned_pids_fn = lock_owned_pids_fn or _lock_owned_serve_pids
     process_age_seconds_fn = process_age_seconds_fn or _process_age_seconds
-    if sys.platform == "win32":  # Windows desktop uses taskkill tree teardown
-        return _empty_result()
 
     def _owned_pids() -> set[int]:
         try:
@@ -1084,8 +1023,6 @@ def _restart_managed_dashboard_service(reason: str, unit: str = _DASHBOARD_SYSTE
     deliberately stops the caller's ``os.kill`` fallback: systemd treats a direct
     SIGTERM as a clean stop, so ``Restart=on-failure`` won't bring it back.
     """
-    if sys.platform == "win32":
-        return False
 
     def _systemctl(*args: str, timeout: int = 10) -> subprocess.CompletedProcess:
         return _run_probe(["systemctl", *args], timeout=timeout)
@@ -1244,7 +1181,7 @@ def _loaded_launchd_backend_jobs(
     from xml.parsers.expat import ExpatError
 
     from hermes_cli.gateway import _launchd_print_service_pid
-    uid = os.getuid()  # windows-footgun: ok — darwin-only branch
+    uid = os.getuid()
     jobs: list[tuple[str, str, list[str], int | None]] = []
     for kind, plist_dir in (plist_dirs if plist_dirs is not None else _launchd_plist_dirs()):
         try:
@@ -1321,9 +1258,7 @@ def _restart_launchd_job(domain: str, label: str, old_pid: int | None, *, timeou
 
 def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
     """Exact argv of a running process: ``/proc/<pid>/cmdline`` (Linux), ``ps -o command=`` + shlex
-    (macOS), None on Windows (no graceful taskkill window; Desktop manages its backend)."""
-    if sys.platform == "win32":
-        return None
+    (macOS)."""
     try:
         cmdline_path = f"/proc/{pid}/cmdline"
         if os.path.exists(cmdline_path):

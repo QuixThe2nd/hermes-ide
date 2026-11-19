@@ -18,7 +18,6 @@ import threading
 import uuid
 from typing import Any, Dict, List, Optional
 
-from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.computer_use.backend import ActionResult, ComputerUseBackend
 from tools.computer_use.cua_backend_capture import _CaptureMixin
 from tools.computer_use.cua_backend_daemon import _EmbeddedCuaDaemon
@@ -138,9 +137,9 @@ def _run_quiet(argv: List[str], *, timeout: float, swallow: Any = (), **kw: Any)
         return None
 
 def _run_driver(driver_cmd: str, *args: str, timeout: float, swallow: Any = ()) -> Any:
-    """Run a short cua-driver verb with the sanitized env and hidden window."""
+    """Run a short cua-driver verb with the sanitized env."""
     return _run_quiet([driver_cmd, *args], timeout=timeout, swallow=swallow, encoding="utf-8",
-                      errors="replace", creationflags=windows_hide_flags(), env=sanitized_cua_driver_env())
+                      errors="replace", env=sanitized_cua_driver_env())
 
 def _linux_session_locked() -> Optional[bool]:
     """Is the graphical session locked? (Linux; best-effort.) A locked KDE/GNOME session freezes renderers and

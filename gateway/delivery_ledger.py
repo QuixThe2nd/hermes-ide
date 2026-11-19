@@ -375,7 +375,7 @@ def _owner_alive(pid: Any, started_at: Any) -> bool:
                 # Never fall back to a raw sig-0 probe on Windows.
                 return False
             try:
-                os.kill(pid, 0)  # windows-footgun: ok — POSIX-only fallback branch
+                os.kill(pid, 0)
             except ProcessLookupError:
                 return False
             except PermissionError:

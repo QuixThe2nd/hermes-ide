@@ -178,24 +178,6 @@ def test_reap_ignores_non_mcp_purposes(ledger, child):
 
 
 # ---------------------------------------------------------------------------
-# Updater rung (_ledger_reapable_backend_pids) flow-through
-# ---------------------------------------------------------------------------
-
-def test_updater_ledger_rung_flows_mcp_helper(ledger, child):
-    from hermes_cli import update_cmd
-
-    pi.register_child(child.pid, "mcp-helper")
-    matches = [(child.pid, "python", "sleep 300")]
-
-    # Live spawner (this process) → never selected.
-    assert update_cmd._ledger_reapable_backend_pids(matches) == []
-
-    # Provably dead spawner → positively identified as reapable.
-    _orphan_entry_for(child.pid)
-    assert update_cmd._ledger_reapable_backend_pids(matches) == [child.pid]
-
-
-# ---------------------------------------------------------------------------
 # Prune-on-write of exited children
 # ---------------------------------------------------------------------------
 

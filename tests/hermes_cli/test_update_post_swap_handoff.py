@@ -30,7 +30,6 @@ def test_parent_reexecs_tail_on_pulled_tree_and_relays_exit_code(monkeypatch, tm
     update <flags> --post-swap <file>`` with the detached receipt + plan in the file and exits
     with the child's code, leaving no open receipt for its own boundary to finalize."""
     import hermes_cli.update_cmd_config as cfg
-    monkeypatch.setattr(update_handoff, "_running_from_windows_shim", lambda: False)
     monkeypatch.delenv(HANDOFF_PID_ENV, raising=False)
     monkeypatch.setattr(cfg, "_LAST_SIBLING_SNAPSHOTS", {"work": "snap-w"})
     spawned = {}
@@ -46,27 +45,25 @@ def test_parent_reexecs_tail_on_pulled_tree_and_relays_exit_code(monkeypatch, tm
     update_receipt.record_step("pre_update_backup", True, "snapshot=s1")
     plan = UpdatePlan(expected_sha="a" * 40, runtimes=[RuntimeRecord(kind="gateway", profile="default", pid=4, code_sha="a" * 40)])
     args = SimpleNamespace(yes=True, no_gateway_restart=True, branch="main", gateway=False)
-    token = {"resume_needed": True, "profiles": {"default": 4}}
+
 
     with pytest.raises(SystemExit) as exit_info:
         update_cmd._hand_off_post_swap(
             args, swap="git", branch="main", pre_pull_sha="a" * 40, opts=_opts(),
             gateway_mode=False, pre_update_snapshot_id="s1",
-            _pre_update_plan=plan, _windows_gateway_resume=token)
+            _pre_update_plan=plan)
 
     assert exit_info.value.code == 7
     assert spawned["cmd"][:4] == [sys.executable, "-m", "hermes_cli.main", "update"]
     assert spawned["cmd"][4:] == ["--yes", "--no-gateway-restart", "--branch", "main", "--post-swap", spawned["cmd"][-1]]
     env = spawned["env"]
-    assert env[update_handoff.POST_SWAP_ENV] == "1" and env["HERMES_UPDATE_REEXEC"] == "1"
+    assert env[update_handoff.POST_SWAP_ENV] == "1"
     assert env[HANDOFF_PID_ENV] == str(os.getpid())
     payload = spawned["payload"]
     assert payload["receipt"]["steps"][0]["name"] == "pre_update_backup"
     assert payload["plan"]["runtimes"][0]["profile"] == "default"
     assert payload["pre_update_version"] == "0.21.3" and payload["pre_pull_sha"] == "a" * 40
     assert payload["sibling_snapshots"] == {"work": "snap-w"}
-    # The child owns the Windows resume: its copy still says resume_needed, the parent's does not.
-    assert payload["windows_gateway_resume"]["resume_needed"] is True and token["resume_needed"] is False
     # Detached: the parent's command-boundary finalize is a no-op — the child writes the receipt.
     assert update_receipt._current.get() is None
     assert update_receipt.finalize_pending_update_receipt(7) is None
@@ -76,7 +73,6 @@ def test_parent_reexecs_tail_on_pulled_tree_and_relays_exit_code(monkeypatch, tm
 def test_parent_records_failure_when_child_cannot_start(monkeypatch, tmp_path):
     """No child → the parent takes the receipt back (a pulled update must leave a record), drops
     the install breadcrumb for the next launch and exits 1."""
-    monkeypatch.setattr(update_handoff, "_running_from_windows_shim", lambda: False)
     monkeypatch.setattr(update_handoff.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("no python")))
     marker = {}
     monkeypatch.setattr(update_cmd._m(), "_write_update_incomplete_marker", lambda: marker.setdefault("written", True))
@@ -108,7 +104,6 @@ def test_child_resumes_receipt_and_runs_git_tail_from_payload(monkeypatch, tmp_p
     seen = {}
     monkeypatch.setattr(cfg, "_LAST_SIBLING_SNAPSHOTS", {})
     monkeypatch.setattr(update_cmd, "_base_git_cmd", lambda: ["git"])
-    monkeypatch.setattr(update_cmd, "_ensure_non_trampoline_git", lambda cmd: cmd)
     monkeypatch.setattr(update_cmd, "_finish_pulled_update", lambda *a, **kw: seen.update(args=a, kw=kw))
     monkeypatch.setattr(update_cmd, "_resolve_update_options", lambda args, gateway_mode: update_cmd._UpdateOptions(
         active_lazy_features=None, active_tool_dependencies=None, pre_update_version="NEW", gw_input_fn=None,

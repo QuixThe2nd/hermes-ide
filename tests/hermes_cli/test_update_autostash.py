@@ -39,8 +39,6 @@ def _patch_gateway_discovery(monkeypatch):
     derives labels from the profile layout, so a default profile alone hands
     it ``ai.hermes.gateway`` and the verify step exits 1 (#111866, #110701).
     """
-    monkeypatch.setattr(hermes_main, "_pause_windows_gateways_for_update", lambda: None)
-    monkeypatch.setattr(hermes_main, "_resume_windows_gateways_after_update", lambda *a: None)
     monkeypatch.setattr("pm.sync_venv", lambda *a, **k: None)
     monkeypatch.setattr("hermes_cli.update_cmd_maint._run_post_update_maintenance", lambda *a, **k: None)
     with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \

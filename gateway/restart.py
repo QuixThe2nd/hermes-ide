@@ -243,7 +243,7 @@ def pid_alive_fail_closed(pid: int) -> bool:
         k32.GetLastError.restype = ctypes.c_uint
         return _windows_pid_alive_fail_closed(pid, k32)
     try:
-        os.kill(int(pid), 0)  # windows-footgun: ok — POSIX-only branch; the os.name == "nt" branch above returns through the Win32 handle probe before reaching this line (bpo-14484)
+        os.kill(int(pid), 0)
         return True
     except ProcessLookupError:
         return False
@@ -307,9 +307,8 @@ def spawn_replacement_gateway(
     repository's ``gateway.run`` entry point resolves without touching the
     ``hermes`` CLI, service managers, or anything else that could route this
     back into a legacy restart path. The child inherits the watcher's
-    environment — already built without ``_HERMES_GATEWAY`` — and detaches
-    per platform through the existing safe detach helpers (a new session on
-    POSIX, the no-breakaway creation flags on Windows).
+    environment — already built without ``_HERMES_GATEWAY`` — and detaches into
+    a new session.
 
     Custom ``popen`` env builders receive ``checkout_venv_bin_dir`` (the
     resolved venv's bin/Scripts directory) so they can pin ``VIRTUAL_ENV`` and
@@ -322,14 +321,7 @@ def spawn_replacement_gateway(
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
     }
-    if os.name == "nt":
-        from hermes_cli._subprocess_compat import (
-            windows_detach_flags_without_breakaway,
-        )
-
-        kwargs["creationflags"] = windows_detach_flags_without_breakaway()
-    else:
-        kwargs["start_new_session"] = True
+    kwargs["start_new_session"] = True
     if popen is None:
         return subprocess.Popen(argv, **kwargs)
     if venv_bin_dir is not None:

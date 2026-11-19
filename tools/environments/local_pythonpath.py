@@ -34,11 +34,10 @@ def _same_path(left: Path, right: Path) -> bool:
 def _build_hermes_repo_root_aliases(
     resolved_root: Path, lexical_root: Path, configured_home: Path,
 ) -> tuple[Path, ...]:
-    """Exact repo-root spellings emitted by Hermes launchers. Mirrors
-    ``gateway_windows._preserve_hermes_home_path`` (physical path under the resolved
-    HERMES_HOME -> configured spelling) so a junction-backed install matches without
-    treating arbitrary HERMES_HOME descendants as Hermes-owned. A repo-level junction
-    (possibly cross-drive) is accepted only when a strict resolve proves
+    """Exact repo-root spellings emitted by Hermes launchers. A symlinked or
+    junction-backed install must match without treating arbitrary HERMES_HOME
+    descendants as Hermes-owned. A repo-level link (possibly cross-drive) is
+    accepted only when a strict resolve proves
     <root>/<repo dirname> is the physical root (fail-closed)."""
     candidates = [resolved_root, lexical_root]
     # Profile re-home: with --profile the configured home is <root>/profiles/<name>

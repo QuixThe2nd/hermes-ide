@@ -17,7 +17,6 @@ from typing import IO, Callable, Protocol
 
 from hermes_constants import get_hermes_home
 from tools.tool_output_truncate import head_tail_split, truncation_notice
-from hermes_cli._subprocess_compat import windows_hide_flags
 
 # Sentinel capacity for full-fidelity capture: large enough that the collector
 # never evicts, so bounded and unbounded modes share one code path.
@@ -252,7 +251,6 @@ def _popen_bash(cmd: list[str], stdin_data: str | None = None, **kwargs) -> subp
     """Spawn a subprocess with standard stdout/stderr/stdin setup; *stdin_data* is written
     asynchronously via :func:`_pipe_stdin`. Backends with special Popen needs (e.g. local's
     ``preexec_fn``) can bypass this and call :func:`_pipe_stdin` directly."""
-    kwargs.setdefault("creationflags", windows_hide_flags())
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,

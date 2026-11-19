@@ -24,8 +24,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from hermes_cli._subprocess_compat import windows_hide_flags
-
 logger = logging.getLogger(__name__)
 
 
@@ -400,7 +398,7 @@ def _warm_installed_bytecode(specs: tuple[str, ...], target: Optional[Path]) -> 
 
 def _run_installer(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     # _SUBPROCESS_KW carries stdin=DEVNULL  # noqa: subprocess-stdin
-    return subprocess.run(cmd, **_SUBPROCESS_KW, creationflags=windows_hide_flags(), **kw)
+    return subprocess.run(cmd, **_SUBPROCESS_KW, **kw)
 
 
 def _uv_binary() -> Optional[str]:

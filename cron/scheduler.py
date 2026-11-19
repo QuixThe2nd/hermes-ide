@@ -37,7 +37,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hermes_constants import get_hermes_home
 from cron.env_settings import cron_env_setting
-from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
     load_config, load_config_readonly, resolve_cron_model_drift_defaults)
 from hermes_cli.fallback_config import get_fallback_chain
@@ -3374,7 +3373,6 @@ def _launch_external_cron_worker(job: dict) -> bool:
                 stdout=subprocess.DEVNULL,
                 stderr=stderr_fd,
                 start_new_session=True,
-                creationflags=windows_hide_flags(),
             )
         finally:
             os.close(stderr_fd)
@@ -3451,7 +3449,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                 # holds nothing useful: name the cause, not the exit code.
                 raise RuntimeError(
                     "restart-safe systemd scope could not be created: the user D-Bus session at "
-                    f"/run/user/{os.getuid()}/bus disappeared after the gateway started. On a "  # windows-footgun: ok — scoped dispatch exists only on Linux
+                    f"/run/user/{os.getuid()}/bus disappeared after the gateway started. On a "
                     "system-level service install, run `sudo loginctl enable-linger <gateway-user>`; "
                     "the next fire dispatches without scope isolation."
                 )

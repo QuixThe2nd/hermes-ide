@@ -26,7 +26,6 @@ import subprocess
 import sys
 
 from hermes_constants import get_hermes_home
-from hermes_cli._subprocess_compat import windows_hide_flags
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +139,6 @@ def _run_quiet(argv: list[str], *, timeout: float = _SUBPROCESS_TIMEOUT_SECONDS)
             stdin=subprocess.DEVNULL,
             timeout=timeout,
             check=False,
-            creationflags=windows_hide_flags(),
         )
     except Exception as exc:
         logger.debug("os_notify: command %r failed: %s", argv[:1], exc)
@@ -174,7 +172,6 @@ def _run_command_override(command: str, *, title: str, subtitle: str,
             timeout=_SUBPROCESS_TIMEOUT_SECONDS,
             check=False,
             env=env,
-            creationflags=windows_hide_flags(),
         )
     except Exception as exc:
         logger.debug("os_notify: command override failed: %s", exc)

@@ -381,62 +381,6 @@ def _windows_running_hermes_launcher_locked() -> bool:
 _UPDATE_REEXEC_ENV = "HERMES_UPDATE_REEXEC"
 
 
-def _reexec_dependency_sync_off_windows_shim(gateway_resume: dict | None = None) -> bool:
-    """Hand the dependency sync to the venv interpreter, off the console shim.
-
-    Returns True when a child was spawned and the caller must exit at once (releasing the
-    shim before the child reaches ``pip install -e .``); False to continue in-process.
-
-    Called at the dependency-sync boundary, NOT at the top of the command: by then the code swap
-    is done and every interactive question has been answered; only the venv rewrite — the one
-    step that cannot run inside the shim — remains. Earlier would detach every run (even the
-    ``Already up to date!`` no-op) and take the prompts along. Waiting on the child deadlocks
-    (we hold the handle it needs) and Windows has no exec, so the shell returns; the child keeps
-    the console, prints its own result, and ``--gateway`` writes the true exit code to
-    ``.update_exit_code``. The child re-runs ``hermes update`` so the sync and its tail happen
-    exactly once; ``_UPDATE_REEXEC_ENV`` stops it spawning again and stops the "already up to
-    date" early return from swallowing the sync. ``.update-incomplete`` is already written, so
-    a child that dies mid-install is finished by the next launch's recovery.
-
-    The child owns the Windows gateway resume from the moment it exists: ``gateway_resume``
-    travels in its env and this process's copy is disarmed, so the parent exits at once instead
-    of relaunching gateways while it still holds the shim (#101600). The child waits for this
-    pid before its own pause/venv work (``update_handoff.wait_for_shim_parent_exit``).
-    ``venv\\Scripts\\hermes.exe`` is a launcher that runs the interpreter with the shim as its script and
-    holds it open without ``FILE_SHARE_DELETE`` for the whole command, so the quarantine rename is refused
-    and uv fails to replace it with os error 32 (#88838, #89599).
-    """
-    if os.environ.get(_UPDATE_REEXEC_ENV) == "1":
-        return False
-    shim = _windows_shim_in_process_chain()
-    if shim is None:
-        return False
-    from hermes_constants import venv_python_path
-    from hermes_cli.update_handoff import detached_shim_child_env
-    python_exe = venv_python_path(shim.parent.parent, windows=True)
-    cmd = [str(python_exe), "-m", "hermes_cli.main", *sys.argv[1:]]
-    if python_exe.is_file():
-        try:
-            subprocess.Popen(
-                cmd, env=detached_shim_child_env({**os.environ, _UPDATE_REEXEC_ENV: "1"}, gateway_resume),
-                stdin=subprocess.DEVNULL)
-            if gateway_resume is not None:
-                gateway_resume["resume_needed"] = False
-            print(
-                f"→ Windows: {shim.name} cannot replace itself while it runs; "
-                "finishing the dependency install under the venv Python.")
-            print(
-                "  The code update is already applied. The install continues "
-                "below and this shell returns right away.")
-            return True
-        except OSError as exc:
-            logger.debug("Dependency-sync hand-off via %s failed: %s", python_exe, exc)
-        print(f"  ⚠ Could not hand the dependency install off {shim.name}.")
-        print("    Continuing in-process; if it cannot replace the shim, run:")
-        print(f"    {subprocess.list2cmdline(cmd)}")
-    return False
-
-
 def _default_venv_install_target() -> tuple[list[str], dict[str, str] | None]:
     """Return ``(install_cmd_prefix, env)`` for the project venv when possible."""
     from hermes_cli.main import PROJECT_ROOT

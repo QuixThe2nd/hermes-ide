@@ -19,8 +19,6 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 from urllib.parse import quote, unquote
 
-from hermes_cli._subprocess_compat import windows_hide_flags
-
 from agent.lsp.protocol import (
     ERROR_CONTENT_MODIFIED, ERROR_METHOD_NOT_FOUND, LSPProtocolError, LSPRequestError, classify_message,
     encode_message, make_error_response, make_notification, make_request, make_response, read_message,
@@ -214,18 +212,14 @@ class LSPClient:
     async def _spawn(self) -> None:
         from agent.delegation_context import delegated_child_subprocess_env
         cmd = self._command
-        if sys.platform == "win32" and cmd[0].lower().endswith((".cmd", ".bat")):
-            cmd = ["cmd.exe", "/c", *cmd]  # CreateProcess can't run .cmd/.bat shims directly
         try:
             # start_new_session=True gives the server its own process group; otherwise it inherits
             # the gateway's pgid and mcp_tool's orphan sweeper can killpg() the TUI parent with it.
-            # windows_hide_flags() suppresses the console window a .cmd shim would flash from a
-            # console-less host (CREATE_NO_WINDOW; 0 on POSIX).
             self._proc = await asyncio.create_subprocess_exec(
                 cmd[0], *cmd[1:],
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 env=delegated_child_subprocess_env({**os.environ, **(self._env or {})}), cwd=self._cwd,
-                start_new_session=True, creationflags=windows_hide_flags(),
+                start_new_session=True,
             )
         except FileNotFoundError as e:
             raise LSPProtocolError(f"LSP server binary not found: {cmd[0]} ({e})") from e

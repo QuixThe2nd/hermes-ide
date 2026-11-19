@@ -123,48 +123,6 @@ def short_home():
         shutil.rmtree(path, ignore_errors=True)
 
 
-@pytest.mark.platforms("windows")
-@pytest.mark.asyncio
-async def test_loop_tick_witness_arms_over_tcp_on_windows(short_home, caplog):
-    """Non-POSIX never touches AF_UNIX; the witness arms over TCP loopback.
-
-    Runs on native Windows (``os.name == "nt"`` for real) rather than faking
-    the platform from Linux — see "Don't fake the host OS" in AGENTS.md.
-    """
-    tmp_path = short_home
-    start_unix_server_calls = []
-
-    def _forbid_start_unix_server(*args, **kwargs):
-        start_unix_server_calls.append((args, kwargs))
-        raise AssertionError("start_unix_server must not be called on non-POSIX")
-
-    with patch.object(
-        shutdown_watchdog_module.asyncio,
-        "start_unix_server",
-        side_effect=_forbid_start_unix_server,
-        # ``asyncio.start_unix_server`` does not exist on native Windows, so
-        # without create=True patch.object itself raises AttributeError.
-        # create=True arms the forbidden-call tripwire anyway and mock
-        # deletes the created attribute on exit.
-        create=True,
-    ), caplog.at_level(logging.DEBUG, logger="gateway.shutdown_watchdog"):
-        payload = await _run_heartbeat_until_payload(tmp_path)
-
-    # (a) the AF_UNIX server was never attempted
-    assert start_unix_server_calls == []
-    # (b) no warning about an unavailable tick socket
-    assert not [
-        r
-        for r in caplog.records
-        if r.levelname == "WARNING"
-        and "Loop tick socket unavailable" in r.getMessage()
-    ]
-    # (c) the witness is armed over TCP and the port is published
-    assert payload["loop_tick_socket"] is True
-    assert 0 < int(payload["loop_tick_tcp_port"]) <= 65535
-    # (d) the POSIX socket node was never created
-    assert not list(tmp_path.glob("**/gateway.loop-tick.*.sock"))
-
 
 @pytest.mark.platforms("posix")
 @pytest.mark.asyncio

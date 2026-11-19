@@ -71,20 +71,6 @@ def _print_output_tail(result: subprocess.CompletedProcess, printer=None) -> Non
         (printer or _print_info)(f"      {line[:200]}")
 
 
-def _post_setup_no_window_flags(*, streams_to_console: bool = False) -> int:
-    """Win32 creationflags that stop post-setup children flashing a console (0 on POSIX).
-    CREATE_NO_WINDOW hides console grandchildren (npm, pip, powershell) while keeping stdio
-    inheritable (unlike DETACHED_PROCESS). ``streams_to_console`` children are only hidden when our
-    own stdout is not a console, so live installer output is never swallowed."""
-    from hermes_cli._subprocess_compat import windows_hide_flags
-    flags = windows_hide_flags()
-    try:
-        if flags and streams_to_console and sys.stdout is not None and sys.stdout.isatty():
-            return 0
-    except Exception:
-        pass
-    return flags or 0
-
 
 def _cua_driver_cmd() -> str:
     """Return the configured cua-driver override, or the bare default name."""
@@ -147,7 +133,6 @@ def _pip_install(args: List[str], *, timeout: int = 300, capture_output: bool = 
     pip``, then ``ensurepip --upgrade`` + retry — the Windows installer creates the venv via
     ``uv venv``, which does NOT seed pip, so bare ``-m pip`` failed on fresh installs."""
     venv_root = Path(sys.executable).parent.parent
-    install_flags = _post_setup_no_window_flags(streams_to_console=not capture_output)
 
     # Resolve uv and its target environment through PM, not ambient PATH.
     from pm.ensure import uv as pm_uv
@@ -155,7 +140,7 @@ def _pip_install(args: List[str], *, timeout: int = 300, capture_output: bool = 
     uv_bin, uv_env = pm_uv(realize=True, venv=venv_root)
     try:  # a failed uv run falls through to pip — it may have failed for a reason pip can handle
         result = uv_bin and _run_text([uv_bin, "pip", "install", *args], timeout=timeout,
-                                      capture_output=capture_output, creationflags=install_flags,
+                                      capture_output=capture_output,
                                       env=uv_env)
         if result and result.returncode == 0:
             return result
@@ -164,21 +149,19 @@ def _pip_install(args: List[str], *, timeout: int = 300, capture_output: bool = 
     pip_cmd = [sys.executable, "-m", "pip"]
     try:
         # Probe for pip; bootstrap via ensurepip if missing (uv venv lacks it).
-        probe = _run_text(pip_cmd + ["--version"], timeout=15,
-                          creationflags=_post_setup_no_window_flags())
+        probe = _run_text(pip_cmd + ["--version"], timeout=15)
         if probe.returncode != 0:
             raise FileNotFoundError("pip not in venv")
     except (subprocess.TimeoutExpired, FileNotFoundError):
         try:
             _run_text([sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                      timeout=120, check=True, creationflags=_post_setup_no_window_flags())
+                      timeout=120, check=True)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             # Synthesize a result so callers see a clean failure path.
             return subprocess.CompletedProcess(
                 pip_cmd, returncode=1, stdout="",
                 stderr=f"pip not available and ensurepip failed: {e}")
-    return _run_text(pip_cmd + ["install", *args], capture_output=capture_output, timeout=timeout,
-                     creationflags=install_flags)
+    return _run_text(pip_cmd + ["install", *args], capture_output=capture_output, timeout=timeout)
 
 
 # No pre-install release/asset probe: cua-driver-rs releases are all prereleases, which GitHub's
@@ -200,8 +183,7 @@ def _cua_install_target_writable() -> bool:
 def _cua_driver_version(binary: str) -> Optional[str]:
     """``<binary> --version`` stdout (possibly ""), or None when the probe itself fails."""
     try:
-        return _run_text([binary, "--version"], timeout=5, env=_cua_driver_env(),
-                         creationflags=_post_setup_no_window_flags()).stdout.strip()
+        return _run_text([binary, "--version"], timeout=5, env=_cua_driver_env()).stdout.strip()
     except Exception:
         return None
 
@@ -426,7 +408,7 @@ def _clear_stale_cua_install_lock() -> None:
             holder_pid = None
         if holder_pid is not None:
             try:
-                os.kill(holder_pid, 0)  # windows-footgun: ok — function early-returns on win32
+                os.kill(holder_pid, 0)
                 return  # holder alive → concurrent install running
             except ProcessLookupError:
                 pass  # dead holder → stale, clear below
@@ -565,7 +547,7 @@ def _kill_installer_tree(proc, *, is_windows: bool) -> None:
     import signal as _signal
     try:
         if not is_windows:
-            os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)  # windows-footgun: ok — POSIX only
+            os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
             return
         # PowerShell may leave download/install helpers alive after its direct process is killed;
         # they inherit stdout and can keep communicate() and install.lock wedged → kill leaf-up.
@@ -686,14 +668,10 @@ def _installer_popen_kwargs(is_windows: bool, verbose: bool, env: dict) -> dict:
     capture the chatty "Next steps" wall and log it so a failure stays debuggable; verbose
     interactive installs stream live."""
     kwargs: dict = {"shell": False, "env": env}
-    if not is_windows:
-        kwargs["start_new_session"] = True
-    if verbose:
-        kwargs["creationflags"] = _post_setup_no_window_flags(streams_to_console=True)
-    else:
+    kwargs["start_new_session"] = True
+    if not verbose:
         kwargs.update(stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                      text=True, encoding="utf-8", errors="replace",
-                      creationflags=_post_setup_no_window_flags())
+                      text=True, encoding="utf-8", errors="replace")
     return kwargs
 
 

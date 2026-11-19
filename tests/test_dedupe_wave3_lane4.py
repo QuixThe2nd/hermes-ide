@@ -14,7 +14,6 @@ import pytest
 
 # (manifest symbol, canonical definition, consuming compatibility surfaces)
 _GROUPS = (
-    ("_windows_runtime_self_lock", "hermes_cli.runtime_repair:_windows_runtime_self_lock", ("hermes_cli.managed_uv:_windows_runtime_self_lock",)),
     ("_sweep_stale_runtime_backups", "hermes_cli.runtime_repair:_sweep_stale_runtime_backups", ("hermes_cli.managed_uv:_sweep_stale_runtime_backups",)),
     ("_classify_is_enabled_probe", "plugins.auto_update.systemd:_classify_is_enabled_probe", ("plugins.drift_watch.systemd:_classify_is_enabled_probe",)),
     ("managed_gateway_auth_headers", "tools.managed_tool_gateway:managed_gateway_auth_headers", ("tools.managed_gateway_auth:managed_gateway_auth_headers",)),

@@ -26,7 +26,6 @@ from pathlib import Path
 from typing import Dict, Iterator, List, NamedTuple, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
-from hermes_cli._subprocess_compat import windows_hide_flags
 from utils import env_int
 
 logger = logging.getLogger(__name__)
@@ -292,7 +291,7 @@ def _git_subprocess(cmd: List[str], env: dict, timeout: int, cwd: Optional[str] 
     # Text mode both replaces undecodable path bytes and normalizes CR/CRLF.
     text_options = {} if "-z" in cmd else {"text": True, "encoding": "utf-8", "errors": "replace"}
     result = subprocess.run(cmd, capture_output=True, timeout=timeout, **text_options,
-                            env=env, cwd=cwd, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
+                            env=env, cwd=cwd, stdin=subprocess.DEVNULL)
     if "-z" in cmd:
         result.stdout = os.fsdecode(result.stdout)
         result.stderr = result.stderr.decode("utf-8", errors="replace")

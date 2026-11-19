@@ -97,10 +97,7 @@ class TestGatewayCommandWSLMessages:
         """hermes gateway install on WSL without systemd shows guidance.
 
         Linux-gated: WSL *is* a Linux host, and the guidance branch sits after
-        the macOS/Windows arms in ``gateway_command``. Reaching it on another
-        host previously required stubbing ``is_macos``/``is_windows`` — on a
-        real Windows host the unstubbed version would have run
-        ``gateway_windows.install()`` against the user's real Startup folder.
+        the macOS arm in ``gateway_command``.
         """
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr(gateway, "is_wsl", lambda: True)
@@ -127,7 +124,7 @@ class TestGatewayCommandWSLMessages:
         """hermes gateway status on WSL with manual process shows WSL note.
 
         Linux-gated for the same reason as the install case: the WSL note is
-        printed only after the macOS/Windows service branches decline.
+        printed only after the macOS service branch declines.
         """
         monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)

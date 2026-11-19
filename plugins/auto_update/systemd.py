@@ -598,7 +598,7 @@ def user_linger_enabled(*, username: str | None = None) -> bool:
         try:
             import pwd
 
-            username = pwd.getpwuid(os.getuid()).pw_name  # windows-footgun: ok — Linux-only linger probe
+            username = pwd.getpwuid(os.getuid()).pw_name
         except (ImportError, KeyError, OSError):
             return False
     return (Path("/var/lib/systemd/linger") / username).is_file()

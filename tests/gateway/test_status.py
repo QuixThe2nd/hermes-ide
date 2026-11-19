@@ -497,85 +497,19 @@ class TestGetProcessStartTime:
 
 
 class TestTerminatePid:
-    @pytest.mark.platforms("windows")
-    def test_force_uses_taskkill_on_windows(self, monkeypatch):
-        # Faking _IS_WINDOWS on POSIX could not reproduce the real
-        # CREATE_NO_WINDOW creationflags value that windows_hide_flags()
-        # returns only on Windows (it is 0 elsewhere).
-        calls = []
 
-        def fake_run(cmd, capture_output=False, text=False, timeout=None, creationflags=0, **kwargs):
-            calls.append((cmd, capture_output, text, timeout, creationflags))
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr(status.subprocess, "run", fake_run)
-
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 456)
-
-        status.terminate_pid(123, force=True, expected_start_time=456)
-
-        # taskkill is spawned with the no-window flag so the windowless
-        # pythonw.exe backend doesn't flash a conhost window on force-kill.
-        from hermes_cli._subprocess_compat import windows_hide_flags
-
-        assert calls == [
-            (["taskkill", "/PID", "123", "/T", "/F"], True, True, 10, windows_hide_flags())
-        ]
-
-    def test_windows_force_refuses_pid_without_start_time_guard(self, monkeypatch):
-        monkeypatch.setattr(status, "_IS_WINDOWS", True)
-        calls = []
-        monkeypatch.setattr(status.subprocess, "run", lambda *args, **kwargs: calls.append(args))
-
+    def test_force_refuses_pid_without_start_time_guard(self):
         with pytest.raises(OSError, match="without a process start-time guard"):
             status.terminate_pid(123, force=True)
 
-        assert calls == []
-
-    def test_windows_force_refuses_reused_pid(self, monkeypatch):
-        monkeypatch.setattr(status, "_IS_WINDOWS", True)
+    def test_force_refuses_reused_pid(self, monkeypatch):
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 999)
-        calls = []
-        monkeypatch.setattr(status.subprocess, "run", lambda *args, **kwargs: calls.append(args))
 
         with pytest.raises(OSError, match="process identity changed"):
             status.terminate_pid(123, force=True, expected_start_time=456)
 
-        assert calls == []
-
 
 class TestScopedLocks:
-    @pytest.mark.platforms("windows")
-    def test_windows_file_lock_uses_high_offset(self, tmp_path, monkeypatch):
-        # Faking _IS_WINDOWS on POSIX could not reproduce the msvcrt
-        # byte-range locking path at all: msvcrt does not exist off Windows,
-        # so the stub below had to invent the module as well as the host.
-        lock_path = tmp_path / "gateway.lock"
-        handle = open(lock_path, "a+", encoding="utf-8")
-        fd = handle.fileno()
-        calls = []
-
-        def fake_locking(fd, mode, size):
-            calls.append((fd, mode, size, handle.tell()))
-
-        monkeypatch.setattr(
-            status,
-            "msvcrt",
-            SimpleNamespace(LK_NBLCK=1, LK_UNLCK=2, locking=fake_locking),
-            raising=False,
-        )
-
-        try:
-            assert status._try_acquire_file_lock(handle) is True
-            status._release_file_lock(handle)
-        finally:
-            handle.close()
-
-        assert calls == [
-            (fd, 1, 1, status._WINDOWS_LOCK_OFFSET),
-            (fd, 2, 1, status._WINDOWS_LOCK_OFFSET),
-        ]
-        assert lock_path.read_text(encoding="utf-8") == "\n"
 
     def test_acquire_scoped_lock_rejects_live_other_process(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))

@@ -484,11 +484,11 @@ def mark_lanes_failed(directory: Path, error: str) -> None:
 # in-process locking only — the same shape as cron/jobs.py. Everywhere else
 # the cross-process lock is mandatory and fails closed (see StatusLockError).
 try:
-    import fcntl  # windows-footgun: ok — msvcrt fallback below
+    import fcntl
 except ImportError:  # pragma: no cover — POSIX always provides fcntl
     fcntl = None
 try:
-    import msvcrt  # windows-footgun: ok — POSIX never imports this branch
+    import msvcrt
 except ImportError:  # pragma: no cover — Windows-only module
     msvcrt = None
 

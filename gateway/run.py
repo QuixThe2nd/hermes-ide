@@ -6968,87 +6968,6 @@ class GatewayRunner(
         watcher_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
         watcher_env.pop("_HERMES_GATEWAY", None)
 
-        # On Windows there's no bash/setsid chain — spawn the Python watcher
-        # directly via sys.executable instead.
-        if sys.platform == "win32":
-            from hermes_cli._subprocess_compat import (
-                windows_detach_flags_without_breakaway,
-                windows_detach_popen_kwargs,
-            )
-
-            # The watcher runs sys.executable (console python) under the
-            # CREATE_NO_WINDOW detach kwargs below: it owns one hidden
-            # console, inherited by the replacement gateway child, so
-            # nothing flashes. Do NOT swap in GUI-subsystem pythonw.exe —
-            # a console-less watcher forces every console-subsystem
-            # descendant to allocate a visible conhost (#54220/#56747).
-            watcher_python = sys.executable
-            venv_dir = Path(watcher_env.get("VIRTUAL_ENV") or Path(project_root) / "venv")
-            site_packages = venv_dir / "Lib" / "site-packages"
-            if site_packages.exists():
-                watcher_env["VIRTUAL_ENV"] = str(venv_dir)
-                pythonpath = [project_root, str(site_packages)]
-                if watcher_env.get("PYTHONPATH"):
-                    pythonpath.append(watcher_env["PYTHONPATH"])
-                watcher_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))
-            watcher_argv = [
-                watcher_python,
-                "-c",
-                bootstrap,
-                str(current_pid),
-                project_root,
-            ]
-            # The watcher process must itself break away from any job object the
-            # parent CLI lives in (Electron/Tauri-wrapped Hermes Desktop, Windows
-            # Terminal, schtasks shells); otherwise it is reaped when the CLI
-            # exits and the gateway never respawns.  windows_detach_popen_kwargs()
-            # carries CREATE_BREAKAWAY_FROM_JOB, but a restrictive job object
-            # (no JOB_OBJECT_LIMIT_BREAKAWAY_OK) rejects that bit with
-            # ERROR_ACCESS_DENIED, surfaced as OSError.  Retry once without the
-            # breakaway bit, preserving argv and the scrubbed watcher_env.
-            # Mirrors the canonical fallback in
-            # hermes_cli/gateway_windows.py::_spawn_detached.
-            try:
-                subprocess.Popen(
-                    watcher_argv,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    env=watcher_env,
-                    cwd=project_root,
-                    **windows_detach_popen_kwargs(),
-                )
-            except OSError:
-                try:
-                    subprocess.Popen(
-                        watcher_argv,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        env=watcher_env,
-                        cwd=project_root,
-                        creationflags=windows_detach_flags_without_breakaway(),
-                    )
-                except OSError as exc:
-                    # Both spawn attempts failed (a breakaway-denying job object
-                    # is the common cause, but OSError covers others too).
-                    # Record a minimal, path-safe diagnostic and return without
-                    # crashing the caller: state plainly that no watcher was
-                    # started, and log only the interpreter basename and a
-                    # numeric error code — never argv, env, watcher source, or
-                    # str(exc) (which can carry a full interpreter path for a
-                    # FileNotFoundError).
-                    winerror = getattr(exc, "winerror", None)
-                    error_code = winerror if winerror is not None else exc.errno
-                    error_field = "winerror" if winerror is not None else "errno"
-                    logger.warning(
-                        "Detached restart watcher was not started after the "
-                        "no-breakaway retry (%s; %s=%r). The gateway will not "
-                        "be respawned by this restart attempt.",
-                        os.path.basename(watcher_python),
-                        error_field,
-                        error_code,
-                    )
-            return
-
         watcher_argv = [sys.executable, "-c", bootstrap, str(current_pid), project_root]
         setsid_bin = shutil.which("setsid")
         if setsid_bin:
@@ -7063,20 +6982,15 @@ class GatewayRunner(
                 start_new_session=True,
             )
         except OSError as exc:
-            # Same plain, path-safe reporting as the Windows dual-failure
-            # branch above: state that no watcher was started (so no
-            # replacement was scheduled) and log only the launched program's
+            # Plain, path-safe reporting: state that no watcher was started (so
+            # no replacement was scheduled) and log only the launched program's
             # basename and a numeric error code — never argv, env, or
             # str(exc), which can carry full interpreter paths.
-            winerror = getattr(exc, "winerror", None)
-            error_code = winerror if winerror is not None else exc.errno
-            error_field = "winerror" if winerror is not None else "errno"
             logger.warning(
-                "Detached restart watcher was not started (%s; %s=%r). The "
+                "Detached restart watcher was not started (%s; errno=%r). The "
                 "gateway will not be respawned by this restart attempt.",
                 os.path.basename(watcher_argv[0]),
-                error_field,
-                error_code,
+                exc.errno,
             )
 
 
@@ -11615,10 +11529,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         # add_signal_handler raises NotImplementedError on Windows; SIGUSR1 is POSIX-only.
         handlers = [(sig, shutdown_signal_handler, (sig,)) for sig in (signal.SIGINT, signal.SIGTERM)]
         if hasattr(signal, "SIGUSR1"):
-            handlers.append((signal.SIGUSR1, restart_signal_handler, ()))  # windows-footgun: ok — hasattr-guarded
+            handlers.append((signal.SIGUSR1, restart_signal_handler, ()))
         for sig, handler, args in handlers:
             with suppress(NotImplementedError):
-                loop.add_signal_handler(sig, handler, *args)  # windows-footgun: ok — suppress(NotImplementedError)
+                loop.add_signal_handler(sig, handler, *args)
     else:
         logger.info("Skipping signal handlers (not running in main thread).")
 

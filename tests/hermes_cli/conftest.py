@@ -27,9 +27,9 @@ def all_assignees_spawnable(monkeypatch):
 def _suppress_concurrent_hermes_gate(request, monkeypatch):
     """Default ``_detect_concurrent_hermes_instances`` to ``[]`` for every test.
 
-    The Windows update path now refuses to proceed when another
-    ``hermes.exe`` is detected (issue #26670). On a developer's Windows
-    machine running the test suite via ``hermes`` itself, this would
+    ``cmd_update`` refuses to proceed when another running Hermes
+    instance is detected (issue #26670). On a developer machine
+    running the test suite via ``hermes`` itself, this would
     flag the running agent as a concurrent instance and abort every
     ``cmd_update`` test. Tests that want to exercise the gate explicitly
     re-patch ``_detect_concurrent_hermes_instances`` with their own
@@ -64,7 +64,7 @@ def _suppress_concurrent_hermes_gate(request, monkeypatch):
 def _inline_post_swap_handoff(request, monkeypatch):
     """Run the post-swap tail in-process instead of re-executing ``hermes update --post-swap``.
 
-    ``_apply_pulled_update`` / ``_update_via_zip`` hand the rest of the run to a child
+    ``_apply_pulled_update`` hands the rest of the run to a child
     interpreter on the pulled tree. A mocked updater flow must not spawn that child (it would
     run a real dependency sync against the worktree), so the tail runs here through the same
     payload round-trip — every step stays patchable and the payload shape is still exercised.
@@ -102,10 +102,6 @@ def isolated_update_runtime(monkeypatch, tmp_path, request):
     monkeypatch.setattr(gateway, "find_profile_gateway_processes", lambda *a, **k: [])
     monkeypatch.setattr(gateway, "_get_service_pids", lambda *a, **k: set())
     monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
-    monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda: None)
-    monkeypatch.setattr(main, "_resume_windows_gateways_after_update", lambda *a, **k: None)
-    monkeypatch.setattr(main, "_detect_venv_python_processes", lambda: [])
-    monkeypatch.setattr(update_cmd, "_clear_windows_venv_holders_or_exit", lambda *a, **k: None)
     monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None)
     monkeypatch.setattr(update_cmd, "_apply_pending_fleet_restart_catchup", lambda *a, **k: None)
     monkeypatch.setattr(update_cmd_fleet, "_restart_macos_launchd_gateways", lambda *a, **k: None)
@@ -201,7 +197,6 @@ def isolated_update_processes():
     with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
          patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
          patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
-         patch("hermes_cli.main._detect_venv_python_processes", return_value=[], create=True), \
          patch("hermes_cli.main._fleet_probe_expected_runtimes", return_value=False, create=True), \
          patch("os.kill"), \
          patch("pm.sync_venv"), \
@@ -210,8 +205,6 @@ def isolated_update_processes():
              return_value=SimpleNamespace(runtimes=[], to_dict=lambda: {}),
          ), \
          patch("hermes_cli.main._purge_stale_hermes_modules", create=True), \
-         patch("hermes_cli.main._pause_windows_gateways_for_update", return_value=None, create=True), \
-         patch("hermes_cli.main._resume_windows_gateways_after_update", create=True), \
          patch(
              "hermes_cli.main._install_hangup_protection",
              return_value={
@@ -245,12 +238,3 @@ def isolated_update_checkout(monkeypatch, tmp_path):
     monkeypatch.setattr(
         main_web_build, "_run_npm_install_deterministic", fake_npm, raising=False
     )
-
-    # Tests that exercise ZIP fallback must override this tripwire explicitly.
-    def _no_zip_fallback(*args, **kwargs):
-        pytest.fail(
-            "test reached _update_via_zip — the git checkout path was not "
-            "isolated correctly (missing tmp .git or unexpected fallback)"
-        )
-
-    monkeypatch.setattr("hermes_cli.update_cmd._update_via_zip", _no_zip_fallback)

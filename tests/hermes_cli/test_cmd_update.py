@@ -14,15 +14,6 @@ from hermes_cli import main_install_repair
 from hermes_cli import update_cmd
 
 
-@pytest.fixture(autouse=True)
-def _isolate_venv_holders(monkeypatch):
-    """The update flow's venv-holder guard sees the live gateway processes on
-    a dev machine and aborts with SystemExit 2 before reaching the branch
-    logic under test.  Isolate it so the test exercises the intended path."""
-    import hermes_cli.main as cli_main
-
-    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: [])
-
 
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
     """Build a side_effect function for subprocess.run that simulates git commands."""
@@ -94,7 +85,6 @@ def _patch_gateway_discovery(isolated_update_runtime):
     with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
          patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
          patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
-         patch("hermes_cli.main._detect_venv_python_processes", return_value=[]), \
          patch("hermes_cli.main._fleet_probe_expected_runtimes", return_value=False), \
          patch("os.kill"), \
          patch("pm.sync_venv"), \
@@ -103,8 +93,6 @@ def _patch_gateway_discovery(isolated_update_runtime):
              return_value=SimpleNamespace(runtimes=[], to_dict=lambda: {}),
          ), \
          patch("hermes_cli.main._purge_stale_hermes_modules", create=True), \
-         patch("hermes_cli.main._pause_windows_gateways_for_update", return_value=None), \
-         patch("hermes_cli.main._resume_windows_gateways_after_update"), \
          patch(
              "hermes_cli.main._install_hangup_protection",
              return_value={
@@ -277,7 +265,7 @@ class TestRepairCurrentCheckoutRuntimeRepair:
         assert update_cmd._repair_venv_on_current_checkout(
             assume_yes=True, gateway_mode=False, pre_update_snapshot_id=None,
             active_lazy_features=[],
-            active_tool_dependencies=[], _windows_gateway_resume=None,
+            active_tool_dependencies=[],
         )
         assert calls == ["memory"]
 
@@ -886,82 +874,6 @@ class TestCmdUpdateCheckBranchFlag:
         assert not any("upstream/main" in c for c in rev_list_cmds), rev_list_cmds
 
 
-class TestCmdUpdateZipBranchRefusal:
-    """``hermes update --branch=<non-main>`` must refuse on the ZIP fallback path.
-
-    The ZIP fallback hard-codes a GitHub archive URL for main.zip; honoring
-    --branch arbitrarily would require remote-branch existence checks the
-    fallback can't easily do. Refusing is the right move — silently lying
-    about which branch got installed is the bug --branch was meant to prevent.
-    """
-
-    def test_zip_fallback_refuses_non_main_branch(self, capsys):
-        from hermes_cli.update_cmd import _update_via_zip
-
-        args = SimpleNamespace(branch="bb/gui")
-        with pytest.raises(SystemExit) as exc_info:
-            _update_via_zip(args)
-        assert exc_info.value.code == 1
-
-        out = capsys.readouterr().out
-        assert "bb/gui" in out
-        assert "not supported" in out
-        # No actual download attempted.
-        assert "Downloading latest version" not in out
-
-
-def test_zip_archive_uses_configured_github_origin(tmp_path, monkeypatch):
-    from hermes_cli import main as hermes_main
-    from hermes_cli import update_cmd_zip
-
-    (tmp_path / ".git").mkdir()
-    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(
-        hermes_main, "_get_origin_url",
-        lambda *args: "git@github.com:Example/custom-hermes.git",
-    )
-
-    assert update_cmd_zip._zip_archive_url("main") == (
-        "https://github.com/example/custom-hermes/archive/refs/heads/main.zip"
-    )
-
-
-def test_zip_archive_source_only_install_defaults_to_hermes_ide(tmp_path, monkeypatch):
-    from hermes_cli import main as hermes_main
-    from hermes_cli import update_cmd_zip
-
-    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
-    assert update_cmd_zip._zip_archive_url("main") == (
-        "https://github.com/quixthe2nd/hermes-ide/archive/refs/heads/main.zip"
-    )
-
-
-@pytest.mark.parametrize(
-    "origin",
-    [
-        None,
-        "https://gitlab.com/example/hermes.git",
-        "https://github.com.evil.example/example/hermes.git",
-        "https://github.com@evil.example/example/hermes.git",
-        "git@github.com.evil:example/hermes.git",
-        "https://evil.example/github.com/example/hermes.git",
-    ],
-)
-def test_zip_archive_refuses_unresolvable_origin_without_downloading(
-    tmp_path, monkeypatch, capsys, origin
-):
-    from hermes_cli import main as hermes_main
-    from hermes_cli import update_cmd_zip
-
-    (tmp_path / ".git").mkdir()
-    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(hermes_main, "_get_origin_url", lambda *args: origin)
-    with patch("urllib.request.urlretrieve") as download:
-        with pytest.raises(SystemExit) as exc_info:
-            update_cmd_zip._zip_archive_url("main")
-    assert exc_info.value.code == 1
-    download.assert_not_called()
-    assert "NousResearch" not in capsys.readouterr().out
 
 
 def test_is_termux_env_true_for_termux_prefix():
@@ -1017,7 +929,7 @@ class TestNodeRuntimeNpmResolution:
         )
 
         failed = update_cmd._update_node_dependencies()
-        assert failed == ["ui-tui workspace"]
+        assert failed == ["Node.js dependencies"]
         out = capsys.readouterr().out
         assert "mixed state" in out
 
@@ -1098,8 +1010,8 @@ class TestUpdateNodeDependencies:
 
     @patch("subprocess.Popen")
     @patch("shutil.which", return_value="/usr/bin/npm")
-    def test_install_names_ui_tui_workspace(self, _which, mock_popen, tmp_path, monkeypatch):
-        """Regression for #43564: install ui-tui directly."""
+    def test_install_runs_at_root_without_workspace_selectors(self, _which, mock_popen, tmp_path, monkeypatch):
+        """With no workspace packages left, npm installs the root manifest only."""
         from hermes_cli import main as hm
 
         (tmp_path / "package.json").write_text("{}")
@@ -1114,39 +1026,12 @@ class TestUpdateNodeDependencies:
         calls = self._popen_npm_calls(popen_calls)
         assert len(calls) == 1, f"expected exactly 1 npm call, got: {calls}"
         joined = " ".join(str(a) for a in calls[0])
-        assert "--workspace ui-tui" in joined, (
-            f"expected ui-tui workspace selector; actual: {calls[0]}"
+        assert "--workspace" not in joined, (
+            f"no workspace scoping remains; actual: {calls[0]}"
         )
-        assert "--workspace web" not in joined, (
-            f"the web workspace is removed; actual: {calls[0]}"
+        assert "--include-workspace-root" not in joined, (
+            f"no workspace install to protect root deps from; actual: {calls[0]}"
         )
-        assert "--workspaces=false" not in joined, (
-            f"no root-only deps remain to protect; --workspaces=false is unnecessary now; actual: {calls[0]}"
-        )
-
-    @patch("subprocess.Popen")
-    @patch("shutil.which", return_value="/usr/bin/npm")
-    def test_install_includes_workspace_root_to_protect_root_devdependencies(
-        self, _which, mock_popen, tmp_path, monkeypatch
-    ):
-        """Root package.json owns the shared ESLint flat-config devDependencies
-        imported by every workspace. --include-workspace-root keeps them from
-        being pruned by this scoped install."""
-        from hermes_cli import main as hm
-
-        (tmp_path / "package.json").write_text("{}")
-        (tmp_path / "package-lock.json").write_text("{}")
-        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        monkeypatch.setattr(hm, "_npm_lockfile_changed", lambda root: True)
-        popen_calls = []
-        mock_popen.side_effect = self._make_popen(popen_calls)
-
-        update_cmd._update_node_dependencies()
-
-        calls = self._popen_npm_calls(popen_calls)
-        assert len(calls) == 1
-        joined = " ".join(str(a) for a in calls[0])
-        assert "--include-workspace-root" in joined
 
     @patch("subprocess.Popen")
     @patch("shutil.which", return_value="/usr/bin/npm")
@@ -1277,116 +1162,3 @@ class TestUpdateNodeDependencies:
         for cwd in cwd_calls:
             assert cwd == tmp_path, f"npm must run from PROJECT_ROOT; got cwd={cwd}"
 
-
-class TestGitTrampolineSelfHeal:
-    """Proactive Git-for-Windows trampoline self-heal (#87876).
-
-    A broken bin\\git.exe / cmd\\git.exe shim (~46KB) refuses every git call
-    with a "BUG (fork bomb)" guard instead of re-execing the real git-core
-    binary. _ensure_non_trampoline_git detects this up front and swaps in a
-    real git binary when one can be located, so the normal git update path
-    survives instead of degrading to the ZIP fallback.
-    """
-
-    @staticmethod
-    def _fake_run_healthy(command, **_kwargs):
-        return subprocess.CompletedProcess(
-            command, 0, stdout="git version 2.50.0.windows.1\n", stderr=""
-        )
-
-    @staticmethod
-    def _fake_run_trampoline(command, **_kwargs):
-        return subprocess.CompletedProcess(
-            command,
-            1,
-            stdout="",
-            stderr="BUG (fork bomb): tried to spawn itself, check your PATH\n",
-        )
-
-    def test_healthy_git_command_unchanged(self):
-        from hermes_cli import update_cmd
-
-        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
-        with (
-            patch("sys.platform", "win32"),
-            patch(
-                "hermes_cli.update_cmd.subprocess.run",
-                side_effect=self._fake_run_healthy,
-            ),
-            patch("hermes_cli.update_cmd._locate_real_git") as locate,
-        ):
-            result = update_cmd._ensure_non_trampoline_git(git_cmd)
-        assert result == git_cmd
-        locate.assert_not_called()
-
-    def test_trampoline_swaps_to_real_git(self, capsys):
-        from pathlib import Path
-
-        from hermes_cli import update_cmd
-
-        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
-        real = Path(r"C:\Program Files\Git\mingw64\libexec\git-core\git.exe")
-        with (
-            patch("sys.platform", "win32"),
-            patch(
-                "hermes_cli.update_cmd.subprocess.run",
-                side_effect=self._fake_run_trampoline,
-            ),
-            patch(
-                "hermes_cli.update_cmd._locate_real_git", return_value=real
-            ),
-        ):
-            result = update_cmd._ensure_non_trampoline_git(git_cmd)
-        assert result == [str(real), "-c", "windows.appendAtomically=false"]
-        out = capsys.readouterr().out
-        assert "switching to real git" in out
-
-    def test_trampoline_no_real_git_keeps_command(self, capsys):
-        from hermes_cli import update_cmd
-
-        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
-        with (
-            patch("sys.platform", "win32"),
-            patch(
-                "hermes_cli.update_cmd.subprocess.run",
-                side_effect=self._fake_run_trampoline,
-            ),
-            patch("hermes_cli.update_cmd._locate_real_git", return_value=None),
-        ):
-            result = update_cmd._ensure_non_trampoline_git(git_cmd)
-        assert result == git_cmd
-        out = capsys.readouterr().out
-        assert "ZIP path" in out
-
-    def test_off_windows_noop(self):
-        from hermes_cli import update_cmd
-
-        git_cmd = ["git"]
-        with (
-            patch("sys.platform", "linux"),
-            patch("hermes_cli.update_cmd.subprocess.run") as run,
-        ):
-            result = update_cmd._ensure_non_trampoline_git(git_cmd)
-        assert result == git_cmd
-        run.assert_not_called()
-
-    def test_portable_git_candidates_check_shared_root_first(self, tmp_path, monkeypatch):
-        # Profile-scoped layout: HERMES_HOME = <root>/profiles/foo, but the
-        # PortableGit tree lives under the SHARED root (monerostar review on
-        # #88136). The candidate list must check get_default_hermes_root()
-        # before the profile home.
-        from hermes_cli import update_cmd
-
-        root = tmp_path / "root"
-        profile_home = root / "profiles" / "foo"
-
-        monkeypatch.setattr(update_cmd, "get_default_hermes_root", lambda: root)
-        monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: profile_home)
-
-        candidates = update_cmd._portable_git_candidates()
-        assert candidates[0] == (
-            root / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
-        )
-        assert candidates[1] == (
-            profile_home / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
-        )
