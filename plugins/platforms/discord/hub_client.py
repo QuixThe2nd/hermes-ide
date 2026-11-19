@@ -26,6 +26,12 @@ logger = logging.getLogger(__name__)
 
 _OVERLAP_SUCCESSOR_ATTACH_TIMEOUT_SECONDS = 300.0
 _OVERLAP_SUCCESSOR_ATTACH_POLL_SECONDS = 0.5
+# StreamReader limit for the hub connection: asyncio's 64 KiB default makes
+# readline() raise LimitOverrunError and drop frames on large Discord
+# payloads (embeds, long messages, attachment batches), so frames up to
+# 16 MiB must pass through whole. Go twin: internal/hubframe (shared
+# testdata contract test).
+_HUB_STREAM_LIMIT = 16 * 1024 * 1024
 
 
 class HubOverlapClientMixin:
@@ -319,11 +325,15 @@ class DiscordHubClientAdapter(HubOverlapClientMixin, BasePlatformAdapter):
 
     async def _open_socket(self) -> None:
         try:
-            self._reader, self._writer = await asyncio.open_unix_connection(str(self._socket_path))
+            self._reader, self._writer = await asyncio.open_unix_connection(
+                str(self._socket_path), limit=_HUB_STREAM_LIMIT
+            )
         except (FileNotFoundError, ConnectionRefusedError, OSError):
             if not await self._start_hub():
                 raise
-            self._reader, self._writer = await asyncio.open_unix_connection(str(self._socket_path))
+            self._reader, self._writer = await asyncio.open_unix_connection(
+                str(self._socket_path), limit=_HUB_STREAM_LIMIT
+            )
 
     async def _start_hub(self) -> bool:
         """Start the installation hub when no service manager has done so.
