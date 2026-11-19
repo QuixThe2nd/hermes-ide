@@ -79,6 +79,37 @@ _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "cron",
 })
 
+# Root entries that are infrastructure / runtime state, never profile data. The export
+# path moved to a root ALLOW-list (``_DEFAULT_EXPORT_INCLUDE_ROOT``, #58394); the one
+# remaining consumer is the distribution path — ``profile_distribution.USER_OWNED_EXCLUDE``
+# layers its distribution-specific additions on top of this authority. Keep new root
+# artifacts here, not in a downstream copy.
+DEFAULT_EXPORT_EXCLUDE_ROOT: frozenset[str] = frozenset({
+    # Infrastructure
+    "hermes-agent",         # repo checkout (multi-GB)
+    ".worktrees",           # git worktrees
+    "profiles",             # other profiles — never recursively managed
+    "bin",                  # installed binaries (tirith, etc.)
+    "node_modules",         # npm packages
+    ".hermes-runtime",      # managed runtime tree (install artifact)
+    "node",                 # legacy pre-split managed Node tree
+    # Databases & runtime state
+    "state.db", "state.db-shm", "state.db-wal",
+    "hermes_state.db",
+    "response_store.db", "response_store.db-shm", "response_store.db-wal",
+    "gateway.pid", "gateway_state.json", "processes.json",
+    "auth.json",            # API keys, OAuth tokens, credential pools
+    ".env",                 # API keys (dotenv)
+    "auth.lock", "active_profile", ".update_check",
+    "errors.log",
+    ".hermes_history",
+    # Caches (regenerated on use)
+    "image_cache", "audio_cache", "document_cache",
+    "browser_screenshots", "checkpoints",
+    "sandboxes",
+    "logs",                 # gateway logs
+})
+
 # Marker written by `hermes profile create --no-skills`. When present at a profile root,
 # seed_profile_skills() callers (fresh-create, `hermes update` all-profile sync, the
 # dashboard) skip bundled-skill seeding. Delete the file to opt back in.
@@ -1662,8 +1693,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
             print(f"✓ Released {_closed} session database connection(s) held by this process")
 
     # The Desktop serve process routes its agent/errors logs for every profile through one
-    # QueueListener. On Windows those ConcurrentRotatingFileHandler instances retain their
-    # ``.__*.lock`` files until explicitly closed, so rmtree otherwise fails with WinError 32.
+    # QueueListener; those handlers stay open until explicitly closed, so rmtree would fail.
     with contextlib.suppress(Exception):
         from hermes_logging import release_profile_log_handlers
         _released_logs = release_profile_log_handlers(profile_dir)
