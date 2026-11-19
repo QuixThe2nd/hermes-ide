@@ -143,7 +143,7 @@ class _RecordingAdapter(BasePlatformAdapter):
         return SendResult(success=True, message_id="1")
 
     def jev_sends(self) -> list:
-        return [s for s in self.sends if str(s["content"]).startswith("🔎 jev")]
+        return [s for s in self.sends if str(s["content"]).startswith(("🔎 jev", "```"))]
 
 
 def _registry_generation(adapter) -> "int | None":
@@ -180,7 +180,7 @@ async def test_success_attempt_posts_one_notice_line(runner, monkeypatch):
         )
     assert decision["label"] == "task"
     assert sent == [
-        "🔎 jev goal-intent (attempt 1/2) user message from operator: task (confidence 0.91)"
+        "```\n🔍 Goal Intent: 0.91 Confidence\n```"
     ]
 
 
@@ -196,8 +196,8 @@ async def test_retry_then_success_posts_one_notice_per_attempt(runner, monkeypat
     assert post.call_count == 2
     assert decision["label"] == "chase"
     assert sent == [
-        "🔎 jev goal-intent (attempt 1/2) user message from operator: failed (http_502)",
-        "🔎 jev goal-intent (attempt 2/2) user message from operator: chase (confidence 0.77)",
+        "```\n🔍 Goal Intent: failed (http_502)\n```",
+        "```\n🔍 Goal Intent: 0.77 Confidence\n```",
     ]
 
 
@@ -215,8 +215,8 @@ async def test_both_attempts_failing_posts_two_failure_notices_and_fails_closed(
     assert post.call_count == 2
     assert decision["label"] == "unknown"
     assert sent == [
-        "🔎 jev goal-intent (attempt 1/2) user message from operator: failed (http_500)",
-        "🔎 jev goal-intent (attempt 2/2) user message from operator: failed (http_500)",
+        "```\n🔍 Goal Intent: failed (http_500)\n```",
+        "```\n🔍 Goal Intent: failed (http_500)\n```",
     ]
 
 
@@ -227,7 +227,7 @@ async def test_chat_and_low_confidence_labels_are_visible(runner, monkeypatch):
     with patch("hermes_cli.goal_intent.requests.post", return_value=_jev_response("chat", 0.2)):
         await runner._run_auto_goal_evaluation("huh", _source(), "discord")
     assert sent == [
-        "🔎 jev goal-intent (attempt 1/2) user message from operator: chat (confidence 0.20)"
+        "```\n🔍 Goal Intent: 0.20 Confidence\n```"
     ]
 
 
@@ -332,9 +332,9 @@ async def test_notices_reach_only_the_owning_source_adapter(runner, monkeypatch,
         await _classify_and_deliver("fix a again", source_a2)
 
     assert [(tag, line) for tag, line, _home in deliveries] == [
-        ("default", "🔎 jev goal-intent (attempt 1/2) user message from A-User: task (confidence 0.90)"),
-        ("beta", "🔎 jev goal-intent (attempt 1/2) user message from B-User: task (confidence 0.90)"),
-        ("default", "🔎 jev goal-intent (attempt 1/2) user message from A-User: task (confidence 0.90)"),
+        ("default", "```\n🔍 Goal Intent: 0.90 Confidence\n```"),
+        ("beta", "```\n🔍 Goal Intent: 0.90 Confidence\n```"),
+        ("default", "```\n🔍 Goal Intent: 0.90 Confidence\n```"),
     ]
     by_tag = {}
     for tag, _line, home in deliveries:
@@ -372,7 +372,7 @@ async def test_jev_notice_send_is_marked_non_conversational_and_interim(runner, 
             await asyncio.sleep(0)
 
     assert [message for message, _meta in sent] == [
-        "🔎 jev goal-intent (attempt 1/2) user message from operator: task (confidence 0.90)"
+        "```\n🔍 Goal Intent: 0.90 Confidence\n```"
     ]
     metadata = sent[0][1]
     assert metadata is not None
@@ -420,10 +420,7 @@ class TestIndependentDeliveryLifecycle:
             return "the answer"
 
         adapter.set_message_handler(handler)
-        notice = (
-            "🔎 jev goal-intent (attempt 1/2) user message from operator: "
-            "task (confidence 0.90)"
-        )
+        notice = "```\n🔍 Goal Intent: 0.90 Confidence\n```"
         with patch(
             "hermes_cli.goal_intent.requests.post", return_value=_jev_response("task", 0.9)
         ):
@@ -464,10 +461,7 @@ class TestIndependentDeliveryLifecycle:
         )
         assert adapter.jev_sends() == []  # boundary fired, nothing stranded
 
-        notice = (
-            "🔎 jev goal-intent (attempt 1/2) user message from operator: "
-            "task (confidence 0.90)"
-        )
+        notice = "```\n🔍 Goal Intent: 0.90 Confidence\n```"
         with patch(
             "hermes_cli.goal_intent.requests.post", return_value=_jev_response("task", 0.9)
         ):
@@ -517,10 +511,7 @@ class TestIndependentDeliveryLifecycle:
             await _drain(runner)
             await _poll_until(lambda: adapter.jev_sends())
 
-        notice = (
-            "🔎 jev goal-intent (attempt 1/2) user message from operator: "
-            "task (confidence 0.90)"
-        )
+        notice = "```\n🔍 Goal Intent: 0.90 Confidence\n```"
         assert [s["content"] for s in adapter.jev_sends()] == [notice]
         assert adapter._post_delivery_callbacks == {}
 
@@ -549,7 +540,7 @@ class TestIndependentDeliveryLifecycle:
         adapter.register_post_delivery_callback = _spying_register
 
         def _notice_landed(generation: int) -> bool:
-            marker = "task (confidence" if generation == 1 else "chase (confidence"
+            marker = "0.90 Confidence" if generation == 1 else "0.80 Confidence"
             return any(
                 marker in str(s["content"]) for s in adapter.jev_sends()
             ) or _registry_generation(adapter) == generation
@@ -605,10 +596,8 @@ class TestIndependentDeliveryLifecycle:
 
         lines = sorted(s["content"] for s in adapter.jev_sends())
         assert lines == sorted([
-            "🔎 jev goal-intent (attempt 1/2) user message from operator: "
-            "task (confidence 0.90)",
-            "🔎 jev goal-intent (attempt 1/2) user message from operator: "
-            "chase (confidence 0.80)",
+            "```\n🔍 Goal Intent: 0.90 Confidence\n```",
+            "```\n🔍 Goal Intent: 0.80 Confidence\n```",
         ])
         assert registrations == []  # both notices bypassed the shared registry
         assert adapter._post_delivery_callbacks == {}
@@ -643,7 +632,7 @@ class TestIndependentDeliveryLifecycle:
 
         sends = adapter_b.jev_sends()
         assert [s["content"] for s in sends] == [
-            "🔎 jev goal-intent (attempt 1/2) user message from B-User: task (confidence 0.90)"
+            "```\n🔍 Goal Intent: 0.90 Confidence\n```"
         ]
         assert sends[0]["home"] == str(home_b)  # owning profile's scope at the send
         assert adapter_default.jev_sends() == []

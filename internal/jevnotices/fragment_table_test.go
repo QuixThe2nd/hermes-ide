@@ -18,18 +18,18 @@ func TestSubjectAuthorFragmentTable(t *testing.T) {
 	}{
 		{
 			"plain subject and author",
-			Notice{Purpose: PurposeGoalIntent, Subject: "user message", Author: "Alice"},
-			Prefix + "goal-intent user message from Alice:",
+			Notice{Purpose: PurposeResponseGate, Subject: "user message", Author: "Alice"},
+			Prefix + "response-gate user message from Alice:",
 		},
 		{
 			"author omitted when empty",
-			Notice{Purpose: PurposeGoalIntent, Subject: "user message"},
-			Prefix + "goal-intent user message:",
+			Notice{Purpose: PurposeResponseGate, Subject: "user message"},
+			Prefix + "response-gate user message:",
 		},
 		{
 			"author omitted when whitespace only",
-			Notice{Purpose: PurposeGoalIntent, Subject: "user message", Author: " \t "},
-			Prefix + "goal-intent user message:",
+			Notice{Purpose: PurposeReactionGate, Subject: "user message", Author: " \t "},
+			Prefix + "reaction-gate user message:",
 		},
 		{
 			"subject collapses internal runs",
@@ -43,18 +43,18 @@ func TestSubjectAuthorFragmentTable(t *testing.T) {
 		},
 		{
 			"assistant subject renders verbatim",
-			Notice{Purpose: PurposeGoalIntent, Subject: "assistant reply"},
-			Prefix + "goal-intent assistant reply:",
+			Notice{Purpose: PurposeReactionGate, Subject: "assistant reply"},
+			Prefix + "reaction-gate assistant reply:",
 		},
 		{
 			"attempt fragment sits between purpose and subject",
-			Notice{Purpose: PurposeGoalIntent, Subject: "user message", Attempt: 2, Attempts: 3},
-			Prefix + "goal-intent (attempt 2/3) user message:",
+			Notice{Purpose: PurposeResponseGate, Subject: "user message", Attempt: 2, Attempts: 3},
+			Prefix + "response-gate (attempt 2/3) user message:",
 		},
 		{
 			"attempt fragment with author",
-			Notice{Purpose: PurposeGoalIntent, Subject: "user message", Author: "Bob", Attempt: 1, Attempts: 2},
-			Prefix + "goal-intent (attempt 1/2) user message from Bob:",
+			Notice{Purpose: PurposeResponseGate, Subject: "user message", Author: "Bob", Attempt: 1, Attempts: 2},
+			Prefix + "response-gate (attempt 1/2) user message from Bob:",
 		},
 		{
 			"purpose is sanitized like a token",
@@ -76,6 +76,11 @@ func TestSubjectAuthorFragmentTable(t *testing.T) {
 			Notice{Purpose: PurposeResponseGate, Subject: "user message", Author: strings.Repeat("x", 200)},
 			Prefix + "response-gate user message from " + strings.Repeat("x", 80) + ":",
 		},
+		{
+			"goal-intent renders the fenced status head",
+			Notice{Purpose: PurposeGoalIntent, Subject: "user message", Author: "Alice", Attempt: 1, Attempts: 2, Label: "task", HasConfidence: true, Confidence: 0.61},
+			"```\n🔍 Goal Intent: 0.61 Confidence\n```",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -96,8 +101,8 @@ func TestSubjectAuthorFragmentTable(t *testing.T) {
 // shapes to make sure none can produce one.
 func TestFragmentHeadNeverEndsInDoubledSpaces(t *testing.T) {
 	shapes := []Notice{
-		{Purpose: PurposeGoalIntent, Subject: "user message", Author: ""},
-		{Purpose: PurposeGoalIntent, Subject: "  ", Author: "   "},
+		{Purpose: PurposeResponseGate, Subject: "user message", Author: ""},
+		{Purpose: PurposeReactionGate, Subject: "  ", Author: "   "},
 		{Purpose: PurposeResponseGate, Subject: "user message", Author: "@", Attempt: 1, Attempts: 2},
 		{Purpose: PurposeReactionGate, Subject: "user message", Author: "` `"},
 	}
@@ -134,7 +139,9 @@ func ExampleFormat() {
 		HasAbstain: true, Abstain: 0.63,
 	}))
 	// Output:
-	// 🔎 jev goal-intent (attempt 1/2) user message from Alice: task (confidence 0.82)
+	// ```
+	// 🔍 Goal Intent: 0.82 Confidence
+	// ```
 	// 🔎 jev response-gate user message from Tek: allow (addresses_bot=0.91 continues_bot_thread=0.12 joins_bot_thread=0.03 noise=0.05)
 	// 🔎 jev reaction-gate user message from Tek: no reaction (abstain 0.63)
 }

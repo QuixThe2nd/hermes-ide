@@ -23,12 +23,13 @@ func TestSharedCasesPass(t *testing.T) {
 }
 
 // TestSharedCasesCoverTheRequiredSurfaces guards the table itself: every
-// purpose, a failure per purpose, and a negative/abstention outcome per
-// decision-shaped purpose must stay represented, because those are the
-// outcomes users are troubleshooting.
+// purpose, a failure per purpose, the decision-shaped negative/abstention
+// outcomes users troubleshoot (deny for the response gate, no-reaction for
+// the reaction gate), and the goal-intent missing-confidence status — the
+// one goal-intent outcome besides success and failure.
 func TestSharedCasesCoverTheRequiredSurfaces(t *testing.T) {
 	cases := loadSharedCases(t)
-	seenPurpose, seenFailure, seenNegative := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	seenPurpose, seenFailure, seenNegative, seenNoConfidence := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, tc := range cases {
 		rec := tc.Record
 		seenPurpose[rec["purpose"].(string)] = true
@@ -37,8 +38,11 @@ func TestSharedCasesCoverTheRequiredSurfaces(t *testing.T) {
 		}
 		switch rec["purpose"].(string) {
 		case PurposeGoalIntent:
-			if label, _ := rec["label"].(string); label == "chat" {
-				seenNegative["goal-intent"] = true
+			confidence, hasConfidence := rec["confidence"]
+			if _, isFloat := confidence.(float64); !hasConfidence || !isFloat {
+				if _, hasErr := rec["error"]; !hasErr {
+					seenNoConfidence["goal-intent"] = true
+				}
 			}
 		case PurposeResponseGate:
 			if allowed, ok := rec["allowed"].(bool); ok && !allowed {
@@ -59,9 +63,15 @@ func TestSharedCasesCoverTheRequiredSurfaces(t *testing.T) {
 		if !seenFailure[purpose] {
 			t.Errorf("shared table lost a failure case for %q", purpose)
 		}
-		if !seenNegative[purpose] {
-			t.Errorf("shared table lost a negative/abstention case for %q", purpose)
-		}
+	}
+	if !seenNoConfidence["goal-intent"] {
+		t.Errorf("shared table lost the goal-intent missing-confidence case")
+	}
+	if !seenNegative[PurposeResponseGate] {
+		t.Errorf("shared table lost the response-gate deny case")
+	}
+	if !seenNegative[PurposeReactionGate] {
+		t.Errorf("shared table lost the reaction-gate no-reaction case")
 	}
 }
 
@@ -150,14 +160,26 @@ func TestFormatFailsClosedOnMalformedNotices(t *testing.T) {
 	}
 }
 
-func TestFormatHidesAttemptFragmentForSingleAttemptCallers(t *testing.T) {
-	with := Format(Notice{Purpose: PurposeGoalIntent, Subject: "user message", Attempt: 1, Attempts: 1, Label: "task", HasConfidence: true, Confidence: 0.9})
-	if strings.Contains(with, "attempt") {
-		t.Fatalf("single-attempt notice must not carry an attempt fragment: %q", with)
-	}
-	without := Format(Notice{Purpose: PurposeGoalIntent, Subject: "user message", Label: "task", HasConfidence: true, Confidence: 0.9})
-	if with != without {
-		t.Fatalf("Attempts<=1 must render identically to unset: %q vs %q", with, without)
+// TestGoalIntentNoticeDropsNumberingSubjectAuthorAndLabel: the fenced
+// goal-intent status carries ONLY the confidence — attempt numbering,
+// subject, author and label are accepted record inputs that must never
+// reach the rendered notice, on any attempt shape.
+func TestGoalIntentNoticeDropsNumberingSubjectAuthorAndLabel(t *testing.T) {
+	for _, shape := range [][2]int{{0, 0}, {1, 1}, {1, 2}, {2, 2}, {3, 4}} {
+		got := Format(Notice{
+			Purpose: PurposeGoalIntent, Subject: "user message", Author: "Alice",
+			Attempt: shape[0], Attempts: shape[1],
+			Label: "task", HasConfidence: true, Confidence: 0.61,
+		})
+		want := "```\n🔍 Goal Intent: 0.61 Confidence\n```"
+		if got != want {
+			t.Fatalf("attempt shape %v: notice = %q, want %q", shape, got, want)
+		}
+		for _, banned := range []string{"attempt", "user message", "Alice", "task", "jev"} {
+			if strings.Contains(got, banned) {
+				t.Fatalf("attempt shape %v: notice %q leaks %q", shape, got, banned)
+			}
+		}
 	}
 }
 
@@ -175,12 +197,12 @@ func TestFormatExtraScoreKeysAreSortedAfterTheFixedFour(t *testing.T) {
 
 func TestFormatConfidenceRoundingIsFixedTwoDecimals(t *testing.T) {
 	got := Format(Notice{Purpose: PurposeGoalIntent, Subject: "user message", Label: "task", HasConfidence: true, Confidence: 0.005})
-	want := "🔎 jev goal-intent user message: task (confidence 0.01)"
+	want := "```\n🔍 Goal Intent: 0.01 Confidence\n```"
 	if got != want {
 		t.Fatalf("rounding = %q, want %q", got, want)
 	}
 	got = Format(Notice{Purpose: PurposeGoalIntent, Subject: "user message", Label: "chase", HasConfidence: true, Confidence: 0.66666})
-	want = "🔎 jev goal-intent user message: chase (confidence 0.67)"
+	want = "```\n🔍 Goal Intent: 0.67 Confidence\n```"
 	if got != want {
 		t.Fatalf("rounding = %q, want %q", got, want)
 	}
@@ -212,7 +234,10 @@ func (tc sharedCase) notice(t *testing.T) Notice {
 		case "label":
 			n.Label = value.(string)
 		case "confidence":
-			n.Confidence, n.HasConfidence = value.(float64), true
+			// null is absent, not zero — the same presence rule as cmd/jevnotice.
+			if f, ok := value.(float64); ok {
+				n.Confidence, n.HasConfidence = f, true
+			}
 		case "allowed":
 			v := value.(bool)
 			n.Allowed = &v

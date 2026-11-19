@@ -201,21 +201,18 @@ async def format_notice_async(
 
 
 def goal_intent_attempt_record(
-    *, attempt: int, attempts: int, label: Optional[str], confidence: Optional[float],
-    error: Optional[str], subject: str = "user message", author: str = "",
+    *, confidence: Optional[float], error: Optional[str],
 ) -> Dict[str, Any]:
-    """One goal-intent Jev attempt: success carries label+confidence, failure the error class."""
-    record: Dict[str, Any] = {
-        "purpose": PURPOSE_GOAL_INTENT,
-        "subject": subject,
-        "author": author,
-        "attempt": attempt,
-        "attempts": attempts,
-    }
+    """One goal-intent Jev attempt as a fenced status record.
+
+    The fenced status renders only the confidence readout or the sanitized
+    failure class — attempt numbering, subject, author and label are not
+    record inputs anymore, so the builder must not emit them either.
+    """
+    record: Dict[str, Any] = {"purpose": PURPOSE_GOAL_INTENT}
     if error:
         record["error"] = error
     else:
-        record["label"] = label or "unknown"
         record["confidence"] = confidence
     return record
 
