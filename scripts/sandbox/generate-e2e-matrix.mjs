@@ -8,8 +8,8 @@
  * about which combinations CI can drive. Every combination is dispatched to
  * its OS's run workflow, and THAT workflow natively skips the method pairs
  * its driver cannot run yet -- capability knowledge lives next to each
- * driver (install-e2e-run.yml for linux, install-e2e-macos-run.yml,
- * and install-e2e-windows-run.yml). Correctness here is enforced by the type
+ * driver (install-e2e-run.yml for linux, install-e2e-macos-run.yml).
+ * Correctness here is enforced by the type
  * unions below (checked via `tsc --checkJs`), not by runtime validation --
  * anything the types can't catch is self-evident on the next CI run.
  *
@@ -19,7 +19,7 @@
  *   node scripts/sandbox/generate-e2e-matrix.mjs \
  *     --tags '["v2026.8.3"]'
  *
- * Prints JSON: { linux: {include:[...]}, windows: {include:[...]},
+ * Prints JSON: { linux: {include:[...]},
  * macos: {include:[...]} } -- every entry is {name, install_method,
  * update_method, install_ref}.
  */
@@ -34,11 +34,10 @@ import { fileURLToPath } from 'node:url';
  * strings, so they are types, not conventions.
  *
  * @typedef {'installer-script'} InstallMethod
- *   The platform's one-liner (curl | bash on linux/macos, irm | iex on
- *   windows).
+ *   The platform's one-liner (curl | bash on linux/macos).
  * @typedef {InstallMethod | 'hermes-update'} UpdateMethod
  *   Re-run the installer over the existing install, or use the updater CLI.
- * @typedef {'linux' | 'windows' | 'macos'} Os
+ * @typedef {'linux' | 'macos'} Os
  *
  * @typedef {{method: InstallMethod}} InstallEntry
  * @typedef {{method: UpdateMethod}} UpdateEntry
@@ -70,10 +69,6 @@ export function legId(name) {
 
 /** @type {Record<Os, OsSpec>} */
 export const SPEC = {
-  windows: {
-    install: [{ method: 'installer-script' }],
-    update: [{ method: 'installer-script' }, { method: 'hermes-update' }],
-  },
   macos: {
     install: [{ method: 'installer-script' }],
     update: [{ method: 'installer-script' }, { method: 'hermes-update' }],
@@ -128,7 +123,7 @@ export function generateEnvironments(spec) {
  */
 export function buildMatrices(envs, tags) {
   /** @type {Record<Os, {include: MatrixEntry[]}>} */
-  const byOs = { linux: { include: [] }, windows: { include: [] }, macos: { include: [] } };
+  const byOs = { linux: { include: [] }, macos: { include: [] } };
   for (const env of envs) {
     for (const tag of tags) {
       /** @type {MatrixEntry} */
@@ -187,22 +182,18 @@ export function renderMarkdownPlan(envs, tags) {
  *   archive:false names artifacts after the FILE) with the leg's logs zip
  *   as a #zip= HASH param — the artifact URL 307s server-side and strips
  *   the query, the hash survives — and ⬇️ to the raw logs zip. Logs
- *   artifacts are `install-e2e-logs-<leg_id>` (windows) or
- *   `install-e2e-logs-<leg_id>-<sha>` (posix arms append the sha at
- *   upload) — matched by prefix. leg_id is rebuilt from the parsed job
- *   name with the same formula the generator mints (legId).
+ *   artifacts are `install-e2e-logs-<leg_id>-<sha>` (posix arms append
+ *   the sha at upload) — matched by prefix. leg_id is rebuilt from the
+ *   parsed job name with the same formula the generator mints (legId).
  * @returns {string}
  */
 export function renderMarkdownResults(jobs, artifactById = new Map()) {
-  const knownRules = JSON.parse(fs.readFileSync(new URL('../../tests/install/e2e-assets/known-failures.json', import.meta.url), 'utf8'));
-  /** @type {Map<string, {number: number, rule: any}>} */
-  const footnotes = new Map();
-  const LEG = /^(linux|windows|macos): (\S+) -> (\S+) \(([^)]+) -> HEAD\) \//;
+  const LEG = /^(linux|macos): (\S+) -> (\S+) \(([^)]+) -> HEAD\) \//;
   // A combination can surface as SEVERAL jobs with the same leg name (a
   // run workflow may have one inner job per driver arm; exactly one runs
   // and the others natively skip), so cells merge by significance: a real
   // outcome always beats a skip, and a bad outcome beats a good one.
-  const RANK = ['skip', 'TODO', '&#x2705;', 'known', 'running', 'cancelled', '&#x274C;'];
+  const RANK = ['skip', 'TODO', '&#x2705;', 'running', 'cancelled', '&#x274C;'];
   const SKIPS = ['skip', 'TODO'];
   // Rendered success/failure cells carry artifact links after the glyph;
   // rank by the leading token or every such cell would rank as unknown (-1)
@@ -222,8 +213,8 @@ export function renderMarkdownResults(jobs, artifactById = new Map()) {
     if (!rows.has(combo)) rows.set(combo, new Map());
     const cell = (() => {
     const legId2 = legId(`${m[1]}: ${m[2]} -> ${m[3]} (${m[4]} -> HEAD)`);
-    // Logs artifacts: `install-e2e-logs-<leg_id>` (windows) or with a
-    // trailing `-<sha>` (posix arms append it at upload). Match by prefix.
+    // Logs artifacts: `install-e2e-logs-<leg_id>-<sha>` (posix arms append
+    // the sha at upload). Match by prefix.
     const logsName = [...artifactById.keys()].find((n) => n.startsWith(`install-e2e-logs-${legId2}`));
     // Player artifacts: the single per-run leg-player upload; archive:
     // false names it after the FILE (playback.html), ignoring `name:`.
@@ -238,14 +229,7 @@ export function renderMarkdownResults(jobs, artifactById = new Map()) {
       ? ` [📼](${runBase}/artifacts/${playerId}#zip=${encodeURIComponent(`${runBase}/artifacts/${logsId}`)}) [⬇️](${runBase}/artifacts/${logsId})`
       : '';
     switch (job.conclusion) {
-      case 'success': {
-        // Only the classifier's uploaded receipt turns a successful job into
-        // a known-failure cell. Tag membership alone never suppresses a red.
-        const rule = knownRules.find((/** @type {any} */ r) => artifactById.has(`install-e2e-known-${r.id}--${legId2}`));
-        if (!rule) return `&#x2705;${reel}`;
-        if (!footnotes.has(rule.id)) footnotes.set(rule.id, { number: footnotes.size + 1, rule });
-        return `known [^${footnotes.get(rule.id)?.number}]${reel}`;
-      }
+      case 'success': return `&#x2705;${reel}`;
       case 'failure': return `&#x274C;${reel}`;
       case 'skipped': return 'TODO';
       case 'cancelled': return 'cancelled';
@@ -263,11 +247,10 @@ export function renderMarkdownResults(jobs, artifactById = new Map()) {
   const passed = cells.filter((c) => c.startsWith('&#x2705;')).length;
   const failed = cells.filter((c) => c.startsWith('&#x274C;')).length;
   const skipped = cells.filter((c) => SKIPS.includes(c)).length;
-  const known = cells.filter((c) => c.startsWith('known ')).length;
   const lines = [
     '### Install & Update E2E results',
     '',
-    `${passed} passed, ${failed} failed, ${known} known failures, ${skipped} skipped (TODO = declared, no driver arm yet), ${cells.length} legs total`,
+    `${passed} passed, ${failed} failed, ${skipped} skipped (TODO = declared, no driver arm yet), ${cells.length} legs total`,
     '',
     `| combination | ${tags.join(' | ')} |`,
     `|---|${tags.map(() => '---').join('|')}|`,
@@ -276,9 +259,6 @@ export function renderMarkdownResults(jobs, artifactById = new Map()) {
     lines.push(`| \`${combo}\` | ${tags.map((t) => byTag.get(t) || '-').join(' | ')} |`);
   }
   lines.push('');
-  for (const { number, rule } of footnotes.values()) {
-    lines.push(`[^${number}]: **${rule.title}.** ${rule.explanation} [Evidence](${rule.evidence}).`);
-  }
   return lines.join('\n');
 }
 
