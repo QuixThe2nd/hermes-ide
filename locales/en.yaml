@@ -11,6 +11,31 @@
 # tests/agent/test_i18n.py asserts catalog parity.
 
 gateway:
+
+  model:
+    error_prefix:           "Error: {error}"
+    switched:               "Model switched to `{model}`"
+    provider_label:         "Provider: {provider}"
+    context_label:          "Context: {tokens} tokens"
+    max_output_label:       "Max output: {tokens} tokens"
+    capabilities_label:     "Capabilities: {capabilities}"
+    prompt_caching_enabled: "Prompt caching: enabled"
+    warning_prefix:         "Warning: {warning}"
+    saved_global:           "Saved to config.yaml (`--global`)"
+    session_only_hint:      "_(session only — add `--global` to persist)_"
+    current_label:          "Current: `{model}` on {provider}"
+    current_tag:            " (current)"
+    more_models_suffix:     " (+{count} more)"
+    usage_switch_model:     "`/model <name>` — switch model"
+    usage_switch_provider:  "`/model <name> --provider <slug>` — switch provider"
+    usage_persist:          "`/model <name> --global` — persist"
+
+  reasoning:
+    unknown_arg:               "⚠️ Unknown argument: `{arg}`\n\n**Valid levels:** none, minimal, low, medium, high, xhigh, max, ultra\n**Display:** show, hide\n**Persist:** add `--global` to save beyond this session"
+    set_global:                "🧠 ✓ Reasoning effort set to `{effort}` (saved to config)\n_(takes effect on next message)_"
+    set_global_save_failed:    "🧠 ✓ Reasoning effort set to `{effort}` (session only — config save failed)\n_(takes effect on next message)_"
+    set_session:               "🧠 ✓ Reasoning effort set to `{effort}` (session only — add `--global` to persist)\n_(takes effect on next message)_"
+
   # Messenger replies to slash commands and implicit state changes.
   draining:         "♻ Restarting gateway..."
   goal_cleared:     "✓ Goal cleared."

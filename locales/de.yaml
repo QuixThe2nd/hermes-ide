@@ -2,6 +2,31 @@
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
 gateway:
+
+  model:
+    error_prefix:           "Fehler: {error}"
+    switched:               "Modell gewechselt zu `{model}`"
+    provider_label:         "Anbieter: {provider}"
+    context_label:          "Kontext: {tokens} Tokens"
+    max_output_label:       "Max. Ausgabe: {tokens} Tokens"
+    capabilities_label:     "Fähigkeiten: {capabilities}"
+    prompt_caching_enabled: "Prompt-Caching: aktiviert"
+    warning_prefix:         "Warnung: {warning}"
+    saved_global:           "In config.yaml gespeichert (`--global`)"
+    session_only_hint:      "_(nur für diese Sitzung — `--global` ergänzen, um zu speichern)_"
+    current_label:          "Aktuell: `{model}` bei {provider}"
+    current_tag:            " (aktuell)"
+    more_models_suffix:     " (+{count} weitere)"
+    usage_switch_model:     "`/model <name>` — Modell wechseln"
+    usage_switch_provider:  "`/model <name> --provider <slug>` — Anbieter wechseln"
+    usage_persist:          "`/model <name> --global` — dauerhaft speichern"
+
+  reasoning:
+    unknown_arg:               "⚠️ Unbekanntes Argument: `{arg}`\n\n**Gültige Stärken:** none, minimal, low, medium, high, xhigh, max, ultra\n**Anzeige:** show, hide\n**Speichern:** `--global` hinzufügen, um über die Sitzung hinaus zu speichern"
+    set_global:                "🧠 ✓ Reasoning-Stärke auf `{effort}` gesetzt (in Konfiguration gespeichert)\n_(wird mit der nächsten Nachricht wirksam)_"
+    set_global_save_failed:    "🧠 ✓ Reasoning-Stärke auf `{effort}` gesetzt (nur Sitzung — Konfiguration konnte nicht gespeichert werden)\n_(wird mit der nächsten Nachricht wirksam)_"
+    set_session:               "🧠 ✓ Reasoning-Stärke auf `{effort}` gesetzt (nur Sitzung — `--global` hinzufügen, um zu speichern)\n_(wird mit der nächsten Nachricht wirksam)_"
+
   draining:         "⏳ Bitte {count} aktive(n) Agent(en) um Pause, dann Neustart..."
   goal_cleared:     "✓ Ziel gelöscht."
   no_active_goal:   "Kein aktives Ziel."

@@ -7,6 +7,31 @@
 # key parity and placeholder parity against en.yaml.
 
 gateway:
+
+  model:
+    error_prefix:           "خطأ: {error}"
+    switched:               "تم التبديل إلى النموذج `{model}`"
+    provider_label:         "المزوّد: {provider}"
+    context_label:          "السياق: {tokens} رمزًا"
+    max_output_label:       "أقصى خرج: {tokens} رمزًا"
+    capabilities_label:     "القدرات: {capabilities}"
+    prompt_caching_enabled: "التخزين المؤقت للموجِّه: مُفعّل"
+    warning_prefix:         "تحذير: {warning}"
+    saved_global:           "حُفظ في config.yaml (‏`--global`)"
+    session_only_hint:      "_(هذه الجلسة فقط — أضف `--global` للحفظ الدائم)_"
+    current_label:          "الحالي: `{model}` على {provider}"
+    current_tag:            " (الحالي)"
+    more_models_suffix:     " (+{count} آخر)"
+    usage_switch_model:     "`/model <name>` — تبديل النموذج"
+    usage_switch_provider:  "`/model <name> --provider <slug>` — تبديل المزوّد"
+    usage_persist:          "`/model <name> --global` — حفظ دائم"
+
+  reasoning:
+    unknown_arg:               "⚠️ وسيط غير معروف: `{arg}`\n\n**المستويات الصالحة:** none, minimal, low, medium, high, xhigh, max, ultra\n**العرض:** show, hide\n**الحفظ:** أضف `--global` للحفظ بعد هذه الجلسة"
+    set_global:                "🧠 ✓ ضُبط جهد التفكير إلى `{effort}` (حُفظ في الإعدادات)\n_(يسري على الرسالة التالية)_"
+    set_global_save_failed:    "🧠 ✓ ضُبط جهد التفكير إلى `{effort}` (الجلسة فقط — فشل حفظ الإعدادات)\n_(يسري على الرسالة التالية)_"
+    set_session:               "🧠 ✓ ضُبط جهد التفكير إلى `{effort}` (الجلسة فقط — أضف `--global` للحفظ الدائم)\n_(يسري على الرسالة التالية)_"
+
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"

@@ -2,6 +2,31 @@
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
 gateway:
+
+  model:
+    error_prefix:           "エラー: {error}"
+    switched:               "モデルを `{model}` に切り替えました"
+    provider_label:         "プロバイダー: {provider}"
+    context_label:          "コンテキスト: {tokens} トークン"
+    max_output_label:       "最大出力: {tokens} トークン"
+    capabilities_label:     "機能: {capabilities}"
+    prompt_caching_enabled: "プロンプトキャッシュ: 有効"
+    warning_prefix:         "警告: {warning}"
+    saved_global:           "config.yaml に保存しました (`--global`)"
+    session_only_hint:      "_(このセッションのみ — 永続化するには `--global` を追加)_"
+    current_label:          "現在: `{model}` ({provider})"
+    current_tag:            " (現在)"
+    more_models_suffix:     " (他 {count} 件)"
+    usage_switch_model:     "`/model <name>` — モデルを切り替え"
+    usage_switch_provider:  "`/model <name> --provider <slug>` — プロバイダーを切り替え"
+    usage_persist:          "`/model <name> --global` — 永続化"
+
+  reasoning:
+    unknown_arg:               "⚠️ 不明な引数: `{arg}`\n\n**有効なレベル:** none, minimal, low, medium, high, xhigh, max, ultra\n**表示:** show, hide\n**永続化:** セッションを越えて保存するには `--global` を追加"
+    set_global:                "🧠 ✓ 推論強度を `{effort}` に設定しました (設定に保存)\n_(次のメッセージから有効)_"
+    set_global_save_failed:    "🧠 ✓ 推論強度を `{effort}` に設定しました (セッションのみ — 設定の保存に失敗)\n_(次のメッセージから有効)_"
+    set_session:               "🧠 ✓ 推論強度を `{effort}` に設定しました (セッションのみ — 永続化するには `--global` を追加)\n_(次のメッセージから有効)_"
+
   draining:         "⏳ {count} 個のアクティブエージェントに一時停止を依頼してから再起動します..."
   goal_cleared:     "✓ 目標をクリアしました。"
   no_active_goal:   "アクティブな目標はありません。"

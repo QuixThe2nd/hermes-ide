@@ -21,7 +21,7 @@ OLD_CHAIN_COMMANDS = [
     "debug", "update", "version", "paste", "image", "reload", "reload-mcp",
     "reload-skills", "browser", "plugins", "rollback", "snapshot",
     "export", "import", "stop", "agents", "journey", "bg", "btw", "queue",
-    "goal", "refine", "review", "loop", "plan",
+    "goal", "refine", "review", "loop", "plan", "model",
     "subgoal", "skin", "indicator",
 ]
 

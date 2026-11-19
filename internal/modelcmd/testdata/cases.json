@@ -1,0 +1,560 @@
+{
+ "parse": [
+  {
+   "raw": "sonnet",
+   "want": {
+    "raw": "sonnet",
+    "target": "sonnet",
+    "explicit_provider": "",
+    "reasoning_effort": "",
+    "is_global": false,
+    "is_session": false,
+    "is_once": false,
+    "force_refresh": false,
+    "scope": "default",
+    "errors": []
+   }
+  },
+  {
+   "raw": "sonnet --provider litellm",
+   "want": {
+    "raw": "sonnet --provider litellm",
+    "target": "sonnet",
+    "explicit_provider": "litellm",
+    "reasoning_effort": "",
+    "is_global": false,
+    "is_session": false,
+    "is_once": false,
+    "force_refresh": false,
+    "scope": "default",
+    "errors": []
+   }
+  },
+  {
+   "raw": "x --global",
+   "want": {
+    "raw": "x --global",
+    "target": "x",
+    "explicit_provider": "",
+    "reasoning_effort": "",
+    "is_global": true,
+    "is_session": false,
+    "is_once": false,
+    "force_refresh": false,
+    "scope": "global",
+    "errors": []
+   }
+  },
+  {
+   "raw": "x --session",
+   "want": {
+    "raw": "x --session",
+    "target": "x",
+    "explicit_provider": "",
+    "reasoning_effort": "",
+    "is_global": false,
+    "is_session": true,
+    "is_once": false,
+    "force_refresh": false,
+    "scope": "session",
+    "errors": []
+   }
+  },
+  {
+   "raw": "x --once",
+   "want": {
+    "raw": "x --once",
+    "target": "x",
+    "explicit_provider": "",
+    "reasoning_effort": "",
+    "is_global": false,
+    "is_session": false,
+    "is_once": true,
+    "force_refresh": false,
+    "scope": "once",
+    "errors": []
+   }
+  },
+  {
+   "raw": "x --once --global",
+   "want": {
+    "raw": "x --once --global",
+    "target": "x",
+    "explicit_provider": "",
+    "reasoning_effort": "",
+    "is_global": true,
+    "is_session": false,
+    "is_once": true,
+    "force_refresh": false,
+    "scope": "once",
+    "errors": [
+     {
+      "code": "once_with_global",
+      "message": "/model --once cannot be combined with --global"
+     }
+    ]
+   }
+  },
+  {
+   "raw": "--once",
+   "want": {
+    "raw": "--once",
+    "target": "",
+    "explicit_provider": "",
+    "reasoning_effort": "",
+    "is_global": false,
+    "is_session": false,
+    "is_once": true,
+    "force_refresh": false,
+    "scope": "once",
+    "errors": [
+     {
+      "code": "once_requires_target",
+      "message": "/model --once requires a model or provider."
+     }
+    ]
+   }
+  },
+  {
+   "raw": "x --reasoning bogus",
+   "want": {
+    "raw": "x --reasoning bogus",
+    "target": "x",
+    "explicit_provider": "",
+    "reasoning_effort": "bogus",
+    "is_global": false,
+    "is_session": false,
+    "is_once": false,
+    "force_refresh": false,
+    "scope": "default",
+    "errors": [
+     {
+      "code": "bad_reasoning",
+      "message": "/model --reasoning takes none, minimal, low, medium, high, xhigh, max or ultra."
+     }
+    ]
+   }
+  },
+  {
+   "raw": "x --reasoning HIGH",
+   "want": {
+    "raw": "x --reasoning HIGH",
+    "target": "x",
+    "explicit_provider": "",
+    "reasoning_effort": "HIGH",
+    "is_global": false,
+    "is_session": false,
+    "is_once": false,
+    "force_refresh": false,
+    "scope": "default",
+    "errors": []
+   }
+  },
+  {
+   "raw": "x —provider litellm",
+   "want": {
+    "raw": "x —provider litellm",
+    "target": "x",
+    "explicit_provider": "litellm",
+    "reasoning_effort": "",
+    "is_global": false,
+    "is_session": false,
+    "is_once": false,
+    "force_refresh": false,
+    "scope": "default",
+    "errors": []
+   }
+  },
+  {
+   "raw": "model‑x --provider",
+   "want": {
+    "raw": "model‑x --provider",
+    "target": "model‑x --provider",
+    "explicit_provider": "",
+    "reasoning_effort": "",
+    "is_global": false,
+    "is_session": false,
+    "is_once": false,
+    "force_refresh": false,
+    "scope": "default",
+    "errors": []
+   }
+  },
+  {
+   "raw": "y --refresh",
+   "want": {
+    "raw": "y --refresh",
+    "target": "y",
+    "explicit_provider": "",
+    "reasoning_effort": "",
+    "is_global": false,
+    "is_session": false,
+    "is_once": false,
+    "force_refresh": true,
+    "scope": "default",
+    "errors": []
+   }
+  },
+  {
+   "raw": "gpt 5.1  preview",
+   "want": {
+    "raw": "gpt 5.1  preview",
+    "target": "gpt 5.1 preview",
+    "explicit_provider": "",
+    "reasoning_effort": "",
+    "is_global": false,
+    "is_session": false,
+    "is_once": false,
+    "force_refresh": false,
+    "scope": "default",
+    "errors": []
+   }
+  },
+  {
+   "raw": "z --provider --global",
+   "want": {
+    "raw": "z --provider --global",
+    "target": "z",
+    "explicit_provider": "--global",
+    "reasoning_effort": "",
+    "is_global": false,
+    "is_session": false,
+    "is_once": false,
+    "force_refresh": false,
+    "scope": "default",
+    "errors": []
+   }
+  },
+  {
+   "raw": "",
+   "want": {
+    "raw": "",
+    "target": "",
+    "explicit_provider": "",
+    "reasoning_effort": "",
+    "is_global": false,
+    "is_session": false,
+    "is_once": false,
+    "force_refresh": false,
+    "scope": "default",
+    "errors": []
+   }
+  }
+ ],
+ "listing": [
+  {
+   "name": "basic",
+   "record": {
+    "current_model": "hermes-4",
+    "current_provider_label": "LiteLLM",
+    "labels": {
+     "current_label": "Current: `{model}` on {provider}",
+     "current_tag": " (current)",
+     "more_models_suffix": " (+{count} more)",
+     "usage_switch_model": "`/model <name>` — switch model",
+     "usage_switch_provider": "`/model <name> --provider <slug>` — switch provider",
+     "usage_persist": "`/model <name> --global` — persist"
+    },
+    "providers": [
+     {
+      "name": "LiteLLM",
+      "slug": "litellm",
+      "is_current": true,
+      "models": [
+       "hermes-4",
+       "hermes-4-mini"
+      ],
+      "total_models": 2,
+      "api_url": ""
+     },
+     {
+      "name": "Anthropic",
+      "slug": "anthropic",
+      "is_current": false,
+      "models": [
+       "claude-opus-4",
+       "claude-sonnet-4"
+      ],
+      "total_models": 9,
+      "api_url": ""
+     },
+     {
+      "name": "Custom OpenAI",
+      "slug": "custom",
+      "is_current": false,
+      "models": [],
+      "total_models": 0,
+      "api_url": "https://api.example.com/v1"
+     }
+    ]
+   },
+   "want": "Current: `hermes-4` on LiteLLM\n\n**LiteLLM** `--provider litellm` (current):\n  `hermes-4`, `hermes-4-mini`\n\n**Anthropic** `--provider anthropic`:\n  `claude-opus-4`, `claude-sonnet-4` (+7 more)\n\n**Custom OpenAI** `--provider custom`:\n  `https://api.example.com/v1`\n\n`/model <name>` — switch model\n`/model <name> --provider <slug>` — switch provider\n`/model <name> --global` — persist"
+  },
+  {
+   "name": "localized_labels",
+   "record": {
+    "current_model": "hermes-4",
+    "current_provider_label": "LiteLLM",
+    "labels": {
+     "current_label": "Actuel : `{model}` sur {provider}",
+     "current_tag": " (actuel)",
+     "more_models_suffix": " (+{count} autres)",
+     "usage_switch_model": "`/model <nom>` — changer de modèle",
+     "usage_switch_provider": "`/model <nom> --provider <slug>` — changer de fournisseur",
+     "usage_persist": "`/model <nom> --global` — persister"
+    },
+    "providers": [
+     {
+      "name": "LiteLLM",
+      "slug": "litellm",
+      "is_current": true,
+      "models": [
+       "hermes-4",
+       "hermes-4-mini"
+      ],
+      "total_models": 2,
+      "api_url": ""
+     }
+    ]
+   },
+   "want": "Actuel : `hermes-4` sur LiteLLM\n\n**LiteLLM** `--provider litellm` (actuel):\n  `hermes-4`, `hermes-4-mini`\n\n`/model <nom>` — changer de modèle\n`/model <nom> --provider <slug>` — changer de fournisseur\n`/model <nom> --global` — persister"
+  }
+ ],
+ "picker": [
+  {
+   "name": "drops_unreachable_and_marks_current",
+   "providers": [
+    {
+     "name": "LiteLLM",
+     "slug": "litellm",
+     "is_current": false,
+     "models": [
+      "a",
+      "b"
+     ],
+     "total_models": 2
+    },
+    {
+     "name": "Empty",
+     "slug": "empty",
+     "is_current": false,
+     "models": [],
+     "total_models": 0
+    },
+    {
+     "name": "EndpointOnly",
+     "slug": "endpoint",
+     "is_current": true,
+     "models": [],
+     "total_models": 0,
+     "api_url": "https://x/v1"
+    }
+   ],
+   "current_provider": "litellm",
+   "max_providers": 0,
+   "max_models": 0,
+   "want": [
+    {
+     "name": "LiteLLM",
+     "slug": "litellm",
+     "is_current": true,
+     "models": [
+      "a",
+      "b"
+     ],
+     "total_models": 2
+    },
+    {
+     "name": "EndpointOnly",
+     "slug": "endpoint",
+     "is_current": false,
+     "models": [],
+     "total_models": 0,
+     "api_url": "https://x/v1"
+    }
+   ]
+  },
+  {
+   "name": "caps_models_keeps_total",
+   "providers": [
+    {
+     "name": "Big",
+     "slug": "big",
+     "is_current": true,
+     "models": [
+      "m0",
+      "m1",
+      "m2",
+      "m3",
+      "m4",
+      "m5"
+     ],
+     "total_models": 12,
+     "extra": "kept"
+    }
+   ],
+   "current_provider": "big",
+   "max_providers": 0,
+   "max_models": 3,
+   "want": [
+    {
+     "name": "Big",
+     "slug": "big",
+     "is_current": true,
+     "models": [
+      "m0",
+      "m1",
+      "m2"
+     ],
+     "total_models": 12,
+     "extra": "kept"
+    }
+   ]
+  },
+  {
+   "name": "provider_cap_keeps_current",
+   "providers": [
+    {
+     "name": "p0",
+     "slug": "p0",
+     "is_current": false,
+     "models": [
+      "m0"
+     ],
+     "total_models": 1
+    },
+    {
+     "name": "p1",
+     "slug": "p1",
+     "is_current": false,
+     "models": [
+      "m1"
+     ],
+     "total_models": 1
+    },
+    {
+     "name": "p2",
+     "slug": "p2",
+     "is_current": false,
+     "models": [
+      "m2"
+     ],
+     "total_models": 1
+    },
+    {
+     "name": "p3",
+     "slug": "p3",
+     "is_current": false,
+     "models": [
+      "m3"
+     ],
+     "total_models": 1
+    },
+    {
+     "name": "p4",
+     "slug": "p4",
+     "is_current": false,
+     "models": [
+      "m4"
+     ],
+     "total_models": 1
+    },
+    {
+     "name": "p5",
+     "slug": "p5",
+     "is_current": false,
+     "models": [
+      "m5"
+     ],
+     "total_models": 1
+    },
+    {
+     "name": "p6",
+     "slug": "p6",
+     "is_current": false,
+     "models": [
+      "m6"
+     ],
+     "total_models": 1
+    },
+    {
+     "name": "p7",
+     "slug": "p7",
+     "is_current": false,
+     "models": [
+      "m7"
+     ],
+     "total_models": 1
+    },
+    {
+     "name": "p8",
+     "slug": "p8",
+     "is_current": true,
+     "models": [
+      "m8"
+     ],
+     "total_models": 1
+    },
+    {
+     "name": "p9",
+     "slug": "p9",
+     "is_current": false,
+     "models": [
+      "m9"
+     ],
+     "total_models": 1
+    }
+   ],
+   "current_provider": "p8",
+   "max_providers": 5,
+   "max_models": 0,
+   "want": [
+    {
+     "name": "p0",
+     "slug": "p0",
+     "is_current": false,
+     "models": [
+      "m0"
+     ],
+     "total_models": 1
+    },
+    {
+     "name": "p1",
+     "slug": "p1",
+     "is_current": false,
+     "models": [
+      "m1"
+     ],
+     "total_models": 1
+    },
+    {
+     "name": "p2",
+     "slug": "p2",
+     "is_current": false,
+     "models": [
+      "m2"
+     ],
+     "total_models": 1
+    },
+    {
+     "name": "p3",
+     "slug": "p3",
+     "is_current": false,
+     "models": [
+      "m3"
+     ],
+     "total_models": 1
+    },
+    {
+     "name": "p8",
+     "slug": "p8",
+     "is_current": true,
+     "models": [
+      "m8"
+     ],
+     "total_models": 1
+    }
+   ]
+  }
+ ]
+}

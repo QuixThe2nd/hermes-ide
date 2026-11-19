@@ -2,6 +2,31 @@
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
 gateway:
+
+  model:
+    error_prefix:           "Помилка: {error}"
+    switched:               "Модель змінено на `{model}`"
+    provider_label:         "Провайдер: {provider}"
+    context_label:          "Контекст: {tokens} токенів"
+    max_output_label:       "Макс. вихід: {tokens} токенів"
+    capabilities_label:     "Можливості: {capabilities}"
+    prompt_caching_enabled: "Кешування промптів: увімкнено"
+    warning_prefix:         "Попередження: {warning}"
+    saved_global:           "Збережено в config.yaml (`--global`)"
+    session_only_hint:      "_(лише для цього сеансу — додайте `--global`, щоб зберегти)_"
+    current_label:          "Поточна: `{model}` на {provider}"
+    current_tag:            " (поточна)"
+    more_models_suffix:     " (+{count} ще)"
+    usage_switch_model:     "`/model <name>` — змінити модель"
+    usage_switch_provider:  "`/model <name> --provider <slug>` — змінити провайдера"
+    usage_persist:          "`/model <name> --global` — зберегти назавжди"
+
+  reasoning:
+    unknown_arg:               "⚠️ Невідомий аргумент: `{arg}`\n\n**Дійсні рівні:** none, minimal, low, medium, high, xhigh, max, ultra\n**Показ:** show, hide\n**Зберегти:** додайте `--global`, щоб зберегти поза цим сеансом"
+    set_global:                "🧠 ✓ Зусилля мислення встановлено на `{effort}` (збережено в конфігурації)\n_(набуде чинності з наступного повідомлення)_"
+    set_global_save_failed:    "🧠 ✓ Зусилля мислення встановлено на `{effort}` (лише цей сеанс — не вдалося зберегти конфігурацію)\n_(набуде чинності з наступного повідомлення)_"
+    set_session:               "🧠 ✓ Зусилля мислення встановлено на `{effort}` (лише цей сеанс — додайте `--global`, щоб зберегти)\n_(набуде чинності з наступного повідомлення)_"
+
   draining:         "⏳ Просимо {count} активних агент(ів) призупинитися, потім перезапуск..."
   goal_cleared:     "✓ Ціль очищено."
   no_active_goal:   "Немає активної цілі."

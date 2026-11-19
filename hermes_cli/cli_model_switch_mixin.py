@@ -1,4 +1,4 @@
-"""Session model restore, runtime snapshot/restore, and codex runtime handling for the interactive CLI
+"""Model switch (/model), session model restore, runtime snapshot/restore, and codex runtime handling for the interactive CLI
 
 Mixin split out of ``cli.py``; bound onto ``HermesCLI`` via the MRO. cli.py-internal
 symbols are imported LAZILY inside each method (``from cli import ...``) — the mixin
@@ -96,9 +96,180 @@ def _heal_bare_custom_provider(provider, *, base_url, model):
     except Exception:
         return None
 
+def _merge_preflight_warning(cli, result, custom_providers) -> None:
+    """Fold the context-compression preflight warning into ``result`` (fail-soft)."""
+    from cli import logger
+    if cli.agent is None:
+        return
+    try:
+        from hermes_cli.context_switch_guard import merge_preflight_compression_warning
+        merge_preflight_compression_warning(
+            result,
+            agent=cli.agent,
+            messages=list(cli.conversation_history or []),
+            custom_providers=custom_providers if custom_providers is not None
+            else getattr(cli.agent, "_custom_providers", None),
+            config_context_length=getattr(cli.agent, "_config_context_length", None))
+    except Exception as exc:
+        logger.debug("preflight-compression switch warning failed: %s", exc)
+
+
+def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_context: bool) -> None:
+    """Record the next-turn switch note and print the "Model switched" block.
+
+    The note is prepended to the next user message (a mid-history system message would break
+    providers and prompt caching). ``strict_context``: the typed /model path lets
+    context-resolution errors propagate.
+    """
+    from cli import _cprint
+    from hermes_cli.model_switch import format_model_for_display, resolve_display_context_length
+    _display_old = format_model_for_display(old_model)
+    _display_new = format_model_for_display(result.new_model)
+    cli._pending_model_switch_note = (
+        f"[Note: model was just switched from {_display_old} to {_display_new} "
+        f"via {result.provider_label or result.target_provider}. "
+        f"{'This override applies to the next turn only. ' if one_turn else ''}"
+        f"Adjust your self-identification accordingly.]")
+    _cprint(f"  ✓ Model switched: {_display_new}")
+    _cprint(f"    Provider: {result.provider_label or result.target_provider}")
+    if result.target_provider == "moa":
+        # The preset name hides who pays: the aggregator runs every tool-loop step (#112359).
+        from hermes_cli.moa_config import normalize_moa_config
+        moa_cfg = cli.config.get("moa") if isinstance(cli.config, dict) else {}
+        agg = normalize_moa_config(moa_cfg)["presets"].get(result.new_model, {}).get("aggregator") or {}
+        if agg:
+            _cprint(f"    Acting model (billed for the run): {agg.get('provider')}:{agg.get('model')}")
+
+    mi = result.model_info
+    agent = cli.agent
+    try:
+        ctx = resolve_display_context_length(
+            result.new_model, result.target_provider,
+            base_url=result.base_url or cli.base_url or "",
+            api_key=result.api_key or cli.api_key or "", model_info=mi,
+            config_context_length=getattr(agent, "_config_context_length", None) if agent else None,
+            custom_providers=getattr(agent, "_custom_providers", None) if agent else None)
+    except Exception:
+        if strict_context:
+            raise
+        ctx = None
+    if ctx:
+        from agent.context_pin import context_pin_suffix
+        _cprint(f"    Context: {ctx:,} tokens"
+                f"{context_pin_suffix(ctx, getattr(agent, '_config_context_length', None) if agent else None)}")
+    if mi:
+        if mi.max_output:
+            _cprint(f"    Max output: {mi.max_output:,} tokens")
+        _cprint(f"    Capabilities: {mi.format_capabilities()}")
+    cache_enabled = (
+        (base_url_host_matches(result.base_url or "", "openrouter.ai") and "claude" in result.new_model.lower())
+        or result.api_mode == "anthropic_messages")
+    if cache_enabled:
+        _cprint("    Prompt caching: enabled")
+    if result.warning_message:
+        _cprint(f"    ⚠ {result.warning_message}")
+
+
+def _switch_model_from(
+    cli, raw_input, *, is_global, explicit_provider, user_providers, custom_providers):
+    """``switch_model`` seeded with this CLI's live route."""
+    from hermes_cli.model_switch import switch_model
+    return switch_model(
+        raw_input=raw_input, current_provider=cli.provider or "", current_model=cli.model or "",
+        current_base_url=cli.base_url or "", current_api_key=cli.api_key or "", is_global=is_global,
+        explicit_provider=explicit_provider, user_providers=user_providers,
+        custom_providers=custom_providers)
+
+
+def _run_confirm_and_apply(cli, target, *args) -> None:
+    """Run a confirm+apply sequence off the UI thread when the TUI is live.
+
+    The expensive-model modal blocks its thread on a response queue (_prompt_text_input_modal);
+    on the prompt_toolkit main thread that freezes rendering, so the modal never appears and the
+    switch silently cancels after the 120s timeout.
+    """
+    if getattr(cli, "_app", None):
+        threading.Thread(target=target, args=args, daemon=True).start()
+    else:
+        target(*args)
+
+
+def _apply_reasoning_after_switch(cli, effort: str, *, persist_global: bool) -> None:
+    """Apply a ``--reasoning <level>`` that rode along with the switch. Runs AFTER the swap: the
+    agent's ``switch_model`` re-resolves ``reasoning_config`` from config.yaml, so an earlier
+    write would be clobbered. Session-scoped unless the switch itself persists (``--global``)."""
+    from cli import CLI_CONFIG, _cprint, _parse_reasoning_config, save_config_value
+    parsed = _parse_reasoning_config(effort)
+    if parsed is None:
+        return
+    cli.reasoning_config = parsed
+    if cli.agent is not None:
+        cli.agent.reasoning_config = parsed
+    saved = persist_global and save_config_value("agent.reasoning_effort", effort)
+    if saved:
+        CLI_CONFIG.setdefault("agent", {})["reasoning_effort"] = effort
+    _cprint(f"    Reasoning effort: {effort}" + (" (saved to config)" if saved else ""))
+
+
+def _commit_model_switch(
+    cli, result, *, persist_global: bool, one_turn: bool = False,
+    reasoning_effort: str = "") -> None:
+    """Stage + swap, print the summary, persist (session row unless --once; config on --global).
+    ``reasoning_effort`` (from ``--reasoning``) is applied after the swap."""
+    from cli import HermesCLI, _cprint
+    old_model = cli.model
+    snapshot = cli._snapshot_model_runtime() if one_turn else None
+    if not cli._stage_and_swap_model(result, old_model):
+        return
+    cli._pending_one_turn_model_restore = snapshot
+    _print_switch_summary(cli, result, old_model, one_turn=one_turn, strict_context=True)
+    if reasoning_effort:
+        _apply_reasoning_after_switch(cli, reasoning_effort, persist_global=persist_global and not one_turn)
+    if persist_global:
+        from hermes_cli.model_switch import persist_model_selection
+        persist_model_selection(result)
+        _cprint("    Saved to config.yaml (--global)")
+    elif one_turn:
+        _cprint("    (next turn only — restores after one response)")
+    else:
+        _cprint("    (session only — add --global to persist)")
+    # The row records what THIS session runs even on --global (else a later resume restores the
+    # stale creation-time model); --once is restored after one turn and never touches the row.
+    if not one_turn:
+        HermesCLI._persist_model_switch_to_session(cli, result)
+
+
+def _show_model_listing(cli, ctx, refresh: bool) -> None:
+    """``/model`` with no args: the Go-canonical listing text (current model, authed providers,
+    usage). The interactive modal picker left the tree with the #674 removal and is NOT restored
+    here — the text listing answers "what am I on / what can I pick" on every surface."""
+    from cli import _cprint
+    from hermes_cli.model_switch_providers import list_authenticated_providers
+    from hermes_cli.modelcmd import listing_record, render_model_listing
+    from hermes_cli.providers import get_label
+    try:
+        providers = list_authenticated_providers(
+            current_provider=cli.provider or "", current_base_url=cli.base_url or "",
+            user_providers=ctx.user_providers if ctx is not None else None,
+            custom_providers=ctx.custom_providers if ctx is not None else None,
+            current_model=cli.model or "", max_models=5, refresh=refresh,
+            probe_custom_providers=False, probe_current_custom_provider=False)
+    except Exception:
+        providers = []
+    text = render_model_listing(listing_record(
+        cli.model or "unknown",
+        get_label(cli.provider) if cli.provider else cli.provider or "unknown",
+        providers))
+    if providers:
+        for line in text.splitlines():
+            _cprint(line)
+    else:
+        _cprint("  No authenticated providers found.")
+        for line in text.splitlines()[-3:]:
+            _cprint(line)
 
 class CLIModelSwitchMixin:
-    """Session model restore, runtime snapshot/restore, and codex runtime handling for the interactive CLI"""
+    """Model switch (/model), session model restore, runtime snapshot/restore, and codex runtime handling for the interactive CLI"""
 
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
         """Normalize provider-specific model IDs and routing."""
@@ -372,3 +543,171 @@ class CLIModelSwitchMixin:
             _cprint(f"  {prefix} {line}" if line.startswith("openai_runtime") else f"    {line}")
         if result.success and result.requires_new_session:
             _cprint("    Tip: `/new` starts a new session immediately.")
+
+    def _handle_model_command(self, cmd_original: str):
+        """Handle /model — show the current model or switch it.
+
+          /model                              — show current model + authed providers + usage
+          /model <name>                       — switch model (this session only)
+          /model <name> --once                — switch for the next turn only
+          /model <name> --session              — switch for this session only (explicit)
+          /model <name> --global              — switch and persist to config.yaml
+          /model <name> --provider <provider> — switch provider + model
+          /model <name> --reasoning <level>   — switch and set reasoning effort in one step
+          /model --provider <provider>        — switch to provider, auto-detect model
+          /model --refresh                    — re-fetch live model lists (with no target)
+
+        Switches are session-scoped unless ``model.persist_switch_by_default`` or ``--global``.
+        """
+        from cli import _cprint
+        from hermes_cli.model_switch import parse_model_switch_args, resolve_persist_behavior
+
+        parts = cmd_original.split(None, 1)  # split off '/model'
+        request = parse_model_switch_args(parts[1].strip() if len(parts) > 1 else "")
+        if request.errors:
+            # CLI decoration: "  ✗ " prefix over the canonical error copy.
+            _cprint(f"  ✗ {request.error_messages()[0]}")
+            return
+        one_turn = request.is_once
+        persist_global = resolve_persist_behavior(
+            request.is_global, request.is_session, is_once=one_turn,
+            explicit_provider=request.explicit_provider)
+
+        if request.force_refresh:
+            try:
+                from hermes_cli.models import clear_provider_models_cache
+                clear_provider_models_cache()
+                if not request.target and not request.explicit_provider:
+                    _cprint("  Cleared model picker cache. Refreshing...")
+            except Exception:
+                pass
+
+        # Live session state is overlaid truthy-only so empty self.* attrs don't clobber config.
+        from hermes_cli.inventory import load_picker_context
+        try:
+            ctx = load_picker_context().with_overrides(
+                current_provider=self.provider or "", current_model=self.model or "",
+                current_base_url=self.base_url or "")
+        except Exception:
+            ctx = None
+        user_provs = ctx.user_providers if ctx is not None else None
+        custom_provs = ctx.custom_providers if ctx is not None else None
+
+        if not request.target and not request.explicit_provider:
+            return _show_model_listing(self, ctx, request.force_refresh)
+
+        result = _switch_model_from(
+            self, request.target, is_global=persist_global,
+            explicit_provider=request.explicit_provider,
+            user_providers=user_provs, custom_providers=custom_provs)
+        if not result.success:
+            _cprint(f"  ✗ {result.error_message}")
+            return
+        _merge_preflight_warning(self, result, custom_provs)
+        extra = (request.reasoning_effort,) if request.reasoning_effort else ()
+        _run_confirm_and_apply(
+            self, self._confirm_and_apply_cli_model_switch,
+            result, persist_global, one_turn, custom_provs, *extra)
+
+    def _confirm_and_apply_cli_model_switch(
+        self, result, persist_global: bool, one_turn: bool, custom_provs=None, reasoning_effort: str = "") -> None:
+        """Confirm an expensive model switch and apply it (typed /model path). Runs on a worker
+        thread when the TUI is active (see _run_confirm_and_apply) so the modal can render."""
+        from cli import _cprint
+        if not self._confirm_expensive_model_switch(result):
+            _cprint("  Model switch cancelled.")
+            return
+        _commit_model_switch(self, result, persist_global=persist_global, one_turn=one_turn,
+                             reasoning_effort=reasoning_effort)
+
+    def _confirm_expensive_model_switch(self, result) -> bool:
+        """Ask for explicit confirmation before applying costly model switches."""
+        if not getattr(result, "success", False):
+            return True
+        try:
+            from hermes_cli.model_selection_guards import (
+                combined_selection_warning, selection_context_for_agent)
+            warning = combined_selection_warning(
+                result.new_model, provider=result.target_provider,
+                base_url=result.base_url or self.base_url or "",
+                api_key=result.api_key or self.api_key or "", model_info=result.model_info,
+                selection_context=selection_context_for_agent(getattr(self, "agent", None)))
+        except Exception:
+            warning = None
+        if warning is None:
+            return True
+        choices = [
+            ("once", "Switch anyway", "Use this model for the current Hermes session."),
+            ("cancel", "Cancel", "Keep the current model.")]
+        raw = self._prompt_text_input_modal(
+            title=f"!!! {warning.title} !!!", detail=warning.message, choices=choices, timeout=120)
+        return self._normalize_slash_confirm_choice(raw, choices) == "once"
+
+    def _stage_and_swap_model(self, result, old_model) -> bool:
+        """Stage ``result`` onto the CLI fields, then swap the live agent in place.
+
+        CLI fields are snapshotted first so a failed agent swap rolls the whole CLI back —
+        otherwise the staged broken credentials leak into the next turn even though the agent
+        rolled back. Returns False after printing the failure (a failed switch is a no-op).
+        """
+        from cli import _cprint
+        _cli_snapshot = _runtime_fields(self)
+        self.model = result.new_model
+        self.provider = result.target_provider
+        self.requested_provider = result.target_provider
+        # Always overwrite explicit overrides so stale credentials from the previous provider
+        # (e.g. Ollama api_key/base_url) don't leak into the next resolution.
+        self._explicit_api_key = result.api_key
+        self._explicit_base_url = result.base_url
+        if result.api_key:
+            self.api_key = result.api_key
+        if result.base_url:
+            self.base_url = result.base_url
+        if result.api_mode:
+            self.api_mode = result.api_mode
+        _resolve_cli_reasoning(self)
+
+        if self.agent is not None:
+            try:
+                self.agent.switch_model(
+                    new_model=result.new_model, new_provider=result.target_provider,
+                    api_key=result.api_key, base_url=result.base_url, api_mode=result.api_mode,
+                    capabilities=getattr(result, "runtime_capabilities", None))
+            except Exception as exc:
+                # The agent rolled itself back to the old working model/client. Roll the CLI's
+                # own staged fields back too and abort the rest of the commit (note + success
+                # print) so a failed switch is a no-op rather than a dead session (#50163).
+                for _k, _v in _cli_snapshot.items():
+                    setattr(self, _k, _v)
+                _cprint(
+                    f"  ⚠ Model switch to {result.new_model} failed ({exc}); "
+                    f"staying on {old_model}.")
+                return False
+        return True
+
+    def _persist_model_switch_to_session(self, result) -> None:
+        """Persist a session-scoped /model switch to the session DB row.
+
+        Writes the model column plus the route in both shapes readers use — nested
+        ``gateway_runtime`` (CLI --resume) and top-level keys (TUI session.resume) — from one
+        or-None dict so stale keys are DELETED (``_merge_model_config_json`` only deletes on
+        explicit None) and the shapes never diverge, mirroring the gateway's
+        ``update_session_model()`` call (#79536). ``getattr``: tests drive the switch paths
+        with ``object.__new__`` stubs.
+        """
+        from cli import logger
+        db = getattr(self, "_session_db", None)
+        sid = getattr(self, "session_id", None)
+        if not db or not sid:
+            return
+        route = {
+            "provider": _heal_bare_custom_provider(
+                result.target_provider, base_url=result.base_url, model=result.new_model,
+            ) or None,
+            "base_url": result.base_url or None,
+            "api_mode": result.api_mode or None}
+        try:
+            db.update_session_model(sid, result.new_model)
+            db.patch_session_model_config(sid, {"gateway_runtime": route, **route})
+        except Exception:
+            logger.debug("Failed to persist model switch to session DB", exc_info=True)

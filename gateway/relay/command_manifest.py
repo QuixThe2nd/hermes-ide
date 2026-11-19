@@ -43,7 +43,8 @@ def build_relay_command_manifest() -> List[Dict[str, Any]]:
         _cmd("new", "Start a new conversation"),
         _cmd("retry", "Retry your last message"),
         _cmd("undo", "Remove the last exchange"),
-        _cmd("status", "Show Hermes session status"),
+        _cmd("model", "Show or change the model",
+             _opt("name", "Model name. Leave empty to see current.")),
         # Native-tree mirror of the Discord-only provisioning command (adapter
         # slash_set_home_server); interactions come back as the same
         # "/sethomeserver args" COMMAND event the dispatcher routes.

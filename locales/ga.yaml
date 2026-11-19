@@ -6,6 +6,31 @@
 # Where Irish has a settled term we use it; otherwise we keep the English.
 
 gateway:
+
+  model:
+    error_prefix:           "Earráid: {error}"
+    switched:               "Athraíodh an tsamhail go `{model}`"
+    provider_label:         "Soláthraí: {provider}"
+    context_label:          "Comhthéacs: {tokens} comhartha"
+    max_output_label:       "Aschur uasta: {tokens} comhartha"
+    capabilities_label:     "Cumais: {capabilities}"
+    prompt_caching_enabled: "Taisceadh leid: cumasaithe"
+    warning_prefix:         "Rabhadh: {warning}"
+    saved_global:           "Sábháilte i config.yaml (`--global`)"
+    session_only_hint:      "_(seisiún amháin — cuir `--global` leis chun é a choinneáil)_"
+    current_label:          "Reatha: `{model}` ar {provider}"
+    current_tag:            " (reatha)"
+    more_models_suffix:     " (+{count} eile)"
+    usage_switch_model:     "`/model <name>` — athraigh an tsamhail"
+    usage_switch_provider:  "`/model <name> --provider <slug>` — athraigh an soláthraí"
+    usage_persist:          "`/model <name> --global` — coinnigh"
+
+  reasoning:
+    unknown_arg:               "⚠️ Argóint anaithnid: `{arg}`\n\n**Leibhéil bhailí:** none, minimal, low, medium, high, xhigh, max, ultra\n**Taispeáint:** show, hide\n**Coinnigh:** cuir `--global` leis chun sábháil thar an seisiún seo"
+    set_global:                "🧠 ✓ Iarracht réasúnaíochta socraithe go `{effort}` (sábháilte sa chumraíocht)\n_(éifeachtach ón gcéad teachtaireacht eile)_"
+    set_global_save_failed:    "🧠 ✓ Iarracht réasúnaíochta socraithe go `{effort}` (seisiún amháin — theip ar shábháil cumraíochta)\n_(éifeachtach ón gcéad teachtaireacht eile)_"
+    set_session:               "🧠 ✓ Iarracht réasúnaíochta socraithe go `{effort}` (seisiún amháin — cuir `--global` leis chun é a choinneáil)\n_(éifeachtach ón gcéad teachtaireacht eile)_"
+
   draining:         "⏳ Ag iarraidh ar {count} gníomhaire(í) gníomhach sos a ghlacadh, ansin atosú..."
   goal_cleared:     "✓ Sprioc glanta."
   no_active_goal:   "Níl aon sprioc ghníomhach ann."
