@@ -175,7 +175,8 @@ def _recorded_launcher_pid() -> Optional[int]:
     return int(pid_s) if pid_s.isdigit() and born_s else None
 
 
-_X_LOCK_DIR = Path("/tmp")  # where X servers write .X<n>-lock (tests point it at a scratch dir)
+_X_LOCK_DIR = Path("/tmp")  # no-tmp: ok — where X servers write .X<n>-lock by X11
+# contract (tests point it at a scratch dir)
 
 
 def _x_lock_pid(num: int) -> Optional[int]:

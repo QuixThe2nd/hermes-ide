@@ -956,9 +956,10 @@ class TestLaunchdSupervisedBackends:
         respawn.assert_called_once_with([list(self.ARGV)])
         assert result["unrecovered"] == []
 
+    @pytest.mark.macos_only
     def test_loaded_backend_jobs_scans_plists_and_attributes_pids_host_independently(
             self, tmp_path, monkeypatch, _no_real_launchd_jobs):
-        """Pure plist scan + attribution, runnable off macOS (platform forced): only LOADED jobs whose
+        """Pure plist scan + attribution, run on the macOS lane (real platform): only LOADED jobs whose
         ProgramArguments are a dashboard/serve backend are returned (gateway plists are never probed,
         unloaded backends dropped, unreadable plists skipped, LaunchDaemons resolve to the system
         domain); a PID is attributed by launchd's live PID, by a live-PID ancestor (exec-less
@@ -992,7 +993,6 @@ class TestLaunchdSupervisedBackends:
                 return (True, None)
             return (False, None)
 
-        monkeypatch.setattr(main_dashboard.sys, "platform", "darwin")
         monkeypatch.setattr(main_dashboard.os, "getuid", lambda: uid, raising=False)
         with patch("hermes_cli.gateway._launchd_print_service_pid", side_effect=fake_print):
             jobs = _no_real_launchd_jobs([("agent", agents), ("daemon", daemons)])

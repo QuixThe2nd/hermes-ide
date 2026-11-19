@@ -117,7 +117,14 @@ def test_scan_skips_tests_lockfiles_ci_and_translations(tmp_path):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(text, encoding="utf-8")
     hits = mod.scan(root=tmp_path)
-    assert sorted(hits) == ["app/src/a.ts", "skills/x/SKILL.md", "tools/a.py", "website/docs/guide.md"]
+    assert sorted(hits) == [
+        "app/src/a.ts",
+        "skills/x/SKILL.md",
+        "tools/a.py",
+        "website/docs/guide.md",
+        # no translated-docs exemption since #710 removed the docs site
+        "website/i18n/zh/guide.md",
+    ]
     assert all(len(v) == 1 for v in hits.values())
 
 

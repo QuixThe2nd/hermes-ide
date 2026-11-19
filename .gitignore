@@ -331,3 +331,7 @@ skills/.hub/
 testlogs
 test-results/
 wandb/
+# Goal briefs that tools/claude_agent_tool.py writes into a workdir to drive a
+# delegated Claude Code session — working files, never product content (one was
+# committed by accident with #571 and tripped the no-tmp footguns gate).
+.hermes-claude-goal-brief.md

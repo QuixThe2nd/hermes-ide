@@ -44,9 +44,12 @@ export XAUTHORITY="$HERMES_BD_XAUTH"
 # running server (another profile may have taken this number) and is never touched — Xvnc then
 # fails to start on it and runtime.py reports that instead of us disrupting the other desktop.
 rm -f "$HERMES_BD_SOCKET"
+# X server lock files live at /tmp/.X<n>-lock and /tmp/.X11-unix/ by X11 contract —
+# not scratch space; no other location works.
+# no-tmp: ok — X11 lock/socket path contract
 xlock="/tmp/.X${HERMES_BD_DISPLAY_NUM}-lock"
 if [[ -e "$xlock" ]] && ! kill -0 "$(tr -d ' ' < "$xlock" 2>/dev/null)" 2>/dev/null; then
-  rm -f "$xlock" "/tmp/.X11-unix/X${HERMES_BD_DISPLAY_NUM}"
+  rm -f "$xlock" "/tmp/.X11-unix/X${HERMES_BD_DISPLAY_NUM}"  # no-tmp: ok — X11 socket dir contract
 fi
 : > "$XAUTHORITY"; chmod 600 "$XAUTHORITY"
 # The cookie goes in on stdin, not argv: a command line is readable by every local user via ps.
