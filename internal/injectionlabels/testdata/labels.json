@@ -7,7 +7,8 @@
     "session_reset": "🆕 Injecting session reset",
     "intro": "👋 Injecting intro",
     "surface_switch": "🔀 Injecting surface switch",
-    "plugin": "🧩 Injecting plugin context"
+    "plugin": "🧩 Injecting plugin context",
+    "process": "🖥️ Injecting process info"
   },
   "memory": {
     "plain": "🧠 Injecting memory",

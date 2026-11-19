@@ -1800,11 +1800,12 @@ class TurnRunner(_TurnRunnerCore):
             getattr(runner, "session_store", None),
             getattr(ctx, "session_id", None), runner)
         if runtime_note:
-            turn_notes.append(runtime_note)
+            # The per-turn serving-identity runtime note is serving-process
+            # info, not a restart notice — it names which process serves THIS
+            # turn on every turn, so it carries kind "process".
+            turn_notes.append(tag_turn_note("process", runtime_note))
         if transition_note:
-            # "Conversation moved processes" (#829) is a restart notice; the
-            # per-turn serving-identity runtime note names the serving process
-            # on every turn and is NOT one — it stays unclassified.
+            # "Conversation moved processes" (#829) is the restart notice.
             turn_notes.append(tag_turn_note("restart", transition_note))
         # Joined text is byte-identical to the legacy "\n\n".join; kinds are
         # additive display metadata aligned 1:1 with the staged entries.
