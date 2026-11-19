@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
 from types import SimpleNamespace
+
+import pytest
 
 
 def _args(**kwargs):
@@ -50,3 +53,15 @@ def test_dry_run_default_reports_synchronous_wording(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "When the report lands" not in out
     assert "Read the report with `hermes curator status`" in out
+
+
+def test_consolidate_flag_is_rejected_by_the_parser():
+    import hermes_cli.curator as curator_cli
+
+    parser = argparse.ArgumentParser()
+    curator_cli.register_cli(parser)
+
+    with pytest.raises(SystemExit) as exc_info:
+        parser.parse_args(["run", "--consolidate"])
+
+    assert exc_info.value.code == 2

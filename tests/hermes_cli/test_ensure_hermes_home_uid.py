@@ -3,8 +3,8 @@
 When Hermes runs in Docker with ``HERMES_UID=1000`` / ``HERMES_GID=911``,
 the entrypoint chowns the top-level ``HERMES_HOME`` once at startup. But
 subdirectories created at runtime by ``ensure_hermes_home()`` — especially
-for profile namespaces under ``profiles/<name>/`` spawned by kanban
-workers — were landing as ``root:root`` and blocking subsequent
+profile namespaces under ``profiles/<name>/`` spawned by workers — were
+landing as ``root:root`` and blocking subsequent
 uid-mapped worker invocations with ``PermissionError [Errno 13]``.
 
 The fix is a ``_chown_to_hermes_uid`` helper that reads the env vars and
@@ -27,6 +27,7 @@ import pytest
 
 
 class TestResolveHermesUidGid:
+    @pytest.mark.platforms("linux")
     def test_returns_parsed_values_when_both_set(self, monkeypatch):
         monkeypatch.setenv("HERMES_UID", "1000")
         monkeypatch.setenv("HERMES_GID", "911")
@@ -36,11 +37,11 @@ class TestResolveHermesUidGid:
         assert gid == 911
 
 
-    # ``windows_only`` rather than ``skipif(sys.platform != "win32")``: the
-    # Windows CI job selects ``-m windows_only``, so a bare skipif would leave
+    # ``platforms("windows")`` rather than ``skipif(sys.platform != "win32")``: the
+    # Windows CI job selects ``-m platforms("windows")``, so a bare skipif would leave
     # this test skipped on Linux AND unselected on the Windows lane — dead on
     # every host.
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_returns_none_none(self, monkeypatch):
         monkeypatch.setenv("HERMES_UID", "1000")
         monkeypatch.setenv("HERMES_GID", "911")
@@ -55,6 +56,7 @@ class TestResolveHermesUidGid:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.platforms("linux")
 class TestChownToHermesUid:
     def test_calls_os_chown_when_both_set(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_UID", "1000")

@@ -1,0 +1,4 @@
+name: cache_trace
+version: 0.1.0
+description: "Opt-in metadata-only cache trace: per-API request fingerprints (tools/system/messages SHA256 + byte/item counts, no content) and raw client cache-field presence, appended to a bounded rotated JSONL in this profile's logs. Off by default; enable with `hermes plugins enable cache_trace` or `plugins.enabled` in config.yaml."
+author: Hermes Agent

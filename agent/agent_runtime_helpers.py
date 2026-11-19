@@ -15,6 +15,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from prompts.load import load
 from hermes_cli.timeouts import get_provider_request_timeout
 from agent.message_sanitization import (
     _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, coerce_tool_name, tool_call_id_variants, tool_result_id_variants
@@ -84,19 +85,7 @@ AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
     {"todo", "todo_list", "session_search", "memory", "clarify", "read_terminal", "desktop_preview", "drive_preview", "annotate_preview", "read_window_below", "manage_connections", "setup_mcp", "tour", "gui_tour", "delegate_agent", "delegate_task"}
 )
 
-_TRAJECTORY_SYSTEM_PROMPT = (
-    "You are a function calling AI model. You are provided with function signatures within <tools> </tools> XML tags. "
-    "You may call one or more functions to assist with the user query. If available tools are not relevant in assisting "
-    "with user query, just respond in natural conversational language. Don't make assumptions about what values to plug "
-    "into functions. After calling & executing the functions, you will be provided with function results within "
-    "<tool_response> </tool_response> XML tags. Here are the available tools:\n"
-    "<tools>\n{tools}\n</tools>\n"
-    "For each function call return a JSON object, with the following pydantic model json schema for each:\n"
-    "{{'title': 'FunctionCall', 'type': 'object', 'properties': {{'name': {{'title': 'Name', 'type': 'string'}}, "
-    "'arguments': {{'title': 'Arguments', 'type': 'object'}}}}, 'required': ['name', 'arguments']}}\n"
-    "Each function call should be enclosed within <tool_call> </tool_call> XML tags.\n"
-    "Example:\n<tool_call>\n{{'name': <function-name>,'arguments': <args-dict>}}\n</tool_call>"
-)
+_TRAJECTORY_SYSTEM_PROMPT = load("trajectory_system")
 
 
 def _trajectory_gpt_prefix(msg: Dict[str, Any]) -> str:
@@ -963,9 +952,6 @@ def _rebuild_primary_client(agent, rt: Dict[str, Any], *, reason: str) -> None:
         # factory so the restored facade keeps the reference_callback relay wired at init — a bare
         # MoAClient() would silently stop emitting moa.reference/moa.aggregating display events (#53802).
         agent._anthropic_client = None
-    elif agent.provider == "bedrock" and agent.api_mode in ("anthropic_messages", "bedrock_converse"):
-        from agent.bedrock_adapter import bind_bedrock_runtime
-        bind_bedrock_runtime(agent, agent.base_url, agent.api_mode)
     elif agent.api_mode == "anthropic_messages":
         _build_anthropic_client_from_runtime(agent, rt)
     else:
@@ -976,16 +962,9 @@ def try_recover_primary_transport(
     agent, api_error: Exception, *, retry_count: int, max_retries: int,
 ) -> bool:
     """Rebuild the primary client once and retry after ``max_retries`` exhaust on a transient
-    transport error. Skipped for aggregators (OpenRouter, Nous) that manage retries server-side."""
+    transport error. Skipped for aggregators (OpenRouter) that manage retries server-side."""
     error_type = type(api_error).__name__
     if agent._fallback_activated or error_type not in _TRANSIENT_TRANSPORT_ERRORS or agent._is_openrouter_url():
-        return False
-    # Portal OpenAI-wire traffic rides aggregator retry infra (skip), but Portal Claude on native
-    # Messages holds a local Anthropic client that needs the rebuild.
-    if (
-        (agent.provider or "").strip().lower() in {"nous", "nous-portal", "nousresearch"}
-        and getattr(agent, "api_mode", None) != "anthropic_messages"
-    ):
         return False
     try:
         # Never hard-close the shared client here: stale streaming workers may still be unwinding on
@@ -1589,14 +1568,12 @@ def anthropic_prompt_cache_policy(
     from agent.anthropic_endpoints import _model_name_is_kimi_family
     is_kimi = _model_name_is_kimi_family(eff_model) or "moonshot" in model_lower
     is_openrouter = base_url_host_matches(eff_base_url, "openrouter.ai")
-    # Nous Portal proxies to OpenRouter; treat as OpenRouter-equivalent for cache layout.
-    is_nous_portal = base_url_host_matches(eff_base_url, "nousresearch.com")
     is_anthropic_wire = eff_api_mode == "anthropic_messages"
     is_native_anthropic = is_anthropic_wire and (
         eff_provider == "anthropic" or base_url_hostname(eff_base_url) == "api.anthropic.com"
     )
     # Honor a configured route's per-model ``prompt_caching`` capability (explicit false too); only
-    # for the two transports this planner handles, not Responses/Bedrock.
+    # for the two transports this planner handles, not Responses.
     supports_cache_markers = eff_api_mode in {"anthropic_messages", "chat_completions"}
     litellm_openai_wire = (
         eff_api_mode == "chat_completions" and is_claude and _is_litellm_route(provider_lower, eff_base_url)
@@ -1631,20 +1608,16 @@ def anthropic_prompt_cache_policy(
             return False, False
     if is_native_anthropic:
         return True, True
-    # Envelope layout is OpenAI-wire only; Portal Claude on native Messages must fall through to the
+    # Envelope layout is OpenAI-wire only; Claude on native Messages must fall through to the
     # anthropic_messages branch (inner-block markers) or it serves 0% cache hits.
-    if (is_openrouter or is_nous_portal) and (is_claude or is_kimi) and not is_anthropic_wire:
-        return True, False
-    # Nous Portal Qwen takes the envelope path too; the alibaba-family check below only matches
-    # provider=opencode/alibaba and would leave Portal traffic uncached.
-    if is_nous_portal and "qwen" in model_lower:
+    if is_openrouter and (is_claude or is_kimi) and not is_anthropic_wire:
         return True, False
     if is_anthropic_wire and is_claude:
         return True, True  # third-party Anthropic-compatible gateway
     # LiteLLM fronting Claude on the OpenAI wire supports cache_control but matched no grant above.
     # Claude-only: strict relays reject the block format for other models. Envelope layout: native
     # top-level markers are only relocated by the anthropic_messages adapter and 400 via LiteLLM.
-    # Gated on chat_completions; codex_responses/bedrock_converse have their own handling.
+    # Gated on chat_completions; codex_responses has its own handling.
     if litellm_openai_wire:
         return True, False
     # MiniMax's own models (M2.x) on its Anthropic-compatible endpoint support cache_control; opt
@@ -1826,15 +1799,6 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # gets its OWN fresh ``httpx.Client`` whose lifetime is tied to the OpenAI client it is passed to. When
     # the OpenAI client is closed (rebuild, teardown, credential rotation), the paired ``httpx.Client``
     # closes with it, and the next call constructs a fresh one — no stale closed transport can be reused.
-    # Bedrock Mantle: the ``aws-sdk`` placeholder is a sentinel for IAM-chain auth, not a bearer token.
-    # Every rebuild from bare ``{api_key, base_url}`` kwargs (switch_model, fallback restore, credential
-    # rotation, request-scoped clients) must reinstall the SigV4 http_client or Mantle answers 401.
-    if "bedrock-mantle." in str(client_kwargs.get("base_url") or ""):
-        from agent.bedrock_adapter import configure_bedrock_openai_client_kwargs
-        timeout = client_kwargs.get("timeout")
-        configure_bedrock_openai_client_kwargs(
-            client_kwargs, timeout=timeout if isinstance(timeout, (int, float)) else None,
-        )
     if "http_client" not in client_kwargs:
         keepalive_http = agent._build_keepalive_http_client(client_kwargs.get("base_url", ""), verify=httpx_verify)
         if keepalive_http is not None:
@@ -1889,6 +1853,9 @@ def _apply_switched_provider_request_overrides(agent, new_provider):
     if new_extra_body:
         overrides["extra_body"] = dict(new_extra_body)
     agent.request_overrides = overrides
+    from agent.claude_code_plan_identity import apply_claude_code_plan_identity_flag
+
+    apply_claude_code_plan_identity_flag(agent, custom_providers or [])
 
 
 # Pool reload is part of the switch and must be reversible on rollback, hence the pool fields.
@@ -1896,7 +1863,7 @@ _SWITCH_SNAPSHOT_FIELDS = (
     "model", "provider", "requested_provider", "base_url", "api_mode", "api_key", "client",
     "_anthropic_client", "_anthropic_api_key", "_anthropic_base_url", "_is_anthropic_oauth",
     "_config_context_length", "_reasoning_echo_flag", "runtime_capabilities",
-    "_credential_pool", "_credential_pool_entry_id",
+    "_credential_pool", "_credential_pool_entry_id", "_claude_code_plan_identity",
 )
 _MISSING = object()
 
@@ -1924,7 +1891,7 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
     from hermes_cli.providers import determine_api_mode, is_actual_route
     from agent.native_compaction import resolve_native_compaction_capabilities
     from hermes_cli.models import opencode_provider_family
-    # Pass model so dual-wire providers (Nous Portal anthropic/* -> Messages) resolve correctly.
+    # Pass model so dual-wire providers (anthropic/* -> Messages) resolve correctly.
     if not api_mode:
         api_mode = determine_api_mode(new_provider, base_url, model=new_model)
     if not base_url and new_norm == "openai":
@@ -1968,12 +1935,6 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
         # is applied inside the fan-out. The binder pins api_mode so the loop never dispatches
         # client.responses.create against the facade (same pins as agent_init / fallback).
         bind_moa_runtime(agent, agent.model, api_key)
-        return
-    if new_provider == "bedrock" and api_mode in ("anthropic_messages", "bedrock_converse"):
-        # Non-Mantle Bedrock wires authenticate through boto3, never through the generic
-        # Anthropic/OpenAI builders (which would ship the ``aws-sdk`` sentinel as a credential).
-        from agent.bedrock_adapter import bind_bedrock_runtime
-        bind_bedrock_runtime(agent, base_url or agent.base_url, api_mode)
         return
     if api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client
@@ -2601,7 +2562,7 @@ def _log_empty_non_final_heal(healed: int) -> None:
 
 def repair_empty_non_final_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Substitute a placeholder for empty-content non-final messages on the per-call copy.
-    Anthropic/litellm/Bedrock 400 on any empty non-final message and a persisted stub poisons
+    Anthropic/litellm 400 on any empty non-final message and a persisted stub poisons
     every later turn; repairing the wire copy heals the session in memory. Substitution (not
     deletion) keeps role alternation and tool-call pairing intact. The final message is untouched."""
     if not messages or len(messages) < 2:
@@ -2903,23 +2864,12 @@ def _dedupe_tool_call_ids(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
 def _realign_tool_result_names(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Align each tool result's wire ``name`` with its call's function name (per-call copy only):
-    Google 400s on a mismatch, routine when tool_search bridges via ``tool_call``."""
-    # 4. Google matches functionResponse.name against functionCall.name and rejects a mismatch with HTTP 400
-    #   "Request contains an invalid argument" (INVALID_ARGUMENT); behind an OpenAI-compatible gateway that
-    #   surfaces only as a generic "Provider returned error". When tool_search defers MCP/plugin tools the
-    #   model calls the bridge tool ``tool_call``, while ``make_tool_result_message()`` labels the result
-    #   with the unwrapped internal tool name (``mcp__github__create_issue``) that dispatch, hooks, logging,
-    #   and guardrails need. #72089 fixed exactly this for the native Gemini adapter, which now prefers
-    #   ``tool_name_by_call_id`` over the result name; requests that reach Gemini through the
-    #   OpenAI-compatible path (OpenRouter, Vertex/LiteLLM proxies, any OpenAI-shaped gateway) skip that
-    #   translation entirely and still send the internal name on the wire. Normalizing here rather than in
-    #   the OpenAI-compat serializer keeps it provider-agnostic: Gemini reaches Hermes under many model
-    #   strings and base URLs, so sniffing for "is this really Google?" is unreliable, and every other
-    #   provider either ignores the field or agrees with the call name. Runs on the per-call copy, so the
-    #   stored trajectory keeps the real tool name for the session DB and the UI — only the wire payload
-    #   changes. A no-op for the native Gemini path, which already resolves the same name. A result whose
-    #   assistant call frame is missing entirely never reaches here — pass 1 above drops it as an orphan —
-    #   so the only results this pass sees are ones whose call name is knowable.
+    Google rejects a mismatched functionResponse/functionCall pair with HTTP 400."""
+    # Provider aliases and transcript repair can leave a result's internal name different from
+    # the assistant call's wire name. The native Gemini adapter already prefers
+    # ``tool_name_by_call_id``; OpenAI-compatible Gemini routes skip that translation, so normalize
+    # on the provider-agnostic per-call copy. Stored trajectories retain the internal tool name for
+    # the session DB and UI. A result with no assistant call frame was already dropped as an orphan.
     call_names: Dict[str, str] = {}
     for msg in messages:
         if msg.get("role") == "assistant":

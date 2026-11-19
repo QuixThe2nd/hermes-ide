@@ -202,7 +202,7 @@ def _project_meta_path(store: Path, dir_hash: str) -> Path:
 def _read_json_dict(path: Path) -> Optional[Dict]:
     """Parse ``path`` as a JSON object; None when missing, unreadable or not a dict."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
@@ -1251,7 +1251,7 @@ def _rmtree_counted(child: Path, result: Dict[str, int], key: str, fail_fmt: str
     """rmtree ``child``, crediting bytes + ``result[key]``; failures count as ``errors`` when tracked."""
     try:
         size = _dir_size_bytes(child)
-        shutil.rmtree(child)
+        _rmtree_force(child)
         result["bytes_freed"] += size
         result[key] += 1
     except OSError as exc:
@@ -1468,6 +1468,12 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
     return out
 
 
+def _rmtree_force(path: Path) -> None:
+    from hermes_cli.fs_utils import rmtree_force
+
+    rmtree_force(path)
+
+
 def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
     """Nuke the entire checkpoint base (store + legacy).  Irreversible.
     Returns ``{"bytes_freed": N, "deleted": bool}``."""
@@ -1477,7 +1483,7 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
         return out
     size = _dir_size_bytes(base)
     try:
-        shutil.rmtree(base)
+        _rmtree_force(base)
         out.update(bytes_freed=size, deleted=True)
     except OSError as exc:
         logger.warning("Could not clear checkpoint base %s: %s", base, exc)

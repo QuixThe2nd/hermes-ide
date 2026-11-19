@@ -56,7 +56,7 @@ def make_startup_runner(tmp_path):
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.config = GatewayConfig(
         platforms={
-            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***"),
+            Platform.DISCORD: PlatformConfig(enabled=True, token="***"),
             Platform.SLACK: PlatformConfig(enabled=True, token="***"),
         },
         sessions_dir=tmp_path / "sessions",
@@ -78,10 +78,8 @@ def make_startup_runner(tmp_path):
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._background_tasks = set()
     runner._failed_platforms = {}
-    runner._voice_mode = {}
 
     runner.hooks = MagicMock()
     runner.hooks.loaded_hooks = []
@@ -94,7 +92,6 @@ def make_startup_runner(tmp_path):
 
     runner._update_runtime_status = MagicMock()
     runner._update_platform_runtime_status = MagicMock()
-    runner._sync_voice_mode_state_to_adapter = MagicMock()
     runner._suspend_stuck_loop_sessions = MagicMock(return_value=0)
     runner._notify_active_sessions_of_shutdown = AsyncMock()
     runner._drain_active_agents = AsyncMock(return_value=({}, False))
@@ -118,11 +115,6 @@ def make_startup_runner(tmp_path):
     runner.request_restart = gateway_run.GatewayRunner.request_restart.__get__(
         runner, gateway_run.GatewayRunner
     )
-    runner._request_cooperative_restart_wind_down = (
-        gateway_run.GatewayRunner._request_cooperative_restart_wind_down.__get__(
-            runner, gateway_run.GatewayRunner
-        )
-    )
     runner.stop = gateway_run.GatewayRunner.stop.__get__(runner, gateway_run.GatewayRunner)
     return runner
 
@@ -140,24 +132,24 @@ async def test_startup_aborts_when_restart_begins_during_platform_connect(tmp_pa
 
     runner = make_startup_runner(tmp_path)
     first_disconnected = asyncio.Event()
-    telegram = StartupRaceAdapter(
-        Platform.TELEGRAM,
+    discord = StartupRaceAdapter(
+        Platform.DISCORD,
         on_connect=lambda: runner.request_restart(detached=False, via_service=True),
     )
     slack = StartupRaceAdapter(Platform.SLACK, wait_for_disconnect=first_disconnected)
 
     async def disconnect_and_release():
-        telegram.disconnected = True
+        discord.disconnected = True
         first_disconnected.set()
 
-    telegram.disconnect = disconnect_and_release
-    runner._create_adapter = MagicMock(side_effect=[telegram, slack])
+    discord.disconnect = disconnect_and_release
+    runner._create_adapter = MagicMock(side_effect=[discord, slack])
 
     result = await asyncio.wait_for(runner.start(), timeout=30)
 
     assert result is True
-    assert telegram.disconnected is True
-    assert telegram.background_cancelled is True
+    assert discord.disconnected is True
+    assert discord.background_cancelled is True
     assert slack.connected is False
     assert runner._running is False
     assert runner.adapters == {}
@@ -349,7 +341,6 @@ async def test_failure_exit_still_stops_cron_housekeeping_and_mcp(monkeypatch):
 
     monkeypatch.setattr(gateway_run, "_shutdown_mcp_servers_nonblocking", fake_mcp_shutdown)
     monkeypatch.setattr(gateway_run, "_stop_cron_provider", lambda provider: stopped.append("provider"))
-    monkeypatch.setattr("hermes_cli.nous_auth_keepalive.stop_nous_auth_keepalive", lambda: None)
     runner = MagicMock(should_exit_with_failure=True, exit_reason="boom", exit_code=None)
 
     result = await gateway_run._start_gateway_shutdown_tail(

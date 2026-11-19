@@ -1,8 +1,8 @@
-"""Terminal renderer for the learning timeline (learned skills + memories): the desktop starmap's data
-(``apps/desktop/src/app/starmap``) drawn as a timeline bar chart (date rows, skill/memory bars colored by dominant
-category, cumulative trajectory sparkline) plus per-slice bucket metadata the TUI walks as a tree. Age gradient and
-memory ink are ported from the desktop source. Grids are style runs ``[text, style, alpha, hex?]``: consumers map
-style + brightness onto their palette; hex overrides the base color (category heatmap). Pure, stdlib-only."""
+"""Terminal renderer for the learning timeline (learned skills + memories): a timeline bar chart (date rows,
+skill/memory bars colored by dominant category, cumulative trajectory sparkline) plus per-slice bucket metadata
+the TUI walks as a tree. Age gradient and memory ink use the shared Journey palette. Grids are style runs
+``[text, style, alpha, hex?]``: consumers map style + brightness onto their palette; hex overrides the base color
+(category heatmap). Pure, stdlib-only."""
 
 from __future__ import annotations
 
@@ -354,7 +354,7 @@ def render_graph(payload: dict[str, Any], *, cols: int = 80, rows: int = 16, rev
         elif bucket.total:
             row.append(["✦" if bucket.skills else "◆", STYLE_SKILL if bucket.skills else STYLE_MEMORY, ink, cat_hex if bucket.skills else None])
         # Skill bar colored by the day's dominant category (a learning heatmap); trailing empty space keeps
-        # counts aligned — starmap texture lives in the trajectory row.
+        # counts aligned — chart texture lives in the trajectory row.
         row += ([["━" * skill_len, STYLE_SKILL, ink, cat_hex]] if skill_len else [])
         row += ([["◆" if memory_len == 1 else "◆" + ("━" * (memory_len - 2)) + "◆", STYLE_MEMORY, max(0.65, ink)]] if memory_len else [])
         row += ([[" " * (bar_w - bar_len), STYLE_BG, 1.0]] if bar_len < bar_w else []) + [["  ", STYLE_BG, 1.0], [str(bucket.skills), STYLE_SKILL, max(0.72, ink)]]

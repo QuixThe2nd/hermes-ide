@@ -153,9 +153,9 @@ def test_session_origin_chat_is_attested(relay_env, monkeypatch):
 
 def test_platform_not_fronted_by_relay_is_untouched(relay_env, monkeypatch):
     """Non-relay platforms keep their own adapters' authorization, unchanged."""
-    monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "telegram")
+    monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "whatsapp")
     monkeypatch.setenv(
-        "GATEWAY_RELAY_BOT_IDS", json.dumps({"telegram": {"botId": "b1"}})
+        "GATEWAY_RELAY_BOT_IDS", json.dumps({"whatsapp": {"botId": "b1"}})
     )
     sent: list[str] = []
     result = _send(f"discord:{ARBITRARY_CHAT}", sent)
@@ -1156,7 +1156,7 @@ def test_a_runner_with_no_relay_key_is_still_an_absence(monkeypatch):
     monkeypatch.setattr(
         gr_run,
         "_gateway_runner_ref",
-        lambda: SimpleNamespace(adapters={Platform.TELEGRAM: object()}),
+        lambda: SimpleNamespace(adapters={Platform.SLACK: object()}),
         raising=False,
     )
     monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"discord"})
@@ -1260,130 +1260,6 @@ def test_a_genuinely_absent_gateway_package_is_still_an_absence(monkeypatch):
 
     assert eg._live_relay_fronted() is None
 
-
-# ── the Telegram @handle exemption must not cover a NATIVE send ────────────
-
-
-def test_handle_exemption_withdrawn_when_a_native_token_exists(monkeypatch):
-    """The exemption's justification is "the connector authorizes this".
-
-    That is false when the gateway holds its own Telegram token:
-    `_send_to_platform` calls `_send_telegram(pconfig.token, ...)` directly and
-    no connector is involved. Measured before the fix: the numeric control was
-    refused while `@unattested_public` was DELIVERED with the gateway's own
-    credential.
-    """
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
-
-    monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"telegram"})
-    monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"123"})
-    monkeypatch.setattr(eg, "_has_native_credential", lambda p: True)
-
-    assert eg.authorize_relay_target("telegram", "@unattested_public") is not None
-    # Controls: the ordinary guard is unchanged in both directions.
-    assert eg.authorize_relay_target("telegram", "999") is not None
-    assert eg.authorize_relay_target("telegram", "123") is None
-
-
-def test_handle_exemption_survives_when_only_the_connector_can_send(monkeypatch):
-    """The converse control — without it the fix is just "refuse everything".
-
-    Relay-only is the configuration the exemption exists for: the connector
-    holds the token and resolves the handle, so it authorizes the destination.
-    """
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
-
-    monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"telegram"})
-    monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"123"})
-    monkeypatch.setattr(eg, "_has_native_credential", lambda p: False)
-
-    assert eg.authorize_relay_target("telegram", "@public_channel") is None
-    # A resolved destination stays fully guarded even in this mode.
-    assert eg.authorize_relay_target("telegram", "999") is not None
-
-
-def test_native_credential_probe_fault_withdraws_the_exemption(monkeypatch):
-    """A fault must not GRANT an exemption — the safe direction is to withdraw
-    it and fall back to the ordinary attestation check."""
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
-
-    monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"telegram"})
-    monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"123"})
-
-    import gateway.config as gcfg
-
-    def _boom(*a, **kw):
-        raise RuntimeError("config unreadable")
-
-    monkeypatch.setattr(gcfg, "load_gateway_config", _boom)
-    assert eg._has_native_credential("telegram") is True
-    assert eg.authorize_relay_target("telegram", "@anything") is not None
-
-
-# ── one config snapshot for authorization AND dispatch ─────────────────────
-
-
-def test_dispatch_snapshot_token_withdraws_the_exemption(monkeypatch):
-    """Authorization must use the SAME token dispatch will send with.
-
-    Reviewer probe: the guard reloaded config independently, so a transition
-    where the authorization snapshot had no token but the retained dispatch
-    snapshot did produced a native send to an unattested handle.
-    """
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
-
-    monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"telegram"})
-    monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"123"})
-    # The independent reload is STALE and says connector-only.
-    monkeypatch.setattr(eg, "_has_native_credential", lambda p: False)
-
-    # Dispatch will use this token, so the exemption must not be granted.
-    assert eg.authorize_relay_target(
-        "telegram", "@unattested", native_token="123456:dispatch-token"
-    ) is not None
-    # Converse: a genuinely tokenless dispatch still exempts the handle.
-    assert eg.authorize_relay_target("telegram", "@public", native_token=None) is None
-    # Controls unchanged in both modes.
-    assert eg.authorize_relay_target("telegram", "999", native_token=None) is not None
-    assert eg.authorize_relay_target("telegram", "123", native_token="t") is None
-
-
-def test_tool_guard_forwards_the_dispatch_token(monkeypatch):
-    """CALLER-LEVEL. The test above drives the callee directly, so it passes
-    even if the tool never forwards its snapshot — the gap that has produced
-    four blockers on this branch. This asserts the wiring itself.
-    """
-    import tools.send_message_tool as smt
-
-    seen = {}
-
-    def _spy(platform_name, chat_id, thread_id=None, *, native_token=smt._TOKEN_UNSET):
-        seen["native_token"] = native_token
-        return None
-
-    monkeypatch.setattr("gateway.relay.egress.authorize_relay_target", _spy)
-    smt._authorize_relay_target("telegram", "@x", None, native_token="123:tok")
-    assert seen["native_token"] == "123:tok"
-
-
-def test_a_caller_that_omits_the_snapshot_does_not_get_the_exemption(monkeypatch):
-    """A forgotten argument must not silently look like "no native token"."""
-    import tools.send_message_tool as smt
-
-    seen = {}
-
-    def _spy(platform_name, chat_id, thread_id=None, **kwargs):
-        seen["kwargs"] = kwargs
-        return None
-
-    monkeypatch.setattr("gateway.relay.egress.authorize_relay_target", _spy)
-    smt._authorize_relay_target("telegram", "@x")
-    # No native_token forwarded at all -> the guard runs its own probe.
-    assert "native_token" not in seen["kwargs"]
 
 
 def test_tool_guard_forwards_thread_id(monkeypatch):

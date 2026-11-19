@@ -81,47 +81,6 @@ def test_fetch_models_with_pricing_copies_nested_original(monkeypatch):
     assert "original" not in result["free/model"]
 
 
-
-
-def test_resolve_nous_pricing_credentials_honors_inference_env_override(monkeypatch):
-    """Staging profiles set NOUS_INFERENCE_BASE_URL — pricing must follow it.
-
-    Without this, anonymous/failed-auth fallback hits prod and sale
-    ``pricing.original`` never reaches Desktop/CLI pickers.
-    """
-    monkeypatch.setenv(
-        "NOUS_INFERENCE_BASE_URL",
-        "https://stg-inference-api.nousresearch.com/v1",
-    )
-    # Auth resolution fails / returns nothing — the env override must still win.
-    monkeypatch.setattr(
-        "hermes_cli.auth.resolve_nous_runtime_credentials",
-        lambda: None,
-    )
-    api_key, base_url = models_pricing._resolve_nous_pricing_credentials()
-    assert api_key == ""
-    # The bare origin, whichever form the override was written in: callers
-    # append their own path (``/v1/models``), so a suffix here would double up.
-    assert base_url == "https://stg-inference-api.nousresearch.com"
-
-
-def test_resolve_nous_pricing_credentials_normalizes_either_suffix(monkeypatch):
-    """``/v1`` on the override is optional and must not change the result."""
-    monkeypatch.setattr(
-        "hermes_cli.auth.resolve_nous_runtime_credentials", lambda: None
-    )
-    for override in (
-        "https://stg-inference-api.nousresearch.com",
-        "https://stg-inference-api.nousresearch.com/",
-        "https://stg-inference-api.nousresearch.com/v1",
-        "https://stg-inference-api.nousresearch.com/v1/",
-    ):
-        monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", override)
-        assert models_pricing._resolve_nous_pricing_credentials()[1] == (
-            "https://stg-inference-api.nousresearch.com"
-        )
-
-
 def test_a_failed_catalog_fetch_is_not_cached_forever(monkeypatch):
     """A blip must not disable live model discovery for the whole process.
 

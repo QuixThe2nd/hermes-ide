@@ -19,7 +19,7 @@ from hermes_cli import update_receipt as receipts
 ])
 def test_runtime_repair_outcome_reaches_persisted_receipt(tmp_path, monkeypatch, status, ok, bucket):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(receipts, "_current", None)
+    receipts._current.set(None)
     result = uv.RuntimeRepairResult(
         status, "candidate dependency sync failed (rc=1): error: lockfile stale", "3.50.4", "3.53.1")
     monkeypatch.setattr(uv, "repair_vulnerable_runtime", lambda _: result)
@@ -44,5 +44,5 @@ def test_runtime_repair_outcome_reaches_persisted_receipt(tmp_path, monkeypatch,
     assert "sqlite 3.50.4 → 3.53.1" in text
     # Outside `hermes update` (setup/bootstrap) there is no receipt; the hook must stay a no-op.
     uv._run_runtime_repair("uv", observed.append)
-    assert receipts._current is None
+    assert receipts._current.get() is None
     assert observed == [result, result]

@@ -175,9 +175,8 @@ def get_nt_namespace_error(path: str, *, verb: str = "Access") -> Optional[str]:
 
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
-    # ``~/.ssh/config`` is deliberately NOT hard-denied: no key bytes, and editing
-    # it is routine. It can carry ProxyCommand / Match exec, so it goes through the
-    # approval gate instead (build_write_approval_paths).
+    # ``~/.ssh/config`` is deliberately NOT hard-denied: it contains no key
+    # bytes and editing it is routine. Credential files remain hard-denied.
     home_files = (
         (".ssh", "authorized_keys"), (".ssh", "id_rsa"), (".ssh", "id_ed25519"),
         (".netrc",), (".pgpass",), (".npmrc",), (".pypirc",), (".git-credentials",),
@@ -208,7 +207,7 @@ def build_write_denied_paths(home: str) -> set[str]:
 
 def build_write_denied_prefixes(home: str) -> list[str]:
     """Return sensitive directory prefixes that must never be written."""
-    # fork: /etc/systemd writes are approval-gated, not hard-denied.
+    # /etc/systemd is not in the hard-coded prefix denylist.
     paths = [
         *(os.path.join(home, d) for d in (".ssh", ".aws", ".gnupg", ".kube")),
         "/etc/sudoers.d",
@@ -226,14 +225,8 @@ def get_safe_write_roots() -> set[str]:
     return roots
 
 
-def build_write_approval_paths(home: str) -> set[str]:
-    """Paths that need human APPROVAL to write but are not hard-denied credentials.
-
-    ``~/.ssh/config`` is routine to edit and holds no key bytes, but can carry
-    ``ProxyCommand`` / ``Match exec``. Interactive file tools prompt
-    (approve-once/session/always, like the terminal tool's ``~/.ssh`` gate);
-    non-interactive callers (ACP shims, background jobs) fail closed.
-    """
+def _routine_write_exceptions(home: str) -> set[str]:
+    """Routine non-credential paths nested inside a denied prefix."""
     return {os.path.realpath(os.path.join(home, ".ssh", "config"))}
 
 
@@ -256,9 +249,8 @@ def _classify_write_denial(path: str) -> Optional[str]:
         return "nt_namespace"
     homes, resolved = _homes_and_resolved(path)
 
-    # Approval-gated paths are allowed at this layer so interactive tools can
-    # prompt; checked first so the ``.ssh/`` prefix deny doesn't swallow them.
-    if any(resolved in build_write_approval_paths(home) for home in homes):
+    # Routine exceptions must be checked before the ``.ssh/`` prefix deny.
+    if any(resolved in _routine_write_exceptions(home) for home in homes):
         return None
 
     if any(
@@ -300,11 +292,6 @@ def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
     return f"{verb} denied: '{path}' is a protected system/credential file." if denial else None
 
 
-def is_write_approval_required(path: str) -> bool:
-    """True if ``path`` is approval-gated (``~/.ssh/config``): interactive callers
-    prompt, callers without a channel treat it as a block (fail closed)."""
-    homes, resolved = _homes_and_resolved(path)
-    return any(resolved in build_write_approval_paths(home) for home in homes)
 
 
 # Secret-bearing project-local env file basenames, blocked anywhere on disk.
@@ -332,8 +319,8 @@ _READ_DENIED_DIRS = (
      "is the Hermes MCP token directory and cannot be read directly.",
      "is a Hermes MCP token file and cannot be read directly."),
     ("browser-profile",
-     "is the Hermes real-profile browser snapshot directory (copied cookies/logins) and cannot be read directly.",
-     "is inside the Hermes real-profile browser snapshot (copied cookies/logins) and cannot be read directly."),
+     "is a Hermes browser profile directory (cookies/logins) and cannot be read directly.",
+     "is inside a Hermes browser profile (cookies/logins) and cannot be read directly."),
     # vault.key + vault.json.enc sit side by side; key + ciphertext = plaintext, so the whole dir is one credential.
     ("vault",
      "is the Hermes credential vault directory and cannot be read directly (secrets are filled server-side by browser_vault_fill).",
@@ -416,11 +403,10 @@ def _resolve_active_profile_name() -> str:
 
 
 # --- Sandbox-mirror write guard ---
-# Non-local terminal backends bind a sandbox-local dir to the container's $HOME:
+# Non-local terminal backends bind a sandbox-local dir to the remote/container $HOME:
 #   <HERMES_HOME>/profiles/<name>/sandboxes/<backend>/<task>/home/.hermes/...
 # A host-side write there lands on a mirror the host never reads: silent success,
-# divergent copies. Path-shape-only detection, independent of the active profile;
-# the inner-container case (bind mount strips the prefix) is classify_container_mirror_target.
+# divergent copies. Path-shape-only detection, independent of the active profile.
 
 _SANDBOX_MIRROR_WARNING = (
     "Sandbox-mirror write blocked by soft guard: {target_path} "
@@ -466,33 +452,12 @@ def get_sandbox_mirror_warning(path: str) -> Optional[str]:
     the caller surfaces it as a tool-result error and ``cross_profile=True`` bypasses."""
     return _mirror_warning(
         classify_sandbox_mirror_target(path),
-        "a per-task mirror created by a non-local terminal backend (docker/daytona/etc.). "
+        "a per-task mirror created by a non-local terminal backend (ssh or a plugin). "
         "Writes here land on a copy that the host Hermes process never reads — the "
         "authoritative file is likely {inner_path!r} under the real HERMES_HOME.",
         "this guard after explicit user direction, retry the call",
     )
 
-
-def classify_container_mirror_target(path: str, mirror_prefix: str | None = None) -> Optional[dict]:
-    """Classify a write target as a container-side sandbox mirror. Inside the container
-    the bind mount strips the ``sandboxes/`` prefix (the agent sees plain ``/root/.hermes/…``),
-    so the caller supplies ``mirror_prefix`` once it knows file tools run in a docker sandbox.
-    ``None`` without a prefix or outside it, else ``target_path``/``mirror_root``/``inner_path``."""
-    target, mirror = _resolve_target(path), _resolve_target(mirror_prefix) if mirror_prefix else None
-    if target is None or mirror is None or not _is_under(target, mirror):
-        return None
-    return _mirror_info(target, mirror, target.relative_to(mirror).as_posix())
-
-
-def get_container_mirror_warning(path: str, mirror_prefix: str | None = None) -> Optional[str]:
-    """Model-facing soft-guard warning when ``path`` lands in the container's mirror, else ``None``."""
-    return _mirror_warning(
-        classify_container_mirror_target(path, mirror_prefix),
-        "the container's bind-mounted home — a per-task mirror that the host Hermes "
-        "process never reads. The authoritative file is {inner_path!r} under "
-        "the real HERMES_HOME.",
-        "after explicit user direction, retry",
-    )
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

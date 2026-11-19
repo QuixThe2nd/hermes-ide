@@ -201,25 +201,3 @@ class ApiErrorSummaryMixin:
         # Fallback: truncate the raw string but give more room than 200 chars
         return ApiErrorSummaryMixin._decorate_xai_entitlement_error(f"{prefix}{raw[:500]}")
 
-    def _mask_api_key_for_logs(self, key: Any) -> Optional[str]:
-        # Azure Foundry Entra ID bearer providers are callables — never invoke them in log
-        # paths; identify the auth surface instead.
-        if callable(key) and not isinstance(key, str):
-            return "<entra-id-bearer>"
-        if not key:
-            return None
-        if len(key) <= 12:
-            return "***"
-        return f"{key[:8]}...{key[-4:]}"
-
-    def _clean_error_message(self, error_msg: str) -> str:
-        """Clean up error messages for user display, removing HTML content and truncating."""
-        if not error_msg:
-            return "Unknown error"
-        # HTML content is common with CloudFlare and gateway error pages
-        if error_msg.strip().startswith('<!DOCTYPE html') or '<html' in error_msg:
-            return "Service temporarily unavailable (HTML error page returned)"
-        cleaned = ' '.join(error_msg.split())
-        if len(cleaned) > 150:
-            cleaned = cleaned[:150] + "..."
-        return cleaned

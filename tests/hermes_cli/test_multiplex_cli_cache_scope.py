@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import io
 import json
-import os
 import threading
 import time
 
@@ -55,7 +54,7 @@ def homes(tmp_path, monkeypatch):
     for home in (a, b):
         (home / "cache").mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(a))
-    for var in ("DEEPINFRA_API_KEY", "DEEPINFRA_BASE_URL", "NOUS_INFERENCE_BASE_URL"):
+    for var in ("DEEPINFRA_API_KEY", "DEEPINFRA_BASE_URL"):
         monkeypatch.delenv(var, raising=False)
     return a, b
 
@@ -99,29 +98,6 @@ def test_copilot_context_cache_hit_requires_same_api_key(homes, monkeypatch):
     assert models.get_copilot_model_context("gpt-x", api_key="copilot-A") == 111
 
 
-def test_nous_reasoning_caps_follow_each_profiles_portal(homes, monkeypatch):
-    a, b = homes
-    (a / ".env").write_text("NOUS_INFERENCE_BASE_URL=https://portal-a.example/v1\n", encoding="utf-8")
-    (b / ".env").write_text("NOUS_INFERENCE_BASE_URL=https://portal-b.example/v1\n", encoding="utf-8")
-    import hermes_cli.models as models
-    import hermes_cli.models_reasoning_caps as caps
-
-    for attr, value in (("_nous_reasoning_caps_cache", None), ("_nous_reasoning_caps_failed_at", None),
-                        ("_nous_caps_disk_checked", False), ("_nous_caps_warm_started", False)):
-        monkeypatch.setattr(models, attr, value)
-
-    def transport(req, *, timeout, **kw):
-        effort = "low" if "portal-a" in req.full_url else "high"
-        return _json_resp({"data": [{"id": "nous/m", "supported_parameters": ["reasoning"],
-                                     "reasoning": {"supported_efforts": [effort]}}]})
-
-    monkeypatch.setattr(models, "_urlopen_model_catalog_request", transport)
-    with _Scoped(a):
-        assert caps.nous_model_reasoning_capabilities("nous/m", allow_fetch=True)["supported_efforts"] == ["low"]
-    with _Scoped(b):
-        assert caps.nous_model_reasoning_capabilities("nous/m", allow_fetch=True)["supported_efforts"] == ["high"]
-
-
 def test_swr_refresh_runs_as_the_profile_that_spawned_it(homes):
     a, b = homes
     import hermes_cli.models as models
@@ -145,36 +121,10 @@ def test_swr_refresh_runs_as_the_profile_that_spawned_it(homes):
     assert not (a / "provider_models_cache.json").exists()
 
 
-def _write_manifest(home, model_id: str, mtime: float) -> None:
-    path = home / "cache" / "model_catalog.json"
-    path.write_text(json.dumps({"version": 1, "providers": {"openrouter": {"models": [
-        {"id": model_id, "description": "x", "default": True}]}}}), encoding="utf-8")
-    os.utime(path, (mtime, mtime))
-
-
-def test_model_catalog_in_process_copy_is_bound_to_its_cache_file(homes, monkeypatch):
-    a, b = homes
-    import hermes_cli.model_catalog as mc
-
-    for home in (a, b):
-        (home / "config.yaml").write_text("model_catalog:\n  ttl_minutes: 600\n", encoding="utf-8")
-    same_mtime = time.time() - 5  # identical mtimes: only the path can tell the two files apart
-    _write_manifest(a, "vendor/a-model", same_mtime)
-    _write_manifest(b, "vendor/b-model", same_mtime)
-    mc.reset_cache()
-    with _Scoped(a):
-        assert [m["id"] for m in mc.get_catalog()["providers"]["openrouter"]["models"]] == ["vendor/a-model"]
-    with _Scoped(b):
-        assert [m["id"] for m in mc.get_catalog()["providers"]["openrouter"]["models"]] == ["vendor/b-model"]
-        assert mc.get_default_model_from_cache("openrouter") == "vendor/b-model"
-
-
 def test_openrouter_curated_list_is_per_profile(homes, monkeypatch):
     a, b = homes
     import hermes_cli.models as models
 
-    for home in (a, b):
-        (home / "config.yaml").write_text("model_catalog:\n  ttl_minutes: 600\n", encoding="utf-8")
     now = time.time()
     for home, mid in ((a, "vendor/a-model"), (b, "vendor/b-model")):
         (home / "cache" / "openrouter_curated_catalog.json").write_text(
@@ -202,35 +152,6 @@ def test_banner_skills_are_the_routed_profiles(homes):
             assert sorted(sum(banner.get_available_skills().values(), [])) == ["skill_b"]
     finally:
         banner._available_skills_cache = None
-
-
-def test_failed_guest_mint_only_suppresses_that_profile(homes, monkeypatch, tmp_path):
-    a, b = homes
-    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
-    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared"))
-    import hermes_cli.anon_auth as anon
-    import hermes_cli.auth_nous as auth_nous
-
-    anon.reset_mint_memo_for_tests()
-    status = {"code": 429}
-    attempts: list[str] = []
-
-    def client(timeout_seconds, verify):
-        def handler(request):
-            attempts.append(str(get_hermes_home()))
-            if status["code"] == 429:
-                return httpx.Response(429, json={"error": "rate"})
-            return httpx.Response(201, json={"token": "anon_b", "user_id": "u", "org_id": "o"})
-        return httpx.Client(transport=httpx.MockTransport(handler))
-
-    monkeypatch.setattr(auth_nous, "_nous_http_client", client)
-    with _Scoped(a), pytest.raises(Exception):
-        anon.ensure_portal_identity(explicit=True, timeout_seconds=1)
-    assert attempts == [str(a)]
-    status["code"] = 201
-    with _Scoped(b):
-        assert anon.ensure_portal_identity(explicit=True, timeout_seconds=1) is not None
-    assert attempts[-1] == str(b)
 
 
 def test_active_skin_is_per_profile_and_leaves_launch_slot_alone(homes):

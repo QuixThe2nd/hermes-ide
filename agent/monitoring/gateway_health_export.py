@@ -157,7 +157,7 @@ def _count(failure_msg: str, module: str, read: Callable[[Any], Any]) -> int:
 def _read_background_work_count() -> int:
     """Live background/subagent work that ``active_agents`` (foreground turns + in-flight cron + API
     runs) deliberately does NOT include: backgrounded ``delegate_agent`` subagents,
-    ``terminal(background=true)`` processes, kanban workers.  TASK-granular: a fan-out batch of N
+    ``terminal(background=true)`` processes.  TASK-granular: a fan-out batch of N
     contributes N (real concurrent load), unlike the pool's one-slot-per-batch accounting."""
     return _count("background-work async-delegation count failed", "tools.async_delegation", lambda m: m.active_task_count()) + _count(
         "background-work process-registry count failed", "tools.process_registry", lambda m: m.process_registry.count_running()
@@ -287,7 +287,7 @@ def start_gateway_health_export(config: Dict[str, Any]) -> GatewayHealthExportRu
     sdk: Optional[Dict[str, Any]] = None
     if metrics_on or diagnostics_on:
         try:
-            sdk = otlp_exporter._require_sdk(_METRICS_SDK, auto_install=True, prompt=False)
+            sdk = otlp_exporter._require_sdk(_METRICS_SDK, auto_install=True)
         except Exception:
             logger.warning("monitoring.gateway_health_export.enabled but OTLP SDK is unavailable; install 'hermes-agent[otlp]'", exc_info=True)
             return GatewayHealthExportRuntime(enabled=False, reason="otlp_unavailable")

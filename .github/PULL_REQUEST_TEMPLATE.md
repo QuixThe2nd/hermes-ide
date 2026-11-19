@@ -48,6 +48,7 @@ Fixes #
 - [ ] My PR contains **only** changes related to this fix/feature (no unrelated commits)
 - [ ] I've run `pytest tests/ -q` and all tests pass
 - [ ] I've added tests for my changes (required for bug fixes, strongly encouraged for features)
+- [ ] My PR stays in scope: product Python changes come with tests, and lockfile/CI-workflow changes are the PR's purpose or carry the `deps` / `ci` / `no-tests-needed` label (CI runs `scripts/check_pr_diff.py`)
 - [ ] I've tested on my platform: <!-- e.g. Ubuntu 24.04, macOS 15.2, Windows 11 -->
 
 ### Documentation & Housekeeping

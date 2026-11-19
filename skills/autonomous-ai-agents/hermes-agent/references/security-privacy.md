@@ -1,6 +1,6 @@
 # Security & Privacy Toggles
 
-Common "why is Hermes doing X to my output / tool calls / commands?" toggles — and the exact commands to change them. Most of these need a fresh session (`/reset` in chat, or start a new `hermes` invocation) because they're read once at startup.
+Common "why is Hermes doing X to my output / tool calls / commands?" toggles — and the exact commands to change them. Most of these need a fresh session (`/new` in chat, or start a new `hermes` invocation) because they're read once at startup.
 
 ### Secret redaction in tool output
 
@@ -17,45 +17,16 @@ Disable only when you deliberately need raw credential-like strings for debuggin
 hermes config set security.redact_secrets false
 ```
 
-### PII redaction in gateway messages
+### Dangerous commands
 
-Separate from secret redaction. When enabled, the gateway hashes user IDs and strips phone numbers from the session context before it reaches the model:
 
-```bash
-hermes config set privacy.redact_pii true    # enable
-hermes config set privacy.redact_pii false   # disable (default)
-```
+Terminal and code-execution commands run immediately without command approval prompts. Independent lifecycle and self-repository guards still apply. None of this affects secret redaction; execution and redaction are independent.
 
-### Command approval prompts
+### Shell-hook consent
 
-By default (`approvals.mode: smart`), Hermes asks an auxiliary LLM to assess shell commands flagged as destructive (`rm -rf`, `git reset --hard`, etc.). The modes are:
-
-- `smart` — auto-approve a low-risk command once, deny high-risk commands, and prompt when uncertain (default)
-- `manual` — always prompt
-- `off` — skip all approval prompts (equivalent to `--yolo`)
-
-```bash
-hermes config set approvals.mode smart       # recommended middle ground
-hermes config set approvals.mode off         # bypass everything (not recommended)
-```
-
-Per-invocation bypass without changing config:
-- `hermes --yolo …`
-- `export HERMES_YOLO_MODE=1`
-
-Note: YOLO / `approvals.mode: off` does NOT turn off secret redaction. They are independent.
-
-### "Reset permissions" / "make Hermes ask again"
-
-The user usually means: wipe the accumulated "Always allow" state — NOT yolo
-mode, and NOT a per-edit diff prompt (which doesn't exist; file writes never
-go through the approval prompt, only shell commands do). Two stores hold it:
-
-1. Shell-command allowlist: `hermes config set command_allowlist '[]'`
-2. Shell-hook consent (only if present): `rm -f ~/.hermes/shell-hooks-allowlist.json`
-
-Then sanity-check `hermes config get approvals.mode` (should not be `off`)
-and confirm `--yolo` isn't baked into their launch alias or systemd unit.
+Shell-hook integrations require explicit allowlisting before they fire, managed
+via `~/.hermes/shell-hooks-allowlist.json` — prompted interactively the first
+time a hook wants to run. To wipe consent: `rm -f ~/.hermes/shell-hooks-allowlist.json`.
 
 ### Shell hooks allowlist
 
@@ -63,5 +34,5 @@ Some shell-hook integrations require explicit allowlisting before they fire. Man
 
 ### Disabling the web/browser/image-gen tools
 
-To keep the model away from network or media tools entirely, open `hermes tools` and toggle per-platform. Takes effect on next session (`/reset`). See `references/configuration.md` for the toolset list.
+To keep the model away from network or media tools entirely, open `hermes tools` and toggle per-platform. Takes effect on next session (`/new`). See `references/configuration.md` for the toolset list.
 

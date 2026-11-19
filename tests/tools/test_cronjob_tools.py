@@ -194,7 +194,6 @@ class TestCronjobRequirements:
         """Cron is internal (JSON-based scheduler), no system crontab needed."""
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
         # Even with no crontab in PATH, the cronjob tool should be available
         # because hermes uses an internal scheduler, not system crontab.
         assert check_cronjob_requirements() is True
@@ -202,21 +201,20 @@ class TestCronjobRequirements:
     def test_accepts_interactive_mode(self, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
 
         assert check_cronjob_requirements() is True
 
 
     @pytest.mark.parametrize(
         "var_name",
-        ["HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK"],
+        ["HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION"],
     )
     @pytest.mark.parametrize("false_like_value", ["0", "false", "no", "off"])
     def test_rejects_false_like_any_session_env(
         self, monkeypatch, var_name, false_like_value
     ):
-        """All three session env vars share the same truthy semantics."""
-        for v in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK"):
+        """Both session env vars share the same truthy semantics."""
+        for v in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION"):
             monkeypatch.delenv(v, raising=False)
         monkeypatch.setenv(var_name, false_like_value)
         assert check_cronjob_requirements() is False
@@ -428,12 +426,12 @@ class TestUnifiedCronjobTool:
 
 
     def test_create_normalizes_list_form_deliver(self):
-        """deliver=['telegram'] (list) is stored as the string 'telegram'.
+        """deliver=['discord'] (list) is stored as the string 'discord'.
 
         Regression for #17139: MCP clients / scripts sometimes pass ``deliver``
-        as an array.  Prior to the fix, ``['telegram']`` was written verbatim
+        as an array.  Prior to the fix, ``['discord']`` was written verbatim
         to ``jobs.json`` and the scheduler then tried to resolve the literal
-        string ``"['telegram']"`` as a platform, failing with
+        string ``"['discord']"`` as a platform, failing with
         "no delivery target resolved".
         """
         from cron.jobs import get_job
@@ -443,16 +441,16 @@ class TestUnifiedCronjobTool:
                 action="create",
                 prompt="Daily briefing",
                 schedule="every 1h",
-                deliver=["telegram"],
+                deliver=["discord"],
             )
         )
         assert created["success"] is True
         stored = get_job(created["job_id"])
-        assert stored["deliver"] == "telegram"
+        assert stored["deliver"] == "discord"
 
 
     def test_update_normalizes_list_form_deliver(self):
-        """update with deliver=['telegram'] stores the canonical string."""
+        """update with deliver=['discord'] stores the canonical string."""
         from cron.jobs import get_job
 
         created = json.loads(
@@ -462,17 +460,54 @@ class TestUnifiedCronjobTool:
             cronjob(
                 action="update",
                 job_id=created["job_id"],
-                deliver=["telegram"],
+                deliver=["discord"],
             )
         )
         assert updated["success"] is True
         stored = get_job(created["job_id"])
-        assert stored["deliver"] == "telegram"
+        assert stored["deliver"] == "discord"
 
 
 # =========================================================================
 # Agent-facing surface: per-job model pins are user-owned
 # =========================================================================
+
+
+class TestProgressDescription:
+    def test_description_is_optional_progress_reason(self):
+        from tools.cronjob_tools import CRONJOB_SCHEMA
+
+        parameters = CRONJOB_SCHEMA["parameters"]
+        assert parameters["properties"]["description"] == {
+            "type": "string",
+            "description": (
+                "One short phrase (max ~80 chars) saying WHY you are calling this, "
+                "e.g. 'clean up the stale backup monitor'. Shown to the user as progress. "
+                "Never put secrets here."
+            ),
+        }
+        assert "description" not in parameters["required"]
+
+    def test_registered_handler_does_not_forward_description(self, monkeypatch):
+        import tools.cronjob_tools as tool_module
+        from tools.registry import registry
+
+        captured = {}
+
+        def _fake_cronjob(**kwargs):
+            captured.update(kwargs)
+            return "{}"
+
+        monkeypatch.setattr(tool_module, "cronjob", _fake_cronjob)
+        registry._tools["cronjob_manage"].handler({
+            "action": "remove",
+            "job_id": "d3b3945f166d",
+            "description": "clean up the stale backup monitor",
+        })
+
+        assert captured["action"] == "remove"
+        assert captured["job_id"] == "d3b3945f166d"
+        assert "description" not in captured
 
 
 class TestAgentCannotSetModelPin:
@@ -674,7 +709,7 @@ class TestLocalDeliveryNotice:
         # Omitted deliver from a session with no origin downgrades to local.
         assert created["deliver"] == "local"
         assert "local-only cron job" in created["message"]
-        assert "deliver='telegram'" in created["message"]
+        assert "deliver='discord:999888777'" in created["message"]
 
 
     def test_gateway_origin_no_notice(self, monkeypatch):
@@ -682,7 +717,7 @@ class TestLocalDeliveryNotice:
         # resolves to that chat — nothing to warn about.
         from gateway.session_context import set_session_vars
 
-        set_session_vars(platform="telegram", chat_id="999")
+        set_session_vars(platform="discord", chat_id="999")
         created = json.loads(
             cronjob(action="create", prompt="x", schedule="every 2m")
         )

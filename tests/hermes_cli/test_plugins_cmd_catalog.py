@@ -108,6 +108,6 @@ def test_removed_annotation_requires_a_pre_resolved_kill_list(world):
 
 def test_owner_repo_hash_subdir_shorthand_resolves_like_the_catalog_spelling():
     from hermes_cli.plugins_cmd import _resolve_git_url
-    assert _resolve_git_url("plastic-labs/honcho#hermes-plugin-honcho") == (
-        "https://github.com/plastic-labs/honcho.git", "hermes-plugin-honcho")
+    assert _resolve_git_url("acme/widgets#plugin-dir") == (
+        "https://github.com/acme/widgets.git", "plugin-dir")
     assert _resolve_git_url("owner/repo") == ("https://github.com/owner/repo.git", None)

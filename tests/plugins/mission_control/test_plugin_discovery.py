@@ -108,23 +108,41 @@ def test_no_static_assets_or_images_ship():
 
 
 def test_server_imports_stdlib_plus_repo_constants_only():
-    tree = ast.parse(
-        (PLUGIN_DIR / "server.py").read_text(encoding="utf-8"))
-    imported = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported.update(a.name.split(".")[0] for a in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 \
-                and node.module:
-            imported.add(node.module.split(".")[0])
-    # hermes_state is the deliberate exception: the session listing is
-    # core-owned (SessionDB.list_sessions_rich owns the projection),
-    # so the server imports the read-only SessionDB from it. Nothing
-    # else from the repo may leak in — no CLI, no agents, no plugin
-    # package imports (the module stays standalone-loadable).
+    # The server is a facade over same-package siblings (server.py,
+    # ui_assets.py, ...): every module in the plugin is held to the
+    # same hygiene contract. hermes_state is the deliberate exception:
+    # the session listing is core-owned (SessionDB.list_sessions_rich
+    # owns the projection), so the server imports the read-only
+    # SessionDB from it. Beyond that, stdlib only — plus the plugin's
+    # OWN siblings, addressed absolutely (from plugins.mission_control
+    # import ...) so the facade stays standalone-loadable by file path
+    # with no package __init__ executed for the server module itself.
+    # No CLI, no agents, no OTHER plugin package may leak in.
     allowed = set(sys.stdlib_module_names) | {
         "hermes_constants", "hermes_state"}
-    assert imported <= allowed, imported - allowed
+    # cli.py / __init__.py are the plugin's registration surface (the
+    # CLI command and PluginManager register()); the hygiene contract
+    # governs the server facade and its topic siblings.
+    modules = sorted(
+        p for p in PLUGIN_DIR.glob("*.py")
+        if p.name not in ("cli.py", "__init__.py"))
+    assert len(modules) >= 2  # server.py facade plus its siblings
+    for path in modules:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(a.name for a in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 \
+                    and node.module:
+                imported.add(node.module)
+        for name in sorted(imported):
+            if name.split(".")[0] == "plugins":
+                # Only the plugin's own package is importable.
+                assert name.startswith("plugins.mission_control"), \
+                    (path.name, name)
+            else:
+                assert name.split(".")[0] in allowed, (path.name, name)
 
 
 def test_register_registers_one_cli_command_and_nothing_else():

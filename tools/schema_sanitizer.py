@@ -14,7 +14,7 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-# Anthropic (and Bedrock/Vertex/Azure fronting it) reject property keys not matching this; one bad
+# Anthropic (and Vertex/Azure fronting it) reject property keys not matching this; one bad
 # key anywhere in the tools array 400s the request (Cloudflare's MCP ships 61).
 _PROP_KEY_RE = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
 _PROP_KEY_BAD_CHARS = re.compile(r"[^a-zA-Z0-9_.-]")

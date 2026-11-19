@@ -75,7 +75,7 @@ def _skills_dir() -> Path:
     """Active profile's skills dir at call time (multi-profile runtimes rebind per session).
     An explicitly patched module-level ``SKILLS_DIR`` (tests) wins over the live HERMES_HOME.
 
-    Long-lived multi-profile runtimes (Dashboard/TUI/Desktop backend, cron, kanban workers) import this
+    Long-lived multi-profile runtimes (Dashboard/TUI/Desktop backend, cron, automation workers) import this
     module once under the launch HERMES_HOME and later bind a different profile per session (#40677).
     """
     configured = Path(SKILLS_DIR)
@@ -860,6 +860,10 @@ SKILL_MANAGE_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
+            "description": {
+                "type": "string",
+                "description": "One short phrase (max ~80 chars) saying WHY skills are being changed, e.g. 'save the deploy rule in the fork skill'. Shown to the user as progress: '<emoji> Editing skill to <description>'. Optional.",
+            },
             "operations": {
                 "type": "array",
                 "description": (

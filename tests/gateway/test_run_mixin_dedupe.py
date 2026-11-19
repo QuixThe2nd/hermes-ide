@@ -1,0 +1,71 @@
+"""Anti-regression guard: GatewayRunner duplicates and the TurnRunner constructor stay consolidated.
+
+History: the Sep-2026 mixin split (run.py -> run_*.py) was clobbered by a repo-restore, leaving
+both the extracted mixin definitions AND the monolith copies in ``gateway/run.py``. The class-body
+copies in ``run.py`` shadowed their byte-identical mixin counterparts via the MRO. They were
+consolidated (wave 1: the byte-identical clusters) — this test fails if any listed pair is
+re-introduced, i.e. if a method here appears in ``GatewayRunner.__dict__`` while the mixin already
+defines it. TurnRunner has one live class and inherits its constructor from ``_TurnRunnerCore``.
+"""
+
+import gateway.run as run_mod
+from gateway.run_adapters import GatewayAdapterLifecycleMixin
+from gateway.run_agent_cache import GatewayAgentCacheMixin
+from gateway.run_busy import GatewayBusySessionMixin
+from gateway.run_config_loaders import GatewayConfigLoadersMixin
+from gateway.run_inbound import GatewayInboundMixin
+from gateway.run_shutdown import GatewayShutdownMixin
+from gateway.run_startup import GatewayStartupMixin
+from gateway.run_turn_runner import TurnRunner, _TurnRunnerCore
+
+# (method name, module-level mixin class) pairs that were byte-identical duplicates of
+# GatewayRunner class-body definitions in gateway/run.py.
+CONSOLIDATED_MIXIN_METHODS = (
+    ("_request_clean_exit", GatewayAdapterLifecycleMixin),
+    ("_retain_background_task", GatewayAdapterLifecycleMixin),
+    ("_goal_still_active_for_session", GatewayBusySessionMixin),
+    ("_lookup_session_id_under_store_lock", GatewayBusySessionMixin),
+    ("_agent_has_active_subagents", GatewayBusySessionMixin),
+    ("_session_has_compression_in_flight", GatewayBusySessionMixin),
+    ("_hm_text_only", GatewayInboundMixin),
+    ("_clear_plugin_message_injector", GatewayInboundMixin),
+    ("_stop_systemd_watchdog", GatewayShutdownMixin),
+    ("wait_for_shutdown", GatewayShutdownMixin),
+    ("_current_session_run_generation", GatewayAgentCacheMixin),
+    ("_is_session_run_current", GatewayAgentCacheMixin),
+    ("_set_pending_turn_sidecar_notes", GatewayAgentCacheMixin),
+)
+
+
+def test_consolidated_methods_defined_exactly_once():
+    """Each consolidated method lives on its mixin only — not re-defined on GatewayRunner.
+
+    A definition in ``GatewayRunner.__dict__`` would silently shadow the mixin copy (MRO),
+    re-creating the duplicate-method drift this consolidation removed.
+    """
+    shadowed = [
+        name for name, mixin in CONSOLIDATED_MIXIN_METHODS
+        if name in run_mod.GatewayRunner.__dict__
+    ]
+    assert not shadowed, (
+        f"GatewayRunner re-defines mixin-owned methods {shadowed}; "
+        "the mixin definition must stay the single definition"
+    )
+    missing = [
+        (name, mixin.__name__) for name, mixin in CONSOLIDATED_MIXIN_METHODS
+        if name not in mixin.__dict__
+    ]
+    assert not missing, f"mixin definitions disappeared: {missing}"
+    # The consolidated methods must still resolve on the composed runner.
+    for name, _mixin in CONSOLIDATED_MIXIN_METHODS:
+        assert callable(getattr(run_mod.GatewayRunner, name, None)), name
+
+
+def test_turn_runner_constructor_defined_exactly_once():
+    """TurnRunner inherits its sole constructor from _TurnRunnerCore."""
+    assert "__init__" not in vars(TurnRunner)
+    assert "__init__" in vars(_TurnRunnerCore)
+    sentinel_runner, sentinel_ctx = object(), object()
+    instance = TurnRunner(sentinel_runner, sentinel_ctx)
+    assert instance._runner is sentinel_runner
+    assert instance._ctx is sentinel_ctx

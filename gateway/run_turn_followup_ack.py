@@ -16,7 +16,7 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent, Processing
 
 def _followup_processing_hooks_apply(adapter, event: MessageEvent | None) -> bool:
     """Both conditions are necessary: a real inbound platform message to acknowledge (adapters key their
-    marker off ``message_id`` — Slack/Telegram/Feishu/Matrix/Photon — or off ``raw_message`` — Signal,
+    marker off ``message_id`` — Slack/Feishu/Matrix/Photon — or off ``raw_message`` — Signal,
     Discord; synthetic drains such as ``/goal`` continuations, wake-ups and startup auto-resume carry
     neither and must stay silent), and an adapter that overrides ``on_processing_start``. We bracket, so
     both halves must belong to us: a complete-only adapter (Google Chat reaps its typing card there,

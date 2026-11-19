@@ -198,7 +198,7 @@ class _JSONStream:
 
 
 def _iter_export_values(path: Path, *, chunk_size: int = 65_536) -> Iterator[tuple[str, Any]]:
-    with path.open("r", encoding="utf-8") as handle:
+    with path.open("r", encoding="utf-8-sig") as handle:
         stream = _JSONStream(handle, chunk_size=chunk_size)
         stream.expect("{")
         seen: set[str] = set()

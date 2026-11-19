@@ -132,10 +132,10 @@ class TestSweepOrphanedSessions:
         assert db.get_session("fresh-child")["ended_at"] is None
 
     def test_gateway_owned_source_not_swept(self, db):
-        """telegram/discord/... rows belong to the messaging gateway (#60609)."""
+        """discord/slack/... rows belong to the messaging gateway (#60609)."""
         stale = time.time() - 8 * 3600
         _make_session(
-            db, "tg-sess", source="telegram", started_at=stale, message_at=stale
+            db, "tg-sess", source="discord", started_at=stale, message_at=stale
         )
 
         assert db.sweep_orphaned_sessions(max_idle_seconds=IDLE_S) == []
@@ -190,10 +190,10 @@ class TestSweepOrphanedSessions:
             db, "stale-cron", source="cron", started_at=stale, message_at=stale
         )
         for sid, session_key in (
-            ("keyed-telegram", "telegram:chat:1"),
-            ("unkeyed-telegram", None),
+            ("keyed-discord", "discord:chat:1"),
+            ("unkeyed-discord", None),
         ):
-            db.create_session(sid, source="telegram", session_key=session_key)
+            db.create_session(sid, source="discord", session_key=session_key)
             db.append_message(sid, role="user", content="hello")
             _set_message_timestamps(db, sid, stale)
             _backdate_session(db, sid, stale)
@@ -202,8 +202,8 @@ class TestSweepOrphanedSessions:
             max_idle_seconds=IDLE_S, sources=("cron",)
         ) == ["stale-cron"]
         assert db.get_session("stale-cron")["end_reason"] == "startup_orphan_reap"
-        assert db.get_session("keyed-telegram")["ended_at"] is None
-        assert db.get_session("unkeyed-telegram")["ended_at"] is None
+        assert db.get_session("keyed-discord")["ended_at"] is None
+        assert db.get_session("unkeyed-discord")["ended_at"] is None
 
     def test_automatic_source_scope_spares_pinned_session(self, db):
         stale = time.time() - 8 * 3600
@@ -303,10 +303,10 @@ class TestSweepOrphanedSessions:
         )
         _set_last_activity(db, "recent-orphan", recent)
         db.create_session(
-            "keyed", source="telegram", session_key="telegram:chat:1"
+            "keyed", source="discord", session_key="discord:chat:1"
         )
         _backdate_session(db, "keyed", stale)
-        db.create_session("unkeyed-gateway", source="telegram")
+        db.create_session("unkeyed-gateway", source="discord")
         _backdate_session(db, "unkeyed-gateway", stale)
         _set_last_activity(db, "unkeyed-gateway", stale)
         assert db.try_acquire_session_turn_lease(
@@ -539,16 +539,16 @@ class TestSweepOrphanedSessions:
     def test_auto_prune_reports_closed_count_and_deletes_after_second_window(
         self, db
     ):
-        """#54189 end-to-end: leaky producers (cron/kanban/subagent) never set
-        ``ended_at``; pass 1 closes them (reported via ``closed``), pass 2 —
-        after a further retention window — deletes them, and a messaging row
-        is never touched by either pass."""
+        """#54189 end-to-end: leaky producers (cron/historical Kanban/subagent)
+        never set ``ended_at``; pass 1 closes them (reported via ``closed``),
+        pass 2 — after a further retention window — deletes them, and a
+        messaging row is never touched by either pass."""
         stale = time.time() - 200 * 86400
         for sid, source in (
             ("cron-0", "cron"),
             ("kanban-1", "kanban"),
             ("subagent-2", "subagent"),
-            ("telegram-3", "telegram"),
+            ("discord-3", "discord"),
         ):
             _make_session(db, sid, source=source, started_at=stale, message_at=stale)
             _set_last_activity(db, sid, stale)
@@ -560,7 +560,7 @@ class TestSweepOrphanedSessions:
         assert first["pruned"] == 0
         for sid in ("cron-0", "kanban-1", "subagent-2"):
             assert db.get_session(sid)["end_reason"] == "startup_orphan_reap"
-        assert db.get_session("telegram-3")["ended_at"] is None
+        assert db.get_session("discord-3")["ended_at"] is None
 
         # Simulate the next maintenance pass after another retention window.
         db._conn.execute(
@@ -574,7 +574,7 @@ class TestSweepOrphanedSessions:
         assert second["closed"] == 0
         assert second["pruned"] == 3
         remaining = [r["id"] for r in db._conn.execute("SELECT id FROM sessions")]
-        assert remaining == ["telegram-3"]
+        assert remaining == ["discord-3"]
 
     def test_auto_prune_closes_and_later_deletes_recovered_placeholders(self, db):
         """#114730: ``sessions recover`` synthesizes ``source='recovered'`` placeholder

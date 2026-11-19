@@ -294,6 +294,59 @@ def test_prefetch_runs_for_substantive_user_message():
     assert ctx.ext_prefetch_cache == "REMEMBERED CONTEXT"
 
 
+def test_incognito_skips_external_recall_prefetch_and_indicators():
+    agent, mm = _agent_with_memory_manager()
+    agent._incognito = True
+    agent._emit_status = MagicMock()
+    query = "what did we decide about the deploy pipeline?"
+
+    ctx = _build(agent, user_message=query)
+
+    mm.on_turn_start.assert_not_called()
+    mm.prefetch_all.assert_not_called()
+    mm.describe_recall.assert_not_called()
+    assert ctx.ext_prefetch_cache == ""
+    assert ctx.messages[-1].get("api_content") is None
+    for call in agent._emit_status.call_args_list:
+        assert "👁️" not in str(call)
+
+
+def test_incognito_memory_card_omits_stale_recalled_count():
+    agent, mm = _agent_with_memory_manager()
+    agent._incognito = True
+    agent._last_memory_blocks = ["incognito system memory card"]
+    agent.tool_progress_callback = MagicMock()
+    mm.recalled_count.return_value = 3
+
+    _build(agent, user_message="what did we decide about the deploy pipeline?")
+
+    mm.recalled_count.assert_not_called()
+    cards = [
+        call.args[3] for call in agent.tool_progress_callback.call_args_list
+        if call.args[:3] == ("context.injected", "context", None)
+    ]
+    assert cards
+    assert all(card["recalled_count"] is None for card in cards)
+
+
+def test_non_incognito_memory_card_keeps_recalled_count():
+    agent, mm = _agent_with_memory_manager()
+    agent._incognito = False
+    agent._last_memory_blocks = ["ordinary system memory card"]
+    agent.tool_progress_callback = MagicMock()
+    mm.recalled_count.return_value = 2
+
+    _build(agent, user_message="what did we decide about the deploy pipeline?")
+
+    cards = [
+        call.args[3] for call in agent.tool_progress_callback.call_args_list
+        if call.args[:3] == ("context.injected", "context", None)
+        and "recalled_count" in call.args[3]
+    ]
+    assert cards
+    assert cards[0]["recalled_count"] == 2
+
+
 # ── Per-turn author ──────────────────────────────────────────────────────────
 
 
@@ -523,7 +576,7 @@ def _title_turn(platform, message="Fix the login button"):
     return titler
 
 
-@pytest.mark.parametrize("platform", ["cli", "telegram", "desktop", "acp", None])
+@pytest.mark.parametrize("platform", ["cli", "discord", "desktop", "acp", None])
 def test_prologue_titles_the_surfaces_a_person_reads(platform):
     assert _title_turn(platform).called
 
@@ -630,7 +683,7 @@ def test_prologue_prunes_both_outside_assistant_whatsapp(handoff_home):
     _start_mission(pm)  # mission exists; the session namespace still gates
     for key in (
         "agent:main:whatsapp:dm:61400000000",
-        "agent:assistant:telegram:dm:61400000000",
+        "agent:assistant:discord:dm:61400000000",
         "",
     ):
         agent = _HandoffAgent(key)

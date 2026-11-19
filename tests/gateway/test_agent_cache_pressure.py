@@ -156,7 +156,7 @@ class TestPersistenceGuard:
             session_id=session_id,
             session_db=db,
         )
-        db.create_session(session_id, source="telegram")
+        db.create_session(session_id, source="discord")
         agent._session_db_created = True
         return agent
 

@@ -9,7 +9,7 @@ into a warning, silence on a clean config.
 
 from unittest.mock import patch
 
-from hermes_cli.doctor import _check_channel_record_hygiene
+from hermes_cli.doctor_config import _check_channel_record_hygiene
 
 
 def test_clean_config_prints_nothing(capsys):

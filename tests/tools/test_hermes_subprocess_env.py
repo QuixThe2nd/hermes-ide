@@ -20,7 +20,7 @@ from tools.environments.local_env_policy import _ALWAYS_STRIP_KEYS, _HERMES_PROV
 
 _TIER1_SAMPLE = {
     "GH_TOKEN": "ghp_secret",
-    "TELEGRAM_BOT_TOKEN": "bot-token",
+    "DISCORD_BOT_TOKEN": "bot-token",
     "SLACK_APP_TOKEN": "xapp-secret",
     "MODAL_TOKEN_SECRET": "modal-secret",
     "HERMES_DASHBOARD_SESSION_TOKEN": "dash-secret",
@@ -58,20 +58,6 @@ class TestStripByDefault:
         result = _build(_TIER1_SAMPLE)
         for var in _TIER1_SAMPLE:
             assert var not in result, f"{var} leaked (Tier-1) with inherit_credentials=False"
-
-    def test_buzz_platform_vars_stripped_by_default(self):
-        """BUZZ_* first-party platform credentials must NOT reach the
-        non-terminal spawn surface (browser / TUI host / copilot-executor),
-        even though they pass through to terminal children (issue #78026)."""
-        buzz_sample = {
-            "BUZZ_PRIVATE_KEY": "nsec1fake",
-            "BUZZ_AUTH_TAG": '["tag","data","kind","sig"]',
-            "BUZZ_RELAY_URL": "https://mycommunity.communities.buzz.xyz",
-        }
-        result = _build(buzz_sample)
-        for var in buzz_sample:
-            assert var not in result, f"{var} leaked via hermes_subprocess_env"
-
 
     def test_pythonutf8_set(self):
         result = _build()
@@ -115,7 +101,7 @@ class TestTierInvariants:
             )
 
     def test_tier1_covers_gateway_bot_token(self):
-        assert "TELEGRAM_BOT_TOKEN" in _ALWAYS_STRIP_KEYS
+        assert "DISCORD_BOT_TOKEN" in _ALWAYS_STRIP_KEYS
 
     def test_tier1_covers_github_auth(self):
         assert {"GH_TOKEN", "GITHUB_TOKEN"} <= _ALWAYS_STRIP_KEYS
@@ -124,57 +110,17 @@ class TestTierInvariants:
         assert {"MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "DAYTONA_API_KEY"} <= _ALWAYS_STRIP_KEYS
 
 
-class TestBrowserPassthroughPattern:
-    def test_browser_keys_recoverable_after_strip(self):
-        """Browser tool pattern: strip everything, then re-add the browser
-        backend keys agent-browser actually needs."""
-        from tools.browser_tool import _BROWSER_PASSTHROUGH_KEYS
-
-        leaked = {
-            "BROWSERBASE_API_KEY": "bb-key",
-            "BROWSERBASE_PROJECT_ID": "bb-proj",
-            "FIRECRAWL_API_KEY": "fc-key",
-            "ANTHROPIC_API_KEY": "ant-should-go",
-            "TELEGRAM_BOT_TOKEN": "bot-should-go",
-        }
-        with patch.dict(os.environ, {**_SAFE_SAMPLE, **leaked}, clear=True):
-            env = hermes_subprocess_env(inherit_credentials=False)
-            for key in _BROWSER_PASSTHROUGH_KEYS:
-                if key in os.environ:
-                    env[key] = os.environ[key]
-
-        assert env["BROWSERBASE_API_KEY"] == "bb-key"
-        assert env["FIRECRAWL_API_KEY"] == "fc-key"
-        # Provider + gateway secrets must NOT come back.
-        assert "ANTHROPIC_API_KEY" not in env
-        assert "TELEGRAM_BOT_TOKEN" not in env
 
 
 class TestDelegatedChildMarker:
-    def test_delegated_child_context_scrubs_parent_kanban_keys_and_sets_marker(self):
+    def test_delegated_child_context_sets_marker(self):
         from agent.delegation_context import delegated_child_context
 
-        with patch.dict(
-            os.environ,
-            {
-                **_SAFE_SAMPLE,
-                "HERMES_KANBAN_TASK": "t_parent",
-                "HERMES_KANBAN_RUN_ID": "123",
-                "HERMES_KANBAN_DB": "/tmp/parent-kanban.db",
-                "HERMES_KANBAN_WORKSPACE": "/tmp/parent-workspace",
-            },
-            clear=True,
-        ):
+        with patch.dict(os.environ, _SAFE_SAMPLE, clear=True):
             with delegated_child_context():
                 env = hermes_subprocess_env(inherit_credentials=True)
 
         assert env["HERMES_DELEGATED_CHILD_CONTEXT"] == "1"
-        # Worker identity is scrubbed; board location and workspace routing survive so the
-        # fenced descendant can still read the board it belongs to.
-        assert "HERMES_KANBAN_TASK" not in env
-        assert "HERMES_KANBAN_RUN_ID" not in env
-        assert env["HERMES_KANBAN_DB"] == "/tmp/parent-kanban.db"
-        assert env["HERMES_KANBAN_WORKSPACE"] == "/tmp/parent-workspace"
         assert env["MY_APP_VAR"] == "keep-me"
 
 

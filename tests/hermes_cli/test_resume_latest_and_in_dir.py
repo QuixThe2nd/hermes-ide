@@ -38,7 +38,6 @@ def main_mod(monkeypatch):
 
     monkeypatch.setattr(mod, "_has_any_provider_configured", lambda: True)
     monkeypatch.setattr(mod, "_sync_bundled_skills_for_startup", lambda: False)
-    monkeypatch.setattr(mod, "_pin_kanban_board_env", lambda: None)
     return mod
 
 
@@ -215,6 +214,7 @@ def test_in_dir_missing_directory_exits(main_mod, monkeypatch, tmp_path, capsys)
     assert "--in directory not found" in capsys.readouterr().out
 
 
+@pytest.mark.platforms("linux")
 def test_in_dir_expands_user_home(main_mod, launched, monkeypatch, tmp_path):
     import os
 

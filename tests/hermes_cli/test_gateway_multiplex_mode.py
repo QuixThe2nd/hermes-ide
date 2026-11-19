@@ -30,12 +30,12 @@ def fleet(tmp_path, monkeypatch):
     for sub in ("profiles/coder", "profiles/ops"):
         (root / sub).mkdir(parents=True)
     (root / "config.yaml").write_text("model:\n  default: x\n", encoding="utf-8")
-    (root / ".env").write_text("TELEGRAM_BOT_TOKEN=111111:default-token\n", encoding="utf-8")
-    (root / "profiles/coder/.env").write_text("TELEGRAM_BOT_TOKEN=222222:coder-token\n", encoding="utf-8")
+    (root / ".env").write_text("DISCORD_BOT_TOKEN=111111:default-token\n", encoding="utf-8")
+    (root / "profiles/coder/.env").write_text("DISCORD_BOT_TOKEN=222222:coder-token\n", encoding="utf-8")
     (root / "profiles/ops/.env").write_text("DISCORD_BOT_TOKEN=ops-discord-333333\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
-    for name in ("TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN", "API_SERVER_KEY", "WEBHOOK_ENABLED"):
+    for name in ("DISCORD_BOT_TOKEN", "DISCORD_BOT_TOKEN", "API_SERVER_KEY", "WEBHOOK_ENABLED"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
     services: dict[str, list] = {}
@@ -84,7 +84,7 @@ def test_unset_flag_multiplexes_a_quiet_fleet_and_stays_standalone_beside_a_live
 def test_preflight_blocker_and_single_profile_keep_the_unset_default_standalone(fleet):
     root, _services, _pids = fleet
     # coder reuses the default's bot token -> the migration preflight's duplicate-credential blocker.
-    (root / "profiles/coder/.env").write_text("TELEGRAM_BOT_TOKEN=111111:default-token\n", encoding="utf-8")
+    (root / "profiles/coder/.env").write_text("DISCORD_BOT_TOKEN=111111:default-token\n", encoding="utf-8")
     decision = mode.resolve_multiplex_mode(load_gateway_config())
     assert decision.source == "guard" and "profile_routes" in decision.reason
 

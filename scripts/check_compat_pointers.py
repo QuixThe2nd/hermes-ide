@@ -26,19 +26,24 @@ ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "compat_manifest.json"
 DEPENDENCY_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__"}
 ROOT_SKIP_DIRS = DEPENDENCY_DIRS | {
-    "website", "skills", "optional-skills", "apps", "evals", "build", "MagicMock", ".worktrees"
+    "website", "skills", "optional-skills", "build", "MagicMock", ".worktrees"
 }
 
 
 def _py_files():
-    for dirpath, dirnames, filenames in os.walk(ROOT):
+    def fail(error):
+        raise error
+
+    for dirpath, dirnames, filenames in os.walk(ROOT, onerror=fail):
         excluded = ROOT_SKIP_DIRS if Path(dirpath) == ROOT else DEPENDENCY_DIRS
-        dirnames[:] = [name for name in dirnames if name not in excluded]
+        dirnames[:] = [
+            name for name in dirnames
+            if name not in excluded and not name.startswith(".")
+        ]
         for filename in filenames:
-            if not filename.endswith(".py") or filename == "check_compat_pointers.py":
-                continue
-            # The compat layer's own contract test uses the pointers on purpose; it is deleted with them.
-            if filename == "test_compat_manifest_targets.py":
+            if not filename.endswith(".py") or filename in {
+                "check_compat_pointers.py", "test_compat_manifest_targets.py"
+            }:
                 continue
             yield Path(dirpath) / filename
 
@@ -47,7 +52,7 @@ def main() -> int:
     if not MANIFEST.exists():
         print("compat_manifest.json missing — nothing to check (compat layer already reverted?)")
         return 0
-    entries = json.loads(MANIFEST.read_text(encoding="utf-8"))["entries"]
+    entries = json.loads(MANIFEST.read_text(encoding="utf-8-sig"))["entries"]
     compat: dict[str, set[str]] = {}
     for e in entries:
         compat.setdefault(e["facade"], set()).add(e["name"])
@@ -57,7 +62,7 @@ def main() -> int:
     for path in _py_files():
         rel = path.relative_to(ROOT)
         try:
-            src = path.read_text(encoding="utf-8", errors="ignore")
+            src = path.read_text(encoding="utf-8-sig", errors="ignore")
             tree = ast.parse(src)
         except SyntaxError:
             continue

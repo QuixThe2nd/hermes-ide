@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_eviction_policy import outbound_image_retire_count
 from agent.anthropic_endpoints import (
-    _is_deepseek_anthropic_endpoint, _is_kimi_family_endpoint, _is_nous_portal_endpoint,
+    _is_deepseek_anthropic_endpoint, _is_kimi_family_endpoint,
     _is_third_party_anthropic_endpoint, _model_name_is_deepseek_thinking,
 )
 
@@ -21,9 +21,8 @@ logger = logging.getLogger(__name__)
 _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
 _CACHEABLE_TYPES = frozenset(("text", "tool_use"))
 _EMPTY_TEXT_PLACEHOLDER = "(empty)"
-_EMPTY_SCHEMA = {"type": "object", "properties": {}}
-_BEDROCK_REGION_PREFIXES = ("global.", "us.", "eu.", "apac.", "ap.", "au.", "jp.", "ca.", "sa.", "me.", "af.")
 
+_EMPTY_SCHEMA = {"type": "object", "properties": {}}
 
 def _block_type(b: Any) -> Any:
     """``type`` of a dict block, None for non-dicts."""
@@ -96,20 +95,14 @@ def _split_blank_text_blocks(blocks: List[Any]) -> Tuple[List[Any], Any, List[in
     return kept, relocated[-1] if relocated else None, dropped
 
 
-def _is_bedrock_model_id(model: str) -> bool:
-    """Bedrock ids (``anthropic.claude-opus-4-7``, ``us.anthropic.claude-*``) use dots as namespace
-    separators that must be preserved verbatim."""
-    return model.lower().startswith(_BEDROCK_REGION_PREFIXES + ("anthropic.",))
-
-
 def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
     """Strip the ``anthropic/`` prefix (case-insensitive) and, unless ``preserve_dots`` (DashScope:
     ``qwen3.5-plus``), convert version dots to hyphens for Claude models only (``claude-opus-4.6``
-    -> ``claude-opus-4-6``). Bedrock ids keep their namespace dots; non-Anthropic names
-    (``gpt-5.4``) keep dots as part of their canonical form."""
+    -> ``claude-opus-4-6``). Non-Anthropic names (``gpt-5.4``) keep dots as part of their
+    canonical form."""
     if model.lower().startswith("anthropic/"):
         model = model[len("anthropic/"):]
-    if not preserve_dots and not _is_bedrock_model_id(model) and model.lower().startswith(("claude-", "anthropic/")):
+    if not preserve_dots and model.lower().startswith(("claude-", "anthropic/")):
         # Only convert dots to hyphens for Anthropic/Claude models. See issue #17171.
         model = model.replace(".", "-")
     return model
@@ -279,7 +272,7 @@ def _content_parts_to_anthropic_blocks(parts: Any) -> List[Dict[str, Any]]:
 def _safe_text(text: Any) -> str:
     """``text`` if non-whitespace, else the placeholder. A blank text block stored in history (e.g.
     by compression) is replayed on every turn and wedges the session with HTTP 400; the placeholder
-    is self-healing. Mirrors ``bedrock_adapter._safe_text`` (kept separate on purpose)."""
+    is self-healing."""
     text = "" if text is None else str(text)
     return text if text.strip() else _EMPTY_TEXT_PLACEHOLDER
 
@@ -570,11 +563,9 @@ def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | No
     Anthropic signs thinking blocks against the full turn; any upstream mutation invalidates them
     (400 "Invalid signature in thinking block"), so on direct Anthropic only the LATEST assistant
     turn keeps signed blocks. Signatures are proprietary: third-party endpoints strip all thinking.
-    Kimi replays as-is; DeepSeek needs unsigned blocks round-tripped but rejects signed ones. Nous
-    Portal proxies Claude with sticky sessions and validates the same signatures, so it takes the
-    native path despite not being anthropic.com.
+    Kimi replays as-is; DeepSeek needs unsigned blocks round-tripped but rejects signed ones.
     """
-    is_third_party = _is_third_party_anthropic_endpoint(base_url) and not _is_nous_portal_endpoint(base_url)
+    is_third_party = _is_third_party_anthropic_endpoint(base_url)
     is_kimi = _is_kimi_family_endpoint(base_url, model)
     is_deepseek = _is_deepseek_anthropic_endpoint(base_url) or (
         is_third_party and _model_name_is_deepseek_thinking(model)

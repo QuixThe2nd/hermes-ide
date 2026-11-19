@@ -1,0 +1,36 @@
+{
+  "comment": "Shared hub stream-limit contract table. stream_limit_bytes pins the frame-size cap that the Go constant hubframe.StreamLimit and the Python _HUB_STREAM_LIMIT (plugins/platforms/discord/hub_client.py) must both equal. The frames table drives the Go ReadFrame tests: content_bytes is the frame length before the terminating newline. The Python contract test (tests/plugins/platforms/discord/test_hubframe_contract.py) reads this file so Python == table == Go.",
+  "stream_limit_bytes": 16777216,
+  "frames": [
+    {
+      "name": "empty_frame",
+      "content_bytes": 0,
+      "accepted": true
+    },
+    {
+      "name": "small_frame",
+      "content_bytes": 1,
+      "accepted": true
+    },
+    {
+      "name": "just_over_the_64kib_asyncio_default",
+      "content_bytes": 65537,
+      "accepted": true
+    },
+    {
+      "name": "one_mebibyte_frame",
+      "content_bytes": 1048576,
+      "accepted": true
+    },
+    {
+      "name": "content_exactly_at_stream_limit",
+      "content_bytes": 16777216,
+      "accepted": true
+    },
+    {
+      "name": "content_one_byte_over_stream_limit",
+      "content_bytes": 16777217,
+      "accepted": false
+    }
+  ]
+}

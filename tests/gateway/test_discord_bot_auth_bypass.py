@@ -31,7 +31,7 @@ def _isolate_discord_env(monkeypatch):
         "DISCORD_ALLOWED_USERS",
         "DISCORD_ALLOWED_ROLES",
         "DISCORD_ALLOW_ALL_USERS",
-        "TELEGRAM_ALLOW_BOTS",
+        "SLACK_ALLOW_BOTS",
         "GATEWAY_ALLOW_ALL_USERS",
         "GATEWAY_ALLOWED_USERS",
     ):
@@ -99,22 +99,22 @@ def test_discord_bot_authorized_when_allow_bots_mentions(monkeypatch):
 
 
 def test_bot_bypass_does_not_leak_to_other_platforms(monkeypatch):
-    """The is_bot bypass is Discord-specific — a Telegram bot source with
+    """The is_bot bypass is Discord-specific — a Slack bot source with
     is_bot=True must NOT be authorized just because DISCORD_ALLOW_BOTS=all.
     """
     runner = _make_bare_runner()
 
     monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
-    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "100200300")
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")
 
-    telegram_bot = SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id="123",
+    slack_bot = SessionSource(
+        platform=Platform.SLACK,
+        chat_id="C123",
         chat_type="channel",
-        user_id="999888777",
+        user_id="B999888777",
         is_bot=True,
     )
-    assert runner._is_user_authorized(telegram_bot) is False
+    assert runner._is_user_authorized(slack_bot) is False
 
 
 # -----------------------------------------------------------------------------
@@ -147,18 +147,18 @@ def test_discord_role_config_does_not_bypass_gateway_allowlist(monkeypatch):
 
 def test_discord_role_config_does_not_leak_to_other_platforms(monkeypatch):
     """DISCORD_ALLOWED_ROLES must only affect Discord. Setting it should
-    not suddenly start authorizing Telegram users whose platform has its
+    not suddenly start authorizing Slack users whose platform has its
     own empty allowlist.
     """
     runner = _make_bare_runner()
 
     monkeypatch.setenv("DISCORD_ALLOWED_ROLES", "1493705176387948674")
-    # Telegram has its own empty allowlist and no allow-all flag.
+    # Slack has its own empty allowlist and no allow-all flag.
 
-    telegram_user = SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id="123",
+    slack_user = SessionSource(
+        platform=Platform.SLACK,
+        chat_id="C123",
         chat_type="channel",
-        user_id="999888777",
+        user_id="U999888777",
     )
-    assert runner._is_user_authorized(telegram_user) is False
+    assert runner._is_user_authorized(slack_user) is False

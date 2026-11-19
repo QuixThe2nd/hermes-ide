@@ -34,7 +34,7 @@ Esta es la pregunta más común para los nuevos colaboradores. La respuesta casi
 - Requiere integración de extremo a extremo con claves API, flujos de autenticación o configuración de múltiples componentes gestionada por el harness del agente
 - Necesita lógica de procesamiento personalizada que debe ejecutarse con precisión en cada ocasión (no "mejor esfuerzo" de la interpretación del LLM)
 - Maneja datos binarios, streaming o eventos en tiempo real que no pueden pasar por el terminal
-- Ejemplos: automatización de navegador (gestión de sesiones Browserbase), TTS (codificación de audio + entrega en plataforma), análisis de visión (manejo de imágenes base64)
+- Ejemplos: automatización de navegador (gestión de sesiones Camofox), análisis de visión (manejo de imágenes base64)
 
 ### ¿Debería la Habilidad estar incluida?
 
@@ -51,7 +51,7 @@ Si tu habilidad es especializada, contribuida por la comunidad o de nicho, es me
 
 ## Proveedores de Memoria: Publicar como Plugin Independiente
 
-**Ya no aceptamos nuevos proveedores de memoria en este repositorio.** El conjunto de proveedores integrados en `plugins/memory/` (honcho, mem0, supermemory, byterover, hindsight, holographic, openviking, retaindb) está cerrado. Si quieres añadir un nuevo backend de memoria, publícalo como un **repositorio de plugin independiente** que los usuarios instalen en `~/.hermes/plugins/` (o a través de un entry point de pip).
+**Ya no aceptamos nuevos proveedores de memoria en este repositorio.** El único proveedor integrado que queda en `plugins/memory/` es hindsight. Los nombres retirados fallan en cerrado. Si quieres añadir un nuevo backend de memoria, publícalo como un **repositorio de plugin independiente** que los usuarios instalen en `~/.hermes/plugins/` (o a través de un entry point de pip).
 
 Los plugins de memoria independientes:
 
@@ -138,7 +138,7 @@ hermes-agent/
 ├── run_agent.py              # Clase AIAgent — bucle de conversación central, despacho de herramientas, persistencia de sesión
 ├── cli.py                    # Clase HermesCLI — TUI interactiva, integración prompt_toolkit
 ├── model_tools.py            # Orquestación de herramientas (capa delgada sobre tools/registry.py)
-├── toolsets.py               # Agrupaciones y presets de herramientas (hermes-cli, hermes-telegram, etc.)
+├── toolsets.py               # Agrupaciones y presets de herramientas (hermes-cli, hermes-discord, etc.)
 ├── hermes_state.py           # Base de datos de sesiones SQLite con búsqueda de texto completo FTS5, títulos de sesión
 ├── batch_runner.py           # Procesamiento en lote paralelo para generación de trayectorias
 │
@@ -154,7 +154,7 @@ hermes-agent/
 │   ├── main.py                   # Punto de entrada, análisis de argumentos, despacho de comandos
 │   ├── config.py                 # Gestión de configuración, migración, definiciones de variables de entorno
 │   ├── setup.py                  # Asistente de configuración interactivo
-│   ├── auth.py                   # Resolución de proveedor, OAuth, Nous Portal
+│   ├── auth.py                   # Resolución de proveedor, OAuth
 │   ├── models.py                 # Listas de selección de modelos de OpenRouter
 │   ├── banner.py                 # Banner de bienvenida, arte ASCII
 │   ├── commands.py               # Registro central de comandos de barra (CommandDef), autocompletado, ayudantes del gateway
@@ -184,7 +184,7 @@ hermes-agent/
 │   ├── config.py                 # Resolución de configuración de plataformas
 │   ├── session.py                # Almacén de sesiones, prompts de contexto, políticas de reset
 │   └── platforms/                # Adaptadores de plataformas
-│       ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
+│       ├── discord.py, slack.py, whatsapp.py
 │
 ├── scripts/                  # Scripts del instalador y puente
 │   ├── install.sh                # Instalador Linux/macOS
@@ -206,7 +206,7 @@ hermes-agent/
 |------|-----------|
 | `~/.hermes/config.yaml` | Configuración (modelo, terminal, toolsets, compresión, etc.) |
 | `~/.hermes/.env` | Claves API y secretos |
-| `~/.hermes/auth.json` | Credenciales OAuth (Nous Portal) |
+| `~/.hermes/auth.json` | Credenciales OAuth |
 | `~/.hermes/skills/` | Todas las habilidades activas (incluidas + instaladas desde hub + creadas por el agente) |
 | `~/.hermes/memories/` | Memoria persistente (MEMORY.md, USER.md) |
 | `~/.hermes/state.db` | Base de datos de sesiones SQLite |

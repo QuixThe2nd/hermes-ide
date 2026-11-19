@@ -70,7 +70,7 @@ async def test_event_loop_stays_responsive_during_resolution(slow_probe):
 
     This is the regression: with the bare sync call the loop stalled for the
     full probe duration, which is what times out Discord heartbeats and stalls
-    Telegram polling for every other chat.
+    Matrix sync for every other chat.
     """
     lags = []
     stop = asyncio.Event()

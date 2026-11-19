@@ -483,19 +483,24 @@ class TestDiscordStreamConsumerFreshFinal:
 # 2026-era Discord range.  All are synthetic; no live entity is modeled.
 _ROOT_MESSAGE_ID = 1544728193026457601  # auto-thread signature: thread id == root
 _PARENT_CHANNEL_ID = 1544720986135749120
+_GUILD_ID = 1544719927045025792
 _IN_THREAD_REPLY_ID = 1544728355012983264  # ordinary in-thread reply target
 _ROOT_AUTHOR_ID = 271190857634097154  # root author (user snowflake)
 _FETCHED_AUTHOR_ID = 462391875021346816  # author served by parent.fetch_message
 _FAKE_MESSAGE_ID_BASE = 1544728400000000000
 
 _ROOT_MENTION = f"<@{_ROOT_AUTHOR_ID}>"  # inline ping carried by chunk 0
+_ROOT_JUMP_URL = (
+    f"https://discord.com/channels/{_GUILD_ID}/{_PARENT_CHANNEL_ID}/{_ROOT_MESSAGE_ID}"
+)
+_ROOT_MENTION_PREFIX = f"{_ROOT_MENTION} [↪]({_ROOT_JUMP_URL})"
 
 # ``truncate_message``'s " (1/2)" continuation markers — stripped per chunk
 # so content-preservation assertions compare the delivered body exactly.
 _CHUNK_INDICATOR_RE = re.compile(r" \(\d+/\d+\)$")
 
 
-def _recover_body(sent_messages, mention: str = _ROOT_MENTION) -> str:
+def _recover_body(sent_messages, mention: str = _ROOT_MENTION_PREFIX) -> str:
     """Body as delivered: drop the one mention prefix and chunk indicators.
 
     Byte-exact — no whitespace normalization: the point of the recovery is
@@ -572,6 +577,7 @@ def _make_root_turn_harness(
     db_author_id=None,
     fetch_message=None,
     forum_parent=False,
+    guild_present=True,
 ):
     """Adapter + fakes for root-turn mention-fallback tests.
 
@@ -580,6 +586,8 @@ def _make_root_turn_harness(
     the exact shape that makes a MessageReference unattachable.
     ``forum_parent=True`` flips the parent to a forum channel (type 15),
     where the starter message instead lives in the thread itself.
+    ``guild_present=False`` omits the thread's guild to exercise the
+    mention-only fallback when no jump URL can be built.
 
     The thread's ``send`` models Discord's real message_reference
     validation, not mere object construction: any reference whose
@@ -627,6 +635,8 @@ def _make_root_turn_harness(
         send=AsyncMock(side_effect=_send),
         send_attempts=send_attempts,
     )
+    if guild_present:
+        thread.guild = SimpleNamespace(id=_GUILD_ID)
 
     def get_channel(channel_id):
         channel_id = int(channel_id)
@@ -658,7 +668,7 @@ class TestDiscordRootTurnMentionFallback:
     async def test_root_turn_final_mentions_once_with_no_reference(
         self, monkeypatch, tmp_path
     ):
-        """Root-turn final: reference can't attach → inline mention, chunk 0 only."""
+        """Root-turn final: no reference → mention plus root jump link on chunk 0."""
         adapter, _thread, _parent, sent_messages, root_id, parent_id = (
             _make_root_turn_harness(monkeypatch, tmp_path, db_author_id=str(_ROOT_AUTHOR_ID))
         )
@@ -674,7 +684,8 @@ class TestDiscordRootTurnMentionFallback:
         assert result.success is True
         assert len(sent_messages) >= 2
         assert all(msg["reference"] is None for msg in sent_messages)
-        assert sent_messages[0]["content"].startswith(_ROOT_MENTION + " ")
+        assert sent_messages[0]["content"].startswith(_ROOT_MENTION_PREFIX + " ")
+        assert _ROOT_JUMP_URL in sent_messages[0]["content"]
         assert sum(msg["content"].count(_ROOT_MENTION) for msg in sent_messages) == 1
         # Later chunks mention NO user at all — not merely "not again".
         for msg in sent_messages[1:]:
@@ -697,7 +708,7 @@ class TestDiscordRootTurnMentionFallback:
 
         assert result.success is True
         assert parent.fetch_message.await_count == 0
-        assert sent_messages[0]["content"].startswith(_ROOT_MENTION + " ")
+        assert sent_messages[0]["content"] == _ROOT_MENTION_PREFIX + " Final answer"
 
     @pytest.mark.asyncio
     async def test_author_missing_from_db_falls_back_to_fetch_message(
@@ -716,9 +727,35 @@ class TestDiscordRootTurnMentionFallback:
 
         assert result.success is True
         parent.fetch_message.assert_awaited_once_with(_ROOT_MESSAGE_ID)
-        assert sent_messages[0]["content"].startswith(
-            f"<@{_FETCHED_AUTHOR_ID}> "
+        assert sent_messages[0]["content"] == (
+            f"<@{_FETCHED_AUTHOR_ID}> [↪]({_ROOT_JUMP_URL}) Final answer"
         )
+
+    @pytest.mark.asyncio
+    async def test_root_turn_final_without_guild_degrades_to_mention_only(
+        self, monkeypatch, tmp_path
+    ):
+        adapter, _thread, parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(
+                monkeypatch,
+                tmp_path,
+                db_author_id=str(_ROOT_AUTHOR_ID),
+                guild_present=False,
+            )
+        )
+
+        result = await adapter.send(
+            parent_id,
+            "Final answer",
+            reply_to=root_id,
+            metadata={"notify": True, "thread_id": root_id},
+        )
+
+        assert result.success is True
+        assert sent_messages[0]["reference"] is None
+        assert sent_messages[0]["content"] == _ROOT_MENTION + " Final answer"
+        assert "[↪]" not in sent_messages[0]["content"]
+        assert parent.fetch_message.await_count == 0
 
     @pytest.mark.asyncio
     async def test_both_author_lookups_fail_sends_clean(
@@ -764,6 +801,7 @@ class TestDiscordRootTurnMentionFallback:
         assert sent_messages[0]["reference"] is not None
         assert sent_messages[0]["reference"].message_id == _IN_THREAD_REPLY_ID
         assert "<@" not in sent_messages[0]["content"]
+        assert "[↪]" not in sent_messages[0]["content"]
         assert parent.fetch_message.await_count == 0
 
     @pytest.mark.asyncio
@@ -795,6 +833,7 @@ class TestDiscordRootTurnMentionFallback:
         assert sent_messages[0]["reference"].message_id == _ROOT_MESSAGE_ID
         assert sent_messages[0]["reference"].channel_id == _ROOT_MESSAGE_ID
         assert "<@" not in sent_messages[0]["content"]
+        assert "[↪]" not in sent_messages[0]["content"]
         assert parent.fetch_message.await_count == 0
 
     @pytest.mark.asyncio
@@ -875,14 +914,14 @@ class TestDiscordRootTurnMentionFallback:
         # The mention cannot ride the single at-cap body chunk, so it
         # ships as its own first message and the body chunk is untouched.
         assert [msg["content"] for msg in sent_messages] == [
-            _ROOT_MENTION + " ",
+            _ROOT_MENTION_PREFIX + " ",
             body,
         ]
         assert _recover_body(sent_messages) == body
         # The interior space at the old loss point is intact.
         assert _recover_body(sent_messages)[1980] == " "
         _assert_delivered_body_chunks_exact(
-            sent_messages, _ROOT_MENTION, _expected_body_chunks(adapter, body)
+            sent_messages, _ROOT_MENTION_PREFIX, _expected_body_chunks(adapter, body)
         )
         assert sum(msg["content"].count(_ROOT_MENTION) for msg in sent_messages) == 1
 
@@ -892,8 +931,8 @@ class TestDiscordRootTurnMentionFallback:
         adapter, thread, _parent, sent_messages, root_id, parent_id = (
             _make_root_turn_harness(monkeypatch, tmp_path, db_author_id=str(_ROOT_AUTHOR_ID))
         )
-        # 8-char prefix + body == exactly the cap: the tightest inline fit.
-        body = "z" * (adapter.MAX_MESSAGE_LENGTH - len(_ROOT_MENTION) - 1)
+        # Prefix + body == exactly the cap: the tightest inline fit.
+        body = "z" * (adapter.MAX_MESSAGE_LENGTH - len(_ROOT_MENTION_PREFIX) - 1)
 
         result = await adapter.send(
             parent_id,
@@ -904,7 +943,7 @@ class TestDiscordRootTurnMentionFallback:
 
         assert result.success is True
         assert [msg["content"] for msg in sent_messages] == [
-            _ROOT_MENTION + " " + body
+            _ROOT_MENTION_PREFIX + " " + body
         ]
         assert _recover_body(sent_messages) == body
 
@@ -937,7 +976,7 @@ class TestDiscordRootTurnMentionFallback:
             assert len(msg["content"]) <= adapter.MAX_MESSAGE_LENGTH
             assert msg["reference"] is None
         _assert_delivered_body_chunks_exact(
-            sent_messages, _ROOT_MENTION, _expected_body_chunks(adapter, at_cap)
+            sent_messages, _ROOT_MENTION_PREFIX, _expected_body_chunks(adapter, at_cap)
         )
         # Space-free body: recovery is byte-exact, no normalization.
         assert _recover_body(sent_messages) == at_cap
@@ -971,7 +1010,7 @@ class TestDiscordRootTurnMentionFallback:
         # indicator reserve, so it ships as its own first message —
         # without displacing so much as one byte of any body chunk.
         _assert_delivered_body_chunks_exact(
-            sent_messages, _ROOT_MENTION, _expected_body_chunks(adapter, body)
+            sent_messages, _ROOT_MENTION_PREFIX, _expected_body_chunks(adapter, body)
         )
         # Space-free body: full recovery, byte-for-byte, indicators gone.
         assert _recover_body(sent_messages) == body
@@ -1005,7 +1044,7 @@ class TestDiscordRootTurnMentionFallback:
         assert result.success is True
         assert len(sent_messages) >= 2
         _assert_delivered_body_chunks_exact(
-            sent_messages, _ROOT_MENTION, _expected_body_chunks(adapter, content)
+            sent_messages, _ROOT_MENTION_PREFIX, _expected_body_chunks(adapter, content)
         )
         # Every word ships, in order — recovered by pattern, because the
         # splitter drops the whitespace it splits on (adjacent words
@@ -1023,7 +1062,7 @@ class TestDiscordRootTurnMentionFallback:
         A root-turn final whose body alone fills the anti-flood cap (seven
         body chunks + truncation notice) and whose mention cannot ride
         chunk 0 — the indicator-tight first chunk leaves no room for the
-        21-char snowflake mention — used to insert the mention as a NINTH
+        mention-and-link prefix — used to insert the mention as a NINTH
         message.  The standalone mention is itself an outbound message, so
         it consumes one of the cap's slots: the body is capped one slot
         tighter (six body chunks) and the notice still reports the body
@@ -1054,7 +1093,7 @@ class TestDiscordRootTurnMentionFallback:
         expected = _expected_body_chunks(adapter, body, reserve=1)
         assert len(expected) == adapter.MAX_SPLIT_MESSAGES - 1
         assert [msg["content"] for msg in sent_messages] == [
-            _ROOT_MENTION + " "
+            _ROOT_MENTION_PREFIX + " "
         ] + expected
         # Every outbound message respects Discord's per-message ceiling and
         # carries no reference (the mention IS the reply notification).
@@ -1095,7 +1134,7 @@ class TestDiscordRootTurnMentionFallback:
         adapter, _thread, _parent, sent_messages, root_id, parent_id = (
             _make_root_turn_harness(monkeypatch, tmp_path, db_author_id=str(_ROOT_AUTHOR_ID))
         )
-        body = "x" * 1900 + "\n" + "y" * 30_000
+        body = "x" * 1800 + "\n" + "y" * 30_000
 
         result = await adapter.send(
             parent_id,
@@ -1115,9 +1154,9 @@ class TestDiscordRootTurnMentionFallback:
         )
         assert len(expected) == adapter.MAX_SPLIT_MESSAGES
         # Precondition: the mention genuinely rides chunk 0 (it fits).
-        assert len(expected[0]) + len(_ROOT_MENTION) + 1 <= adapter.MAX_MESSAGE_LENGTH
+        assert len(expected[0]) + len(_ROOT_MENTION_PREFIX) + 1 <= adapter.MAX_MESSAGE_LENGTH
         delivered = [msg["content"] for msg in sent_messages]
-        assert delivered == [_ROOT_MENTION + " " + expected[0]] + expected[1:]
+        assert delivered == [_ROOT_MENTION_PREFIX + " " + expected[0]] + expected[1:]
         assert len(sent_messages) == adapter.MAX_SPLIT_MESSAGES
         assert "Response truncated" in sent_messages[-1]["content"]
         assert sum(msg["content"].count(_ROOT_MENTION) for msg in sent_messages) == 1
@@ -1164,7 +1203,7 @@ class TestDiscordRootTurnAllModeReplyReference:
             assert msg["reference"] is None
         # Exactly one inline mention of the root author, on the first chunk;
         # later chunks carry neither mention nor reference.
-        assert sent_messages[0]["content"].startswith(_ROOT_MENTION + " ")
+        assert sent_messages[0]["content"].startswith(_ROOT_MENTION_PREFIX + " ")
         assert sum(msg["content"].count(_ROOT_MENTION) for msg in sent_messages) == 1
         for msg in sent_messages[1:]:
             assert "<@" not in msg["content"]
@@ -1207,6 +1246,7 @@ class TestDiscordRootTurnAllModeReplyReference:
             assert reference.channel_id == _ROOT_MESSAGE_ID
             assert reference.fail_if_not_exists is False
             assert "<@" not in msg["content"]
+            assert "[↪]" not in msg["content"]
         assert parent.fetch_message.await_count == 0
 
     @pytest.mark.asyncio
@@ -1247,6 +1287,7 @@ class TestDiscordRootTurnAllModeReplyReference:
             assert reference.channel_id == _ROOT_MESSAGE_ID
             assert reference.fail_if_not_exists is False
             assert "<@" not in msg["content"]
+            assert "[↪]" not in msg["content"]
         assert parent.fetch_message.await_count == 0
 
     @pytest.mark.asyncio

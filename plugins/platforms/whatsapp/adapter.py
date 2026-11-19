@@ -15,7 +15,11 @@ from pathlib import Path
 from typing import Dict, Optional, Any
 
 from gateway.platforms._shared import (
-    apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret, get_scoped_secret, send_error
+    apply_yaml_bridge as _apply_yaml_bridge,
+    extra_or_secret as _extra_or_secret,
+    get_scoped_secret,
+    seed_extra_from_env as _seed_extra_from_env,
+    send_error,
 )
 from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 from hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
@@ -247,7 +251,7 @@ _BRIDGE_PASSTHROUGH_ENV = (
     "WHATSAPP_CHUNK_DELAY_MS", "WHATSAPP_SEND_TIMEOUT_MS",
 )
 _TEXT_INJECT_EXTS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"}
-_MAX_TEXT_INJECT_BYTES = 100 * 1024  # matches Telegram/Discord/Slack
+_MAX_TEXT_INJECT_BYTES = 100 * 1024  # matches Discord/Slack
 _NATIVE_MEDIA_TYPES = {"location": MessageType.LOCATION, "live_location": MessageType.LOCATION, "sticker": MessageType.STICKER}
 # Inbound mediaType substring → kind; ptt = WhatsApp voice note, so "ptt" must precede "audio".
 _MEDIA_NEEDLES = (("image", MessageType.PHOTO), ("video", MessageType.VIDEO), ("ptt", MessageType.VOICE), ("audio", MessageType.AUDIO))
@@ -278,6 +282,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     _DEFAULT_BRIDGE_DIR = None  # resolved in __init__
     splits_long_messages = True  # send() chunks via truncate_message()
+
+    def _effective_reply_prefix(self) -> str:
+        """Prefix for outgoing replies in self-chat mode."""
+        if (_wenv("WHATSAPP_MODE", default="self-chat") or "self-chat") != "self-chat":
+            return ""
+        if self._reply_prefix is not None:
+            return self._reply_prefix.replace("\\n", "\n")
+        env_prefix = get_scoped_secret("WHATSAPP_REPLY_PREFIX", None)
+        if env_prefix is not None:
+            return env_prefix.replace("\\n", "\n")
+        return self.DEFAULT_REPLY_PREFIX
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP)
@@ -694,9 +709,6 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def send_video(self, chat_id: str, video_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
         return await self._send_media_to_bridge(chat_id, video_path, "video", caption)
 
-    async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
-        return await self._send_media_to_bridge(chat_id, audio_path, "audio", caption)
-
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,
                             reply_to: Optional[str] = None, **kwargs) -> SendResult:
         return await self._send_media_to_bridge(chat_id, file_path, "document", caption, file_name or os.path.basename(file_path))
@@ -912,9 +924,9 @@ _WA_EXT_MEDIA_TYPE = {
 }
 
 
-def _bridge_media_type(file_path: str, is_voice: bool, force_document: bool) -> str:
+def _bridge_media_type(file_path: str, force_document: bool) -> str:
     """Local file → bridge ``mediaType`` (image|video|audio|document); ``force_document`` = the [[as_document]] directive."""
-    return "document" if force_document else "audio" if is_voice else _WA_EXT_MEDIA_TYPE.get(os.path.splitext(file_path)[1].lower(), "document")
+    return "document" if force_document else _WA_EXT_MEDIA_TYPE.get(os.path.splitext(file_path)[1].lower(), "document")
 
 
 def _normalize_outbound_mentions(mentions: list[str] | None) -> list[str]:
@@ -971,7 +983,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                 if err:
                     return err
             # 2) Each media file as a native attachment (mediaType picks the WhatsApp kind).
-            for media_path, is_voice in media:
+            for media_path in media:
                 if not os.path.exists(media_path):
                     # In caption mode the words would vanish with the missing file — deliver the caption as a plain message.
                     if media_caption:
@@ -981,7 +993,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                         except Exception:
                             logger.warning("WhatsApp caption-fallback send failed for missing media")
                     return send_error(f"WhatsApp media file not found: {media_path}")
-                media_type = _bridge_media_type(media_path, is_voice, force_document)
+                media_type = _bridge_media_type(media_path, force_document)
                 payload: Dict[str, Any] = {"chatId": normalized_chat_id, "filePath": media_path, "mediaType": media_type}
                 payload.update({k: v for k, v in (("fileName", os.path.basename(media_path) if media_type == "document" else None), ("caption", media_caption)) if v})
                 payload = _mention_first_payload(payload)
@@ -1026,6 +1038,13 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("free_response_chats", "WHATSAPP_FREE_RESPONSE_CHATS", "csv"), ("allow_from", "WHATSAPP_ALLOWED_USERS", "csv"),
     ("group_allow_from", "WHATSAPP_GROUP_ALLOWED_USERS", "csv"),
 )
+
+
+def _env_enablement() -> dict:
+    return _seed_extra_from_env((
+        ("WHATSAPP_ENABLED", "enabled_opt", None),
+        ("WHATSAPP_MODE", "mode", None),
+    ))
 
 
 def _apply_yaml_config(yaml_cfg: dict, whatsapp_cfg: dict) -> dict | None:

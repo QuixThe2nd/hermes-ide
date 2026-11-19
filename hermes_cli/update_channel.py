@@ -8,23 +8,21 @@ Channel storage — per install, never home-global::
           path: /home/u/.hermes/hermes-agent   #   canonical install root)
           channel: canary
 
-One config.yaml serves many installs (host + docker gateway + desktop all
-bind-mount one ``~/.hermes``), so a home-global ``update.channel`` key is
-UNSAFE and does not exist: setting canary for a dev checkout must not
-flip the desktop app's feed. The id is sha16 of the canonical
-install-root PATH — the same key that names the ``installs/<sha16>/``
-state folder (``boot_bootstrap._install_key``; a byte-identical helper is
-inlined below until that module lands). Path-derived on purpose: an
-electron-updater update replaces the artifact (new stamp bytes) at the
-same path, and the channel opt-in must survive that.
+One config.yaml serves many installs (host + docker gateway all bind-mount
+one ``~/.hermes``), so a home-global ``update.channel`` key is UNSAFE and
+does not exist: setting a channel for a dev checkout must not flip a sibling
+install. The id is sha16 of the canonical install-root PATH — the same key
+that names the ``installs/<sha16>/`` state folder
+(``boot_bootstrap._install_key``; a byte-identical helper is inlined below
+until that module lands). Path-derived on purpose: replacing an install at
+the same path must preserve its channel opt-in.
 
 * Written by ``hermes update --set-channel <x>`` from inside an install
   (it knows its own id — the user never types a sha).
-* Shown by ``hermes update --install-id`` and the desktop About page.
+* Shown by ``hermes update --install-id``.
 * Channels are meaningful ONLY where the mechanism is ``self`` (which git
-  ref: main / stable / canary→main) or ``electron-updater`` (which feed:
-  latest.yml / canary.yml). ``external`` installs have no channel; the
-  steward owns updates.
+  ref: main / stable / canary→main). ``external`` installs have no channel;
+  the steward owns updates.
 
 Pure-stdlib leaf module (plus hermes-internal imports done lazily): the
 installers and boot paths read it before the full config machinery loads.
@@ -32,10 +30,11 @@ installers and boot paths read it before the full config machinery loads.
 
 from __future__ import annotations
 
-import hashlib
+from hermes_cli.runtime_paths import install_key, installs_root
 import logging
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -74,32 +73,6 @@ def canary_tag_for_date(version: str, date_utc: str) -> str:
     return f"v{major}.{minor}.{patch + 1}-canary.{date_utc}"
 
 
-def _install_key_sha16(project_root: Path) -> str:
-    """sha16 of the canonical install-root PATH.
-
-    NOTE: dedupe with ``boot_bootstrap._install_key`` at assembly — this
-    is a byte-identical inline copy (sha256 of the resolved root, first 16
-    hex chars). Lane w2a ports boot_bootstrap in parallel; this module must
-    not import from it until both land.
-    """
-    try:
-        canonical = str(Path(project_root).resolve())
-    except OSError:
-        canonical = str(project_root)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
-
-
-def _installs_root() -> Path:
-    """The parent of every per-install state folder.
-
-    NOTE: dedupe with ``boot_bootstrap.installs_root`` at assembly —
-    anchored to the DEFAULT home (profiles share one folder per install).
-    """
-    from hermes_cli.profiles import _get_default_hermes_home
-
-    return _get_default_hermes_home() / "installs"
-
-
 def _default_root() -> Path:
     """This process's install root.
 
@@ -118,7 +91,7 @@ def install_id(project_root: Optional[Path] = None) -> str:
     """
     if project_root is None:
         project_root = _default_root()
-    return _install_key_sha16(Path(project_root))
+    return install_key(Path(project_root))
 
 
 def _read_stamp(root: Path) -> dict:
@@ -145,24 +118,8 @@ def channel_record(config: Optional[dict], project_root: Optional[Path] = None) 
 
 
 def default_channel(project_root: Optional[Path] = None) -> str:
-    """The channel an unconfigured install tracks.
-
-    ``self`` source installs follow main (historical behavior).
-    ``electron-updater`` bundles follow the channel their own artifact was
-    published to: a canary artifact tracks canary, every other bundle
-    tracks stable. The stamp's ``tag`` is the authority, the same fact
-    apps/desktop/product-identity.cjs keys the published feed name on — so
-    the feed a canary artifact asks for and the feed it was published to
-    can never disagree. Deriving stable here instead would send a fresh
-    canary install to look for its ``canary.yml`` feed file under the
-    newest STABLE release, where that file does not exist (404), leaving
-    the install unable to update at all.
-    """
-    root = Path(project_root) if project_root is not None else _default_root()
-    stamp = _read_stamp(root)
-    if stamp.get("updateMechanism") != "electron-updater":
-        return CHANNEL_MAIN
-    return CHANNEL_CANARY if is_canary_tag(stamp.get("tag")) else CHANNEL_STABLE
+    """Source installs follow main unless a per-install record overrides it."""
+    return CHANNEL_MAIN
 
 
 def resolve_update_channel(
@@ -172,11 +129,9 @@ def resolve_update_channel(
     """The effective update channel for this install.
 
     Resolution: the per-install record (``update.installs.<sha16>.channel``)
-    when valid; otherwise the mechanism default (main for self-source,
-    stable/canary for electron-updater bundles by artifact tag). Source
-    installs asking for canary normalize to main — canary builds are
-    release artifacts, and a git checkout tracks branches; callers print
-    the note.
+    when valid; otherwise main. Source installs asking for canary normalize
+    to main — canary builds are release artifacts, and a git checkout tracks
+    branches; callers print the note.
     """
     configured: Any = channel_record(config, project_root).get("channel")
     if isinstance(configured, str) and configured.strip().lower() in VALID_CHANNELS:
@@ -184,19 +139,15 @@ def resolve_update_channel(
     else:
         channel = default_channel(project_root)
 
-    if channel == CHANNEL_CANARY:
-        root = Path(project_root) if project_root is not None else _default_root()
-        if _read_stamp(root).get("updateMechanism") != "electron-updater":
-            # canary→main normalization for source installs.
-            return CHANNEL_MAIN
-    return channel
+    # canary→main normalization for source installs.
+    return CHANNEL_MAIN if channel == CHANNEL_CANARY else channel
 
 
 def canary_normalized_note() -> str:
     """The one-line note callers print when canary normalizes to main."""
     return (
         "→ Channel 'canary' on a source install tracks main "
-        "(canary builds are desktop release artifacts)."
+        "(canary builds are release artifacts)."
     )
 
 
@@ -230,38 +181,80 @@ def set_install_channel(
 
 
 def _write_channel_record(sha16: str, path: str, channel: str) -> None:
-    """Write ``update.installs.<sha16>`` into config.yaml, preserving the rest."""
-    import yaml
+    """Write ``update.installs.<sha16>`` into config.yaml, preserving the rest.
 
-    from hermes_cli.config import get_config_path
+    Persists through the shared comment-preserving atomic writer
+    (:func:`utils.atomic_roundtrip_yaml_update` — the same ruamel round-trip
+    path ``hermes config set`` uses), fail-closed via
+    :func:`hermes_cli.config.require_readable_config_before_write`. Malformed
+    ``update`` / ``update.installs`` values are refused, never replaced —
+    the dotted writer would otherwise turn a scalar into a mapping and
+    destroy whatever the user had there.
+    """
+    from utils import atomic_roundtrip_yaml_update
+
+    from hermes_cli.config import (
+        get_config_path,
+        require_readable_config_before_write,
+    )
 
     config_path = get_config_path()
-    try:
-        raw = yaml.safe_load(config_path.read_text(encoding="utf-8-sig")) or {}
-    except FileNotFoundError:
-        raw = {}
-    if not isinstance(raw, dict):
-        raise ValueError(f"config at {config_path} is not a mapping")
-
-    update_cfg = raw.setdefault("update", {})
-    if not isinstance(update_cfg, dict):
+    existing = require_readable_config_before_write(config_path)
+    update_cfg = existing.get("update")
+    if update_cfg is not None and not isinstance(update_cfg, dict):
         raise ValueError("config key 'update' is not a mapping")
-    installs = update_cfg.setdefault("installs", {})
-    if not isinstance(installs, dict):
+    installs = update_cfg.get("installs") if isinstance(update_cfg, dict) else None
+    if installs is not None and not isinstance(installs, dict):
         raise ValueError("config key 'update.installs' is not a mapping")
-    record = installs.setdefault(sha16, {})
-    if not isinstance(record, dict):
-        record = {}
-        installs[sha16] = record
-    record["path"] = path  # DATA, for humans + doctor GC
-    record["channel"] = channel
+    record = installs.get(sha16) if isinstance(installs, dict) else None
+    new_record = dict(record) if isinstance(record, dict) else {}
+    new_record["path"] = path  # DATA, for humans + doctor GC
+    new_record["channel"] = channel
+    atomic_roundtrip_yaml_update(config_path, f"update.installs.{sha16}", new_record)
 
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = config_path.with_suffix(config_path.suffix + ".tmp")
-    tmp.write_text(
-        yaml.safe_dump(raw, sort_keys=False, allow_unicode=True), encoding="utf-8"
-    )
-    tmp.replace(config_path)
+
+def _set_channel_from_cli(channel: str) -> None:
+    """Persist ``--set-channel`` and print the switch text. Never updates.
+
+    Runs before the update lock, git, network, backups, or process pause:
+    this is a configuration action, not an update. The reported previous
+    channel prefers the stored per-install record over the source default.
+    """
+    from hermes_cli.config import read_raw_config
+
+    root = _default_root()
+    stored = channel_record(read_raw_config(), root).get("channel")
+    if isinstance(stored, str) and stored.strip().lower() in VALID_CHANNELS:
+        previous = stored.strip().lower()
+    else:
+        previous = resolve_update_channel(None, root)
+    try:
+        sha16 = set_install_channel(channel, root)
+    except ValueError as exc:
+        print(f"error: {exc}")
+        sys.exit(1)
+
+    print(f"Channel set to '{channel}' (was '{previous}') for install {sha16}.")
+    if channel == CHANNEL_CANARY:
+        print(f"  {canary_normalized_note()}")
+    sys.exit(0)
+
+
+def handle_channel_flags(args) -> None:
+    """Preflight for the informational update flags.
+
+    ``--install-id`` prints this install's id and path; ``--set-channel``
+    atomically persists a valid channel record. Both terminate the command
+    here — the caller never reaches the update lock, git, network, backup,
+    or process-pause paths.
+    """
+    if getattr(args, "install_id", False):
+        root = _default_root()
+        print(f"{install_id(root)}  {root}")
+        sys.exit(0)
+    channel = getattr(args, "set_channel", None)
+    if channel:
+        _set_channel_from_cli(channel)
 
 
 def stale_channel_records(config: Optional[dict]) -> list[tuple[str, dict, str]]:
@@ -290,7 +283,7 @@ def stale_channel_records(config: Optional[dict]) -> list[tuple[str, dict, str]]
             if not path.exists():
                 stale.append((sha16, record, "missing"))
                 continue
-            if _install_key_sha16(path) != sha16:
+            if install_key(path) != sha16:
                 stale.append((sha16, record, "replaced"))
                 continue
 
@@ -298,7 +291,7 @@ def stale_channel_records(config: Optional[dict]) -> list[tuple[str, dict, str]]
         # record whose sha16 has no installs/<sha16>/install.json was
         # either hand-written or its install never booted post-record.
         try:
-            if not (_installs_root() / sha16 / "install.json").is_file():
+            if not (installs_root() / sha16 / "install.json").is_file():
                 stale.append((sha16, record, "unclaimed"))
         except Exception as exc:  # noqa: BLE001 — doctor sweep must not raise
             logger.debug("installs root unavailable: %s", exc)

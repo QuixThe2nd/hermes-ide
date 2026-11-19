@@ -1,12 +1,9 @@
 """Tests for the last_fire_error stamp (missed scheduled fires made visible).
 
-When the hosted fire path (NAS -> dashboard -> loopback forward to the
-gateway api_server) cannot reach the gateway, no execution row is ever
-created — the miss used to be invisible outside gui.log. The dashboard fire
-webhook now stamps ``last_fire_error`` on the job record via
-``note_fire_forward_failure`` so `cronjob list`, `hermes cron list`, and the
-dashboard surface it, and ``mark_job_run`` clears the stamp on the next
-successful run so it always describes CURRENT auto-fire health.
+When an external provider cannot forward a fire to the gateway, no execution
+row is created. ``note_fire_forward_failure`` stamps ``last_fire_error`` on the
+job so cron surfaces show the miss, and ``mark_job_run`` clears it after the next
+successful run so it describes CURRENT auto-fire health.
 """
 
 import pytest

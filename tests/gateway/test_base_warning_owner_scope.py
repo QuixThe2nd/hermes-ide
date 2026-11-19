@@ -16,7 +16,7 @@ from hermes_constants import get_hermes_home
 
 class RecordingAdapter(BasePlatformAdapter):
     def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, typing_indicator=False), Platform.TELEGRAM)
+        super().__init__(PlatformConfig(enabled=True, typing_indicator=False), Platform.DISCORD)
         self.wire = []
         self.attempts = []
         self.completed = []
@@ -79,13 +79,13 @@ async def test_recursive_three_turn_chain_then_human(profiles, monkeypatch, diag
         ("}" if setting is None else f", suppress_warning_notifications: {str(setting).lower()}}}")
     )
     from gateway.config import HomeChannel
-    config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(
-        enabled=True, home_channel=HomeChannel(platform=Platform.TELEGRAM, chat_id="42", name="test"))})
+    config = GatewayConfig(platforms={Platform.DISCORD: PlatformConfig(
+        enabled=True, home_channel=HomeChannel(platform=Platform.DISCORD, chat_id="42", name="test"))})
     runner = GatewayRunner(config)
     adapter = RecordingAdapter()
     adapter.gateway_runner = runner
-    runner.adapters = {Platform.TELEGRAM: adapter}
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="42", user_id="42")
+    runner.adapters = {Platform.DISCORD: adapter}
+    source = SessionSource(platform=Platform.DISCORD, chat_id="42", user_id="42")
     key = runner._session_key_for_source(source)
     events = [MessageEvent(
         text=f"turn-{i}", source=source, message_id=f"inbound-{i}",
@@ -140,7 +140,7 @@ async def test_recursive_three_turn_chain_then_human(profiles, monkeypatch, diag
         assert authorized[-1] == "42"  # next human still crosses authorization
         denied = MessageEvent(
             text="⚠️ diagnostic-looking human input", internal=False,
-            source=SessionSource(platform=Platform.TELEGRAM, chat_id="group", chat_type="group",
+            source=SessionSource(platform=Platform.DISCORD, chat_id="group", chat_type="group",
                                  user_id="denied"),
             metadata={"notification_category": "diagnostic", "_notification_reply_muted": True})
         before = list(adapter.wire)
@@ -179,7 +179,7 @@ async def test_turn_error_preserves_diagnostic_bridge_and_failed_outcome(
     event = MessageEvent(text="work", source=source, internal=diagnostic,
                          metadata={"notification_category": "diagnostic"})
     try:
-        key = "agent:default:telegram:dm:42"
+        key = "agent:default:discord:dm:42"
         assert adapter._start_session_processing(event, key)
         await adapter._session_tasks[key]
         assert adapter.completed[-1][1] is ProcessingOutcome.FAILURE

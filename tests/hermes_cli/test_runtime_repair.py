@@ -92,6 +92,83 @@ def _make_candidate_layout(tmp_path):
     return root, generation, python
 
 
+class TestManagedUvPath:
+    # POSIX arm of the name mapping; Windows uses bin/uv.exe.
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: bin/uv name")
+    def test_posix(self, tmp_path):
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
+            from hermes_cli.managed_uv import managed_uv_path
+            assert managed_uv_path() == tmp_path / "bin" / "uv"
+
+
+class TestMacOSManagedPythonSigning:
+    def test_signs_with_stable_identifier_and_verifies(self, tmp_path, monkeypatch):
+        import hermes_cli.managed_uv as managed_uv
+
+        python = tmp_path / "generation" / "bin" / "python3.11"
+        python.parent.mkdir(parents=True)
+        python.touch()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(managed_uv.shutil, "which", lambda name: "/usr/bin/codesign")
+        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run)
+
+        assert managed_uv._macos_sign_managed_python(python) is True
+        assert calls[0][0] == [
+            "/usr/bin/codesign",
+            "--force",
+            "--deep",
+            "--sign",
+            "-",
+            "--timestamp=none",
+            "--identifier",
+            "com.nousresearch.hermes.managed-python",
+            "--requirements",
+            '=designated => identifier "com.nousresearch.hermes.managed-python"',
+            str(python),
+        ]
+        assert calls[1][0] == [
+            "/usr/bin/codesign",
+            "--verify",
+            "--deep",
+            "--strict",
+            str(python),
+        ]
+
+    def test_is_non_blocking_when_signing_fails(self, tmp_path, monkeypatch):
+        import hermes_cli.managed_uv as managed_uv
+
+        python = tmp_path / "python3.11"
+        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(managed_uv.shutil, "which", lambda name: "/usr/bin/codesign")
+        monkeypatch.setattr(
+            managed_uv.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=1, stdout="", stderr="not signable"
+            ),
+        )
+
+        assert managed_uv._macos_sign_managed_python(python) is False
+
+    def test_skips_non_macos(self, tmp_path, monkeypatch):
+        import hermes_cli.managed_uv as managed_uv
+
+        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(
+            managed_uv.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail("codesign must not run on Linux"),
+        )
+
+        assert managed_uv._macos_sign_managed_python(tmp_path / "python") is False
+
+
 def _fake_sync_proc(lines, returncode=0):
     """``subprocess.Popen`` stand-in for the candidate sync: text lines on stdout."""
     proc = MagicMock()
@@ -518,6 +595,24 @@ class TestRuntimeCutover:
         ).exists()
         assert not candidate.exists()
         assert not list(runtime_root.glob("venv-rejected-*"))
+
+
+
+
+# ---------------------------------------------------------------------------
+# _install_uv internals
+# ---------------------------------------------------------------------------
+
+class TestInstallUvInternals:
+    @pytest.mark.platforms("linux")
+    def test_posix_sets_uv_unmanaged_install(self, tmp_path):
+        target = tmp_path / "bin" / "uv"
+        with patch("hermes_cli.managed_uv._install_uv_posix") as mock_posix:
+            from hermes_cli.managed_uv import _install_uv
+            _install_uv(target)
+            mock_posix.assert_called_once()
+            call_env = mock_posix.call_args[0][0]
+            assert call_env["UV_UNMANAGED_INSTALL"] == str(tmp_path / "bin")
 
 
 class TestRuntimeRequestMinorLine:
@@ -990,6 +1085,7 @@ class TestDefaultLiveVenv:
             )
         return root
 
+    @pytest.mark.platforms("linux")
     def test_dot_venv_only_is_targeted(self, tmp_path):
         from hermes_cli.runtime_repair import _default_live_venv
 

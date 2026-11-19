@@ -525,8 +525,9 @@ def record_plan_in_receipt(plan: UpdatePlan) -> None:
     try:
         import hermes_cli.update_receipt as ur
 
-        if ur._current is not None:
-            ur._current.data["plan"] = plan.to_dict()
+        current = ur._current.get()
+        if current is not None:
+            current.data["plan"] = plan.to_dict()
     except Exception as exc:
         logger.debug("Could not record plan in receipt: %s", exc)
 

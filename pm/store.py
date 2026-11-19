@@ -303,47 +303,12 @@ class Store:
 
     @contextmanager
     def install_lock(self):
-        """Single-flight advisory lock for all installs on this machine.
-        Blocks until acquired: installs legitimately hold it for minutes
-        (browser downloads), so the Windows rung polls LK_NBLCK instead of
-        msvcrt's 10-second LK_LOCK ladder."""
+        """Serialize writers using the same advisory lock as runtime publication."""
+        from hermes_cli.runtime_state import _lock
         self.root.mkdir(parents=True, exist_ok=True)
-        lock_path = self.root / ".install.lock"
-        handle = open(lock_path, "a+b")
+        fd = os.open(self.root / ".install.lock", os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            if sys.platform.startswith("win"):
-                import msvcrt
-
-                handle.seek(0)
-                waited = 0
-                while True:
-                    try:
-                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                        break
-                    except OSError:
-                        if waited == 5:
-                            print("waiting for another hermes install to finish...")
-                        time.sleep(1)
-                        waited += 1
-            else:
-                import fcntl
-
-                try:
-                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except OSError:
-                    print("waiting for another hermes install to finish...")
-                    fcntl.flock(handle, fcntl.LOCK_EX)
+            _lock(fd, wait=True)
             yield
         finally:
-            try:
-                if sys.platform.startswith("win"):
-                    import msvcrt
-
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(handle, fcntl.LOCK_UN)
-            finally:
-                handle.close()
+            os.close(fd)

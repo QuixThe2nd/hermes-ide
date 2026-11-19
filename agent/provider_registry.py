@@ -15,7 +15,7 @@ import logging
 import threading
 from typing import Any, Callable, Dict, FrozenSet, Generic, List, Optional, TypeVar
 
-from hermes_constants import hermes_home_key
+from hermes_constants import hermes_home_key, normalize_scope
 
 P = TypeVar("P")
 
@@ -54,6 +54,7 @@ class ProviderRegistry(Generic[P]):
         self._log_label = label if label.isupper() else label[0].lower() + label[1:]
 
     def _target(self, scope: Optional[str], *, create: bool) -> Dict[str, P]:
+        scope = normalize_scope(scope)
         if scope is None:
             return self._providers
         if create:
@@ -61,6 +62,7 @@ class ProviderRegistry(Generic[P]):
         return self._scoped_providers.get(scope, {})
 
     def _bump(self, scope: Optional[str]) -> None:
+        scope = normalize_scope(scope)
         if scope is None:
             self._generation += 1
         else:
@@ -100,7 +102,12 @@ class ProviderRegistry(Generic[P]):
         """Global map overlaid with the active profile's scoped map (a copy)."""
         with self._lock:
             merged = dict(self._providers)
-            merged.update(self._scoped_providers.get(scope or hermes_home_key(), {}))
+            merged.update(
+                self._scoped_providers.get(
+                    hermes_home_key(scope),
+                    {},
+                )
+            )
         return merged
 
     def list_providers(self, *, scope: Optional[str] = None) -> List[P]:
@@ -114,13 +121,16 @@ class ProviderRegistry(Generic[P]):
         key = self.normalize(name)
         with self._lock:
             return (
-                self._scoped_providers.get(scope or hermes_home_key(), {}).get(key)
+                self._scoped_providers.get(
+                    hermes_home_key(scope),
+                    {},
+                ).get(key)
                 or self._providers.get(key)
             )
 
     def registry_generation(self, *, scope: Optional[str] = None) -> tuple:
         """Cache fingerprint ``(global_generation, scoped_generation)``."""
-        active_scope = scope or hermes_home_key()
+        active_scope = hermes_home_key(scope)
         with self._lock:
             return self._generation, self._scoped_generations.get(active_scope, 0)
 
@@ -134,6 +144,7 @@ class ProviderRegistry(Generic[P]):
     ) -> bool:
         """Restore *previous* only when *current* is still installed under *name*."""
         key = self.normalize(name)
+        scope = normalize_scope(scope)
         with self._lock:
             target = self._target(scope, create=True)
             if target.get(key) is not current:
@@ -179,8 +190,7 @@ def is_available_safe(
 
 
 def configured_provider_name(section: str, logger: logging.Logger) -> Optional[str]:
-    """Read ``<section>.provider`` from config.yaml, mapping the managed Nous
-    selection to ``fal`` (the FAL plugin services it via the managed gateway)."""
+    """Read ``<section>.provider`` from config.yaml."""
     configured: Optional[str] = None
     try:
         from hermes_cli.config import load_config_readonly
@@ -191,11 +201,4 @@ def configured_provider_name(section: str, logger: logging.Logger) -> Optional[s
             configured = raw.strip()
     except Exception as exc:
         logger.debug("Could not read %s.provider from config: %s", section, exc)
-    if configured:
-        try:
-            from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
-            if configured.lower() == NOUS_MANAGED_PROVIDER:
-                configured = "fal"
-        except Exception:  # pragma: no cover — helpers are in-repo
-            pass
     return configured

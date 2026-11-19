@@ -458,7 +458,11 @@ def analyse(source: str, source_file: str, *, entrypoints: bool) -> Analysis | N
 
 
 def _all_audited_paths() -> tuple[str, ...]:
-    return UPDATE_MODULE_CANDIDATES + POST_SWAP_HELPER_MODULES
+    siblings = tuple(sorted(
+        str(p.relative_to(REPO_ROOT)).replace("\\", "/")
+        for p in (REPO_ROOT / "hermes_cli").glob("update_cmd_*.py")
+    ))
+    return tuple(dict.fromkeys((*UPDATE_MODULE_CANDIDATES, *POST_SWAP_HELPER_MODULES, *siblings)))
 
 
 def shipped_commits() -> list[str]:

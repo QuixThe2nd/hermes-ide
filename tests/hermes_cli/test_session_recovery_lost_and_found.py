@@ -405,7 +405,7 @@ def _make_synthetic_lost_and_found(
         def session_row(session_id: str, ncols: int) -> list:
             base = {
                 "id": session_id,
-                "source": "telegram",
+                "source": "discord",
                 "started_at": 1_754_000_000.0,
                 "message_count": 2,
                 "title": f"synthetic {session_id}",
@@ -574,7 +574,7 @@ def test_mapper_rebuilds_sessiondb_from_synthetic_lost_and_found(
             "SELECT source, title FROM sessions WHERE id = ?",
             ("20260202_020202_bbb002",),
         ).fetchone()
-        assert row == ("telegram", "synthetic 20260202_020202_bbb002")
+        assert row == ("discord", "synthetic 20260202_020202_bbb002")
 
         assert fts.get("messages_fts") == "rebuilt"
         fts_hits = dest.execute(
@@ -683,8 +683,8 @@ def _map_salvage_rows(
             # timestamp gate rather than layout inference.
             row = {
                 "id": session_id,
-                "source": "telegram",
-                "session_key": f"agent:main:telegram:dm:{session_id}",
+                "source": "discord",
+                "session_key": f"agent:main:discord:dm:{session_id}",
                 "chat_type": "dm",
                 "model": "gpt-4.1",
                 "model_config": "{}",
@@ -971,7 +971,7 @@ def test_upgraded_physical_layout_maps_cells_by_name(tmp_path: Path) -> None:
     message_timestamp = 1_754_000_321.0
     session_cells = {
         "id": session_id,
-        "source": "telegram",
+        "source": "discord",
         "model": "gpt-4.1",
         "started_at": started_at,
         "message_count": 42,

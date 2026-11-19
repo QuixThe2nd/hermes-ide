@@ -1,17 +1,17 @@
 """Regression: stream-is-the-message is a SLACK semantic, not a relay
 semantic (PR 85796 review, B4).
 
-The base send_draft contract is Telegram-shaped: the draft animates and
+The base send_draft contract is draft-then-send: the draft animates and
 clears client-side, and the final answer arrives as a separate REAL send
 that becomes the history message. Slack native streaming inverts this —
 the stream IS the message and the turn-final seals it in place.
 
 The relay adapter hardcoded draft_stream_is_message = True for every
-descriptor, so a Telegram (or any non-Slack) connector advertising the
+descriptor, so any non-Slack connector advertising the
 draft op had its turn-final intercepted into draft(final=true): no real
 message was ever posted to the chat history. Live-probed on the review
-branch (`platform telegram … ops [draft(final=False), draft(final=True)]`,
-no send op).
+branch (a draft-then-send connector whose only outbound ops were
+draft(final=False) and draft(final=True) — no send op).
 
 Now the flag is gated on the negotiated descriptor platform. A future
 platform with genuine stream-is-the-message semantics should advertise it
@@ -37,21 +37,21 @@ class TestStreamIsMessageGating:
         adapter, _ = _connected_adapter()  # platform="slack" default
         assert adapter.draft_stream_is_message is True
 
-    def test_telegram_descriptor_does_not(self):
+    def test_draft_then_send_descriptor_does_not(self):
         adapter, _ = _connected_adapter(
-            platform="telegram",
+            platform="discord",
             markdown_dialect="markdown_v2",
             supported_ops=("send", "edit", "typing", "draft"),
         )
         assert adapter.draft_stream_is_message is False
 
     @pytest.mark.asyncio
-    async def test_telegram_final_is_a_real_send_not_a_seal(self):
-        """The B4 probe: telegram + draft op → frames go out as drafts,
+    async def test_draft_then_send_final_is_a_real_send_not_a_seal(self):
+        """The B4 probe: draft-then-send + draft op → frames go out as drafts,
         the final goes out as a REAL send (history message), never as
         draft(final=true)."""
         adapter, _ = _connected_adapter(
-            platform="telegram",
+            platform="discord",
             markdown_dialect="markdown_v2",
             supported_ops=("send", "edit", "typing", "draft"),
         )
@@ -65,7 +65,7 @@ class TestStreamIsMessageGating:
         assert ("draft", False) in ops
         assert ("send", None) in ops, ops
         assert not [o for o in t.ops if o["op"] == "draft" and o.get("final")], (
-            "telegram-shaped connector must never receive draft(final=true) "
+            "draft-then-send connector must never receive draft(final=true) "
             "as the turn-final — the draft clears client-side and the real "
             "send is the history message"
         )

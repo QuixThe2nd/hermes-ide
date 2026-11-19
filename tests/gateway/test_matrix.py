@@ -607,11 +607,18 @@ class TestMatrixRenderingPayloads:
         self.mock_client.send_message_event = AsyncMock(return_value="$evt")
         self.adapter._client = self.mock_client
 
+    _FINAL_PING_MXID = "@parsa:yazdani.au"
+
+
     def _sent_contents(self):
         return [
             call.args[2] if len(call.args) > 2 else call.kwargs["content"]
             for call in self.mock_client.send_message_event.await_args_list
         ]
+
+    @staticmethod
+    def _mention_ids(content):
+        return (content.get("m.mentions") or {}).get("user_ids") or []
 
 
     @pytest.mark.asyncio
@@ -653,6 +660,151 @@ class TestMatrixRenderingPayloads:
             assert content["m.relates_to"]["event_id"] == "$root"
             assert content["m.relates_to"]["m.in_reply_to"] == {"event_id": "$root"}
             assert content["body"].count("```") % 2 == 0
+
+    @pytest.mark.asyncio
+    async def test_notify_final_pings_and_replies_without_quote(self):
+        body = "Final answer"
+
+        result = await self.adapter.send(
+            "!room:example.org",
+            body,
+            reply_to="$question",
+            metadata={"notify": True},
+        )
+
+        assert result.success is True
+        content = self._sent_contents()[0]
+        mxid = self._FINAL_PING_MXID
+        pill = f'<a href="https://matrix.to/#/{mxid}">{mxid}</a>'
+        assert self._mention_ids(content) == [mxid]
+        assert content["body"] == f"{mxid} {body}"
+        assert content["formatted_body"] == f"{pill} {body}"
+        assert content["m.relates_to"] == {"m.in_reply_to": {"event_id": "$question"}}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("reply_to", "reply_target"),
+        [("$question", "$question"), (None, "$root")],
+        ids=["reply-to-event", "thread-root-fallback"],
+    )
+    async def test_notify_final_thread_replies_without_quote(self, reply_to, reply_target):
+        result = await self.adapter.send(
+            "!room:example.org",
+            "Threaded final answer",
+            reply_to=reply_to,
+            metadata={"notify": True, "thread_id": "$root"},
+        )
+
+        assert result.success is True
+        content = self._sent_contents()[0]
+        assert content["body"] == f"{self._FINAL_PING_MXID} Threaded final answer"
+        assert content["m.relates_to"] == {
+            "rel_type": "m.thread",
+            "event_id": "$root",
+            "is_falling_back": True,
+            "m.in_reply_to": {"event_id": reply_target},
+        }
+        assert self._FINAL_PING_MXID in self._mention_ids(content)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "metadata",
+        [
+            None,
+            {},
+            {"notify": False},
+            {"_interim_send": True},
+            {"notify": True, "_interim_send": True},
+        ],
+        ids=["missing", "empty", "notify-false", "interim", "notify-interim"],
+    )
+    async def test_non_final_sends_keep_only_body_derived_mentions(self, metadata):
+        result = await self.adapter.send(
+            "!room:example.org",
+            "Hello @alice:example.org",
+            reply_to="$question",
+            metadata=metadata,
+        )
+
+        assert result.success is True
+        content = self._sent_contents()[0]
+        assert self._mention_ids(content) == ["@alice:example.org"]
+        assert self._FINAL_PING_MXID not in self._mention_ids(content)
+        assert self._FINAL_PING_MXID not in content["body"]
+        assert self._FINAL_PING_MXID not in content.get("formatted_body", "")
+        assert content["m.relates_to"] == {"m.in_reply_to": {"event_id": "$question"}}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "Hello @alice:example.org; hello again @alice:example.org",
+            (
+                "Hello @alice:example.org and @parsa:yazdani.au; "
+                "hello again @parsa:yazdani.au"
+            ),
+        ],
+        ids=["other-body-mention", "body-already-pings-parsa"],
+    )
+    async def test_notify_final_merges_and_dedupes_body_mentions(self, body):
+        result = await self.adapter.send(
+            "!room:example.org",
+            body,
+            metadata={"notify": True},
+        )
+
+        assert result.success is True
+        assert self._mention_ids(self._sent_contents()[0]) == [
+            "@alice:example.org",
+            self._FINAL_PING_MXID,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_split_notify_final_pings_only_first_chunk(self):
+        self.adapter.max_message_length = 500
+
+        result = await self.adapter.send(
+            "!room:example.org",
+            "word " * 400,
+            metadata={"notify": True},
+        )
+
+        assert result.success is True
+        contents = self._sent_contents()
+        assert len(contents) > 1
+        mxid = self._FINAL_PING_MXID
+        pill = f'<a href="https://matrix.to/#/{mxid}">{mxid}</a>'
+        assert self._mention_ids(contents[0]) == [mxid]
+        assert contents[0]["body"].startswith(f"{mxid} ")
+        assert pill in contents[0]["formatted_body"]
+        assert all(
+            mxid not in self._mention_ids(content)
+            and mxid not in content["body"]
+            and mxid not in content.get("formatted_body", "")
+            for content in contents[1:]
+        )
+
+    @pytest.mark.asyncio
+    async def test_edit_preserves_body_mentions_without_adding_final_ping(self):
+        result = await self.adapter.edit_message(
+            "!room:example.org",
+            "$preview",
+            "Edited for @alice:example.org",
+            finalize=True,
+        )
+
+        assert result.success is True
+        content = self._sent_contents()[0]
+        assert self._mention_ids(content) == ["@alice:example.org"]
+        assert self._mention_ids(content["m.new_content"]) == ["@alice:example.org"]
+        for payload in (content, content["m.new_content"]):
+            assert self._FINAL_PING_MXID not in self._mention_ids(payload)
+            assert self._FINAL_PING_MXID not in payload["body"]
+            assert self._FINAL_PING_MXID not in payload.get("formatted_body", "")
+        assert content["m.relates_to"] == {"rel_type": "m.replace", "event_id": "$preview"}
+
+    def test_matrix_prefers_fresh_final_send(self):
+        assert self.adapter.prefers_fresh_final_streaming("Final answer") is True
 
 
 # ---------------------------------------------------------------------------
@@ -2299,7 +2451,7 @@ class TestMatrixSystemBridgeFilter:
     def test_appservice_underscore_prefix_is_bridge(self):
         # Conventional appservice namespace puppets
         assert self.adapter._is_system_or_bridge_sender(
-            "@_telegram_12345:bridge.example.org"
+            "@_discord_12345:bridge.example.org"
         ) is True
         assert self.adapter._is_system_or_bridge_sender(
             "@_discord_999:example.org"
@@ -2347,7 +2499,7 @@ class TestMatrixOnRoomMessageFilter:
 
     @pytest.mark.asyncio
     async def test_bridge_sender_dropped_before_pairing(self):
-        ev = self._mk_event(sender="@_telegram_12345:bridge.example.org")
+        ev = self._mk_event(sender="@_discord_12345:bridge.example.org")
         await self.adapter._on_room_message(ev)
         # Bridge / appservice identities must never flow through to the
         # gateway — otherwise they trigger pairing (#15763).

@@ -141,7 +141,7 @@ def test_batch_routing(answers, asked, payload, resumed):
 
 
 class _UndeliverableAdapter(_CardAdapter):
-    """Telegram's ``_send_prompt`` shape when the Bot API rejects the card."""
+    """``send_clarify`` failing the way a platform API rejecting the card does."""
 
     async def send_clarify(self, **kwargs):
         self.asked.append(kwargs["question"])

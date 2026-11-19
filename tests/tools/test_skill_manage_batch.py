@@ -23,7 +23,6 @@ class TestSkillManageBatch(unittest.TestCase):
     def setUp(self):
         self.home = tempfile.mkdtemp(prefix="skmbatch_t_")
         os.environ["HERMES_HOME"] = self.home
-        os.environ["HERMES_YOLO_MODE"] = "1"
         os.makedirs(os.path.join(self.home, "skills"), exist_ok=True)
         # Re-import against the temp home (module caches SKILLS_DIR).
         import importlib

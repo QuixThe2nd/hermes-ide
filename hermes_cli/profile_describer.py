@@ -1,17 +1,19 @@
 """Profile describer — auto-generate ``description`` for a profile.
 
-Mirrors ``hermes_cli/kanban_specify.py``: lazy aux client import, lenient response parse,
-never raises on expected failure modes. Reads at most ``MAX_SKILLS_FOR_PROMPT`` skill
-names to keep the prompt bounded.
+Uses the auxiliary client and a lenient response parser. Reads at most
+``MAX_SKILLS_FOR_PROMPT`` skill names to keep the prompt bounded.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+from prompts.load import load
 
 from hermes_cli import profiles as profiles_mod
 from agent.skill_utils import is_excluded_skill_path
@@ -22,35 +24,7 @@ logger = logging.getLogger(__name__)
 MAX_SKILLS_FOR_PROMPT = 60
 
 
-_SYSTEM_PROMPT = """You are a profile-describer for the Hermes Agent kanban board.
-
-A user runs multiple "profiles" — distinct agent identities, each with their
-own skills, model, and configuration. The kanban board's orchestrator routes
-work to whichever profile best fits each task. To do that well, every
-profile needs a short, concrete description of what it's good at.
-
-You are given a profile's:
-  - Name
-  - Model / provider
-  - List of installed skill names (a strong signal of role / domain)
-
-Produce a single JSON object with exactly one key:
-
-  {
-    "description": "<1-2 sentence description, plain prose, no preamble>"
-  }
-
-Rules:
-  - The description is what an orchestrator will read to decide whether to
-    route a task here. Lead with the profile's strongest capability.
-  - Stay concrete. Bad: "an AI agent that helps users."
-                  Good: "Reads and modifies Python codebases — runs tests,
-                         refactors functions, opens GitHub PRs."
-  - 1-2 sentences, <= 280 characters total.
-  - Never invent capabilities the skills don't suggest.
-  - Never write "Hermes Agent profile" or other meta-narration.
-  - No code fences, no preamble, no closing remarks. Output only JSON.
-"""
+_SYSTEM_PROMPT = load("profile_describer_system")
 
 
 _USER_TEMPLATE = """Profile name: {name}
@@ -105,8 +79,19 @@ def _sample_skills(names: list[str]) -> list[str]:
 
 
 def _extract_json_blob(raw: str) -> Optional[dict]:
-    from hermes_cli.kanban_specify import _extract_json_blob as _extract
-    return _extract(raw, _FENCE_RE)
+    """Extract the first-brace-to-last-brace JSON object, tolerating code fences."""
+    if not raw:
+        return None
+    stripped = _FENCE_RE.sub("", raw.strip())
+    first = stripped.find("{")
+    last = stripped.rfind("}")
+    if first == -1 or last == -1 or last <= first:
+        return None
+    try:
+        value = json.loads(stripped[first:last + 1])
+    except (ValueError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
 
 
 def describe_profile(profile_name: str, *, overwrite: bool = False, timeout: Optional[int] = None) -> DescribeOutcome:

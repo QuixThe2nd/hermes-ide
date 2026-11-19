@@ -1,6 +1,6 @@
 """Tests for the gateway loop-level transient-network-error safety net.
 
-Issues #31066 / #31110: unhandled ``telegram.error.TimedOut`` (or peer
+Issues #31066 / #31110: unhandled ``TimedOut`` (or peer
 ``NetworkError`` / ``httpx`` connection error) propagating to the
 asyncio event loop killed the gateway process, taking down every
 profile attached to the same runner. The safety net installed in
@@ -25,15 +25,15 @@ from gateway.run import (
 
 
 # ----- Fake exception classes that mimic the real wire types ----------
-# We avoid importing telegram / httpx here so the test runs in environments
+# We avoid importing platform SDKs / httpx here so the test runs in environments
 # without those packages installed (the classifier matches on class name).
 
 class TimedOut(Exception):
-    """Stand-in for ``telegram.error.TimedOut``."""
+    """Stand-in for a platform SDK ``TimedOut``."""
 
 
 class NetworkError(Exception):
-    """Stand-in for ``telegram.error.NetworkError``."""
+    """Stand-in for a platform SDK ``NetworkError``."""
 
 
 class ConnectError(Exception):

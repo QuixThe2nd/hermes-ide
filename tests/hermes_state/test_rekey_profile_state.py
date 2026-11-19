@@ -21,28 +21,6 @@ def db(tmp_path):
     database.close()
 
 
-def _create_legacy_v2_topic_tables(db):
-    """Create the supported pre-profile-name topic schema without migrating it."""
-    db._write_sql("""
-        CREATE TABLE telegram_dm_topic_mode (
-            chat_id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
-            enabled INTEGER NOT NULL DEFAULT 1,
-            activated_at REAL NOT NULL, updated_at REAL NOT NULL,
-            has_topics_enabled INTEGER, allows_users_to_create_topics INTEGER,
-            capability_checked_at REAL, intro_message_id TEXT, pinned_message_id TEXT
-        )
-    """)
-    db._write_sql("""
-        CREATE TABLE telegram_dm_topic_bindings (
-            chat_id TEXT NOT NULL, thread_id TEXT NOT NULL, user_id TEXT NOT NULL,
-            session_key TEXT NOT NULL,
-            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-            managed_mode TEXT NOT NULL DEFAULT 'auto',
-            linked_at REAL NOT NULL, updated_at REAL NOT NULL,
-            PRIMARY KEY (chat_id, thread_id)
-        )
-    """)
-
 
 def _create_legacy_ledger_without_adapter_profile(db):
     """The delivery_obligations shape before ``adapter_profile`` was added (ledger never reopened)."""
@@ -143,75 +121,30 @@ class TestRekeyProfileState:
 
     def test_underscore_in_profile_name_is_not_a_like_wildcard(self, db):
         db.create_session(
-            "literal", "telegram", session_key="agent:foo_bar:telegram:dm:a",
+            "literal", "whatsapp", session_key="agent:foo_bar:discord:dm:a",
             profile_name="foo_bar", chat_id="a", chat_type="dm")
         db.create_session(
-            "bystander", "telegram", session_key="agent:fooXbar:telegram:dm:b",
+            "bystander", "whatsapp", session_key="agent:fooXbar:discord:dm:b",
             profile_name="fooXbar", chat_id="b", chat_type="dm")
         db.rekey_profile_state("foo_bar", "renamed")
         assert db._read_one(
             "SELECT session_key FROM sessions WHERE id = ?", ("literal",)
-        )["session_key"] == "agent:renamed:telegram:dm:a"
+        )["session_key"] == "agent:renamed:discord:dm:a"
         assert db._read_one(
             "SELECT session_key FROM sessions WHERE id = ?", ("bystander",)
-        )["session_key"] == "agent:fooXbar:telegram:dm:b"
+        )["session_key"] == "agent:fooXbar:discord:dm:b"
 
-    def test_rekeys_origin_json_and_telegram_topic_state(self, db):
+    def test_rekeys_origin_json(self, db):
         db.create_session(
-            "sess_old", "telegram", session_key="agent:oldname:telegram:dm:chatA",
+            "sess_old", "whatsapp", session_key="agent:oldname:discord:dm:chatA",
             profile_name="oldname", chat_id="chatA", chat_type="dm")
         db._write_sql(
             "UPDATE sessions SET origin_json = ? WHERE id = ?",
-            (json.dumps({"platform": "telegram", "profile": "oldname"}), "sess_old"))
-        db.enable_telegram_topic_mode(
-            chat_id="chatA", user_id="userA", profile_name="oldname")
-        db.bind_telegram_topic(
-            chat_id="chatA", thread_id="threadA", user_id="userA",
-            session_key="agent:oldname:telegram:dm:chatA", session_id="sess_old",
-            profile_name="oldname")
+            (json.dumps({"platform": "discord", "profile": "oldname"}), "sess_old"))
         counts = db.rekey_profile_state("oldname", "newname")
         row = db._read_one("SELECT origin_json FROM sessions WHERE id = ?", ("sess_old",))
         assert json.loads(row["origin_json"])["profile"] == "newname"
         assert counts["sessions_origin_json"] == 1
-        binding = db._read_one(
-            "SELECT profile_name, session_key FROM telegram_dm_topic_bindings "
-            "WHERE chat_id = ? AND thread_id = ?", ("chatA", "threadA"))
-        assert binding["profile_name"] == "newname"
-        assert binding["session_key"] == "agent:newname:telegram:dm:chatA"
-
-    def test_rekeys_legacy_v2_topic_binding_by_session_key(self, db):
-        """Legacy v2 tables have no profile_name, but bindings retain profile namespaces."""
-        db.create_session(
-            "sess_old", "telegram", session_key="agent:oldname:telegram:dm:chatA",
-            profile_name="oldname", chat_id="chatA", chat_type="dm")
-        db.create_session(
-            "sess_keep", "telegram", session_key="agent:keepme:telegram:dm:chatB",
-            profile_name="keepme", chat_id="chatB", chat_type="dm")
-        _create_legacy_v2_topic_tables(db)
-        db._write_sql(
-            "INSERT INTO telegram_dm_topic_mode "
-            "(chat_id, user_id, enabled, activated_at, updated_at) VALUES (?, ?, 1, 1, 1)",
-            ("chatA", "userA"))
-        db._write_sql(
-            "INSERT INTO telegram_dm_topic_bindings "
-            "(chat_id, thread_id, user_id, session_key, session_id, linked_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, 1, 1)",
-            ("chatA", "threadA", "userA", "agent:oldname:telegram:dm:chatA", "sess_old"))
-        db._write_sql(
-            "INSERT INTO telegram_dm_topic_bindings "
-            "(chat_id, thread_id, user_id, session_key, session_id, linked_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, 1, 1)",
-            ("chatB", "threadB", "userB", "agent:keepme:telegram:dm:chatB", "sess_keep"))
-
-        counts = db.rekey_profile_state("oldname", "newname")
-
-        assert counts["telegram_dm_topic_bindings_session_key"] == 1
-        assert db._read_one(
-            "SELECT session_key FROM telegram_dm_topic_bindings WHERE chat_id = ?", ("chatA",)
-        )["session_key"] == "agent:newname:telegram:dm:chatA"
-        assert db._read_one(
-            "SELECT session_key FROM telegram_dm_topic_bindings WHERE chat_id = ?", ("chatB",)
-        )["session_key"] == "agent:keepme:telegram:dm:chatB"
 
     def test_rekeys_legacy_ledger_without_adapter_profile_by_session_key(self, db):
         """A ledger created before adapter_profile existed is rekeyed on its namespace alone."""

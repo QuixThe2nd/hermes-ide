@@ -46,12 +46,12 @@ def remote_env(monkeypatch, tmp_path):
 
 
 def test_sandbox_artifact_is_fetched_but_credentials_and_symlinks_to_them_are_not(remote_env):
-    media = [("/home/agent/out/report.txt", False), ("/home/agent/out/innocent.txt", False),
-             ("/home/agent/.ssh/id_rsa", False), ("~/out/report.txt", False)]
+    media = ["/home/agent/out/report.txt", "/home/agent/out/innocent.txt",
+             "/home/agent/.ssh/id_rsa", "~/out/report.txt"]
     delivered = BasePlatformAdapter.filter_media_delivery_paths(media)
 
-    assert [Path(p).read_bytes() for p, _ in delivered] == [b"hello from sandbox", b"hello from sandbox"]
-    assert all(Path(p).name.endswith("_report.txt") for p, _ in delivered)
+    assert [Path(p).read_bytes() for p in delivered] == [b"hello from sandbox", b"hello from sandbox"]
+    assert all(Path(p).name.endswith("_report.txt") for p in delivered)
     # The credential file and the symlink that resolves to it were refused BEFORE any bytes moved.
     assert remote_env.fetched == ["/home/agent/out/report.txt", "/home/agent/out/report.txt"]
 
@@ -59,10 +59,10 @@ def test_sandbox_artifact_is_fetched_but_credentials_and_symlinks_to_them_are_no
 def test_local_backend_and_strict_mode_do_not_fetch(monkeypatch, tmp_path, remote_env):
     """Strict mode keeps its recency gate: a fetched copy would land in an allowlisted root and skip it."""
     monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
-    assert BasePlatformAdapter.filter_media_delivery_paths([("/home/agent/out/report.txt", False)]) == []
+    assert BasePlatformAdapter.filter_media_delivery_paths(["/home/agent/out/report.txt"]) == []
     monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT")
     monkeypatch.setattr(media_fetch, "_active_remote_env", lambda: None)
-    assert BasePlatformAdapter.filter_media_delivery_paths([(str(tmp_path / "nope.txt"), False)]) == []
+    assert BasePlatformAdapter.filter_media_delivery_paths([str(tmp_path / "nope.txt")]) == []
     assert remote_env.fetched == []
 
 

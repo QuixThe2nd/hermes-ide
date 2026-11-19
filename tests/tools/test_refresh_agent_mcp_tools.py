@@ -52,7 +52,7 @@ def test_refresh_preserves_memory_provider_and_context_engine_tools(monkeypatch)
     """B1 regression: a rebuild must NOT drop post-build-injected tools.
 
     get_tool_definitions() returns only the registry-derived tools. agent_init
-    appends memory-provider tools (mem0/honcho/…) and context-engine tools
+    appends memory-provider tools (hindsight/…) and context-engine tools
     (lcm_*) directly onto agent.tools AFTER that. A naive
     `agent.tools = get_tool_definitions()` would silently delete them on every
     refresh. The helper must re-inject them.
@@ -290,35 +290,6 @@ def test_preserve_prefix_appends_late_arrivals_at_the_tail(monkeypatch):
     assert [t["function"]["name"] for t in agent.tools] == [
         "read_file", "terminal", "aaa_mcp_late",
     ]
-
-
-def test_preserve_prefix_keeps_the_bridge_tools_byte_identical(monkeypatch):
-    """``tool_search``'s description is derived from the session at build time: the
-    deferred-tool count, the embedded listing, and whether ``manage_connections`` was
-    present. Every one of those inputs can move between turns (a late MCP server, a
-    ``check_fn`` flap on a portal blip), and a moved byte in the tool array re-prefills
-    the whole cached history. The refresh must leave the bridge entries exactly as
-    built; a search still reads the live catalog at dispatch."""
-    from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
-
-    built = _tool("tool_search")
-    built["function"]["description"] = "Search 21 additional tools. connectors__ hint present."
-    agent = _agent(["read_file", "manage_connections"])
-    agent.tools.append(built)
-    agent.valid_tool_names.add("tool_search")
-    before = json.dumps(agent.tools, sort_keys=True)
-
-    fresh_bridge = _tool("tool_search")
-    fresh_bridge["function"]["description"] = "Search 33 additional tools."
-    # manage_connections flapped out (portal blip); a late server grew the count.
-    _serve(monkeypatch, [_tool("read_file"), fresh_bridge, _tool("mcp_late_tool")])
-    _registered(monkeypatch, ["read_file", "manage_connections", "mcp_late_tool", *BRIDGE_TOOL_NAMES])
-
-    added = _mcp_agent.refresh_agent_mcp_tools(agent, preserve_prefix=True)
-
-    assert added == {"mcp_late_tool"}
-    assert json.dumps(agent.tools[:3], sort_keys=True) == before
-    assert [t["function"]["name"] for t in agent.tools][-1] == "mcp_late_tool"
 
 
 # ---------------------------------------------------------------------------

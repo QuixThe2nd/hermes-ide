@@ -30,6 +30,7 @@ class ProcessingOutcome(Enum):
     SUCCESS = "success"
     FAILURE = "failure"
     CANCELLED = "cancelled"
+    DEFERRED = "deferred"
 
 
 @dataclass
@@ -52,9 +53,6 @@ class MessageEvent:
     # refused first reply then reads as delivered). Reply routing is unaffected: the reply anchor
     # still comes from this event.
     ledger_message_id: Optional[str] = None
-    # Platform update id (Telegram ``update_id``): ``/restart`` records it so the new gateway
-    # advances past it even if PTB's shutdown ACK times out.
-    platform_update_id: Optional[int] = None
     # Media attachments: local file paths (for vision tool access)
     media_urls: List[str] = field(default_factory=list)
     media_types: List[str] = field(default_factory=list)
@@ -83,14 +81,25 @@ class MessageEvent:
     # May this event resolve gateway commands / control prompts? Proactive plugin events set False
     # so untrusted payload text stays conversational. Kept last for positional compat.
     allow_gateway_control: bool = True
-    # The queue layer saw this platform message id before (drain-snapshot replay,
-    # FIFO promotion/rescue of a duplicated id). The flag rides the surviving copy
+    # The queue layer saw this platform message id before (FIFO
+    # promotion/rescue of a duplicated id). The flag rides the surviving copy
     # so the model can tell a re-delivery from a fresh user message and answer it
-    # once instead of per copy. Serialized in the drain snapshot (_EVENT_FIELDS).
+    # once instead of per copy. Serialized in hub records (_EVENT_FIELDS).
     redelivered: bool = False
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
+    # A queued/deferred handler result is not a delivered answer. Execution admission clears this.
+    _gateway_processing_deferred: bool = field(default=False, init=False, repr=False, compare=False)
+    # Process-local replay settlement hook. The drain queue binds its record/claim
+    # identity before enqueue; base processing invokes it with the real outcome.
+    _gateway_replay_completion: Any = field(default=None, init=False, repr=False, compare=False)
+    # Original durable inbound ids absorbed by replay dedup/media merges. These move
+    # with the completion callback so platform hooks can settle every accepted row.
+    _gateway_replay_message_ids: List[str] = field(default_factory=list, init=False, repr=False, compare=False)
+    # Adapter-proven incognito history bounds; process-local so replay fails closed.
+    _incognito_context_bounded: bool = field(default=False, init=False, repr=False, compare=False)
+    _incognito_reply_bounded: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
 
@@ -114,6 +123,48 @@ class MessageEvent:
         args = parts[1] if len(parts) > 1 else ""
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         return args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
+
+
+def transfer_replay_completion(
+    consumer: MessageEvent, incoming: MessageEvent
+) -> MessageEvent:
+    """Move replay settlement to the queued event that will actually run.
+
+    Dedup and media merges keep an older event object. Each durable record still
+    needs its own callback, so two replay owners on one consumer are chained in
+    arrival order. Their original inbound ids move with them, including ids from
+    earlier merges. The finally keeps one faulty callback from suppressing the
+    other record's settlement; the processing boundary logs the failure.
+    """
+    callback = getattr(incoming, "_gateway_replay_completion", None)
+    if consumer is incoming or not callable(callback):
+        return consumer
+    aliases = list(getattr(consumer, "_gateway_replay_message_ids", ()))
+    absorbed_ids = [
+        *getattr(incoming, "_gateway_replay_message_ids", ()),
+        inbound_platform_message_id(incoming),
+    ]
+    for absorbed_id in absorbed_ids:
+        if absorbed_id:
+            alias = str(absorbed_id)
+            if alias not in aliases:
+                aliases.append(alias)
+    consumer._gateway_replay_message_ids = aliases
+    incoming._gateway_replay_message_ids = []
+    existing = getattr(consumer, "_gateway_replay_completion", None)
+    if existing is callback:
+        combined = existing
+    elif callable(existing):
+        def combined(outcome, previous=existing, following=callback):
+            try:
+                previous(outcome)
+            finally:
+                following(outcome)
+    else:
+        combined = callback
+    consumer._gateway_replay_completion = combined
+    incoming._gateway_replay_completion = None
+    return consumer
 
 
 def inbound_platform_message_id(event: MessageEvent) -> Optional[str]:

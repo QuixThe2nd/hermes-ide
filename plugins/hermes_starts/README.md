@@ -24,14 +24,16 @@ On the first `start` action, if no channel exists yet, the plugin auto-runs setu
 
 You can also provision explicitly with `action='setup'`.
 
-## How a start lands
+## How a conversation lands
 
-Each start is **one message in the channel**: the full opening in Hermes's own voice,
-with a `*Where I'd take this:*` paragraph when there is a next move. A public thread
-named `Start #N — <kind>` is anchored on that message, so replies stay out of the
-channel. Openings longer than the message limit split on paragraph boundaries — the
-first part is the channel message, the rest go in the thread. If thread creation fails,
-the whole opening stays in the channel and the start still reports success.
+Every public inbox opener uses the same delivery path. The opening is posted in
+the channel and a public thread is anchored on it; starts are named
+`Start #N — <kind>`. When `mention_user_id` is configured, its mention always
+shares the anchor with real opening text, and the owner is added to the thread
+on a best-effort basis. Openings longer than the message limit split on
+paragraph or word boundaries — the first part is the channel message, the rest
+go in the thread. If start thread creation fails, the whole opening stays in
+the channel and the start still reports success.
 
 ### Settings
 
@@ -39,9 +41,45 @@ Under `plugins.entries.hermes_starts.settings` in `config.yaml`:
 
 | Key | Default | What it does |
 |---|---|---|
-| `mention_user_id` | *(unset)* | Discord user ID pinged on each start. The mention prefixes the opening, and the same user is added to the thread so replies and subscription keep working. |
-| `quiet_hours` | `23:00-08:00` | Window in `quiet_tz` where starts still post but neither ping nor thread-add happens. Empty string disables the gate. |
-| `quiet_tz` | `Australia/Sydney` | IANA zone used to evaluate `quiet_hours`. |
+| `sparks_cron` | `true` | Master switch for the default `inbox-sparks` cron job (see below). `false` never seeds it, on any profile. |
+
+## The default `inbox-sparks` cron job
+
+Every install gets periodic agent-initiated-conversation wakes without
+hand-creating a job. On gateway start (the plugin's `on_gateway_start` hook,
+run off the startup path), the plugin checks each served profile's cron store
+and — when no job named `inbox-sparks` exists — creates one:
+
+- **schedule** `every 120m`, **deliver** `local` (a no-opening run posts
+  nothing anywhere; `start_conversation` is the only thing that talks),
+- **toolsets** `hermes_starts` plus the generic `file`, `terminal`,
+  `session_search`, `skills`, `web` — no host-specific toolsets;
+- **no skills** — the repo ships no skill for the job to attach; the wake
+  prompt is self-contained and works on every install.
+
+Seeding is idempotent and deferential:
+
+- an existing `inbox-sparks` job is **never modified or duplicated** — a
+  hand-tuned job keeps its prompt, schedule, and toolsets byte-identical,
+  paused or not;
+- after the seeder creates the job once, a marker file
+  (`$HERMES_HOME/hermes_starts/sparks_cron_seeded`) records that it seeded —
+  delete the job and it stays deleted;
+- `plugins.entries.hermes_starts.settings.sparks_cron: false` opts a profile
+  out entirely (per-profile: under `gateway.multiplex_profiles` each served
+  profile's own flag and own store apply);
+- `plugins.disabled` naming `hermes_starts` or `inbox_sparks` opts the home
+  out the same way (spelling normalized, so `inbox-sparks` counts): no job
+  is created and no marker written — the deny-list is the loader's own
+  opt-out for these bundled plugins, so seeding honors it too;
+- seeding also requires a configured `DISCORD_BOT_TOKEN` for that profile —
+  without the token the wake's only tool cannot resolve, so no job is
+  created until the token exists.
+
+The job spec and the create/skip decision live in the Go module
+`internal/sparkscron` (built on demand into `$HERMES_HOME/cache/sparkscron`;
+needs a Go toolchain — without one, seeding is skipped with a log line and
+retried on the next gateway start).
 
 ## Duplicate-start protection
 
@@ -74,7 +112,7 @@ Enabled starts serialize their state reads, cooldown checks, comparison and deli
 A reservation is saved before sending and retains any known anchor or thread after a
 partial failure. Retrying the same opening therefore cannot assume that a timeout
 means nothing was posted. Inspect the recorded destination before any manual recovery.
-The guard preserves quiet hours, mentions, thread membership and conversation seeding.
+The guard preserves mentions, thread membership and conversation seeding.
 
 ## Multi-guild bots
 

@@ -33,8 +33,8 @@ logger = logging.getLogger(__name__)
 # store's allowlist mirror (single source of truth); plugin platforms are added per-call from the registry.
 _ALLOWED_USERS_ENV = {Platform(k): v for k, v in _PLATFORM_ALLOWLIST_ENV.items()}
 _ALLOW_ALL_ENV = {p: v.replace("_ALLOWED_USERS", "_ALLOW_ALL_USERS") for p, v in _ALLOWED_USERS_ENV.items()}
-_GROUP_USER_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS"}
-_GROUP_CHAT_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS", Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS"}
+_GROUP_USER_ENV: dict = {}
+_GROUP_CHAT_ENV = {Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS"}
 _ALLOW_BOTS_ENV = {
     # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466). Checked before the
     # no-user-id guard below: some platforms deliver bot/automation traffic with no user_id at all -- e.g.
@@ -42,7 +42,6 @@ _ALLOW_BOTS_ENV = {
     # guard would reject them outright (the same reason the chat-scoped allowlist above runs early).
     Platform.DISCORD: "DISCORD_ALLOW_BOTS",
     Platform.FEISHU: "FEISHU_ALLOW_BOTS",
-    Platform.TELEGRAM: "TELEGRAM_ALLOW_BOTS",
     Platform.SLACK: "SLACK_ALLOW_BOTS",
 }
 
@@ -86,76 +85,6 @@ def _adapter_config_extra(adapter) -> dict:
     return getattr(getattr(adapter, "config", None), "extra", None) or {}
 
 
-# Nostr npub -> hex (Buzz): ``BUZZ_ALLOWED_USERS`` accepts hex or ``npub1…`` but inbound pubkeys
-# are always hex. Pure stdlib; mirrors plugins/platforms/buzz/adapter.py.
-# Without decoding, the central allowlist comparison string-matches the raw npub against the hex pubkey and
-# an operator who listed only their npub sees every message rejected ("Unauthorized user: <hex pubkey>",
-# #78428).
-_BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
-_BECH32_GENERATOR = (0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3)
-
-
-def _bech32_polymod(values):
-    chk = 1
-    for value in values:
-        top = chk >> 25
-        chk = (chk & 0x1FFFFFF) << 5 ^ value
-        for i, gen in enumerate(_BECH32_GENERATOR):
-            chk ^= gen if ((top >> i) & 1) else 0
-    return chk
-
-
-def _bech32_hrp_expand(hrp: str):
-    return [ord(c) >> 5 for c in hrp] + [0] + [ord(c) & 31 for c in hrp]
-
-
-def _convertbits(data, frombits: int, tobits: int, pad: bool = True):
-    acc = 0
-    bits = 0
-    ret = []
-    maxv = (1 << tobits) - 1
-    for value in data:
-        if value < 0 or (value >> frombits):
-            return None
-        acc = (acc << frombits) | value
-        bits += frombits
-        while bits >= tobits:
-            bits -= tobits
-            ret.append((acc >> bits) & maxv)
-    if pad and bits:
-        ret.append((acc << (tobits - bits)) & maxv)
-    elif not pad and (bits >= frombits or ((acc << (tobits - bits)) & maxv)):
-        return None
-    return ret
-
-
-def _npub_to_hex(npub: str) -> Optional[str]:
-    """Decode an ``npub1…`` bech32 string to a 64-char hex pubkey, else None."""
-    npub = npub.strip().lower()
-    if not npub.startswith("npub1"):
-        return None
-    try:
-        data = [_BECH32_CHARSET.index(c) for c in npub[len("npub1"):]]
-    except ValueError:
-        return None
-    if _bech32_polymod(_bech32_hrp_expand("npub") + data) != 1:
-        return None
-    decoded = _convertbits(data[:-6], 5, 8, pad=False)
-    if decoded is None or len(decoded) != 32:
-        return None
-    return bytes(decoded).hex()
-
-
-def _normalize_nostr_allow_entries(entries: set) -> set:
-    """Add the hex form of every valid ``npub1…`` entry; invalid entries are kept as-is.
-
-    Hex entries pass through unchanged; each valid ``npub1…`` entry is decoded and its 64-char hex form
-    added, so either form authorizes the same identity (#78428). Invalid entries are kept as-is (they simply
-    never match an inbound hex pubkey).
-    """
-    return set(entries) | {h for e in entries if e.lower().startswith("npub1") and (h := _npub_to_hex(e))}
-
-
 def _principal_matches_allowlist(source, user_id: str, allowed_ids: set) -> bool:
     """Whether *user_id* (under any platform-specific alias) is in *allowed_ids*."""
     check_ids = {user_id}
@@ -170,20 +99,6 @@ def _principal_matches_allowlist(source, user_id: str, allowed_ids: set) -> bool
         if normalized_user_id:
             check_ids.add(normalized_user_id)
 
-    platform_value = source.platform.value if source.platform is not None else None
-    # SimpleX: user_id is the numeric contactId but the UI only shows display names.
-    if platform_value == "simplex" and source.user_name:
-        check_ids.add(source.user_name)
-    # Buzz: allowlist may hold npub or hex; inbound pubkeys are hex.
-    if platform_value == "buzz":
-        # Buzz (Nostr-based): BUZZ_ALLOWED_USERS accepts npub or hex, but inbound event pubkeys are always
-        # 64-char hex. Decode npub entries to hex so an operator who listed only their npub authorizes the
-        # same identity as the hex form (#78428). Hex entries pass through unchanged, so existing hex-only
-        # allowlists keep working.
-        allowed_ids = _normalize_nostr_allow_entries(allowed_ids)
-        hex_user = _npub_to_hex(user_id) if user_id.startswith("npub") else None
-        if hex_user:
-            check_ids.add(hex_user)
     return bool(check_ids & allowed_ids)
 
 
@@ -237,7 +152,7 @@ class GatewayAuthorizationMixin:
         ``_profile_adapters`` entry is the ``{}`` startup placeholder; a secondary connected on ANY
         platform is its own credential boundary and never borrows the primary. Restored/cached sources
         carry no transport ref, so this is what keeps heartbeats, completions and goal notices for such a
-        profile deliverable after a restart (the same rule ``kanban_watchers_notifier`` and cron apply)."""
+        profile deliverable after a restart (the same rule cron applies)."""
         config = getattr(self, "config", None)
         if not getattr(config, "multiplex_profiles", False):
             return False
@@ -298,7 +213,7 @@ class GatewayAuthorizationMixin:
         runtime_profile)`` delivers — ``_adapters_for_profile`` holds one adapter per platform per
         profile, a shared-bot satellite drains through the primary, and a disconnected secondary
         fails closed to ``{}`` rather than borrowing the default bot. Restored sessions, cron,
-        kanban and completion notices all rely on this row. Matrix: gateway/AGENTS.md § Profile scope.
+        and completion notices all rely on this row. Matrix: gateway/AGENTS.md § Profile scope.
         """
         if source is None:
             return None
@@ -608,7 +523,7 @@ class GatewayAuthorizationMixin:
         return True
 
     def _adapter_extra_allowlist_authorizes(self, source, user_id, is_group) -> bool:
-        """Adapters (e.g. Telegram) that gate via config.extra.allow_from / group_allow_from
+        """Adapters that gate via config.extra.allow_from / group_allow_from
         without setting enforces_own_access_policy."""
         adapter = self._delivery_adapter_for(source)
         if adapter is None:
@@ -616,12 +531,12 @@ class GatewayAuthorizationMixin:
         extra = _adapter_config_extra(adapter)
         adapter_allow = extra.get("group_allow_from" if is_group else "allow_from")
         if not adapter_allow:
-            # Plugin platforms (Buzz, DingTalk) spell their env allowlist as ``extra.allowed_users``;
+            # Plugin platforms spell their env allowlist as ``extra.allowed_users``;
             # under multiplex only the default profile's list reaches the env (first-writer-wins
             # bridge), so read the live adapter's.
             entry = _registry_entry(source.platform)
             if entry and entry.allowed_users_env:
-                # Buzz) carry the same operator-configured allowlist in
+                # Plugin platforms carry the same operator-configured allowlist in
                 # ``PlatformConfig.extra.allowed_users``. An absent/empty entry changes nothing here — the
                 # default-deny below still applies. See #82871, #98738.
                 adapter_allow = extra.get("allowed_users")
@@ -630,7 +545,7 @@ class GatewayAuthorizationMixin:
         allowed = _coerce_allow_set(adapter_allow)
         normalize = getattr(adapter, "normalize_user_id", None)
         if callable(normalize):
-            # Ids and entries may spell the same principal differently (Buzz hex vs npub).
+            # Ids and entries may spell the same principal differently.
             allowed = {normalize(entry) or entry for entry in allowed}
         return _allows(allowed, user_id)
 
@@ -694,15 +609,15 @@ class GatewayAuthorizationMixin:
             chat_allowlist_env = _GROUP_CHAT_ENV.get(source.platform, "")
             if chat_allowlist_env and _allows(_coerce_allow_set(_auth_env(chat_allowlist_env)), source.chat_id):
                 return True
-            # config.yaml fallback (``extra.group_allowed_chats``): Telegram observe-unmentioned mode
+            # config.yaml fallback (``extra.group_allowed_chats``): observe-unmentioned mode
             # strips user_id, so the env-only check above misses it.
             with contextlib.suppress(Exception):
                 adapter_group_allowed = self._adapter_extra_for_source(source).get("group_allowed_chats")
                 if adapter_group_allowed and _allows(_coerce_allow_set(adapter_group_allowed), source.chat_id):
                     return True
         # WhatsApp observe-unmentioned group sessions key on the group chat
-        # with a shared source (user_id=None), exactly like Telegram's
-        # observe mode. WhatsApp has no group_allowed_chats env var — its
+        # with a shared source (user_id=None). WhatsApp has no
+        # group_allowed_chats env var — its
         # group allowlist is ``group_allow_from`` (``@g.us`` JIDs), honored
         # by adapter intake (_is_group_allowed) and bridged from
         # ``platforms.whatsapp.extra.group_allow_from``. Admit an allowlisted
@@ -749,23 +664,6 @@ class GatewayAuthorizationMixin:
                     return True
         return False
 
-    def _legacy_telegram_chat_grant(self, source, group_user_allowlist: str) -> bool:
-        """TELEGRAM_GROUP_ALLOWED_USERS was once (mis)used as a chat-ID allowlist; "-"-prefixed
-        values are chat IDs, honor them and warn once."""
-        from gateway.run import logger
-        legacy_chat_ids = {v.strip() for v in group_user_allowlist.split(",") if v.strip().startswith("-")}
-        if not legacy_chat_ids:
-            return False
-        if not getattr(self, "_warned_telegram_group_users_legacy", False):
-            logger.warning(
-                "TELEGRAM_GROUP_ALLOWED_USERS contains chat-ID-shaped values "
-                "(%s). Treating them as chat IDs for backward compatibility. "
-                "Move chat IDs to TELEGRAM_GROUP_ALLOWED_CHATS — the _USERS var "
-                "is now for sender user IDs.",
-                ",".join(sorted(legacy_chat_ids)),
-            )
-            self._warned_telegram_group_users_legacy = True
-        return source.chat_id in legacy_chat_ids
 
     def _bot_loop_guard_instance(self) -> BotLoopGuard:
         guard = getattr(self, "_bot_loop_guard", None)
@@ -936,17 +834,11 @@ class GatewayAuthorizationMixin:
                 return True
             return _env_truthy("GATEWAY_ALLOW_ALL_USERS")
 
-        if is_group_or_forum and source.chat_id:
-            # Telegram group traffic authorized by chat ID (TELEGRAM_GROUP_ALLOWED_USERS gates the sender).
-            if group_chat_allowlist and _allows(_coerce_allow_set(group_chat_allowlist), source.chat_id):
-                return True
-            if (
-                source.platform == Platform.TELEGRAM and group_user_allowlist
-                and self._legacy_telegram_chat_grant(source, group_user_allowlist)
-            ):
-                return True
+        if is_group_or_forum and source.chat_id and group_chat_allowlist \
+                and _allows(_coerce_allow_set(group_chat_allowlist), source.chat_id):
+            return True
 
-        # TELEGRAM_GROUP_ALLOWED_USERS is group-scoped (no DM access); TELEGRAM_ALLOWED_USERS is platform-wide.
+        # {PLATFORM}_GROUP_ALLOWED_USERS is group-scoped (no DM access); {PLATFORM}_ALLOWED_USERS is platform-wide.
         allowed_ids = (
             _coerce_allow_set(platform_allowlist)
             | _coerce_allow_set(group_user_allowlist)

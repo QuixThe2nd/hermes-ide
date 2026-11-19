@@ -1,7 +1,7 @@
 """Tests for CodexAppServerSession — drive turns through a mock client.
 
 The session adapter has the most complex behavior of the three new modules:
-notification draining, server-request handling (approvals), interrupt,
+notification draining, automatic server-request responses, interrupt,
 deadline timeouts. These tests pin all of that without spawning real codex.
 """
 
@@ -19,8 +19,6 @@ import agent.transports.codex_app_server_session as session_mod
 from agent.transports.codex_app_server import CodexAppServerTransportError
 from agent.transports.codex_app_server_session import (
     CodexAppServerSession,
-    _ServerRequestRouting,
-    _approval_choice_to_codex_decision,
     _build_turn_input,
 )
 
@@ -129,19 +127,6 @@ def make_session(client: FakeClient, **kwargs) -> CodexAppServerSession:
     )
 
 
-# ---- choice mapping ----
-
-class TestApprovalChoiceMapping:
-    @pytest.mark.parametrize("choice,expected", [
-        ("once", "accept"),
-        ("session", "acceptForSession"),
-        ("always", "acceptForSession"),
-        ("deny", "decline"),
-        ("anything-else", "decline"),
-    ])
-    def test_mapping(self, choice, expected):
-        assert _approval_choice_to_codex_decision(choice) == expected
-
 
 class TestTurnInputCoercion:
     def test_image_parts_ride_natively_in_turn_start(self):
@@ -249,7 +234,7 @@ class TestRunTurn:
         assert result.submitted_user_text != rich_input
 
     def test_foreign_completion_in_server_request_drain_is_ignored(self):
-        """Approval draining must not project a child result into the parent."""
+        """Server-request draining must not project a child result into the parent."""
         client = FakeClient()
         client.queue_server_request(
             "item/commandExecution/requestApproval",
@@ -302,10 +287,7 @@ class TestRunTurn:
             )
 
         client.respond = respond_and_release_parent
-        session = make_session(
-            client,
-            request_routing=_ServerRequestRouting(auto_approve_exec=True),
-        )
+        session = make_session(client)
 
         result = session.run_turn("delegate then continue", turn_timeout=2.0)
 
@@ -580,16 +562,10 @@ class TestServerRequestRouting:
             for (rid, code, _msg) in client.error_responses
         )
 
-    def test_on_event_fires_during_approval_drain(self):
-        """When a server-initiated approval request arrives, the session
-        drains up to 8 pending notifications first so per-turn state
-        (e.g. _pending_file_changes for fileChange approvals) is current.
-        Those drained notifications must also reach the on_event display
-        hook — otherwise tool bubbles around approvals silently disappear.
+    def test_on_event_fires_during_server_request_drain(self):
+        """Notifications drained alongside a server request reach on_event.
 
-        Regression for the issue where item/started events that landed
-        in the queue alongside (or just before) an approval request got
-        projected into messages but never displayed.
+        Otherwise tool bubbles around server requests silently disappear.
         """
         client = FakeClient()
         # An item/started notification is queued first, then a server
@@ -615,135 +591,38 @@ class TestServerRequestRouting:
 
         events: list[dict] = []
 
-        def cb(command, description, *, allow_permanent=True):
-            return "once"
-
-        s = make_session(
-            client,
-            approval_callback=cb,
-            on_event=events.append,
-        )
+        s = make_session(client, on_event=events.append)
         s.run_turn("hi", turn_timeout=1.0)
 
-        # The on_event hook must have seen the item/started even though
-        # it was drained as part of the approval roundtrip — not just
-        # events that arrive on the main notification path.
+        # The on_event hook must see item/started events drained during the
+        # server-request roundtrip, not just main-path notifications.
         item_started_events = [
             e for e in events
             if e.get("method") == "item/started"
         ]
-        assert item_started_events, (
-            "item/started drained alongside the approval was not "
-            "forwarded to on_event — display will miss tool bubbles "
-            "around approvals"
-        )
+        assert item_started_events
 
 
 
-    def test_routing_auto_approve_bypass(self):
+    @pytest.mark.parametrize(("method", "decision"), [
+        ("item/commandExecution/requestApproval", "accept"),
+        ("item/fileChange/requestApproval", "accept"),
+        ("item/permissions/requestApproval", "decline"),
+    ])
+    def test_fixed_server_request_policy(self, method, decision):
         client = FakeClient()
-        client.queue_server_request("item/commandExecution/requestApproval", request_id="r1",
-                                    command="ls", cwd="/")
+        client.queue_server_request(method, request_id="r1", command="ls", cwd="/")
         client.queue_notification(
             "turn/completed", threadId="t",
             turn={"id": "tu1", "status": "completed", "error": None},
         )
-        # No callback, but routing says auto-approve. Should approve.
-        s = make_session(client, request_routing=_ServerRequestRouting(
-            auto_approve_exec=True))
-        s.run_turn("hi", turn_timeout=1.0)
-        assert ("r1", {"decision": "accept"}) in client.responses
+
+        make_session(client).run_turn("hi", turn_timeout=1.0)
+
+        assert ("r1", {"decision": decision}) in client.responses
 
 
 
-# ---- enriched approval prompts ----
-
-class TestApprovalPromptEnrichment:
-    """Quirk #4: apply_patch prompt should show what's changing.
-    Quirk #10: exec prompt should never show empty cwd."""
-
-    def test_exec_falls_back_to_session_cwd(self):
-        """When codex omits cwd from the approval params, the prompt shows
-        the session cwd, not an empty string."""
-        client = FakeClient()
-        client.queue_server_request(
-            "item/commandExecution/requestApproval", request_id="r1",
-            command="ls",  # no cwd
-        )
-        client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
-        )
-        captured = {}
-        def cb(command, description, *, allow_permanent=True):
-            captured["description"] = description
-            return "once"
-        s = make_session(client, approval_callback=cb)
-        s.run_turn("hi", turn_timeout=1.0)
-        # Session cwd is /tmp by default in make_session()
-        assert "/tmp" in captured["description"]
-        assert "Codex requests exec in <unknown>" not in captured["description"]
-
-    def test_apply_patch_prompt_summarizes_pending_changes(self):
-        """When the projector has cached the fileChange item from item/started,
-        the approval prompt surfaces the change summary."""
-        client = FakeClient()
-        # item/started fires first (carries the changes), then approval request
-        client.queue_notification(
-            "item/started",
-            item={"type": "fileChange", "id": "fc-1",
-                  "changes": [
-                      {"kind": {"type": "add"}, "path": "/tmp/new.py"},
-                      {"kind": {"type": "update"}, "path": "/tmp/old.py"},
-                  ]},
-            threadId="t", turnId="tu1",
-        )
-        client.queue_server_request(
-            "item/fileChange/requestApproval", request_id="req-2",
-            itemId="fc-1", turnId="tu1", threadId="t",
-            startedAtMs=1234567890,
-            reason="add and update files",
-        )
-        client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
-        )
-        captured = {}
-        def cb(command, description, *, allow_permanent=True):
-            captured["command"] = command
-            captured["description"] = description
-            return "once"
-        s = make_session(client, approval_callback=cb)
-        s.run_turn("hi", turn_timeout=1.0)
-        # Both add and update kinds should be in the summary
-        assert "1 add" in captured["command"] or "1 add" in captured["description"]
-        assert "1 update" in captured["command"] or "1 update" in captured["description"]
-        # And at least one of the paths
-        joined = captured["command"] + " " + captured["description"]
-        assert "/tmp/new.py" in joined or "/tmp/old.py" in joined
-
-    def test_apply_patch_prompt_works_without_cached_summary(self):
-        """When approval arrives before item/started (or without changes
-        info), prompt falls back to whatever codex provided."""
-        client = FakeClient()
-        client.queue_server_request(
-            "item/fileChange/requestApproval", request_id="req-2",
-            itemId="fc-orphan", turnId="tu1", threadId="t",
-            startedAtMs=1234567890,
-            reason="apply some changes",
-        )
-        client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
-        )
-        captured = {}
-        def cb(command, description, *, allow_permanent=True):
-            captured["command"] = command
-            return "once"
-        s = make_session(client, approval_callback=cb)
-        s.run_turn("hi", turn_timeout=1.0)
-        # Falls back to the reason
-        assert "apply some changes" in captured["command"]
 
 
 # ---- openclaw beta.8 parity: retire/wedge/oauth/abort marker ----
@@ -1077,7 +956,7 @@ class TestTransportLoss:
         client = TransportLossClient(fail_on)
         if fail_on == "respond":
             client.queue_server_request("item/commandExecution/requestApproval", command="ls")
-        session = make_session(client, approval_callback=lambda *a, **k: "once")
+        session = make_session(client)
         if run == "run_turn":
             result = session.run_turn("hi", turn_timeout=2, notification_poll_timeout=0.001)
         else:

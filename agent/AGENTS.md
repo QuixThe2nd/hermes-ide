@@ -14,7 +14,7 @@ taking the session turn lease (`turn_facade_lease.py`). `AIAgent.__init__` takes
 `api_mode` (`"chat_completions" | "codex_responses" | ...`), `model` (empty → resolved from
 config/provider later), `max_iterations` (default 500, shared with subagents),
 `enabled_toolsets`/`disabled_toolsets`, `quiet_mode`, `save_trajectories`, `platform`
-(`"cli"`, `"telegram"`, ...), `session_id`, `skip_context_files`, `skip_memory`, `credential_pool`.
+(`"cli"`, `"discord"`, ...), `session_id`, `skip_context_files`, `skip_memory`, `credential_pool`.
 `chat(message) -> str` is the simple interface; `run_conversation(user_message, system_message=None,
 conversation_history=None, task_id=None) -> dict` returns `final_response` + `messages`.
 
@@ -119,7 +119,7 @@ providers intentionally do not run during cron.
   must too, or every guard is silently off. Isolation is BETWEEN profiles; children inherit via
   `copy_context`; a child's `UnscopedSecretError` is a spawn-site bug, never grounds for an
   `os.getenv` fallthrough. Delegated children carry `delegation_context.py::
-  DELEGATED_CHILD_ENV_MARKER` valued as the fenced Kanban board root, not a bare flag.
+  DELEGATED_CHILD_ENV_MARKER` to identify their delegated runtime environment.
 
 ## Tests
 

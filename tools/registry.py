@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
-from hermes_constants import hermes_home_key
+from hermes_constants import hermes_home_key, normalize_scope
 
 logger = logging.getLogger(__name__)
 
@@ -363,17 +363,15 @@ def _check_fn_cached(fn: Callable) -> bool:
 
         # No recent success (or grace expired) — honor the failure. A False verdict is the
         # expected state for optional, unconfigured toolsets; only a raised probe is actionable.
-        # Core (non-deferrable) tools are the exception when they were available earlier in
-        # this process and the probe now fails: dropped, they leave neither the schema nor the
-        # tool_search catalog, so the model's "no such tool" is accurate and nothing points at
-        # the probe. That regression is a WARNING once per probe per process (#112649). A core
-        # tool whose probe never succeeded (browser, image_gen, HA unconfigured on a stock home)
-        # is the expected state and keeps the INFO verdict.
+        # Core tools are the exception when they were available earlier in this process and the
+        # probe now fails: dropping their schema is a WARNING once per probe per process (#112649).
+        # A core tool whose probe never succeeded (browser, image_gen, HA unconfigured on a stock
+        # home) is the expected state and keeps the INFO verdict.
         if core_dropped and cache_key in _check_fn_ever_good and cache_key not in _check_fn_core_drop_warned:
             _check_fn_core_drop_warned.add(cache_key)
             logger.warning(
-                "check_fn %s %s; previously available core tool(s) %s dropped (non-deferrable, "
-                "so not searchable either); dependent tools will be unavailable this turn",
+                "check_fn %s %s; previously available core tool(s) %s dropped; "
+                "dependent tools will be unavailable this turn",
                 _fn_label(fn), outcome, ", ".join(core_dropped), exc_info=exc_info)
         else:
             log = logger.warning if exc_info else logger.info
@@ -466,6 +464,7 @@ class ToolRegistry:
 
     def _slot(self, scope: Optional[str], *, create: bool = False) -> Dict[str, ToolEntry]:
         """The registration map for *scope*: global when None, else that profile's overlay."""
+        scope = normalize_scope(scope)
         if scope is None:
             return self._tools
         if create:
@@ -478,7 +477,7 @@ class ToolRegistry:
 
     def _merged_tools(self, scope: Optional[str] = None) -> Dict[str, ToolEntry]:
         """Return global tools overlaid with one profile's plugin tools."""
-        return {**self._tools, **self._scoped_tools.get(scope or self.current_scope_key(), {})}
+        return {**self._tools, **self._scoped_tools.get(hermes_home_key(scope), {})}
 
     def _toolset_entries(self, toolset: str, scope: Optional[str]) -> List[ToolEntry]:
         return self._grouped(self._merged_tools(scope).values()).get(toolset, [])
@@ -512,6 +511,7 @@ class ToolRegistry:
     def snapshot_registration(
         self, name: str, *, scope: Optional[str] = None) -> Optional[ToolEntry]:
         """Local slot state only — no global fallback."""
+        scope = normalize_scope(scope)
         with self._lock:
             return self._slot(scope).get(name)
 
@@ -558,6 +558,7 @@ class ToolRegistry:
         as a hard boundary: ``toolsets.get_toolset``/``resolve_toolset`` then
         ignore any tools registered into the same name by overlays.
         """
+        scope = normalize_scope(scope)
         with self._lock:
             target = (
                 self._toolset_definitions
@@ -576,6 +577,7 @@ class ToolRegistry:
         self, name: str, *, scope: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """Return a copy of the active profile's toolset definition, or None."""
+        scope = normalize_scope(scope)
         with self._lock:
             definition = self._merged_toolset_definitions(scope).get(name)
             if definition is None:
@@ -590,6 +592,7 @@ class ToolRegistry:
         self, name: str, *, scope: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """Return the local slot state without following global fallback."""
+        scope = normalize_scope(scope)
         with self._lock:
             target = (
                 self._toolset_definitions
@@ -612,6 +615,7 @@ class ToolRegistry:
         by the plugin ownership ledger — mirrors :meth:`restore_registration`
         so unloading one plugin never removes another's newer definition.
         """
+        scope = normalize_scope(scope)
         with self._lock:
             target = (
                 self._toolset_definitions
@@ -661,6 +665,7 @@ class ToolRegistry:
     ) -> _PluginOverridePolicy:
         """Bind a plugin module namespace to its current operator opt-in. The identity-bearing
         result lets unload/reload revoke a stale authorization without losing attribution."""
+        scope = normalize_scope(scope)
         with self._lock:
             policy = _PluginOverridePolicy(allowed)
             self._plugin_override_policy[(scope, module_namespace)] = policy
@@ -671,6 +676,7 @@ class ToolRegistry:
         self, module_namespace: str, *, scope: Optional[str] = None,
     ) -> Optional[_PluginOverridePolicy]:
         """Return one local authorization generation without fallback."""
+        scope = normalize_scope(scope)
         with self._lock:
             return self._plugin_override_policy.get((scope, module_namespace))
 
@@ -678,6 +684,7 @@ class ToolRegistry:
         self, module_namespace: str, current: _PluginOverridePolicy,
         previous: Optional[_PluginOverridePolicy], *, scope: Optional[str] = None) -> bool:
         """CAS-restore policy state while retaining durable scope attribution."""
+        scope = normalize_scope(scope)
         with self._lock:
             key = (scope, module_namespace)
             if self._plugin_override_policy.get(key) is not current:
@@ -813,6 +820,7 @@ class ToolRegistry:
         owner = caller_owner or handler_owner
         if scope is None and owner is not None:
             scope = self._plugin_scope_of(owner)
+        scope = normalize_scope(scope)
         with self._lock:
             target = self._slot(scope, create=True)
             existing = (self._tools if scope is None else self._merged_tools(scope)).get(name)
@@ -879,6 +887,7 @@ class ToolRegistry:
         ``register(override=True)``, else a plugin could deregister a tool it doesn't own
         and re-register over the empty slot (the override check only runs when an entry
         exists). ``mcp-*`` toolsets are exempt — discovery repaves its own tools per refresh."""
+        scope = normalize_scope(scope)
         with self._lock:
             caller_mod = self._caller_module()
             caller_owner = self._plugin_namespace_of_module(caller_mod)
@@ -934,6 +943,7 @@ class ToolRegistry:
         The identity check is deliberate: another plugin (or ``PluginManager`` in a
         multi-profile process) may have registered a newer entry under the same name, and
         unloading this entry must leave that newer one untouched."""
+        scope = normalize_scope(scope)
         with self._lock:
             target = self._slot(scope, create=True)
             if target.get(name) is not current:

@@ -255,7 +255,7 @@ class TestMessageCombining:
     def test_gateway_pending_messages_append(self):
         """Simulate gateway _pending_messages append logic."""
         pending = {}
-        key = "agent:main:telegram:dm"
+        key = "agent:main:discord:dm"
 
         # First message
         if key in pending:
@@ -283,13 +283,14 @@ class TestSIGKILLEscalation:
         not __import__("shutil").which("bash"),
         reason="Requires bash"
     )
-    def test_sigterm_trap_killed_within_2s(self):
+    @pytest.mark.platforms("posix")
+    def test_sigterm_trap_killed_within_2s(self, tmp_path):
         """A process that traps SIGTERM should be SIGKILL'd after 1s grace."""
         from tools.interrupt import set_interrupt
         from tools.environments.local import LocalEnvironment
 
         set_interrupt(False)
-        env = LocalEnvironment(cwd="/tmp", timeout=30)
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=30)
 
         # Start execution in a thread, interrupt after 0.5s
         result_holder = {"value": None}
@@ -404,10 +405,10 @@ Manual Smoke Test Checklist:
 2. CLI: Ask it to extract content from 5 URLs, type interrupt mid-way.
    Expected: remaining URLs are skipped, partial results returned.
 
-3. Gateway (Telegram): Send a long task, then send "Stop".
+3. Gateway (Discord): Send a long task, then send "Stop".
    Expected: agent stops and responds acknowledging the stop.
 
-4. Gateway (Telegram): Send "Stop" then "Do X instead" rapidly.
+4. Gateway (Discord): Send "Stop" then "Do X instead" rapidly.
    Expected: both messages appear as the next prompt (joined by newline).
 
 5. CLI: Start a task that generates 3+ tool calls in one batch.

@@ -72,7 +72,7 @@ class TestValidation:
         assert config.enabled is False
         assert config.chat_id == ""
 
-    @pytest.mark.parametrize("platform", ["telegram", "slack", "discord-webhook"])
+    @pytest.mark.parametrize("platform", ["matrix", "slack", "discord-webhook"])
     def test_unsupported_platform_is_rejected(self, platform: str):
         with pytest.raises(FallbackWatchError, match="platform"):
             load_watch_config({

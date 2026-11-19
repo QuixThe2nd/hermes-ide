@@ -32,6 +32,7 @@ def repo(tmp_path):
     d = tmp_path / "repo"
     d.mkdir()
     _git(d, "init", "-q")
+    _git(d, "config", "core.autocrlf", "false")
     (d / "tracked.py").write_text("print('hello')\n")
     _git(d, "add", "-A")
     _git(d, "commit", "-q", "-m", "init")

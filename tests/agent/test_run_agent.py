@@ -561,7 +561,7 @@ class TestStripThinkBlocks:
     # Some open models (notably Gemma variants via OpenRouter) emit
     # standalone tool-call XML inside assistant content instead of via the
     # structured `tool_calls` field. Left unstripped, raw XML leaks to
-    # gateway users (Discord/Telegram/Matrix) and the CLI.
+    # gateway users (Discord/Slack/Matrix) and the CLI.
 
 
 
@@ -4430,47 +4430,6 @@ class TestRunConversation:
         assert all(len(n) <= 64 and n.replace("_", "").replace("-", "").isalnum() for n in wire_names)
         assert [tc["function"]["name"] for tc in history[1]["tool_calls"]] == ["multi_tool_use.parallel", long_name, ""]
 
-    def test_nous_401_refreshes_after_remint_and_retries(self, agent):
-        self._setup_agent(agent)
-        agent.provider = "nous"
-        agent.api_mode = "chat_completions"
-
-        calls = {"api": 0, "refresh": 0}
-
-        class _UnauthorizedError(RuntimeError):
-            def __init__(self):
-                super().__init__("Error code: 401 - unauthorized")
-                self.status_code = 401
-
-        def _fake_api_call(api_kwargs):
-            calls["api"] += 1
-            if calls["api"] == 1:
-                raise _UnauthorizedError()
-            return _mock_response(
-                content="Recovered after remint", finish_reason="stop"
-            )
-
-        def _fake_refresh(*, force=True):
-            calls["refresh"] += 1
-            assert force is True
-            return True
-
-        with (
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
-            patch.object(
-                agent, "_try_refresh_nous_client_credentials", side_effect=_fake_refresh
-            ),
-        ):
-            result = agent.run_conversation("hello")
-
-        assert calls["api"] == 2
-        assert calls["refresh"] == 1
-        assert result["completed"] is True
-        assert result["final_response"] == "Recovered after remint"
-
     def test_context_compression_triggered(self, agent):
         """When compressor says should_compress, compression runs."""
         self._setup_agent(agent)
@@ -4913,104 +4872,6 @@ class TestRunConversation:
         assert any(isinstance(m, dict) and m.get("role") == "tool" for m in msgs)
 
 
-    def test_kanban_block_called_on_iteration_exhaustion(self, agent, monkeypatch):
-        """Regression: kanban worker must signal the dispatcher when its
-        iteration budget is exhausted, otherwise the task silently re-runs
-        forever without ever tripping the failure_limit circuit breaker
-        (issue #23216 / #29747 gap 2).
-
-        As of #29747, the exhaustion path routes through
-        ``kanban_db._record_task_failure(outcome="timed_out")`` so the
-        ``consecutive_failures`` counter increments and the dispatcher's
-        ``failure_limit`` breaker eventually trips. The legacy
-        ``kanban_block`` call was replaced because blocked-outcome runs
-        bypass the failure counter.
-        """
-        self._setup_agent(agent)
-        agent.max_iterations = 2
-
-        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_test_task_123")
-
-        # Return a tool call for every iteration to exhaust the budget.
-        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
-        tool_resp = _mock_response(
-            content="", finish_reason="tool_calls", tool_calls=[tc],
-        )
-        # Final summary response from _handle_max_iterations.
-        summary_resp = _mock_response(
-            content="Could not finish — budget exhausted.", finish_reason="stop",
-        )
-        agent.client.chat.completions.create.side_effect = [
-            tool_resp, tool_resp, summary_resp,
-        ]
-
-        mock_record_failure = MagicMock(return_value=False)
-        mock_connect = MagicMock(return_value=MagicMock())
-
-        with (
-            patch("model_tools.handle_function_call", return_value="ok"),
-            patch("hermes_cli.kanban_db_dispatch._record_task_failure",
-                  mock_record_failure),
-            patch("hermes_cli.kanban_db_connect.connect", mock_connect),
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            result = agent.run_conversation("do the kanban work")
-
-        # The agent should have reported the task as not completed.
-        assert result["completed"] is False
-
-        # _record_task_failure should have been called exactly once for
-        # the exhaustion event, with outcome="timed_out".
-        assert mock_record_failure.call_count == 1, (
-            f"Expected exactly 1 _record_task_failure call, "
-            f"got {mock_record_failure.call_count}. "
-            f"Calls: {mock_record_failure.call_args_list}"
-        )
-        call = mock_record_failure.call_args_list[0]
-        # Positional: (conn, task_id, ...)
-        assert call.args[1] == "t_test_task_123"
-        assert call.kwargs.get("outcome") == "timed_out"
-        assert call.kwargs.get("release_claim") is True
-        assert call.kwargs.get("end_run") is True
-        assert "Iteration budget exhausted" in call.kwargs.get("error", "")
-
-    def test_no_kanban_block_when_not_in_kanban_mode(self, agent, monkeypatch):
-        """The exhaustion bridge must NOT fire when HERMES_KANBAN_TASK
-        is unset (non-kanban runs are unaffected by #29747 gap 2)."""
-        self._setup_agent(agent)
-        agent.max_iterations = 2
-
-        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-
-        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
-        tool_resp = _mock_response(
-            content="", finish_reason="tool_calls", tool_calls=[tc],
-        )
-        summary_resp = _mock_response(
-            content="Summary.", finish_reason="stop",
-        )
-        agent.client.chat.completions.create.side_effect = [
-            tool_resp, tool_resp, summary_resp,
-        ]
-
-        mock_record_failure = MagicMock(return_value=False)
-
-        with (
-            patch("model_tools.handle_function_call", return_value="ok"),
-            patch("hermes_cli.kanban_db_dispatch._record_task_failure",
-                  mock_record_failure),
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            agent.run_conversation("do stuff")
-
-        assert mock_record_failure.call_count == 0, (
-            "_record_task_failure should not be called outside kanban mode"
-        )
-
     # ── Output-cap retry: safe_out uses provider available_out + request estimate ──
 
     def test_output_cap_retry_uses_provider_available_out(self, agent):
@@ -5345,14 +5206,14 @@ class TestHookPayloadSanitizesSimpleNamespace:
     importing it, so sanitizing any hook payload that contained one raised
     ``NameError: name 'SimpleNamespace' is not defined``.
 
-    The non-OpenAI providers (Bedrock, Codex responses, the auxiliary client,
-    and the chat-completion stream stub) build their response / message /
-    tool_call objects as ``types.SimpleNamespace`` — see
-    ``agent/bedrock_adapter.py``, ``agent/codex_responses_adapter.py``, and
-    ``agent/auxiliary_client.py``. Those raw objects are handed straight to
-    ``_api_response_payload_for_hook`` for the ``post_api_request`` hook, so the
-    crash silently killed observability hooks for every one of those providers
-    (the call sites swallow the exception with ``except Exception: pass``).
+    Several non-OpenAI paths (Codex responses, the auxiliary client, and the
+    chat-completion stream stub) build their response / message / tool_call
+    objects as ``types.SimpleNamespace`` — see
+    ``agent/codex_responses_adapter.py`` and ``agent/auxiliary_client.py``.
+    Those raw objects are handed straight to ``_api_response_payload_for_hook``
+    for the ``post_api_request`` hook, so the crash silently killed
+    observability hooks for every one of those providers (the call sites
+    swallow the exception with ``except Exception: pass``).
     """
 
     def test_hook_jsonable_normalizes_simplenamespace(self):
@@ -5361,8 +5222,8 @@ class TestHookPayloadSanitizesSimpleNamespace:
         assert result == {"id": "call_1", "value": 42, "nested": {"name": "x"}}
 
     def test_api_response_payload_for_hook_normalizes_simplenamespace_tool_calls(self, agent):
-        # Shape mirrors agent/bedrock_adapter.py::normalize_converse_response and
-        # agent/codex_responses_adapter.py — raw SDK objects are SimpleNamespace.
+        # Shape mirrors agent/codex_responses_adapter.py — raw SDK objects
+        # are SimpleNamespace.
         tool_call = SimpleNamespace(
             id="call_1",
             type="function",
@@ -5602,135 +5463,6 @@ class TestConversationHistoryNotMutated:
 # ---------------------------------------------------------------------------
 
 
-class TestNousCredentialRefresh:
-    """Verify Nous credential refresh rebuilds the runtime client."""
-
-    def test_try_refresh_nous_client_credentials_rebuilds_client(
-        self, agent, monkeypatch
-    ):
-        agent.provider = "nous"
-        agent.api_mode = "chat_completions"
-
-        closed = {"value": False}
-        retired = {"value": False}
-        rebuilt = {"kwargs": None}
-        captured = {}
-
-        class _ExistingClient:
-            def close(self):
-                closed["value"] = True
-
-        class _RebuiltClient:
-            pass
-
-        def _fake_resolve(**kwargs):
-            captured.update(kwargs)
-            return {
-                "api_key": "new-nous-key",
-                "base_url": "https://inference-api.nousresearch.com/v1",
-            }
-
-        def _fake_openai(**kwargs):
-            rebuilt["kwargs"] = kwargs
-            return _RebuiltClient()
-
-        monkeypatch.setattr(
-            "hermes_cli.auth.resolve_nous_runtime_credentials", _fake_resolve
-        )
-
-        existing = _ExistingClient()
-        agent.client = existing
-
-        _orig_retire = agent._retire_shared_openai_client
-
-        def _spy_retire(client, *, reason):
-            if client is existing:
-                retired["value"] = True
-            return _orig_retire(client, reason=reason)
-
-        monkeypatch.setattr(agent, "_retire_shared_openai_client", _spy_retire)
-
-        with patch("agent.process_bootstrap.OpenAI", side_effect=_fake_openai):
-            ok = agent._try_refresh_nous_client_credentials(force=True)
-
-        assert ok is True
-        # #70773: the replaced shared client is RETIRED (sockets shutdown,
-        # FD release deferred to GC), never hard-closed from the refreshing
-        # thread — close() releasing pool FDs cross-thread was the
-        # TLS-FD→SQLite corruption vector.
-        assert retired["value"] is True
-        assert closed["value"] is False
-        assert captured["force_refresh"] is True
-        assert rebuilt["kwargs"]["api_key"] == "new-nous-key"
-        assert (
-            rebuilt["kwargs"]["base_url"] == "https://inference-api.nousresearch.com/v1"
-        )
-        assert "default_headers" not in rebuilt["kwargs"]
-        assert isinstance(agent.client, _RebuiltClient)
-
-    def test_try_refresh_nous_client_credentials_rebuilds_anthropic_client(
-        self, agent, monkeypatch
-    ):
-        """Portal anthropic/* sessions hold an Anthropic client, not OpenAI.
-
-        A 401 on the Messages wire must refresh the invoke JWT into
-        ``_anthropic_api_key`` / ``_anthropic_base_url`` and rebuild that
-        client — swapping only ``agent.client`` would leave the turn stuck
-        on the expired Bearer token.
-        """
-        agent.provider = "nous"
-        agent.api_mode = "anthropic_messages"
-        agent.model = "anthropic/claude-opus-4.8"
-        agent.api_key = "stale-nous-key"
-        agent.base_url = "https://inference-api.nousresearch.com/v1"
-        agent._anthropic_api_key = "stale-nous-key"
-        agent._anthropic_base_url = "https://inference-api.nousresearch.com/v1"
-        agent._client_kwargs = {}
-        agent.client = None
-
-        captured = {}
-        rebuild_calls = {"count": 0}
-
-        class _RebuiltAnthropic:
-            pass
-
-        def _fake_resolve(**kwargs):
-            captured.update(kwargs)
-            return {
-                "api_key": "fresh-portal-jwt",
-                "base_url": "https://inference-api.nousresearch.com/v1",
-            }
-
-        def _fake_rebuild():
-            rebuild_calls["count"] += 1
-            agent._anthropic_client = _RebuiltAnthropic()
-
-        monkeypatch.setattr(
-            "hermes_cli.auth.resolve_nous_runtime_credentials", _fake_resolve
-        )
-        monkeypatch.setattr(agent, "_rebuild_anthropic_client", _fake_rebuild)
-        monkeypatch.setattr(
-            agent,
-            "_replace_primary_openai_client",
-            MagicMock(side_effect=AssertionError("OpenAI client must not be rebuilt")),
-        )
-
-        ok = agent._try_refresh_nous_client_credentials(force=True)
-
-        assert ok is True
-        assert captured["force_refresh"] is True
-        assert agent.api_key == "fresh-portal-jwt"
-        assert agent.base_url == "https://inference-api.nousresearch.com/v1"
-        assert agent._anthropic_api_key == "fresh-portal-jwt"
-        assert agent._anthropic_base_url == (
-            "https://inference-api.nousresearch.com/v1"
-        )
-        assert rebuild_calls["count"] == 1
-        assert isinstance(agent._anthropic_client, _RebuiltAnthropic)
-        assert agent.client is None
-        agent._replace_primary_openai_client.assert_not_called()
-
-
 class TestCredentialPoolRecovery:
     def test_recover_with_pool_rotates_on_402(self, agent):
         current = SimpleNamespace(label="primary")
@@ -5896,25 +5628,6 @@ class TestGpt5ApiModeRouting:
         assert agent.api_mode == "chat_completions"
 
 
-    def test_nous_gpt5_stays_on_chat_completions(self, agent):
-        """Nous serves gpt-5.x on /chat/completions — must not upgrade to codex_responses."""
-        agent.provider = "nous"
-        agent.base_url = "https://inference-api.nousresearch.com/v1"
-        agent.api_mode = "chat_completions"
-        agent.model = "openai/gpt-5.5"
-        if (
-            agent.api_mode == "chat_completions"
-            and not agent._is_azure_openai_url()
-            and (
-                agent._is_direct_openai_url()
-                or agent._provider_model_requires_responses_api(
-                    agent.model, provider=agent.provider,
-                )
-            )
-        ):
-            agent.api_mode = "codex_responses"
-        assert agent.api_mode == "chat_completions"
-
     def test_is_azure_openai_url_detection(self, agent):
         assert agent._is_azure_openai_url("https://foo.openai.azure.com/openai/v1") is True
         assert agent._is_azure_openai_url("https://api.openai.com/v1") is False
@@ -6042,8 +5755,8 @@ class TestSafeWriter:
             sys.stdout = original_stdout
             sys.stderr = original_stderr
 
-    # test_installed_before_init_time_honcho_error_prints removed —
-    # Honcho integration extracted to plugin (PR #4154).
+    # test_installed_before_init_time_honcho_error_prints removed
+    # (memory-provider integration extracted to plugin, PR #4154).
 
 
 
@@ -7493,7 +7206,7 @@ class TestMemoryContextSanitization:
         cleaned to just the surrounding text.  Used by build_memory_context_block
         (input-validation) and by plugins on their own backend boundary."""
         from agent.memory_manager import sanitize_context
-        user_text = "how is the honcho working"
+        user_text = "how is the hindsight working"
         injected = (
             user_text + "\n\n"
             "<memory-context>\n"
@@ -7506,4 +7219,4 @@ class TestMemoryContextSanitization:
         result = sanitize_context(injected)
         assert "memory-context" not in result.lower()
         assert "stale observation" not in result
-        assert "how is the honcho working" in result
+        assert "how is the hindsight working" in result

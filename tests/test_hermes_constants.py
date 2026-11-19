@@ -9,7 +9,6 @@ import pytest
 import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
-    agent_browser_runnable,
     get_default_hermes_root,
     get_hermes_dir,
     get_hermes_home,
@@ -26,7 +25,7 @@ from hermes_constants import (
 class TestGetDefaultHermesRoot:
     """Tests for get_default_hermes_root() — Docker/custom deployment awareness."""
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_no_hermes_home_returns_native(self, tmp_path, monkeypatch):
         """When HERMES_HOME is not set, returns ~/.hermes."""
         monkeypatch.delenv("HERMES_HOME", raising=False)
@@ -59,7 +58,7 @@ class TestGetDefaultHermesRoot:
 
         assert get_default_hermes_root() == custom_root
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_no_hermes_home_returns_localappdata_root_on_windows(self, tmp_path, monkeypatch):
         """Native Windows falls back to %LOCALAPPDATA%\\hermes, not ~/.hermes."""
         local_appdata = tmp_path / "LocalAppData"
@@ -73,8 +72,8 @@ class TestGetDefaultHermesRoot:
         """Repeated calls reuse the memo; HERMES_HOME / home changes invalidate.
 
         get_default_hermes_root() resolves HERMES_HOME against the native
-        home (~80us of path resolution) and is called at 31+ sites — kanban,
-        backup, gateway, update, profile enumeration. The memo is keyed on
+        home (~80us of path resolution) and is called at 31+ sites — backup,
+        gateway, update, profile enumeration. The memo is keyed on
         (native home, HERMES_HOME) compared for free each call.
         """
         # HERMES_HOME set to a Docker-profile path: every call resolves the
@@ -131,7 +130,7 @@ class TestGetDefaultHermesRoot:
 class TestGetHermesHome:
     """Tests for get_hermes_home() platform-aware fallback."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_fallback_uses_localappdata(self, tmp_path, monkeypatch):
         """When HERMES_HOME is unset on Windows, use %LOCALAPPDATA%\\hermes."""
         local_appdata = tmp_path / "LocalAppData"
@@ -176,6 +175,60 @@ class TestGetProcessHermesHome:
             finally:
                 reset_hermes_home_override(token)
 
+
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell stubs; Windows uses .cmd shims")
+
+class TestHermesManagedNode:
+    @pytest.mark.platforms("windows")
+    def test_windows_node_dir_prefers_portable_root(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        node_dir = home / "node"
+        bin_dir = node_dir / "bin"
+        node_dir.mkdir(parents=True)
+        bin_dir.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        assert iter_hermes_node_dirs() == [node_dir, bin_dir]
+
+    @pytest.mark.platforms("windows")
+    def test_windows_finds_npm_cmd_before_path(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        node_dir = home / "node"
+        node_dir.mkdir(parents=True)
+        npm_cmd = node_dir / "npm.cmd"
+        npm_cmd.write_text("@echo off\n")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(hermes_constants, "node_tool_runnable", lambda path: True)
+
+        assert find_hermes_node_executable("npm") == str(npm_cmd)
+
+
+
+    @pytest.mark.platforms("windows")
+    def test_windows_skips_broken_managed_npm_without_path_fallback(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        managed_npm = home / "node" / "npm.cmd"
+        managed_npm.parent.mkdir(parents=True)
+        managed_npm.write_text("@echo off\n")
+        bin_dir = tmp_path / "nodejs"
+        bin_dir.mkdir()
+        path_npm = bin_dir / "npm.cmd"
+        path_npm.write_text("@echo off\n")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("PATH", str(bin_dir))
+        monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
+        monkeypatch.setattr(hermes_constants, "heal_hermes_managed_node", lambda: False)
+        monkeypatch.setattr(
+            hermes_constants,
+            "node_tool_runnable",
+            lambda path: False,
+        )
+
+        assert hermes_managed_node_tree_present() is True
+        assert find_node_executable("npm") is None
+        assert find_node_executable("npm") != str(path_npm)
 
 
 
@@ -552,53 +605,6 @@ class TestSecureParentDir:
         assert called_with[0] == (str(real_dir), 0o700)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX shell stubs; Windows uses .cmd shims")
-class TestAgentBrowserRunnable:
-    """agent_browser_runnable() validates the resolved CLI actually runs.
-
-    Regression coverage for issue #48521: a dangling global symlink left by
-    agent-browser's npm postinstall is reported by ``which`` but fails at exec
-    with exit 127, silently breaking every browser tool. The validator must
-    reject it (and other non-runnable candidates) so callers fall through.
-    """
-
-    def _stub(self, tmp_path, name, body, mode=0o755):
-        p = tmp_path / name
-        p.write_text(body)
-        p.chmod(mode)
-        return p
-
-    def test_none_and_empty_rejected(self):
-        assert agent_browser_runnable(None) is False
-        assert agent_browser_runnable("") is False
-
-    def test_dangling_symlink_rejected(self, tmp_path):
-        link = tmp_path / "agent-browser"
-        link.symlink_to(tmp_path / "does-not-exist")
-        # exists() follows the link → False, so it's rejected without exec.
-        assert agent_browser_runnable(str(link)) is False
-
-
-
-
-
-    def test_version_probe_uses_windows_hide_flags(self, tmp_path, monkeypatch):
-        good = self._stub(tmp_path, "agent-browser", "#!/bin/sh\necho hi\n")
-        captured = []
-
-        def fake_run(cmd, **kwargs):
-            captured.append((cmd, kwargs))
-            return SimpleNamespace(returncode=0)
-
-        import hermes_cli._subprocess_compat as subprocess_compat
-        import subprocess as subprocess_mod
-
-        monkeypatch.setattr(subprocess_compat, "windows_hide_flags", lambda: 0x08000000)
-        monkeypatch.setattr(subprocess_mod, "run", fake_run)
-
-        assert agent_browser_runnable(str(good)) is True
-        assert captured[0][0] == [str(good), "--version"]
-        assert captured[0][1]["creationflags"] == 0x08000000
 
 
 

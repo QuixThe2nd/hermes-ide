@@ -193,7 +193,7 @@ inferring support from the executable's reported version.
 page content (no `cua_browser_*` actions). For reading or acting on a page's
 DOM — navigation, clicking a link by text, typed input into a form field —
 use the separate `browser_navigate`/`browser_click`/`browser_type`/`browser_snapshot`
-tools (or `browser_exec` when the Browser Use CLI backend is active); their
+tools; their
 own schemas document the current contract. Reserve `computer_use` for browser
 *chrome* (the address bar, permission prompts, extension popups, native
 dialogs) and anything else on screen that isn't page content.
@@ -266,7 +266,7 @@ input action goes to that same window (input actions ignore `app=`).
 
 ## Delivering screenshots to the user
 
-When the user is on a messaging platform (Telegram, Discord, etc.) and
+When the user is on a messaging platform (Discord, Slack, etc.) and
 you took a screenshot they should see, save it somewhere durable and
 use `MEDIA:/absolute/path.png` in your reply. cua-driver's screenshots
 are PNG or JPEG bytes (mimeType is on the response); write them out

@@ -153,6 +153,17 @@ _COMPLETION_INSTRUCTIONS = (
     "whole process. Your response is returned to the parent agent as a summary, and overlong summaries crowd out the "
     "parent's context window."
 )
+_DECISION_BRIEF_RULE = (
+    "\n## Decision Briefs (1-3-1)\n"
+    "When the delegated task has multiple viable approaches with meaningful trade-offs, or the parent "
+    "explicitly asks for options, answer as a 1-3-1 decision brief:\n"
+    "1. **Problem** — exactly one sentence stating the decision to be made.\n"
+    "2. **Options** — exactly three genuinely different approaches, each with pros and cons.\n"
+    "3. **Recommendation** — one pick, with your reasoning, plus a verifiable definition of done and "
+    "an implementation plan.\n"
+    "Do NOT use this format for simple questions, debugging, or decisions already made — just answer "
+    "or execute directly.\n"
+)
 _ORCHESTRATOR_BLOCK = (
     "\n## Subagent Spawning (Orchestrator Role)\n"
     "You have access to the `delegate_agent` tool and CAN spawn your own subagents to parallelize independent work.\n\n"
@@ -194,7 +205,7 @@ def _build_child_system_prompt(
             f"{workspace_path}\n"
             "Use this exact path for local repository/workdir operations unless the task explicitly says otherwise."
         )
-        # Project context files (AGENTS.md / CLAUDE.md / .cursorrules ...) via the SAME discovery/priority/cap logic
+        # Project context files (.hermes.md / AGENTS.md / CLAUDE.md ...) via the SAME discovery/priority/cap logic
         # as the main agent's prompt: children are built with skip_context_files=True, so without this a subagent
         # works in a repo blind to its conventions. SOUL.md is skipped (identity belongs to the parent).
         # workspace_path comes only from explicit sources (_resolve_workspace_hint, never bare getcwd), so the
@@ -207,6 +218,7 @@ def _build_child_system_prompt(
         if _ctx_files.strip():
             parts.append(_CONTEXT_FILES_INTRO + _ctx_files.strip())
     parts.append(_COMPLETION_INSTRUCTIONS)
+    parts.append(_DECISION_BRIEF_RULE)
     if role == "orchestrator":
         child_note = _LEAF_CHILDREN_NOTE if child_depth + 1 >= max_spawn_depth else _NESTED_CHILDREN_NOTE
         parts.append(

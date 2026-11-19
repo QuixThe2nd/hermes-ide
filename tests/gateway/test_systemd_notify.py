@@ -7,6 +7,8 @@ import socket
 
 import pytest
 
+pytestmark = pytest.mark.platforms("linux")
+
 
 @pytest.mark.linux_only  # abstract (NUL-prefixed) AF_UNIX names are a Linux kernel feature
 def test_notify_supports_systemd_abstract_socket(monkeypatch):
@@ -51,6 +53,16 @@ def test_notify_uses_nonblocking_datagram_send(monkeypatch):
 
     assert notify_mod.notify("READY=1") is True
     assert calls[0] == ("setblocking", False)
+
+
+def test_main_pid_handover_uses_the_nonblocking_notify_path(monkeypatch):
+    import gateway.systemd_notify as notify_mod
+
+    sent = []
+    monkeypatch.setattr(notify_mod, "notify", lambda message: sent.append(message) or True)
+
+    assert notify_mod.handover_main_pid(5150) is True
+    assert sent == ["MAINPID=5150"]
 
 
 @pytest.mark.asyncio

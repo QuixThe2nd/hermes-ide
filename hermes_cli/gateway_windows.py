@@ -1029,7 +1029,7 @@ def _consume_start_attestation(generation: str, home: Path | None = None) -> Non
 def _read_start_attestation(home: Path | None = None) -> object | None:
     """Parsed attestation payload (any JSON type), or ``None`` when absent/unreadable. Never raises."""
     try:
-        return json.loads(_start_attestation_path(home).read_text(encoding="utf-8"))
+        return json.loads(_start_attestation_path(home).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
 
@@ -1064,7 +1064,7 @@ def _attested_pid_exited_cleanly(pid: int, create_time: float | None = None, hom
         from gateway.lifecycle_ledger import get_lifecycle_sentinel_path
 
         sentinel = get_lifecycle_sentinel_path(home if home is not None else _hermes_home())
-        data = json.loads(sentinel.read_text(encoding="utf-8"))
+        data = json.loads(sentinel.read_text(encoding="utf-8-sig"))
     except OSError:
         return False
     except Exception:

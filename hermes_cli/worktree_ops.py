@@ -572,7 +572,7 @@ def _worktree_merge_cache_path() -> Path:
 def _load_worktree_merge_cache() -> Dict[str, bool]:
     """Load the ``git cherry`` verdict cache. Missing/corrupt cache = empty."""
     try:
-        entries = json.loads(_worktree_merge_cache_path().read_text(encoding="utf-8")).get("verdicts")
+        entries = json.loads(_worktree_merge_cache_path().read_text(encoding="utf-8-sig")).get("verdicts")
     except Exception:
         return {}
     # A hand-edited or partially written cache must never inject a non-bool verdict.
@@ -758,13 +758,12 @@ def _worktree_lock_is_live(repo_root: str, worktree_path: str, timeout: int = 10
 def _prune_candidates(worktrees_dir: Path, max_age_hours: int, now: float) -> list:
     """Phase 1, stat-only age filter -> ``[(entry, mtime, force)]`` for trees past their soft cutoff.
 
-    Kanban trees (``t_<hex>``) belong to the kanban gc. ``hermes-*`` trees age on *max_age_hours*,
-    deliberately named trees at 3x; *force* marks the hard (3x) tier.
+    ``hermes-*`` trees age on *max_age_hours*, deliberately named trees at 3x;
+    *force* marks the hard (3x) tier.
     """
-    kanban_re = re.compile(r"^t_[0-9a-f]+$")
     candidates: list = []
     for entry in sorted(worktrees_dir.iterdir()):
-        if not entry.is_dir() or kanban_re.match(entry.name):
+        if not entry.is_dir():
             continue
         tier_hours = max_age_hours if entry.name.startswith("hermes-") else max_age_hours * 3
         try:

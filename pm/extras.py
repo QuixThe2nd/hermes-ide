@@ -14,7 +14,6 @@ import importlib.util
 # extra name -> module that proves it is installed
 ANCHORS: dict[str, str | tuple[str, ...]] = {
     "anthropic": "anthropic",
-    "bedrock": "boto3",
     "vertex": "google.auth",
     "azure-identity": "azure.identity",
     "exa": "exa_py",
@@ -22,42 +21,16 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "parallel-web": "parallel",
     "otlp": "opentelemetry.sdk",
     "mistral": "mistralai",
-    "edge-tts": "edge_tts",
-    "tts-premium": "elevenlabs",
-    "voice": "faster_whisper",
-    "stt-whisper": "faster_whisper",
-    "audio-io": ("sounddevice", "numpy"),
-    "silk": "pilk",
-    "wake": "openwakeword",
-    "wake-openwakeword": "openwakeword",
-    "wake-sherpa": "sherpa_onnx",
-    "wake-porcupine": "pvporcupine",
-    "wake-tflite": "ai_edge_litert",
     "fal": "fal_client",
-    "honcho": "honcho",
     # The hindsight-client wheel (0.6.1 / 0.9.2) ships hindsight_client*, never a
     # top-level ``hindsight`` module — anchoring on the package name made
     # available("hindsight") a permanent false negative (pc_1de37914422e).
     "hindsight": "hindsight_client",
-    "supermemory": "supermemory",
-    "mem0": "mem0",
-    "messaging": "telegram",
-    "telegram": "telegram",
+    "messaging": "discord",
     "discord": "discord",
-    "slack": "slack_bolt",
     "matrix": ("mautrix", "asyncpg", "aiosqlite", "markdown", "aiohttp_socks"),
-    "dingtalk": "dingtalk_stream",
-    "feishu": "lark_oapi",
-    "wecom": "defusedxml",
-    "teams": "microsoft.teams.apps",
-    "modal": "modal",
-    "daytona": "daytona",
-    "vercel": "vercel",
     "google": "googleapiclient",
-    "google-chat": "google.cloud.pubsub_v1",
     "youtube": "youtube_transcript_api",
-    "acp": "acp",
-    "web": "fastapi",
     "doc-extract": "anydoc",
     "computer-use": "mcp",
     "trace-upload": "huggingface_hub",
@@ -171,6 +144,18 @@ def ensure_import(extra: str) -> None:
     from pm.ensure import sync_venv
 
     sync_venv([extra])
+    # Activation is a process-boot operation. Never mix a newly resolved
+    # dependency tree with libraries already imported by this process.
+    from hermes_cli.runtime_paths import selected_venv, site_packages
+    from pm.paths import repo_root, runtime_facts_path
+    import sys
+    from pathlib import Path
+
+    if runtime_facts_path().is_file():
+        selected = site_packages(selected_venv(repo_root())).resolve()
+        if selected not in {Path(entry).resolve() for entry in sys.path}:
+            from pm.package import InstallError
+            raise InstallError("venv", f"{extra} installed; restart Hermes to activate the new dependency environment")
 
 
 def ensure_and_bind(extra, importer, target_globals) -> bool:

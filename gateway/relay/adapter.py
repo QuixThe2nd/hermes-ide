@@ -21,10 +21,7 @@ from collections import OrderedDict
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
-    BasePlatformAdapter, ExecApprovalPrompt, SendResult,
-)
-from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.egress import (
@@ -63,18 +60,11 @@ _FALSY = {"0", "false", "no", "off"}
 
 _SLACK = Platform.SLACK.value
 
-# Prompt option id -> in-channel ack label (the option set doubles as the choice allowlist).
-_EXEC_APPROVAL_LABELS = {
-    "once": "✅ Approved once",
-    "session": "✅ Approved for session",
-    "always": "✅ Approved permanently",
-    "deny": "❌ Denied",
-}
 _SLASH_CONFIRM_LABELS = {"once": "✅ Approved once", "always": "🔒 Always approve", "cancel": "❌ Cancelled"}
 
 
 def _utf16_len(text: str) -> int:
-    """Count UTF-16 code units (Telegram's length unit)."""
+    """Count UTF-16 code units (the length unit several chat APIs use)."""
     return len(text.encode("utf-16-le")) // 2
 
 
@@ -167,14 +157,14 @@ class RelayAdapter(BasePlatformAdapter):
         # Stream-is-the-message marker (finding #4): the stream consumer
         # checks this to keep ONE draft stream per turn instead of bumping
         # draft_id at tool boundaries (which opens a new Slack message per
-        # segment on native streaming — Telegram-shaped adapters want the
+        # segment on native streaming — draft-then-send adapters want the
         # bump, we don't).
         #
         # SLACK-ONLY semantic, gated on the negotiated descriptor (review
-        # B4): the base send_draft contract is Telegram-shaped — the draft
+        # B4): the base send_draft contract is draft-then-send — the draft
         # clears and the final arrives as a separate real send. Setting
         # this unconditionally made ANY relay connector that advertises
-        # the draft op (e.g. a Telegram connector) intercept the turn-final
+        # the draft op (e.g. a draft-then-send connector) intercept the turn-final
         # into draft(final=true), so no real history message was ever
         # posted. A future connector platform whose native streaming is
         # also stream-is-the-message should advertise it explicitly
@@ -232,7 +222,7 @@ class RelayAdapter(BasePlatformAdapter):
         self._lifecycle_ack_tasks: set = set()
         # Stream-is-the-message marker read by the stream consumer to keep ONE draft
         # stream per turn instead of bumping draft_id at tool boundaries. SLACK-ONLY:
-        # the base send_draft contract is Telegram-shaped (draft clears, final is a
+        # the base send_draft contract is draft-then-send (draft clears, final is a
         # separate real send); setting this for any "draft" connector intercepted the
         # turn-final into draft(final=true) and no history message was ever posted.
         # A future platform with this semantic should advertise it via the descriptor.
@@ -303,7 +293,7 @@ class RelayAdapter(BasePlatformAdapter):
 
     def _descriptor_for_chat(self, chat_id: str) -> CapabilityDescriptor:
         """The descriptor governing a specific chat. Platform caps genuinely differ
-        (Discord 2000 / Telegram 4096 / Slack 39000), so the primary's scalar cap
+        (Discord 2000 / Slack 39000), so the primary's scalar cap
         either fragments needlessly or over-sends into a platform 400. Falls back to
         the scalar when the chat's platform is unknown (never saw inbound)."""
         per_platform = self._negotiated_descriptor(self._platform_by_chat.get(str(chat_id)))
@@ -324,7 +314,7 @@ class RelayAdapter(BasePlatformAdapter):
         # Needs BOTH the descriptor flag and an explicit "draft" op: supported_ops is
         # fail-open for legacy connectors, but "draft" did not exist pre-contract, so
         # it must NOT fail open. Resolved per chat when the caller names one (a
-        # Telegram primary must not starve a Slack chat).
+        # draft-then-send primary must not starve a Slack chat).
         desc = self._descriptor_for_chat(str(chat_id)) if chat_id is not None else self.descriptor
         if not (desc.supports_draft_streaming and "draft" in (desc.supported_ops or ())):
             return False
@@ -361,9 +351,9 @@ class RelayAdapter(BasePlatformAdapter):
 
     def stream_is_message_for_chat(self, chat_id: str) -> bool:
         """Per-chat stream-is-the-message semantic (see ``draft_stream_is_message``).
-        A Slack primary must not impose seal semantics on a Telegram chat (its
+        A Slack primary must not impose seal semantics on a draft-then-send chat (its
         turn-final would become draft(final=true) — no history message), nor a
-        Telegram primary deny a Slack chat native streaming. Platform-name inference
+        stream-is-the-message primary deny a Slack chat native streaming. Platform-name inference
         is deliberate; a descriptor field is the eventual contract."""
         return str(self._descriptor_for_chat(str(chat_id)).platform or "").lower() == "slack"
 
@@ -371,7 +361,7 @@ class RelayAdapter(BasePlatformAdapter):
     # Additive relay ops within contract v1, emitted when the negotiated descriptor
     # advertises them; the connector owns the platform API mechanics and the
     # send+edit fallback. Semantic bridge: the base send_draft contract is
-    # Telegram-shaped (draft clears, final is a separate send()); Slack native
+    # draft-then-send (draft clears, final is a separate send()); Slack native
     # streaming makes the stream THE message, so the adapter tracks the open draft
     # per turn and converts that turn's final send() into draft(final=true).
 
@@ -569,7 +559,7 @@ class RelayAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True)
         # Arm seal-interception ONLY for stream-is-the-message chats: on a
-        # Telegram-shaped connector the final MUST go out as a real send.
+        # draft-then-send connector the final MUST go out as a real send.
         if self.stream_is_message_for_chat(str(chat_id)):
             self._open_draft_by_chat[chat_key] = draft_id
             self._evict_oldest(self._open_draft_by_chat)
@@ -858,7 +848,7 @@ class RelayAdapter(BasePlatformAdapter):
             # watcher (gateway/run.py) re-establishes a platform after a fatal adapter error by building a
             # fresh adapter and calling ``connect(is_reconnect=True)``. Relay MUST accept the kwarg or that
             # recovery path raises TypeError and the relay platform can never come back through the watcher.
-            # The flag exists so adapters with a server-side update queue (e.g. Telegram's Bot API) preserve
+            # The flag exists so adapters with a server-side update queue preserve
             # that queue across an outage instead of dropping it (#46621). Routine WS drops are handled
             # entirely by the transport's own reconnect supervisor (WebSocketRelayTransport,
             # reconnect=True); a watcher-driven reconnect builds a fresh transport from scratch (the
@@ -1822,7 +1812,7 @@ class RelayAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Egress a typing indicator (the base ``_keep_typing`` tick) as the ``typing``
-        op. Best-effort and one-shot: Discord/Telegram indicators self-expire; Slack
+        op. Best-effort and one-shot: Discord indicators self-expire; Slack
         Assistant status persists, so ``stop_typing`` sends an explicit clear for
         Slack only."""
         if self._transport is None:
@@ -2032,23 +2022,6 @@ class RelayAdapter(BasePlatformAdapter):
             chat_id, image_path, caption=caption, reply_to=reply_to, metadata=metadata, **kwargs
         )
 
-    async def send_voice(
-        self,
-        chat_id: str,
-        audio_path: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        **kwargs,
-    ) -> SendResult:
-        result = await self._send_media(
-            chat_id, media_kind="voice", source=audio_path, source_is_path=True,
-            caption=caption, reply_to=reply_to, metadata=metadata,
-        )
-        return result if result is not None else await super().send_voice(
-            chat_id, audio_path, caption=caption, reply_to=reply_to, metadata=metadata, **kwargs
-        )
-
     async def send_video(
         self,
         chat_id: str,
@@ -2192,38 +2165,16 @@ class RelayAdapter(BasePlatformAdapter):
 
     _PROMPT_UNAVAILABLE = SendResult(success=False, error="relay prompt op unavailable")
 
-    _EA_HEADER = f"⚠️ **{EA_HEADER_TEXT}**\n\n"
-    _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
-    _EA_CMD_BUDGET = 1500
-
-    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
-        """Native-button exec approval over the relay (the press resolves via
-        tools.approval.resolve_gateway_approval). When the lane is unavailable the send FAILS
-        (success=False) so run.py's button→text fallback runs."""
-        options = [{"id": choice, "label": label, **({"style": style} if style else {})}
-                   for label, choice, style in prompt.actions]
-        result = await self._mint_and_send_prompt(
-            "exec_approval", {"session_key": prompt.session_key}, prompt.chat_id, prompt_kind="approval",
-            text=prompt.text, options=options, metadata=prompt.metadata,
-        )
-        return result if result is not None else self._PROMPT_UNAVAILABLE
 
     async def send_slash_confirm(
-        self,
-        chat_id: str,
-        title: str,
-        message: str,
-        session_key: str,
-        confirm_id: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,
+        metadata: Optional[Dict[str, Any]] = None, include_always: bool = True,
     ) -> SendResult:
-        """Three-button slash-command confirmation over the relay (resolves via
-        tools.slash_confirm.resolve; success=False falls back to text-intercept)."""
-        options = [
-            {"id": "once", "label": "Approve Once", "style": "primary"},
-            {"id": "always", "label": "Always Approve"},
-            {"id": "cancel", "label": "Cancel", "style": "danger"},
-        ]
+        """Send slash-command confirmation options over the relay."""
+        options = [{"id": "once", "label": "Approve Once", "style": "primary"}]
+        if include_always:
+            options.append({"id": "always", "label": "Always Approve"})
+        options.append({"id": "cancel", "label": "Cancel", "style": "danger"})
         result = await self._mint_and_send_prompt(
             "slash_confirm", {"session_key": session_key, "confirm_id": confirm_id}, chat_id,
             prompt_kind="approval", text=f"**{title}**\n\n{message}" if title else message,
@@ -2314,17 +2265,6 @@ class RelayAdapter(BasePlatformAdapter):
             logger.warning("relay prompt_response resolution failed", exc_info=True)
         return True
 
-    async def _resolve_exec_approval(self, state, option_id, chat_id, ack_meta) -> None:
-        from tools.approval import resolve_gateway_approval
-
-        choice = option_id if option_id in _EXEC_APPROVAL_LABELS else "deny"
-        count = resolve_gateway_approval(str(state.get("session_key") or ""), choice)
-        label = _EXEC_APPROVAL_LABELS[choice] if count else "⌛ Approval expired — no command was waiting."
-        # In-channel ack preserves the audit trail the native edit gives (the
-        # connector's prompt message can't be edited cross-platform yet).
-        self._send_lifecycle_ack(chat_id, label, ack_meta)
-        if count:
-            self.resume_typing_for_chat(chat_id)
 
     async def _resolve_slash_confirm(self, state, option_id, chat_id, ack_meta) -> None:
         from tools import slash_confirm as slash_confirm_mod
@@ -2450,7 +2390,7 @@ class RelayAdapter(BasePlatformAdapter):
         name: str,
     ) -> Optional[str]:
         """Create a thread/topic under ``parent_chat_id`` via the connector. One
-        `thread_create` op covers Discord (channel thread), Telegram (forum topic) and
+        `thread_create` op covers Discord (channel thread) and
         Slack (named seed root message). None on any failure/unavailability so the
         handoff watcher falls back to the parent."""
         result = await self._gated_op(
@@ -2483,7 +2423,7 @@ class RelayAdapter(BasePlatformAdapter):
         from its own created-name memory, so the gateway need not reproduce the
         initial name byte-for-byte (any normalization drift silently declined every
         rename). ``only_if_current_name`` is the legacy string guard for older
-        connectors. ``parent_chat_id`` defaults to the thread id (Telegram needs the
+        connectors. ``parent_chat_id`` defaults to the thread id (some platforms need the
         containing chat; Discord ignores it)."""
         cleaned = " ".join(str(name or "").split()).strip()
         if not cleaned or not thread_id:
@@ -2512,7 +2452,6 @@ class RelayAdapter(BasePlatformAdapter):
 
 # prompt kind -> resolver (order-independent: kinds are distinct keys).
 _PROMPT_RESOLVERS = {
-    "exec_approval": RelayAdapter._resolve_exec_approval,
     "slash_confirm": RelayAdapter._resolve_slash_confirm,
     "clarify": RelayAdapter._resolve_clarify,
 }

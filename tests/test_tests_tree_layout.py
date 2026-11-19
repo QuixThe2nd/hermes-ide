@@ -25,9 +25,9 @@ TESTS_ROOT = REPO_ROOT / "tests"
 # legitimate homes: cross-cutting suites, fixtures, and script-family tests.
 _NON_MIRROR_DIRS = {
     "ci", "conformance", "dashboard", "desktop", "docker", "e2e", "evals",
-    "fakes", "fixtures", "honcho_plugin", "install", "integration", "manual",
-    "monitoring", "openviking_plugin", "perf_guards", "scripts", "secret_sources",
-    "security", "skills", "verify", "website", "computer_use", "hermes_state",
+    "fakes", "fixtures", "install", "integration", "manual",
+    "monitoring", "perf_guards", "scripts", "secret_sources",
+    "security", "skills", "verify", "computer_use", "hermes_state",
 }
 
 # Root-level modules whose tests sit directly in tests/ (no package to mirror).

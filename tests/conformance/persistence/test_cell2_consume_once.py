@@ -55,7 +55,7 @@ def test_exactly_one_claimant_wins(tmp_path):
 
     db = SessionDB(db_path=db_path)
     db.create_session("cell2", source="conformance")
-    assert db.request_handoff("cell2", "telegram") is not False
+    assert db.request_handoff("cell2", "discord") is not False
 
     children = []
     ready_files = []

@@ -284,7 +284,7 @@ def _finish_dashboard_update_cleanup(
 
 def _print_update_completion(message: str) -> None:
     """Print the outcome (with branch @ sha so drift is visible) plus, when launched by the
-    dashboard with an action id, a receipt line the Desktop matches after restart.
+    dashboard with an action id, the completion receipt line its update action matches.
 
     See #47359, #58764.
     """
@@ -368,36 +368,29 @@ def _clear_stale_sqlite_sidecars(db_path: Path) -> None:
         db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
 
 
-def _print_update_summary(*, node_failures: list, desktop_build_ok: bool, pre_update_version: str | None) -> bool:
-    """Final banner. A failed Desktop rebuild is non-fatal but must not print ``✓ Update complete!``.
-
-    See #88251.
-    """
+def _print_update_summary(*, node_failures: list, pre_update_version: str | None) -> bool:
+    """Print the final banner and return the generic runtime-health verdict."""
     from hermes_cli.update_cmd import _post_update_sqlite_runtime_status, _update_complete_message
     sqlite_runtime_ok, sqlite_info = _post_update_sqlite_runtime_status()
     if sqlite_info is None:
         # Grace path: only a POSITIVE vulnerable probe demotes success to partial.
         sqlite_runtime_ok = True
     print()
-    if node_failures or not desktop_build_ok or not sqlite_runtime_ok:
+    if node_failures or not sqlite_runtime_ok:
         parts = []
         if node_failures:
             parts.append(f"Node.js dependencies for {', '.join(node_failures)} did not refresh")
-        if not desktop_build_ok:
-            parts.append("the desktop app was not rebuilt and is still on the previous build")
         if parts:
             print("⚠ Update partially complete — " + "; ".join(parts) + ".")
         if node_failures:
             print("  Code and Python deps are updated, but the dashboard/TUI may")
             print("  be in a mixed state until the Node deps are rebuilt.")
-        if not desktop_build_ok:
-            print("  Run `hermes desktop` to retry the desktop rebuild.")
         if not sqlite_runtime_ok:
             for line in _sqlite_partial_completion_lines(sqlite_info.sqlite_version_string):
                 print(line)
     else:
         _print_update_completion(_update_complete_message(pre_update_version))
-    return desktop_build_ok and sqlite_runtime_ok
+    return sqlite_runtime_ok
 
 
 def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
@@ -409,7 +402,8 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
     clobbers pages. Holder scan ``None`` proceeds (gateways drained; refusing on unknown would
     disable auto-restore on non-Linux). Raises OSError if the copy fails.
     """
-    from hermes_cli.backup import _foreign_db_holder_pids, verify_sqlite_integrity
+    from hermes_cli.backup import verify_sqlite_integrity
+    from hermes_cli.backup_restore import _foreign_db_holder_pids
     from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
     holders = _foreign_db_holder_pids(state_path)
     if holders:
@@ -563,7 +557,7 @@ def _ensure_fhs_path_guard() -> None:
         if not cfg.is_file():
             continue
         try:
-            existing = cfg.read_text(errors="replace", encoding="utf-8")
+            existing = cfg.read_text(errors="replace", encoding="utf-8-sig")
         except OSError:
             continue
         # Idempotency: any uncommented PATH line referencing /usr/local/bin (install.sh grep).
@@ -583,45 +577,6 @@ def _ensure_fhs_path_guard() -> None:
     if wrote_any:
         print("    (reload your shell or run 'source ~/.bashrc' to pick it up)")
 
-
-def _ensure_acp_launcher() -> None:
-    r"""Self-heal a ``hermes-acp`` launcher next to ``hermes`` (mirrors install.sh): ACP hosts
-    resolve it on the login-shell PATH but the console script lives in the venv. The shim
-    delegates to the sibling ``hermes acp``, correct for every layout.
-
-    No-op on Windows (install.ps1 stages launchers into ``$HermesHome\bin``, never
-    ``venv\Scripts`` which would shadow the user's python; launcher repair lives in
-    _install_repair) and where it already exists. Unwritable dirs are skipped. Idempotent.
-
-    ``/usr/local/bin`` as non-root) are skipped silently. See #83797.
-    """
-    from hermes_cli.update_cmd import _m
-    if _m().sys.platform == "win32":
-        return
-    for bin_dir in (Path.home() / ".local" / "bin", Path("/usr/local/bin")):
-        hermes_cmd = bin_dir / "hermes"
-        acp_cmd = bin_dir / "hermes-acp"
-        try:
-            if not (hermes_cmd.is_file() or hermes_cmd.is_symlink()):
-                continue
-            # is_symlink() catches broken symlinks exists() misses; never follow-and-overwrite.
-            # Already present — a console script (pip/pipx install), an earlier shim, or a symlink.
-            # is_symlink() catches broken symlinks that exists() would miss; never follow-and-overwrite (the
-            # #21454 failure mode).
-            if acp_cmd.exists() or acp_cmd.is_symlink():
-                continue
-            shim = (
-                "#!/usr/bin/env bash\n"
-                "# Hermes Agent — ACP launcher (written by `hermes update`).\n"
-                "# ACP hosts (Zed, JetBrains, Buzz) resolve the agent by this\n"
-                "# command name on the login-shell PATH.\n"
-                f'exec "{hermes_cmd}" acp "$@"\n'
-            )
-            acp_cmd.write_text(shim, encoding="utf-8")
-            acp_cmd.chmod(acp_cmd.stat().st_mode | 0o755)
-        except OSError:
-            continue
-        print(f"  ✓ Installed hermes-acp launcher → {acp_cmd}")
 
 
 _BACKUP_MODE_ALIASES = {
@@ -835,7 +790,7 @@ def _profile_skill_sync_status(r) -> str:
 
 
 def _sync_profiles_after_update() -> None:
-    """Best-effort per-profile syncs: bundled skills, ``.env`` backfill, Honcho profiles."""
+    """Best-effort per-profile syncs: bundled skills and ``.env`` backfill."""
     # All profiles incl. the active one: seed_profile_skills() subprocesses with an explicit
     # HERMES_HOME, so sync_skills()'s module-level HERMES_HOME cache can't skew it.
     with suppress(Exception):
@@ -859,12 +814,6 @@ def _sync_profiles_after_update() -> None:
         if backfilled:
             print()
             print(f"→ Seeded .env for {len(backfilled)} profile(s) (copied from default): {', '.join(backfilled)}")
-
-    with suppress(Exception):
-        from plugins.memory.honcho.cli import sync_honcho_profiles_quiet
-        synced = sync_honcho_profiles_quiet()
-        if synced:
-            print(f"\n-> Honcho: synced {synced} profile(s)")
 
 
 def _refresh_cua_driver_after_update() -> None:
@@ -926,7 +875,6 @@ def _print_post_update_notices_and_self_heals() -> None:
         ('Curator first-run notice failed: %s', _print_curator_first_run_notice),
         ('Curator recent-run notice failed: %s', _print_curator_recent_run_notice),
         ('FHS PATH guard check failed: %s', _ensure_fhs_path_guard),
-        ('hermes-acp launcher self-heal failed: %s', _ensure_acp_launcher),
         ('Windows bin launcher migration failed: %s', _migrate_windows_bin_path),
         ('cua-driver refresh failed: %s', _refresh_cua_driver_after_update),
         ('Checkpoint footprint notice failed: %s', _print_checkpoint_footprint_notice),
@@ -948,29 +896,13 @@ def _migrate_relay_exporter_env() -> None:
 
 
 def _run_post_update_maintenance(
-    *, assume_yes, gateway_mode, pre_update_snapshot_id, had_desktop_app_before_update, node_failures, desktop_build_ok,
+    *, assume_yes, gateway_mode, pre_update_snapshot_id, node_failures,
     pre_update_version, deferred_defects=None,
 ) -> bool:
     """Post-pull housekeeping: state.db restore, catalog/skills/profile syncs, config migration,
     the update summary (verdict returned), and best-effort notices/self-heals. Every step is
     isolated so none can fail the update."""
     from hermes_cli.update_cmd import _check_and_apply_config_migration, _m
-    # macOS TCC: Desktop bundles are re-signed each update, so old grants can go stale
-    # (toggle ON, yet macOS re-prompts with no Allow button). Tell users how to re-grant.
-    # With the post-#73681 identifier-pinned DR, new grants survive rebuilds — but a grant made to a pre-fix
-    # binary stays stale: the System Settings toggle shows ON while macOS re-prompts on every capture, and
-    # the modern prompt has no Allow button, so users loop. One line of guidance after update tells affected
-    # users how to complete the one-time re-grant.
-    if sys.platform == "darwin" and had_desktop_app_before_update:
-        print()
-        print(
-            "  ℹ macOS: if Hermes re-prompts for permissions you already "
-            "granted (toggle shows ON), the stored grant is stale — run "
-            "`tccutil reset ScreenCapture com.nousresearch.hermes` (repeat "
-            "per affected service), toggle it ON in System Settings, then "
-            "fully quit & relaunch once."
-        )
-
     # macOS TCC interpreter anchor; boot-gated — a failed probe leaves the venv untouched.
     try:
         # See #95596.
@@ -982,12 +914,6 @@ def _run_post_update_maintenance(
     # state.db integrity guard for root home AND every profile; restore from own snapshot.
     with _best_effort('Post-update state.db integrity check failed: %s'):
         _verify_and_restore_state_dbs_post_update()
-
-    # Seed the model-catalog cache from the checkout instead of a bot-gated, flaky fetch.
-    with _best_effort('Model catalog seed during update failed: %s'):
-        from hermes_cli.model_catalog import seed_cache_from_checkout
-        if seed_cache_from_checkout(_m().PROJECT_ROOT):
-            print("  ✓ Model catalog cache refreshed from checkout")
 
     # Claimed work that throws cannot be part of a *completed* preparation — a deferred run that
     # swallowed this would stamp itself prepared while the skill tree is half-synced (fork).
@@ -1007,7 +933,7 @@ def _run_post_update_maintenance(
     )
 
     update_complete = _print_update_summary(
-        node_failures=node_failures, desktop_build_ok=desktop_build_ok, pre_update_version=pre_update_version,
+        node_failures=node_failures, pre_update_version=pre_update_version,
     )
 
     _print_post_update_notices_and_self_heals()

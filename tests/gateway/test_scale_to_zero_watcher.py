@@ -425,7 +425,7 @@ def test_real_inbound_after_dormancy_restores_running_status(monkeypatch):
 # known platform, so list(config.platforms.keys()) is always the full ~20-entry catalog
 # regardless of what the instance runs. The arm check must filter to ENABLED platforms
 # (mirroring the connect loop) before asking messaging_is_relay_only_or_absent — passing
-# the bare placeholder keys made it see disabled `discord`/`telegram`/… as live direct
+# the bare placeholder keys made it see disabled `discord`/`slack`/… as live direct
 # platforms and refuse to arm on a real relay-only instance. The pure-helper tests in
 # test_scale_to_zero.py pass bare names so they never exercised this call site.
 
@@ -456,8 +456,8 @@ def test_arm_true_for_relay_only_with_disabled_placeholders(monkeypatch):
     r = _arm_runner(
         monkeypatch,
         {
-            Platform.TELEGRAM: False,
             Platform.DISCORD: False,
+            Platform.WHATSAPP: False,
             Platform.SLACK: False,
             Platform.MATRIX: False,
             Platform.RELAY: True,
@@ -579,7 +579,7 @@ def test_arm_true_with_api_server_enabled(monkeypatch):
         {
             Platform.RELAY: True,
             Platform.API_SERVER: True,
-            Platform.TELEGRAM: False,
+            Platform.DISCORD: False,
         },
     )
     assert r._scale_to_zero_should_arm() is True
@@ -618,7 +618,7 @@ def test_direct_platform_still_disarms_alongside_api_server(monkeypatch):
 
 # ── supervised watchers must NOT count as live background work (staging bug) ──
 #
-# _spawn_supervised parks every permanent watcher task (session-expiry, kanban,
+# _spawn_supervised parks every permanent watcher task (session-expiry,
 # reconnect, the scale-to-zero watcher ITSELF, ...) in _background_tasks. The
 # bg-work check counted them, so an armed gateway considered itself busy
 # forever and never went dormant — verified live on staging 2026-08-12 (armed
@@ -638,7 +638,7 @@ async def test_supervised_watchers_do_not_block_idle():
         await asyncio.sleep(3600)
 
     # Spawn like production does — through _spawn_supervised.
-    for name in ("session_expiry", "kanban", "scale_to_zero_watcher"):
+    for name in ("session_expiry", "reconnect", "scale_to_zero_watcher"):
         r._spawn_supervised(lambda: _forever(), name)
     await asyncio.sleep(0)  # let tasks start
     try:
@@ -707,24 +707,6 @@ async def test_loop_heartbeat_task_does_not_block_idle():
     finally:
         r._loop_heartbeat_task.cancel()
         await asyncio.gather(r._loop_heartbeat_task, return_exceptions=True)
-
-
-@pytest.mark.asyncio
-async def test_heartbeat_poll_task_does_not_block_idle():
-    r = GatewayRunner.__new__(GatewayRunner)
-    r._running = True
-    r._background_tasks = set()
-    r._heartbeat_poll_task = None
-    r._heartbeat_watch = {}
-    r._running_agents = {}
-
-    r._start_heartbeat_poller()
-    await asyncio.sleep(0)  # let the task start
-    try:
-        assert r._scale_to_zero_has_live_background_work() is False
-    finally:
-        r._heartbeat_poll_task.cancel()
-        await asyncio.gather(r._heartbeat_poll_task, return_exceptions=True)
 
 
 # ── in-flight cron / API-server work must block suspend (the 10:45 near-miss) ──

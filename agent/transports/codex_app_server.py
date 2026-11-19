@@ -2,7 +2,7 @@
 
 ``initialize`` handshake, then ``thread/start`` + ``turn/start`` with streaming
 ``item/*`` notifications until ``turn/completed``. Wire-level speaker only —
-projection, approvals and transcript handling live in sibling modules.
+projection, server-request handling and transcript handling live in sibling modules.
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from agent.deadline import kill_process_tree
-from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
 from tools.environments.local import hermes_subprocess_env
 
 MIN_CODEX_VERSION = (0, 125, 0)
@@ -109,32 +108,8 @@ class CodexAppServerClient:
             spawn_env["CODEX_HOME"] = codex_home
 
         cmd = [codex_bin, "app-server", *(extra_args or [])]
-        from agent.delegation_context import (
-            DELEGATED_CHILD_ENV_MARKER, KANBAN_ENV_KEYS,
-            delegated_child_subprocess_env, is_dispatcher_owned_worker_context,
-        )
-        # Native shell children remain unowned. Only Hermes' managed MCP tool
-        # endpoint acts for this worker; grant it scope via its existing per-server
-        # environment (the entry the runtime migration registers), never by granting
-        # the whole executor process ownership.
-        owned_task = os.environ.get("HERMES_KANBAN_TASK") and is_dispatcher_owned_worker_context()
-        if owned_task:
-            for key in (*KANBAN_ENV_KEYS, "HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
-                if key in os.environ:
-                    cmd += ["-c", f"mcp_servers.{HERMES_TOOLS_MCP_SERVER_NAME}.env.{key}={json.dumps(os.environ[key])}"]
-            cmd += ["-c", f'mcp_servers.{HERMES_TOOLS_MCP_SERVER_NAME}.env.{DELEGATED_CHILD_ENV_MARKER}=""']
+        from agent.delegation_context import delegated_child_subprocess_env
         spawn_env = delegated_child_subprocess_env(spawn_env)
-        # Kanban workers must write handoff/status to the board DB outside the
-        # workspace: keep the sandbox on, add the Kanban root as writable.
-        if owned_task:
-            kanban_db = spawn_env.get("HERMES_KANBAN_DB")
-            default_root = os.path.join(spawn_env.get("HERMES_HOME", os.path.expanduser("~/.hermes")), "kanban")
-            kanban_root = os.path.dirname(kanban_db) if kanban_db else spawn_env.get("HERMES_KANBAN_ROOT", default_root)
-            cmd += [
-                "-c", 'sandbox_mode="workspace-write"',
-                "-c", f'sandbox_workspace_write.writable_roots=["{kanban_root}"]',
-                "-c", "sandbox_workspace_write.network_access=false",
-            ]
         # Codex emits tracing to stderr; default WARN keeps it quiet for users.
         spawn_env.setdefault("RUST_LOG", "warn")
 
@@ -254,7 +229,7 @@ class CodexAppServerClient:
         self._send({"method": method, "params": params or {}})
 
     def respond(self, request_id: Any, result: dict) -> None:
-        """Reply to a server-initiated request (e.g. approval prompts)."""
+        """Reply to a server-initiated request."""
         self._send({"id": request_id, "result": result})
 
     def respond_error(self, request_id: Any, code: int, message: str, data: Optional[Any] = None) -> None:
@@ -276,7 +251,7 @@ class CodexAppServerClient:
         return self._take(self._notifications, timeout)
 
     def take_server_request(self, timeout: float = 0.0) -> Optional[dict]:
-        """Pop the next server-initiated request (e.g. exec/applyPatch approval)."""
+        """Pop the next server-initiated request."""
         return self._take(self._server_requests, timeout)
 
     def stderr_tail(self, n: int = 20) -> list[str]:

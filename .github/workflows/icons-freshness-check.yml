@@ -1,10 +1,12 @@
 name: Icon Assets Freshness
 
 # Guard for the single-master icon pipeline. assets/icon-master.svg is the
-# source of truth for all 23 generated icons (see scripts/generate_icons.py);
+# source of truth for every target configured in scripts/generate_icons.py;
 # this check regenerates every target and byte-compares against the committed
 # files. The repo can never hold a hand-edited or stale generated icon, and a
-# master change can never land without its regenerated outputs.
+# master change can never land without its regenerated outputs. No icon
+# targets are currently configured (the website was removed), so the reusable
+# check passes until outputs are configured again.
 #
 # Byte-determinism note: resvg renders the same SVG to identical bytes on any
 # host for pure-shape artwork. If the master ever contains <text>, font

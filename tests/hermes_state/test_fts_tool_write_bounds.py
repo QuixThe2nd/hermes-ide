@@ -28,7 +28,7 @@ def db(tmp_path):
         session_db.close()
 
 
-def test_new_tool_rows_bound_fts_content_but_explicit_tool_search_is_complete(db):
+def test_new_tool_rows_bound_fts_content_but_explicit_tool_role_search_is_complete(db):
     tool_id = db.append_message(
         "session",
         role="tool",

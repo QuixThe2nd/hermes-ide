@@ -147,15 +147,15 @@ def test_greedy_pack_overflow_callback():
 
 
 
-# ── UTF-16 length units at the Telegram limit (#55844) ──────────────────────
+# ── UTF-16 length units at a 4096-unit platform limit (#55844) ──────────────────────
 
 
 def test_emoji_heavy_split_respects_utf16_limit():
-    """Telegram's 4096 limit is UTF-16 code units — emoji count as 2.
+    """A 4096 limit measured in UTF-16 code units — emoji count as 2.
 
     Regression for #55844: the fallback splitter must measure chunks with
     the platform len_fn, not Python codepoints, or emoji-heavy messages
-    ship oversized chunks that Telegram rejects with MESSAGE_TOO_LONG.
+    ship oversized chunks that the platform rejects as too long.
     """
     limit = 3996  # gateway's safe limit: 4096 - 100 headroom
     text = "🚀" * 3000  # 3000 codepoints == 6000 UTF-16 units

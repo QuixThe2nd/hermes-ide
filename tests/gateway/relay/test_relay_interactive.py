@@ -46,8 +46,8 @@ FULL_OPS = (
 def make_desc(**kw) -> CapabilityDescriptor:
     base = dict(
         contract_version=CONTRACT_VERSION,
-        platform="telegram",
-        label="Telegram",
+        platform="discord",
+        label="Discord",
         max_message_length=4096,
         supports_draft_streaming=False,
         supports_edit=True,
@@ -75,7 +75,7 @@ def _event(
         text=text,
         message_type=MessageType.COMMAND,
         source=SessionSource(
-            platform="telegram", chat_id=chat_id, chat_type="dm", user_id="u1"
+            platform="discord", chat_id=chat_id, chat_type="dm", user_id="u1"
         ),
         prompt_response=prompt_response,
     )
@@ -85,40 +85,9 @@ def _event(
 
 
 @pytest.mark.asyncio
-async def test_exec_approval_renders_full_option_set():
-    adapter, stub = _adapter()
-    result = await adapter.send_exec_approval(
-        "c1", "rm -rf /tmp/x", "sess:1", description="deletes files"
-    )
-    assert result.success is True
-    assert result.message_id == "pm1"
-    action = stub.sent[-1]
-    assert action["op"] == "prompt"
-    assert action["prompt_kind"] == "approval"
-    ids = [o["id"] for o in action["options"]]
-    assert ids == ["once", "session", "always", "deny"]
-    assert "rm -rf /tmp/x" in action["content"]
-    assert "deletes files" in action["content"]
-    # The registry holds the pending prompt keyed by the wire's prompt_id.
-    assert action["prompt_id"] in adapter._pending_prompts
-    state = adapter._pending_prompts[action["prompt_id"]]
-    assert state["kind"] == "exec_approval"
-    assert state["session_key"] == "sess:1"
 
 
 @pytest.mark.asyncio
-async def test_exec_approval_smart_denied_and_flag_gating():
-    adapter, stub = _adapter()
-    await adapter.send_exec_approval(
-        "c1", "cmd", "s", smart_denied=True, allow_permanent=True, allow_session=True
-    )
-    ids = [o["id"] for o in stub.sent[-1]["options"]]
-    assert ids == ["once", "deny"]  # smart-deny: no session/always
-    await adapter.send_exec_approval(
-        "c1", "cmd", "s", allow_session=True, allow_permanent=False
-    )
-    ids = [o["id"] for o in stub.sent[-1]["options"]]
-    assert ids == ["once", "session", "deny"]
 
 
 @pytest.mark.asyncio
@@ -343,7 +312,7 @@ def test_minted_prompt_ids_are_instance_scoped_and_callback_safe():
     """Ids carry the minting process's nonce and stay codec-legal.
 
     The connector's promptCodec validates each id as [A-Za-z0-9_.-]{1,32} and
-    caps "hp1:<prompt_id>:<option_id>" at Telegram's 64-byte callback budget.
+    caps "hp1:<prompt_id>:<option_id>" at a 64-byte callback-data budget.
     """
     import re
 

@@ -62,7 +62,7 @@ class TestPlatformConfigRoundtrip:
             enabled=True,
             token="tok_123",
             notification_channel=DeliveryTarget(
-                platform=Platform.TELEGRAM,
+                platform=Platform.DISCORD,
                 chat_id="555",
                 name="gateway-restarts",
             ),
@@ -139,7 +139,7 @@ class TestPlatformConfigMalformedSections:
         restored = PlatformConfig.from_dict(
             {
                 "enabled": True,
-                "notification_channel": "telegram:123",
+                "notification_channel": "discord:123",
                 "extra": "oops",
             }
         )
@@ -205,29 +205,15 @@ class TestGetConnectedPlatforms:
     def test_returns_enabled_with_token(self):
         config = GatewayConfig(
             platforms={
-                Platform.TELEGRAM: PlatformConfig(enabled=True, token="t"),
-                Platform.DISCORD: PlatformConfig(enabled=False, token="d"),
-                Platform.SLACK: PlatformConfig(enabled=True),  # no token
+                Platform.DISCORD: PlatformConfig(enabled=True, token="t"),
+                Platform.MATRIX: PlatformConfig(enabled=False, token="d"),
+                Platform.WHATSAPP_CLOUD: PlatformConfig(enabled=True),
             },
         )
         connected = config.get_connected_platforms()
-        assert Platform.TELEGRAM in connected
-        assert Platform.DISCORD not in connected
-        assert Platform.SLACK not in connected
-
-
-    def test_dingtalk_recognised_via_env_vars(self, monkeypatch):
-        """DingTalk configured via env vars (no extras) should still be
-        recognised as connected — covers the case where _apply_env_overrides
-        hasn't populated extras yet."""
-        monkeypatch.setenv("DINGTALK_CLIENT_ID", "env_cid")
-        monkeypatch.setenv("DINGTALK_CLIENT_SECRET", "env_sec")
-        config = GatewayConfig(
-            platforms={
-                Platform.DINGTALK: PlatformConfig(enabled=True, extra={}),
-            },
-        )
-        assert Platform.DINGTALK in config.get_connected_platforms()
+        assert Platform.DISCORD in connected
+        assert Platform.MATRIX not in connected
+        assert Platform.WHATSAPP_CLOUD not in connected
 
 
 class TestStreamingConfig:
@@ -319,33 +305,14 @@ class TestGatewayConfigRoundtrip:
 class TestLoadGatewayConfig:
 
 
-    def test_slack_ignored_channels_config_sets_env_bridge(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text(
-            "slack:\n"
-            "  ignored_channels:\n"
-            "    - C0123456789\n"
-            "    - C0987654321\n",
-            encoding="utf-8",
-        )
-
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.delenv("SLACK_IGNORED_CHANNELS", raising=False)
-
-        load_gateway_config()
-
-        assert os.getenv("SLACK_IGNORED_CHANNELS") == "C0123456789,C0987654321"
-
-
     def test_typing_status_text_from_nested_platforms_block(self, tmp_path, monkeypatch):
-        """``platforms.slack.typing_status_text`` reaches PlatformConfig via
+        """``platforms.discord.typing_status_text`` reaches PlatformConfig via
         _merge_platform_map + the from_dict top-level read."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text(
             "platforms:\n"
-            "  slack:\n"
+            "  discord:\n"
             "    enabled: true\n"
             '    typing_status_text: "chasing yarn…"\n',
             encoding="utf-8",
@@ -355,7 +322,7 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert (
-            config.platforms[Platform.SLACK].typing_status_text == "chasing yarn…"
+            config.platforms[Platform.DISCORD].typing_status_text == "chasing yarn…"
         )
 
     def test_multiplex_profiles_from_nested_gateway_section(self, tmp_path, monkeypatch):
@@ -665,9 +632,9 @@ class TestLoadGatewayConfig:
         config_path.write_text(
             "gateway:\n"
             "  platforms:\n"
-            "    telegram:\n"
+            "    matrix:\n"
             "      enabled: true\n"
-            "      bot_token: '123:abc'\n"
+            "      token: 'fake-matrix-token'\n"
             "    api_server:\n"
             "      enabled: true\n",
             encoding="utf-8",
@@ -680,7 +647,7 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.platforms[Platform.RELAY].enabled is True
-        assert config.platforms[Platform.TELEGRAM].enabled is False
+        assert config.platforms[Platform.MATRIX].enabled is False
         discord_cfg = config.platforms.get(Platform.DISCORD)
         assert discord_cfg is None or discord_cfg.enabled is False
         # Non-messaging surfaces are untouched.
@@ -700,9 +667,9 @@ class TestLoadGatewayConfig:
             "      enabled: true\n"
             "      extra:\n"
             "        relay_url: https://connector.example/relay\n"
-            "    telegram:\n"
+            "    matrix:\n"
             "      enabled: true\n"
-            "      bot_token: '123:abc'\n",
+            "      token: 'fake-matrix-token'\n",
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -711,7 +678,7 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.platforms[Platform.RELAY].enabled is True
-        assert config.platforms[Platform.TELEGRAM].enabled is True
+        assert config.platforms[Platform.MATRIX].enabled is True
 
 
     def test_relay_env_url_opt_out_keeps_direct_platforms(self, tmp_path, monkeypatch):
@@ -724,9 +691,9 @@ class TestLoadGatewayConfig:
         config_path.write_text(
             "gateway:\n"
             "  platforms:\n"
-            "    telegram:\n"
+            "    matrix:\n"
             "      enabled: true\n"
-            "      bot_token: '123:abc'\n",
+            "      token: 'fake-matrix-token'\n",
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -736,7 +703,7 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.platforms[Platform.RELAY].enabled is True
-        assert config.platforms[Platform.TELEGRAM].enabled is True
+        assert config.platforms[Platform.MATRIX].enabled is True
 
 
     def test_relay_exclusive_reads_profile_scoped_env(self, tmp_path, monkeypatch):
@@ -757,9 +724,9 @@ class TestLoadGatewayConfig:
         config_path.write_text(
             "gateway:\n"
             "  platforms:\n"
-            "    telegram:\n"
+            "    matrix:\n"
             "      enabled: true\n"
-            "      bot_token: '123:abc'\n",
+            "      token: 'fake-matrix-token'\n",
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -781,7 +748,7 @@ class TestLoadGatewayConfig:
         # The deploy stamp survives the profile scope: relay enabled, sweep
         # ran — matching what register_relay_adapter() sees in os.environ.
         assert config.platforms[Platform.RELAY].enabled is True
-        assert config.platforms[Platform.TELEGRAM].enabled is False
+        assert config.platforms[Platform.MATRIX].enabled is False
 
         # A profile-only stamp does NOT activate relay: globals read only the
         # process env, so config and the relay transport can never disagree.
@@ -799,7 +766,7 @@ class TestLoadGatewayConfig:
 
         relay_cfg = config.platforms.get(Platform.RELAY)
         assert relay_cfg is None or relay_cfg.enabled is False
-        assert config.platforms[Platform.TELEGRAM].enabled is True
+        assert config.platforms[Platform.MATRIX].enabled is True
 
 
     def test_relay_exclusive_sweep_log_levels_and_marker_cleanup(self, tmp_path, monkeypatch, caplog):
@@ -814,9 +781,9 @@ class TestLoadGatewayConfig:
         config_path.write_text(
             "gateway:\n"
             "  platforms:\n"
-            "    telegram:\n"
+            "    matrix:\n"
             "      enabled: true\n"
-            "      bot_token: '123:abc'\n",
+            "      token: 'fake-matrix-token'\n",
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -828,7 +795,7 @@ class TestLoadGatewayConfig:
 
         warnings = [
             r for r in caplog.records
-            if r.levelno == _logging.WARNING and "telegram" in r.getMessage()
+            if r.levelno == _logging.WARNING and "matrix" in r.getMessage()
         ]
         assert warnings, "explicit platform must be disabled at WARNING"
         discord_infos = [
@@ -861,40 +828,6 @@ class TestLoadGatewayConfig:
         # Env value preserved, not clobbered by yaml.
         assert os.environ.get("DISCORD_THREAD_REQUIRE_MENTION") == "true"
 
-
-    def test_bridges_nested_gateway_platforms_dingtalk_allowed_users_to_env(self, tmp_path, monkeypatch):
-        """gateway.platforms.dingtalk.extra.allowed_users must reach
-        DINGTALK_ALLOWED_USERS — it's the documented config.yaml alternative
-        to the env var (website/docs/user-guide/messaging/dingtalk.md), the
-        adapter reads it from PlatformConfig.extra, but gateway auth
-        (_is_user_authorized) only consults the env var.
-        """
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        config_path = hermes_home / "config.yaml"
-        config_path.write_text(
-            "gateway:\n"
-            "  platforms:\n"
-            "    dingtalk:\n"
-            "      enabled: true\n"
-            "      extra:\n"
-            "        allowed_users:\n"
-            "          - user-id-1\n"
-            "          - user-id-2\n",
-            encoding="utf-8",
-        )
-
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.delenv("DINGTALK_ALLOWED_USERS", raising=False)
-
-        config = load_gateway_config()
-
-        assert config.platforms[Platform.DINGTALK].extra["allowed_users"] == [
-            "user-id-1",
-            "user-id-2",
-        ]
-        assert os.environ.get("DINGTALK_ALLOWED_USERS") == "user-id-1,user-id-2"
-
     @pytest.mark.parametrize("yaml_text", ["gateway:\n  allow_all_users: true\n", "allow_all_users: true\n"])
     def test_allow_all_users_yaml_reaches_the_authz_gate(self, tmp_path, monkeypatch, yaml_text):
         """Both spellings must open the gate for an unknown sender; before #110690 the key was inert
@@ -911,7 +844,7 @@ class TestLoadGatewayConfig:
         runner = object.__new__(GatewayAuthorizationMixin)
         runner.config = load_gateway_config()
         runner.adapters = {}
-        stranger = SessionSource(platform=Platform.TELEGRAM, user_id="999", chat_id="999", chat_type="dm")
+        stranger = SessionSource(platform=Platform.DISCORD, user_id="999", chat_id="999", chat_type="dm")
         assert runner._is_user_authorized(stranger) is True
 
     @pytest.mark.parametrize("yaml_text, env, expected", [
@@ -936,7 +869,7 @@ class TestLoadGatewayConfig:
         runner.config = load_gateway_config()
         runner.adapters = {}
         assert os.environ.get("GATEWAY_ALLOW_ALL_USERS") == expected
-        stranger = SessionSource(platform=Platform.TELEGRAM, user_id="999", chat_id="999", chat_type="dm")
+        stranger = SessionSource(platform=Platform.DISCORD, user_id="999", chat_id="999", chat_type="dm")
         assert runner._is_user_authorized(stranger) is False
 
     def test_bridged_allow_all_users_does_not_survive_a_config_flip_or_restart(self, tmp_path, monkeypatch):
@@ -944,7 +877,6 @@ class TestLoadGatewayConfig:
         and the restart/dashboard child envs never carry the bridged value (a sticky env var would make
         the restarted gateway ignore the flipped config and stay open)."""
         from gateway.run_shutdown import GatewayShutdownMixin
-        from hermes_cli.web_server_gateway import _profile_action_environment
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -954,7 +886,6 @@ class TestLoadGatewayConfig:
         load_gateway_config()
         assert os.environ.get("GATEWAY_ALLOW_ALL_USERS") == "true"
         assert "GATEWAY_ALLOW_ALL_USERS" not in GatewayShutdownMixin._restart_watcher_env()
-        assert "GATEWAY_ALLOW_ALL_USERS" not in _profile_action_environment(["gateway", "restart"])
 
         (hermes_home / "config.yaml").write_text("gateway:\n  allow_all_users: false\n", encoding="utf-8")
         load_gateway_config()
@@ -980,7 +911,7 @@ class TestLoadGatewayConfig:
         runner.adapters = {}
         set_multiplex_active(True)
         try:
-            stranger = SessionSource(platform=Platform.TELEGRAM, user_id="999", chat_id="999", chat_type="dm")
+            stranger = SessionSource(platform=Platform.DISCORD, user_id="999", chat_id="999", chat_type="dm")
             with _profile_runtime_scope(hermes_home):
                 assert runner._is_user_authorized(stranger) is True
             assert "GATEWAY_ALLOW_ALL_USERS" not in build_profile_secret_scope(secondary)
@@ -995,13 +926,13 @@ class TestLoadGatewayConfig:
         config_path.write_text(
             "gateway:\n"
             "  platforms:\n"
-            "    telegram:\n"
+            "    discord:\n"
             "      enabled: false\n"
             "      token: nested-token\n"
             "      extra:\n"
             "        reply_prefix: nested\n"
             "platforms:\n"
-            "  telegram:\n"
+            "  discord:\n"
             "    enabled: true\n"
             "    token: top-token\n"
             "    extra:\n"
@@ -1013,17 +944,17 @@ class TestLoadGatewayConfig:
 
         config = load_gateway_config()
 
-        telegram = config.platforms[Platform.TELEGRAM]
-        assert telegram.enabled is True
-        assert telegram.token == "top-token"
-        assert telegram.extra["reply_prefix"] == "top"
+        discord = config.platforms[Platform.DISCORD]
+        assert discord.enabled is True
+        assert discord.token == "top-token"
+        assert discord.extra["reply_prefix"] == "top"
 
     def test_shared_key_loop_bridges_allow_from_from_nested_platforms(self, tmp_path, monkeypatch):
         """Regression: shared-key loop must bridge allow_from / require_mention
         into PlatformConfig.extra even when the platform is configured only
-        under ``platforms:`` (no top-level ``telegram:`` block).
+        under ``platforms:`` (no top-level ``discord:`` block).
 
-        Before the fix, ``platform_cfg = yaml_cfg.get('telegram')`` returned
+        Before the fix, ``platform_cfg = yaml_cfg.get('discord')`` returned
         None for nested-only configs, so the loop skipped the platform entirely
         and allow_from was silently ignored.  The apply_yaml_config_fn dispatch
         received the same fix in #44f3e51; the shared-key loop now mirrors it.
@@ -1033,7 +964,7 @@ class TestLoadGatewayConfig:
         config_path = hermes_home / "config.yaml"
         config_path.write_text(
             "platforms:\n"
-            "  telegram:\n"
+            "  matrix:\n"
             "    allow_from:\n"
             "      - \"111222333\"\n"
             "      - \"444555666\"\n"
@@ -1045,13 +976,13 @@ class TestLoadGatewayConfig:
 
         config = load_gateway_config()
 
-        telegram = config.platforms[Platform.TELEGRAM]
-        assert telegram.extra.get("allow_from") == ["111222333", "444555666"], (
-            "allow_from configured under platforms.telegram must be bridged "
+        matrix = config.platforms[Platform.MATRIX]
+        assert matrix.extra.get("allow_from") == ["111222333", "444555666"], (
+            "allow_from configured under platforms.matrix must be bridged "
             "into PlatformConfig.extra by the shared-key loop"
         )
-        assert telegram.extra.get("require_mention") is True, (
-            "require_mention configured under platforms.telegram must be "
+        assert matrix.extra.get("require_mention") is True, (
+            "require_mention configured under platforms.matrix must be "
             "bridged into PlatformConfig.extra by the shared-key loop"
         )
 
@@ -1074,44 +1005,6 @@ class TestLoadGatewayConfig:
         assert config.unauthorized_dm_behavior == "ignore"
         assert config.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
 
-
-    def test_loads_telegram_rich_messages_from_gateway_platform_extra(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        config_path = hermes_home / "config.yaml"
-        config_path.write_text(
-            "gateway:\n"
-            "  platforms:\n"
-            "    telegram:\n"
-            "      extra:\n"
-            "        rich_messages: false\n",
-            encoding="utf-8",
-        )
-
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        config = load_gateway_config()
-
-        assert config.platforms[Platform.TELEGRAM].extra["rich_messages"] is False
-
-
-    def test_telegram_proxy_env_takes_precedence_over_config(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        config_path = hermes_home / "config.yaml"
-        config_path.write_text(
-            "telegram:\n"
-            "  proxy_url: http://from-config:8080\n",
-            encoding="utf-8",
-        )
-
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.setenv("TELEGRAM_PROXY", "socks5://from-env:1080")
-
-        load_gateway_config()
-
-        import os
-        assert os.environ.get("TELEGRAM_PROXY") == "socks5://from-env:1080"
 
     def test_profile_scoped_env_overrides_do_not_fall_back_to_default_profile_env(
         self,
@@ -1378,7 +1271,7 @@ class TestApiServerEnvOverride:
         )
 
         api_server_key = "secret-key-at-least-16"
-        with patch.dict(os.environ, {"API_SERVER_KEY": api_server_key}, clear=True):
+        with patch.dict(os.environ, {"API_SERVER_KEY": api_server_key, "HERMES_HOME": os.environ["HERMES_HOME"]}, clear=True):
             _apply_env_overrides(config)
 
         # Explicit disable wins over the env-var presence.
@@ -1420,6 +1313,7 @@ class TestWebhookEnvOverride:
         with patch.dict(
             os.environ,
             {
+                "HERMES_HOME": os.environ["HERMES_HOME"],
                 "WEBHOOK_ENABLED": "true",
                 "WEBHOOK_PORT": "9999",
                 "WEBHOOK_SECRET": "shared-secret",

@@ -54,6 +54,36 @@ class TestSyncExternalMemoryForTurn:
         agent._memory_manager.sync_all.assert_not_called()
         agent._memory_manager.queue_prefetch_all.assert_not_called()
 
+    def test_incognito_turn_does_not_sync_or_queue_prefetch(self):
+        agent = _bare_agent()
+        agent._incognito = True
+
+        agent._sync_external_memory_for_turn(
+            original_user_message="Remember this private turn",
+            final_response="Private response",
+            interrupted=False,
+        )
+
+        agent._memory_manager.sync_all.assert_not_called()
+        agent._memory_manager.queue_prefetch_all.assert_not_called()
+
+    def test_non_incognito_turn_still_syncs_and_queues_prefetch(self):
+        agent = _bare_agent()
+        agent._incognito = False
+
+        agent._sync_external_memory_for_turn(
+            original_user_message="What is the deploy status?",
+            final_response="All green.",
+            interrupted=False,
+        )
+
+        agent._memory_manager.sync_all.assert_called_once_with(
+            "What is the deploy status?", "All green.", session_id="test_session_001",
+        )
+        agent._memory_manager.queue_prefetch_all.assert_called_once_with(
+            "What is the deploy status?", session_id="test_session_001",
+        )
+
     # --- Per-turn author (stashed by build_turn_context) -----------------
 
     def test_stashed_bot_author_reaches_sync_all(self):

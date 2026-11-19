@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from agent.redact import mask_secret, redact_cdp_url, redact_sensitive_text, RedactingFormatter
+from agent.redact import mask_secret, redact_sensitive_text, RedactingFormatter
 
 
 @pytest.fixture(autouse=True)
@@ -517,19 +517,6 @@ class TestApiKeyHeaders:
         assert "anotherOpaqueSecret" not in result
 
 
-class TestTelegramTokens:
-    def test_bot_token(self):
-        text = "bot123456789:ABCDEfghij-KLMNopqrst_UVWXyz12345"
-        result = redact_sensitive_text(text)
-        assert "ABCDEfghij" not in result
-        assert "123456789:***" in result
-
-    def test_raw_token(self):
-        text = "12345678901:ABCDEfghijKLMNopqrstUVWXyz1234567890"
-        result = redact_sensitive_text(text)
-        assert "ABCDEfghij" not in result
-
-
 class TestPassthrough:
     def test_empty_string(self):
         assert redact_sensitive_text("") == ""
@@ -570,7 +557,7 @@ PATH=/usr/local/bin:/usr/bin
 OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012mno345
 OPENROUTER_API_KEY=sk-or-v1-reallyLongSecretKeyValue12345678
 FIRECRAWL_API_KEY=fc-shortkey123456789012
-TELEGRAM_BOT_TOKEN=bot987654321:ABCDEfghij-KLMNopqrst_UVWXyz12345
+DISCORD_BOT_TOKEN=bot987654321:ABCDEfghij-KLMNopqrst_UVWXyz12345
 SHELL=/bin/bash
 USER=teknium"""
         result = redact_sensitive_text(env_dump)
@@ -1409,28 +1396,6 @@ class TestFireworksToken:
 
 
 
-class TestRedactCdpUrl:
-    """redact_cdp_url() is the single chokepoint for CDP endpoint log redaction.
-
-    Unlike the global pass (which deliberately lets web-URL query params and
-    userinfo through for OAuth/magic-link workflows), CDP endpoint credentials
-    are pure secrets and must always be masked. Both the browser tool's
-    session/discovery logs and the supervisor's attach-timeout error route
-    through this helper.
-    """
-
-
-    def test_masks_multiple_query_credentials(self):
-        url = "wss://provider.example/session?token=aaa-secret&apikey=bbb-secret"
-        out = redact_cdp_url(url)
-        assert "aaa-secret" not in out
-        assert "bbb-secret" not in out
-
-
-
-
-    def test_none_returns_empty(self):
-        assert redact_cdp_url(None) == ""
 
 
 class TestKeywordWordBoundary:

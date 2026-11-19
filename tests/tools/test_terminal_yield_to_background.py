@@ -13,15 +13,18 @@ import time
 
 import pytest
 
-from agent.interrupt_control import InterruptControlMixin
+from run_agent import AIAgent
 from tools import interrupt as interrupt_mod
 from tools.process_registry import process_registry
 from tools.terminal_tool import terminal_tool
 
-pytestmark = pytest.mark.linux_only
+pytestmark = pytest.mark.platforms("linux")
 
 
-class _Agent(InterruptControlMixin):
+class _Agent:
+    redirect = AIAgent.redirect
+    steer = AIAgent.steer
+
     _executing_tools = True
     _interrupt_requested = False
     _pending_steer = None

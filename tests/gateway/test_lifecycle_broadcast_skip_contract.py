@@ -31,8 +31,8 @@ async def test_startup_broadcast_without_notification_channel_logs_and_skips(cap
 @pytest.mark.asyncio
 async def test_startup_broadcast_still_sends_with_notification_channel(caplog):
     runner, adapter = make_restart_runner()
-    runner.config.platforms[Platform.TELEGRAM].notification_channel = DeliveryTarget(
-        platform=Platform.TELEGRAM,
+    runner.config.platforms[Platform.DISCORD].notification_channel = DeliveryTarget(
+        platform=Platform.DISCORD,
         chat_id="restarts-42",
         name="Gateway Restarts",
     )
@@ -40,7 +40,7 @@ async def test_startup_broadcast_still_sends_with_notification_channel(caplog):
     with caplog.at_level(logging.INFO, logger="gateway.run"):
         delivered = await runner._send_notification_channel_startup_notifications()
 
-    assert delivered == {("telegram", "restarts-42", None)}
+    assert delivered == {("discord", "restarts-42", None)}
     assert [chat_id for chat_id, _content, _metadata in adapter.sent_calls] == ["restarts-42"]
     assert not [
         r for r in caplog.records

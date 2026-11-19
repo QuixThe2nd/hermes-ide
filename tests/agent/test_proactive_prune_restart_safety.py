@@ -42,7 +42,7 @@ def _history(*, large_chars: int = 24_000) -> list[dict]:
     return messages
 
 
-def _build_agent(db: SessionDB, session_id: str, *, platform: str = "telegram"):
+def _build_agent(db: SessionDB, session_id: str, *, platform: str = "discord"):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
 
@@ -78,7 +78,7 @@ def test_gateway_eviction_reload_keeps_prune_and_durable_runway(tmp_path: Path) 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "GATEWAY_PRUNE_RESTART"
     db.create_session(
-        session_id, source="telegram", model_config={"keep": "value"},
+        session_id, source="discord", model_config={"keep": "value"},
     )
     db.append_messages_batch(session_id, _history())
 
@@ -118,7 +118,7 @@ def test_gateway_eviction_reload_keeps_prune_and_durable_runway(tmp_path: Path) 
 def test_fresh_agent_rearms_after_durable_history_regrowth_once(tmp_path: Path) -> None:
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "PRUNE_DURABLE_REGROWTH"
-    db.create_session(session_id, source="telegram")
+    db.create_session(session_id, source="discord")
     db.append_messages_batch(session_id, _history())
     first_agent = _build_agent(db, session_id)
     _configure_pruning(first_agent)
@@ -164,7 +164,7 @@ def test_fresh_agent_rearms_after_durable_history_regrowth_once(tmp_path: Path) 
 def test_prune_persistence_failure_is_a_noop(tmp_path: Path) -> None:
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "PRUNE_PERSISTENCE_FAILURE"
-    db.create_session(session_id, source="telegram")
+    db.create_session(session_id, source="discord")
     db.append_messages_batch(session_id, _history())
     agent = _build_agent(db, session_id)
     _configure_pruning(agent)
@@ -191,7 +191,7 @@ def test_archive_model_config_patch_rolls_back_with_transcript(tmp_path: Path) -
     session_id = "PRUNE_ATOMIC_ARCHIVE_FAILURE"
     db.create_session(
         session_id,
-        source="telegram",
+        source="discord",
         model_config={"keep": "value", _REARM_KEY: 120_000},
     )
     original = [{"role": "user", "content": "original"}]
@@ -217,7 +217,7 @@ def test_model_switch_clears_durable_runway(tmp_path: Path) -> None:
     session_id = "MODEL_SWITCH_CLEARS_RUNWAY"
     db.create_session(
         session_id,
-        source="telegram",
+        source="discord",
         model_config={"keep": "value", _REARM_KEY: 120_000},
     )
     agent = _build_agent(db, session_id)
@@ -250,7 +250,7 @@ def test_incapable_store_short_circuits_before_prune_scan(tmp_path: Path) -> Non
     """A bound store without archive_and_compact must not pay the prune scan."""
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "INCAPABLE_STORE_FAST_NOOP"
-    db.create_session(session_id, source="telegram")
+    db.create_session(session_id, source="discord")
     db.append_messages_batch(session_id, _history())
     agent = _build_agent(db, session_id)
     _configure_pruning(agent)

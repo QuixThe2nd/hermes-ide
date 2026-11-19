@@ -90,7 +90,7 @@ def _zero_event_then_completed_client(seen_inputs: list):
 def _oversized_codex_kwargs(size: int) -> dict:
     return {"model": "gpt-5-codex", "instructions": "You are Hermes.", "store": False, "tools": None,
             "input": [{"role": "user", "content": "look"},
-                      {"type": "function_call", "call_id": "call_browser", "name": "browser_exec", "arguments": "{}"},
+                      {"type": "function_call", "call_id": "call_browser", "name": "browser_console", "arguments": "{}"},
                       {"type": "function_call_output", "call_id": "call_browser", "output": "x" * size},
                       {"role": "user", "content": "continue"}]}
 

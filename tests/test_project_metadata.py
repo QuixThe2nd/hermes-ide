@@ -58,20 +58,13 @@ def test_lazy_installable_extras_excluded_from_all():
     # list so the test stays a contract — adding a new opt-in backend
     # means updating this list AND verifying [all] doesn't contain it.
     lazy_covered_extras = {
-        "anthropic", "bedrock",
+        "anthropic",
         "exa", "firecrawl", "parallel-web",
         "fal",
-        "edge-tts", "tts-premium",
-        "voice",  # faster-whisper / sounddevice / numpy (composes stt-whisper + audio-io)
-        "stt-whisper",
-        "modal", "daytona", "vercel",
-        "messaging", "slack", "matrix", "dingtalk", "feishu",
-        "telegram", "discord",
-        "wake", "wake-openwakeword", "wake-sherpa", "wake-porcupine", "wake-tflite",
-        "google-chat",
-        "honcho", "hindsight",
-        "supermemory", "mem0",
-        "mistral",  # mistralai — Voxtral STT/TTS, lazy-installed (stt.mistral / tts.mistral)
+        "messaging", "matrix",
+        "discord",
+        "hindsight",
+        "mistral",  # mistralai provider SDK, lazy-installed
     }
     all_extra_specs = optional_dependencies["all"]
     for extra in lazy_covered_extras:
@@ -80,7 +73,7 @@ def test_lazy_installable_extras_excluded_from_all():
             if f"hermes-agent[{extra}]" in spec
         ]
         assert not offending, (
-            f"[{extra}] is in [all] but also in LAZY_DEPS. "
+            f"[{extra}] is in [all] but is a PM on-demand extra. "
             f"Remove it from [all] in pyproject.toml — it lazy-installs "
             f"at first use. Found in [all]: {offending}"
         )
@@ -96,8 +89,6 @@ def _exact_pins(specs):
         package = package.split("[", 1)[0].lower().replace("_", "-")
         pins[package] = version
     return pins
-
-
 
 
 def test_extras_pin_each_package_at_one_version():
@@ -126,23 +117,6 @@ def test_extras_pin_each_package_at_one_version():
         "extras pin the same package at different versions — uv sync would "
         f"resolve whichever wins and silently downgrade the other: {drift}"
     )
-
-
-
-
-
-
-def test_dingtalk_extra_includes_qrcode_for_qr_auth():
-    """DingTalk's QR-code device-flow auth (hermes_cli/dingtalk_auth.py)
-    needs the qrcode package."""
-    optional_dependencies = _load_optional_dependencies()
-
-    dingtalk_extra = optional_dependencies["dingtalk"]
-    assert any(dep.startswith("qrcode") for dep in dingtalk_extra)
-
-
-
-
 
 
 def _uv_lock_version(package: str) -> str:

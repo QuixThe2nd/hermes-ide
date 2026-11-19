@@ -31,25 +31,11 @@ ENV_EXAMPLE_FILENAME = ".env.EXAMPLE"
 # ``distribution_owned:``. config.yaml is dist-owned but preserved on update by default.
 DEFAULT_DIST_OWNED: Tuple[str, ...] = ("SOUL.md", "config.yaml", "mcp.json", "skills", "cron", MANIFEST_FILENAME)
 
-# Paths NEVER part of a distribution: user-owned, protected on update. Keep consistent with
-# ``profiles.py`` export exclusions plus the ``local/`` convention for user customizations.
-USER_OWNED_EXCLUDE: frozenset = frozenset({
-    # Credentials & runtime secrets
-    "auth.json", ".env",
-    # Databases & runtime state
-    "state.db", "state.db-shm", "state.db-wal",
-    "hermes_state.db", "response_store.db",
-    "response_store.db-shm", "response_store.db-wal",
-    "gateway.pid", "gateway_state.json", "processes.json",
-    "auth.lock", "active_profile", ".update_check",
-    "errors.log", ".hermes_history",
-    # User data
-    "memories", "sessions", "logs", "plans", "workspace", "home",
-    "image_cache", "audio_cache", "document_cache",
-    "browser_screenshots", "checkpoints", "sandboxes",
-    "backups", "cache",
-    # User customization namespace
-    "local",
+# Distribution-specific user data extends the shared profile/runtime exclusions.
+from hermes_cli.profiles import DEFAULT_EXPORT_EXCLUDE_ROOT
+
+USER_OWNED_EXCLUDE: frozenset = DEFAULT_EXPORT_EXCLUDE_ROOT | frozenset({
+    "memories", "sessions", "plans", "workspace", "home", "backups", "cache", "local",
 })
 
 

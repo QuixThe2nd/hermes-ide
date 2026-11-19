@@ -32,6 +32,18 @@ class TestImageCommand:
         assert cli_obj._attached_images == [img]
 
 
+    def test_handle_image_command_bare_shows_usage(self):
+        """Bare ``/image`` prints the usage hint through the CLI's real printing
+        helpers — this branch raised NameError before the lazy import existed."""
+        cli_obj = _make_cli()
+
+        with patch("cli._cprint") as mock_print:
+            cli_obj._handle_image_command("/image")
+
+        assert cli_obj._attached_images == []
+        rendered = " ".join(str(arg) for call in mock_print.call_args_list for arg in call.args)
+        assert "Usage: /image <path>" in rendered
+
     def test_handle_image_command_rejects_non_image_file(self, tmp_path):
         file_path = tmp_path / "notes.txt"
         file_path.write_text("hello\n", encoding="utf-8")

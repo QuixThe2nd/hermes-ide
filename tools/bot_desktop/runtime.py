@@ -122,7 +122,7 @@ class DesktopStatus:
     socket: Optional[str]
     geometry: str
     install_command: Optional[str]
-    browser: Optional[str]  # headed Chromium the dock's Browser icon and agent-browser share; None = no headed browser
+    browser: Optional[str]  # headed Chromium for the dock's Browser icon; None = no headed browser
 
     def as_dict(self) -> Dict[str, object]:
         return dict(self.__dict__)
@@ -130,7 +130,7 @@ class DesktopStatus:
 
 def _read(path: Path) -> Optional[str]:
     try:
-        return path.read_text(encoding="utf-8").strip() or None
+        return path.read_text(encoding="utf-8-sig").strip() or None
     except OSError:
         return None
 
@@ -180,7 +180,7 @@ _X_LOCK_DIR = Path("/tmp")  # where X servers write .X<n>-lock (tests point it a
 
 def _x_lock_pid(num: int) -> Optional[int]:
     try:
-        return int((_X_LOCK_DIR / f".X{num}-lock").read_text(encoding="utf-8").strip())
+        return int((_X_LOCK_DIR / f".X{num}-lock").read_text(encoding="utf-8-sig").strip())
     except (OSError, ValueError):
         return None
 
@@ -305,8 +305,6 @@ def desktop_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     if published:
         env.update(published)
         env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
-        from tools.bot_desktop.browser import env_for_agent
-        env_for_agent(env)  # same binary + user-data-dir as the dock's Browser icon
     return env
 
 

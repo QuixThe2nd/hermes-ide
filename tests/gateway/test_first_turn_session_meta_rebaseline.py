@@ -47,7 +47,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource
 
 
-SESSION_KEY = "agent:main:telegram:group:-1001:12345"
+SESSION_KEY = "agent:main:discord:group:-1001:12345"
 SESSION_ID = "sess-first-turn"
 
 
@@ -64,7 +64,6 @@ def _bootstrap(monkeypatch, tmp_path, db):
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
     runner._handle_active_session_busy_message = AsyncMock(return_value=False)
@@ -74,7 +73,6 @@ def _bootstrap(monkeypatch, tmp_path, db):
     from hermes_state import AsyncSessionDB
 
     runner._session_db = AsyncSessionDB(db)
-    runner._recover_telegram_topic_thread_id = lambda _source: None
     runner._cache_session_source = lambda _key, _source: None
     runner._is_session_run_current = lambda _key, _gen: True
     runner._begin_session_run_generation = lambda _key: 1
@@ -95,7 +93,7 @@ def _bootstrap(monkeypatch, tmp_path, db):
         session_id=SESSION_ID,
         created_at=datetime.now(),
         updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="group",
     )
     # Empty history → triggers the first-turn ``session_meta`` write path.
@@ -132,7 +130,7 @@ def _event():
     return MessageEvent(
         text="hello world",
         source=SessionSource(
-            platform=Platform.TELEGRAM,
+            platform=Platform.DISCORD,
             chat_id="-1001",
             chat_type="group",
             user_id="12345",
@@ -143,7 +141,7 @@ def _event():
 
 def _source():
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="-1001",
         chat_type="group",
         user_id="12345",
@@ -169,7 +167,7 @@ async def test_first_turn_session_meta_is_captured_by_rebaseline(
     from hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "sessions.db")
-    db.create_session(SESSION_ID, source="telegram")
+    db.create_session(SESSION_ID, source="discord")
 
     runner = _bootstrap(monkeypatch, tmp_path, db)
 

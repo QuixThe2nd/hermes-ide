@@ -25,14 +25,13 @@ _RUNTIME_NOTE_MAX_LINE_CHARS = 220
 
 _BACKEND_LABELS = (
     ("delegate_claude_agent", "claude-code cli"),
-    ("delegate_cursor_agent", "cursor agent"),
 )
 
 
 def _backend_label(record: Dict[str, Any]) -> str:
     """Human backend label from the record's tool/result_kind provenance."""
     from tools.async_delegation import (
-        RESULT_KIND_CLI_AGENT, RESULT_KIND_CLOUD_AGENT, RESULT_KIND_MISSION,
+        RESULT_KIND_CLI_AGENT, RESULT_KIND_MISSION,
         RESULT_KIND_SUBAGENT,
     )
 
@@ -43,8 +42,6 @@ def _backend_label(record: Dict[str, Any]) -> str:
     kind = str(record.get("result_kind") or "")
     if kind == RESULT_KIND_CLI_AGENT:
         return "cli agent"
-    if kind == RESULT_KIND_CLOUD_AGENT:
-        return "cloud agent"
     if kind == RESULT_KIND_MISSION:
         return "external mission"
     if kind == RESULT_KIND_SUBAGENT:
@@ -106,9 +103,7 @@ def _runtime_lifecycle(record: Dict[str, Any], activity: Optional[Dict[str, Any]
     - stalling / finishing: the monitor's or finalizer's own states.
 
     Externally-driven units (assistant missions) are reported as exactly that —
-    never as an OS process queued/running by this process. Remote/cursor
-    workers never inherit local-executor startup as remote startup: without an
-    observed remote fact the state stays explicitly unconfirmed.
+    never as an OS process queued/running by this process.
     """
     status = record.get("status")
     if status == "stalling":
@@ -151,11 +146,6 @@ def _runtime_lifecycle(record: Dict[str, Any], activity: Optional[Dict[str, Any]
                 age = None
             return "started", ("process started" + (f" {age}s ago" if age is not None else "")
                                + "; liveness not directly observed")
-        if str(record.get("tool") or "") == "delegate_cursor_agent":
-            remote = evidence.get("remote_observed")
-            if isinstance(remote, str) and remote:
-                return "running", _clean_note_text(remote, 64)
-            return "started", "remote run state unconfirmed (local executor started only)"
         return "started", "worker started; no model activity observed yet"
     return str(status or "unknown"), ""
 

@@ -77,37 +77,9 @@ def get_camofox_url() -> str:
     return (get_secret("CAMOFOX_URL", "") or "").rstrip("/")
 
 
-def _config_cdp_url() -> str:
-    """Persistent ``browser.cdp_url`` from config.yaml, or "" (read here, not via
-    ``browser_tool_cdp._get_cdp_override`` — circular import)."""
-    try:
-        from hermes_cli.config import read_raw_config  # late-bound: tests patch the source module
-        browser_cfg = read_raw_config().get("browser", {})
-        if isinstance(browser_cfg, dict):
-            return str(browser_cfg.get("cdp_url", "") or "").strip()
-    except Exception:
-        pass
-    return ""
-
-
 def is_camofox_mode() -> bool:
-    """True when the Camofox backend is selected and no CDP override is active.
-
-    Selection is ``browser.cloud_provider: camofox``; ``CAMOFOX_URL`` is only the address
-    and never overrides a different stored selection (legacy: with no selection ever
-    written, a set ``CAMOFOX_URL`` still activates Camofox). A CDP override (``BROWSER_CDP_URL``
-    env or ``browser.cdp_url``, same precedence as ``browser_tool_cdp._get_cdp_override()``) wins.
-    """
-    if os.getenv("BROWSER_CDP_URL", "").strip() or _config_cdp_url():
-        return False
-    try:
-        from tools.tool_backend_helpers import read_selection
-        selected = read_selection("browser")
-    except Exception:  # pragma: no cover — helpers are in-repo
-        selected = None
-    if selected is not None:
-        return selected == "camofox"
-    return bool(get_camofox_url())
+    """Camofox is the only browser backend; legacy selectors are ignored."""
+    return True
 
 
 def _vnc_url_from_health(url: str, resp: Any) -> Optional[str]:
@@ -235,7 +207,7 @@ def _rewrite_loopback_url_for_camofox(url: str) -> tuple[str, Optional[Dict[str,
 
 
 # ---- Session management ----
-_sessions: Dict[str, Dict[str, Any]] = {}  # task_id -> {"user_id": str, "tab_id": str|None, ...}
+_sessions: Dict[tuple[str, str], Dict[str, Any]] = {}  # (home_key, task_id) -> REST session
 _sessions_lock = threading.Lock()
 
 
@@ -258,14 +230,77 @@ def _adopt_existing_tab(session: Dict[str, Any]) -> Dict[str, Any]:
     return session
 
 
+def _normalize_for_tab_match(url: str) -> Optional[str]:
+    """Comparison form of a URL: lowercase scheme/host, fragment dropped, one trailing
+    slash removed from the path, query kept — so a listed tab's URL matches the URL
+    that was posted."""
+    try:
+        parts = urlsplit(str(url).strip())
+        hostname = (parts.hostname or "").lower()
+        netloc = hostname if parts.port is None else f"{hostname}:{parts.port}"
+    except ValueError:
+        return None
+    path = parts.path[:-1] if parts.path.endswith("/") else parts.path
+    return urlunsplit((parts.scheme.lower(), netloc, path, parts.query, ""))
+
+
+def _tab_match_url(tab: Dict[str, Any]) -> Optional[str]:
+    """The tab's page URL: first present of ``url`` / ``currentUrl`` / ``pageUrl``."""
+    for key in ("url", "currentUrl", "pageUrl"):
+        if tab.get(key):
+            return tab[key]
+    return None
+
+
+def _is_lost_control_response(exc: Exception) -> bool:
+    """True when a tab POST may have been processed although its response died: read
+    timeouts and HTTP 500s. Connection errors and 4xx mean the action never happened."""
+    if isinstance(exc, requests.Timeout):
+        return True
+    if isinstance(exc, requests.HTTPError):
+        return getattr(exc.response, "status_code", None) == 500
+    return False
+
+
+def _adopt_tab_for_lost_control_response(session: Dict[str, Any], posted_url: str) -> Optional[str]:
+    """Re-register the tab the server created before a control response died: list the
+    user's tabs and match the posted URL. ``None`` when the lookup fails, lists no
+    tabs, or nothing matches — the caller re-raises the original error. Applies to
+    ephemeral sessions too: only ``tab_id`` is filled, ``adopt_existing_tab`` stays off."""
+    try:
+        payload = _get("/tabs", params=_user_params(session), timeout=5)
+    except Exception as exc:
+        logger.debug("Camofox tab recovery lookup failed for %s: %s", session.get("user_id"), exc)
+        return None
+    tabs = payload.get("tabs", []) if isinstance(payload, dict) else None
+    if not isinstance(tabs, list):
+        return None
+    wanted = _normalize_for_tab_match(posted_url)
+    if wanted is None:
+        return None
+    for tab in tabs:
+        if not isinstance(tab, dict) or not isinstance(tab.get("tabId"), str) or not tab.get("tabId"):
+            continue
+        tab_url = _tab_match_url(tab)
+        if tab_url is not None and _normalize_for_tab_match(tab_url) == wanted:
+            return tab["tabId"]
+    return None
+
+
+def _session_key(task_id: Optional[str], *, home_key: Optional[str] = None) -> tuple[str, str]:
+    """Process-local browser identity; equal task IDs in different profiles never share a tab."""
+    return home_key or hermes_home_key(), task_id or "default"
+
+
 def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
     """Get or create the task's session. Identity precedence: external override
     (CAMOFOX_USER_ID / config) → profile-scoped identity when managed persistence
     is on → random ephemeral userId."""
     task_id = task_id or "default"
+    session_key = _session_key(task_id)
     with _sessions_lock:
-        if task_id in _sessions:
-            return _adopt_existing_tab(_sessions[task_id])
+        if session_key in _sessions:
+            return _adopt_existing_tab(_sessions[session_key])
         camofox_cfg = _get_camofox_config()
         identity = _camofox_identity_override(task_id, camofox_cfg)
         if identity is None and _managed_persistence_enabled(camofox_cfg):
@@ -276,8 +311,8 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
         else:
             managed, adopt = True, _flag("CAMOFOX_ADOPT_EXISTING_TAB", camofox_cfg, "adopt_existing_tab")
         session = {"user_id": identity["user_id"], "tab_id": None, "session_key": identity["session_key"],
-                   "managed": managed, "adopt_existing_tab": adopt}
-        _sessions[task_id] = session
+                   "managed": managed, "adopt_existing_tab": adopt, "home_key": session_key[0]}
+        _sessions[session_key] = session
         return _adopt_existing_tab(session)
 
 
@@ -285,15 +320,27 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
     """Ensure a tab exists for the session, creating one if needed."""
     session = _get_session(task_id)
     if not session["tab_id"]:
-        data = _post("/tabs", {"userId": session["user_id"], "listItemId": session["session_key"], "url": url})
-        session["tab_id"] = data.get("tabId")
+        try:
+            data = _post("/tabs", {"userId": session["user_id"], "listItemId": session["session_key"], "url": url})
+        except (requests.Timeout, requests.HTTPError) as exc:
+            # The server may have created the tab before the response died — re-register
+            # it instead of leaving the session tab-less ("No browser session" forever).
+            tab_id = (_adopt_tab_for_lost_control_response(session, url)
+                      if _is_lost_control_response(exc) else None)
+            if not tab_id:
+                raise
+            logger.warning("Camofox tab creation response was lost (%s); re-registered tab %s for %s",
+                           exc, tab_id, session.get("user_id"))
+            session["tab_id"] = tab_id
+        else:
+            session["tab_id"] = data.get("tabId")
     return session
 
 
 def _drop_session(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Remove and return session info."""
+    """Remove and return the current profile's session info."""
     with _sessions_lock:
-        return _sessions.pop(task_id or "default", None)
+        return _sessions.pop(_session_key(task_id), None)
 
 
 def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
@@ -308,10 +355,28 @@ def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
     return False
 
 
+class CamofoxNotConfiguredError(RuntimeError):
+    """CAMOFOX_URL is unset/empty: every server request would otherwise die inside
+    ``requests`` with a cryptic ``MissingSchema: Invalid URL '/tabs'`` on the
+    relative path, which reads like a page-URL problem instead of a missing
+    browser server configuration."""
+
+
+def _not_configured_message() -> str:
+    return (
+        "Camofox browser server is not configured: CAMOFOX_URL is unset. "
+        "Set CAMOFOX_URL in ~/.hermes/.env (e.g. CAMOFOX_URL=http://localhost:9377), "
+        "then start the server: npm start (in camofox-browser dir) "
+        "or: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
+
+
 # ---- HTTP helpers ----
 def _request(method: str, path: str, timeout: Optional[int] = None, **kwargs: Any) -> requests.Response:
     """Issue an authenticated request to camofox and return the raised-for-status response."""
-    resp = getattr(requests, method)(f"{get_camofox_url()}{path}", headers=_auth_headers(),
+    base_url = get_camofox_url()
+    if not base_url:
+        raise CamofoxNotConfiguredError(_not_configured_message())
+    resp = getattr(requests, method)(f"{base_url}{path}", headers=_auth_headers(),
                                      timeout=_get_command_timeout() if timeout is None else timeout, **kwargs)
     resp.raise_for_status()
     return resp
@@ -343,8 +408,12 @@ def _user_params(session: Dict[str, Any]) -> Dict[str, str]:
     return {"userId": session["user_id"]}
 
 
-def _snapshot_data(session: Dict[str, Any]) -> dict:
-    return _get(_tab_path(session, "snapshot"), params=_user_params(session))
+def _snapshot_data(session: Dict[str, Any], timeout: Optional[int] = None) -> dict:
+    path = _tab_path(session, "snapshot")
+    params = _user_params(session)
+    if timeout is None:
+        return _get(path, params=params)
+    return _get(path, params=params, timeout=timeout)
 
 
 def _parse_snapshot_images(snapshot: str) -> list[Dict[str, str]]:
@@ -380,18 +449,29 @@ def _fetch_snapshot(session: Dict[str, Any]) -> tuple[str, int]:
 def _navigate_tab(task_id: Optional[str], browser_url: str) -> tuple[Dict[str, Any], dict]:
     """Open ``browser_url`` in the task's tab (creating it if missing) and return
     ``(session, navigate_response)``. A 404 on the existing tab means the server
-    garbage-collected it — recreate instead of failing."""
+    garbage-collected it — recreate instead of failing. A lost control response
+    (timeout / HTTP 500) may still have navigated — recover the tabId via /tabs."""
     session = _get_session(task_id)
     if session["tab_id"]:
         try:
             data = _post(_tab_path(session, "navigate"), {"userId": session["user_id"], "url": browser_url}, timeout=60)
             return session, data
-        except requests.HTTPError as e:
-            if e.response is None or e.response.status_code != 404:
+        except (requests.Timeout, requests.HTTPError) as e:
+            if (isinstance(e, requests.HTTPError) and e.response is not None
+                    and e.response.status_code == 404):
+                logger.warning("Camofox tab %s returned 404 — tab was garbage collected. Creating a fresh tab.",
+                               session["tab_id"])
+                session["tab_id"] = None
+            elif _is_lost_control_response(e):
+                tab_id = _adopt_tab_for_lost_control_response(session, browser_url)
+                if not tab_id:
+                    raise
+                logger.warning("Camofox navigate response was lost (%s); re-registered tab %s for %s",
+                               e, tab_id, session.get("user_id"))
+                session["tab_id"] = tab_id
+                return session, {"ok": True, "url": browser_url}
+            else:
                 raise
-            logger.warning("Camofox tab %s returned 404 — tab was garbage collected. Creating a fresh tab.",
-                           session["tab_id"])
-            session["tab_id"] = None
     return _ensure_tab(task_id, browser_url), {"ok": True, "url": browser_url}
 
 
@@ -582,11 +662,21 @@ def camofox_vision(question: str, annotate: bool = False, task_id: Optional[str]
         from agent.auxiliary_client import call_llm
         vision_prompt = f"Analyze this browser screenshot and answer: {question}{redact_sensitive_text(annotation_context)}"
         timeout, temperature = _vision_llm_settings()
-        response = call_llm(
-            messages=[{"role": "user", "content": [
-                {"type": "text", "text": vision_prompt},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}}]}],
-            task="vision", temperature=temperature, timeout=timeout)
+        try:
+            response = call_llm(
+                messages=[{"role": "user", "content": [
+                    {"type": "text", "text": vision_prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}}]}],
+                task="vision", temperature=temperature, timeout=timeout)
+        except Exception as exc:
+            # Billing failure: OCR the screenshot we already saved instead of failing.
+            from tools.vision_ocr import billing_ocr_fallback
+            ocr_text = billing_ocr_fallback(exc, screenshot_path)
+            if ocr_text is None:
+                raise
+            logger.warning("Vision API billing failure (%s); returning local OCR text instead.", exc)
+            return json.dumps({"success": True, "analysis": redact_sensitive_text(ocr_text),
+                               "screenshot_path": screenshot_path})
         analysis = (response.choices[0].message.content or "").strip() if response.choices else ""
         # Redact secrets the vision LLM may have read from the screenshot.
         return json.dumps({"success": True, "analysis": redact_sensitive_text(analysis), "screenshot_path": screenshot_path})

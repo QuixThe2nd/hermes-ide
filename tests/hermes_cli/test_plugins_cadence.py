@@ -62,41 +62,16 @@ def test_interval_reads_config(homed):
 
 
 def test_run_writes_receipt_and_marker(homed):
-    calls = {"checks": 0}
-    receipt_calls = []
-
-    import pm.receipt as receipt_mod
-
-    orig_begin, orig_finalize = receipt_mod.begin, receipt_mod.finalize
-    monkey = pytest.MonkeyPatch()
-    monkey.setattr(receipt_mod, "begin", lambda kind: receipt_calls.append(("begin", kind)))
-    monkey.setattr(
-        receipt_mod, "finalize",
-        lambda outcome, exit_code=0: receipt_calls.append(("finalize", outcome)),
-    )
-    try:
-        def fake_run_checks(plugins_dir):
-            calls["checks"] += 1
-            return [_Result("plug", update_available=True)]
-
-        results = cad.run_scheduled_check(
-            run_checks_fn=fake_run_checks,
-            plugins_dir=homed / "plugins",
-            now=time.time(),
-        )
-        assert calls["checks"] == 1
-        assert results[0].name == "plug"
-        assert ("begin", "plugin-check") in receipt_calls
-        assert ("finalize", "updates-available") in receipt_calls
-        # marker stamped → second run is a no-op
-        assert cad.run_scheduled_check(
-            run_checks_fn=fake_run_checks,
-            plugins_dir=homed / "plugins",
-            now=time.time(),
-        ) is None
-        assert calls["checks"] == 1
-    finally:
-        monkey.undo()
+    import pm.receipt as receipts
+    calls = []
+    def checks(directory):
+        calls.append(directory)
+        return [_Result("plug", update_available=True)]
+    result = cad.run_scheduled_check(run_checks_fn=checks, plugins_dir=homed / "plugins")
+    assert result[0].name == "plug"
+    assert receipts.latest()["outcome"] == "updates-available"
+    assert cad.run_scheduled_check(run_checks_fn=checks, plugins_dir=homed / "plugins") is None
+    assert len(calls) == 1
 
 
 def test_needs_fixing_logged_not_applied(homed):
@@ -106,7 +81,7 @@ def test_needs_fixing_logged_not_applied(homed):
 
     monkey = pytest.MonkeyPatch()
     monkey.setattr(receipt_mod, "begin", lambda kind: None)
-    monkey.setattr(receipt_mod, "finalize", lambda outcome, exit_code=0: None)
+    monkey.setattr(receipt_mod, "finalize", lambda outcome, exit_code=0, **kwargs: None)
     try:
         results = cad.run_scheduled_check(
             run_checks_fn=lambda d: [_Result("plug", needs_fixing="mismatch")],
@@ -126,7 +101,7 @@ def test_auto_apply_only_git_rows_and_only_when_opted_in(homed):
 
     monkey = pytest.MonkeyPatch()
     monkey.setattr(receipt_mod, "begin", lambda kind: None)
-    monkey.setattr(receipt_mod, "finalize", lambda outcome, exit_code=0: None)
+    monkey.setattr(receipt_mod, "finalize", lambda outcome, exit_code=0, **kwargs: None)
     try:
         results = [_Result("gitplug", klass="git", update_available=True),
                    _Result("pipplug", klass="pip", update_available=True)]
@@ -159,7 +134,7 @@ def test_check_failure_is_never_fatal_and_stamps_marker(homed):
 
     monkey = pytest.MonkeyPatch()
     monkey.setattr(receipt_mod, "begin", lambda kind: None)
-    monkey.setattr(receipt_mod, "finalize", lambda outcome, exit_code=0: None)
+    monkey.setattr(receipt_mod, "finalize", lambda outcome, exit_code=0, **kwargs: None)
     try:
         def boom(d):
             raise RuntimeError("network down")

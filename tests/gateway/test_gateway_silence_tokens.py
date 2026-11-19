@@ -18,7 +18,7 @@ from gateway.response_filters import (
 
 def _source():
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="-1001",
         chat_type="group",
         user_id="12345",
@@ -40,12 +40,10 @@ def _runner(monkeypatch, tmp_path):
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
     runner._handle_active_session_busy_message = AsyncMock(return_value=False)
     runner._session_db = MagicMock()
-    runner._recover_telegram_topic_thread_id = lambda _source: None
     runner._cache_session_source = lambda _key, _source: None
     runner._is_session_run_current = lambda _key, _gen: True
     runner._reply_anchor_for_event = lambda _event: None
@@ -56,11 +54,11 @@ def _runner(monkeypatch, tmp_path):
 
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = SessionEntry(
-        session_key="agent:main:telegram:group:-1001:12345",
+        session_key="agent:main:discord:group:-1001:12345",
         session_id="sess-silent",
         created_at=datetime.now(),
         updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="group",
     )
     runner.session_store.load_transcript.return_value = []
@@ -111,7 +109,7 @@ async def test_human_turn_gets_a_visible_fallback_for_a_silence_marker(monkeypat
     })
 
     response = await runner._handle_message_with_agent(
-        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+        _event(), _source(), "agent:main:discord:group:-1001:12345", 1
     )
 
     assert "silence marker" in response
@@ -135,7 +133,7 @@ async def test_internal_silence_token_suppresses_delivery_but_preserves_transcri
     })
 
     response = await runner._handle_message_with_agent(
-        _event(internal=True), _source(), "agent:main:telegram:group:-1001:12345", 1
+        _event(internal=True), _source(), "agent:main:discord:group:-1001:12345", 1
     )
 
     assert response == ""
@@ -145,31 +143,11 @@ async def test_internal_silence_token_suppresses_delivery_but_preserves_transcri
 
 
 @pytest.mark.asyncio
-async def test_scheduled_heartbeat_silence_suppresses_delivery(monkeypatch, tmp_path):
-    """A poller-stamped heartbeat turn may end on a bare marker (#113031); the event stays
-    non-internal so authorization and the emergency stop still apply to it."""
-    runner = _runner(monkeypatch, tmp_path)
-    entry = runner.session_store.get_or_create_session.return_value
-    entry.suspended = False
-    runner.session_store.lookup_by_session_key.return_value = entry
-    runner._run_agent = AsyncMock(return_value={
-        "final_response": "NO_REPLY",
-        "messages": [], "tools": [], "history_offset": 0, "last_prompt_tokens": 0,
-        "api_calls": 1, "failed": False,
-    })
-    event = _event()
-    event._heartbeat_session_id = entry.session_id
-
-    assert await runner._handle_message_with_agent(event, _source(), entry.session_key, 1) == ""
-    assert not event.internal
-
-
-@pytest.mark.asyncio
 async def test_queued_human_turn_also_gets_the_visible_fallback():
     runner = gateway_run.GatewayRunner(GatewayConfig())
     runner._deliver_queued_first_response = AsyncMock()
     turn_ctx = SimpleNamespace(
-        session_key="agent:main:telegram:group:-1001:12345",
+        session_key="agent:main:discord:group:-1001:12345",
         stream_consumer_holder=[None],
         mute_notification_reply=False,
         persist_user_display_kind=None,
@@ -195,12 +173,12 @@ async def test_queued_terminal_turn_owns_the_silence_verdict(monkeypatch, tmp_pa
     runner._MAX_INTERRUPT_DEPTH = 8
     runner._run_agent = AsyncMock(return_value={"final_response": "NO_REPLY", "messages": []})
     runner._is_goal_continuation_event = MagicMock(return_value=False)
-    runner._session_key_for_source = MagicMock(return_value="agent:main:telegram:group:-1001:12345")
+    runner._session_key_for_source = MagicMock(return_value="agent:main:discord:group:-1001:12345")
     runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="follow-up")
     runner._delivery_adapter_for = MagicMock(return_value=None)
     runner._refresh_agent_cache_message_count = AsyncMock()
     turn_ctx = SimpleNamespace(
-        source=_source(), session_id="sid", session_key="agent:main:telegram:group:-1001:12345",
+        source=_source(), session_id="sid", session_key="agent:main:discord:group:-1001:12345",
         run_generation=1, _interrupt_depth=0, history=[], _status_thread_metadata=None,
         context_prompt=None, result_holder=[None])
     pending_event = SimpleNamespace(source=_source(), message_id="43", channel_prompt=None,
@@ -225,12 +203,12 @@ async def test_queued_terminal_turn_owns_the_silence_verdict(monkeypatch, tmp_pa
     runner = _runner(monkeypatch, tmp_path)
     runner._run_agent = AsyncMock(return_value=_result("internal_notification"))
     assert await runner._handle_message_with_agent(
-        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1) == ""
+        _event(), _source(), "agent:main:discord:group:-1001:12345", 1) == ""
     # Internal opener, human terminal turn: visible fallback.
     runner = _runner(monkeypatch, tmp_path)
     runner._run_agent = AsyncMock(return_value=_result(None))
     response = await runner._handle_message_with_agent(
-        _event(internal=True), _source(), "agent:main:telegram:group:-1001:12345", 1)
+        _event(internal=True), _source(), "agent:main:discord:group:-1001:12345", 1)
     assert "silence marker" in response
 
 
@@ -251,7 +229,7 @@ async def test_empty_success_still_gets_empty_response_warning(monkeypatch, tmp_
     })
 
     response = await runner._handle_message_with_agent(
-        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+        _event(), _source(), "agent:main:discord:group:-1001:12345", 1
     )
 
     assert "no response was generated" in response
@@ -275,7 +253,7 @@ async def test_prose_mentioning_silence_token_is_delivered(monkeypatch, tmp_path
     })
 
     response = await runner._handle_message_with_agent(
-        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+        _event(), _source(), "agent:main:discord:group:-1001:12345", 1
     )
 
     assert response == text
@@ -301,7 +279,7 @@ async def test_agent_end_hook_includes_model_and_provider(monkeypatch, tmp_path)
     })
 
     await runner._handle_message_with_agent(
-        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+        _event(), _source(), "agent:main:discord:group:-1001:12345", 1
     )
 
     end_context = next(

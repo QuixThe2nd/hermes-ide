@@ -27,7 +27,7 @@ __all__ = ["ConnectorClient", "Transport"]
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 EXECUTE_TIMEOUT_SECONDS = 60.0
-# Search is on every enabled tool-search path and must degrade to local-only results.
+# Connector discovery is best-effort and must not stall direct local tool setup.
 SEARCH_TIMEOUT_SECONDS = 30.0
 SCHEMAS_TIMEOUT_SECONDS = 10.0
 
@@ -191,7 +191,7 @@ class ConnectorClient:
             headers = dict(self._header_provider(url))
             if not headers:
                 raise GatewayAuthError(
-                    "no portal access token available", code="NO_TOKEN", status=401
+                    "no tool-gateway user token is configured", code="NO_TOKEN", status=401
                 )
             headers["Content-Type"] = "application/json"
             if idempotency_key:

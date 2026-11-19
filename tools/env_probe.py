@@ -33,10 +33,7 @@ _WAIT_ALREADY_TIMED_OUT = False  # after one full wait, later callers only peek
 
 # Keep in sync with agent/prompt_builder.py:_REMOTE_TERMINAL_BACKENDS.
 # Duplicated rather than imported to avoid a circular import.
-_REMOTE_BACKENDS = frozenset({
-    "docker", "singularity", "modal", "daytona", "ssh", "managed_modal",
-    "vercel_sandbox",
-})
+_REMOTE_BACKENDS = frozenset({"ssh"})
 
 
 def _plugin_backend_is_remote(backend: str) -> bool:

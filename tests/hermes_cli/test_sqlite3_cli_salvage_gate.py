@@ -252,13 +252,6 @@ class TestGuidanceNeverNamesLiveDb:
         assert "sessions recover --source" in body
         assert "--inspect-only" in body
 
-    def test_kanban_manual_recovery_warns_about_live_db(self):
-        import hermes_cli.kanban_ops as kanban  # ``_cmd_repair`` lives here (split from hermes_cli.kanban)
-
-        source = inspect.getsource(kanban)
-        assert '`sqlite3 kanban.db ".recover"`' not in source
-        assert "copy kanban.db aside FIRST" in source
-
 
 # ---------------------------------------------------------------------------
 # The emitted command satisfies the real CLI contract

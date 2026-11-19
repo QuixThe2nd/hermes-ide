@@ -103,6 +103,7 @@ class TestResolveSubdirWithin:
 
 
 
+    @pytest.mark.require_symlinks
     def test_rejects_symlink_escape(self, tmp_path):
         clone = tmp_path / "clone"
         clone.mkdir()
@@ -199,6 +200,7 @@ class TestGitPullPluginDirAutostash:
         origin = tmp_path / "origin"
         origin.mkdir()
         git(origin, "init", "-q", "-b", "main")
+        git(origin, "config", "core.autocrlf", "false")
         git(origin, "config", "user.email", "t@t")
         git(origin, "config", "user.name", "t")
         pad = "\n".join(f"# pad {i}" for i in range(12))
@@ -238,7 +240,7 @@ class TestGitPullPluginDirAutostash:
         assert ok is True
         content = (checkout / "plugin.py").read_text(encoding="utf-8")
         assert "VALUE = 2" in content        # update landed
-        assert "OTHER = 'local'" in content  # local edit survived
+        assert "OTHER = 'local'" in content, msg  # local edit survived
         assert "re-applied" in msg
         # Clean re-apply drops the autostash entry.
         assert git(checkout, "stash", "list").strip() == ""
@@ -449,7 +451,7 @@ class TestCmdRemove:
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
-    @patch("hermes_cli.plugins_cmd.shutil.rmtree")
+    @patch("hermes_cli.fs_utils.shutil.rmtree")
     def test_remove_deletes_plugin(self, mock_rmtree, mock_plugins_dir, mock_sanitize):
         from hermes_cli.plugins_cmd import cmd_remove
 
@@ -460,7 +462,12 @@ class TestCmdRemove:
 
         cmd_remove("test-plugin")
 
-        mock_rmtree.assert_called_once_with(mock_target)
+        # Deletion goes through the read-only-clearing rmtree wrapper: the
+        # target is deleted with an onerror hook attached (Windows read-only
+        # git objects), never a bare rmtree.
+        assert mock_rmtree.call_count == 1
+        assert mock_rmtree.call_args.args == (mock_target,)
+        assert callable(mock_rmtree.call_args.kwargs.get("onerror"))
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
@@ -486,33 +493,24 @@ class TestCmdRemove:
 class TestCmdList:
     """Test the list command."""
 
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    def test_list_empty_plugins_dir(self, mock_plugins_dir):
-        from hermes_cli.plugins_cmd import cmd_list
+    def test_list_empty_plugins_dir(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd
+        monkeypatch.setattr(plugins_cmd, "_plugins_dir", lambda: tmp_path)
+        console = MagicMock()
+        monkeypatch.setattr(plugins_cmd, "_console", lambda: console)
+        plugins_cmd.cmd_list()
+        console.print.assert_called()
 
-        mock_plugins_dir_val = MagicMock()
-        mock_plugins_dir_val.iterdir.return_value = []
-        mock_plugins_dir.return_value = mock_plugins_dir_val
-
-        cmd_list()
-
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    @patch("hermes_cli.plugins_cmd._read_manifest")
-    def test_list_with_plugins(self, mock_read_manifest, mock_plugins_dir):
-        from hermes_cli.plugins_cmd import cmd_list
-
-        mock_plugins_dir_val = MagicMock()
-        mock_plugin_dir = MagicMock()
-        mock_plugin_dir.name = "test-plugin"
-        mock_plugin_dir.is_dir.return_value = True
-        mock_plugin_dir.__truediv__ = lambda self, x: MagicMock(
-            exists=MagicMock(return_value=False)
-        )
-        mock_plugins_dir_val.iterdir.return_value = [mock_plugin_dir]
-        mock_plugins_dir.return_value = mock_plugins_dir_val
-        mock_read_manifest.return_value = {"name": "test-plugin", "version": "1.0.0"}
-
-        cmd_list()
+    def test_list_with_plugins(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd
+        plugin = tmp_path / "test-plugin"
+        plugin.mkdir()
+        (plugin / "plugin.yaml").write_text("name: test-plugin\nversion: 1.0.0\n", encoding="utf-8")
+        monkeypatch.setattr(plugins_cmd, "_plugins_dir", lambda: tmp_path)
+        console = MagicMock()
+        monkeypatch.setattr(plugins_cmd, "_console", lambda: console)
+        plugins_cmd.cmd_list()
+        console.print.assert_called()
 
 
 # ── _copy_example_files tests ─────────────────────────────────────────────────

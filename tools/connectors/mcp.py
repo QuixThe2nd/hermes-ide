@@ -122,8 +122,8 @@ def run_mcp_operation(
         return tool_error(error)
     targets = [Target(n, "mcp", action) for n in names]
     session_key = operation_session_key(session_id)
-    # The surface decides, not the callback: every tui_gateway session has the callback attached,
-    # the Ink TUI included, and only the desktop renders the card.
+    # The surface decides, not the callback: a GUI session can have the callback attached
+    # and still not render the card.
     if session_platform() != "desktop" or connection_callback is None:
         return _unavailable(ConnectionOperation(targets, session_key=session_key))
     def prepare(operation: ConnectionOperation) -> None:

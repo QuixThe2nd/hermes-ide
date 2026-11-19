@@ -367,8 +367,8 @@ class TestPendingWaitsForProfile:
         # The live wait is still named (deduped to one row per session+kind).
         assert waits == [{"session_id": "sess-w", "kind": "clarify"}]
 
-    def test_wait_kind_and_dedupe_by_session_and_kind(self):
-        """kind rides along from registration; distinct kinds coexist."""
+    def test_wait_kind_defaults_and_dedupes_by_session(self):
+        """Explicit and default clarify kinds share one waiting-status row."""
         from tools import clarify_gateway as cm
 
         cm.register(
@@ -376,20 +376,13 @@ class TestPendingWaitsForProfile:
             owner_profile="alpha", owner_session_id="sess-c",
         )
         cm.register(
-            "r1", "sk-c", "Restart?", None,
-            owner_profile="alpha", owner_session_id="sess-c",
-            wait_kind="restart",
-        )
-        # A second clarify on the same session collapses onto one row.
-        cm.register(
             "c2", "sk-c", "Q2?", ["A"],
             owner_profile="alpha", owner_session_id="sess-c",
+            wait_kind="clarify",
         )
 
-        waits = cm.pending_waits_for_profile("alpha")
-        assert sorted(waits, key=lambda w: w["kind"]) == [
+        assert cm.pending_waits_for_profile("alpha") == [
             {"session_id": "sess-c", "kind": "clarify"},
-            {"session_id": "sess-c", "kind": "restart"},
         ]
 
     def test_rotation_of_session_key_cannot_reattribute(self):

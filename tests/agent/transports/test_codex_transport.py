@@ -4,6 +4,7 @@ import json
 import pytest
 from types import SimpleNamespace
 
+from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 from agent.transports import get_transport
 from agent.transports.types import NormalizedResponse
 
@@ -278,41 +279,17 @@ class TestCodexBuildKwargs:
         kw = transport.preflight_kwargs(kw, sanitize_harmony_tokens=is_codex_backend)
         assert [item["content"] for item in kw["input"]] == [expected_user, expected_assistant, expected_user]
 
-    @pytest.mark.parametrize("model", [
-        "gpt-5.5",
-        "gpt-5.5-pro",
-        "gpt-5.4",
-        "gpt-5.2",
-        "gpt-5.1-codex-max",
-        "gpt-5.1",
-        "gpt-5.1-codex",
-        "gpt-5.1-codex-mini",
-        "gpt-5.1-chat-latest",
-        "gpt-5",
-        "gpt-5-codex",
-        "gpt-4.1",
-        "openai.gpt-5.5-pro",
-        "openai/gpt-5.1-codex-2026-01-01",
-    ])
-    def test_extended_cache_models_set_24h_prompt_cache_retention(self, transport, model):
+    @pytest.mark.parametrize("model", ["gpt-5.5", "gpt-4o", "openai.gpt-5.5-pro"])
+    def test_meta_model_api_sets_24h_prompt_cache_retention(self, transport, model):
+        # Meta Model API (api.meta.ai): caching is opt-in via prompt_cache_retention
+        # (0% hits without; #32243). The rule is host-exact and model-agnostic.
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model=model, messages=messages, tools=[],
             session_id="test-session",
-            base_url="https://bedrock-mantle.us-west-2.api.aws/v1",
+            base_url="https://api.meta.ai/v1",
         )
         assert kw["prompt_cache_retention"] == "24h"
-
-    @pytest.mark.parametrize("model", ["gpt-5.6", "gpt-4o", "o3"])
-    def test_prompt_cache_retention_omitted_for_other_model_families(self, transport, model):
-        kw = transport.build_kwargs(
-            model=model,
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=[],
-            session_id="test-session",
-            base_url="https://bedrock-mantle.us-west-2.api.aws/v1",
-        )
-        assert "prompt_cache_retention" not in kw
 
     @pytest.mark.parametrize("base_url", [
         "https://api.openai.com/v1",
@@ -322,10 +299,10 @@ class TestCodexBuildKwargs:
         "https://api.githubcopilot.com",
         "https://chatgpt.com/backend-api/codex",
         "https://responses.example.com/v1",
-        "https://bedrock-mantle.us-west-2.api.aws.example/v1",
-        "https://example.com/bedrock-mantle.us-west-2.api.aws/v1",
+        "https://api.meta.ai.example/v1",
+        "https://example.com/api.meta.ai/v1",
     ])
-    def test_prompt_cache_retention_omitted_for_non_mantle_endpoints(self, transport, base_url):
+    def test_prompt_cache_retention_omitted_for_non_meta_endpoints(self, transport, base_url):
         kw = transport.build_kwargs(
             model="gpt-5.4",
             messages=[{"role": "user", "content": "Hi"}],
@@ -1261,8 +1238,8 @@ class TestResponsesReservedToolAliases:
 
 class TestXaiReservedToolSearchAlias:
     """xAI reserves ``tool_search`` for Grok's native Tool Search and rejects
-    the client declaration with HTTP 400 (#95003). The transport aliases the
-    progressive-disclosure bridge on the wire and maps it back on dispatch."""
+    a client-defined function with that name (#95003). The transport aliases
+    the colliding function on the wire and maps it back on dispatch."""
 
     @pytest.fixture
     def transport(self):
@@ -1271,13 +1248,13 @@ class TestXaiReservedToolSearchAlias:
 
     _TOOLS = [
         {"type": "function", "function": {
-            "name": "tool_search", "description": "Search deferred tools.",
+            "name": "tool_search", "description": "Search indexed content.",
             "parameters": {"type": "object",
                            "properties": {"query": {"type": "string"}}}}},
         {"type": "function", "function": {
-            "name": "tool_describe", "description": "Describe a deferred tool.",
+            "name": "search_files", "description": "Search files.",
             "parameters": {"type": "object",
-                           "properties": {"name": {"type": "string"}}}}},
+                           "properties": {"pattern": {"type": "string"}}}}},
         {"type": "function", "function": {
             "name": "read_file", "description": "Read a file.",
             "parameters": {"type": "object",
@@ -1297,14 +1274,13 @@ class TestXaiReservedToolSearchAlias:
         names = self._names(kw)
         assert "hermes_tool_search" in names
         assert "tool_search" not in names
-        # Only ``tool_search`` is reserved — the sibling bridge tools and
-        # ordinary tools go out untouched.
-        assert "tool_describe" in names
+        # Only ``tool_search`` is reserved — sibling functions go out untouched.
+        assert "search_files" in names
         assert "read_file" in names
 
     def test_openai_responses_aliases_reserved_tool_search(self, transport):
         """OpenAI Responses reserves the ``tool_search`` namespace for its native Tool Search (#83122):
-        both the ChatGPT Codex backend and api.openai.com get the bridge under ``hermes_tool_search``."""
+        both the ChatGPT Codex backend and api.openai.com alias the client-defined function."""
         for extra in ({"is_codex_backend": True}, {"base_url": "https://api.openai.com/v1"}):
             kw = transport.build_kwargs(
                 model="gpt-5.4", messages=[{"role": "user", "content": "hi"}], tools=list(self._TOOLS), **extra,
@@ -1325,7 +1301,7 @@ class TestXaiReservedToolSearchAlias:
         assert "hermes_tool_search" not in names
 
     def test_alias_composes_with_native_web_search_swap(self, transport, monkeypatch):
-        """The bridge alias must survive the xAI web_search branch (#48108)."""
+        """The reserved-name alias must survive the xAI web_search branch (#48108)."""
         import agent.transports.codex as codex_mod
 
         monkeypatch.setattr(codex_mod, "_xai_prefers_native_web_search", lambda: True)
@@ -1420,13 +1396,13 @@ class TestXaiReservedToolSearchAlias:
 
     def test_alias_collision_takes_suffix_no_duplicates(self, transport, monkeypatch):
         """A real tool already named ``hermes_tool_search`` keeps its wire
-        name; the bridge is suffixed and both round-trip independently."""
+        name; the reserved client function is suffixed and both round-trip independently."""
         tools = [
             {"type": "function", "function": {
                 "name": "hermes_tool_search", "description": "Real tool.",
                 "parameters": {"type": "object", "properties": {}}}},
             {"type": "function", "function": {
-                "name": "tool_search", "description": "Bridge.",
+                "name": "tool_search", "description": "Reserved client function.",
                 "parameters": {"type": "object", "properties": {}}}},
         ]
         kw = transport.build_kwargs(
@@ -1439,7 +1415,7 @@ class TestXaiReservedToolSearchAlias:
         assert names == ["hermes_tool_search", "hermes_tool_search_2"]
         assert len(names) == len(set(names))
         assert transport._last_wire_aliases == {"hermes_tool_search_2": "tool_search"}
-        # Bridge alias maps back; the real tool's name is untouched.
+        # Reserved-name alias maps back; the real tool's name is untouched.
         normalized = self._normalize_named_call(
             transport, monkeypatch, "hermes_tool_search_2"
         )
@@ -1936,3 +1912,235 @@ def test_text_verbosity_reaches_responses_body_only_when_configured(transport):
     )
     chat = get_transport("chat_completions").build_kwargs(model="gpt-5.1", messages=msgs, text_verbosity="low")
     assert "text" not in chat and "text" not in (chat.get("extra_body") or {})
+
+
+class TestBridgedResponsesSystemPromptAsInputItem:
+    """Non-OpenAI-native Responses routes (LiteLLM fronting Anthropic) cache the system
+    prompt only when it rides as a leading ``role: "system"`` input item.
+
+    Measured against a LiteLLM deployment with
+    ``cache_control_injection_points=[{location: message, role: system}]``: the same
+    ~3.6k-token prompt as ``instructions`` cached 0/0 tokens; as a leading system input
+    item it cached in full (3626/3626). OpenAI-native routes keep the historical
+    ``instructions`` wire byte-for-byte.
+    """
+
+    LITELLM = "http://192.168.30.21:4000/v1"
+    SYSTEM = "You are Hermes Agent. Use the terminal tool."
+    MESSAGES = [
+        {"role": "system", "content": SYSTEM},
+        {"role": "user", "content": "Ping"},
+    ]
+
+    def _litellm_kwargs(self, transport, messages=None, **extra):
+        kw = transport.build_kwargs(
+            model="hermes", messages=list(messages or self.MESSAGES), tools=[],
+            provider="custom:litellm", base_url=self.LITELLM, **extra,
+        )
+        return transport.preflight_kwargs(kw)
+
+    def test_litellm_route_sends_system_prompt_as_leading_input_item(self, transport):
+        kw = self._litellm_kwargs(transport)
+        assert "instructions" not in kw
+        assert kw["input"][0] == {"role": "system", "content": self.SYSTEM}
+        assert kw["input"][1] == {"role": "user", "content": "Ping"}
+
+    def test_litellm_route_prompt_prefix_byte_stable_across_turns(self, transport):
+        """No per-turn content may land ahead of the system item: turn 2's payload must
+        start with exactly turn 1's system item so the bridged cache prefix stays warm."""
+        first = self._litellm_kwargs(transport)
+        history = self.MESSAGES + [
+            {"role": "assistant", "content": "Pong"},
+            {"role": "user", "content": "Again"},
+        ]
+        second = self._litellm_kwargs(transport, history)
+        assert second["input"][0] == first["input"][0]
+        assert second["input"][1] == {"role": "user", "content": "Ping"}
+
+    def test_litellm_route_without_system_message_keeps_identity_in_item(self, transport):
+        kw = self._litellm_kwargs(transport, messages=[{"role": "user", "content": "Hi"}])
+        assert "instructions" not in kw
+        assert kw["input"][0]["role"] == "system"
+        assert kw["input"][0]["content"].strip()
+
+    def test_plan_identity_route_keeps_instructions_wire(self, transport):
+        """The Claude Code plan-identity route relocates parts of the system prompt into the
+        first user message; it must not get a second transformation stacked on top."""
+        kw = self._litellm_kwargs(transport, claude_code_plan_identity=True)
+        assert kw["instructions"].strip()
+        assert not any(item.get("role") == "system" for item in kw["input"])
+
+    @pytest.mark.parametrize(
+        "base_url,extra",
+        [
+            ("https://api.openai.com/v1", {}),
+            ("https://chatgpt.com/backend-api/codex", {"is_codex_backend": True}),
+            ("https://api.x.ai/v1", {"is_xai_responses": True}),
+            ("https://models.github.ai/v1", {"is_github_responses": True}),
+            ("https://my-resource.openai.azure.com/openai", {}),
+            ("https://opencode.ai/v1", {}),
+            ("https://api.perplexity.ai/v1", {}),
+            ("https://api.meta.ai/v1", {}),
+            (None, {}),
+        ],
+    )
+    def test_native_routes_keep_instructions_wire(self, transport, base_url, extra):
+        """First-party/official Responses origins are byte-identical to today: the system
+        prompt rides in ``instructions`` and no system input item is emitted."""
+        kw = transport.build_kwargs(
+            model="gpt-5.5", messages=list(self.MESSAGES), tools=[],
+            base_url=base_url, **extra,
+        )
+        assert kw["instructions"] == self.SYSTEM
+        assert not any(item.get("role") == "system" for item in kw["input"])
+        normalized = transport.preflight_kwargs(kw)
+        assert normalized["instructions"] == self.SYSTEM
+        assert not any(item.get("role") == "system" for item in normalized["input"])
+
+    def test_litellm_route_changed_system_prompt_propagates(self, transport):
+        """The leading system item must track the CURRENT system prompt, not a memoized
+        first value: a conversation whose system prompt changed between sessions must send
+        the new text (and drop the old), or a stale prefix would poison the bridge cache."""
+        first = self._litellm_kwargs(transport)
+        assert first["input"][0]["content"] == self.SYSTEM
+        changed = "You are Hermes Agent v2. Different identity."
+        second = transport.build_kwargs(
+            model="hermes",
+            messages=[{"role": "system", "content": changed}, {"role": "user", "content": "Ping"}],
+            tools=[], provider="custom:litellm", base_url=self.LITELLM,
+        )
+        second = transport.preflight_kwargs(second)
+        assert second["input"][0] == {"role": "system", "content": changed}
+        assert changed not in first["input"][0]["content"]
+
+    def test_litellm_route_concurrent_builds_do_not_mutate_or_leak(self, transport):
+        """Concurrent turns against one shared transport must not share mutable state:
+        each payload's leading system item carries that call's own prompt, and the
+        caller's message lists are never mutated in place."""
+        import copy
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+
+        prompts = {f"system-prompt-{i}": [f"body-{i}"] for i in range(8)}
+        barrier = Barrier(len(prompts))
+        originals = {
+            key: [{"role": "system", "content": key}, {"role": "user", "content": body[0]}]
+            for key, body in prompts.items()
+        }
+        snapshots = {key: copy.deepcopy(msgs) for key, msgs in originals.items()}
+
+        def _build(key):
+            barrier.wait(timeout=10)
+            kw = self._litellm_kwargs(transport, messages=originals[key])
+            return key, kw
+
+        with ThreadPoolExecutor(max_workers=len(prompts)) as pool:
+            results = dict(pool.map(_build, prompts))
+        for key, kw in results.items():
+            assert kw["input"][0] == {"role": "system", "content": key}
+            assert kw["input"][1] == {"role": "user", "content": prompts[key][0]}
+            assert kw["input"][0]["content"] not in {k for k in prompts if k != key}
+        assert originals == snapshots
+
+
+class TestBridgedResponsesRequestOverrides:
+    """``request_overrides`` interaction with the bridged system-item layout.
+
+    Base contract (pre-bridged-layout, 165183140bc): ``kwargs.update(request_overrides)``
+    ran last, so an ``instructions`` override replaced the system prompt wholesale — the
+    wire carried ONLY the override text — and an ``input`` override replaced the input
+    list while the prompt kept riding ``instructions``. The relocation must preserve both
+    semantics: it carries the EFFECTIVE prompt, never stacking the original prompt's
+    system item under an overridden ``instructions`` field (two system rows on the wire).
+    """
+
+    OVERRIDE = "OVERRIDE SYSTEM: curator auxiliary identity."
+
+    def _build(self, transport, overrides, **extra):
+        kw = transport.build_kwargs(
+            model="hermes",
+            messages=[
+                {"role": "system", "content": TestBridgedResponsesSystemPromptAsInputItem.SYSTEM},
+                {"role": "user", "content": "Ping"},
+            ],
+            tools=[], provider="custom:litellm",
+            base_url=TestBridgedResponsesSystemPromptAsInputItem.LITELLM,
+            request_overrides=overrides, **extra,
+        )
+        return kw, transport.preflight_kwargs(kw)
+
+    def test_instructions_override_replaces_system_item(self, transport):
+        """Only the override text may reach the wire — one system row, no instructions
+        field. Pre-fix the wire held BOTH instructions=override AND the original prompt
+        as a leading system item (preflight preserves both)."""
+        kw, normalized = self._build(transport, {"instructions": self.OVERRIDE})
+        assert [i for i in kw["input"] if i.get("role") == "system"] == [
+            {"role": "system", "content": self.OVERRIDE}
+        ]
+        assert "instructions" not in normalized
+        assert [i for i in normalized["input"] if i.get("role") == "system"] == [
+            {"role": "system", "content": self.OVERRIDE}
+        ]
+        assert TestBridgedResponsesSystemPromptAsInputItem.SYSTEM not in json.dumps(normalized)
+
+    @pytest.mark.parametrize("blank", ["", "   ", None], ids=["empty", "whitespace", "none"])
+    def test_blank_instructions_override_matches_base_wire(self, transport, blank):
+        """An explicitly present blank/None override is still a wholesale replacement —
+        the pristine-base (165183140bc) wire, reproduced end to end: the raw value rides
+        top-level ``instructions``, no system item is relocated, preflight resolves the
+        blank prompt to DEFAULT_AGENT_IDENTITY, and the original prompt is absent."""
+        kw, normalized = self._build(transport, {"instructions": blank})
+        assert kw["instructions"] == blank
+        assert not any(i.get("role") == "system" for i in kw["input"])
+        assert TestBridgedResponsesSystemPromptAsInputItem.SYSTEM not in json.dumps(kw)
+        assert normalized["instructions"] == DEFAULT_AGENT_IDENTITY
+        assert not any(i.get("role") == "system" for i in normalized["input"])
+        assert TestBridgedResponsesSystemPromptAsInputItem.SYSTEM not in json.dumps(normalized)
+
+    @pytest.mark.parametrize(
+        "base_url,extra",
+        [
+            (None, {}),
+            ("https://api.openai.com/v1", {}),
+        ],
+        ids=["sdk-default-origin", "openai"],
+    )
+    def test_native_route_instructions_override_unchanged_from_base(self, transport, base_url, extra):
+        """Direct OpenAI keeps the historical wire: the override lands in top-level
+        ``instructions`` and no system item is emitted — the relocation never runs."""
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[
+                {"role": "system", "content": TestBridgedResponsesSystemPromptAsInputItem.SYSTEM},
+                {"role": "user", "content": "Ping"},
+            ],
+            tools=[], base_url=base_url, request_overrides={"instructions": self.OVERRIDE},
+            **extra,
+        )
+        assert kw["instructions"] == self.OVERRIDE
+        assert not any(i.get("role") == "system" for i in kw["input"])
+        normalized = transport.preflight_kwargs(kw)
+        assert normalized["instructions"] == self.OVERRIDE
+        assert not any(i.get("role") == "system" for i in normalized["input"])
+
+    def test_input_override_keeps_instructions_wire(self, transport):
+        """An ``input`` override replaces the input list wholesale (base contract) — it
+        never carried the system prompt, so the prompt keeps riding ``instructions``
+        instead of being silently discarded with the replaced items."""
+        caller_input = [{"role": "user", "content": "raw caller payload"}]
+        kw, normalized = self._build(transport, {"input": caller_input})
+        assert kw["instructions"] == TestBridgedResponsesSystemPromptAsInputItem.SYSTEM
+        assert kw["input"] == caller_input
+        assert normalized["instructions"] == TestBridgedResponsesSystemPromptAsInputItem.SYSTEM
+        assert normalized["input"] == caller_input
+
+    def test_cache_key_tracks_overridden_prompt(self, transport):
+        """``prompt_cache_key`` is content-addressed over the prompt actually sent: an
+        overridden system prompt must change the key within the same cache scope, and
+        the same override must hash stably across builds."""
+        def _key(overrides):
+            _, normalized = self._build(transport, overrides, session_id="override-cache-scope")
+            return normalized["prompt_cache_key"]
+
+        assert _key({}) != _key({"instructions": self.OVERRIDE})
+        assert _key({"instructions": self.OVERRIDE}) == _key({"instructions": self.OVERRIDE})

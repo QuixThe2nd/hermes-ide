@@ -1,5 +1,5 @@
 """Structured reasoning keeps text and answer channels intact on every chat consumer."""
-from evals.providers.reasoning_shapes import run_matrix
+from tests.probes.providers.reasoning_shapes import run_matrix
 
 
 def test_stream_reasoning_shapes_preserve_text_and_answer():

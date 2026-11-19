@@ -6,12 +6,12 @@
 #
 # Source filters (pythonSrc, per-package npm srcs) reduce rebuild scope so
 # that e.g. a .tsx change doesn't trigger a Python venv rebuild, and a .py
-# change doesn't trigger a TUI/Web/Desktop rebuild.  Each derivation gets a
+# change doesn.t trigger an npm rebuild.  Each derivation gets a
 # filtered src that only includes files it actually needs, while keeping
 # the repo-root directory layout intact for buildNpmPackage /
 # npmConfigHook workspace resolution.
 #
-# mkNpmPassthru returns packageJsonPath (e.g. "ui-tui/package.json")
+# mkNpmPassthru returns packageJsonPath
 # instead of a per-package devShellHook.  The root devshell hook
 # (mkNpmDevShellHook) collects all package.json paths, stamps them,
 # and if any changed, runs a single `npm i --package-lock-only` from
@@ -68,7 +68,7 @@ let
 
   # Expand a workspace glob (e.g. "apps/*") into concrete member dirs
   # relative to the repo root.  Only trailing "*" globs are supported —
-  # that's all npm uses here.  Literal patterns (e.g. "ui-tui") pass
+  # that's all npm uses here.  Literal patterns pass
   # through unchanged.
   expandWorkspace =
     pattern:
@@ -94,14 +94,14 @@ let
 
   # Top-level directory of each workspace member, deduplicated.  Used to
   # exclude JS/TS workspace trees from the Python source filter.  E.g.
-  # apps/desktop + apps/shared + ui-tui + web → [ "apps" "ui-tui" "web" ].
+  # "a/b" + "a/c" → [ "a" ].
   jsWorkspaceTopDirs = lib.unique (
     map (d: builtins.head (lib.splitString "/" d)) workspaceMemberDirs
   );
 
   # ── Source filters for reducing rebuild scope ──────────────────────
   # Changing a .tsx/.mjs file should NOT trigger a Python venv rebuild,
-  # and changing a .py file should NOT trigger a TUI/Web/Desktop rebuild.
+  # and changing a .py file should NOT trigger an npm rebuild.
 
   # Python source: everything except JS/TS/docs/infra directories.
   pythonSrc = lib.cleanSourceWith {
@@ -232,11 +232,11 @@ let
   # its first entry is the package's own folder (→ packageJsonPath), and
   # all entries scope the filtered src.  Packages that import source from
   # another workspace member (file: deps) must list that member's dir too,
-  # e.g. apps/desktop depends on apps/shared.
+  # e.g. one workspace depends on another.
   #
   # Usage:
   #   hermesNpmLib.buildNpmPackage {
-  #     dirs = [ "apps/desktop" "apps/shared" ];
+  #     dirs = [ "a" "b" ];
   #     buildPhase = '' ... '';
   #     installPhase = '' ... '';
   #   }
@@ -260,7 +260,6 @@ let
         src = mkNpmSrc dirs;
         npmConfigHook = patchedNpmConfigHook;
         npmRoot = ".";
-        ELECTRON_SKIP_BINARY_DOWNLOAD = 1;
         passthru = {
           packageJsonPath = "${folder}/package.json";
         };
@@ -303,8 +302,8 @@ in
 
     # importNpmLock reads hashes from the lockfile itself — rebuild every
     # npm package to verify the new lockfile resolves offline.
-    nix build .#tui .#web .#desktop
-    echo "Lockfile updated and all npm packages built."
+    nix build .#update-npm-lockfile
+    echo "Lockfile updated."
   '';
 
   buildNpmPackage = customBuildNpmPackage;

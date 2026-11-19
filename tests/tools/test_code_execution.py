@@ -27,8 +27,8 @@ os.environ["TERMINAL_ENV"] = "local"
 def _force_local_terminal(monkeypatch):
     """Re-set TERMINAL_ENV=local before every test.
 
-    The module-level assignment above covers import time, but under xdist
-    another worker can overwrite os.environ between tests.  monkeypatch
+    The module-level assignment above covers import time, but another
+    test can overwrite os.environ between tests.  monkeypatch
     ensures each test starts (and ends) with the correct value.
     """
     monkeypatch.setenv("TERMINAL_ENV", "local")
@@ -49,6 +49,20 @@ from tools.code_execution_tool import (
     _format_interrupted_output,
 )
 from tools.registry import registry
+
+
+@pytest.fixture(autouse=True)
+def _fresh_kernel_registry():
+    """Session kernels are always on: dispose them per-test so one test's
+    kernel child can't outlive the run (hangs pytest at exit) or leak its
+    interpreter state / task key into the next test. Per-file process
+    isolation does not replace per-test kernel ownership.
+    """
+    from tools.code_kernel import shutdown_all_kernels
+
+    shutdown_all_kernels()
+    yield
+    shutdown_all_kernels()
 
 
 def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
@@ -930,6 +944,7 @@ class TestRpcTokenAuthorization(unittest.TestCase):
             t.join(timeout=5)
         return responses
 
+    @pytest.mark.platforms("linux")
     def test_missing_token_rejected(self):
         """A request with no token is rejected as Unauthorized."""
         resp = self._drive_server(

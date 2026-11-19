@@ -2,10 +2,9 @@
 
 Covers:
 * ``PluginContext.register_platform_handler`` validation + queuing
-* ``PluginContext.register_telegram_handler`` back-compat alias
-* ``PluginManager.get_platform_handler_factories`` accessor (+ telegram alias)
+* ``PluginManager.get_platform_handler_factories`` accessor
 * ``BasePlatformAdapter._wire_plugin_handlers`` invoking factories with
-  ``(native, adapter)`` — exercised through the Telegram adapter
+  ``(native, adapter)`` — exercised through the Discord adapter
 * Defensive isolation: a factory that raises does NOT prevent other
   factories from wiring or the platform from connecting.
 * Platform scoping: factories for platform A never fire for platform B.
@@ -27,8 +26,8 @@ _repo = str(Path(__file__).resolve().parents[2])
 if _repo not in sys.path:
     sys.path.insert(0, _repo)
 
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
-from gateway.config import PlatformConfig  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from gateway.config import Platform, PlatformConfig  # noqa: E402
 
 from hermes_cli.plugins import (  # noqa: E402
     PluginContext,
@@ -44,9 +43,10 @@ def _make_ctx(name: str = "test_plugin") -> tuple[PluginManager, PluginContext]:
     return mgr, ctx
 
 
-def _make_adapter() -> TelegramAdapter:
-    config = PlatformConfig(enabled=True, token="test-token", extra={})
-    adapter = TelegramAdapter(config)
+def _make_adapter() -> DiscordAdapter:
+    """Bare DiscordAdapter with the attributes _wire_plugin_handlers reads."""
+    adapter = object.__new__(DiscordAdapter)
+    adapter.platform = Platform.DISCORD
     adapter._app = MagicMock()
     adapter._bot = MagicMock()
     return adapter
@@ -97,56 +97,33 @@ class TestRegisterPlatformHandlerAPI:
 
     def test_accessor_returns_copy(self):
         mgr, ctx = _make_ctx()
-        ctx.register_platform_handler("telegram", lambda n, a: None)
+        ctx.register_platform_handler("slack", lambda n, a: None)
 
-        got = mgr.get_platform_handler_factories("telegram")
+        got = mgr.get_platform_handler_factories("slack")
         got.append(("junk", "junk"))
-        assert len(mgr.get_platform_handler_factories("telegram")) == 1
+        assert len(mgr.get_platform_handler_factories("slack")) == 1
 
     def test_multiple_plugins_each_recorded(self):
         mgr = PluginManager()
         for name in ("plugin_a", "plugin_b"):
             manifest = PluginManifest(name=name, version="0.1.0", description="t")
             ctx = PluginContext(manifest=manifest, manager=mgr)
-            ctx.register_platform_handler("telegram", lambda n, a: None)
+            ctx.register_platform_handler("slack", lambda n, a: None)
 
-        names = [n for _, n in mgr.get_platform_handler_factories("telegram")]
+        names = [n for _, n in mgr.get_platform_handler_factories("slack")]
         assert names == ["plugin_a", "plugin_b"]
 
     def test_force_rediscovery_clears_factories(self):
         mgr, ctx = _make_ctx()
-        ctx.register_platform_handler("telegram", lambda n, a: None)
-        assert len(mgr.get_platform_handler_factories("telegram")) == 1
+        ctx.register_platform_handler("slack", lambda n, a: None)
+        assert len(mgr.get_platform_handler_factories("slack")) == 1
 
         mgr.discover_and_load(force=True)
-        assert mgr.get_platform_handler_factories("telegram") == []
+        assert mgr.get_platform_handler_factories("slack") == []
 
 
 # ===========================================================================
-# Telegram back-compat alias
-# ===========================================================================
-
-class TestTelegramAlias:
-    def test_register_telegram_handler_routes_to_telegram_bucket(self):
-        mgr, ctx = _make_ctx()
-
-        def factory(application, adapter):  # pragma: no cover
-            pass
-
-        ctx.register_telegram_handler(factory)
-
-        assert mgr.get_platform_handler_factories("telegram") == [
-            (factory, "test_plugin")
-        ]
-
-    def test_alias_non_callable_raises(self):
-        _, ctx = _make_ctx()
-        with pytest.raises(ValueError, match="non-callable"):
-            ctx.register_telegram_handler("not-a-callable")  # type: ignore[arg-type]
-
-
-# ===========================================================================
-# BasePlatformAdapter._wire_plugin_handlers (via TelegramAdapter)
+# BasePlatformAdapter._wire_plugin_handlers (via DiscordAdapter)
 # ===========================================================================
 
 class TestAdapterPluginWiring:
@@ -167,7 +144,7 @@ class TestAdapterPluginWiring:
         assert calls == [(adapter._app, adapter)]
         adapter._app.add_handler.assert_called_once()
         # Adapter asked for its own platform's factories.
-        mgr.get_platform_handler_factories.assert_called_once_with("telegram")
+        mgr.get_platform_handler_factories.assert_called_once_with("discord")
 
     def test_no_factories_is_a_noop(self):
         adapter = _make_adapter()
@@ -238,9 +215,7 @@ def test_all_connectable_adapters_wire_plugin_handlers():
     ) + [
         str(repo / "gateway" / "platforms" / name)
         for name in (
-            "api_server.py", "bluebubbles.py", "msgraph_webhook.py",
-            "qqbot/adapter.py", "signal.py", "webhook.py", "weixin.py",
-            "whatsapp_cloud.py", "yuanbao.py",
+            "api_server.py", "webhook.py", "whatsapp_cloud.py",
         )
     ]
     missing = []

@@ -19,6 +19,15 @@ import pytest
 import pm.workspace as ws
 
 
+def _site_packages(venv: Path) -> Path:
+    """site-packages of the venv uv actually created — the running
+    interpreter's layout (pm pins UV_PYTHON to sys.executable), not a
+    per-OS hardcoded one."""
+    import sysconfig
+
+    return Path(sysconfig.get_paths(vars={"base": str(venv)})["purelib"])
+
+
 def _uv_available() -> bool:
     import shutil
 
@@ -70,10 +79,8 @@ def test_lock_and_sync_installs_member_deps(mini_workspace):
     _, plug, venv = mini_workspace
     ws.lock_and_sync([plug], [], venv_dir=venv)
 
-    site = venv / "Lib" if (venv / "Lib").exists() else venv / "lib"
-    packages = sorted(p.name for p in site.glob("*site-packages"))
-    assert packages, "no site-packages in the synced venv"
-    sp = site / packages[0]
+    sp = _site_packages(venv)
+    assert sp.is_dir(), "no site-packages in the synced venv"
 
     # the member's dep landed (this is the --all-packages contract)
     assert (sp / "pyfiglet").is_dir() or any(
@@ -93,8 +100,7 @@ def test_union_survives_a_resync(mini_workspace):
     ws.lock_and_sync([plug], [], venv_dir=venv)
     ws.lock_and_sync([plug], [], venv_dir=venv)
 
-    site = venv / "Lib" if (venv / "Lib").exists() else venv / "lib"
-    sp = site / next(iter(sorted(p.name for p in site.glob("*site-packages"))))
+    sp = _site_packages(venv)
     assert any(p.name.startswith("pyfiglet") for p in sp.iterdir()), (
         "member deps were stripped by a re-sync — the union lock must own "
         "them across rebuilds"

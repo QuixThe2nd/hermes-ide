@@ -30,70 +30,27 @@ name per process. Fix the import and it goes away. To silence during migration:
 `python -W ignore::hermes_cli.plugin_compat.HermesPluginCompatWarning` or `warnings.filterwarnings("ignore", category=HermesPluginCompatWarning)`.
 
 **Scope.** Only PUBLIC names (no leading underscore) that were defined or imported at module top level
-before the decomposition are covered. Private names (`_foo`, `_TG_NAME_LIMIT`, `_clamp_telegram_names`,
-...) were never part of any surface and are NOT restored; a plugin that patched or imported one must move
+before the decomposition are covered. Private names (`_foo`, ...) were never part of any surface and are NOT restored; a plugin that patched or imported one must move
 to the public equivalent or the new module. Test monkeypatch seams are likewise not preserved.
 
 | kind | count | meaning |
 |---|---|---|
 | moved | 0 | name now defined in `new location`; re-exported from the old module |
-| moved-lazy | 1148 | same, resolved lazily via `__getattr__` to avoid an import cycle |
-| import | 592 | a third-party/stdlib name the old module used to expose; original import restored |
-| restored-def | 290 | public name that was deleted as unused; its pre-decomposition definition is restored verbatim |
-| restored-helper | 41 | private helper restored only because a restored-def above depends on it |
-| restored-import | 17 | import re-added only because a restored-def above depends on it |
+| moved-lazy | 1136 | same, resolved lazily via `__getattr__` to avoid an import cycle |
+| import | 589 | a third-party/stdlib name the old module used to expose; original import restored |
+| restored-def | 281 | public name that was deleted as unused; its pre-decomposition definition is restored verbatim |
+| restored-helper | 39 | private helper restored only because a restored-def above depends on it |
+| restored-import | 15 | import re-added only because a restored-def above depends on it |
 | module-stub | 3 | whole module deleted; stub re-exports from its replacement |
 | unrestorable | 34 | not restorable (e.g. leaked loop variables); listed for completeness |
 
 ## Names by old module
 
 
-### `acp_adapter.auth`
 
-| name | kind | new location |
-|---|---|---|
-| `has_provider` | restored-def | `(deleted; BASE body restored)` |
 
-### `acp_adapter.edit_approval`
 
-| name | kind | new location |
-|---|---|---|
-| `FutureTimeout` | import | `concurrent.futures` |
-| `clear_edit_approval_requester` | restored-def | `(deleted; BASE body restored)` |
-| `get_edit_approval_requester` | restored-def | `(deleted; BASE body restored)` |
 
-### `acp_adapter.events`
-
-| name | kind | new location |
-|---|---|---|
-| `json` | import | `json` |
-
-### `acp_adapter.server`
-
-| name | kind | new location |
-|---|---|---|
-| `ACP_MAX_MODELS_PER_PROVIDER` | moved-lazy | `acp_adapter.model_catalog` |
-| `AgentThoughtChunk` | import | `acp.schema` |
-| `AudioContentBlock` | import | `acp.schema` |
-| `AvailableCommand` | import | `acp.schema` |
-| `AvailableCommandsUpdate` | import | `acp.schema` |
-| `BlobResourceContents` | import | `acp.schema` |
-| `EmbeddedResourceContentBlock` | import | `acp.schema` |
-| `ImageContentBlock` | import | `acp.schema` |
-| `Path` | import | `pathlib` |
-| `ResourceContentBlock` | import | `acp.schema` |
-| `TextResourceContents` | import | `acp.schema` |
-| `UnstructuredCommandInput` | import | `acp.schema` |
-| `base64` | import | `base64` |
-| `json` | import | `json` |
-| `unquote` | import | `urllib.parse` |
-| `urlparse` | import | `urllib.parse` |
-
-### `acp_adapter.session`
-
-| name | kind | new location |
-|---|---|---|
-| `Lock` | import | `threading` |
 
 ### `agent`
 
@@ -152,7 +109,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 
 | name | kind | new location |
 |---|---|---|
-| `NOUS_EXTRA_BODY` | restored-def | `(deleted; BASE body restored)` |
 | `Path` | import | `pathlib` |
 | `copy` | import | `copy` |
 | `get_async_text_auxiliary_client` | restored-def | `(deleted; BASE body restored)` |
@@ -171,40 +127,12 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `Path` | import | `pathlib` |
 | `is_background_review_enabled` | restored-def | `(deleted; BASE body restored)` |
 
-### `agent.bedrock_adapter`
-
-| name | kind | new location |
-|---|---|---|
-| `CONTEXT_OVERFLOW_PATTERNS` | restored-def | `(deleted; BASE body restored)` |
-| `OVERLOAD_PATTERNS` | restored-def | `(deleted; BASE body restored)` |
-| `THROTTLE_PATTERNS` | restored-def | `(deleted; BASE body restored)` |
-| `call_converse_stream` | restored-def | `(deleted; BASE body restored)` |
-| `classify_bedrock_error` | restored-def | `(deleted; BASE body restored)` |
-| `is_context_overflow_error` | restored-helper | `(deleted; restored as a dependency of classify_bedrock_error)` |
-| `is_context_overflow_error` | restored-def | `(deleted; BASE body restored)` |
-
 ### `agent.bounded_response`
 
 | name | kind | new location |
 |---|---|---|
 | `Optional` | import | `typing` |
 | `read_error_body_or_default` | restored-def | `(deleted; BASE body restored)` |
-
-### `agent.browser_provider`
-
-| name | kind | new location |
-|---|---|---|
-| `Any` | import | `typing` |
-| `Optional` | import | `typing` |
-
-### `agent.browser_registry`
-
-| name | kind | new location |
-|---|---|---|
-| `Dict` | import | `typing` |
-| `List` | import | `typing` |
-| `hermes_home_key` | moved-lazy | `hermes_constants` |
-| `threading` | import | `threading` |
 
 ### `agent.codex_runtime`
 
@@ -373,13 +301,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `re` | import | `re` |
 
-### `agent.nous_rate_guard`
-
-| name | kind | new location |
-|---|---|---|
-| `atomic_replace` | moved-lazy | `utils` |
-| `tempfile` | import | `tempfile` |
-
 ### `agent.outbound_webhooks`
 
 | name | kind | new location |
@@ -387,17 +308,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `Path` | import | `pathlib` |
 | `datetime` | import | `datetime` |
 | `timezone` | import | `datetime` |
-
-### `agent.pet.generate.atlas`
-
-| name | kind | new location |
-|---|---|---|
-| `COLUMNS` | restored-def | `(deleted; BASE body restored)` |
-| `FRAME_COUNTS` | restored-def | `(deleted; BASE body restored)` |
-| `ROWS` | restored-def | `(deleted; BASE body restored)` |
-| `atlas_to_webp_bytes` | restored-def | `(deleted; BASE body restored)` |
-| `io` | restored-import | `io` |
-| `io` | import | `io` |
 
 ### `agent.prompt_builder`
 
@@ -645,7 +555,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `Condition` | import | `prompt_toolkit.filters` |
 | `ConditionalContainer` | import | `prompt_toolkit.layout` |
 | `ConditionalProcessor` | import | `prompt_toolkit.layout.processors` |
-| `DEFAULT_BROWSER_CDP_URL` | moved-lazy | `hermes_cli.browser_connect` |
 | `Dimension` | import | `prompt_toolkit.layout.dimension` |
 | `FileHistory` | import | `prompt_toolkit.history` |
 | `FormattedTextControl` | import | `prompt_toolkit.layout` |
@@ -675,10 +584,8 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `get_toolset_for_tool` | moved-lazy | `model_tools` |
 | `get_toolset_info` | moved-lazy | `toolsets` |
 | `init_skin_from_config` | moved-lazy | `hermes_cli.skin_engine` |
-| `is_browser_debug_ready` | moved-lazy | `hermes_cli.browser_connect` |
 | `is_table_divider` | moved-lazy | `agent.markdown_tables` |
 | `looks_like_table_row` | moved-lazy | `agent.markdown_tables` |
-| `manual_chrome_debug_command` | moved-lazy | `hermes_cli.browser_connect` |
 | `print_config_warnings` | moved-lazy | `hermes_cli.config` |
 | `prompt_for_secret` | moved-lazy | `hermes_cli.callbacks` |
 | `rich_box` | import | `rich` |
@@ -711,18 +618,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | name | kind | new location |
 |---|---|---|
 | `provider_supports_fire_cancel` | restored-def | `(deleted; BASE body restored)` |
-
-### `gateway.browser_control_artifacts`
-
-| name | kind | new location |
-|---|---|---|
-| `ArtifactOverwrite` | restored-def | `(deleted; BASE body restored)` |
-
-### `gateway.browser_control_broker`
-
-| name | kind | new location |
-|---|---|---|
-| `BROWSER_CONTROL_ALL_CAPABILITIES` | restored-def | `(deleted; BASE body restored)` |
 
 ### `gateway.config`
 
@@ -794,17 +689,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `NoReturn` | import | `typing` |
 | `contextmanager` | import | `contextlib` |
 | `time` | import | `time` |
-
-### `gateway.kanban_watchers`
-
-| name | kind | new location |
-|---|---|---|
-| `Callable` | import | `typing` |
-| `Context` | import | `contextvars` |
-| `logging` | import | `logging` |
-| `re` | import | `re` |
-| `sqlite3` | import | `sqlite3` |
-| `t` | moved-lazy | `agent.i18n` |
 
 ### `gateway.memory_status`
 
@@ -980,7 +864,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `is_shared_multi_user_session` | moved-lazy | `gateway.session` |
 | `is_truthy_value` | moved-lazy | `utils` |
 | `load_dotenv` | import | `dotenv` |
-| `looks_like_telegram_private_chat_id` | moved-lazy | `gateway.delivery` |
 | `loop_heartbeat_forever` | moved-lazy | `gateway.shutdown_watchdog` |
 | `merge_pending_message_event` | moved-lazy | `gateway.platforms.base` |
 | `neutralize_untrusted_inline_text` | moved-lazy | `gateway.session` |
@@ -1093,8 +976,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS` | moved-lazy | `hermes_cli.auth_constants` |
 | `HTTPServer` | import | `http.server` |
 | `MINIMAX_OAUTH_GRANT_TYPE` | moved-lazy | `hermes_cli.auth_constants` |
-| `NOUS_INFERENCE_INVOKE_SCOPE` | moved-lazy | `hermes_cli.auth_constants` |
-| `NOUS_SHARED_STORE_FILENAME` | moved-lazy | `hermes_cli.auth_nous` |
 | `OAUTH_OVER_SSH_DOCS_URL` | moved-lazy | `hermes_cli.auth_constants` |
 | `QWEN_OAUTH_CLIENT_ID` | moved-lazy | `hermes_cli.auth_constants` |
 | `QWEN_OAUTH_TOKEN_URL` | moved-lazy | `hermes_cli.auth_constants` |
@@ -1108,7 +989,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `base64` | import | `base64` |
 | `hashlib` | import | `hashlib` |
 | `parse_qs` | import | `urllib.parse` |
-| `refresh_nous_oauth_pure` | moved-lazy | `hermes_cli.auth_nous` |
 | `ssl` | import | `ssl` |
 | `subprocess` | import | `subprocess` |
 | `sys` | import | `sys` |
@@ -1120,17 +1000,10 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `copy_db_and_verify` | restored-def | `(deleted; BASE body restored)` |
 
-### `hermes_cli.browser_connect`
-
-| name | kind | new location |
-|---|---|---|
-| `try_launch_chrome_debug` | restored-def | `(deleted; BASE body restored)` |
-
 ### `hermes_cli.callbacks`
 
 | name | kind | new location |
 |---|---|---|
-| `approval_callback` | restored-def | `(deleted; BASE body restored)` |
 | `clarify_callback` | restored-def | `(deleted; BASE body restored)` |
 
 ### `hermes_cli.checkpoints`
@@ -1172,9 +1045,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `slack_native_slashes` | moved-lazy | `hermes_cli.commands_platforms` |
 | `slack_subcommand_map` | moved-lazy | `hermes_cli.commands_platforms` |
 | `subprocess` | import | `subprocess` |
-| `telegram_bot_commands` | moved-lazy | `hermes_cli.commands_platforms` |
-| `telegram_menu_commands` | moved-lazy | `hermes_cli.commands_platforms` |
-| `telegram_menu_max_commands` | moved-lazy | `hermes_cli.commands_platforms` |
 | `time` | import | `time` |
 
 ### `hermes_cli.config`
@@ -1197,13 +1067,11 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `Protocol` | import | `typing` |
 
-### `hermes_cli.dashboard_auth.audit`
 
 | name | kind | new location |
 |---|---|---|
 | `os` | import | `os` |
 
-### `hermes_cli.dashboard_auth.middleware`
 
 | name | kind | new location |
 |---|---|---|
@@ -1224,13 +1092,11 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `OPENROUTER_MODELS_URL` | moved-lazy | `hermes_constants` |
 | `Path` | import | `pathlib` |
 | `STATE_DB_SIZE_WARN_BYTES` | moved-lazy | `hermes_cli.doctor_state` |
-| `agent_browser_runnable` | moved-lazy | `hermes_constants` |
 | `base_url_host_matches` | moved-lazy | `utils` |
 | `check_certificates` | moved-lazy | `hermes_cli.doctor_platform` |
 | `check_fail` | restored-def | `(deleted; BASE body restored)` |
 | `check_macos_full_disk_access` | moved-lazy | `hermes_cli.doctor_platform` |
 | `check_macos_tcc_anchor` | moved-lazy | `hermes_cli.doctor_platform` |
-| `check_macos_tcc_grants` | moved-lazy | `hermes_cli.doctor_platform` |
 | `check_ok` | restored-def | `(deleted; BASE body restored)` |
 | `check_warn` | restored-def | `(deleted; BASE body restored)` |
 | `collect_deprecated_config_keys` | moved-lazy | `hermes_cli.doctor_config` |
@@ -1283,91 +1149,11 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `is_ancestor_of_head` | restored-def | `(deleted; BASE body restored)` |
 
-### `hermes_cli.heartbeat`
-
-| name | kind | new location |
-|---|---|---|
-| `Dict` | import | `typing` |
-
 ### `hermes_cli.journey`
 
 | name | kind | new location |
 |---|---|---|
 | `cmd_journey` | restored-def | `(deleted; BASE body restored)` |
-
-### `hermes_cli.kanban`
-
-| name | kind | new location |
-|---|---|---|
-| `Any` | import | `typing` |
-
-### `hermes_cli.kanban_db`
-
-| name | kind | new location |
-|---|---|---|
-| `DEFAULT_BUSY_TIMEOUT_MS` | moved-lazy | `hermes_cli.kanban_db_connect` |
-| `DEFAULT_LOG_BACKUP_COUNT` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `DEFAULT_LOG_ROTATE_BYTES` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `DEFAULT_SPAWN_FAILURE_LIMIT` | restored-def | `(deleted; BASE body restored)` |
-| `DERIVED_MAX_IN_PROGRESS_CEILING` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `DERIVED_MAX_IN_PROGRESS_FLOOR` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `KanbanDbCorruptError` | moved-lazy | `hermes_cli.kanban_db_connect` |
-| `MEMORY_GUARD_MB_PER_WORKER` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `Mapping` | import | `typing` |
-| `RepairResult` | moved-lazy | `hermes_cli.kanban_db_connect` |
-| `add_notify_sub` | moved-lazy | `hermes_cli.kanban_db_notify` |
-| `advance_notify_cursor` | moved-lazy | `hermes_cli.kanban_db_notify` |
-| `check_respawn_guard` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `claim_unseen_events_for_sub` | moved-lazy | `hermes_cli.kanban_db_notify` |
-| `configured_max_in_progress` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `connect` | moved-lazy | `hermes_cli.kanban_db_connect` |
-| `connect_closing` | moved-lazy | `hermes_cli.kanban_db_connect` |
-| `count_notify_subs` | moved-lazy | `hermes_cli.kanban_db_notify` |
-| `count_running_tasks` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `count_running_tasks_other_boards` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `derive_default_max_in_progress` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `detect_crashed_workers` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `detect_stale_running` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `dispatch_once` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `enforce_max_runtime` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `field` | import | `dataclasses` |
-| `has_spawnable_ready` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `has_spawnable_review` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `hashlib` | import | `hashlib` |
-| `heartbeat_worker` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `list_notify_subs` | moved-lazy | `hermes_cli.kanban_db_notify` |
-| `parent_results` | restored-def | `(deleted; BASE body restored)` |
-| `purge_stale_done_notify_subs` | moved-lazy | `hermes_cli.kanban_db_notify` |
-| `random` | import | `random` |
-| `reap_worker_zombies` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `reconcile_orphaned_running` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `remove_notify_sub` | moved-lazy | `hermes_cli.kanban_db_notify` |
-| `repair_db` | moved-lazy | `hermes_cli.kanban_db_connect` |
-| `resolve_max_in_progress` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `resolve_workspace` | moved-lazy | `hermes_cli.kanban_db_workspace` |
-| `review_dispatch_enabled` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `rewind_notify_cursor` | moved-lazy | `hermes_cli.kanban_db_notify` |
-| `run_daemon` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `set_branch_name` | moved-lazy | `hermes_cli.kanban_db_workspace` |
-| `set_workspace_path` | moved-lazy | `hermes_cli.kanban_db_workspace` |
-| `shutil` | import | `shutil` |
-| `threading` | import | `threading` |
-| `unseen_events_for_sub` | moved-lazy | `hermes_cli.kanban_db_notify` |
-| `worker_log_rotation_config` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-
-### `hermes_cli.kanban_decompose`
-
-| name | kind | new location |
-|---|---|---|
-| `json` | import | `json` |
-| `os` | import | `os` |
-
-### `hermes_cli.kanban_diagnostics`
-
-| name | kind | new location |
-|---|---|---|
-| `DIAGNOSTIC_KINDS` | restored-def | `(deleted; BASE body restored)` |
 
 ### `hermes_cli.local_runtime.binaries`
 
@@ -1447,9 +1233,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 
 | name | kind | new location |
 |---|---|---|
-| `BEDROCK_GEO_PREFIXES` | moved-lazy | `hermes_cli.model_setup_flows_bedrock` |
-| `bedrock_model_routable_from_region` | moved-lazy | `hermes_cli.model_setup_flows_bedrock` |
-| `bedrock_region_geo_prefix` | moved-lazy | `hermes_cli.model_setup_flows_bedrock` |
 | `custom_provider_slug` | moved-lazy | `hermes_cli.providers` |
 | `line_input` | moved-lazy | `hermes_cli.cli_output` |
 | `subprocess` | import | `subprocess` |
@@ -1477,22 +1260,16 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `ProviderEntry` | moved-lazy | `hermes_cli.models_catalog_static` |
 | `atomic_json_write` | moved-lazy | `utils` |
 | `base_url_host_matches` | moved-lazy | `utils` |
-| `compute_sale_discount` | moved-lazy | `hermes_cli.models_pricing` |
 | `ensure_lmstudio_model_loaded` | moved-lazy | `hermes_cli.models_local` |
 | `fetch_ai_gateway_pricing` | moved-lazy | `hermes_cli.models_pricing` |
 | `fetch_lmstudio_models` | moved-lazy | `hermes_cli.models_local` |
 | `fetch_models_with_pricing` | moved-lazy | `hermes_cli.models_pricing` |
 | `fetch_ollama_local_models` | moved-lazy | `hermes_cli.models_local` |
-| `get_cached_nous_inference_base_url` | moved-lazy | `hermes_cli.models_pricing` |
 | `get_close_matches` | import | `difflib` |
 | `get_pricing_for_provider` | moved-lazy | `hermes_cli.models_pricing` |
 | `group_providers` | moved-lazy | `hermes_cli.models_catalog_static` |
 | `http` | import | `http.client` |
-| `is_nous_free_tier` | restored-def | `(deleted; BASE body restored)` |
 | `lmstudio_model_reasoning_options` | moved-lazy | `hermes_cli.models_local` |
-| `nous_catalog_url` | moved-lazy | `hermes_cli.models_reasoning_caps` |
-| `nous_model_reasoning_capabilities` | moved-lazy | `hermes_cli.models_reasoning_caps` |
-| `nous_policy_allowed_ids` | moved-lazy | `hermes_cli.models_pricing` |
 | `ollama_model_supports_thinking` | moved-lazy | `hermes_cli.models_local` |
 | `openrouter_model_reasoning_capabilities` | moved-lazy | `hermes_cli.models_reasoning_caps` |
 | `parse_openrouter_reasoning_capabilities` | moved-lazy | `hermes_cli.models_reasoning_caps` |
@@ -1502,24 +1279,10 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `probe_ollama_local_models` | moved-lazy | `hermes_cli.models_local` |
 | `provider_group_for_slug` | moved-lazy | `hermes_cli.models_catalog_static` |
 | `refresh_reasoning_caps_async` | moved-lazy | `hermes_cli.models_reasoning_caps` |
-| `restrict_to_nous_policy` | moved-lazy | `hermes_cli.models_pricing` |
 | `should_use_ollama_native_catalog` | moved-lazy | `hermes_cli.models_local` |
 | `url_origin` | moved-lazy | `hermes_cli.urllib_security` |
 | `validate_requested_model` | moved-lazy | `hermes_cli.models_validate` |
-| `warm_nous_reasoning_caps_async` | moved-lazy | `hermes_cli.models_reasoning_caps` |
 | `warm_openrouter_reasoning_caps_async` | moved-lazy | `hermes_cli.models_reasoning_caps` |
-
-### `hermes_cli.nous_billing`
-
-| name | kind | new location |
-|---|---|---|
-| `BILLING_MANAGE_SCOPE` | restored-def | `(deleted; BASE body restored)` |
-
-### `hermes_cli.nous_subscription`
-
-| name | kind | new location |
-|---|---|---|
-| `managed_nous_tools_enabled` | moved-lazy | `tools.tool_backend_helpers` |
 
 ### `hermes_cli.observability.relay_runtime`
 
@@ -1636,10 +1399,8 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `Any` | import | `typing` |
 | `Dict` | import | `typing` |
 | `Optional` | import | `typing` |
-| `get_nous_subscription_features` | moved-lazy | `hermes_cli.nous_subscription` |
 | `get_optional_skills_dir` | moved-lazy | `hermes_constants` |
 | `json` | import | `json` |
-| `managed_nous_tools_enabled` | moved-lazy | `tools.tool_backend_helpers` |
 | `shutil` | import | `shutil` |
 
 ### `hermes_cli.slack_cli`
@@ -1658,41 +1419,15 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 
 | name | kind | new location |
 |---|---|---|
-| `format_nous_portal_entitlement_message` | moved-lazy | `hermes_cli.nous_account` |
-| `get_nous_portal_account_info` | moved-lazy | `hermes_cli.nous_account` |
-| `get_nous_subscription_features` | moved-lazy | `hermes_cli.nous_subscription` |
-| `managed_nous_tools_enabled` | moved-lazy | `tools.tool_backend_helpers` |
 | `redact_key` | moved-lazy | `hermes_cli.config` |
 | `subprocess` | import | `subprocess` |
-
-### `hermes_cli.telegram_managed_bot`
-
-| name | kind | new location |
-|---|---|---|
-| `DEFAULT_MANAGER_BOT` | restored-def | `(deleted; BASE body restored)` |
-| `_USERNAME_SLUG_ALPHABET` | restored-helper | `(deleted; restored as a dependency of generate_bot_username)` |
-| `auto_setup_telegram_bot` | restored-def | `(deleted; BASE body restored)` |
-| `generate_bot_username` | restored-def | `(deleted; BASE body restored)` |
-| `generate_deep_link` | restored-def | `(deleted; BASE body restored)` |
-| `generate_pairing_nonce` | restored-def | `(deleted; BASE body restored)` |
-| `generate_username_slug` | restored-helper | `(deleted; restored as a dependency of generate_bot_username)` |
-| `generate_username_slug` | restored-def | `(deleted; BASE body restored)` |
-| `poll_for_token` | restored-def | `(deleted; BASE body restored)` |
-| `poll_pairing_once` | restored-def | `(deleted; BASE body restored)` |
-| `secrets` | restored-import | `secrets` |
-| `secrets` | import | `secrets` |
-| `urllib` | restored-import | `urllib.parse` |
-| `urllib` | import | `urllib.parse` |
 
 ### `hermes_cli.tools_config`
 
 | name | kind | new location |
 |---|---|---|
-| `MANAGED_FEATURE_COVERAGE_CATEGORY` | moved-lazy | `hermes_cli.nous_subscription` |
-| `NOUS_MANAGED_PROVIDER` | moved-lazy | `tools.tool_backend_helpers` |
 | `base_url_hostname` | moved-lazy | `utils` |
 | `fal_key_is_configured` | moved-lazy | `tools.tool_backend_helpers` |
-| `format_nous_portal_entitlement_message` | moved-lazy | `hermes_cli.nous_account` |
 | `is_truthy_value` | moved-lazy | `utils` |
 | `save_env_value` | moved-lazy | `hermes_cli.config` |
 | `shutil` | import | `shutil` |
@@ -1721,7 +1456,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `Path` | import | `pathlib` |
 | `os` | import | `os` |
 
-### `hermes_cli.web_deps`
 
 | name | kind | new location |
 |---|---|---|
@@ -1730,19 +1464,16 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `has_valid_session_token` | restored-def | `(deleted; BASE body restored)` |
 | `late_attr` | restored-def | `(deleted; BASE body restored)` |
 
-### `hermes_cli.web_routers.cron`
 
 | name | kind | new location |
 |---|---|---|
 | `logging` | import | `logging` |
 
-### `hermes_cli.web_routers.mcp`
 
 | name | kind | new location |
 |---|---|---|
 | `logging` | import | `logging` |
 
-### `hermes_cli.web_routers.sessions`
 
 | name | kind | new location |
 |---|---|---|
@@ -1750,21 +1481,18 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `Dict` | import | `typing` |
 | `logging` | import | `logging` |
 
-### `hermes_cli.web_routers.skills`
 
 | name | kind | new location |
 |---|---|---|
 | `LateState` | moved-lazy | `hermes_cli.web_deps` |
 | `logging` | import | `logging` |
 
-### `hermes_cli.web_routers.tools`
 
 | name | kind | new location |
 |---|---|---|
 | `LateState` | moved-lazy | `hermes_cli.web_deps` |
 | `logging` | import | `logging` |
 
-### `hermes_cli.web_server`
 
 | name | kind | new location |
 |---|---|---|
@@ -1842,7 +1570,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `RawConfigUpdate` | moved-lazy | `hermes_cli.web_models` |
 | `RegistryFull` | moved-lazy | `hermes_cli.pty_session` |
 | `Response` | unrestorable | `no top-level definition on BASE` |
-| `STORAGE_HONCHO_HOST_BLOCK` | moved-lazy | `plugins.memory.config_schema` |
 | `SecretStr` | unrestorable | `no top-level definition on BASE` |
 | `SessionImport` | moved-lazy | `hermes_cli.web_models` |
 | `SessionPrune` | moved-lazy | `hermes_cli.web_models` |
@@ -1856,8 +1583,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `StaticFiles` | unrestorable | `no top-level definition on BASE` |
 | `TTSLeaseRequest` | moved-lazy | `hermes_cli.web_models` |
 | `TTSSpeakRequest` | moved-lazy | `hermes_cli.web_models` |
-| `TelegramOnboardingApply` | moved-lazy | `hermes_cli.web_models` |
-| `TelegramOnboardingStart` | moved-lazy | `hermes_cli.web_models` |
 | `TerminalBackendSelect` | moved-lazy | `hermes_cli.web_models` |
 | `ThemeSetBody` | moved-lazy | `hermes_cli.web_models` |
 | `ToolsetEnvUpdate` | moved-lazy | `hermes_cli.web_models` |
@@ -1875,7 +1600,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `activate_custom_endpoint` | moved-lazy | `hermes_cli.web_routers.config_env` |
 | `add_credential_pool_entry` | moved-lazy | `hermes_cli.web_routers.ops` |
 | `add_mcp_server` | moved-lazy | `hermes_cli.web_routers.mcp` |
-| `apply_telegram_onboarding` | moved-lazy | `hermes_cli.web_routers.messaging` |
 | `apply_whatsapp_onboarding` | moved-lazy | `hermes_cli.web_routers.messaging` |
 | `approve_pairing` | moved-lazy | `hermes_cli.web_routers.ops` |
 | `atexit` | import | `atexit` |
@@ -1885,7 +1609,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `build_cron_model_impact` | moved-lazy | `hermes_cli.config` |
 | `bulk_delete_sessions_endpoint` | moved-lazy | `hermes_cli.web_routers.sessions` |
 | `cancel_oauth_session` | moved-lazy | `hermes_cli.web_routers.oauth` |
-| `cancel_telegram_onboarding` | moved-lazy | `hermes_cli.web_routers.messaging` |
 | `cancel_whatsapp_onboarding` | moved-lazy | `hermes_cli.web_routers.messaging` |
 | `cfg_get` | moved-lazy | `hermes_cli.config` |
 | `check_config_version` | moved-lazy | `hermes_cli.config` |
@@ -1904,7 +1627,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `create_profile_endpoint` | moved-lazy | `hermes_cli.web_routers.profiles` |
 | `create_skill` | moved-lazy | `hermes_cli.web_routers.skills` |
 | `create_webhook` | moved-lazy | `hermes_cli.web_routers.ops` |
-| `cron_fire_webhook` | moved-lazy | `hermes_cli.web_routers.cron` |
 | `custom_endpoint_key_env` | moved-lazy | `hermes_cli.config` |
 | `dataclass` | import | `dataclasses` |
 | `datetime` | import | `datetime` |
@@ -1963,7 +1685,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `get_env_vars` | moved-lazy | `hermes_cli.web_routers.config_env` |
 | `get_health` | moved-lazy | `hermes_cli.web_routers.status` |
 | `get_hermes_home` | moved-lazy | `hermes_cli.config` |
-| `get_learning_graph` | moved-lazy | `hermes_cli.web_routers.status` |
 | `get_learning_node` | moved-lazy | `hermes_cli.web_routers.status` |
 | `get_logs` | moved-lazy | `hermes_cli.web_routers.status` |
 | `get_media` | moved-lazy | `hermes_cli.web_routers.files` |
@@ -1997,7 +1718,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `get_ssh_ownership` | moved-lazy | `hermes_cli.web_routers.status` |
 | `get_status` | moved-lazy | `hermes_cli.web_routers.status` |
 | `get_system_stats` | moved-lazy | `hermes_cli.web_routers.status` |
-| `get_telegram_onboarding_status` | moved-lazy | `hermes_cli.web_routers.messaging` |
 | `get_terminal_backends` | moved-lazy | `hermes_cli.web_routers.tools` |
 | `get_toolset_config` | moved-lazy | `hermes_cli.web_routers.tools` |
 | `get_toolset_models` | moved-lazy | `hermes_cli.web_routers.tools` |
@@ -2131,7 +1851,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `speak_text` | moved-lazy | `hermes_cli.web_routers.audio` |
 | `start_gateway` | moved-lazy | `hermes_cli.web_routers.ops` |
 | `start_oauth_login` | moved-lazy | `hermes_cli.web_routers.oauth` |
-| `start_telegram_onboarding` | moved-lazy | `hermes_cli.web_routers.messaging` |
 | `start_whatsapp_onboarding` | moved-lazy | `hermes_cli.web_routers.messaging` |
 | `stat` | import | `stat` |
 | `stop_gateway` | moved-lazy | `hermes_cli.web_routers.ops` |
@@ -2179,7 +1898,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `os` | import | `os` |
 | `tempfile` | import | `tempfile` |
 
-### `hermes_cli.win_pty_bridge`
 
 | name | kind | new location |
 |---|---|---|
@@ -2267,29 +1985,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `json` | import | `json` |
 | `os` | import | `os` |
 
-### `plugins.browser.browser_use.provider`
-
-| name | kind | new location |
-|---|---|---|
-| `BrowserProvider` | moved-lazy | `agent.browser_provider` |
-| `os` | import | `os` |
-
-### `plugins.browser.browserbase.provider`
-
-| name | kind | new location |
-|---|---|---|
-| `BrowserProvider` | moved-lazy | `agent.browser_provider` |
-| `requests` | import | `requests` |
-| `uuid` | import | `uuid` |
-
-### `plugins.browser.firecrawl.provider`
-
-| name | kind | new location |
-|---|---|---|
-| `BrowserProvider` | moved-lazy | `agent.browser_provider` |
-| `requests` | import | `requests` |
-| `uuid` | import | `uuid` |
-
 ### `plugins.context_engine`
 
 | name | kind | new location |
@@ -2304,32 +1999,17 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `importlib` | import | `importlib.util` |
 | `sys` | import | `sys` |
 
-### `plugins.cron_providers.chronos`
-
-| name | kind | new location |
-|---|---|---|
-| `Optional` | import | `typing` |
-
-### `plugins.cron_providers.chronos._nas_client`
-
-| name | kind | new location |
-|---|---|---|
-| `Optional` | import | `typing` |
-
-### `plugins.dashboard_auth.basic`
 
 | name | kind | new location |
 |---|---|---|
 | `Any` | import | `typing` |
 | `LoginStart` | moved-lazy | `hermes_cli.dashboard_auth` |
 
-### `plugins.dashboard_auth.drain`
 
 | name | kind | new location |
 |---|---|---|
 | `LoginStart` | moved-lazy | `hermes_cli.dashboard_auth` |
 
-### `plugins.dashboard_auth.nous`
 
 | name | kind | new location |
 |---|---|---|
@@ -2344,7 +2024,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `secrets` | import | `secrets` |
 | `urllib` | import | `urllib.parse` |
 
-### `plugins.dashboard_auth.self_hosted`
 
 | name | kind | new location |
 |---|---|---|
@@ -2356,31 +2035,9 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `os` | import | `os` |
 | `secrets` | import | `secrets` |
 
-### `plugins.google_meet.audio_bridge`
 
-| name | kind | new location |
-|---|---|---|
-| `chrome_fake_audio_flags` | restored-def | `(deleted; BASE body restored)` |
 
-### `plugins.google_meet.meet_bot`
 
-| name | kind | new location |
-|---|---|---|
-| `SAY_PCM_FILENAME` | restored-def | `(deleted; BASE body restored)` |
-| `SAY_QUEUE_FILENAME` | restored-def | `(deleted; BASE body restored)` |
-| `json` | import | `json` |
-
-### `plugins.google_meet.node.cli`
-
-| name | kind | new location |
-|---|---|---|
-| `Any` | import | `typing` |
-
-### `plugins.google_meet.node.registry`
-
-| name | kind | new location |
-|---|---|---|
-| `json` | import | `json` |
 
 ### `plugins.image_gen.deepinfra`
 
@@ -2434,78 +2091,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `dataclass` | import | `dataclasses` |
 | `importlib` | import | `importlib` |
 
-### `plugins.memory.honcho`
 
-| name | kind | new location |
-|---|---|---|
-| `CONCLUDE_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `CONTEXT_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `PROFILE_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `REASONING_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `SEARCH_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `TRIVIAL_PROMPT_RE` | moved-lazy | `agent.memory_provider` |
-
-### `plugins.memory.honcho.client`
-
-| name | kind | new location |
-|---|---|---|
-| `SingletonSlot` | moved-lazy | `plugins.plugin_utils` |
-
-### `plugins.memory.honcho.oauth`
-
-| name | kind | new location |
-|---|---|---|
-| `Callable` | import | `typing` |
-
-### `plugins.memory.honcho.session`
-
-| name | kind | new location |
-|---|---|---|
-| `Callable` | import | `typing` |
-| `Path` | import | `pathlib` |
-| `hashlib` | import | `hashlib` |
-| `re` | import | `re` |
-
-### `plugins.memory.mem0`
-
-| name | kind | new location |
-|---|---|---|
-| `ADD_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `DELETE_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `SEARCH_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `UPDATE_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-
-### `plugins.memory.mem0._setup`
-
-| name | kind | new location |
-|---|---|---|
-| `has_oss_flags` | restored-def | `(deleted; BASE body restored)` |
-
-### `plugins.memory.retaindb`
-
-| name | kind | new location |
-|---|---|---|
-| `CONTEXT_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `Dict` | import | `typing` |
-| `FILE_DELETE_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `FILE_INGEST_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `FILE_LIST_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `FILE_READ_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `FILE_UPLOAD_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `FORGET_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `List` | import | `typing` |
-| `PROFILE_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `REMEMBER_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `SEARCH_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-
-### `plugins.memory.supermemory`
-
-| name | kind | new location |
-|---|---|---|
-| `FORGET_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `PROFILE_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `SEARCH_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
-| `STORE_SCHEMA` | restored-def | `(deleted; BASE body restored)` |
 
 ### `plugins.platforms.a2a.protocol`
 
@@ -2539,13 +2125,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `TypedDict` | import | `typing` |
 
-### `plugins.platforms.dingtalk.adapter`
-
-| name | kind | new location |
-|---|---|---|
-| `DINGTALK_TYPE_MAPPING` | moved-lazy | `plugins.platforms.dingtalk.inbound` |
-| `EXT_MAP` | restored-def | `(deleted; BASE body restored)` |
-| `MessageType` | moved-lazy | `gateway.platforms.event` |
 
 ### `plugins.platforms.discord.adapter`
 
@@ -2568,17 +2147,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `secrets` | import | `secrets` |
 | `subprocess` | import | `subprocess` |
 
-### `plugins.platforms.irc.adapter`
 
-| name | kind | new location |
-|---|---|---|
-| `os` | import | `os` |
-
-### `plugins.platforms.line.adapter`
-
-| name | kind | new location |
-|---|---|---|
-| `field` | import | `dataclasses` |
 
 ### `plugins.platforms.matrix.adapter`
 
@@ -2590,11 +2159,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `_MATRIX_CAPABILITIES` | restored-helper | `(deleted; restored as a dependency of get_matrix_capabilities)` |
 | `get_matrix_capabilities` | restored-def | `(deleted; BASE body restored)` |
 
-### `plugins.platforms.ntfy.adapter`
-
-| name | kind | new location |
-|---|---|---|
-| `os` | import | `os` |
 
 ### `plugins.platforms.photon.adapter`
 
@@ -2623,87 +2187,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `asyncio` | import | `asyncio` |
 
-### `plugins.platforms.teams.adapter`
-
-| name | kind | new location |
-|---|---|---|
-| `TeamsSummaryWriter` | moved-lazy | `plugins.platforms.teams.summary_writer` |
-| `html` | import | `html` |
-| `quote` | import | `urllib.parse` |
-
-### `plugins.platforms.telegram.adapter`
-
-| name | kind | new location |
-|---|---|---|
-| `atomic_replace` | moved-lazy | `utils` |
-| `cache_document_from_bytes` | moved-lazy | `gateway.platforms.base` |
-| `threading` | import | `threading` |
-
-### `plugins.platforms.telegram.telegram_ids`
-
-| name | kind | new location |
-|---|---|---|
-| `telegram_chat_id_key` | restored-def | `(deleted; BASE body restored)` |
-
-### `plugins.platforms.wecom.adapter`
-
-| name | kind | new location |
-|---|---|---|
-| `ABSOLUTE_MAX_BYTES` | moved-lazy | `plugins.platforms.wecom.media` |
-| `APP_CMD_UPLOAD_MEDIA_CHUNK` | moved-lazy | `plugins.platforms.wecom.media` |
-| `APP_CMD_UPLOAD_MEDIA_FINISH` | moved-lazy | `plugins.platforms.wecom.media` |
-| `APP_CMD_UPLOAD_MEDIA_INIT` | moved-lazy | `plugins.platforms.wecom.media` |
-| `FILE_MAX_BYTES` | moved-lazy | `plugins.platforms.wecom.media` |
-| `IMAGE_MAX_BYTES` | moved-lazy | `plugins.platforms.wecom.media` |
-| `MAX_INTERMEDIATE_FRAMES` | moved-lazy | `plugins.platforms.wecom.streaming` |
-| `MAX_UPLOAD_CHUNKS` | moved-lazy | `plugins.platforms.wecom.media` |
-| `Path` | import | `pathlib` |
-| `ReplyFrame` | moved-lazy | `plugins.platforms.wecom.streaming` |
-| `STREAM_EXPIRED_ERRCODE` | moved-lazy | `plugins.platforms.wecom.streaming` |
-| `STREAM_REQUEST_EXPIRED_ERRCODE` | moved-lazy | `plugins.platforms.wecom.streaming` |
-| `STREAM_VERSION_CONFLICT_ERRCODE` | moved-lazy | `plugins.platforms.wecom.streaming` |
-| `UPLOAD_CHUNK_SIZE` | moved-lazy | `plugins.platforms.wecom.media` |
-| `VIDEO_MAX_BYTES` | moved-lazy | `plugins.platforms.wecom.media` |
-| `VOICE_MAX_BYTES` | moved-lazy | `plugins.platforms.wecom.media` |
-| `VOICE_SUPPORTED_MIMES` | moved-lazy | `plugins.platforms.wecom.media` |
-| `WeComStreamExpiredError` | moved-lazy | `plugins.platforms.wecom.streaming` |
-| `base64` | import | `base64` |
-| `cache_document_from_bytes_async` | moved-lazy | `gateway.platforms.base` |
-| `cache_image_from_bytes_async` | moved-lazy | `gateway.platforms.base` |
-| `dataclass` | import | `dataclasses` |
-| `deque` | import | `collections` |
-| `hashlib` | import | `hashlib` |
-| `mimetypes` | import | `mimetypes` |
-| `os` | import | `os` |
-| `unquote` | import | `urllib.parse` |
-| `urlparse` | import | `urllib.parse` |
-
-### `plugins.spotify`
-
-| name | kind | new location |
-|---|---|---|
-| `SPOTIFY_ALBUMS_SCHEMA` | moved-lazy | `plugins.spotify.tools` |
-| `SPOTIFY_DEVICES_SCHEMA` | moved-lazy | `plugins.spotify.tools` |
-| `SPOTIFY_LIBRARY_SCHEMA` | moved-lazy | `plugins.spotify.tools` |
-| `SPOTIFY_PLAYBACK_SCHEMA` | moved-lazy | `plugins.spotify.tools` |
-| `SPOTIFY_PLAYLISTS_SCHEMA` | moved-lazy | `plugins.spotify.tools` |
-| `SPOTIFY_QUEUE_SCHEMA` | moved-lazy | `plugins.spotify.tools` |
-| `SPOTIFY_SEARCH_SCHEMA` | moved-lazy | `plugins.spotify.tools` |
-
-### `plugins.spotify.client`
-
-| name | kind | new location |
-|---|---|---|
-| `compact_json` | restored-def | `(deleted; BASE body restored)` |
-| `json` | restored-import | `json` |
-| `json` | import | `json` |
-
-### `plugins.spotify.tools`
-
-| name | kind | new location |
-|---|---|---|
-| `SpotifyAPIError` | moved-lazy | `plugins.spotify.client` |
-| `SpotifyAuthRequiredError` | moved-lazy | `plugins.spotify.client` |
 
 ### `plugins.teams_pipeline.cli`
 
@@ -2863,40 +2346,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `json` | import | `json` |
 
-### `tools.approval`
-
-| name | kind | new location |
-|---|---|---|
-| `DANGEROUS_PATTERNS` | moved-lazy | `tools.approval_detection` |
-| `DANGEROUS_PATTERNS_COMPILED` | moved-lazy | `tools.approval_detection` |
-| `HARDLINE_PATTERNS` | moved-lazy | `tools.approval_detection` |
-| `HARDLINE_PATTERNS_COMPILED` | moved-lazy | `tools.approval_detection` |
-| `HUMAN_WAIT_MARGIN_S` | moved-lazy | `tools.approval_human_wait` |
-| `cfg_get` | moved-lazy | `hermes_cli.config` |
-| `contextlib` | import | `contextlib` |
-| `contextvars` | import | `contextvars` |
-| `fnmatch` | import | `fnmatch` |
-| `functools` | import | `functools` |
-| `get_plugin_manager` | moved-lazy | `tools.approval_prompt` |
-| `human_wait_ceiling` | moved-lazy | `tools.approval_human_wait` |
-| `human_wait_seconds` | moved-lazy | `tools.approval_human_wait` |
-| `human_wait_window` | moved-lazy | `tools.approval_human_wait` |
-| `is_interrupted` | moved-lazy | `tools.interrupt` |
-| `re` | import | `re` |
-| `request_elicitation_consent` | moved-lazy | `tools.approval_prompt` |
-| `reset_current_observability_context` | moved-lazy | `tools.approval_context` |
-| `reset_current_session_key` | moved-lazy | `tools.approval_context` |
-| `reset_hermes_interactive_context` | moved-lazy | `tools.approval_context` |
-| `set_current_observability_context` | moved-lazy | `tools.approval_context` |
-| `set_current_session_key` | moved-lazy | `tools.approval_context` |
-| `set_hermes_interactive_context` | moved-lazy | `tools.approval_context` |
-| `shlex` | import | `shlex` |
-| `sys` | import | `sys` |
-| `tempfile` | import | `tempfile` |
-| `time` | import | `time` |
-| `unicodedata` | import | `unicodedata` |
-| `uuid` | import | `uuid` |
-
 ### `tools.async_delegation`
 
 | name | kind | new location |
@@ -2910,41 +2359,13 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `CAMOFOX_STATE_DIR_NAME` | restored-def | `(deleted; BASE body restored)` |
 | `CAMOFOX_STATE_SUBDIR` | restored-def | `(deleted; BASE body restored)` |
 
-### `tools.browser_dialog_tool`
-
-| name | kind | new location |
-|---|---|---|
-| `logger` | moved-lazy | `tools.approval` |
-| `logging` | import | `logging` |
-
-### `tools.browser_supervisor`
-
-| name | kind | new location |
-|---|---|---|
-| `CONSOLE_HISTORY_MAX` | restored-def | `(deleted; BASE body restored)` |
-| `ConsoleEvent` | restored-def | `(deleted; BASE body restored)` |
-| `DIALOG_BRIDGE_HOST` | moved-lazy | `tools.browser_supervisor_dialogs` |
-| `DIALOG_BRIDGE_URL_PATTERN` | moved-lazy | `tools.browser_supervisor_dialogs` |
-| `DIALOG_POLICY_AUTO_ACCEPT` | moved-lazy | `tools.browser_supervisor_dialogs` |
-| `DIALOG_POLICY_AUTO_DISMISS` | moved-lazy | `tools.browser_supervisor_dialogs` |
-| `DIALOG_POLICY_MUST_RESPOND` | moved-lazy | `tools.browser_supervisor_dialogs` |
-| `FRAME_TREE_MAX_ENTRIES` | moved-lazy | `tools.browser_supervisor_frames` |
-| `FRAME_TREE_MAX_OOPIF_DEPTH` | moved-lazy | `tools.browser_supervisor_frames` |
-
 ### `tools.browser_tool`
 
 | name | kind | new location |
 |---|---|---|
-| `BrowserUseProvider` | moved-lazy | `plugins.browser.browser_use.provider.BrowserUseBrowserProvider` |
-| `BrowserbaseProvider` | moved-lazy | `plugins.browser.browserbase.provider.BrowserbaseBrowserProvider` |
-| `CloudBrowserProvider` | moved-lazy | `agent.browser_provider.BrowserProvider` |
-| `FirecrawlProvider` | moved-lazy | `plugins.browser.firecrawl.provider.FirecrawlBrowserProvider` |
 | `List` | import | `typing` |
 | `SNAPSHOT_SUMMARIZE_THRESHOLD` | restored-def | `(deleted; BASE body restored)` |
 | `Tuple` | import | `typing` |
-| `agent_browser_runnable` | moved-lazy | `hermes_constants` |
-| `check_browser_requirements` | moved-lazy | `tools.browser_tool_install` |
-| `check_browser_vision_requirements` | moved-lazy | `tools.browser_tool_install` |
 | `cleanup_all_browsers` | moved-lazy | `tools.browser_tool_lifecycle` |
 | `cleanup_browser` | moved-lazy | `tools.browser_tool_lifecycle` |
 | `contextlib` | import | `contextlib` |
@@ -2953,16 +2374,13 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `get_hermes_home_override` | moved-lazy | `hermes_constants` |
 | `hermes_home_key` | moved-lazy | `hermes_constants` |
 | `is_truthy_value` | moved-lazy | `utils` |
-| `lightpanda_engine_status` | moved-lazy | `tools.browser_tool_lightpanda_fallback` |
 | `node_tool_runnable` | moved-lazy | `hermes_constants` |
-| `normalize_browser_cloud_provider` | moved-lazy | `tools.tool_backend_helpers` |
 | `re` | import | `re` |
 | `reset_hermes_home_override` | moved-lazy | `hermes_constants` |
 | `set_hermes_home_override` | moved-lazy | `hermes_constants` |
 | `shutil` | import | `shutil` |
 | `signal` | import | `signal` |
 | `timezone` | import | `datetime` |
-| `warm_agent_browser_npx_cache` | moved-lazy | `tools.browser_tool_install` |
 | `windows_hide_flags` | moved-lazy | `hermes_cli._subprocess_compat` |
 
 ### `tools.clarify_gateway`
@@ -3008,7 +2426,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `get_computer_use_schema` | moved-lazy | `tools.computer_use.tool` |
 | `handle_computer_use` | moved-lazy | `tools.computer_use.tool` |
 | `release_computer_use_session` | moved-lazy | `tools.computer_use.tool` |
-| `set_approval_callback` | moved-lazy | `tools.computer_use.tool` |
 
 ### `tools.computer_use.cua_backend`
 
@@ -3150,7 +2567,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | name | kind | new location |
 |---|---|---|
 | `json` | import | `json` |
-| `logger` | moved-lazy | `tools.approval` |
 | `logging` | import | `logging` |
 | `threading` | import | `threading` |
 
@@ -3337,12 +2753,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `get_async_client` | restored-def | `(deleted; BASE body restored)` |
 
-### `tools.path_security`
-
-| name | kind | new location |
-|---|---|---|
-| `logger` | moved-lazy | `tools.approval` |
-| `logging` | import | `logging` |
 
 ### `tools.preview_tool`
 
@@ -3459,9 +2869,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `GITHUB_TAP_PROVIDERS` | moved-lazy | `tools.skills_hub_github` |
 | `GitHubAuth` | moved-lazy | `tools.skills_hub_github` |
 | `GitHubSource` | moved-lazy | `tools.skills_hub_github` |
-| `HERMES_INDEX_TTL` | moved-lazy | `tools.skills_hub_search` |
-| `HERMES_INDEX_URL` | moved-lazy | `tools.skills_hub_search` |
-| `HermesIndexSource` | moved-lazy | `tools.skills_hub_official` |
 | `LobeHubSource` | moved-lazy | `tools.skills_hub_sources` |
 | `OptionalSkillSource` | moved-lazy | `tools.skills_hub_official` |
 | `PurePosixPath` | import | `pathlib` |
@@ -3588,7 +2995,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `is_interrupted` | moved-lazy | `tools.interrupt` |
 | `is_managed_tool_gateway_ready` | moved-lazy | `tools.managed_tool_gateway` |
 | `is_persistent_env` | moved-lazy | `tools.terminal_tool_lifecycle` |
-| `nous_tool_gateway_unavailable_message` | moved-lazy | `tools.tool_backend_helpers` |
 | `platform` | import | `platform` |
 | `re` | import | `re` |
 | `resolve_modal_backend_state` | moved-lazy | `tools.tool_backend_helpers` |
@@ -3605,18 +3011,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `HEREDOC_MARKER` | restored-def | `(deleted; BASE body restored)` |
 | `uuid` | import | `uuid` |
-
-### `tools.tool_search`
-
-| name | kind | new location |
-|---|---|---|
-| `Literal` | import | `typing` |
-| `build_catalog_listing` | restored-def | `(deleted; BASE body restored)` |
-| `copy` | import | `copy` |
-| `field` | import | `dataclasses` |
-| `re` | import | `re` |
-| `snowballstemmer` | import | `snowballstemmer` |
-| `threading` | import | `threading` |
 
 ### `tools.transcription_tools`
 
@@ -3637,8 +3031,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `OPENAI_MODELS` | moved-lazy | `tools.transcription_common` |
 | `SUPPORTED_FORMATS` | moved-lazy | `tools.transcription_common` |
 | `XAI_STT_BASE_URL` | moved-lazy | `tools.transcription_common` |
-| `managed_nous_tools_enabled` | moved-lazy | `tools.tool_backend_helpers` |
-| `nous_tool_gateway_unavailable_message` | moved-lazy | `tools.tool_backend_helpers` |
 | `platform` | import | `platform` |
 | `queue` | import | `queue` |
 | `re` | import | `re` |
@@ -3712,8 +3104,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `dataclass` | import | `dataclasses` |
 | `field` | import | `dataclasses` |
 | `hermes_xai_user_agent` | moved-lazy | `tools.xai_http` |
-| `managed_nous_tools_enabled` | moved-lazy | `tools.tool_backend_helpers` |
-| `nous_tool_gateway_unavailable_message` | moved-lazy | `tools.tool_backend_helpers` |
 | `platform` | import | `platform` |
 | `queue` | import | `queue` |
 | `re` | import | `re` |
@@ -3784,9 +3174,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `asyncio` | import | `asyncio` |
 | `build_vendor_gateway_url` | moved-lazy | `tools.managed_tool_gateway` |
 | `httpx` | import | `httpx` |
-| `managed_nous_tools_enabled` | moved-lazy | `tools.tool_backend_helpers` |
 | `normalize_url_for_request` | moved-lazy | `tools.url_safety` |
-| `nous_tool_gateway_unavailable_message` | moved-lazy | `tools.tool_backend_helpers` |
 | `prefers_gateway` | moved-lazy | `tools.tool_backend_helpers` |
 | `re` | import | `re` |
 | `resolve_managed_tool_gateway` | moved-lazy | `tools.managed_tool_gateway` |
@@ -3851,14 +3239,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `Optional` | import | `typing` |
 | `Tuple` | import | `typing` |
 | `resolve_profile` | restored-def | `(deleted; BASE body restored)` |
-
-### `tui_gateway.methods_browser_control`
-
-| name | kind | new location |
-|---|---|---|
-| `BROWSER_CONTROL_PROTOCOL_VERSION` | moved-lazy | `gateway.browser_control_broker` |
-| `browser_control_protocol_supported` | moved-lazy | `gateway.browser_control_broker` |
-| `filter_browser_control_capabilities` | moved-lazy | `gateway.browser_control_broker` |
 
 ### `tui_gateway.methods_prompt`
 

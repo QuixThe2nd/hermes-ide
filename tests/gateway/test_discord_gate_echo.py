@@ -1,4 +1,9 @@
-"""Tests for discord.response_gate echo_channels (judge echo, no session wake)."""
+"""Tests for discord.response_gate echo_channels (judge echo, no session wake).
+
+Every real judge request also posts one visible ``🔎 jev`` notice line (the
+Go formatter renders it); tests that observe that send are gated on the
+formatter binary being resolvable, like the other jev notice suites.
+"""
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -7,11 +12,17 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig, ResponseGateConfig
+from gateway.jev_notice import go_formatter_binary
 from gateway.platforms.base import SendResult
 
 import plugins.platforms.discord.adapter as discord_platform  # noqa: E402
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 from plugins.platforms.discord.response_gate import GateDecision, ResponseGateError  # noqa: E402
+
+requires_go = pytest.mark.skipif(
+    go_formatter_binary() is None,
+    reason="jev notices need the Go formatter binary (cached or built from the checkout)",
+)
 
 
 class _TextChannel:
@@ -103,6 +114,7 @@ def _mock_decide(adapter, decision: GateDecision):
     return client
 
 
+@requires_go
 @pytest.mark.asyncio
 async def test_echo_channel_score_at_or_above_threshold(adapter):
     channel = _TextChannel()
@@ -112,7 +124,10 @@ async def test_echo_channel_score_at_or_above_threshold(adapter):
     )
     client = _mock_decide(
         adapter,
-        GateDecision(allowed=True, mode="enforce", score=0.96, latency_ms=12.0),
+        GateDecision(
+            allowed=True, mode="enforce", score=0.96, latency_ms=12.0,
+            scores={"addresses_bot": 0.91, "noise": 0.05},
+        ),
     )
     msg = _make_message(channel=channel)
 
@@ -120,11 +135,17 @@ async def test_echo_channel_score_at_or_above_threshold(adapter):
 
     assert result is False
     adapter.send.assert_awaited_once()
-    assert "0.96" in adapter.send.await_args.args[1]
+    # The echo line IS the visible notice: verdict plus the judge's component
+    # scores, rendered by the shared Go formatter (missing nouls read 0.00).
+    assert adapter.send.await_args.args[1] == (
+        "🔎 jev response-gate user message from Alice: allow "
+        "(addresses_bot=0.91 continues_bot_thread=0.00 joins_bot_thread=0.00 noise=0.05)"
+    )
     adapter._handle_message.assert_not_awaited()
     client.decide.assert_awaited_once()
 
 
+@requires_go
 @pytest.mark.asyncio
 async def test_echo_channel_score_below_threshold(adapter):
     channel = _TextChannel()
@@ -136,6 +157,10 @@ async def test_echo_channel_score_below_threshold(adapter):
         adapter,
         GateDecision(
             allowed=False, mode="shadow", score=0.31, latency_ms=8.0, reason="below_threshold",
+            scores={
+                "addresses_bot": 0.09, "continues_bot_thread": 0.88,
+                "joins_bot_thread": 0.02, "noise": 0.75,
+            },
         ),
     )
     msg = _make_message(channel=channel)
@@ -145,14 +170,25 @@ async def test_echo_channel_score_below_threshold(adapter):
     assert result is False
     adapter.send.assert_awaited_once()
     body = adapter.send.await_args.args[1]
-    assert "0.31" in body
-    assert "(below 0.8)" in body
+    # A denied echo still posts the judge's verdict with all four component
+    # scores — the threshold decision itself is visible, not just a wake.
+    assert body == (
+        "🔎 jev response-gate user message from Alice: deny "
+        "(addresses_bot=0.09 continues_bot_thread=0.88 joins_bot_thread=0.02 noise=0.75)"
+    )
     adapter._handle_message.assert_not_awaited()
     client.decide.assert_awaited_once()
 
 
+@requires_go
 @pytest.mark.asyncio
-async def test_non_echo_enforce_deny_no_echo_send(adapter):
+async def test_non_echo_enforce_deny_posts_visible_notice_without_dispatch(adapter):
+    """Enforce deny in a normal channel: one visible notice, no session wake.
+
+    The visible-diagnostic contract posts the judge's deny as a jev notice
+    into the originating conversation for every real request; the denial
+    policy itself is unchanged — the message still never reaches the agent.
+    """
     channel = _TextChannel()
     _init_gate(
         adapter,
@@ -169,13 +205,24 @@ async def test_non_echo_enforce_deny_no_echo_send(adapter):
     result = await adapter._dispatch_discord_message(msg)
 
     assert result is False
-    adapter.send.assert_not_awaited()
+    adapter.send.assert_awaited_once()
+    body = adapter.send.await_args.args[1]
+    assert body.startswith("🔎 jev response-gate user message from Alice: deny (")
+    # The notice is marked non-conversational so it never comes back as
+    # history or a conversation boundary on recovery.
+    assert adapter.send.await_args.kwargs["metadata"]["non_conversational_history"] is True
     adapter._handle_message.assert_not_awaited()
     client.decide.assert_awaited_once()
 
 
+@requires_go
 @pytest.mark.asyncio
 async def test_non_echo_shadow_still_dispatches_when_admitted(adapter):
+    """Shadow admit: dispatch unchanged, plus the same one visible notice.
+
+    Shadow mode never alters the legacy decision; the real judge request
+    still posts its allow notice.
+    """
     channel = _TextChannel()
     _init_gate(
         adapter,
@@ -190,7 +237,10 @@ async def test_non_echo_shadow_still_dispatches_when_admitted(adapter):
     result = await adapter._dispatch_discord_message(msg)
 
     assert result is True
-    adapter.send.assert_not_awaited()
+    adapter.send.assert_awaited_once()
+    assert adapter.send.await_args.args[1].startswith(
+        "🔎 jev response-gate user message from Alice: allow ("
+    )
     adapter._handle_message.assert_awaited_once()
     client.decide.assert_awaited_once()
 
@@ -216,6 +266,7 @@ async def test_explicit_mention_in_echo_channel_bypasses_gate(adapter):
     adapter._handle_message.assert_awaited_once()
 
 
+@requires_go
 @pytest.mark.asyncio
 async def test_echo_channel_judge_error(adapter):
     channel = _TextChannel()
@@ -232,7 +283,10 @@ async def test_echo_channel_judge_error(adapter):
 
     assert result is False
     adapter.send.assert_awaited_once()
-    assert "gate error (timeout)" in adapter.send.await_args.args[1]
+    # The failure class from the real request is the notice verdict.
+    assert adapter.send.await_args.args[1] == (
+        "🔎 jev response-gate user message from Alice: failed (timeout)"
+    )
     adapter._handle_message.assert_not_awaited()
 
 
@@ -251,6 +305,7 @@ def test_response_gate_config_echo_channels_validation():
         ResponseGateConfig.from_dict({"echo_channels": ["*"]})
 
 
+@requires_go
 @pytest.mark.asyncio
 async def test_double_echo_guard_live_and_recovered(adapter):
     channel = _TextChannel()

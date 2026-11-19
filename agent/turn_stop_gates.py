@@ -1,22 +1,31 @@
 """Text-response stop gates for the conversation turn loop.
 
-When the model stops with a text answer, three gates may instead append the answer as an
-interim row plus a synthetic user-role nudge and continue the turn: verify-on-stop (#65919),
-the ``pre_verify`` plugin hook after code edits, and the kanban worker terminal-tool guard.
-Each keeps the candidate answer as a budget-exhaustion fallback
-(``pending_verification_response``) and clears ``final_response`` so the finalizer can tell
-this gate from error exits (#61631). Nothing here imports ``agent.conversation_loop`` at
-module level (cycle).
+When the model stops with a text answer, three gates may instead continue the
+turn. The restart-echo gate runs first and DROPS the answer: a model quoting
+the restart tool result (the rich "Restarted successfully" notice) is echoing
+context, not replying, so the candidate must not be emitted, persisted, or
+kept as a fallback — one synthetic user nudge re-enters the loop instead.
+The other two append the answer as an interim row plus a synthetic user-role
+nudge: verify-on-stop (#65919) and the ``pre_verify`` plugin hook after code
+edits. Each clears ``final_response`` so the finalizer can tell a gate from
+error exits (#61631); the interim-answer gates keep the candidate as a
+budget-exhaustion fallback (``pending_verification_response``). Nothing here
+imports ``agent.conversation_loop`` at module level (cycle).
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent.message_metadata import append_message
+from agent.turn_control import (
+    RESTART_NOTICE_FIRST_LINE,
+    RESTART_NOTICE_NEW_PROCESS_PREFIX,
+    RESTART_NOTICE_OLD_PROCESS_PREFIX,
+    parse_restart_notice_lines,
+)
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -30,6 +39,96 @@ class StopGateVerdict:
     final_response: Any
     pending_verification_response: Any
     pending_verification_response_previewed: Any
+
+
+# A model that ends the turn by quoting the restart tool result is echoing
+# context, not answering (PR #667 follow-up: the notice reached a Discord
+# user verbatim as the turn's final reply). The echo is dropped — never
+# emitted, never persisted, never a budget fallback — and one synthetic user
+# nudge re-enters the loop after the tool result (tool → user, the legal
+# boundary /steer uses). The nudge is itself a user row after the notice, so
+# it structurally closes the gate: a second echo is delivered as the answer
+# (no loop), and a later restart's fresh notice re-arms it.
+_RESTART_ECHO_NUDGE = (
+    "[System: the \"Restarted successfully\" report with the process ids is "
+    "the restart tool result, not a reply to the user — do not send, repeat, "
+    "or quote it. The old process is gone; you are running in the new one. "
+    "Continue the interrupted task with your tools — confirm the restart "
+    "took effect and finish the remaining work — then answer the user about "
+    "that work.]"
+)
+_RESTART_ECHO_FLAG = "_restart_echo_synthetic"
+
+
+def _latest_restart_notice(
+    messages: List[Dict[str, Any]],
+) -> Optional[tuple]:
+    """``(index, lines)`` of the newest rich restart-notice tool result."""
+    for index in range(len(messages) - 1, -1, -1):
+        row = messages[index]
+        if not (isinstance(row, dict) and row.get("role") == "tool"):
+            continue
+        lines = parse_restart_notice_lines(row.get("content"))
+        if lines is not None:
+            return index, lines
+    return None
+
+
+def _restart_notice_window_open(messages: List[Dict[str, Any]], notice_index: int) -> bool:
+    """True while the restart turn is still open: no user row follows the
+    notice (the echo nudge itself, a raced-in user message, or a later turn
+    closes the window)."""
+    return not any(
+        isinstance(row, dict) and row.get("role") == "user"
+        for row in messages[notice_index + 1:]
+    )
+
+
+def _is_restart_notice_echo(text: Any, notice_lines: List[str]) -> bool:
+    """True when *text* quotes the notice itself: exact copy, or a subset —
+    it opens with the notice's first line, every line is one of the notice's
+    lines, and the identity (Old/New process) lines are present. A reply
+    about different pids, or notice lines plus real work, is content."""
+    stripped = str(text or "").strip()
+    if not stripped:
+        return False
+    reply_lines = [line.strip() for line in stripped.split("\n") if line.strip()]
+    if reply_lines == notice_lines:
+        return True
+    if not stripped.startswith(RESTART_NOTICE_FIRST_LINE):
+        return False
+    if not all(line in notice_lines for line in reply_lines):
+        return False
+    identity = [
+        line for line in notice_lines
+        if line.startswith((
+            RESTART_NOTICE_OLD_PROCESS_PREFIX,
+            RESTART_NOTICE_NEW_PROCESS_PREFIX,
+        ))
+    ]
+    return all(line in reply_lines for line in identity)
+
+
+def _gate_restart_echo(agent, final_response, messages) -> Optional[StopGateVerdict]:
+    """Drop an echo of the restart notice and continue the interrupted turn."""
+    notice = _latest_restart_notice(messages)
+    if notice is None:
+        return None
+    notice_index, notice_lines = notice
+    if not _restart_notice_window_open(messages, notice_index):
+        return None
+    if not _is_restart_notice_echo(final_response, notice_lines):
+        return None
+    append_message(messages, {
+        "role": "user", "content": _RESTART_ECHO_NUDGE, _RESTART_ECHO_FLAG: True,
+    })
+    agent._session_messages = messages
+    logger.debug("restart-result echo gated; continuation nudge issued")
+    return StopGateVerdict(
+        continue_turn=True, final_response=None,
+        pending_verification_response=None,
+        pending_verification_response_previewed=False,
+    )
 
 
 def _verify_on_stop_nudge(agent) -> Optional[str]:
@@ -76,21 +175,6 @@ def _pre_verify_nudge(agent, final_response, attempt: int) -> Optional[str]:
     return None
 
 
-def _kanban_stop_nudge(agent, messages) -> Optional[str]:
-    """Workers must end with a terminal board tool (kanban_complete / kanban_block /
-    kanban_request_review / kanban_request_changes); a narrated stop is recorded
-    as protocol_violation, so nudge once or twice first."""
-    try:
-        from agent.kanban_stop import build_kanban_stop_nudge
-
-        return build_kanban_stop_nudge(
-            messages=messages, attempts=getattr(agent, "_kanban_stop_nudges", 0)
-        )
-    except Exception:
-        logger.debug("kanban stop-loop check failed", exc_info=True)
-        return None
-
-
 def _append_interim_answer(agent, final_msg, messages, conversation_history, flush_fail_msg: str) -> None:
     """Real content: persist and emit as interim so the user sees the attempted answer;
     only the nudge is flagged synthetic (#65919)."""
@@ -107,9 +191,11 @@ def apply_stop_gates(
     conversation_history: Any, pending_verification_response: Any,
     pending_verification_response_previewed: Any,
 ) -> StopGateVerdict:
-    """Run verify-on-stop → pre_verify hook → kanban stop guard, in that order. Nudges
-    are user-role rows appended only after the assistant answer row, so role alternation
-    holds. Hook lookups are imported lazily from their origin modules (tests patch them
+    """Run the restart-echo gate first (it drops the candidate entirely),
+    then verify-on-stop, then the pre_verify hook. Nudges are user-role rows
+    appended only after a legal boundary (tool result for the echo gate,
+    assistant answer row for the others), so role alternation holds. Hook
+    lookups are imported lazily from their origin modules (tests patch them
     there)."""
 
     def _continue(nudge: str, flag: str) -> StopGateVerdict:
@@ -126,6 +212,10 @@ def apply_stop_gates(
                 final_response or ""
             ),
         )
+
+    _echo_verdict = _gate_restart_echo(agent, final_response, messages)
+    if _echo_verdict is not None:
+        return _echo_verdict
 
     _verify_nudge = _verify_on_stop_nudge(agent)
     if _verify_nudge:
@@ -151,23 +241,6 @@ def apply_stop_gates(
         logger.debug("pre_verify nudge issued (attempt %d)", agent._pre_verify_nudges)
         return verdict
 
-    _kanban_nudge = _kanban_stop_nudge(agent, messages)
-    if _kanban_nudge:
-        agent._kanban_stop_nudges = getattr(agent, "_kanban_stop_nudges", 0) + 1
-        final_msg["finish_reason"] = "kanban_terminal_required"
-        final_msg["_kanban_stop_synthetic"] = True
-        append_message(messages, final_msg)
-        verdict = _continue(_kanban_nudge, "_kanban_stop_synthetic")
-        logger.info(
-            "kanban stop-loop nudge issued (attempt %d) task=%s",
-            agent._kanban_stop_nudges,
-            os.environ.get("HERMES_KANBAN_TASK", ""),
-        )
-        agent._emit_diagnostic_status(
-            "⚠️ Kanban worker tried to exit without a terminal board call "
-            "(kanban_complete/kanban_request_review/kanban_block) — nudging to finish"
-        )
-        return verdict
     return StopGateVerdict(
         continue_turn=False, final_response=final_response,
         pending_verification_response=pending_verification_response,

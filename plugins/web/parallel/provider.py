@@ -26,7 +26,7 @@ def _client(slot: str, cls_name: str) -> Any:
         import parallel  # deliberately lazy
         return getattr(parallel, cls_name)(api_key=api_key)
 
-    return cached_sdk_client(slot, "PARALLEL_API_KEY", _MISSING_KEY, "search.parallel", _factory)
+    return cached_sdk_client(slot, "PARALLEL_API_KEY", _MISSING_KEY, "parallel-web", _factory)
 
 
 def _get_sync_client() -> Any:

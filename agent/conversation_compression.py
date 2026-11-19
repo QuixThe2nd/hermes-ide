@@ -113,8 +113,8 @@ _TERMINAL_COMPRESSION_PROVENANCES = frozenset(
 _SPLIT_FAILURE_COOLDOWN_SECONDS = 60
 
 # Stable marker the gateway matches on to re-tag the auto-compaction lifecycle
-# status as ``kind="compacting"`` (tui_gateway/server.py::_status_update), so
-# drivers like the desktop app can show an explicit "Summarizing…" indicator
+# status as ``kind="compacting"`` (matched by status consumers), so drivers
+# like a desktop app can show an explicit "Summarizing…" indicator
 # instead of the transcript appearing to silently reset. Keep the marker phrase
 # intact if you reword COMPACTION_STATUS. Idle/preflight/retry lines do not
 # contain this marker — ``is_compaction_progress_status`` covers those too.
@@ -168,9 +168,9 @@ def _emit_compaction_done(agent: Any) -> None:
 # Every ROUTINE (non-failure, non-manual-/compress) compression status line the
 # agent emits lives here so the gateway noise filter and its tests can couple
 # to the real emitted wording instead of hand-copied literals. These are
-# suppressed on human-facing chat platforms by _TELEGRAM_NOISY_STATUS_RE
+# suppressed on human-facing chat platforms by _NOISY_STATUS_RE
 # (gateway/run.py) — when rewording ANY of them, update that regex and the
-# pinned data in tests/gateway/test_telegram_noise_filter.py in the same PR.
+# pinned data in tests/gateway/test_compression_progress_notices.py in the same PR.
 # Failure notices (⚠ Compression aborted / empty transcript / codex compaction
 # failed) and manual /compress feedback (manual_compression_feedback.py) are
 # deliberate carve-outs from silence and must NOT be added here.
@@ -205,8 +205,8 @@ COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE = (
 # session will keep growing until the hard provider token limit kills it.
 # This MUST stay visible on chat gateways. Do NOT add it to
 # ROUTINE_COMPRESSION_STATUS_SAMPLES or the gateway noise regex
-# (_TELEGRAM_NOISY_STATUS_RE); it is pinned un-swallowed in
-# tests/gateway/test_telegram_noise_filter.py::VISIBLE_COMPRESSION_MESSAGES.
+# (_NOISY_STATUS_RE); it is pinned un-swallowed in
+# tests/gateway/test_compression_progress_notices.py::VISIBLE_COMPRESSION_MESSAGES.
 CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE = (
     CONTEXT_OVERFLOW_BLOCKED_WARNING_PREFIX
     + " (~{tokens:,} tokens >= {threshold:,}) "
@@ -237,8 +237,8 @@ ROUTINE_COMPRESSION_STATUS_SAMPLES = (
 def is_compaction_progress_status(text: str | None) -> bool:
     """True for in-progress auto-compaction lifecycle lines (not the done edge).
 
-    ``tui_gateway.server._status_update`` re-tags matching ``lifecycle``
-    statuses as ``kind="compacting"`` so TUI and desktop can show a summarizing
+    A status consumer re-tags matching ``lifecycle``
+    statuses as ``kind="compacting"`` so GUI clients can show a summarizing
     indicator for the whole pause. Matching only ``COMPACTION_STATUS_MARKER``
     left idle/preflight/retry lines looking like a hung turn (#97239).
 
@@ -2619,7 +2619,7 @@ def run_compress_context_with_progress_timeout(
         return worker(worker_fence)
 
     # Bare pool workers start with an empty ContextVar map; propagate the
-    # parent conversation/approval context into the worker.
+    # parent conversation context into the worker.
     try:
         future = executor.submit(
             propagate_context_to_thread(_fence_gated_worker), fence
@@ -3531,7 +3531,7 @@ class _CompressionActivityHeartbeat:
 
         Routed through ``agent._emit_status`` like every other compaction
         status: same "lifecycle" key (the TUI gateway re-tags it to
-        ``compacting``; Telegram edits one bubble per key), same chat-platform
+        ``compacting``; chat platforms edit one bubble per key), same chat-platform
         filter, same CLI print path.
         """
         if not self._emit_client_status:
@@ -3849,7 +3849,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
         # than minting a bearer JWT just to look up a context length.
         _raw_aux_key = getattr(client, "api_key", "")
         aux_api_key = "" if (callable(_raw_aux_key) and not isinstance(_raw_aux_key, str)) else str(_raw_aux_key or "")
-        # Resolve each model with its own provider so provider-specific paths (Bedrock table, OpenRouter API)
+        # Resolve each model with its own provider so provider-specific paths (OpenRouter API)
         # hit the correct client, not the main model's.
         _aux_provider = (
             _aux_cfg_provider if _aux_cfg_provider and _aux_cfg_provider != "auto" else getattr(agent, "provider", "")
@@ -3945,7 +3945,7 @@ def replay_compression_warning(agent: Any) -> None:
     wired, so ``_emit_status`` only reaches ``_vprint`` (CLI).  This
     method is called once at the start of the first
     ``run_conversation()`` — by then the gateway has set the callback,
-    so every platform (Telegram, Discord, Slack, etc.) receives the
+    so every platform (Discord, Slack, etc.) receives the
     warning.
     """
     msg = getattr(agent, "_compression_warning", None)
@@ -4023,6 +4023,7 @@ _SYNTHETIC_USER_FLAGS = (
     "_verification_stop_synthetic",
     "_pre_verify_synthetic",
     "_pre_turn_end_synthetic",
+    "_restart_echo_synthetic",
     "_dropped_toolcall_nudge",
 )
 
@@ -4053,7 +4054,7 @@ def _is_real_user_message(message: Any) -> bool:
 def _message_contains_busy_steer(message: Any) -> bool:
     """Return whether *message* carries a busy-steer marker.
 
-    With ``display.busy_input_mode: steer`` the follow-up is embedded as an
+    With busy-steer the follow-up is embedded as an
     out-of-band marker inside a ``role=tool`` result (see
     ``agent_runtime_helpers.apply_pending_steer_to_tool_results``). That marker
     carries real user intent but lives outside ``role=user``, so the
@@ -5128,7 +5129,7 @@ def _parent_deliberately_ended(session_db: Any, session_id: str) -> bool:
 
 
 def _carry_session_state_to_child(agent: Any, old_session_id: str, old_title: Any) -> None:
-    """Migrate /goal, /heartbeat, /loop state and the title from the parent to the child.
+    """Migrate /goal, /loop state and the title from the parent to the child.
     Each lookup is a flat per-session read with no parent walk, so state would silently die at the boundary. The title
     is carried unchanged (renumbering per rotation made one session look like many); its provenance is read BEFORE the
     transfer clears the ancestor's row, then restored so an inherited auto-title stays upgradeable.
@@ -5139,9 +5140,6 @@ def _carry_session_state_to_child(agent: Any, old_session_id: str, old_title: An
         # silently dies at the boundary (#33618).
         from hermes_cli.goals import migrate_goal_to_session
         migrate_goal_to_session(old_session_id, agent.session_id, reason="compression")
-    with _swallow('Could not migrate heartbeat on compression: %s'):
-        from hermes_cli.heartbeat import migrate_heartbeat_to_session
-        migrate_heartbeat_to_session(old_session_id, agent.session_id)
     with _swallow('Could not migrate loop on compression: %s'):
         from hermes_cli.loops import migrate_loop_to_session
         migrate_loop_to_session(old_session_id, agent.session_id, reason="compression")

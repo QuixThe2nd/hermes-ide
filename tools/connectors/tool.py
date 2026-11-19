@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Connection lifecycle tool for managed gateway accounts and local MCP servers.
 
-Disconnecting accounts remains a portal-only user decision.
+Disconnecting managed accounts remains a user-only decision in the hosting service.
 """
 
 from typing import Any, Callable, Dict, Optional
@@ -67,7 +67,7 @@ MANAGE_CONNECTIONS_SCHEMA = {
         "your next turn. Off the desktop app the MCP targets come back 'unavailable' with the "
         "terminal commands to give the user. This tool can NOT disconnect, delete, or revoke an "
         "account — that is deliberately user-only. When asked, say so and direct the user to the "
-        "Nous Portal (their org's Connectors page) or the desktop app."
+        "managed hosting service or the desktop app."
     ),
     "parameters": {
         "type": "object",
@@ -112,8 +112,8 @@ registry.register(
     name="manage_connections",
     toolset="connections",
     schema=MANAGE_CONNECTIONS_SCHEMA,
-    # The portal gate decides schema presence: an account the portal has not enabled for
-    # connectors never sees the tool, so the model cannot call it and read the gateway's
+    # The availability gate decides schema presence: sessions without a configured gateway
+    # never see the tool, so the model cannot call it and read the gateway's
     # 404 back to them. The handler runs the same gate so the RPC path (methods_connectors) and
     # a cached schema agree. Read as a module attribute so tests patch
     # ``gateway.config.connectors_available`` at one seam.

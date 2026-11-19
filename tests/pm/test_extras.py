@@ -69,7 +69,7 @@ def synced(monkeypatch):
 
 
 def test_available_known_anchor_present():
-    assert extras.available("web") is True  # fastapi ships in this venv
+    assert extras.available("mcp") is True  # the MCP SDK ships in this venv
 
 
 def test_available_missing_module():

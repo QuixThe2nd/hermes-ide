@@ -6,6 +6,7 @@ Nothing runs on the host unless TERMINAL_ENV=local; other backends run in their 
 
 import codecs
 from contextlib import suppress
+from functools import partial
 import json
 import logging
 import os
@@ -33,8 +34,17 @@ from typing import Any, Dict, List, Literal, NamedTuple, Optional
 from hermes_cli.config import get_hermes_home
 
 from tools.process_registry_notifications import format_process_notification
-from tools.process_registry_checkpoint import ProcessCheckpointMixin
+import tools.process_registry_checkpoint as _process_registry_checkpoint
 from tools.process_registry_results import load_completed_results, save_completed_result
+from agent.redact import redact_sensitive_text as _redact_sensitive_text
+
+# Durable checkpoints must redact even when live model output opts out. The
+# checkpoint mixin imports its redactor at module scope, so bind that seam to
+# the same forced policy used by durable process-result receipts.
+_process_registry_checkpoint.redact_sensitive_text = partial(
+    _redact_sensitive_text, force=True
+)
+ProcessCheckpointMixin = _process_registry_checkpoint.ProcessCheckpointMixin
 
 logger = logging.getLogger(__name__)
 
@@ -261,22 +271,25 @@ def _systemd_run_user_scope_available() -> bool:
 
 
 def _is_supervised_gateway_process() -> bool:
-    """Whether this process is the live, supervised Hermes gateway itself.
-    Supervisor markers and ``_HERMES_GATEWAY`` are inherited by every descendant (and
-    importing ``gateway.run`` sets the latter), so also require ownership of the live
-    gateway PID file — scopes are for the gateway, not terminal children or CLIs.
-    Reads the launch marker (``HERMES_SUPERVISED_CHILD`` included), not the restart-route
-    probe: a Windows Scheduled-Task gateway sets only that marker, and the self-kill guards
-    gated here must protect it too (#113667)."""
-    if os.environ.get("_HERMES_GATEWAY") != "1":
-        return False
-    try:
-        from gateway.restart import is_supervised_gateway_launch
-        from gateway.status import get_running_pid
+    """Whether this process is actively running a ``GatewayRunner`` loop.
 
-        return is_supervised_gateway_launch() and get_running_pid(cleanup_stale=False) == os.getpid()
+    PID-file ownership is deliberately not identity: an overlap successor runs
+    its loop before the predecessor exits and releases ``gateway.pid``. The
+    runner reference and loop are process-local, so inherited supervisor and
+    ``_HERMES_GATEWAY`` markers in terminal descendants cannot qualify them.
+    """
+    try:
+        from gateway.run import _gateway_runner_ref
+
+        runner = _gateway_runner_ref()
+        loop = getattr(runner, "_gateway_loop", None)
+        return bool(
+            loop is not None
+            and loop.is_running()
+            and not loop.is_closed()
+        )
     except Exception as exc:
-        logger.debug("Could not verify supervised gateway process identity: %s", exc)
+        logger.debug("Could not verify running gateway loop identity: %s", exc)
         return False
 
 
@@ -304,7 +317,7 @@ class RestartSafeScopeUnavailable(RuntimeError):
 
     Host-level (no user D-Bus / no ``systemd-run``), never a property of the
     child being launched: callers that keep per-job retry budgets must not
-    charge it (a kanban card parked ``blocked`` for an unreachable bus, #114720).
+    charge it for an unreachable bus.
     """
 
 
@@ -378,11 +391,11 @@ def restart_safe_gateway_child_argv(
     Hosts with no user systemd session (containers, LXCs without linger) cannot
     create one; hard-failing there is a silent cron outage, so callers state the
     policy: ``require_restart_safe_scope=True`` raises
-    :class:`RestartSafeScopeUnavailable` (kanban's long-lived workers), ``False``
+    :class:`RestartSafeScopeUnavailable` for long-lived workers, ``False``
     degrades to a direct external subprocess with a once-per-process warning
     (cron, behind ``cron.require_restart_safe_scope``).
 
-    ``outlives_parent=True`` (fire-and-forget kanban workers): any *other*
+    ``outlives_parent=True`` (fire-and-forget workers): any *other*
     systemd unit — a ``Type=oneshot`` dispatch timer, an operator's sequencer
     service — tears its cgroup down when it exits, so the child is scope-wrapped
     there too (#113612). Whether that unit actually kills its children
@@ -423,38 +436,50 @@ def restart_safe_gateway_child_argv(
     return GatewayChildDispatch("scoped", scoped)
 
 
-def _stop_systemd_unit(unit_name: str) -> bool:
-    """Stop a transient systemd user scope by unit name.
-    Reaps the *entire* cgroup — catching double-forked descendants reparented to init
-    inside the scope that survive a plain PID signal (SIGTERM all, SIGKILL after
-    ``TimeoutStopSec``). True if stopped or already gone; False if ``systemctl`` is
-    unavailable or the stop failed.
+def _systemctl_stop_result(binary: str, args: list, env: dict) -> str:
+    """``stopped``, ``missing``, or ``failed`` for one systemctl stop invocation."""
+    result = subprocess.run(
+        [binary, *args], capture_output=True, timeout=15, stdin=subprocess.DEVNULL, env=env,
+    )
+    if result.returncode == 0:
+        return "stopped"
+    stderr = (result.stderr or b"").decode(errors="replace").strip().lower()
+    if any(marker in stderr for marker in ("not loaded", "not found", "does not exist")):
+        return "missing"
+    logger.debug("systemctl %s exited %d: %s", " ".join(args), result.returncode, stderr)
+    return "failed"
 
-    See #70716.
+
+def _stop_systemd_unit(unit_name: str) -> bool:
+    """Stop a transient user scope or system service by unit name.
+
+    Reaps the entire cgroup. A missing unit is already gone. A system service
+    (unrelated harness) is not on the user manager, so a user-manager miss
+    falls through to the system manager instead of being treated as success.
+    True if stopped or already gone; False if systemctl is unavailable or the
+    stop failed.
     """
     import shutil
 
     binary = shutil.which("systemctl")
     if binary is None:
         return False
+    env = systemd_user_bus_env()
     try:
-        result = subprocess.run(
-            [binary, "--user", "stop", unit_name],
-            capture_output=True,
-            timeout=15,
-            stdin=subprocess.DEVNULL,
-            env=systemd_user_bus_env(),
-        )
-        if result.returncode != 0:
-            stderr = (result.stderr or b"").decode(errors="replace").strip()
-            if any(marker in stderr.lower() for marker in ("not loaded", "not found", "does not exist")):
-                return True
-            logger.debug("systemctl --user stop %s exited %d: %s", unit_name, result.returncode, stderr)
-            return False
-        return True
+        user = _systemctl_stop_result(binary, ["--user", "stop", unit_name], env)
     except Exception as exc:
         logger.debug("systemctl --user stop %s failed: %s", unit_name, exc)
-        return False
+        user = "failed"
+    if user == "stopped":
+        return True
+    try:
+        system = _systemctl_stop_result(binary, ["stop", unit_name], env)
+    except Exception as exc:
+        logger.debug("systemctl stop %s failed: %s", unit_name, exc)
+        return user == "missing"
+    if system == "stopped":
+        return True
+    return user == "missing" and system == "missing"
 
 
 def format_uptime_short(seconds: int) -> str:
@@ -2352,7 +2377,7 @@ def _list_processes(task_id) -> dict:
     session_key = ""
     with suppress(Exception):
         # See #29177.
-        from tools.approval_context import get_current_session_key
+        from tools.session_context import get_current_session_key
         session_key = get_current_session_key(default="") or ""
     return {"processes": [
         _redact_process_result(p)

@@ -20,89 +20,29 @@ fi
 
 _HERMES_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# --- target detection (same rules as pm.sh: msys on Windows must report the
-# machine's truth from the registry, not the emulated shell's) ---
-_hermes_os="$(uname -s)"
-case "$_hermes_os" in
-    Linux) _hermes_os=linux ;;
-    Darwin) _hermes_os=darwin ;;
-    MINGW*|MSYS*|CYGWIN*) _hermes_os=win32 ;;
-    *) echo "activate: unsupported OS $(uname -s)" >&2; return 1 2>/dev/null || exit 1 ;;
-esac
-if [ "$_hermes_os" = win32 ]; then
-    _hermes_winarch="$(reg.exe query 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' /v PROCESSOR_ARCHITECTURE 2>/dev/null | tr -d '
-' | awk '/PROCESSOR_ARCHITECTURE/ {print $NF}')"
-    # PROCESSOR_ARCHITECTURE reports the EMULATED arch inside an x64-on-
-    # arm64 shell, and uname -m does too. The registry is the machine's
-    # truth; when reg.exe is unreachable, uname -s's release token (e.g.
-    # MINGW64_NT-10.0-28000-ARM64) still names the real machine arch.
-    if [ -z "$_hermes_winarch" ]; then
-        case "$(uname -s)" in
-            *ARM64) _hermes_winarch=ARM64 ;;
-            *AMD64) _hermes_winarch=AMD64 ;;
-        esac
-    fi
-    case "${_hermes_winarch:-}" in
-        ARM64) _hermes_arch=arm64 ;;
-        AMD64) _hermes_arch=x64 ;;
-        *) : ;;  # probe unavailable — the store probe below decides
-    esac
-fi
-if [ -z "${_hermes_arch:-}" ] && [ "$_hermes_os" != win32 ]; then
-    case "$(uname -m)" in
-        arm64|aarch64) _hermes_arch=arm64 ;;
-        x86_64|amd64) _hermes_arch=x64 ;;
-        *) : ;;  # unknown — the store probe below decides
-    esac
-fi
-# Resolve the pm store root here so the arch probe below can consult it.
-_hermes_store="${HERMES_RUNTIME_DIR:-$HOME/.hermes/tools}"
-if [ -n "${_hermes_arch:-}" ]; then
-    _hermes_target="$_hermes_os-$_hermes_arch"
-else
-    # Registry + env both unavailable (blanked PATH): ask the store which
-    # target it actually holds instead of guessing an arch. First
-    # python-<ver>-<os>-<arch> entry wins.
-    _hermes_target=""
-    for _hermes_entry in "$_hermes_store"/python-*; do
-        [ -d "$_hermes_entry" ] || continue
-        case "${_hermes_entry##*/}" in
-            python-*-linux-*|python-*-darwin-*|python-*-win32-*)
-                _hermes_target="${_hermes_entry##*python-}"
-                _hermes_target="${_hermes_target#*-}"
-                break
-                ;;
-        esac
-    done
-    if [ -z "$_hermes_target" ]; then
-        echo "activate: cannot determine target arch and the store holds no python entry — run ./setup-hermes.sh first" >&2
-        unset _hermes_repo _hermes_os _hermes_arch _hermes_target _hermes_store _hermes_py
-        return 1 2>/dev/null || exit 1
-    fi
-fi
+# Bootstrap Python only emits the environment; it does not install anything.
+_hermes_repo="$_HERMES_REPO"
 _hermes_py=""
-for _hermes_entry in "$_hermes_store"/python-*-"$_hermes_target"; do
-    if [ -x "$_hermes_entry/bin/python" ]; then
-        _hermes_py="$_hermes_entry/bin/python"
-    elif [ -x "$_hermes_entry/bin/python.exe" ]; then
-        _hermes_py="$_hermes_entry/bin/python.exe"
-    fi
-    [ -n "$_hermes_py" ] && break
+for _hermes_candidate in "$_hermes_repo/.venv/bin/python" "$_hermes_repo/.venv/Scripts/python.exe" \
+                         "$_hermes_repo/venv/bin/python" "$_hermes_repo/venv/Scripts/python.exe"; do
+    [ -x "$_hermes_candidate" ] && { _hermes_py="$_hermes_candidate"; break; }
 done
 if [ -z "$_hermes_py" ]; then
-    for _hermes_venvpy in "$_hermes_repo/venv/bin/python" "$_hermes_repo/venv/bin/python.exe" \
-                          "$_hermes_repo/venv/Scripts/python.exe"; do
-        [ -x "$_hermes_venvpy" ] && { _hermes_py="$_hermes_venvpy"; break; }
+    for _hermes_store in "${HERMES_RUNTIME_DIR:-}" "$_hermes_repo/../tools" "${HERMES_HOME:-$HOME/.hermes}/tools"; do
+        [ -n "$_hermes_store" ] || continue
+        for _hermes_candidate in "$_hermes_store"/python-*/bin/python3 "$_hermes_store"/python-*/python.exe "$_hermes_store"/python-*/bin/python "$_hermes_store"/python-*/bin/python.exe; do
+            [ -x "$_hermes_candidate" ] && { _hermes_py="$_hermes_candidate"; break; }
+        done
+        [ -n "$_hermes_py" ] && break
     done
 fi
 if [ -z "$_hermes_py" ]; then
-    echo "activate: no pm python found — run ./setup-hermes.sh first" >&2
-    unset _hermes_repo _hermes_os _hermes_arch _hermes_target _hermes_store _hermes_py
+    echo "activate: no bootstrap Python found; run setup-hermes.sh" >&2
     return 1 2>/dev/null || exit 1
 fi
 
 # --- emit export lines from `pm env` ---
-_hermes_json="$(PYTHONPATH="$_hermes_repo${PYTHONPATH:+:$PYTHONPATH}" "$_hermes_py" -m pm.cli env 2>/dev/null)"
+_hermes_json="$(PYTHONHOME= PYTHONPATH="$_hermes_repo" "$_hermes_py" -m hermes_cli.runtime_paths)"
 if [ -z "$_hermes_json" ] || [ "${_hermes_json#*{}" = "$_hermes_json" ]; then
     echo "activate: could not read pm env (run ./setup-hermes.sh first)" >&2
     unset _hermes_repo _hermes_os _hermes_arch _hermes_target _hermes_store _hermes_py _hermes_json

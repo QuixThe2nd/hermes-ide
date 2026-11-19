@@ -86,6 +86,8 @@ class _Tick:
     got_reopen_seed: bool = False
     approval_boundary: Optional[tuple] = None  # (future, cancelled_flag)
     commentary_text: Optional[str] = None
+    # Narration-gate release riding the commentary item (see on_commentary).
+    commentary_release: Optional[Callable[[], None]] = None
     # Set by _push_update for _finalize_turn / _end_segment.
     update_visible: bool = False
     draft_final_fresh_send: bool = False
@@ -102,8 +104,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     after the agent finishes ``consumer.finish()`` then ``await task`` for the final edit."""
 
     _MAX_FLOOD_STRIKES = 3  # consecutive flood failures before edits are disabled
+    _adapter_provider = None  # instances built via __new__ without __init__ keep snapshot-only behavior
 
-    # Class-wide monotonic draft-id counter (Telegram animates a draft only when the
+    # Class-wide monotonic draft-id counter (some adapters animate a draft only when the
     # same non-zero draft_id is reused).  RANDOM seed: draft_id keys the relay
     # connector's sealed-stream tombstones, which outlive this process — a replayed id
     # is answered out of the OLD tombstone and dropped.  49 bits stays inside JS 2^53.
@@ -121,8 +124,16 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         run_still_current: Optional[Callable[[], bool]] = None,
         on_visible_progress: Optional[Callable[[], None]] = None,
         visible_delivery_lock=None,
-        context_gate: Optional[Callable[[], Any]] = None):
-        self.adapter = adapter
+        context_gate: Optional[Callable[[], Any]] = None,
+        progress_box_gate: Optional[Callable[[], Any]] = None,
+        on_progress_gate: Optional[Callable[[threading.Event], None]] = None,
+        *,
+        adapter_provider: Optional[Callable[[], Any]] = None):
+        # Mid-turn hub reconnect swaps the runner's adapter; the consumer must
+        # follow the current transport or every remaining delta/finalize raises
+        # on the dead one.
+        self._adapter_provider = adapter_provider
+        self._adapter_snapshot = adapter
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
         self.metadata = metadata
@@ -144,6 +155,17 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # never "someone already started waiting". None = ungated
         # (tests / standalone use); after the gate clears it is a cheap no-op.
         self._context_gate = context_gate
+        # Narration-send gates for the tool-progress bubble (either style; both may
+        # be wired, on_progress_gate wins). Called at the START of a commentary /
+        # first-stream send, it queues a hold marker on the turn's progress queue
+        # BEFORE the send's step can enqueue tool rows; the pump closes the old
+        # bubble at the marker and holds the next box's first send until the send
+        # lands (or fails). None = ungated (tests / standalone use).
+        self._progress_box_gate = progress_box_gate
+        # on_progress_gate(evt) receives a threading.Event (commentary fires from
+        # the agent worker thread) and owns queueing it as ('__gate__', evt).
+        self._on_progress_gate = on_progress_gate
+        self._progress_hold_active = False
         self._on_before_finalize = on_before_finalize
         self._initial_reply_to_id = initial_reply_to_id
         self._turn_id = str(uuid.uuid4())  # keys send_stream_frame() per concurrent consumer
@@ -158,7 +180,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Only platforms needing an explicit finalize call (DingTalk AI Cards) force a
         # redundant final edit; ``is True`` keeps MagicMock adapters out.
         self._adapter_requires_finalize = getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
-        # Telegram bounds edit retries at 5s; a fallback must not wait longer.
+        # Platforms bound edit retries (e.g. 5s); a fallback must not wait longer.
         self._max_fallback_flood_retry_seconds = 5.0
 
         self._queue: queue.Queue = queue.Queue()
@@ -206,6 +228,22 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._awaiting_reopen_after_boundary = False
         self._reopen_seeded_eagerly = False
 
+    @property
+    def adapter(self):
+        provider = self._adapter_provider
+        if provider is not None:
+            try:
+                live = provider()
+            except Exception:
+                live = None
+            if live is not None:
+                return live
+        return self._adapter_snapshot
+
+    @adapter.setter
+    def adapter(self, value):
+        self._adapter_snapshot = value
+
     def _reset_message_state(self) -> None:
         """Per-message (segment) state: fresh at construction and after each segment break."""
         self._message_id: Optional[str] = None
@@ -219,9 +257,13 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Fallback sends only the missing tail after a partial overflow delivery.
         self._fallback_preserve_partial_messages = False
         self._segment_preview_message_ids: "set[str]" = set()
-        # Tool-progress overlay (native only): shown in the bubble until text arrives.
+        # Tool-progress overlay: shown in the bubble until text arrives.
         self._tool_progress_lines: list[str] = []
         self._tool_progress_active: bool = False
+        # True while ``_message_id`` holds a tool-only bubble preserved across a
+        # text-less segment break (see _end_segment): more tool rounds keep editing
+        # that message, and the first real text must open a NEW message below it.
+        self._tool_bubble_preserved: bool = False
         self._clear_turn_final_flags()
 
     def _clear_turn_final_flags(self) -> None:
@@ -279,7 +321,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     def _metadata_for_send(self, *, final: bool = False, expect_edits: bool = False) -> dict | None:
         """Per-send metadata.  ``final`` → notify=True (Mattermost treats notify-worthy sends
         as final when a broken thread root may fall back flat); ``expect_edits`` keeps
-        editable previews on Telegram's legacy send path."""
+        editable previews on legacy send paths."""
         meta = dict(self.metadata) if self.metadata else {}
         if self._initial_reply_to_id:
             meta["reply_to_message_id"] = self._initial_reply_to_id
@@ -313,6 +355,14 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if self._tool_progress_lines:  # real text overwrites the overlay
             self._tool_progress_lines.clear()
             self._tool_progress_active = False
+        if self._tool_bubble_preserved:
+            # Text after a preserved tool-only bubble: the box stays on screen as-is;
+            # the text must land as a NEW message below it (chat ordering: text below
+            # tool boxes), never as an edit of the tool box.
+            self._tool_bubble_preserved = False
+            self._message_id = None
+            self._message_created_ts = None
+            self._last_sent_text = ""
         self._accumulated += text
         self._stream_ledger += text
 
@@ -333,7 +383,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # The final clean-up edit failed, but the complete answer is already visible from the last streaming
         # frame (usually with only the cursor still stuck on screen). Mark the content delivered so the
         # gateway suppresses its normal full final send; otherwise users see the same long answer twice when
-        # Telegram/Discord rate-limit this cosmetic final edit (#36965, #25349).
+        # platforms rate-limit this cosmetic final edit (#36965, #25349).
         self._final_content_delivered = True
         if record is not None:
             self._record_turn_final_payload(record)
@@ -428,9 +478,19 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         return boundary_future, cancelled_flag
 
     def on_commentary(self, text: str) -> None:
-        """Queue a completed interim assistant commentary message."""
-        if text:
-            self._queue.put((_COMMENTARY, text))
+        """Queue a completed interim assistant commentary message.
+
+        Non-blank commentary is a narration: arm the gate NOW, from the agent
+        worker thread, so the hold marker reaches the progress queue BEFORE any
+        tool row this step enqueues. The release rides the queue item and is
+        fired by ``_send_commentary`` whether the send lands or fails. Blank
+        text (empty assistant step) never arms the gate — it must not split the
+        open tool box.
+        """
+        if not text:
+            return
+        release = self._begin_progress_gate() if text.strip() else None
+        self._queue.put((_COMMENTARY, text, release))
 
     def flush_pending_sync(self, timeout: float = 5.0) -> bool:
         """Block the agent worker thread until everything queued so far is delivered:
@@ -461,6 +521,61 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 self._on_new_message()
         except Exception:
             logger.debug("on_new_message callback error", exc_info=True)
+
+    def _begin_progress_gate(self):
+        """Arm the narration gate, whichever style is wired.
+
+        Returns the release callable (``release()`` frees the pump's hold), or
+        None when no gate is wired / begin failed. Sets ``_progress_hold_active``
+        so gated sends skip the redundant on_new_message reset (the hold marker
+        already owns the bubble reset at the pump).
+        """
+        self._progress_hold_active = False
+        if self._on_progress_gate is not None:
+            evt = threading.Event()
+            try:
+                self._on_progress_gate(evt)
+            except Exception:
+                logger.debug("progress gate begin failed", exc_info=True)
+                return None
+            self._progress_hold_active = True
+            return evt.set
+        if self._progress_box_gate is not None:
+            try:
+                release = self._progress_box_gate()
+            except Exception:
+                logger.debug("progress box gate begin failed", exc_info=True)
+                return None
+            self._progress_hold_active = release is not None
+            return release
+        return None
+
+    @contextlib.contextmanager
+    def _progress_box_hold(self):
+        """Hold the tool-progress bubble while a narration send is in flight.
+
+        The gate queues a hold marker BEFORE this send's step can enqueue
+        tool rows; the progress pump closes the current bubble at the marker and
+        holds the next box's first send until the send lands, so the narration
+        appears ABOVE it. Release happens on success AND failure (finally).
+        """
+        release = self._begin_progress_gate()
+        try:
+            yield
+        finally:
+            self._progress_hold_active = False
+            if release is not None:
+                with contextlib.suppress(Exception):
+                    release()
+
+    def _notify_new_message_unless_gated(self) -> None:
+        """on_new_message for sends gated by a narration hold: the hold marker
+        already owns the tool-progress bubble reset at the pump, so firing
+        on_new_message here would reset AGAIN — closing the box this same
+        step's tools just opened below the narration."""
+        if self._progress_hold_active:
+            return
+        self._notify_new_message()
 
     async def _deliver_visible_frame(self, deliver):
         """Await ``deliver()`` under the turn's delivery lock when one is wired,
@@ -514,7 +629,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Also clears the final flags: what we delivered was an interim preamble.  Safe:
         # got_done returns before any reset; run.py reads flags after the task exits.
         self._reset_message_state()
-        # Telegram-shaped drafts: bump draft_id so the next segment animates as a fresh
+        # Draft-then-send drafts: bump draft_id so the next segment animates as a fresh
         # preview below the tool-progress bubbles.  Stream-is-the-message adapters keep
         # ONE stream per turn — a bump there left one frozen message per segment.
         if self._use_draft_streaming and not self._stream_is_message():
@@ -652,7 +767,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                         return
 
                 if self._should_edit(tick) and (
-                    self._accumulated or (self._use_native_streaming and self._tool_progress_active)
+                    self._accumulated or self._tool_progress_active
                 ):
                     # Overflow split.  Native streaming bypasses this: the adapter
                     # truncates against the stream protocol's own limit.
@@ -668,7 +783,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     return
 
                 if tick.commentary_text is not None:
-                    await self._deliver_commentary(tick.commentary_text)
+                    await self._deliver_commentary(tick.commentary_text, tick.commentary_release)
                 if tick.got_segment_break:
                     await self._end_segment(tick)
 
@@ -741,7 +856,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             if kind is _FINAL_TEXT:
                 self._adopt_final_text(item[1])
             elif kind is _TOOL_PROGRESS:  # keep draining to batch simultaneous lines
-                if self._use_native_streaming:
+                # Native frames carry the overlay; edit-based (non-cumulative)
+                # transports render it as ONE edited tool bubble.
+                if self._use_native_streaming or (
+                        self._edit_supported and not self._use_draft_streaming):
                     self._tool_progress_lines.append(item[1])
                     self._tool_progress_active = True
             elif kind is _APPROVAL_BOUNDARY:
@@ -749,6 +867,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 return tick
             elif kind is _COMMENTARY:
                 tick.commentary_text = item[1]
+                tick.commentary_release = item[2] if len(item) > 2 else None
                 return tick
             elif kind is _FLUSH:
                 # Barrier: finalize like a tool boundary, signal at the end of the tick.
@@ -811,8 +930,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             elapsed = time.monotonic() - self._last_edit_time
             # buffer_threshold is a codepoint debounce heuristic, not a
             # platform-limit check (_len_fn is for overflow).
-            should_edit = bool((elapsed >= self._current_edit_interval and self._accumulated)
-                               or len(self._accumulated) >= self.cfg.buffer_threshold)
+            should_edit = bool(
+                (elapsed >= self._current_edit_interval
+                 and (self._accumulated or self._tool_progress_active))
+                or len(self._accumulated) >= self.cfg.buffer_threshold)
         # Defer mid-stream edits while the buffer could still resolve to a silence
         # marker ("NO"→"NO_REPLY"); got_done always resolves the buffer.
         return should_edit and not _is_partial_silence_marker(
@@ -895,12 +1016,20 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         """Send/edit this tick's visible text (cursor-suffixed unless finalizing)."""
         display_text = self._accumulated
         if tick.is_interim:
-            if self._use_native_streaming:
+            if self._use_native_streaming or self._tool_progress_lines:
+                # Native frames carry the overlay; the edit path composes the same
+                # Strategy-B frame (text above, tool status below) into the bubble.
                 display_text = self._compose_frame_content()
-                if display_text and self.cfg.cursor:
-                    display_text += self.cfg.cursor
-            else:
+            if display_text and self.cfg.cursor:
                 display_text += self.cfg.cursor
+        elif self._tool_progress_lines:
+            # got_done / segment break landed in the SAME drain as the tool line
+            # (the restart shape: the tool call is the turn's last action, so the
+            # edit-interval debounce never fired an interim edit). Compose the
+            # same Strategy-B frame here or the pending tool call is silently
+            # dropped from the final bubble. Draft transports never accumulate
+            # tool lines, so prefix-stable draft frames are unaffected.
+            display_text = self._compose_frame_content()
 
         # A got_done FRESH send via the draft transport already carries finalize=True,
         # unlike an EDIT, which REQUIRES_EDIT_FINALIZE adapters still need a pass for.
@@ -952,7 +1081,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         elif tick.update_visible and (not self._adapter_requires_finalize
                                       or self._last_edit_overflowed or tick.draft_final_fresh_send):
             # The update already delivered the final.  A second finalize would re-edit
-            # it (Telegram: editMessageText after sendRichMessage falls back to the
+            # it (editMessageText after sendRichMessage can fall back to the
             # legacy formatter) or overflow-split again, duplicating chunks.
             self._mark_skip_redundant_finalize()
         elif self._message_id:
@@ -978,7 +1107,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         stream_draft = self._stream_is_message() and self._use_draft_streaming
         return stream_draft or self._use_native_streaming
 
-    async def _deliver_commentary(self, commentary_text: str) -> None:
+    async def _deliver_commentary(self, commentary_text: str, release=None) -> None:
         """Post commentary as its own message.  Cumulative transports keep the stream going —
         resetting _accumulated would break the append-only invariant / lose text."""
         cumulative = self._cumulative_transport()
@@ -987,7 +1116,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         await self._gate_context_cards()
         if not cumulative:
             self._reset_segment_state()
-        await self._send_commentary(commentary_text)
+        await self._send_commentary(commentary_text, release)
         self._last_edit_time = time.monotonic()
         if not cumulative:
             self._reset_segment_state()
@@ -1000,6 +1129,17 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         must keep its sentinel or every tool boundary posts a new message; the
         continuation goes out once via _send_fallback_final."""
         if self._cumulative_transport():
+            return
+        # Tool-only segment (no text deltas): the delivered bubble IS the tool box.
+        # PRESERVE it — keep _message_id and the overlay lines so the next round's
+        # tool lines keep EDITING the same message instead of stacking one box per
+        # tool round.  Still interim, not the final answer: clear the turn-final
+        # flags (#29346 semantics).  _append_accumulated releases the bubble when
+        # real text finally arrives, so the text lands below the box.
+        if (not self._accumulated and self._tool_progress_lines
+                and self._message_id and self._message_id != "__no_edit__"):
+            self._clear_turn_final_flags()
+            self._tool_bubble_preserved = True
             return
         # If the segment-break edit didn't land (flood control / fallback mode),
         # _accumulated holds unseen pre-boundary text — flush it before the reset.
@@ -1041,7 +1181,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     # non-streaming paths share the same regex, so a tag is treated identically whichever path delivered the
     # text.
     def _clean_for_display(text: str) -> str:
-        """Hide MEDIA:<path> / [[audio_as_voice]] directives; media is delivered post-stream."""
+        """Hide MEDIA:<path> directives; media is delivered post-stream."""
         return _BasePlatformAdapter.strip_media_directives_for_display(text)
 
     # ── fork overrides on the transport mixin (reply-ping only on the final answer,
@@ -1081,24 +1221,28 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 "declined this destination for this run"
             )
             return False
-        notify_final = finalize and self._first_send_turn_final
-        result = await self.adapter.send(
-            chat_id=self.chat_id, content=text, reply_to=self._initial_reply_to_id,
-            metadata=self._metadata_for_send(final=notify_final, expect_edits=not finalize))
-        if not result.success:
-            self._edit_supported = False
-            return False
-        self._already_sent = True
-        self._notify_visible_progress()  # landed send = user-visible progress
-        self._last_sent_text = text
-        if result.message_id:
-            self._adopt_message_id(result.message_id)
-            self._track_preview_ids_from_result(result)
-        else:
-            # No editable id: fallback mode + sentinel so we don't re-enter first-send.
-            self._enter_fallback_mode(self._visible_prefix())
-            self._message_id = "__no_edit__"
-        self._notify_new_message()
+        with self._progress_box_hold():
+            notify_final = finalize and self._first_send_turn_final
+            result = await self.adapter.send(
+                chat_id=self.chat_id, content=text, reply_to=self._initial_reply_to_id,
+                metadata=self._metadata_for_send(final=notify_final, expect_edits=not finalize))
+            if not result.success:
+                self._edit_supported = False
+                return False
+            self._already_sent = True
+            self._notify_visible_progress()  # landed send = user-visible progress
+            self._last_sent_text = text
+            if result.message_id:
+                self._adopt_message_id(result.message_id)
+                self._track_preview_ids_from_result(result)
+            else:
+                # No editable id: fallback mode + sentinel so we don't re-enter first-send.
+                self._enter_fallback_mode(self._visible_prefix())
+                self._message_id = "__no_edit__"
+            # Box reset is owned by the hold marker when the gate is wired (see
+            # _notify_new_message_unless_gated) — a late reset here would close
+            # the box this same step's tools just opened.
+            self._notify_new_message_unless_gated()
         return True
 
     async def _edit_existing(self, text: str, *, finalize: bool, is_turn_final: bool) -> bool:
@@ -1120,7 +1264,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         ):
             return True
         # Fresh-final: replace a long-lived preview with a fresh message, or whenever
-        # the adapter prefers it (Telegram's send path renders richer markdown).  An
+        # the adapter prefers it (a platform's send path may render richer markdown).  An
         # explicit hook returning False must NOT be overridden by the time threshold
         # (delete is best-effort; both messages would stay on screen).  Check the
         # CLASS (MagicMock auto-creates attrs) plus instance __dict__ (test doubles).

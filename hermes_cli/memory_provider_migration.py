@@ -60,7 +60,14 @@ def migrate_home(home: Path, *, install: Callable[[str], dict], say: Callable[[s
     update or the agent down with it.
     """
     name = configured_provider(home)
-    if not name or provider_present(name, home):
+    if not name:
+        return None
+    from plugins.memory import RETIRED_MEMORY_PROVIDERS
+    if name in RETIRED_MEMORY_PROVIDERS:
+        say(f"  ⚠ Memory provider '{name}' was removed from this distribution and will not be installed. "
+            f"Change memory.provider (hindsight remains) or use built-in memory.")
+        return None
+    if provider_present(name, home):
         return None
     if catalog_source(name) is None:
         say(f"  ⚠ Memory provider '{name}' is configured but not installed and not in the plugin catalog. "
@@ -112,8 +119,8 @@ def recover_at_startup(name: str) -> bool:
     if name in _attempted:
         return False
     _attempted.add(name)
-    from tools.lazy_deps import _allow_lazy_installs
-    if not _allow_lazy_installs():
+    from pm import lazy_installs_allowed
+    if not lazy_installs_allowed():
         logger.warning("Memory provider '%s' is not installed; security.allow_lazy_installs is off — "
                        "run `hermes plugins install %s`.", name, name)
         return False

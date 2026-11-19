@@ -23,6 +23,7 @@ import queue
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -37,9 +38,14 @@ from utils import read_json_or_empty
 
 from .embedded import (
     _RETRIABLE_CONNECTION_MARKERS, _build_embedded_profile_env,
-    _check_local_runtime, _embedded_llm_api_key, _embedded_profile_env_path,
-    _export_port_health_grace_timeout, _load_simple_env, _local_runtime_hint, _materialize_embedded_profile_env,
+    _check_local_runtime, _embedded_profile_env_path,
+    _load_simple_env, _local_runtime_hint, _materialize_embedded_profile_env,
     _may_rewrite_profile_env,
+)
+from .embedded_runtime import ensure_daemon_and_url as _start_sideenv_daemon
+from .retain_backlog import (
+    RetainBacklog, _permanent_retry_refusal,
+    classify_exception, format_retry_at,
 )
 from .settings import (
     _DEFAULT_API_URL, _DEFAULT_IDLE_TIMEOUT, _DEFAULT_LOCAL_URL, _DEFAULT_RETAIN_SOURCE,
@@ -858,6 +864,18 @@ class HindsightMemoryProvider(MemoryProvider):
         self._sync_thread = None  # legacy alias external callers may join; points at the writer
         self._shutting_down = threading.Event()
         self._atexit_registered = False
+        # Durable backlog for provider-rate-limited retains (retain_backlog.py);
+        # ``may_exist`` gates every hot-path check so a normal retain never pays
+        # file I/O. One drain pass may be queued at a time.
+        self._retain_backlog = RetainBacklog(lambda: get_hermes_home())
+        self._backlog_drain_queued = False
+        # Exact wakeup for future-due backlog entries (see _arm_backlog_wakeup):
+        # one re-armable slot so entries drain without waiting for chat input
+        # or the writer's interval backstop.
+        self._backlog_wakeup_deadline: float | None = None
+        self._backlog_wakeup_event = threading.Event()
+        self._backlog_wakeup_thread: threading.Thread | None = None
+        self._backlog_wakeup_lock = threading.Lock()
         self._retain_tags: List[str] = []
         self._tags: list[str] | None = None
         self._retain_source = _DEFAULT_RETAIN_SOURCE
@@ -955,7 +973,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_max_results", "description": "Keep only the top N ranked recall results after score filtering (0 = no cap)", "default": 0},
             {"key": "auto_recall", "description": "Automatically recall memories before each turn", "default": True},
             {"key": "recall_sync", "description": "Recall synchronously against the current message before each turn (higher relevance, adds recall latency to the turn). Default off: recall runs in the background and is injected on the next turn.", "default": False},
-            {"key": "recall_indicator", "description": "Show a '👁️ Hindsight — recalled N memories' status line when auto-recall injects memory (turn off for customer-facing agents)", "default": True},
+            {"key": "recall_indicator", "description": "Show a '👁️ Hindsight — recalled N memories' status line when auto-recall injects memory. Off by default — the gateway's '🧠 Injecting N memories' card already reports the count; set true to opt back in.", "default": False},
             {"key": "retain_indicator", "description": "Show a '👁️ Hindsight — saving to memory…' status line when a turn is saved to memory (turn off for customer-facing agents)", "default": True},
             {"key": "auto_retain", "description": "Automatically retain conversation turns", "default": True},
             {"key": "retain_every_n_turns", "description": "Retain every N turns (1 = every turn)", "default": 1},
@@ -979,25 +997,38 @@ class HindsightMemoryProvider(MemoryProvider):
         return _parse_int_setting(os.environ.get(env_var, env_default) if value is None else value, default)
 
     def _new_embedded_client(self):
-        available, reason = _check_local_runtime()
-        if not available:
-            raise RuntimeError("Hindsight local runtime is unavailable" + (f": {reason}" if reason else ""))
-        _ensure_client_dependency()
-        from hindsight import HindsightEmbedded
-        HindsightEmbedded.__del__ = lambda self: None
+        """HTTP client against the side-env daemon. The daemon manager runs in the
+        isolated side env (its own interpreter → its own hindsight-api binary and
+        ProfileManager port allocation); Hermes talks to it over HTTP with the
+        pinned main-env hindsight-client — no in-process HindsightEmbedded."""
         cfg = self._config
+        profile = cfg.get("profile", "hermes")
         llm_provider = _daemon_llm_provider(cfg.get("llm_provider", ""))
-        logger.debug("Creating HindsightEmbedded client (profile=%s, provider=%s)",
-                     cfg.get("profile", "hermes"), llm_provider)
+        logger.debug("Creating Hindsight embedded client (profile=%s, provider=%s)", profile, llm_provider)
         self._idle_timeout = self._int_setting(
             "idle_timeout", "HINDSIGHT_IDLE_TIMEOUT", _DEFAULT_IDLE_TIMEOUT, env_default=self._idle_timeout,
         )
-        kwargs = dict(profile=cfg.get("profile", "hermes"), llm_provider=llm_provider,
-                      llm_api_key=_embedded_llm_api_key(cfg), llm_model=cfg.get("llm_model", ""),
-                      idle_timeout=self._idle_timeout)
-        if self._llm_base_url:
-            kwargs["llm_base_url"] = self._llm_base_url
-        return HindsightEmbedded(**kwargs)
+        # Starts (or reuses) the side-env daemon; the URL comes from the side env's
+        # own ProfileManager/get_url, never a hardcoded port.
+        changed = _load_simple_env(_embedded_profile_env_path(cfg)) != _build_embedded_profile_env(cfg)
+        restart = changed and _may_rewrite_profile_env(cfg)
+        if restart:
+            _materialize_embedded_profile_env(cfg)
+        elif changed:
+            logger.warning(
+                "Hindsight profile env for %r holds an LLM API key this process cannot see "
+                "(no secret scope); leaving the file and running daemon untouched so it keeps its key.",
+                profile,
+            )
+        url = _start_sideenv_daemon(cfg, restart=restart)
+        self._api_url = url
+        _ensure_client_dependency()
+        from hindsight_client import Hindsight
+        kwargs = {"base_url": url, "timeout": float(self._timeout or _DEFAULT_TIMEOUT)}
+        if self._api_key:
+            kwargs["api_key"] = self._api_key
+        logger.info("Hindsight embedded: HTTP client ready (profile=%s, url=%s)", profile, url)
+        return Hindsight(**kwargs)
 
     def _new_cloud_client(self):
         _ensure_client_dependency()
@@ -1863,30 +1894,11 @@ class HindsightMemoryProvider(MemoryProvider):
         if client is None:
             return True
         try:
-            if self._mode == "local_embedded":
-                # HindsightEmbedded.close() delegates to its sync client.close().
-                # Close the embedded inner async client on the shared loop
-                # first, then let the wrapper clean up daemon/UI bookkeeping.
-                # Only when _client was explicitly set on the wrapper (skip
-                # MagicMock auto-attributes in unit tests that seed a plain
-                # mock as provider._client).
-                inner_client = client.__dict__.get("_client")
-                if inner_client is not None and hasattr(inner_client, "aclose"):
-                    await inner_client.aclose()
-                    try:
-                        client._client = None
-                    except Exception:
-                        pass
-                try:
-                    client.close()
-                except RuntimeError:
-                    pass
-            else:
-                aclose = getattr(client, "aclose", None)
-                if callable(aclose):
-                    result = aclose()
-                    if inspect.isawaitable(result):
-                        await result
+            aclose = getattr(client, "aclose", None)
+            if callable(aclose):
+                result = aclose()
+                if inspect.isawaitable(result):
+                    await result
             return True
         except Exception:
             logger.debug("Hindsight: closing a displaced client failed", exc_info=True)
@@ -2150,15 +2162,28 @@ class HindsightMemoryProvider(MemoryProvider):
             self._atexit_registered = True
             atexit.register(self._atexit_shutdown)
 
+    # Periodic retain-backlog check cadence while the writer is alive. The
+    # check itself is an in-memory flag test; file I/O only when a backlog
+    # may exist.
+    _BACKLOG_DRAIN_INTERVAL_S = 300.0
+
     def _writer_loop(self) -> None:
         """Drain the retain queue serially until the sentinel. A failing job can't
-        kill the writer; task_done() always fires so queue.join() works."""
+        kill the writer; task_done() always fires so queue.join() works.
+        While idle it also nudges the rate-limit backlog every
+        _BACKLOG_DRAIN_INTERVAL_S (cheap flag check; see retain_backlog.py)."""
+        last_backlog_check = time.monotonic()
         while True:
             try:
                 job = self._retain_queue.get(timeout=1.0)
             except queue.Empty:
                 if self._shutting_down.is_set():
                     return
+                now = time.monotonic()
+                if now - last_backlog_check >= self._BACKLOG_DRAIN_INTERVAL_S:
+                    last_backlog_check = now
+                    if self._retain_backlog.may_exist:
+                        self._queue_backlog_drain()
                 continue
             try:
                 if job is _WRITER_SENTINEL:
@@ -2299,7 +2324,8 @@ class HindsightMemoryProvider(MemoryProvider):
         stable session-scoped id with ``update_mode='append'``; older APIs get
         *fallback_document_id* (per-process unique) and no update_mode — the only
         way the resume-overwrite fix works there. The /version probe targets the
-        embedded client's dynamic per-profile port when running, else api_url.
+        embedded daemon URL resolved by the side env (stored in ``_api_url``), else
+        the configured api_url.
 
         On Hindsight ≥ 0.5.0 the API supports ``update_mode='append'``, which lets us reuse a stable
         session-scoped ``document_id`` across process lifecycles without overwriting prior turns. On older
@@ -2307,8 +2333,7 @@ class HindsightMemoryProvider(MemoryProvider):
         minted at initialize / switch time) and don't pass ``update_mode`` at all — that's the only way the
         resume-overwrite fix (#6654) keeps working on legacy servers.
         """
-        url = getattr(self._client, "url", None) if self._mode == "local_embedded" else None
-        probe_url = str(url) if url else (self._api_url or "")
+        probe_url = self._api_url or ""
         if self._session_id and _check_api_supports_update_mode_append(probe_url, self._api_key):
             return self._session_id, "append"
         return fallback_document_id, None
@@ -2339,14 +2364,14 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._mode == "local":  # legacy alias
             self._mode = "local_embedded"
         if self._mode == "local_embedded":
-            # Must precede the daemon_embed_manager import, which reads it at import time.
-            _export_port_health_grace_timeout(cfg)
             available, reason = _check_local_runtime()
             if not available:
-                logger.warning("Hindsight local mode disabled because its runtime could not be imported: %s.%s",
+                logger.warning("Hindsight local_embedded disabled: the isolated runtime is unavailable: %s.%s",
                                reason, _local_runtime_hint(reason))
                 self._mode = "disabled"
                 return
+            logger.info("Hindsight local_embedded: isolated runtime available (profile=%s); "
+                        "daemon start queued", cfg.get("profile", "hermes"))
         self._apply_connection_settings(cfg)
         self._apply_retain_settings(cfg)
         self._apply_recall_settings(cfg)
@@ -2370,6 +2395,19 @@ class HindsightMemoryProvider(MemoryProvider):
 
         if self._mode == "local_embedded":
             self._start_embedded_daemon()
+        # One stat decides whether a rate-limit retain backlog may exist for
+        # this profile; when it does, a background pass drains it once due
+        # (tools-only setups never start the writer, so initialize() is their
+        # only automatic trigger short of the next rate-limited retain).
+        if self._retain_backlog.refresh_may_exist():
+            spawn_context_thread(self._backlog_startup_drain, name="hindsight-backlog-drain").start()
+
+    def _backlog_startup_drain(self) -> None:
+        """Background drain of a pre-existing backlog at provider initialize()."""
+        try:
+            self._drain_retain_backlog()
+        except Exception as exc:
+            logger.warning("Hindsight retain-backlog startup drain failed: %s", exc, exc_info=True)
 
     def _apply_connection_settings(self, cfg: dict) -> None:
         """Endpoint, bank and mode selectors from *cfg* (env fallbacks where documented)."""
@@ -2447,7 +2485,7 @@ class HindsightMemoryProvider(MemoryProvider):
         else:
             self._recall_types = list([] if configured_types is None else configured_types) or ["observation"]
         self._recall_prompt_preamble = cfg.get("recall_prompt_preamble", "")
-        self._recall_indicator = bool(cfg.get("recall_indicator", True))
+        self._recall_indicator = bool(cfg.get("recall_indicator", False))
         # Strictness knobs (hindsight-client >= 0.9.2): server-side inclusive
         # AND-ed per-stage score floors, and a client-side top-N cap applied
         # after floor filtering. Unset/empty = exact pre-knob behavior.
@@ -2483,45 +2521,15 @@ class HindsightMemoryProvider(MemoryProvider):
         spawn_context_thread(self._daemon_start_worker, name="hindsight-daemon-start").start()
 
     def _daemon_start_worker(self) -> None:
-        import traceback
-        log_path = get_hermes_home() / "logs" / "hindsight-embed.log"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-
-        def _log(text: str) -> None:
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(text)
-
+        """Background daemon bring-up: keep the materialized profile .env in sync,
+        then start/reuse the side-env daemon and connect the HTTP client."""
         try:
-            # Rich console -> our log file (redirecting global fds would capture other threads).
-            import hindsight_embed.daemon_embed_manager as dem
-            from rich.console import Console
-            dem.console = Console(file=open(log_path, "a", encoding="utf-8"), force_terminal=False)
-
-            client = self._get_client()
-            profile = self._config.get("profile", "hermes")
-            # Profile .env out of sync with config -> rewrite and restart a running daemon.
-            # Fail-closed on key material: when this process holds no key (no secret
-            # scope on this thread) but the file does, a rewrite would destroy the
-            # only key copy the daemon subprocess can read. Skip the write AND the
-            # stop: restarting the daemon now would boot it keyless, which is the
-            # exact outage this guards against. _get_client() above already passed
-            # whatever key WAS available into the in-process client kwargs.
-            if _load_simple_env(_embedded_profile_env_path(self._config)) != _build_embedded_profile_env(self._config):
-                if _may_rewrite_profile_env(self._config):
-                    _materialize_embedded_profile_env(self._config)
-                    if client._manager.is_running(profile):
-                        _log("\n=== Config changed, restarting daemon ===\n")
-                        client._manager.stop(profile)
-                else:
-                    logger.warning(
-                        "Hindsight profile env for %r holds an LLM API key this process cannot see "
-                        "(no secret scope); leaving the file untouched so the daemon keeps its key.",
-                        profile)
-                    _log("\n=== Profile env has a key this process cannot see; left untouched ===\n")
-            client._ensure_started()
-            _log("\n=== Daemon started successfully ===\n")
+            cfg = self._config
+            profile = cfg.get("profile", "hermes")
+            self._get_client()
+            logger.info("Hindsight embedded: daemon start worker finished (profile=%s)", profile)
         except Exception as e:
-            _log(f"\n=== Daemon startup failed: {e} ===\n" + traceback.format_exc())
+            logger.warning("Hindsight embedded daemon startup failed: %s", e, exc_info=True)
 
     def system_prompt_block(self) -> str:
         mode = self._memory_mode if self._memory_mode in _SYSTEM_PROMPT_TAILS else "hybrid"
@@ -2683,10 +2691,14 @@ class HindsightMemoryProvider(MemoryProvider):
         return item
 
     def _retain_batch(self, item: dict, *, bank_id: str, document_id: str | None = None,
-                      retain_async: bool | None = None):
+                      retain_async: bool | None = None, operation_id: str | None = None):
         """Dispatch one item via aretain_batch (bank_id/document_id/retain_async are
-        call-level args, never item keys)."""
-        kwargs: Dict[str, Any] = {"bank_id": bank_id, "items": [item], "document_id": document_id, "retain_async": retain_async}
+        call-level args, never item keys). operation_id is the backlog replay key:
+        sent only when set, the server treats a repeated id as a replay of the
+        original operation (idempotency requires async; the backlog drain always
+        replays with retain_async=True)."""
+        kwargs: Dict[str, Any] = {"bank_id": bank_id, "items": [item], "document_id": document_id,
+                                  "retain_async": retain_async, "operation_id": operation_id}
         kwargs = {k: v for k, v in kwargs.items() if v is not None}
         return self._run_hindsight_operation(lambda client: client.aretain_batch(**kwargs))
 
@@ -2705,6 +2717,10 @@ class HindsightMemoryProvider(MemoryProvider):
                                              tags=tags, update_mode=update_mode)
             logger.debug("Hindsight %s: bank=%s, doc=%s, mode=%s, async=%s, content_len=%d, num_turns=%d",
                          label, bank_id, document_id, update_mode, retain_async, len(content), len(turns))
+            # Tool-only scope: an automatic turn retain that hits the provider
+            # rate limit does NOT enter the backlog (a replayed append-mode
+            # document re-appends its tail; chunk-hash recovery only dedupes
+            # byte-identical chunks). The failure surfaces unchanged.
             resp = self._retain_batch(item, bank_id=bank_id, document_id=document_id, retain_async=retain_async)
             # Async retains are only *accepted* here; track the op id(s) so the
             # next-turn prefetch can wait for true server-side completion.
@@ -2768,6 +2784,182 @@ class HindsightMemoryProvider(MemoryProvider):
         self._register_atexit()
         self._retain_queue.put(job)
 
+    # -- retain backlog (provider rate limits) -----------------------------------
+
+    # The reconcile table lives in the Go runtime (internal/retainbacklog):
+    # an entry is removed ONLY on observed server-side "completed";
+    # pending/processing poll; failed/cancelled re-queue via the server's
+    # own retry_operation (never delete+resubmit); not_found/unknown submit
+    # idempotently by the persisted operation id. This provider supplies
+    # only the network half (BacklogRemote below).
+
+    # Floor for wakeup delays: an earliest-retry in the past (entry kept after
+    # a non-rate-limit settle failure) must not arm an immediately-due timer
+    # and hot-loop; the writer's interval pass backstops that case.
+    _BACKLOG_WAKEUP_MIN_S = 1.0
+
+    def _enqueue_backlog_entry(self, item: dict, *, bank_id: str, retry_after,
+                               document_id=None) -> str:
+        """Persist a rate-limited retain via the Go runtime, schedule a
+        (due-gated) drain pass and arm the exact wakeup so the entry drains
+        even with no further chat."""
+        entry_id = self._retain_backlog.enqueue(
+            bank_id=bank_id, item=item, retry_after=retry_after,
+            document_id=document_id,
+        )
+        logger.info("Hindsight retain deferred by provider rate limit; backlog entry %s "
+                    "(retry after %s)", entry_id, format_retry_at(retry_after))
+        self._arm_backlog_wakeup(retry_after)
+        self._queue_backlog_drain()
+        return entry_id
+
+    def _queue_backlog_drain(self) -> None:
+        """Queue one drain pass on the writer (self-deduping). The pass itself
+        re-checks due-ness, so queueing early is always safe."""
+        if self._backlog_drain_queued or self._shutting_down.is_set():
+            return
+        self._backlog_drain_queued = True
+        self._enqueue_retain(self._backlog_drain_job)
+
+    def _backlog_drain_job(self) -> None:
+        self._backlog_drain_queued = False
+        try:
+            self._drain_retain_backlog()
+        except Exception as exc:
+            logger.warning("Hindsight retain-backlog drain failed: %s", exc, exc_info=True)
+
+    def _backlog_operation_status(self, bank_id: str, op_id: str) -> str:
+        """Lowercase server-side operation status; "not_found" on 404.
+        Transport errors propagate (the drain keeps the entry)."""
+        from hindsight_client_api.exceptions import NotFoundException
+
+        try:
+            resp = self._run_hindsight_operation(
+                lambda client: client.operations.get_operation_status(
+                    bank_id=bank_id, operation_id=op_id)
+            )
+        except NotFoundException:
+            return "not_found"
+        return str(getattr(resp, "status", "") or "").lower()
+
+    class _BacklogRemoteAdapter:
+        """BacklogRemote (retain_backlog.py) backed by the provider's SDK
+        scope. Every call runs inside the credential/scope wrapper so a
+        multiplexed process keys network calls by the live profile."""
+
+        def __init__(self, provider: "HindsightMemoryProvider"):
+            self._provider = provider
+
+        def status(self, bank_id: str, op_id: str) -> str:
+            return self._provider._backlog_operation_status(bank_id, op_id)
+
+        def retry_operation(self, bank_id: str, op_id: str) -> str:
+            """Re-queue a failed/cancelled row via the server's own retry;
+            never delete+resubmit. The two server 409s differ: the explicit
+            batch-parent refusal ("no incomplete sub-batches to retry") is
+            PERMANENT — the runtime replays the entry under a NEW operation
+            id (same document id + item, so server-side chunk-hash recovery
+            skips already-committed chunks); any other 409 (row moved to
+            pending/processing between read and retry) just polls."""
+            from hindsight_client_api.exceptions import ApiException, NotFoundException
+
+            try:
+                self._provider._run_hindsight_operation(
+                    lambda client: client.operations.retry_operation(
+                        bank_id=bank_id, operation_id=op_id)
+                )
+                return "ok"
+            except NotFoundException:
+                return "gone"
+            except ApiException as exc:
+                if getattr(exc, "status", None) == 404:
+                    return "gone"
+                if getattr(exc, "status", None) == 409:
+                    return "permanent" if _permanent_retry_refusal(exc) else "conflict"
+                raise
+
+        def submit(self, entry: dict) -> None:
+            """Replay the entry as an async retain under its persisted
+            operation id — idempotent server-side. Same document id as the
+            original attempt, so partially-committed chunks are recovered,
+            not duplicated. No completion tracking: the drain owns polling."""
+            self._provider._retain_batch(
+                entry["item"], bank_id=entry["bank_id"],
+                document_id=entry.get("document_id"),
+                retain_async=True, operation_id=entry["id"])
+
+    def _backlog_remote(self) -> "_BacklogRemoteAdapter":
+        return self._BacklogRemoteAdapter(self)
+
+    def _drain_retain_backlog(self) -> None:
+        """One FIFO settle pass in the Go runtime (cross-process flock held
+        there); arm an exact wakeup when entries remain."""
+        if not self._retain_backlog.may_exist:
+            return
+        next_retry = self._retain_backlog.drain(self._backlog_remote())
+        if next_retry is not None:
+            self._arm_backlog_wakeup(next_retry)
+
+    def _arm_backlog_wakeup(self, due_at: datetime) -> None:
+        """(Re)arm the single wakeup slot for the earliest future-due backlog
+        entry, so it drains without incoming chat or the writer's interval.
+        Earlier deadlines re-arm the waiting thread; later deadlines are
+        ignored (the thread re-checks the shared deadline after every wake).
+        Delay is floored at _BACKLOG_WAKEUP_MIN_S (see above)."""
+        if self._shutting_down.is_set():
+            return
+        try:
+            due_at = due_at.astimezone(timezone.utc)
+        except (ValueError, OSError, TypeError):
+            return
+        delay = max(
+            (due_at - datetime.now(timezone.utc)).total_seconds(),
+            self._BACKLOG_WAKEUP_MIN_S,
+        )
+        deadline = time.monotonic() + delay
+        with self._backlog_wakeup_lock:
+            current = self._backlog_wakeup_deadline
+            if current is not None and current <= deadline:
+                return
+            self._backlog_wakeup_deadline = deadline
+            thread = self._backlog_wakeup_thread
+            if thread is None or not thread.is_alive():
+                self._backlog_wakeup_thread = spawn_context_thread(
+                    self._backlog_wakeup_loop, name="hindsight-backlog-wakeup")
+                self._backlog_wakeup_thread.start()
+            else:
+                self._backlog_wakeup_event.set()
+
+    def _backlog_wakeup_loop(self) -> None:
+        """Wait out the armed deadline, then queue one drain pass and clear the
+        slot. A re-arm wake is picked up by re-reading the shared deadline.
+        Exit path re-checks the slot under the lock so a wakeup armed while
+        we were draining is not lost, and clears the thread slot so a later
+        arm spawns a fresh waiter."""
+        try:
+            while not self._shutting_down.is_set():
+                with self._backlog_wakeup_lock:
+                    deadline = self._backlog_wakeup_deadline
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining > 0:
+                    self._backlog_wakeup_event.wait(timeout=remaining)
+                    self._backlog_wakeup_event.clear()
+                    if self._shutting_down.is_set():
+                        return
+                    continue  # re-arm (earlier) or spurious wake: re-read deadline
+                with self._backlog_wakeup_lock:
+                    self._backlog_wakeup_deadline = None
+                self._queue_backlog_drain()
+                with self._backlog_wakeup_lock:
+                    if (self._backlog_wakeup_deadline is not None
+                            and not self._shutting_down.is_set()):
+                        continue  # re-armed while draining: wait it out, don't exit
+                    return
+        finally:
+            with self._backlog_wakeup_lock:
+                if self._backlog_wakeup_thread is threading.current_thread():
+                    self._backlog_wakeup_thread = None
+
     # -- tools -------------------------------------------------------------------
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
@@ -2777,9 +2969,27 @@ class HindsightMemoryProvider(MemoryProvider):
         content, context = args["content"], args.get("context")
         item = self._build_retain_kwargs(content, context=context, tags=args.get("tags"),
                                          occurred_at=args.get("occurred_at"))
+        # Stable document id, minted BEFORE the original call: server-side
+        # chunk-hash recovery keys on (document_id, content hash), and a
+        # backlog replay without it would mint a fresh id and duplicate every
+        # chunk the original attempt already committed. The backlog entry
+        # persists this same id.
+        document_id = f"hindsight-retain-{uuid.uuid4()}"
         logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
                      self._bank_id, len(content), context)
-        self._retain_batch(item, bank_id=self._bank_id)
+        try:
+            self._retain_batch(item, bank_id=self._bank_id, document_id=document_id)
+        except Exception as exc:
+            retry_at = classify_exception(exc)
+            if retry_at is None:
+                raise
+            # Success, not an error: the memory IS persisted, just deferred —
+            # the backlog (or its emergency spool when the Go runtime is
+            # unproducible) drains automatically once the limit resets.
+            self._enqueue_backlog_entry(item, bank_id=self._bank_id,
+                                        retry_after=retry_at, document_id=document_id)
+            return (f"Memory queued: provider rate limit; will be stored "
+                    f"automatically after {format_retry_at(retry_at)}.")
         logger.debug("Tool hindsight_retain: success")
         return "Memory stored successfully."
 
@@ -2875,24 +3085,18 @@ class HindsightMemoryProvider(MemoryProvider):
                      self._session_id, self._parent_session_id, reset, self._document_id)
 
     def _close_client(self) -> None:
-        if self._mode != "local_embedded":
-            self._run_sync(self._client.aclose())
-            return
-        # HindsightEmbedded.close() closes its sync client from this thread ("attached
-        # to a different loop" before aiohttp releases the session): aclose the inner
-        # client on the shared loop first, then let the wrapper clean up bookkeeping.
-        inner_client = getattr(self._client, "_client", None)
-        if inner_client is not None and hasattr(inner_client, "aclose"):
-            _run_sync(inner_client.aclose())
-            with contextlib.suppress(Exception):
-                self._client._client = None
-        with contextlib.suppress(RuntimeError):
-            self._client.close()
+        # Both client kinds are hindsight_client.Hindsight now (the embedded mode
+        # is an HTTP client against the side-env daemon): close on the shared loop.
+        self._run_sync(self._client.aclose())
 
     def shutdown(self) -> None:
-        logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
+        logger.debug("Hindsight shutdown: mode=%s, stopping writer + waiting for background threads", self._mode)
         # Stop accepting retain jobs first so late sync_turn() calls are dropped.
         self._shutting_down.set()
+        # Release the backlog wakeup waiter so it exits with the writer.
+        with self._backlog_wakeup_lock:
+            self._backlog_wakeup_deadline = None
+        self._backlog_wakeup_event.set()
         # The writer finishes in-flight work then exits on the sentinel; the
         # bounded join keeps shutdown predictable even if the daemon is wedged.
         if (writer := self._writer_thread) is not None and writer.is_alive():

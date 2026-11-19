@@ -6,6 +6,7 @@ import sys
 import time
 import types
 from types import SimpleNamespace
+from urllib.parse import quote
 
 import pytest
 
@@ -17,7 +18,7 @@ from gateway.session import SessionSource
 
 
 class ProgressCaptureAdapter(BasePlatformAdapter):
-    def __init__(self, platform=Platform.TELEGRAM):
+    def __init__(self, platform=Platform.DISCORD):
         super().__init__(PlatformConfig(enabled=True, token="***"), platform)
         self.sent = []
         self.edits = []
@@ -75,12 +76,12 @@ class DiscordProgressCaptureAdapter(ProgressCaptureAdapter):
 class MediaCaptureProgressAdapter(ProgressCaptureAdapter):
     """Capture native image batches without contacting a platform API."""
 
-    def __init__(self, platform=Platform.TELEGRAM):
+    def __init__(self, platform=Platform.DISCORD):
         super().__init__(platform=platform)
         self.image_batches = []
 
     async def send_multiple_images(
-        self, chat_id, images, metadata=None, human_delay=0.0
+        self, chat_id, images, metadata=None
     ) -> None:
         self.image_batches.append(
             {
@@ -96,7 +97,7 @@ class SmallLimitProgressAdapter(ProgressCaptureAdapter):
 
     MAX_MESSAGE_LENGTH = 180
 
-    def __init__(self, platform=Platform.TELEGRAM):
+    def __init__(self, platform=Platform.DISCORD):
         super().__init__(platform=platform)
         self._next_id = 0
         self.oversized_edits = []
@@ -150,7 +151,7 @@ class MetadataEditProgressCaptureAdapter(ProgressCaptureAdapter):
 class RetryableFirstEditProgressCaptureAdapter(ProgressCaptureAdapter):
     """Fail one progress edit transiently, then accept later edits."""
 
-    def __init__(self, platform=Platform.TELEGRAM):
+    def __init__(self, platform=Platform.DISCORD):
         super().__init__(platform=platform)
         self.edit_outcomes = []
 
@@ -177,7 +178,7 @@ class RetryableFirstEditProgressCaptureAdapter(ProgressCaptureAdapter):
 class RetryableOverflowEditProgressAdapter(SmallLimitProgressAdapter):
     """Fail the first split edit transiently, then keep editing."""
 
-    def __init__(self, platform=Platform.TELEGRAM):
+    def __init__(self, platform=Platform.DISCORD):
         super().__init__(platform=platform)
         self.retryable_edit_failures = 0
 
@@ -473,7 +474,6 @@ def _make_runner(adapter):
 
     runner = object.__new__(GatewayRunner)
     runner.adapters = {adapter.platform: adapter}
-    runner._voice_mode = {}
     runner._prefill_messages = []
     runner._ephemeral_system_prompt = ""
     runner._reasoning_config = None
@@ -561,7 +561,7 @@ async def test_scheduled_heartbeat_suppresses_routine_progress_and_typing(monkey
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
 
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="123",
         chat_type="dm",
         thread_id="topic-7",
@@ -573,7 +573,7 @@ async def test_scheduled_heartbeat_suppresses_routine_progress_and_typing(monkey
         history=[],
         source=source,
         session_id="heartbeat-session",
-        session_key="agent:main:telegram:dm:123:topic-7",
+        session_key="agent:main:discord:dm:123:topic-7",
         scheduled_heartbeat=True,
     )
 
@@ -710,6 +710,9 @@ def _extract_progress_preview(content: str) -> str | None:
     Handles both render styles:
     - Legacy / custom tools:  ``🔧 tool_name: "<preview>"`` (quoted)
     - Friendly built-in verb: ``💻 Running <preview>`` (verb prefix, no quotes)
+
+    Progress rows always render inside a fenced code box; the closing fence
+    is not part of the preview and is stripped here.
     """
     import re
 
@@ -721,7 +724,7 @@ def _extract_progress_preview(content: str) -> str | None:
     marker = " Running "
     idx = content.find(marker)
     if idx != -1:
-        return content[idx + len(marker):].strip()
+        return content[idx + len(marker):].removesuffix("\n```").strip()
     return None
 
 
@@ -745,8 +748,11 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
     fake_run_agent.AIAgent = LongPreviewAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
-    # Write config.yaml so _run_agent picks up tool_preview_length
-    config = {"display": {"tool_preview_length": preview_length}}
+    # Write config.yaml so _run_agent picks up tool_preview_length. The stale
+    # tool_progress_codebox key stays in on purpose: leftover config must be
+    # ignored (boxing is enforced in code), and _extract_progress_preview
+    # strips the always-on fence before lengths are measured.
+    config = {"display": {"tool_preview_length": preview_length, "tool_progress_codebox": False}}
     (tmp_path / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
 
     adapter = ProgressCaptureAdapter()
@@ -756,7 +762,7 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
 
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="12345",
         chat_type="dm",
         thread_id=None,
@@ -769,7 +775,7 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
             history=[],
             source=source,
             session_id="sess-trunc",
-            session_key="agent:main:telegram:dm:12345",
+            session_key="agent:main:discord:dm:12345",
         )
     )
     return adapter, result
@@ -788,6 +794,16 @@ def test_all_mode_respects_custom_preview_length(monkeypatch, tmp_path):
     assert len(preview_text) > 40, f"Preview suspiciously short ({len(preview_text)}): {preview_text}"
     # But still capped at 120
     assert len(preview_text) <= 120, f"Preview too long ({len(preview_text)}): {preview_text}"
+
+
+def test_stale_codebox_config_is_ignored_progress_still_boxed(monkeypatch, tmp_path):
+    """A leftover ``tool_progress_codebox: false`` in config.yaml must be ignored:
+    boxing is enforced in code, every progress bubble still renders in a fence."""
+    adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0)
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    content = adapter.sent[0]["content"]
+    assert content.startswith("```\n") and content.endswith("\n```"), content
 
 
 def test_discord_truncated_tool_url_links_to_full_destination(monkeypatch, tmp_path):
@@ -1047,7 +1063,7 @@ async def _run_with_agent(
     session_id,
     pending_text=None,
     config_data=None,
-    platform=Platform.TELEGRAM,
+    platform=Platform.DISCORD,
     chat_id="-1001",
     chat_type="group",
     thread_id="17585",
@@ -1116,6 +1132,7 @@ async def test_slack_native_progress_correlates_concurrent_duplicate_tools_by_id
         tmp_path,
         DuplicateNativeToolsAgent,
         session_id="sess-native-ids",
+        config_data={"display": {"tool_progress": "all"}},
         platform=Platform.SLACK,
         chat_id="C1",
         thread_id="thread-1",
@@ -1159,6 +1176,7 @@ async def test_slack_native_failure_keeps_editing_one_live_text_fallback(
         tmp_path,
         DuplicateNativeToolsAgent,
         session_id="sess-native-fallback",
+        config_data={"display": {"tool_progress": "all"}},
         platform=Platform.SLACK,
         chat_id="C1",
         thread_id="thread-1",
@@ -1282,32 +1300,11 @@ async def test_slack_operator_tool_progress_new_keeps_task_cards(monkeypatch, tm
     assert adapter.native_stops == 1
 
 
-@pytest.mark.asyncio
-async def test_slack_unsupported_card_destination_does_not_degrade_to_text_progress(
-    monkeypatch, tmp_path
-):
-    # Flat Slack DM, no operator config (tier default: tool_progress off). The connector cannot
-    # render a card without a thread anchor; that is a property of the destination, not a
-    # transient native failure, so the lane must NOT fall back to text tool progress the operator
-    # never asked for. Transient failures keep the fallback (see the test above).
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        DuplicateNativeToolsAgent,
-        session_id="sess-native-unsupported-dest",
-        platform=Platform.SLACK,
-        chat_id="D1",
-        chat_type="dm",
-        thread_id=None,
-        adapter_cls=UnsupportedDestinationTaskCardAdapter,
-        user_id="U1",
-        scope_id="T1",
-    )
-
-    assert result["final_response"] == "done"
-    assert len(adapter.native_updates) == 1
-    assert adapter.sent == []
-    assert adapter.edits == []
+# test_slack_unsupported_card_destination_does_not_degrade_to_text_progress was
+# removed: its premise (Slack's tier-default tool_progress "off" with no operator
+# config) died with the slack tier entry in gateway/display_config.py — an
+# unconfigured slack source now resolves the global "all", which is exactly the
+# scenario the surviving explicit-all sibling below covers.
 
 
 @pytest.mark.asyncio
@@ -1495,7 +1492,7 @@ async def test_run_agent_queued_message_delivers_first_response_media(monkeypatc
         "image_batches": [
             {
                 "chat_id": "discord-thread",
-                "images": [(media_path.as_uri(), "")],
+                "images": [(f"file://{quote(str(media_path))}", "")],
                 "metadata": {"thread_id": "discord-thread"},
             }
         ],
@@ -1536,7 +1533,7 @@ async def test_run_agent_queued_message_delivers_streamed_first_response_media(
     assert adapter.image_batches == [
         {
             "chat_id": "discord-thread",
-            "images": [(media_path.as_uri(), "")],
+            "images": [(f"file://{quote(str(media_path))}", "")],
             "metadata": {"thread_id": "discord-thread"},
         }
     ]
@@ -1628,7 +1625,7 @@ async def test_base_processing_releases_post_delivery_callback_after_main_send()
         )
 
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="-1001",
         chat_type="group",
         thread_id="17585",
@@ -1639,7 +1636,7 @@ async def test_base_processing_releases_post_delivery_callback_after_main_send()
         source=source,
         message_id="msg-1",
     )
-    session_key = "agent:main:telegram:group:-1001:17585"
+    session_key = "agent:main:discord:group:-1001:17585"
     adapter._active_sessions[session_key] = asyncio.Event()
     adapter._post_delivery_callbacks[session_key] = _post_delivery_cb
 
@@ -1674,7 +1671,7 @@ async def test_base_processing_stops_typing_before_hung_post_delivery_callback(
     adapter.stop_typing = _stop_typing
 
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="-1001",
         chat_type="group",
         thread_id="17585",
@@ -1685,7 +1682,7 @@ async def test_base_processing_stops_typing_before_hung_post_delivery_callback(
         source=source,
         message_id="msg-1",
     )
-    session_key = "agent:main:telegram:group:-1001:17585"
+    session_key = "agent:main:discord:group:-1001:17585"
     adapter._active_sessions[session_key] = asyncio.Event()
     adapter._post_delivery_callbacks[session_key] = _post_delivery_cb
 
@@ -1910,7 +1907,10 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
     renders a bare fenced code block — no language tag (Slack mrkdwn would print
     'bash' as a literal first code line).  In non-verbose ("all"/"new") mode the
     command is collapsed to a single line capped at tool_preview_length so a long
-    or multi-line command doesn't render as a huge block (#42634)."""
+    or multi-line command doesn't render as a huge block (#42634).
+
+    Keyed on matrix: a tier platform with tool_preview_length 40 (untiered
+    platforms resolve preview 0 = unlimited and render the full block)."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
     fake_dotenv = types.ModuleType("dotenv")
@@ -1922,14 +1922,14 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
     import tools.terminal_tool  # noqa: F401 - register terminal emoji
 
-    adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
+    adapter = CodeBlockProgressAdapter(platform=Platform.MATRIX)
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
 
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.MATRIX,
         chat_id="12345",
         chat_type="dm",
         thread_id=None,
@@ -1941,7 +1941,7 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
         history=[],
         source=source,
         session_id="sess-terminal-code-block",
-        session_key="agent:main:telegram:dm:12345",
+        session_key="agent:main:matrix:dm:12345",
     )
 
     assert result["final_response"] == "done"
@@ -1975,14 +1975,14 @@ async def test_terminal_progress_verbose_shows_full_command(monkeypatch, tmp_pat
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
     import tools.terminal_tool  # noqa: F401 - register terminal emoji
 
-    adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
+    adapter = CodeBlockProgressAdapter(platform=Platform.DISCORD)
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
 
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="12345",
         chat_type="dm",
         thread_id=None,
@@ -1994,7 +1994,7 @@ async def test_terminal_progress_verbose_shows_full_command(monkeypatch, tmp_pat
         history=[],
         source=source,
         session_id="sess-terminal-code-block-verbose",
-        session_key="agent:main:telegram:dm:12345",
+        session_key="agent:main:discord:dm:12345",
     )
 
     assert result["final_response"] == "done"
@@ -2023,14 +2023,14 @@ async def test_terminal_progress_no_bash_block_in_verbose_mode(monkeypatch, tmp_
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
     import tools.terminal_tool  # noqa: F401 - register terminal emoji
 
-    adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
+    adapter = CodeBlockProgressAdapter(platform=Platform.DISCORD)
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
 
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="12345",
         chat_type="dm",
         thread_id=None,
@@ -2042,7 +2042,7 @@ async def test_terminal_progress_no_bash_block_in_verbose_mode(monkeypatch, tmp_
         history=[],
         source=source,
         session_id="sess-terminal-verbose-no-bash",
-        session_key="agent:main:telegram:dm:12345",
+        session_key="agent:main:discord:dm:12345",
     )
 
     assert result["final_response"] == "done"
@@ -2085,14 +2085,14 @@ async def test_consecutive_terminal_progress_collapses_headers(monkeypatch, tmp_
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
     import tools.terminal_tool  # noqa: F401 - register terminal emoji
 
-    adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
+    adapter = CodeBlockProgressAdapter(platform=Platform.DISCORD)
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
 
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="12345",
         chat_type="dm",
         thread_id=None,
@@ -2104,7 +2104,7 @@ async def test_consecutive_terminal_progress_collapses_headers(monkeypatch, tmp_
         history=[],
         source=source,
         session_id="sess-terminal-consecutive",
-        session_key="agent:main:telegram:dm:12345",
+        session_key="agent:main:discord:dm:12345",
     )
 
     assert result["final_response"] == "done"
@@ -2134,14 +2134,3 @@ class TestSlackReplyInThreadProgressRouting:
             event_message_id="1700000000.000100",
             reply_in_thread=False,
         ) is None
-
-    def test_buzz_uses_event_message_id_as_progress_thread(self):
-        """Buzz has no native thread_id; progress must reply-to the trigger."""
-        from gateway.run import _resolve_progress_thread_id
-
-        assert _resolve_progress_thread_id(
-            "buzz",
-            source_thread_id=None,
-            event_message_id="evt-trigger-001",
-            reply_in_thread=True,
-        ) == "evt-trigger-001"

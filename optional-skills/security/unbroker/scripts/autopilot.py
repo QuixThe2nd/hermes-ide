@@ -128,10 +128,10 @@ def _optout_action(row: dict, playbook: dict[str, dict], subject_id: str, dossie
     deletion = row.get("deletion") or {}
 
     # 1) The autonomous EMAIL LANE (right-to-delete by email + confirm the reply).
-    # Autonomous when SMTP is configured (programmatic/alias) OR in browser mode (agent sends via
+    # Autonomous when SMTP is configured (programmatic) OR in browser mode (agent sends via
     # the operator's logged-in webmail; no password needed).
     email_addr, lane_why = _email_lane(row)
-    can_email = (email_mode in ("programmatic", "alias") and smtp_ok) or email_mode == "browser"
+    can_email = (email_mode == "programmatic" and smtp_ok) or email_mode == "browser"
     if email_addr and can_email:
         kind = request_kind(dossier, deletion.get("kinds"))
         via = "browser" if email_mode == "browser" else "smtp"
@@ -212,9 +212,7 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
     mail = emailer.available(env)
     at = _now_iso()
 
-    batch = tiers.batch_plan(dossier, brokers_list, cfg, ledger,
-                             browser_clears_captcha=cfg.get("browser_backend") == "browserbase"
-                             or bool(env.get("BROWSERBASE_API_KEY")))
+    batch = tiers.batch_plan(dossier, brokers_list, cfg, ledger)
     groups = batch["groups"]
     playbook = {p["broker_id"]: p for p in batch.get("parent_playbook") or []}
     by_id = {b.get("id"): b for b in brokers_list}
@@ -341,7 +339,7 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
                           "confirm the success state, screenshot into evidence/"],
                 "after": f"python3 scripts/pdd.py record {subject_id} {bid} submitted --channel web_form",
             })
-        elif (email_mode in ("programmatic", "alias") and mail["smtp"]) or email_mode == "browser":
+        elif (email_mode == "programmatic" and mail["smtp"]) or email_mode == "browser":
             actions.append({
                 "type": "indirect_email_send",
                 "broker_id": bid, "confirm_first": confirm_first,
@@ -357,15 +355,15 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
                                   prep=[f"python3 scripts/pdd.py render-email {subject_id} {bid} "
                                         f"--kind ccpa_indirect --listing <url>"]))
 
-    # 6) blocked sites: stealth pass if we have one, else the operator-browser path
+    # 6) blocked sites: Camofox retry when configured, else the operator-browser path
     blocked = groups.get("blocked") or []
     if blocked:
         ids = [r["broker_id"] for r in blocked]
-        if bool(env.get("BROWSERBASE_API_KEY")):
+        if bool(env.get("CAMOFOX_URL")):
             actions.append({
                 "type": "stealth_rescan",
                 "broker_ids": ids,
-                "how": "retry these with the cloud/stealth browser backend, then record real verdicts",
+                "how": "retry these with Camofox, then record real verdicts; solve any CAPTCHA manually",
             })
         else:
             for r in blocked:

@@ -523,8 +523,8 @@ class TestCallerLossAfterClaimAcquisition:
             claimed = jobs.claim_job_for_fire(job["id"], force=True, return_job=True)
             assert isinstance(claimed, dict)
 
-            # Caller died here — the claim outlives it. A retry (NAS/webhook
-            # or manual) must be refused while the lease is fresh.
+            # Caller died here — the claim outlives it. A provider retry or
+            # manual run must be refused while the lease is fresh.
             retry = jobs.claim_job_for_fire(job["id"], return_job=True)
             assert retry is False or not isinstance(retry, dict)
 

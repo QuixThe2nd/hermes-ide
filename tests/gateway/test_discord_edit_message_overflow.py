@@ -5,7 +5,7 @@ formatted payload over Discord's 2,000-char cap to ``[:1997] + "..."`` and
 returned ``success=True``, so the stream consumer believed the full reply
 landed and the user lost everything past the boundary.
 
-The fix mirrors the proven Telegram contract (and its #48648 lesson):
+The fix mirrors the proven split-and-deliver contract (and its #48648 lesson):
 
 * **Mid-stream** (``finalize=False``) — never split.  A mid-stream split moves
   the edit target to a continuation; the next accumulated-token tick re-edits
@@ -138,8 +138,7 @@ class TestMidStreamOverflowTruncates:
 
 
 # --------------------------------------------------------------------------- #
-# Saturated-preview dedup — stop flood-control edit storms (mirrors the
-# Telegram #58563 fix)
+# Saturated-preview dedup — stop flood-control edit storms (the #58563 fix)
 # --------------------------------------------------------------------------- #
 
 
@@ -149,7 +148,7 @@ class TestSaturatedPreviewDedup:
         """Once a mid-stream preview saturates at the truncation cap, further
         oversized edits truncate to the SAME text — re-sending them is a
         visual no-op that still counts against Discord's edit rate limit
-        (the exact "Telegram #48648 lesson" this file's own docstring
+        (the exact "#48648 lesson" this file's own docstring
         already references). The adapter must skip identical saturated
         previews without an API call."""
         adapter = _make_adapter()

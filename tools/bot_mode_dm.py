@@ -502,19 +502,19 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
     intent: dict[str, Any]
     intent_path = Path(dm_file + ".live.json")
     if intent_path.exists():
-        intent = json.loads(intent_path.read_text(encoding="utf-8"))
+        intent = json.loads(intent_path.read_text(encoding="utf-8-sig"))
     else:
         assert profile_home is not None
         owner = find_canonical_live_owner(profile_home)
         if owner is None:
             return None
-        intent = dict(owner=owner, message=Path(dm_file).read_text(encoding="utf-8"),
+        intent = dict(owner=owner, message=Path(dm_file).read_text(encoding="utf-8-sig"),
                       delivery_id=_dm_delivery_id(dm_file),
                       **({"author": author} if author else {}))
         try:
             fd = os.open(intent_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
-            intent = json.loads(intent_path.read_text(encoding="utf-8"))
+            intent = json.loads(intent_path.read_text(encoding="utf-8-sig"))
         else:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
                 json.dump(intent, stream)
@@ -717,12 +717,6 @@ def _spawn_delivery(
         proc_id = parsed.get("session_id") or ""
         if parsed.get("error"):
             return _err(f"Delivery to {label} failed to start: {parsed['error']}")
-        if parsed.get("status") == "pending_approval":
-            # terminal_tool's approval gate answers with an EMPTY error and no session_id: the runner
-            # never launched because nobody in this turn could approve its command.
-            return _err(f"Delivery to {label} failed to start: its command needs terminal approval that nobody "
-                        "in this turn can grant" + (", so nothing was sent. Approve it (or add it to "
-                                                    "command_allowlist) and send again." if dm_file else "."))
         if not proc_id:
             return _err(f"Delivery to {label} failed to start: no process id returned")
         # From here the background runner owns the file (removed after the consumer finishes).

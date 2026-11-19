@@ -21,11 +21,11 @@ class TestQuerySessionListingSearch:
     def db(self, tmp_path):
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("sess_an94", "telegram", user_id="1", chat_id="2")
+        db.create_session("sess_an94", "discord", user_id="1", chat_id="2")
         db.set_session_title("sess_an94", "AN-94 Prestige Barrel Build #2")
         db.create_session("sess_winton", "whatsapp", user_id="1", chat_id="2")
         db.set_session_title("sess_winton", "Winton Email Sheet Update #3")
-        db.create_session("sess_untitled", "telegram", user_id="1", chat_id="2")
+        db.create_session("sess_untitled", "discord", user_id="1", chat_id="2")
         yield db
         db.close()
 
@@ -35,7 +35,7 @@ class TestQuerySessionListingSearch:
 
 
     def test_source_scoping(self, db):
-        assert self._ids(db, source="telegram", search_query="winton") == []
+        assert self._ids(db, source="discord", search_query="winton") == []
         assert self._ids(db, source="whatsapp", search_query="winton") == ["sess_winton"]
 
 
@@ -43,31 +43,31 @@ class TestQuerySessionListingSearch:
         """Searching an old (compressed-away) title surfaces the live tip."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "chain.db")
-        db.create_session("root_1", "telegram", user_id="1", chat_id="2")
+        db.create_session("root_1", "discord", user_id="1", chat_id="2")
         db.set_session_title("root_1", "Old Chat")
         db.end_session("root_1", end_reason="compression")
         db.create_session(
-            "tip_1", "telegram", user_id="1", chat_id="2", parent_session_id="root_1"
+            "tip_1", "discord", user_id="1", chat_id="2", parent_session_id="root_1"
         )
         db.set_session_title("tip_1", "AN-94 Build")
         try:
             for query in ("old chat", "root_1", "an94"):
-                rows = query_session_listing(db, source="telegram", search_query=query)
+                rows = query_session_listing(db, source="discord", search_query=query)
                 assert [r["id"] for r in rows] == ["tip_1"], query
         finally:
             db.close()
 
     def test_plain_listing_still_hides_unnamed(self, db):
-        assert self._ids(db, source="telegram") == ["sess_an94"]
+        assert self._ids(db, source="discord") == ["sess_an94"]
 
     def test_current_session_is_hidden_by_default(self, db):
-        rows = query_session_listing(db, source="telegram", current_session_id="sess_an94")
+        rows = query_session_listing(db, source="discord", current_session_id="sess_an94")
         assert [r["id"] for r in rows] == []
 
     def test_current_session_can_be_listed_with_marker(self, db):
         rows = query_session_listing(
             db,
-            source="telegram",
+            source="discord",
             current_session_id="sess_an94",
             include_current_session=True,
         )
@@ -116,25 +116,25 @@ class TestQuerySessionListingLaneScope:
         from hermes_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "state.db")
-        lane_key = "agent:main:telegram:dm:lane"
+        lane_key = "agent:main:discord:dm:lane"
         db.create_session(
-            "lane_current", "telegram", session_key=lane_key,
+            "lane_current", "discord", session_key=lane_key,
             user_id="lane-user", chat_id="lane",
         )
         db.set_session_title("lane_current", "Current lane")
         db.create_session(
-            "lane_named", "telegram", session_key=lane_key,
+            "lane_named", "discord", session_key=lane_key,
             user_id="lane-user", chat_id="lane",
         )
         db.set_session_title("lane_named", "Needle lane")
         db.create_session(
-            "lane_unnamed", "telegram", session_key=lane_key,
+            "lane_unnamed", "discord", session_key=lane_key,
             user_id="lane-user", chat_id="lane",
         )
         for i in range(60):
             db.create_session(
-                f"foreign_{i}", "telegram",
-                session_key=f"agent:main:telegram:dm:foreign-{i}",
+                f"foreign_{i}", "discord",
+                session_key=f"agent:main:discord:dm:foreign-{i}",
                 user_id=f"foreign-user-{i}", chat_id=f"foreign-{i}",
             )
             db.set_session_title(f"foreign_{i}", f"Needle foreign {i}")
@@ -146,7 +146,7 @@ class TestQuerySessionListingLaneScope:
 
         rows = query_session_listing(
             session_db,
-            source="telegram",
+            source="discord",
             session_key=lane_key,
             current_session_id="lane_current",
             limit=1,
@@ -159,14 +159,14 @@ class TestQuerySessionListingLaneScope:
 
         full_rows = query_session_listing(
             session_db,
-            source="telegram",
+            source="discord",
             session_key=lane_key,
             include_unnamed=True,
             limit=10,
         )
         search_rows = query_session_listing(
             session_db,
-            source="telegram",
+            source="discord",
             session_key=lane_key,
             search_query="needle",
             limit=10,
@@ -182,7 +182,7 @@ class TestQuerySessionListingLaneScope:
 
         rows = query_session_listing(
             session_db,
-            source="telegram",
+            source="discord",
             search_query="needle foreign 59",
             limit=10,
         )

@@ -12,8 +12,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from gateway.runtime_footer import _format_duration
-
 # ---------------------------------------------------------------------------
 # Overrideable display settings and their global defaults
 # ---------------------------------------------------------------------------
@@ -22,41 +20,21 @@ from gateway.runtime_footer import _format_duration
 # and don't participate in per-platform resolution.
 
 _GLOBAL_DEFAULTS: dict[str, Any] = {
-    "tool_progress": "all",
+    # Unconfigured installs get "describe" (one short human sentence per call).
+    # The explicit opt-in to raw verbosity stays available: ``tool_progress: all``,
+    # and a bare boolean ``tool_progress: true`` still coerces to "all" (see _NORMALISERS).
+    "tool_progress": "describe",
     "tool_progress_grouping": "accumulate",  # "accumulate" = edit one bubble; "separate" = one msg per tool
-    # Present each accumulated tool-progress group as one unlabelled fenced
-    # code block (rows keep their relative order; embedded ``` are escaped so
-    # they stay inside the box). Opt-in; off = plain multi-line bubble.
-    "tool_progress_codebox": False,
     "show_reasoning": False,
-    # How a reasoning/thinking summary is rendered when show_reasoning is on.
-    #   "code"      -> 💭 **Reasoning:** + fenced code block (legacy default)
-    #   "blockquote"-> each line prefixed with "> "
-    #   "subtext"   -> each line prefixed with "-# " (Discord small grey subtext)
-    #   "compact"   -> single "💭 thought for Xs" duration line, no CoT text;
-    #                  appends " (N tokens)" when this turn's count is known
-    # Discord defaults to "subtext"; everywhere else defaults to "code".
-    "reasoning_style": "code",
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
     # Gateway-only assistant/status chatter; mobile platforms opt down to final-answer-first.
     "interim_assistant_messages": True,
     "suppress_warning_notifications": False,
-    "long_running_notifications": True,
     "busy_ack_detail": True,
-    # Whether busy_input_mode=steer sends a visible "Steered into current run"
-    # acknowledgment after successfully injecting the user's mid-turn message.
-    # Disable when the platform should steer silently (the text still lands in
-    # the active run; only the confirmation echo is suppressed).
-    "busy_steer_ack_enabled": True,
-    # Whether steer mode ALSO sends the follow-up "✅ Steer delivered" bubble
-    # at the moment the steered text is actually injected into the model's
-    # context (the immediate ack only promises that it WILL arrive). Disable
-    # to keep only the initial acknowledgment.
-    "busy_steer_delivered_ack_enabled": True,
-    # When true, delete tool-progress / "⏳ Working — N min" / status bubbles
+    # When true, delete tool-progress / status bubbles
     # after the final response lands on platforms that support message
-    # deletion (e.g. Telegram). Off by default — progress is still shown
+    # deletion. Off by default — progress is still shown
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
@@ -75,72 +53,31 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
 # Tiers: HIGH = editing, personal/team use; MEDIUM = editing but customer-facing;
 # LOW = no edit support (progress messages are permanent); MINIMAL = batch delivery.
 _TIER_HIGH = {
-    "tool_progress": "all", "show_reasoning": False, "tool_preview_length": 40,
+    "tool_progress": "describe", "show_reasoning": False, "tool_preview_length": 40,
     "streaming": None,  # follow global
-    "interim_assistant_messages": True, "long_running_notifications": True, "busy_ack_detail": True,
+    "interim_assistant_messages": True, "busy_ack_detail": True,
 }
 _TIER_MEDIUM = {**_TIER_HIGH, "tool_progress": "new"}
 _TIER_LOW = {
     **_TIER_HIGH, "tool_progress": "off", "streaming": False,
-    "interim_assistant_messages": False, "long_running_notifications": False, "busy_ack_detail": False,
+    "interim_assistant_messages": False, "busy_ack_detail": False,
 }
 _TIER_MINIMAL = {**_TIER_LOW, "tool_preview_length": 0}
 
 _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Tier 1 — full edit support, personal/team use
-    # Telegram is usually a mobile inbox: keep tool_progress quiet and skip
-    # the verbose busy-ack iteration counter, but DO surface real mid-turn
-    # assistant commentary (interim_assistant_messages) and DO send periodic
-    # heartbeats (long_running_notifications) so the user has signal between
-    # turn start and final answer. Otherwise it looks like "typing..." for
-    # 30 minutes with nothing happening. Opt in to verbose iteration detail
-    # via display.platforms.telegram.busy_ack_detail / tool_progress.
-    "telegram":    {
-        **_TIER_HIGH,
-        "tool_progress": "off",
-        "busy_ack_detail": False,
-    },
-    # Discord has a native "subtext" primitive (-# small grey text) that reads
-    # as metadata rather than content, so reasoning summaries default to it
-    # here instead of the fenced code block used elsewhere.
-    # Discord's long-running heartbeat defaults to the phase line ("⏳ terminal
-    # 1m42s" / "⏳ grok-4.6 38s" / "⏳ packing 12s") — the current wait plus its
-    # elapsed time — instead of the raw diagnostic join ("⏳ Working — 3 min —
-    # iteration N/M, <provider wait notice>"). "generic" keeps the catalog
-    # phrase ("⏳ still working"); raw detail remains available via
-    # display.platforms.discord.long_running_notifications: true (plus
-    # busy_ack_detail for the iteration counter).
     # Discord shows the FULL tool command and all arguments by default
     # (tool_preview_length 0 = unlimited); an explicit positive
     # display.platforms.discord.tool_preview_length re-caps.
     "discord":     {
         **_TIER_HIGH,
-        "reasoning_style": "subtext",
-        "long_running_notifications": "phase",
         "tool_preview_length": 0,
     },
 
     # Tier 2 — edit support, often customer/workspace channels
-    # Slack: tool_progress off by default — Bolt posts cannot be edited like CLI;
-    # "new"/"all" spam permanent lines in channels (hermes-agent#14663).
-    "slack":           {
-        **_TIER_MEDIUM,
-        "tool_progress": "off",
-        "long_running_notifications": False,
-        "busy_ack_detail": False,
-    },
-    "mattermost":      _TIER_MEDIUM,
     "matrix":          _TIER_MEDIUM,
-    "feishu":          _TIER_MEDIUM,
-    # Buzz (Nostr relay via buzz-cli): messages can be edited in place
-    # (`buzz messages edit`), so grouped/accumulating progress works, but
-    # channels are shared community spaces — keep the medium tier. Without
-    # this entry Buzz inherited the verbose _GLOBAL_DEFAULTS and every
-    # interim update became a separate permanent channel post (#95841).
-    "buzz":            _TIER_MEDIUM,
 
     # Tier 3 — no edit support, progress messages are permanent
-    "signal":          _TIER_LOW,
     "whatsapp":        _TIER_MEDIUM,  # Baileys bridge supports /edit
     # WhatsApp Cloud API: Meta added message editing in 2023 but the
     # Hermes Cloud adapter doesn't implement edit_message yet, so we
@@ -148,29 +85,8 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # status update as a separate message. Promote to TIER_MEDIUM once
     # Cloud's edit_message lands.
     "whatsapp_cloud":  _TIER_LOW,
-    # Photon (managed iMessage over the gRPC sidecar) and BlueBubbles are both
-    # permanent-message iMessage inboxes with no message-edit support, so both
-    # stay TIER_LOW. This keeps tool progress, interim scratch commentary,
-    # "still working" heartbeats, and busy-ack iteration detail out of the
-    # user's iMessage thread. Without this entry Photon inherited the noisy
-    # global ("all") defaults and compacted/narrated on nearly every turn.
-    "photon":          _TIER_LOW,
-    "bluebubbles":     _TIER_LOW,
-    "weixin":          _TIER_LOW,
-    # WeCom is technically non-editable but exposes a native streaming
-    # transport (msgtype: "stream" via aibot_respond_msg) that the gateway
-    # consumer routes mid-stream content through. Enable streaming by default
-    # so the WeCom client renders the typing animation and cumulative content
-    # updates instead of a single one-shot markdown drop.
-    "wecom":           {**_TIER_LOW, "streaming": True},
-    "wecom_callback":  _TIER_LOW,
-    "dingtalk":        _TIER_LOW,
-
     # Tier 4 — batch or non-interactive delivery
-    "email":           _TIER_MINIMAL,
-    "sms":             _TIER_MINIMAL,
     "webhook":         _TIER_MINIMAL,
-    "homeassistant":   _TIER_MINIMAL,
     "api_server":      {**_TIER_HIGH, "tool_preview_length": 0},
 }
 
@@ -181,7 +97,7 @@ OVERRIDEABLE_KEYS = frozenset(_GLOBAL_DEFAULTS.keys())
 def resolve_display_setting(user_config: dict, platform_key: str, setting: str, fallback: Any = None) -> Any:
     """Resolve a display setting with per-platform override support (see module docstring for order).
 
-    ``platform_key`` is the platform config key (``"telegram"``; see ``_platform_config_key`` in
+    ``platform_key`` is the platform config key (``"discord"``; see ``_platform_config_key`` in
     gateway/run.py). Returns *fallback* when nothing is configured.
     """
     configured = _configured_display_value(user_config, platform_key, setting)
@@ -249,14 +165,6 @@ def _norm_bool(value: Any) -> bool:
     return value.strip().lower() in _TRUTHY | {"raw", "verbose"} if isinstance(value, str) else bool(value)
 
 
-def _norm_long_running(value: Any) -> Any:
-    if isinstance(value, str):
-        val = value.strip().lower()
-        if val in {"generic", "phase"}:
-            return val
-    return _norm_bool(value)
-
-
 def _norm_suppress_warning_notifications(value: Any) -> bool:
     # Only an explicit, recognized opt-in may hide engine diagnostics.
     if isinstance(value, bool):
@@ -293,81 +201,34 @@ _NORMALISERS: dict[str, Any] = {
     "streaming": _norm_bool,
     "interim_assistant_messages": _norm_bool,
     "suppress_warning_notifications": _norm_suppress_warning_notifications,
-    "long_running_notifications": _norm_long_running,
     "busy_ack_detail": _norm_bool,
-    "busy_steer_ack_enabled": _norm_bool,
-    # Fork additions: the second steer ack + live retry-progress rail.
-    "busy_steer_delivered_ack_enabled": _norm_bool,
     "retry_progress": _norm_bool,
     "thinking_progress": _norm_bool,
     "cleanup_progress": _norm_cleanup_progress,
     "live_status": _norm_tristate("full", "off", {"full", "verb", "off"}, extra_truthy={"all"}),
     "tool_progress_grouping": _norm_choice(("accumulate", "separate")),
-    "tool_progress_codebox": _norm_bool,
-    # "compact" (fork): single "💭 thought for Xs" duration line, no CoT text.
-    "reasoning_style": _norm_choice(("code", "blockquote", "subtext", "compact")),
     "tool_preview_length": _norm_int,
 }
 
 
-def format_reasoning_prefix(
-    style: str,
-    last_reasoning: str | None,
-    turn_seconds: float | None,
-    platform_key: str,
-    thought_tokens: int | None = None,
-) -> str:
-    """Render the reasoning block prepended to a final response.
+def format_reasoning_prefix(last_reasoning: str | None, platform_key: str) -> str:
+    """Render one line summarizing the first non-empty reasoning line.
 
-    Returns ``""`` when there is nothing to show — no reasoning text, or the
-    ``compact`` style with no measurable duration. Callers own the
-    ``show_reasoning`` gate and prepend the result as ``f"{prefix}\\n\\n{response}"``.
-
-    ``compact`` never includes chain-of-thought text: it renders a single
-    💭-marked duration line (``-# 💭 thought for 12s`` on Discord,
-    ``_💭 thought for 12s_`` elsewhere) so users see that the model reasoned
-    without dumping the reasoning itself. When ``thought_tokens`` carries
-    THIS turn's reasoning/output token count, the line gains a
-    ``(N tokens)`` suffix (``-# 💭 thought for 12s (N tokens)``); a
-    missing/zero count leaves the bare duration line. Duration formatting
-    reuses :func:`gateway.runtime_footer._format_duration`.
+    Callers own the ``show_reasoning`` gate and prepend the result as
+    ``f"{prefix}\\n\\n{response}"``.
     """
     if not last_reasoning:
         return ""
-    if style == "compact":
-        duration = _format_duration(turn_seconds)
-        if not duration:
-            return ""
-        if thought_tokens:
-            duration += f" ({thought_tokens} tokens)"
-        if platform_key == "discord":
-            return f"-# 💭 thought for {duration}"
-        return f"_💭 thought for {duration}_"
-    # Collapse long reasoning to keep messages readable
-    lines = last_reasoning.strip().splitlines()
-    if len(lines) > 15:
-        display_reasoning = "\n".join(lines[:15])
-        display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
-    else:
-        display_reasoning = last_reasoning.strip()
-    if style == "subtext":
-        quoted = "\n".join(
-            f"-# {ln}" if ln else "-#" for ln in display_reasoning.splitlines()
-        )
-        return f"-# 💭 Reasoning\n{quoted}"
-    if style == "blockquote":
-        quoted = "\n".join(
-            f"> {ln}" if ln else ">" for ln in display_reasoning.splitlines()
-        )
-        return f"> 💭 **Reasoning:**\n{quoted}"
-    # Default "code" style: escape ``` inside reasoning so inner fences don't
-    # break the outer code block used to render it.
-    from gateway.stream_consumer_fences import escape_code_fences_for_display
-
-    return (
-        f"💭 **Reasoning:**\n"
-        f"```\n{escape_code_fences_for_display(display_reasoning)}\n```"
+    describe = next(
+        (line.strip() for line in last_reasoning.splitlines() if line.strip()), ""
     )
+    if not describe:
+        return ""
+    if len(describe) > 80:
+        describe = describe[:80] + "…"
+    if platform_key == "discord":
+        return f"-# 💭 Reasoned about {describe}"
+    return f"_💭 Reasoned about {describe}_"
 
 
 def _normalise(setting: str, value: Any) -> Any:
@@ -397,13 +258,13 @@ def _row_contains_fence(line) -> bool:
     return bool(re.search(r"(`{3,}|~{3,})", str(line)))
 
 
-def format_progress_group(lines: list, codebox: bool) -> str:
+def format_progress_group(lines: list) -> str:
     """Render accumulated tool-progress rows as one bubble's text.
 
-    ``codebox`` wraps the whole group in a single unlabelled fenced code block
-    (``display.tool_progress_codebox``). The box is always a plain ``` pair;
-    any 3+ backtick or tilde run inside the body is neutered with a trailing
-    U+200B so an embedded fence can never break out of the outer box.
+    The whole group is wrapped in a single unlabelled fenced code block (not
+    configurable). The box is always a plain ``` pair; any 3+ backtick or
+    tilde run inside the body is neutered with a trailing U+200B so an
+    embedded fence can never break out of the outer box.
 
     SEGMENTED RENDERING: if ANY row in the group contains its own 3+ fence
     run, the group is split into contiguous runs of fenced vs plain rows.
@@ -412,17 +273,14 @@ def format_progress_group(lines: list, codebox: bool) -> str:
     — Discord cannot nest codeblocks, but it renders multiple non-nested
     blocks in one message fine. Segments are joined with a blank line, so a
     pure-fenced group reduces to the plain newline-free raw join and a
-    pure-plain group keeps the single-box behavior above. Plain mode
-    (``codebox`` off) is always the historical newline join.
+    pure-plain group keeps the single-box behavior above.
 
     Oversized GROUPS that contain fenced rows are not pre-chunked here —
     chunk_oversized_progress_row handles single plain rows only, so a large
     segmented group reaches the native adapter and is split there.
     """
-    if not codebox or not any(_row_contains_fence(line) for line in lines):
+    if not any(_row_contains_fence(line) for line in lines):
         body = "\n".join(str(line) for line in lines)
-        if not codebox:
-            return body
         return f"```\n{_neuter_box_fences(body)}\n```"
     segments: list[str] = []
     run: list[str] = []
@@ -437,6 +295,16 @@ def format_progress_group(lines: list, codebox: bool) -> str:
     if run:
         segments.append("```\n" + "\n".join(run) + "\n```")
     return "\n\n".join(segments)
+
+
+def format_progress_row(row, limit: int, len_fn=len) -> list[str]:
+    """Texts to send for ONE row delivered as its own message ("separate" / non-editable).
+
+    Wraps the row via :func:`format_progress_group` (fenced rows stay unboxed)
+    and slices an oversized row into limit-fitting boxes so nothing is split
+    mid-fence by the adapter. Rows must be passed RAW (never pre-boxed).
+    """
+    return [format_progress_group([chunk]) for chunk in chunk_oversized_progress_row(row, limit, len_fn)]
 
 
 # "```\n" + "\n```" around a one-line boxed group.
@@ -481,13 +349,13 @@ def chunk_oversized_progress_row(line, limit: int, len_fn=len) -> list:
     return chunks
 
 
-def repeat_row_text(base_msg, count: int, codebox: bool) -> str:
-    """The repeat-rendered row text for a ``__dedup__`` update (neutered when boxed).
+def repeat_row_text(base_msg, count: int) -> str:
+    """The repeat-rendered row text for a ``__dedup__`` update (neutered for the box).
 
     A fenced row ships unboxed (its fences render as real blocks), so its
     repeat text stays raw — no ZWSP neutering.
     """
     text = f"{base_msg} (×{count + 1})"
-    if not codebox or _row_contains_fence(base_msg):
+    if _row_contains_fence(base_msg):
         return text
     return _neuter_box_fences(text)

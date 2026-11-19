@@ -3,6 +3,7 @@
 Tests _wrap_command(), _extract_cwd_from_output(), _embed_stdin_heredoc(),
 init_session() failure handling, and the CWD marker contract.
 """
+import pytest
 
 from unittest.mock import MagicMock
 
@@ -229,6 +230,7 @@ class TestAtomicSnapshotConcurrencyBehavioral:
         import subprocess
         return subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True)
 
+    @pytest.mark.platforms("linux")
     def test_concurrent_writes_never_tear_the_snapshot(self, tmp_path):
         import shutil
         if not shutil.which("bash"):
@@ -266,6 +268,7 @@ class TestAtomicSnapshotConcurrencyBehavioral:
         final = self._run(f"source {_q(snap)} >/dev/null 2>&1 && echo OK || echo BROKEN")
         assert "OK" in final.stdout, f"final snapshot not sourceable: {final.stdout} {final.stderr}"
 
+    @pytest.mark.platforms("linux")
     def test_failed_export_does_not_destroy_good_snapshot(self, tmp_path):
         """If ``export -p`` fails, the ``&&``-chained mv must NOT clobber the
         existing good snapshot."""
@@ -293,6 +296,7 @@ class TestAtomicSnapshotConcurrencyBehavioral:
 class TestSnapshotFileModes:
     """Snapshot metadata files are private without changing user command umask."""
 
+    @pytest.mark.platforms("linux")
     def test_snapshot_and_cwd_files_are_0600(self, tmp_path):
         import os
         from pathlib import Path
@@ -449,7 +453,7 @@ class TestCwdMarker:
 class TestSanitizeTaskIdForPath:
     """sanitize_task_id_for_path must yield mountable, collision-free segments.
 
-    A raw task id like ``session:agent:main:telegram:dm:12345`` used as a
+    A raw task id like ``session:agent:main:discord:dm:12345`` used as a
     sandbox directory name made docker -v split the bind-mount on the embedded
     colons and the daemon rejected it with "invalid mode" / exit 125 (#92414).
     The helper is shared by every backend that builds host paths from task_id
@@ -459,7 +463,7 @@ class TestSanitizeTaskIdForPath:
     def test_docker_unsafe_characters_are_replaced(self):
         from tools.environments.path_utils import sanitize_task_id_for_path
 
-        out = sanitize_task_id_for_path("session:agent:main:telegram:dm:12345")
+        out = sanitize_task_id_for_path("session:agent:main:discord:dm:12345")
         assert ":" not in out
         assert "/" not in out and "\\" not in out
 
@@ -505,7 +509,7 @@ class TestSanitizeTaskIdForPath:
         from tools.environments.path_utils import sanitize_task_id_for_path
 
         target = tmp_path / "docker" / sanitize_task_id_for_path(
-            "session:agent:main:telegram:dm:12345"
+            "session:agent:main:discord:dm:12345"
         )
         target.mkdir(parents=True)
         assert target.is_dir()

@@ -133,8 +133,8 @@ _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
 # ``timeouts.tools.unbounded_tools`` in config.yaml (a list of tool names; an
 # explicit empty list disables the exemption entirely).
 #
-# Uniform delegation lifecycle: ALL four delegate tools are exempt in their
-# default (blocking) mode — a foreground fan-out, a multi-hour claude/cursor
+# Uniform delegation lifecycle: ALL delegate tools are exempt in their
+# default (blocking) mode — a foreground fan-out, a multi-hour claude
 # run, or a days-long assistant mission wait is legitimate blocked work, not
 # a wedged thread. The 30s tool heartbeat keeps the gateway's inactivity
 # watchdog fed the whole time, so the deadline exemption is the only guard
@@ -144,8 +144,13 @@ _DEFAULT_UNBOUNDED_TOOLS = frozenset(
     {
         "delegate_agent",
         "delegate_claude_agent",
-        "delegate_cursor_agent",
         "delegate_assistant",
+        # Coding lane tools — a foreground lane run (especially an OMP RPC
+        # goal-mode reverse-engineer pass) legitimately blocks for a long time.
+        "delegate_ui_dev",
+        "delegate_client_dev",
+        "delegate_backend_dev",
+        "delegate_reverse_engineer",
         # Hidden registry aliases (advertise=False) — dispatchable forever.
         "delegate_task",
         "restart",
@@ -167,6 +172,15 @@ _TOOL_NAME_ALIASES = {
     "delegate_task": "delegate_agent",
 }
 
+# Lane tools named here (not imported from tools.delegate_lane_specs to keep
+# agent -> tools import edges at call sites only).
+_LANE_TOOL_NAMES = frozenset({
+    "delegate_ui_dev",
+    "delegate_client_dev",
+    "delegate_backend_dev",
+    "delegate_reverse_engineer",
+})
+
 
 def _resolve_unbounded_tools() -> frozenset[str]:
     from agent.deadline import resolve_name_list
@@ -183,7 +197,7 @@ def _resolve_unbounded_tools() -> frozenset[str]:
             expanded.add(new)
         if new in expanded:
             expanded.add(old)
-    if not expanded & {"delegate_agent", "delegate_task"}:
+    if not expanded & ({"delegate_agent", "delegate_task"} | _LANE_TOOL_NAMES):
         logger.warning(
             "timeouts.tools.unbounded_tools names no delegation tool; a "
             "foreground delegate_agent call will be killed by the %ss batch "
@@ -191,36 +205,35 @@ def _resolve_unbounded_tools() -> frozenset[str]:
             "alive.",
             _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S,
         )
+    missing_lanes = _LANE_TOOL_NAMES - expanded
+    if missing_lanes:
+        logger.warning(
+            "timeouts.tools.unbounded_tools omits the lane tool(s) %s; their "
+            "foreground calls will be killed by the %ss batch deadline. Add "
+            "them to keep long blocking lane runs (e.g. an OMP goal-mode "
+            "reverse-engineer pass) alive.",
+            ", ".join(sorted(missing_lanes)),
+            _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S,
+        )
     return frozenset(expanded)
 # Upper bound a concurrent worker will wait at the start-order gate for all
 # earlier-ordered tools to advance before proceeding out of order. Long enough
-# to cover slow-but-legitimate authorization (e.g. an approval round-trip),
+# to cover slow-but-legitimate authorization (e.g. a sudo prompt),
 # short enough that one wedged dispatch cannot starve the batch forever.
 _START_ORDER_GATE_TIMEOUT_S = 120.0
-# Fallback only; the effective bound derives from approvals.timeout (_authorization_gate_lock_timeout).
+# Fallback only; the effective bound uses the fixed sudo-wait ceiling.
 _AUTHORIZATION_GATE_LOCK_TIMEOUT_S = 360.0
 
 
 def _authorization_gate_lock_timeout() -> float:
-    """Authorization-lock bound = ``tools.approval_human_wait.human_wait_ceiling`` (approval timeout +
-    margin, capped so it can't overflow Lock.acquire): never break serialization while a
-    prompt is answerable, never let a wedged holder park workers forever. Deliberately NOT
-    min()'d with the fallback so the gate never gives up early.
+    """Bound lock serialization by the same safe ceiling as sudo waits.
 
-    Delegates to ``tools.approval_human_wait.human_wait_ceiling`` — the same bound that clamps a human-wait window's
-    deadline contribution — so the two can't drift. Long enough that serialization is never broken while a
-    legitimate approval prompt is still answerable; short enough that a wedged holder (hanging
-    ``pre_tool_call`` plugin, dead approval client) cannot park other workers forever (#79719). Resolved
-    once per gate (per batch), so a mid-process ``approvals.timeout`` change applies from the next batch.
+    A wedged pre-tool hook must not park every concurrent worker forever.
     """
     try:
-        from tools.approval_human_wait import human_wait_ceiling
+        from tools.sudo_wait import human_wait_ceiling
 
-        # human_wait_ceiling is platform-safety-capped (agent/deadline.py MAX_SAFE_TIMEOUT_S): a huge
-        # approvals.timeout can no longer overflow Lock.acquire's time_t on macOS (#83220). Deliberately NOT
-        # min()'d with _AUTHORIZATION_GATE_LOCK_TIMEOUT_S — the gate must never give up while a legitimate
-        # approval prompt is still answerable (#79719), so a configured approvals.timeout above 360s must
-        # extend the gate.
+        # The ceiling is capped for platform-safe Lock.acquire timeouts.
         return human_wait_ceiling()
     except Exception:
         return _AUTHORIZATION_GATE_LOCK_TIMEOUT_S
@@ -415,39 +428,6 @@ def _append_skipped_tool_results(
     return True
 
 
-def _tool_search_scoped_names(agent) -> frozenset:
-    """Deferrable tool names the session may invoke via ``tool_call``; the unwrap bypasses
-    the bridge's scope check in ``model_tools.handle_function_call``, so restricted sessions
-    validate against this set. Cached on the agent, keyed by registry scope/generation."""
-    try:
-        import model_tools
-        from tools import tool_search as _ts
-        from tools.registry import registry as _registry
-    except Exception:
-        return frozenset()
-
-    enabled = getattr(agent, "enabled_toolsets", None)
-    disabled = getattr(agent, "disabled_toolsets", None)
-    cache_key = (
-        _registry.current_scope_key(),
-        getattr(_registry, "_generation", 0),
-        frozenset(enabled) if enabled is not None else None,
-        frozenset(disabled) if disabled is not None else None,
-    )
-    cached = getattr(agent, "_tool_search_scope_cache", None)
-    if cached is not None and cached[0] == cache_key:
-        return cached[1]
-    try:
-        names = _ts.scoped_deferrable_names(model_tools.get_tool_definitions(
-            enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True, skip_tool_search_assembly=True,
-        ) or [])
-    except Exception:
-        names = frozenset()
-    with contextlib.suppress(Exception):
-        agent._tool_search_scope_cache = (cache_key, names)
-    return names
-
-
 def _canonical_tool_name(function_name: str) -> str:
     """Map legacy tool-name aliases BEFORE agent-loop dispatch."""
     from model_tools import _LEGACY_TOOL_ALIASES as _lta
@@ -455,74 +435,24 @@ def _canonical_tool_name(function_name: str) -> str:
     return _lta.get(function_name, function_name)
 
 
-def _unwrap_tool_search_call(
-    agent, function_name: str, function_args: dict, *, flatten_probe: bool = False
-) -> tuple[str, dict, Optional[str]]:
-    """Peel the ``tool_call`` bridge so downstream hooks (checkpointing, guardrails, plugin
-    hooks, activity feed) see the underlying tool; ``tool_call.function`` stays untouched for
-    the transcript and tool_call_id pairing.
-
-    The unwrap bypasses handle_function_call's scope check, so session toolset scope is
-    enforced HERE. Returns ``(name, args, scope_block)``; ``scope_block`` is the block
-    message when the underlying tool is out of scope or its args fail the deferred-schema
-    probe (``flatten_probe`` collapses the probe's JSON payload to one plain string for
-    callers that wrap the message in ``{"error": ...}``).
-    """
-    scope_block: Optional[str] = None
-    try:
-        from tools import tool_search as _ts
-        if function_name != _ts.TOOL_CALL_NAME:
-            return function_name, function_args, None
-        underlying, underlying_args, err = _ts.resolve_underlying_call(function_args)
-        if err or not underlying:
-            return function_name, function_args, None
-        if underlying == _ts.CONNECTOR_BATCH_SENTINEL:
-            # Both executors retain the wrapper: scope/probe/hooks run per entry
-            # in the batch dispatcher, not against a synthetic registry name.
-            return function_name, function_args, None
-        if underlying not in _tool_search_scoped_names(agent):
-            return function_name, function_args, (
-                f"'{underlying}' is not available in this session. Use tool_search to find tools you can call."
-            )
-        # Validate before unwrapping: the generic bridge hides the concrete
-        # parameter schema from provider-native tool-call validation.
-        scope_block = _ts.validate_deferred_call_args(underlying, underlying_args)
-        if scope_block is None:
-            return underlying, underlying_args, None
-        if flatten_probe:
-            probe = json.loads(scope_block)
-            scope_block = (
-                f"{probe.get('error', '')} Parameters schema: "
-                f"{json.dumps(probe.get('parameters', {}), ensure_ascii=False)}. "
-                f"{probe.get('hint', '')}"
-            ).strip()
-    except Exception:
-        pass
-    return function_name, function_args, scope_block
-
-
 @dataclass
 class _ParsedCall:
-    """One model tool call after alias canonicalization, arg parsing and bridge unwrap."""
+    """One model tool call after alias canonicalization and argument parsing."""
 
     tool_call: Any
     name: str
     args: dict
     middleware_trace: list
     parse_error: Optional[str]
-    scope_block: Optional[str]
 
     def ref(self, task_id: str) -> _ToolCallRef:
         return _ToolCallRef(self.name, self.args, task_id, _pairing_tool_call_id(self.tool_call), self.middleware_trace)
 
 
-def _parse_tool_call(agent, tool_call, *, flatten_probe: bool = False) -> _ParsedCall:
+def _parse_tool_call(tool_call) -> _ParsedCall:
     name = _canonical_tool_name(tool_call.function.name)
     args, parse_error = _parse_tool_arguments(tool_call.function.arguments)
-    scope_block = None
-    if parse_error is None:
-        name, args, scope_block = _unwrap_tool_search_call(agent, name, args, flatten_probe=flatten_probe)
-    return _ParsedCall(tool_call, name, args, [], parse_error, scope_block)
+    return _ParsedCall(tool_call, name, args, [], parse_error)
 
 
 @dataclass
@@ -544,23 +474,10 @@ class _ToolCancelledResult(str):
 
 
 class _ConcurrentToolAuthorizationGate:
-    """Serialize policy prompts and exclude human approval waits from batch deadlines.
+    """Serialize interactive sudo prompts and exclude their waits from deadlines.
 
-    The acquire is BOUNDED: on expiry the worker prompts unserialized rather than starving
-    the batch behind a wedged plugin/approval client. Exclusion is measured at the SOURCE
-    of the human wait (``tools.approval.human_wait_seconds``), NOT as gate residency —
-    residency-based exclusion let a wedged plugin keep the deadline from ever firing.
-
-    Serialization keeps concurrent approval prompts from interleaving on the user's screen. The acquire is
-    BOUNDED: a worker wedged inside the gate (a hanging ``pre_tool_call`` plugin, or an approval round-trip
-    to a client that went away) must not park every other worker forever. On expiry the worker runs its
-    prompt unserialized — worst case is interleaved prompts, strictly better than permanent starvation (same
-    tradeoff as the start-order gate, #79705).
-    Gate residency is arbitrary code — using it as the exclusion signal let a wedged plugin grow the
-    exclusion 1:1 with wall clock, keeping the batch deadline's ``remaining`` constant so it never fired and
-    the turn hung forever (#79719). A wedged plugin now contributes nothing to the exclusion and the batch
-    times out normally, while a genuine approval wait (which can legitimately exceed any fixed bound) is
-    still excluded in full.
+    Gate residency is not deadline-excluded: a wedged pre-tool hook must still
+    time out normally. Only the explicit sudo wait window contributes.
     """
 
     def __init__(self, *, lock_timeout: float | None = None, session_key: str | None = None) -> None:
@@ -571,20 +488,20 @@ class _ConcurrentToolAuthorizationGate:
             # Snapshot on the SUBMITTING thread: excluded_seconds() is polled from the
             # batch wait loop, whose context may differ from the workers'.
             try:
-                from tools.approval_context import get_current_session_key
+                from tools.session_context import get_current_session_key
 
                 self._session_key = get_current_session_key()
             except Exception:
                 logger.debug(
                     "authorization gate could not snapshot the session key; "
-                    "human-wait exclusion will re-resolve it at poll time",
+                    "sudo-wait exclusion will re-resolve it at poll time",
                     exc_info=True,
                 )
         self._baseline_wait_seconds = self._human_wait_seconds()
 
     def _human_wait_seconds(self) -> float:
         try:
-            from tools.approval_human_wait import human_wait_seconds
+            from tools.sudo_wait import human_wait_seconds
 
             return human_wait_seconds(self._session_key)
         except Exception:
@@ -592,17 +509,8 @@ class _ConcurrentToolAuthorizationGate:
 
     def run(self, callback):
         if not self._serialization_lock.acquire(timeout=self._lock_timeout):
-            # Deterministic failure (bad command, non-MCP URL, 401/403): every retry hits the same wall.
-            # Park immediately instead of burning the retry ladder and spamming N identical warnings
-            # (#65673). Auth failures park here too rather than returning. Returning ends the run task, and
-            # with it the only listener on ``_reconnect_event`` — so a 401 on the very first connect left
-            # the server unrevivable for the life of the process, even after the user re-authenticated with
-            # ``hermes mcp login``. Parking keeps the task alive so the 300s self-probe (and an explicit
-            # /mcp refresh) can pick up fresh tokens.
             logger.warning(
-                "authorization gate lock not acquired after %.1fs "
-                "(holder wedged in a pre_tool_call plugin or approval "
-                "round-trip?); running prompt unserialized",
+                "authorization gate lock not acquired after %.1fs; running callback unserialized",
                 self._lock_timeout,
             )
             return callback()
@@ -612,7 +520,7 @@ class _ConcurrentToolAuthorizationGate:
             self._serialization_lock.release()
 
     def excluded_seconds(self) -> float:
-        """Return human-approval wait seconds accrued since the batch started."""
+        """Return interactive sudo-wait seconds accrued since the batch started."""
         return max(0.0, self._human_wait_seconds() - self._baseline_wait_seconds)
 
 
@@ -739,12 +647,11 @@ def _dispatch_authorized_once(
     ref: _ToolCallRef,
     *,
     execute,
-    scope_block: str | None,
     display_index: int | None,
     begin_execution,
     authorization_gate: _ConcurrentToolAuthorizationGate | None,
 ) -> Any:
-    """Hermes policy (scope → plugin pre-hooks → guardrails) then the one real dispatch.
+    """Run plugin pre-hooks and guardrails, then dispatch exactly once.
 
     Plugin ``modify`` hooks may rewrite ``ref.args`` (mirrored into ``state.args``).
     ``begin_execution`` (concurrent start-order gate) is advanced exactly once on every
@@ -756,12 +663,10 @@ def _dispatch_authorized_once(
         elif callback is not None:
             callback()
 
-    block_message, block_error_type = scope_block, "tool_scope_block"
-    if block_message is None:
-        block_error_type = "plugin_block"
-        resolve = lambda: _pre_tool_block(agent, ref)  # noqa: E731
-        block_message, ref.args = resolve() if authorization_gate is None else authorization_gate.run(resolve)
-        state.args = ref.args
+    block_error_type = "plugin_block"
+    resolve = lambda: _pre_tool_block(agent, ref)  # noqa: E731
+    block_message, ref.args = resolve() if authorization_gate is None else authorization_gate.run(resolve)
+    state.args = ref.args
 
     guardrail_decision = None
     if block_message is None:
@@ -782,8 +687,6 @@ def _dispatch_authorized_once(
     elif ref.name == "skill_manage":
         agent._iters_since_skill = 0
 
-    from agent.terminal_approval_batch import prepare_current_terminal
-    prepare_current_terminal(ref)
     _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
     return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
 
@@ -796,7 +699,6 @@ def _run_agent_tool_execution_middleware(
     effective_task_id: str,
     tool_call_id: str,
     execute,
-    scope_block: str | None = None,
     display_index: int | None = None,
     middleware_trace: list[dict[str, Any]] | None = None,
     begin_execution=None,
@@ -825,14 +727,11 @@ def _run_agent_tool_execution_middleware(
             state,
             _ToolCallRef(function_name, final_args, effective_task_id, tool_call_id, trace),
             execute=execute,
-            scope_block=scope_block,
             display_index=display_index,
             begin_execution=begin_execution,
             authorization_gate=authorization_gate,
         )
 
-    from agent.terminal_approval_batch import bind_prepared_dispatch
-    _authorized_dispatch = bind_prepared_dispatch(_authorized_dispatch)
 
     def _hermes_pipeline(relay_args: dict[str, Any]) -> Any:
         request_result = apply_tool_request_middleware(
@@ -876,14 +775,14 @@ def _resolve_sequential_tool_timeout() -> float | None:
     """Deadline for one sequential call: ``timeouts.tools.sequential_call``, else the
     concurrent batch deadline so the two paths can't drift; ``0``/negative disables.
     Deliberately NOT ``agent.deadline.run_bounded_sync``: both executors extend the
-    deadline while an approval prompt is open, which a fixed deadline can't express."""
+    deadline while a sudo prompt is open, which a fixed deadline can't express."""
     from agent.deadline import resolve_timeout
 
     return resolve_timeout("tools.sequential_call", default=_resolve_concurrent_tool_timeout())
 
 
 # ``manage_connections`` waits on the connection operation's own deadline; the generic deadline
-# would return tool_timeout while its approval card is still open.
+# would return tool_timeout while its interactive card is still open.
 # Long blocking delegations are covered by ``tools.unbounded_tools``
 # (``_DEFAULT_UNBOUNDED_TOOLS``), which now also exempts ``terminal``: a foreground
 # terminal call supervises its own child and deadline.
@@ -898,7 +797,7 @@ def _abandoned_sequential_result(agent, ref: _ToolCallRef, message: str, result_
 
 
 def _poll_sequential_future(agent, future, function_name: str, deadline: float | None, started: float, authorization_gate) -> tuple[str, Any]:
-    """Wait for the worker in interrupt-poll slices, extending the deadline by human approval
+    """Wait for the worker in interrupt-poll slices, extending the deadline by sudo
     wait; returns ``("done", result)``, ``("timeout", None)`` or ``("interrupted", None)``.
     A disabled deadline still polls: this loop is what makes a non-cooperative tool
     interruptible, so no deadline must not mean no interrupt checks."""
@@ -929,41 +828,22 @@ def _run_sequential_tool_execution_middleware(
     effective_task_id: str,
     tool_call_id: str,
     execute,
-    scope_block: str | None = None,
     display_index: int | None = None,
     middleware_trace: list[dict[str, Any]] | None = None,
 ) -> _ManagedToolResult:
-    """Run one sequential call on a worker thread under the concurrent executor's deadline.
-    Interactive tools (``clarify``) own their wait via ``agent.clarify_timeout``; the
-    generic deadline would report ``tool_timeout`` while the prompt is still live. They
-    are ``_NEVER_PARALLEL_TOOLS`` and run inline below, before any deadline is armed, so
-    they need no ``_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS`` entry."""
+    """Run one sequential call on a worker thread under the tool deadline."""
     timeout_s = _resolve_sequential_tool_timeout()
     if function_name in _resolve_unbounded_tools():
-        # Long-running external agents have no stall watchdog of their own and
-        # may legitimately run (quietly) for hours; human-confirmation tools
-        # (e.g. restart) wait for a human reply and rely on clarify heartbeats
-        # — the generic deadline must not fire for either.
         timeout_s = None
     ref = _ToolCallRef(function_name, function_args, effective_task_id, tool_call_id, middleware_trace)
-    kwargs = dict(ref.middleware_kwargs(), execute=execute, scope_block=scope_block, display_index=display_index)
-    from agent.terminal_approval_batch import take_prepared_call
-    prepared = take_prepared_call(tool_call_id)
-    if prepared is not None:
-        authorization_gate = prepared.batch.authorization_gate
-        executor = prepared.batch.executor
-        worker_tid = prepared.tids
-        future = prepared.future
-    else:
-        authorization_gate = None
+    kwargs = dict(ref.middleware_kwargs(), execute=execute, display_index=display_index)
     if function_name in _NEVER_PARALLEL_TOOLS:
         return _run_agent_tool_execution_middleware(agent, **kwargs)
 
     from tools.daemon_pool import DaemonThreadPoolExecutor
 
-    if prepared is None:
-        authorization_gate = _ConcurrentToolAuthorizationGate()
-        worker_tid: list[int] = []
+    authorization_gate = _ConcurrentToolAuthorizationGate()
+    worker_tid: list[int] = []
 
     def _run() -> _ManagedToolResult:
         with _registered_tool_worker(agent) as tid:
@@ -972,9 +852,8 @@ def _run_sequential_tool_execution_middleware(
 
     if ref.trace is None:
         ref.trace = []
-    if prepared is None:
-        executor = DaemonThreadPoolExecutor(max_workers=1)
-        future = executor.submit(propagate_context_to_thread(_run))
+    executor = DaemonThreadPoolExecutor(max_workers=1)
+    future = executor.submit(propagate_context_to_thread(_run))
     deadline = time.monotonic() + timeout_s if timeout_s is not None else None
     started = time.monotonic()
     abandoned = False
@@ -983,8 +862,6 @@ def _run_sequential_tool_execution_middleware(
         if state == "done":
             return result
         if state == "interrupted":
-            # interrupt() already fanned out to tracked tids, but this worker may have
-            # registered after that ran; then 3s grace (mirrors the concurrent path).
             _interrupt_worker_tids(agent, worker_tid, reason=getattr(agent, "_tool_interrupt_reason", None))
             concurrent.futures.wait([future], timeout=3.0)
             if future.done() and not future.cancelled():
@@ -1000,26 +877,20 @@ def _run_sequential_tool_execution_middleware(
                 error_type="tool_interrupted", error_message=f"Tool execution cancelled: {interrupt_reason}",
             )
         else:
-            assert timeout_s is not None  # only reachable when a deadline exists
+            assert timeout_s is not None
             message = f"Error executing tool '{function_name}': timed out after {timeout_s:.1f}s"
             logger.warning("sequential tool %s timed out after %.1fs", function_name, timeout_s)
             result_cls, outcome = _ToolTimeoutResult, dict(
                 duration_ms=int(timeout_s * 1000), status="timeout", error_type="tool_timeout", error_message=message,
             )
         abandoned = True
-        if prepared is not None:
-            # A timed-out shell may still be unwinding. Never release a later
-            # prepared command into overlapping execution.
-            prepared.batch.close()
-            agent.interrupt("terminal batch tool did not complete")
         future.cancel()
         if state == "timeout":
             _interrupt_worker_tids(agent, worker_tid)
         return _abandoned_sequential_result(agent, ref, message, result_cls, **outcome)
     finally:
         # Never join a wedged worker (daemon pool also keeps it out of the atexit join).
-        if prepared is None:
-            executor.shutdown(wait=not abandoned, cancel_futures=abandoned)
+        executor.shutdown(wait=not abandoned, cancel_futures=abandoned)
 
 
 def _safe_callback(callback, label: str, *args, **kwargs) -> None:
@@ -1188,10 +1059,10 @@ def _commit_tool_result(
 
 def _persist_multimodal_text_parts(result: dict, tool_name: str, tool_call_id: str, env, budget: BudgetConfig) -> dict:
     """Spill oversized TEXT parts of a multimodal envelope through the same persistence policy as
-    string results (#95429). A ``browser_exec`` call that captured a screenshot bakes its full
-    stdout into the envelope's text part, which used to bypass ``maybe_persist_tool_result``
-    entirely and ride every later request inline. Image parts are left untouched (their size is
-    governed by the vision embed budget); a fresh dict is returned so history is never mutated."""
+    string results (#95429). A ``browser_vision`` envelope's text used to bypass
+    ``maybe_persist_tool_result`` entirely and ride every later request inline. Image parts are left
+    untouched (their size is governed by the vision embed budget); a fresh dict is returned so history
+    is never mutated."""
     parts = result.get("content") or []
     bounded_parts, first_replacement = [], None
     for part in parts:
@@ -1335,13 +1206,13 @@ class _ConcurrentBatch:
         self.authorization_gate = _ConcurrentToolAuthorizationGate()
         self.timed_out_indices: set[int] = set()
 
-    def _dispatch_worker(self, index: int, ref: _ToolCallRef, scope_block, start_gate: _WorkerStartOnce) -> Optional[_ToolOutcome]:
+    def _dispatch_worker(self, index: int, ref: _ToolCallRef, start_gate: _WorkerStartOnce) -> Optional[_ToolOutcome]:
         """Run one call through the middleware and synthesize its slot outcome; ``None`` when
         abandoned at the gate (the main thread already wrote this slot; emitting would
         double-report the tool_call_id)."""
         agent = self.agent
-        # Approval/sudo callbacks (thread-local) and the agent turn's ContextVars are propagated by
-        # propagate_context_to_thread() at the submit site below (GHSA-qg5c-hvr5-hjgr, #13617).
+        # Sudo and staged-write callbacks (thread-local) and the agent turn's ContextVars are
+        # propagated by propagate_context_to_thread() at the submit site below (GHSA-qg5c-hvr5-hjgr, #13617).
         start = time.time()
         blocked = dispatched = False
         try:
@@ -1356,7 +1227,6 @@ class _ConcurrentBatch:
                     skip_tool_execution_middleware=True,
                     tool_request_middleware_trace=list(ref.trace),
                 ),
-                scope_block=scope_block,
                 display_index=index + 1,
                 begin_execution=start_gate.advance,
                 authorization_gate=self.authorization_gate,
@@ -1399,7 +1269,7 @@ class _ConcurrentBatch:
             _set_worker_activity_callback(agent)
             start_gate = _WorkerStartOnce(self.gate, start_order, pc.name)
             try:
-                outcome = self._dispatch_worker(index, pc.ref(self.effective_task_id), pc.scope_block, start_gate)
+                outcome = self._dispatch_worker(index, pc.ref(self.effective_task_id), start_gate)
                 if outcome is not None:
                     self.results[index] = outcome
             finally:
@@ -1409,7 +1279,7 @@ class _ConcurrentBatch:
     def submit_all(self, executor, runnable: list[int]) -> tuple[list, dict]:
         """Submit every runnable slot; on interpreter shutdown, synthesize error results
         for the unsubmitted remainder instead of raising. ``propagate_context_to_thread``
-        carries turn ContextVars and thread-local approval/sudo callbacks into the worker."""
+        carries turn ContextVars and thread-local sudo/staged-write callbacks into the worker."""
         futures = []
         future_to_index = {}
         for submit_index, i in enumerate(runnable):
@@ -1626,7 +1496,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         )
         return
 
-    parsed_calls = [_parse_tool_call(agent, tc) for tc in tool_calls]
+    parsed_calls = [_parse_tool_call(tc) for tc in tool_calls]
 
     tool_names_str = ", ".join(pc.name for pc in parsed_calls)
     if _tool_progress_enabled(agent):
@@ -1722,7 +1592,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
         inline_ctx = InlineToolContext(effective_task_id=effective_task_id, tool_call_id=tool_call_id, messages=messages)
         return _SequentialDispatch(lambda next_args: inline_executor(agent, next_args, inline_ctx), finish_in_finally=False)
     if function_name in ("delegate_agent", "delegate_task"):
-        # Backend-routed calls (claude/cursor) need the registry dispatch path:
+        # Backend-routed calls (claude) need the registry dispatch path:
         # the external handlers key spawn/restart receipts on the session and
         # tool-call ids only that path supplies. The subagent fast path keeps
         # its live-agent intercept.
@@ -1759,7 +1629,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
             error_log="context_engine.handle_tool_call raised for %s: %s",
         )
     if agent._memory_manager and agent._memory_manager.has_tool(function_name):
-        # Memory-provider tools (hindsight_retain, honcho_search, ...) are not in the registry.
+        # Memory-provider tools (hindsight_retain, ...) are not in the registry.
         return _SequentialDispatch(
             execute=lambda next_args: agent._memory_manager.handle_tool_call(function_name, next_args),
             spinner=_start_quiet_tool_spinner(agent, function_name, function_args),
@@ -1828,7 +1698,6 @@ def _run_sequential_call(
     dispatch: _SequentialDispatch,
     ref: _ToolCallRef,
     *,
-    scope_block: Optional[str],
     messages: list,
     remaining_calls,
     display_index: int,
@@ -1843,7 +1712,6 @@ def _run_sequential_call(
             agent,
             **dict(ref.middleware_kwargs(), middleware_trace=dispatch.middleware_trace_arg),
             execute=dispatch.execute,
-            scope_block=scope_block,
             display_index=display_index,
         )
         ref.args = managed.args
@@ -1956,15 +1824,9 @@ def _append_gateway_restart_skipped_tool_results(
 
 
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
-    from types import SimpleNamespace
-    from agent.terminal_approval_batch import terminal_approval_batch, terminal_approval_runs
-    for calls in terminal_approval_runs(agent, assistant_message.tool_calls):
-        with terminal_approval_batch(agent, calls, messages, effective_task_id):
-            _execute_tool_calls_sequential(agent, SimpleNamespace(tool_calls=calls), messages, effective_task_id, api_call_count, finalize=False)
-        if getattr(agent, "_incremental_persistence_failed", False):
-            return
-    if finalize:
-        _finalize_tool_batch(agent, messages, effective_task_id, len(assistant_message.tool_calls), _budget_for_agent(agent))
+    _execute_tool_calls_sequential(
+        agent, assistant_message, messages, effective_task_id, api_call_count, finalize=finalize
+    )
 
 
 def _execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
@@ -2011,7 +1873,7 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
                     return
             break
 
-        pc = _parse_tool_call(agent, tool_call, flatten_probe=True)
+        pc = _parse_tool_call(tool_call)
         ref = pc.ref(effective_task_id)
         if pc.parse_error is not None:
             if not _append_invalid_arguments_result(agent, messages, ref, pc.parse_error):
@@ -2022,7 +1884,6 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
         dispatch = _resolve_sequential_dispatch(agent, ref, messages)
         managed, tool_duration = _run_sequential_call(
             agent, dispatch, ref,
-            scope_block=pc.scope_block,
             messages=messages,
             remaining_calls=tool_calls[i - 1:],
             display_index=i,

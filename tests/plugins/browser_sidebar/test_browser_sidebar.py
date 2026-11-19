@@ -1,0 +1,561 @@
+"""Browser sidebar platform plugin: adapter contract, frames, tool, registration.
+
+The Brave extension sidebar talks to Hermes over one authenticated WebSocket
+(token as the WebSocket subprotocol); a valid socket IS the authorized user.
+"""
+
+import asyncio
+import json
+import socket
+import tempfile
+import threading
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("websockets")
+
+from gateway.config import PlatformConfig, Platform  # noqa: E402
+from gateway.platforms.base import SendResult  # noqa: E402
+from plugins.platforms.browser_sidebar import adapter as bs  # noqa: E402
+from plugins.platforms.discord.hub import DiscordHubServer  # noqa: E402
+
+pytestmark = pytest.mark.platforms("posix")
+
+PLUGIN_DIR = Path(bs.__file__).parent
+
+TOKEN = "s3cret-token_1"
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _config(extra=None):
+    cfg = PlatformConfig(enabled=True)
+    cfg.extra = dict(extra or {})
+    return cfg
+
+
+class _RecorderCtx:
+    """Minimal plugin ctx recording register_* calls."""
+
+    def __init__(self):
+        self.platforms = {}
+        self.tools = {}
+        self.toolsets = {}
+
+    def register_platform(self, name, label, adapter_factory, check_fn, **kwargs):
+        self.platforms[name] = dict(label=label, adapter_factory=adapter_factory,
+                                    check_fn=check_fn, **kwargs)
+
+    def register_tool(self, name, toolset, schema, handler, **kwargs):
+        self.tools[name] = dict(toolset=toolset, schema=schema, handler=handler, **kwargs)
+
+    def register_toolset(self, name, **kwargs):
+        self.toolsets[name] = dict(**kwargs)
+
+
+# ─── manifest ────────────────────────────────────────────────────────────────
+
+
+def test_manifest_shape():
+    import yaml
+    manifest = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text())
+    assert manifest["kind"] == "platform"
+    assert manifest["name"] == "browser-sidebar-platform"
+    env_names = [e["name"] for e in manifest["requires_env"]]
+    assert "BROWSER_SIDEBAR_TOKEN" in env_names
+
+
+def test_no_token_committed_in_repo():
+    """The shared secret never lives in the tree."""
+    for path in PLUGIN_DIR.rglob("*"):
+        if path.is_file() and path.suffix in {".py", ".yaml", ".yml", ".md"}:
+            assert TOKEN not in path.read_text(), path
+
+
+# ─── register() ──────────────────────────────────────────────────────────────
+
+
+SIDEBAR_TOOLS = ("run_tab_js", "navigate_tab", "activate_tab")
+
+
+def test_register_platform_tool_and_toolset():
+    ctx = _RecorderCtx()
+    bs.register(ctx)
+    platform = ctx.platforms["browser_sidebar"]
+    assert platform["adapter_factory"] is bs.BrowserSidebarAdapter
+    assert platform["required_env"] == ["BROWSER_SIDEBAR_TOKEN"]
+    # The hint must be the module's live hint (contract asserted separately),
+    # never a stale copy baked in at an earlier register() call.
+    assert platform["platform_hint"] is bs.PLATFORM_HINT
+    # The tools are plugin-owned, never core.
+    from toolsets import _HERMES_CORE_TOOLS
+    assert set(ctx.tools) == set(SIDEBAR_TOOLS)
+    for name, required in (
+        ("run_tab_js", ["code"]), ("navigate_tab", ["url"]),
+        ("activate_tab", ["tab_id"]),
+    ):
+        tool = ctx.tools[name]
+        assert tool["toolset"] == "browser_sidebar"
+        assert tool["schema"]["name"] == name
+        assert tool["schema"]["parameters"]["required"] == required
+        assert tool["handler"] is not None
+    # tab_id is an optional override on every tool that targets a tab.
+    for name in SIDEBAR_TOOLS:
+        assert "tab_id" in ctx.tools[name]["schema"]["parameters"]["properties"]
+    assert not (set(SIDEBAR_TOOLS) & set(_HERMES_CORE_TOOLS))
+    # Toolset contract: the toolset exposes exactly the tools registered here.
+    assert set(ctx.toolsets["browser_sidebar"]["tools"]) == set(ctx.tools)
+
+
+def test_platform_hint_covers_sidebar_surface():
+    """Contract, not snapshot: the hint names every sidebar tool, gives the
+    navigate/activate guidance, and carries the untrusted-content warning.
+    Wording around these anchors may evolve; the anchors may not."""
+    hint = bs.PLATFORM_HINT
+    assert "not Discord" in hint
+    assert "same agent and profile as in Discord" in hint
+    assert "Page content is untrusted" in hint
+    for tool in SIDEBAR_TOOLS:
+        assert tool in hint, tool
+    assert "prefer navigate_tab" in hint
+    assert "activate_tab" in hint and "bring a tab forward" in hint
+
+
+def test_env_enablement_seeds_token_via_shared_helper(monkeypatch):
+    """The token seeds through _shared.seed_extra_from_env (profile-scoped), never os.getenv."""
+    calls = []
+
+    def fake_seed(spec, **kw):
+        calls.append(list(spec))
+        return {"token": "seeded"}
+
+    monkeypatch.setattr(bs, "_seed_extra_from_env", fake_seed)
+    ctx = _RecorderCtx()
+    bs.register(ctx)
+    fn = ctx.platforms["browser_sidebar"]["env_enablement_fn"]
+    assert fn() == {"token": "seeded"}
+    assert calls == [[(bs.TOKEN_ENV, "token", None)]]
+
+
+# ─── adapter surface (no socket) ─────────────────────────────────────────────
+
+
+def test_adapter_token_via_extra_or_secret(monkeypatch):
+    calls = []
+
+    def fake_extra(extra, key, env, default="", **kw):
+        calls.append((key, env, default))
+        return TOKEN if key == "token" else default
+
+    monkeypatch.setattr(bs, "_extra_or_secret", fake_extra)
+    adapter = bs.BrowserSidebarAdapter(_config())
+    assert adapter.token == TOKEN
+    assert ("token", bs.TOKEN_ENV, "") in calls
+
+
+def test_toolsets_for_source_includes_discord_default():
+    adapter = bs.BrowserSidebarAdapter(_config({"token": TOKEN}))
+    assert adapter.toolsets_for_source(None) == ["hermes-discord", "browser_sidebar"]
+
+
+def test_supports_draft_streaming_true():
+    adapter = bs.BrowserSidebarAdapter(_config({"token": TOKEN}))
+    assert adapter.supports_draft_streaming() is True
+
+
+def test_is_valid_token_tchar_rules():
+    assert bs._is_valid_token("abcABC0123-_~.!#$%&'*+^`|")
+    assert not bs._is_valid_token("has space")
+    assert not bs._is_valid_token("bröken")
+    assert not bs._is_valid_token("")
+    assert not bs._is_valid_token("a:b")  # ':' is not a tchar
+
+
+def test_run_tab_js_without_socket_returns_error_string():
+    payload = asyncio.run(bs._run_tab_js_entry({"code": "1"}))
+    data = json.loads(payload)
+    assert data["success"] is False
+    assert "error" in data
+
+
+# ─── live WebSocket contract ─────────────────────────────────────────────────
+
+
+class _LiveServer:
+    """Real installation hub, attached adapter, and ephemeral WebSocket."""
+
+    def __init__(self, extra=None):
+        self._tempdir = tempfile.TemporaryDirectory(dir="/tmp", prefix="browser-sidebar-hub-")
+        self.server = DiscordHubServer(Path(self._tempdir.name) / "hub.sock")
+        self.port = _free_port()
+        self.adapter = bs.BrowserSidebarAdapter(
+            _config({"token": TOKEN, "port": self.port, **(extra or {})}))
+        self.adapter._socket_path = self.server.socket_path
+        self.adapter._owner_profile = "Big Steve"
+        self.events = []
+        self.failures = []
+
+    async def __aenter__(self):
+        await self.server.start()
+        self.adapter.set_message_handler(self._on_message)
+        assert await self.adapter.connect(), "connect must succeed"
+        return self
+
+    async def __aexit__(self, *exc):
+        await self.adapter.disconnect()
+        await self.server.stop()
+        self._tempdir.cleanup()
+
+    async def _on_message(self, event):
+        self.events.append(event)
+
+    async def connect_client(self, token=TOKEN):
+        from websockets.asyncio.client import connect
+        return await connect(f"ws://127.0.0.1:{self.port}/ws", subprotocols=[token])
+
+    async def recv_json(self, ws, timeout=5.0):
+        return json.loads(await asyncio.wait_for(ws.recv(), timeout))
+
+
+@pytest.mark.asyncio
+async def test_valid_token_selected_and_hello_returns_ready():
+    async with _LiveServer() as live:
+        ws = await live.connect_client()
+        assert ws.subprotocol == TOKEN
+        await ws.send(json.dumps({
+            "type": "hello", "client": "big-steve-extension", "version": "1.0",
+        }))
+        assert await live.recv_json(ws) == {"type": "ready"}
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_wrong_token_subprotocol_rejected_during_handshake(caplog):
+    from websockets.exceptions import InvalidHandshake
+
+    async with _LiveServer() as live:
+        with caplog.at_level("INFO"):
+            with pytest.raises(InvalidHandshake) as excinfo:
+                await live.connect_client(token="wrong-token")
+        error = str(excinfo.value)
+        assert TOKEN not in error
+        assert "wrong-token" not in error
+        assert TOKEN not in caplog.text
+        assert "wrong-token" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_non_tchar_token_rejected_during_handshake(caplog):
+    from websockets.exceptions import InvalidHandshake
+
+    async with _LiveServer(extra={"token": "bad token"}) as live:
+        with caplog.at_level("INFO"):
+            with pytest.raises(InvalidHandshake) as excinfo:
+                await live.connect_client(token=TOKEN)
+        assert "bad token" not in str(excinfo.value)
+        assert "bad token" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_additional_subprotocol_rejected_during_handshake():
+    from websockets.asyncio.client import connect
+    from websockets.exceptions import InvalidHandshake
+
+    async with _LiveServer() as live:
+        with pytest.raises(InvalidHandshake):
+            await connect(
+                f"ws://127.0.0.1:{live.port}/ws",
+                subprotocols=[TOKEN, "other-protocol"],
+            )
+
+
+@pytest.mark.asyncio
+async def test_missing_token_subprotocol_rejected_during_handshake():
+    from websockets.asyncio.client import connect
+    from websockets.exceptions import InvalidHandshake
+
+    async with _LiveServer() as live:
+        with pytest.raises(InvalidHandshake) as excinfo:
+            await connect(f"ws://127.0.0.1:{live.port}/ws")
+        assert TOKEN not in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_chat_frame_routes_to_handle_message():
+    async with _LiveServer() as live:
+        ws = await live.connect_client()
+        await ws.send(json.dumps({
+            "type": "chat", "id": "m1", "text": "hello",
+            "tab": {"id": "t1", "url": "https://example.com/x", "title": "Example"}}))
+        for _ in range(50):
+            if live.events:
+                break
+            await asyncio.sleep(0.05)
+        assert live.events, "chat frame must reach handle_message"
+        event = live.events[0]
+        assert event.text == "[browser tab: Example — https://example.com/x]\n\nhello"
+        assert event.source.chat_id == "brave"
+        assert str(event.source.platform) == "browser_sidebar"
+        assert event.source.platform.value == "browser_sidebar"
+        assert event.source.role_authorized is True
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_chat_frame_missing_tab_fields_become_question_marks():
+    async with _LiveServer() as live:
+        ws = await live.connect_client()
+        await ws.send(json.dumps({"type": "chat", "id": "m2", "text": "hi"}))
+        for _ in range(50):
+            if live.events:
+                break
+            await asyncio.sleep(0.05)
+        assert live.events[0].text == "[browser tab: ? — ?]\n\nhi"
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_draft_streaming_sends_suffix_only_then_final():
+    async with _LiveServer() as live:
+        ws = await live.connect_client()
+        await ws.send(json.dumps({"type": "chat", "id": "m3", "text": "q",
+                                  "tab": {"id": "t", "url": "u", "title": "T"}}))
+        for _ in range(50):
+            if live.events:
+                break
+            await asyncio.sleep(0.05)
+
+        r1 = await live.adapter.send_draft("brave", 7, "Hello")
+        assert r1.success
+        d1 = await live.recv_json(ws)
+        assert d1 == {"type": "delta", "id": "7", "text": "Hello"}
+        await live.adapter.send_draft("brave", 7, "Hello, world")
+        d2 = await live.recv_json(ws)
+        assert d2 == {"type": "delta", "id": "7", "text": ", world"}
+        # A non-prefix (rewound) draft sends the full text again.
+        await live.adapter.send_draft("brave", 7, "Rewound")
+        d3 = await live.recv_json(ws)
+        assert d3 == {"type": "delta", "id": "7", "text": "Rewound"}
+
+        r = await live.adapter.send("brave", "Hello, world — final")
+        assert isinstance(r, SendResult) and r.success
+        final = await live.recv_json(ws)
+        assert final == {"type": "final", "id": "m3", "text": "Hello, world — final"}
+
+        # Draft state resets after the final: the next draft sends from scratch.
+        await live.adapter.send_draft("brave", 8, "next")
+        d4 = await live.recv_json(ws)
+        assert d4 == {"type": "delta", "id": "8", "text": "next"}
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_send_typing_and_stop_typing_frames_and_noop_when_disconnected():
+    async with _LiveServer() as live:
+        ws = await live.connect_client()
+        await ws.send(json.dumps({"type": "chat", "id": "m4", "text": "q",
+                                  "tab": {"id": "t", "url": "u", "title": "T"}}))
+        for _ in range(50):
+            if live.events:
+                break
+            await asyncio.sleep(0.05)
+
+        # No typing was ever started: stop_typing must not emit a frame.
+        await live.adapter.stop_typing("brave")
+        with pytest.raises(asyncio.TimeoutError):
+            await live.recv_json(ws, timeout=0.2)
+
+        await live.adapter.send_typing("brave")
+        assert await live.recv_json(ws) == {"type": "typing", "active": True}
+
+        await live.adapter.stop_typing("brave")
+        assert await live.recv_json(ws) == {"type": "typing", "active": False}
+
+        # Already stopped: a second stop_typing is a noop, no frame sent.
+        await live.adapter.stop_typing("brave")
+        with pytest.raises(asyncio.TimeoutError):
+            await live.recv_json(ws, timeout=0.2)
+
+        await ws.close()
+        for _ in range(50):
+            if not live.adapter._browser_connected:
+                break
+            await asyncio.sleep(0.05)
+        assert not live.adapter._browser_connected
+
+        # Typing is best-effort: neither raises when the browser is gone.
+        await live.adapter.send_typing("brave")
+        await live.adapter.stop_typing("brave")
+
+
+@pytest.mark.asyncio
+async def test_run_tab_js_round_trip():
+    async with _LiveServer() as live:
+        ws = await live.connect_client()
+
+        async def call():
+            return await bs._run_tab_js_entry({"code": "document.title"})
+
+        task = asyncio.create_task(call())
+        frame = await live.recv_json(ws)
+        assert frame["type"] == "tool"
+        assert frame["name"] == "run_tab_js"
+        assert frame["args"] == {"code": "document.title"}
+        request_id = frame["request_id"]
+        await ws.send(json.dumps({"type": "tool_result", "request_id": request_id,
+                                  "ok": True, "result": "Example Page"}))
+        payload = json.loads(await asyncio.wait_for(task, 5))
+        assert payload["success"] is True
+        assert payload["result"] == "Example Page"
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_navigate_tab_round_trip():
+    async with _LiveServer() as live:
+        ws = await live.connect_client()
+
+        async def call():
+            return await bs._tool_entry("navigate_tab", {"url": "https://example.com/settings"})
+
+        task = asyncio.create_task(call())
+        frame = await live.recv_json(ws)
+        assert frame["type"] == "tool"
+        assert frame["name"] == "navigate_tab"
+        assert frame["args"] == {"url": "https://example.com/settings"}
+        await ws.send(json.dumps({"type": "tool_result", "request_id": frame["request_id"],
+                                  "ok": True,
+                                  "result": json.dumps({"tab_id": 42, "url": "https://example.com/settings",
+                                                        "title": "Settings"})}))
+        payload = json.loads(await asyncio.wait_for(task, 5))
+        assert payload["success"] is True
+        assert json.loads(payload["result"])["url"] == "https://example.com/settings"
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_run_tab_js_error_result():
+    async with _LiveServer() as live:
+        ws = await live.connect_client()
+        task = asyncio.create_task(bs._run_tab_js_entry({"code": "x"}))
+        frame = await live.recv_json(ws)
+        await ws.send(json.dumps({"type": "tool_result", "request_id": frame["request_id"],
+                                  "ok": False, "error": "page navigated away"}))
+        payload = json.loads(await asyncio.wait_for(task, 5))
+        assert payload["success"] is False
+        assert payload["error"] == "page navigated away"
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_run_tab_js_routes_to_connected_adapter_not_last_constructed():
+    # The gateway constructs one adapter per profile in the same process.
+    # A secondary profile's adapter that never connects must not shadow the
+    # primary, already-connected adapter when routing run_tab_js.
+    async with _LiveServer() as live:
+        ws = await live.connect_client()
+
+        secondary = bs.BrowserSidebarAdapter(_config({"token": TOKEN}))
+        assert secondary._browser_connected is False
+
+        async def call():
+            return await bs._run_tab_js_entry({"code": "document.title"})
+
+        task = asyncio.create_task(call())
+        frame = await live.recv_json(ws)
+        assert frame["type"] == "tool"
+        assert frame["name"] == "run_tab_js"
+        request_id = frame["request_id"]
+        await ws.send(json.dumps({"type": "tool_result", "request_id": request_id,
+                                  "ok": True, "result": "Example Page"}))
+        payload = json.loads(await asyncio.wait_for(task, 5))
+        assert payload["success"] is True
+        assert payload["result"] == "Example Page"
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_run_tab_js_result_truncated_to_100000():
+    async with _LiveServer() as live:
+        ws = await live.connect_client()
+        task = asyncio.create_task(bs._run_tab_js_entry({"code": "x"}))
+        frame = await live.recv_json(ws)
+        await ws.send(json.dumps({"type": "tool_result", "request_id": frame["request_id"],
+                                  "ok": True, "result": "y" * 150000}))
+        payload = json.loads(await asyncio.wait_for(task, 10))
+        assert payload["success"] is True
+        assert len(payload["result"]) == 100000
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_run_tab_js_timeout_returns_error_string():
+    async with _LiveServer(extra={"tool_timeout": 0.3}) as live:
+        ws = await live.connect_client()
+        payload = json.loads(await bs._run_tab_js_entry({"code": "x"}))
+        assert payload["success"] is False
+        assert "error" in payload
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_run_tab_js_disconnect_returns_error_string():
+    async with _LiveServer() as live:
+        ws = await live.connect_client()
+        task = asyncio.create_task(bs._run_tab_js_entry({"code": "x"}))
+        await live.recv_json(ws)
+        await ws.close()
+        for _ in range(50):
+            if task.done():
+                break
+            await asyncio.sleep(0.05)
+        payload = json.loads(await asyncio.wait_for(task, 5))
+        assert payload["success"] is False
+        assert "error" in payload
+
+
+@pytest.mark.asyncio
+async def test_malformed_frame_gets_error_frame_not_crash():
+    async with _LiveServer() as live:
+        ws = await live.connect_client()
+        await ws.send("this is not json")
+        err = await live.recv_json(ws)
+        assert err["type"] == "error"
+        assert err["text"]
+        # The socket stays usable afterwards.
+        await ws.send(json.dumps({"type": "ready"}))
+        await ws.send(json.dumps({"type": "chat", "id": "m9", "text": "again",
+                                  "tab": {"id": "t", "url": "u", "title": "T"}}))
+        for _ in range(50):
+            if live.events:
+                break
+            await asyncio.sleep(0.05)
+        assert live.events[0].text.endswith("again")
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_scoped_token_lock_held_while_connected(monkeypatch):
+    from gateway import status as gateway_status
+    calls = []
+
+    def fake_acquire(scope, identity, metadata=None):
+        calls.append(("acquire", scope, identity))
+        return True, None
+
+    def fake_release(scope, identity):
+        calls.append(("release", scope, identity))
+
+    monkeypatch.setattr(gateway_status, "acquire_scoped_lock", fake_acquire)
+    monkeypatch.setattr(gateway_status, "release_scoped_lock", fake_release)
+    async with _LiveServer() as live:
+        pass
+    acquires = [c for c in calls if c[0] == "acquire"]
+    releases = [c for c in calls if c[0] == "release"]
+    assert acquires == [("acquire", "browser_sidebar_token", TOKEN)]
+    assert releases == [("release", "browser_sidebar_token", TOKEN)]

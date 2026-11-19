@@ -351,34 +351,3 @@ def test_concurrent_hermes_sessions_do_not_share_backend_state():
     assert len(created) == 2
 
 
-def test_persistent_focus_has_a_separate_approval_scope(monkeypatch):
-    from tools.computer_use import tool as computer_use
-
-    seen = []
-
-    def approve(command, description, **kw):
-        # The shared gate prompts once per scope key: the click itself, then the separate bring_to_front scope.
-        action = description.split("`")[1]
-        seen.append(action)
-        return "once" if action == "click" else "deny"
-
-    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-    computer_use.set_approval_callback(approve)
-    try:
-        result = json.loads(
-            computer_use.handle_computer_use(
-                {
-                    "action": "click",
-                    "element": 1,
-                    "delivery_mode": "foreground",
-                    "bring_to_front": True,
-                },
-                session_id="approval-session",
-            )
-        )
-    finally:
-        computer_use.set_approval_callback(None)
-
-    assert seen == ["click", "bring_to_front"]
-    assert result["error"].startswith("BLOCKED: User denied")
-    assert result["action"] == "bring_to_front"

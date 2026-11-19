@@ -1,4 +1,4 @@
-"""Busy-session queueing, slot claims, slash dispatch tables and destructive-slash confirmation
+"""Busy-session queueing, slot claims, slash dispatch tables and confirmation prompts
 for GatewayRunner (mixin bound via the MRO).
 
 ``gateway.run`` internals are imported lazily inside method bodies (import cycle), so
@@ -14,6 +14,8 @@ import contextlib
 import json
 import os
 import time
+import threading
+from functools import lru_cache
 from agent.i18n import t
 from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
@@ -29,6 +31,28 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+@lru_cache(maxsize=1)
+def _goal_continuation_prefixes() -> tuple:
+    """Exact text prefixes (up to the ``{goal}`` slot) of every continuation
+    template ``GoalManager`` emits — plain, contract, subgoals, and the
+    quality-gate-failed variant. Derived from the templates so they cannot drift."""
+    from hermes_cli.goals import (
+        CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE,
+        CONTINUATION_PROMPT_TEMPLATE,
+        CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE,
+        CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE,
+    )
+    return tuple(
+        t.split("{goal}", 1)[0]
+        for t in (
+            CONTINUATION_PROMPT_TEMPLATE,
+            CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE,
+            CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE,
+            CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE,
+        )
+    )
 
 
 def _strip_slot(text: str, slot: str) -> Optional[str]:
@@ -72,13 +96,81 @@ def _same_chat_key_slots(
     return None
 
 
-class GatewayBusySessionMixin:
-    """Busy-session queueing, slot claims, slash dispatch tables, destructive-slash confirmation."""
+class _SteerDeliveryBinding:
+    """One accepted Discord message's listener and delayed, one-shot receipt."""
 
-    def _queue_during_drain_enabled(self, busy_input_mode: Optional[str] = None) -> bool:
-        # "queue"/"steer" mean messages survive a restart (queued for the new process); "interrupt" drops.
-        mode = busy_input_mode or self._busy_input_mode
-        return self._restart_requested and mode in {"queue", "steer"}
+    def __init__(
+        self, runner: Any, turn: Any, agent: Any, event: MessageEvent,
+        adapter: Any, message_id: str, expected_text: str,
+    ) -> None:
+        self.runner = runner
+        self.turn = turn
+        self.agent = agent
+        self.source = event.source
+        self.adapter = adapter
+        self.message_id = message_id
+        self.expected_text = expected_text
+        self.callback = self._on_delivered
+        self._lock = threading.Lock()
+        self._cancelled = False
+        self._injected = False
+        self._acceptance_finished = False
+        self._send_scheduled = False
+
+    def _matches(self, delivered_text: str) -> bool:
+        """Match a complete steer() batch component, including its origin JSON."""
+        expected = self.expected_text
+        return (
+            delivered_text == expected
+            or delivered_text.startswith(expected + "\n")
+            or delivered_text.endswith("\n" + expected)
+            or "\n" + expected + "\n" in delivered_text
+        )
+
+    def _unregister(self) -> None:
+        try:
+            self.agent.unregister_steer_delivery_listener(self.callback)
+        except Exception:
+            logger.debug("Failed to unregister Discord steer delivery listener", exc_info=True)
+
+    def cancel(self) -> None:
+        """Invalidate a refused or turn-ending binding; safe to call repeatedly."""
+        with self._lock:
+            self._cancelled = True
+        self._unregister()
+
+    def _on_delivered(self, delivered_text: str) -> None:
+        if not isinstance(delivered_text, str) or not self._matches(delivered_text):
+            return
+        # Map identity fences a listener snapshot from an earlier turn or a replayed ID.
+        with self.turn.steer_delivery_lock:
+            if self.turn.steer_delivery_bindings.get(self.message_id) is not self:
+                return
+            self.turn.steer_delivery_bindings.pop(self.message_id, None)
+        self._unregister()
+        with self._lock:
+            if self._cancelled:
+                return
+            self._injected = True
+            if not self._acceptance_finished or self._send_scheduled:
+                return
+            self._send_scheduled = True
+        self.runner._schedule_steer_delivery_receipt(self)
+
+    def finish_acceptance(self) -> None:
+        """Release an immediate callback only after its acceptance send has finished."""
+        with self._lock:
+            if self._cancelled:
+                return
+            self._acceptance_finished = True
+            if not self._injected or self._send_scheduled:
+                return
+            self._send_scheduled = True
+        self.runner._schedule_steer_delivery_receipt(self)
+
+
+class GatewayBusySessionMixin:
+    """Busy-session queueing, slot claims, slash dispatch tables, and confirmation prompts."""
 
     def _overflow_queue(self, session_key: str):
         """The session's FIFO overflow list, or None when no session state exists yet."""
@@ -168,11 +260,13 @@ class GatewayBusySessionMixin:
             )
         return dropped
 
-    def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> None:
-        """Append a /queue event to the FIFO chain for a session."""
+    def _enqueue_fifo(
+        self, session_key: str, queued_event: "MessageEvent", adapter: Any
+    ) -> Optional["MessageEvent"]:
+        """Append a /queue event and return the event that will consume it."""
         pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
         if pending_slot is None:
-            return
+            return None
         # One platform message id, one queued turn: a re-delivered copy parked here would run as
         # its own turn at promotion time.
         message_id = self._fifo_message_id(queued_event)
@@ -180,12 +274,22 @@ class GatewayBusySessionMixin:
             queued_copy = self._find_queued_copy_by_message_id(session_key, message_id, adapter)
             if queued_copy is not None:
                 self._drop_redelivered_fifo_copy(session_key, message_id, queued_copy)
-                return
-        if session_key in pending_slot:
+                from gateway.platforms.event import transfer_replay_completion
+
+                return transfer_replay_completion(queued_copy, queued_event)
+        if session_key in pending_slot or (
+            getattr(queued_event, "internal", False)
+            and not self._is_goal_continuation_event(queued_event)
+        ):
+            # Overflow preserves FIFO when the head is occupied. Other internal
+            # events always use overflow so text merging cannot collapse them
+            # into a human turn; goal continuations retain their pending-slot drain.
             self._session_state(session_key).conversation.queued_events.append(queued_event)
         else:
             pending_slot[session_key] = queued_event
+        queued_event._gateway_processing_deferred = True
         queued_event._gateway_accepted = True
+        return queued_event
 
     def _promote_queued_event(
         self, session_key: str, adapter: Any, pending_event: Optional["MessageEvent"]
@@ -289,9 +393,24 @@ class GatewayBusySessionMixin:
 
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
-        """True for synthetic /goal continuation turns (so pause/clear can spare real /queue items)."""
-        text = getattr(event_or_text, "text", event_or_text) or ""
-        return str(text).startswith("[Continuing toward your standing goal]\nGoal:")
+        """True for synthetic /goal continuation turns (so pause/clear can spare real /queue items).
+
+        Two-part check, never a loose text prefix: the text must match the EXACT
+        prefix of a template ``GoalManager`` emits, and an *event* must additionally
+        carry internal provenance. A human quoting the banner — or even a full
+        template — arrives as a non-internal platform event and must be preserved,
+        not drained as synthetic. Text-only input (the enqueue side) is decided by
+        the exact prefixes alone.
+        """
+        text = getattr(event_or_text, "text", None)
+        raw = event_or_text if text is None else text
+        if not raw:
+            return False
+        if not str(raw).startswith(_goal_continuation_prefixes()):
+            return False
+        if text is None:
+            return True  # bare template text: no event provenance to inspect
+        return bool(getattr(event_or_text, "internal", False))
 
     def _clear_goal_pending_continuations(self, session_key: str, adapter: Any) -> int:
         """Remove queued synthetic /goal continuations for one session; real /queue items are kept."""
@@ -391,40 +510,6 @@ class GatewayBusySessionMixin:
         except Exception:
             return False
 
-    @staticmethod
-    def _steer_active_subagents(running_agent: Any, text: str) -> int:
-        """Queue *text* into every live child of *running_agent*; returns how many accepted it.
-
-        A parent blocked inside ``delegate_task`` only drains its own steer queue after the tool
-        returns, i.e. after the child finishes — so a steer aimed at a looping child would sit
-        unread for the whole delegation (#112095, Telegram). Children are the parent's own
-        ``_active_children`` (identity-scoped, same snapshot ``interrupt()`` fans out to)."""
-        children = getattr(running_agent, "_active_children", None)
-        if not isinstance(children, (list, tuple, set)) or not children:
-            return 0
-        lock = getattr(running_agent, "_active_children_lock", None)
-        try:
-            with lock if lock is not None else contextlib.nullcontext():
-                snapshot = list(children)
-        except Exception:
-            return 0
-        accepted = 0
-        for child in snapshot:
-            steer = getattr(child, "steer", None)
-            if not callable(steer):
-                continue
-            try:
-                accepted += bool(steer(text))
-            except Exception as exc:
-                logger.warning("Steer into subagent %r failed: %s", getattr(child, "_delegate_id", child), exc)
-        return accepted
-
-    def _steer_running_agent(self, running_agent: Any, text: str) -> bool:
-        """``running_agent.steer(text)`` plus fan-out to its active subagents (see
-        :meth:`_steer_active_subagents`); True when the parent or any child queued it."""
-        accepted = bool(running_agent.steer(text))
-        return bool(self._steer_active_subagents(running_agent, text)) or accepted
-
     async def _session_has_compression_in_flight(self, session_key: str) -> bool:
         """True when a compression lock is held for this session's id (callers demote interrupt →
         queue, else a follow-up against the pre-rotation parent orphans compression siblings).
@@ -483,27 +568,47 @@ class GatewayBusySessionMixin:
         "notification_category",
     )
 
-    def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
+    def _queue_or_replace_pending_event(
+        self, session_key: str, event: MessageEvent
+    ) -> Optional[MessageEvent]:
+        """Queue one event and return its consumer, or None when not inserted."""
         from gateway.platforms.base import merge_pending_message_event
-        adapter = self._delivery_adapter_for(event.source)
+
+        adapter = self._adapter_for_source(event.source)
         if not adapter:
-            return
-        # FIFO so each follow-up gets its own turn in arrival order (the single pending slot used to
-        # be silently OVERWRITTEN). Photo bursts still merge into the head slot (album semantics).
+            return None
+        # #28503 — Previously this called ``merge_pending_message_event``
+        # with the default ``merge_text=False``, which silently OVERWROTE
+        # the single pending slot when consecutive text messages arrived
+        # a queued follow-up. Route through the FIFO
+        # infrastructure shared with ``/queue`` so each follow-up gets
+        # its own turn in arrival order. Photo bursts still merge into
+        # the head slot via ``merge_pending_message_event`` (album
+        # semantics); everything else appends to the overflow tail.
         #
-        # One platform message id, one queued turn — checked BEFORE the media merge so a
-        # re-delivered photo/caption cannot double-merge into the head slot either.
+        # One platform message id, one queued turn — checked BEFORE the
+        # media merge so a re-delivered photo/caption cannot double-merge
+        # into the head slot either; the queued copy keeps the turn and is
+        # marked as a re-delivery.
         _dedupe_id = self._fifo_message_id(event)
         if _dedupe_id:
-            _queued_copy = self._find_queued_copy_by_message_id(session_key, _dedupe_id, adapter)
+            _queued_copy = self._find_queued_copy_by_message_id(
+                session_key, _dedupe_id, adapter
+            )
             if _queued_copy is not None:
                 self._drop_redelivered_fifo_copy(session_key, _dedupe_id, _queued_copy)
-                return
+                from gateway.platforms.event import transfer_replay_completion
+
+                return transfer_replay_completion(_queued_copy, event)
         pending_slot = getattr(adapter, "_pending_messages", None)
-        # #28503 — Previously this called ``merge_pending_message_event`` with the default
-        # ``merge_text=False``, which silently OVERWROTE the single pending slot when consecutive text
-        # messages arrived in ``busy_input_mode: queue``.
         existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
+        security_metadata_keys = (
+            "hermes_plugin_id",
+            "hermes_plugin_injection",
+            "gateway_session_key",
+            "gateway_session_id",
+            "gateway_session_strict",
+        )
         same_security_context = existing is not None and (
             getattr(existing, "internal", False) == getattr(event, "internal", False)
             and getattr(existing, "allow_gateway_control", True)
@@ -511,53 +616,32 @@ class GatewayBusySessionMixin:
             and all(
                 (getattr(existing, "metadata", None) or {}).get(key)
                 == (getattr(event, "metadata", None) or {}).get(key)
-                for key in self._SECURITY_METADATA_KEYS
+                for key in security_metadata_keys
             )
         )
-        # Only a photo burst (PHOTO on either side, the other side TEXT or PHOTO) merges into the
-        # head slot. Every other media follow-up — voice, audio, video, document — is an
-        # independent message and takes its own FIFO turn like text does; merging on *any*
-        # ``media_urls`` collapsed three voice notes into one turn (#114363). Telegram albums
-        # (``media_group_id``, photos and videos) are already coalesced by the adapter upstream.
-        merge_types = {
-            getattr(existing, "message_type", None),
-            getattr(event, "message_type", None),
-        }
-        if (
-            same_security_context
-            and MessageType.PHOTO in merge_types
-            and merge_types <= {MessageType.TEXT, MessageType.PHOTO}
+        if same_security_context and (
+            getattr(existing, "message_type", None) == MessageType.PHOTO
+            or event.message_type == MessageType.PHOTO
+            or bool(getattr(existing, "media_urls", None))
+            or bool(getattr(event, "media_urls", None))
         ):
-            merge_pending_message_event(
-                adapter._pending_messages, session_key, event,
+            # Preserve photo-burst / media-merge semantics for the head slot.
+            return merge_pending_message_event(
+                adapter._pending_messages,
+                session_key,
+                event,
                 merge_text=event.message_type == MessageType.TEXT,
             )
-            event._gateway_accepted = True
-            return
 
         if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
             logger.warning(
                 "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
-                session_key, self._BUSY_QUEUE_MAX_PENDING,
+                session_key,
+                self._BUSY_QUEUE_MAX_PENDING,
             )
-            return
+            return None
 
-        self._enqueue_fifo(session_key, event, adapter)
-
-    async def _prepare_busy_steer_text(self, event: MessageEvent) -> str:
-        """Steerable text for a busy follow-up, transcribing voice-message media first.
-
-        Steer bypasses the inbound STT queue, so a media-only voice follow-up would otherwise
-        silently degrade to queue mode. Uses the single out-of-band STT choke point, so STT runs at
-        most once per message; on failure the caption (if any) is kept.
-        """
-        text = (event.text or "").strip()
-        if not self._pending_event_audio_paths(event):
-            return text
-        enriched_text, successful_transcripts = await self._transcribe_and_echo_pending_voice(
-            event, self._delivery_adapter_for(event.source), event.source, text, log_context="Busy-steer"
-        )
-        return (enriched_text or text).strip() if successful_transcripts else text
+        return self._enqueue_fifo(session_key, event, adapter)
 
     def _steer_text_with_origin(self, text: str, event: MessageEvent) -> str:
         """Keep event origin in this injection, never in the cached system prompt."""
@@ -576,21 +660,6 @@ class GatewayBusySessionMixin:
             "source_message_id": source.message_id,
         }
         origin = {key: value for key, value in origin.items() if value not in (None, "")}
-        from gateway.run import _load_gateway_config
-        from gateway.session import _hash_chat_id, _hash_id, _hash_sender_id, _should_redact_pii
-
-        # Adapter busy callbacks can bypass the routed normal-message scope.
-        with self._profile_scope_for_source(source):
-            redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
-        if _should_redact_pii(source.platform, redact_pii):
-            # Only the model-facing copy changes; event/source remain valid routing state.
-            hashers = {
-                "user_id": _hash_sender_id, "user_id_alt": _hash_sender_id,
-                "chat_id": _hash_chat_id, "chat_id_alt": _hash_chat_id,
-                "parent_chat_id": _hash_chat_id,
-            }
-            origin = {key: (value if key in ("platform", "chat_type") else
-                            hashers.get(key, _hash_id)(value)) for key, value in origin.items()}
         # JSON preserves identifiers exactly (including colons/whitespace) instead of
         # normalizing them into another destination. Escape marker delimiters too.
         encoded = json.dumps(origin, ensure_ascii=True).replace("[", "\\u005b").replace("]", "\\u005d")
@@ -601,441 +670,449 @@ class GatewayBusySessionMixin:
             f"{text}"
         )
 
+    def _bind_discord_steer_delivery(
+        self, event: MessageEvent, session_key: str, running_agent: Any,
+        expected_text: str,
+    ) -> Optional[_SteerDeliveryBinding]:
+        """Bind one human Discord message ID before redirect() can inject it."""
+        source = event.source
+        if (
+            source.platform != Platform.DISCORD
+            or getattr(source, "is_bot", False)
+            or getattr(event, "internal", False)
+            or not expected_text.strip()
+            or os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() != "true"
+            or os.environ.get("HERMES_GATEWAY_BUSY_STEER_DELIVERED_ACK_ENABLED", "true").lower() != "true"
+        ):
+            return None
+        message_id = str(event.message_id or source.message_id or "").strip()
+        register = getattr(running_agent, "register_steer_delivery_listener", None)
+        adapter = self._delivery_adapter_for(source)
+        if not message_id or not callable(register) or adapter is None:
+            return None
+
+        turn = self._session_state(session_key).turn
+        binding = _SteerDeliveryBinding(
+            self, turn, running_agent, event, adapter, message_id, expected_text,
+        )
+        with turn.steer_delivery_lock:
+            # Adapter admission normally rejects replays first. This per-turn fence also
+            # covers a duplicate that races that boundary or a manually replayed listener.
+            if message_id in turn.steer_delivery_message_ids:
+                return None
+            if register(binding.callback) is not True:
+                return None
+            turn.steer_delivery_bindings[message_id] = binding
+            turn.steer_delivery_message_ids.add(message_id)
+        return binding
+
     @staticmethod
-    def _busy_reply_to(event: MessageEvent, reply_anchor):
-        # Telegram DM topics anchor on the thread; other Telegram threads send unanchored.
-        return (
-            reply_anchor
-            if event.source.platform == Platform.TELEGRAM
-            and event.source.chat_type == "dm"
-            and event.source.thread_id
-            else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
-        )
-
-    async def _send_busy_reply(self, event: MessageEvent, adapter, content: str, *, plain_anchor: bool = False) -> None:
-        """Send a busy-path reply anchored to the event (thread metadata included)."""
-        reply_anchor = self._reply_anchor_for_event(event)
-        await adapter._send_with_retry(
-            chat_id=event.source.chat_id, content=content,
-            reply_to=reply_anchor if plain_anchor else self._busy_reply_to(event, reply_anchor),
-            metadata=self._thread_metadata_for_source(event.source, reply_anchor),
-        )
-
-    async def _send_busy_drain_notice(self, event: MessageEvent, session_key: str, effective_mode: str) -> None:
-        """Busy path while the gateway is restarting/stopping: queue (if allowed) and tell the user."""
-        adapter = self._delivery_adapter_for(event.source)
-        if not adapter:
+    def _cancel_steer_delivery(binding: Optional[_SteerDeliveryBinding]) -> None:
+        if binding is None:
             return
-        if self._queue_during_drain_enabled(effective_mode):
-            self._queue_or_replace_pending_event(session_key, event)
-            message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
-        else:
-            message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
-        await self._send_busy_reply(event, adapter, message)
+        with binding.turn.steer_delivery_lock:
+            if binding.turn.steer_delivery_bindings.get(binding.message_id) is binding:
+                binding.turn.steer_delivery_bindings.pop(binding.message_id, None)
+            binding.turn.steer_delivery_message_ids.discard(binding.message_id)
+        binding.cancel()
 
-    # Bare-word approval replies → (verb, args) for the synthesized slash command.
-    _PLAINTEXT_APPROVAL_WORDS: Dict[str, tuple] = {
-        **{w: ("approve", "") for w in ("approve", "yes", "ok", "okay", "confirm", "y", "👍")},
-        **{w: ("deny", "") for w in ("deny", "no", "reject", "cancel", "n", "👎")},
-        **{w: ("approve", "always") for w in ("always", "approve always", "always approve")},
-        **{w: ("approve", "session") for w in ("session", "approve session", "session approve")},
-    }
+    def _schedule_steer_delivery_receipt(self, binding: _SteerDeliveryBinding) -> None:
+        from agent.async_utils import safe_schedule_threadsafe
 
-    async def _route_plaintext_approval_while_busy(self, event: MessageEvent, session_key: str) -> bool:
-        """Route a bare "yes"/"no" to the approval handlers while a dangerous-command approval blocks.
+        safe_schedule_threadsafe(
+            self._send_steer_delivery_receipt(binding),
+            getattr(self, "_gateway_loop", None),
+            logger=logger,
+            log_message="Failed to schedule Discord steer delivery receipt",
+        )
 
-        Returns True when the message was consumed as an approval response.
-        """
-        # A bare "yes" while blocked on a dangerous-command approval must reach the approval handler,
-        # not queue behind a turn that can't start until it resolves (auto-deny deadlock). Gated on
-        # has_blocking_approval so a conversational "yes" never fires a command.
+    async def _send_steer_delivery_receipt(self, binding: _SteerDeliveryBinding) -> None:
+        """Best-effort send in the accepted source's own profile and thread."""
+        source = binding.source
         try:
-            from tools.approval import has_blocking_approval
-            # --- Approval response routing (#46866) --- When the agent is blocked waiting for a
-            # dangerous-command approval, plain-text responses like "yes" or "approve" must be routed to the
-            # approval handler instead of being steered/queued/interrupted. Slash forms (/approve, /deny)
-            # already bypass to the runner at the base-adapter guard. This handles the bare-word forms
-            # (Signal/SMS users naturally type "yes" rather than "/approve"). Gating on
-            # has_blocking_approval(session_key) is the disambiguator that keeps a conversational "yes" from
-            # triggering a dangerous command when no approval is actually pending (design intent — see
-            # run.py "Pending exec approvals are handled by /approve and /deny" note). We reuse the
-            # canonical /approve and /deny handlers rather than re-deriving the resolution + i18n messaging:
-            # they resolve the waiting thread, resume typing, AND return a localized confirmation string.
-            # The busy-handler path does not auto-send that return, so we deliver it ourselves (mirroring
-            # the draining-case send above).
-            if event.allow_gateway_control and has_blocking_approval(session_key):
-                _raw_text = (event.text or "").strip().lower()
-                _match = self._PLAINTEXT_APPROVAL_WORDS.get(_raw_text)
-                if _match is not None:
-                    _verb, _normalized_args = _match
-                    _approval_handler = (
-                        self._handle_approve_command if _verb == "approve" else self._handle_deny_command
-                    )
-                    # Synthesize "/approve [args]" / "/deny" so the slash handlers parse modifiers via
-                    # event.get_command_args(). Always a literal "/": is_command()/get_command_args()
-                    # don't recognize per-platform display prefixes ("!" on Slack/Matrix).
-                    event.text = f"/{_verb} {_normalized_args}".rstrip()
-                    _reply = await _approval_handler(event)
-                    logger.info(
-                        "Approval response via plain text: session=%s verb=%s args=%r",
-                        session_key, _verb, _normalized_args,
-                    )
-                    _adapter = self._delivery_adapter_for(event.source)
-                    if _adapter and _reply:
-                        _text, _eph_ttl = _adapter._unwrap_ephemeral(_reply)
-                        if _text:
-                            await self._send_busy_reply(event, _adapter, _text, plain_anchor=True)
-                    return True
-        except Exception:
-            logger.warning(
-                "Plain-text approval routing failed for session %s; "
-                "falling through to busy handling", session_key, exc_info=True,
+            if getattr(getattr(self, "config", None), "multiplex_profiles", False) is True:
+                from gateway.run import _async_profile_runtime_scope
+
+                async with _async_profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+                    await self._send_steer_delivery_receipt_in_scope(binding)
+            else:
+                with self._standalone_launch_scope():
+                    await self._send_steer_delivery_receipt_in_scope(binding)
+        except Exception as exc:
+            logger.debug(
+                "Failed to send Discord steer delivery receipt for %s: %s",
+                binding.message_id, exc,
             )
-        return False
+
+    async def _send_steer_delivery_receipt_in_scope(self, binding: _SteerDeliveryBinding) -> None:
+        metadata = dict(self._thread_metadata_for_source(binding.source, binding.message_id) or {})
+        metadata["_interim_send"] = True
+        await binding.adapter._send_with_retry(
+            chat_id=binding.source.chat_id,
+            content="✅ Steer delivered — your message is now in the model’s context.",
+            reply_to=binding.message_id,
+            metadata=metadata,
+        )
 
     async def _resolve_busy_steer_or_redirect(
-        self, event: MessageEvent, session_key: str, effective_mode: str, running_agent: Any
+        self, event: MessageEvent, session_key: str, running_agent: Any
     ) -> "GatewayRunner._BusySteerOutcome":
-        """Apply interrupt->queue demotions, then attempt steer (steer mode) or redirect (interrupt mode)."""
+        """Apply interrupt->queue demotions, then attempt the text-only redirect.
+
+        Interrupt is demoted to queue while subagents run (interrupt() would abort them;
+        /stop and /new still cancel all) or while context compression is in flight (#56391);
+        otherwise a text-only follow-up redirects the live turn (preserving displayed context)
+        when the runtime supports it.
+        """
         from gateway.run import _AGENT_PENDING_SENTINEL
-        # Steer injects mid-run via running_agent.steer(), falling back to queue (nothing lost) when
-        # the agent isn't running yet, lacks steer(), or the payload is empty. Interrupt is demoted
-        # to queue while subagents run (interrupt() would abort them); /stop and /new still cancel all.
-        demoted_for_subagents = (
-            effective_mode == "interrupt" and self._agent_has_active_subagents(running_agent)
-        )
+        demoted_for_subagents = self._agent_has_active_subagents(running_agent)
+        demoted_for_compression = False
         if demoted_for_subagents:
             effective_mode = self._demote_interrupt(session_key, "the running agent has active subagents (#30170)")
-        demoted_for_compression = (
-            effective_mode == "interrupt" and await self._session_has_compression_in_flight(session_key)
-        )
-        if demoted_for_compression:
+        elif await self._session_has_compression_in_flight(session_key):
+            demoted_for_compression = True
             effective_mode = self._demote_interrupt(session_key, "context compression is in flight (#56391)")
-        steered = redirected = False
+        else:
+            effective_mode = "interrupt"
+        redirected = False
+        steered = False
+        steer_delivery = None
         agent_live = running_agent is not None and running_agent is not _AGENT_PENDING_SENTINEL
         plain_text = (
             event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
         )
-        if effective_mode == "steer":
-            steer_text = await self._prepare_busy_steer_text(event)
-            # Steerable: plain text, OR every attachment is voice media folded into steer_text.
-            # A follow-up qualifies for steering when it is plain text, OR when every attachment is
-            # STT-eligible voice media whose transcript was just folded into steer_text — otherwise a voice
-            # note in steer mode silently degrades to queue mode (#58780).
-            _steer_media_urls = getattr(event, "media_urls", None) or []
-            _steer_all_voice = bool(_steer_media_urls) and (
-                len(self._pending_event_audio_paths(event)) == len(_steer_media_urls)
-            )
-            if steer_text and (plain_text or _steer_all_voice) and agent_live and hasattr(running_agent, "steer"):
-                steered = self._try_agent_verb(
-                    running_agent, "steer", steer_text, session_key, event=event
-                )
-            if not steered:
-                effective_mode = "queue"
-        elif (
+        if (
             effective_mode == "interrupt" and plain_text and agent_live
             and getattr(running_agent, "_supports_active_turn_redirect", False) is True
             and hasattr(running_agent, "redirect")
         ):
+            call_text = self._steer_text_with_origin((event.text or "").strip(), event)
+            accepted_mode = None
+
+            def on_accept(mode: str) -> None:
+                nonlocal accepted_mode, steer_delivery
+                accepted_mode = mode
+                if mode != "steer":
+                    return
+                try:
+                    steer_delivery = self._bind_discord_steer_delivery(
+                        event, session_key, running_agent, call_text,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to bind Discord steer delivery for %s", session_key,
+                        exc_info=True,
+                    )
             redirected = self._try_agent_verb(
-                running_agent, "redirect", (event.text or "").strip(), session_key, event=event
+                running_agent, "redirect", call_text, session_key, on_accept=on_accept,
             )
+            steered = redirected and accepted_mode == "steer"
+            if not redirected:
+                self._cancel_steer_delivery(steer_delivery)
+                steer_delivery = None
         return self._BusySteerOutcome(
             effective_mode=effective_mode, demoted_for_subagents=demoted_for_subagents,
-            demoted_for_compression=demoted_for_compression, steered=steered, redirected=redirected,
+            demoted_for_compression=demoted_for_compression, redirected=redirected,
+            steered=steered, steer_delivery=steer_delivery,
         )
 
     @staticmethod
     def _demote_interrupt(session_key: str, why: str) -> str:
-        logger.info("Demoting busy_input_mode 'interrupt' to 'queue' for session %s because %s", session_key, why)
+        logger.info("Demoting busy interrupt to queue for session %s because %s", session_key, why)
         return "queue"
 
     def _try_agent_verb(
-        self, running_agent, verb: str, text: str, session_key: str, *, event: Optional[MessageEvent] = None
+        self, running_agent, verb: str, text: str, session_key: str, *,
+        event: Optional[MessageEvent] = None, on_accept=None,
     ) -> bool:
-        """Call ``running_agent.<verb>(text)`` (steer/redirect); False + warning on failure."""
+        """Call ``running_agent.<verb>(text)`` with its optional acceptance hook."""
         try:
             call_text = self._steer_text_with_origin(text, event) if event else text
-            if verb == "steer":
-                return self._steer_running_agent(running_agent, call_text)
-            return bool(getattr(running_agent, verb)(call_text))
+            call = getattr(running_agent, verb)
+            if on_accept is not None:
+                return bool(call(call_text, on_accept=on_accept))
+            return bool(call(call_text))
         except Exception as exc:
             logger.warning("Gateway %s failed for session %s: %s", verb, session_key, exc)
             return False
 
-    async def _interrupt_running_agent_for_busy_event(self, event: MessageEvent, adapter, running_agent) -> None:
-        """Interrupt mode: abort in-flight tool calls; the agent loop exits at its next check point."""
-        from gateway.run import _build_media_placeholder
-        try:
-            _interrupt_text = event.text
-            _media_urls = getattr(event, "media_urls", None) or []
-            if self._pending_event_audio_paths(event):
-                _interrupt_text, _ = await self._transcribe_and_echo_pending_voice(
-                    event, adapter, event.source, event.text or "", log_context="Voice-busy-interrupt",
-                )
-            elif not _interrupt_text and _media_urls:
-                _interrupt_text = _build_media_placeholder(event)
-            running_agent.interrupt(_interrupt_text)
-        except Exception:
-            pass  # don't let interrupt failure block the ack
-
-    def _busy_steer_ack_enabled(self, event: MessageEvent, session_key: str) -> bool:
-        # Some mobile chat setups want silent steering — keep the behavior, drop the bubble.
-        from gateway.run import _load_gateway_config, _platform_config_key
-        from gateway.display_config import resolve_display_setting
-        steer_ack_env = os.environ.get("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED")
-        if steer_ack_env is not None:
-            steer_ack_enabled = steer_ack_env.strip().lower() in {"1", "true", "yes", "on"}
-        else:
-            steer_ack_enabled = bool(
-                resolve_display_setting(
-                    _load_gateway_config(), _platform_config_key(event.source.platform),
-                    "busy_steer_ack_enabled", True,
-                )
-            )
-        if not steer_ack_enabled:
-            logger.debug("Busy steer ack suppressed for session %s", session_key)
-        return steer_ack_enabled
-
-    async def _maybe_react_discord_busy_steer(
-        self, event: MessageEvent, adapter: Any, session_key: str, *,
-        steered: bool, is_steer_mode: bool,
-    ) -> bool:
-        """Single Discord busy-steer ⏩ receipt; shared by facade and mixin busy handlers."""
-        # Mobile Discord clients treat reactions as lighter-weight steer receipts
-        # than a bot reply bubble; steer delivery is unchanged.
-        if not (steered and is_steer_mode and event.source.platform == Platform.DISCORD):
-            return False
-        if not self._busy_steer_ack_enabled(event, session_key):
-            return True
-        # ⏩ steer receipt is a reactions feature — honor the adapter's
-        # reactions opt-out; skip is silent (no bubble) per busy-steer contract.
+    async def _maybe_react_discord_busy_redirect(
+        self, event: MessageEvent, adapter: Any, session_key: str,
+    ) -> None:
+        """Best-effort ⏩ on one accepted human Discord redirect."""
+        if event.source.platform != Platform.DISCORD or getattr(event.source, "is_bot", False):
+            return
         reactions_gate = getattr(adapter, "_reactions_enabled", None)
         if not callable(reactions_gate):
-            logger.debug(
-                "Discord busy-steer reaction skipped (missing _reactions_enabled) "
-                "for session %s",
-                session_key,
-            )
-            return True
+            logger.debug("Discord redirect reaction skipped (missing reactions gate) for %s", session_key)
+            return
         try:
             if not reactions_gate():
-                logger.debug(
-                    "Discord busy-steer reaction suppressed (reactions disabled) "
-                    "for session %s",
-                    session_key,
-                )
-                return True
+                return
         except Exception:
-            logger.debug(
-                "Discord busy-steer reaction gate failed for session %s",
-                session_key,
-                exc_info=True,
-            )
-            return True
+            logger.debug("Discord redirect reaction gate failed for %s", session_key, exc_info=True)
+            return
         add_reaction = getattr(adapter, "_add_reaction", None)
         raw = getattr(event, "raw_message", None)
         if not callable(add_reaction) or raw is None:
-            logger.debug(
-                "Discord busy-steer reaction skipped (missing _add_reaction or raw_message) "
-                "for session %s",
-                session_key,
-            )
-            return True
+            logger.debug("Discord redirect reaction skipped (missing reaction target) for %s", session_key)
+            return
         try:
             await add_reaction(raw, "⏩")
         except Exception as exc:
-            logger.debug(
-                "Discord busy-steer reaction failed for session %s: %s",
-                session_key,
-                exc,
-            )
-        return True
+            logger.debug("Discord redirect reaction failed for %s: %s", session_key, exc)
 
-    _BUSY_DEMOTED_TAIL = (
-        " — your message is queued for when it finishes (use /stop to cancel everything)."
-    )
+    async def _send_busy_ack(
+        self, event: MessageEvent, adapter: Any, session_key: str,
+        running_agent: Any, outcome: Any,
+    ) -> None:
+        try:
+            await self._send_busy_ack_message(event, adapter, session_key, running_agent, outcome)
+        finally:
+            binding = getattr(outcome, "steer_delivery", None)
+            if binding is not None:
+                binding.finish_acceptance()
 
-    def _compose_busy_ack_message(
-        self, event: MessageEvent, now: float, _busy_state, running_agent: Any, *,
-        is_steer_mode: bool, is_queue_mode: bool, is_redirect_mode: bool,
-        demoted_for_subagents: bool, demoted_for_compression: bool,
-    ) -> str:
-        from gateway.run import (
-            _AGENT_PENDING_SENTINEL, _hermes_home, _load_gateway_config, _platform_config_key
-        )
+    async def _send_busy_ack_message(
+        self, event: MessageEvent, adapter: Any, session_key: str,
+        running_agent: Any, outcome: Any,
+    ) -> None:
+        """Send the receipt owned by one resolved busy-message outcome."""
+        from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _platform_config_key
+
+        effective_mode = outcome.effective_mode
+        demoted_for_subagents = outcome.demoted_for_subagents
+        demoted_for_compression = outcome.demoted_for_compression
+        is_queue_mode = effective_mode == "queue"
+        is_redirect_mode = effective_mode == "interrupt" and outcome.redirected
+
+        # This legacy switch covers both the visible ack and its reaction.
+        busy_ack_enabled = os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() == "true"
+        if not busy_ack_enabled:
+            logger.debug("Busy ack suppressed for session %s", session_key)
+            return
+
+        if is_redirect_mode:
+            await self._maybe_react_discord_busy_redirect(event, adapter, session_key)
+
+        # Accepted redirects are distinct steering inputs, not repeated status
+        # pings: each receives an ack even inside the ordinary busy-ack cooldown.
+        now = time.time()
+        busy_state = self._peek_session_state(session_key)
+        last_ack = busy_state.turn.busy_ack_ts if busy_state else 0
+        if not is_redirect_mode and now - last_ack < 30:
+            return
+
         from gateway.display_config import resolve_display_setting
 
-        # Terse by default; iteration/tool detail opts in via display.platforms.<p>.busy_ack_detail.
+        self._session_state(session_key).turn.busy_ack_ts = now
         status_parts = []
         busy_ack_detail_enabled = bool(
             resolve_display_setting(
-                _load_gateway_config(), _platform_config_key(event.source.platform),
-                "busy_ack_detail", True,
+                _load_gateway_config(),
+                _platform_config_key(event.source.platform),
+                "busy_ack_detail",
+                True,
             )
         )
         if busy_ack_detail_enabled and running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             try:
                 summary = running_agent.get_activity_summary()
-                elapsed_min = 0
-                if _busy_state and _busy_state.turn.started_ts:
-                    elapsed_min = int((now - _busy_state.turn.started_ts) / 60)
-                if elapsed_min > 0:
-                    status_parts.append(f"{elapsed_min} min elapsed")
-                if summary.get("max_iterations", 0):
-                    status_parts.append(
-                        format_iteration_progress(
-                            summary.get("api_call_count", 0), summary.get("max_iterations", 0)
-                        )
-                    )
-                if summary.get("current_tool"):
-                    status_parts.append(f"running: {summary.get('current_tool')}")
+                iteration = summary.get("api_call_count", 0)
+                max_iter = summary.get("max_iterations", 0)
+                current_tool = summary.get("current_tool")
+                start_ts = busy_state.turn.started_ts if busy_state else 0
+                if start_ts:
+                    elapsed_min = int((now - start_ts) / 60)
+                    if elapsed_min > 0:
+                        status_parts.append(f"{elapsed_min} min elapsed")
+                if max_iter:
+                    # sys.maxsize means unbounded — render "iteration N" without
+                    # the sentinel denominator (#102806).
+                    from agent.session_activity import format_iteration_progress
+
+                    status_parts.append(format_iteration_progress(iteration, max_iter))
+                if current_tool:
+                    status_parts.append(f"running: {current_tool}")
             except Exception:
                 pass
+
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
-        if is_steer_mode and self._agent_has_active_subagents(running_agent):
-            head = "⏩ Steered into current run and its active subagent(s)"
-            tail = ". Your message arrives after their next tool call."
-        elif is_steer_mode:
-            head, tail = "⏩ Steered into current run", ". Your message arrives after the next tool call."
+        if is_redirect_mode and getattr(outcome, "steered", False):
+            message = f"⏩ Steered into current run{status_detail}."
+            if getattr(outcome, "steer_delivery", None) is not None:
+                message += " Delivery will be confirmed once your message is in the model’s context."
+            else:
+                message += " Your message will be injected at a safe point in this run."
         elif is_redirect_mode:
-            head, tail = "↪ Redirected current run", ". I'll adjust using your correction."
+            message = (
+                f"↪ Redirected current run{status_detail}. "
+                f"I'll adjust using your correction."
+            )
         elif is_queue_mode and demoted_for_subagents:
-            # Explain the demotion: the follow-up didn't kill the subagent; /stop is the escape hatch.
-            head, tail = "⏳ Subagent working", self._BUSY_DEMOTED_TAIL
+            message = (
+                f"⏳ Subagent working{status_detail} — your message is queued for "
+                f"when it finishes (use /stop to cancel everything)."
+            )
         elif is_queue_mode and demoted_for_compression:
-            head, tail = "⏳ Compressing context", self._BUSY_DEMOTED_TAIL
+            message = (
+                f"⏳ Compressing context{status_detail} — your message is queued for "
+                f"when it finishes (use /stop to cancel everything)."
+            )
         elif is_queue_mode:
-            head, tail = "⏳ Queued for the next turn", ". I'll respond once the current task finishes."
+            message = (
+                f"⏳ Queued for the next turn{status_detail}. "
+                f"I'll respond once the current task finishes."
+            )
         else:
-            head, tail = "⚡ Interrupting current task", ". I'll respond to your message shortly."
-        message = f"{head}{status_detail}{tail}"
+            message = (
+                f"⚡ Interrupting current task{status_detail}. "
+                f"I'll respond to your message shortly."
+            )
 
-        # One-time onboarding hint about the queue/interrupt knob (flag persisted to config.yaml).
+        reply_anchor = self._reply_anchor_for_event(event)
+        thread_meta = dict(self._thread_metadata_for_source(event.source, reply_anchor) or {})
+        thread_meta["_interim_send"] = True
         try:
-            from agent.onboarding import (BUSY_INPUT_FLAG, busy_input_hint_gateway, is_seen, mark_seen)
-            if not is_seen(_load_gateway_config(), BUSY_INPUT_FLAG):
-                _hint_mode = (
-                    "steer" if is_steer_mode
-                    else "queue" if is_queue_mode
-                    else "redirect" if is_redirect_mode
-                    else "interrupt"
-                )
-                message = f"{message}\n\n{busy_input_hint_gateway(_hint_mode)}"
-                mark_seen(_hermes_home / "config.yaml", BUSY_INPUT_FLAG)
-        except Exception as _onb_err:
-            logger.debug("Failed to apply busy-input onboarding hint: %s", _onb_err)
-        return message
-
-    async def _send_busy_ack_reply(self, event: MessageEvent, adapter, message: str) -> None:
-        try:
-            await self._send_busy_reply(event, adapter, message)
+            await adapter._send_with_retry(
+                chat_id=event.source.chat_id,
+                content=message,
+                reply_to=event.message_id,
+                metadata=thread_meta,
+            )
         except Exception as e:
             logger.debug("Failed to send busy-ack: %s", e)
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
-        # Gateway wakes have no external user identity. Admit them before auth/drain/approval
-        # handling, without merging their text into an already queued human message.
-        if event.internal and event.allow_gateway_control:
-            adapter = self._delivery_adapter_for(event.source)
-            if adapter and session_key in getattr(adapter, "_pending_messages", {}):
-                self._queue_or_replace_pending_event(session_key, event)
-                return True
-            return False  # base adapter queues silently behind the active turn
+        from gateway.run import _AGENT_PENDING_SENTINEL, _build_media_placeholder
 
-        # Same authorization gate as the cold path, else unauthorized users in shared threads
-        # inject messages into a session they don't own.
-        from gateway.run import _AGENT_PENDING_SENTINEL
-        # See #17775. A primary transport can route a turn into a secondary
-        # profile, so authorize in the stamped transport scope.
-        if not self._is_user_authorized_for_source(event.source):
+        # --- Authorization gate (#17775) ---
+        # The cold path (_handle_message) checks _is_user_authorized before
+        # creating a session.  The busy path must enforce the same check;
+        # otherwise unauthorized users in shared threads (Slack/Discord)
+        # can inject messages into an active session they don't own.
+        if not self._is_user_authorized(event.source):
             logger.warning(
                 "Dropping message from unauthorized user in active session: "
-                "user=%s (%s), platform=%s, session=%s", event.source.user_id, event.source.user_name,
-                event.source.platform.value if event.source.platform else "unknown", session_key,
+                "user=%s (%s), platform=%s, session=%s",
+                event.source.user_id,
+                event.source.user_name,
+                event.source.platform.value if event.source.platform else "unknown",
+                session_key,
             )
             return True  # handled (silently dropped); do not fall through
-        # A steered or queued follow-up never reaches _hm_admit_event, so the budget is charged here.
+        # Bot loop guard: a steered or queued follow-up never reaches the cold-path
+        # admission, so the budget is charged here.
         if not self._admit_bot_message_for_source(event.source):
             return True
         event._bot_loop_admitted = True
 
-        effective_mode = self._effective_busy_input_mode(event.source)
-        if self._draining:  # gateway restarting/stopping
-            await self._send_busy_drain_notice(event, session_key, effective_mode)
+        # --- Draining case (gateway restarting/stopping) ---
+        from gateway.overlap_restart import admits_local_drain_turn, admits_owned_work
+        if self._draining and not admits_owned_work(self, event.source) \
+                and not admits_local_drain_turn(self, event.source):
+            adapter = self._adapter_for_source(event.source)
+            if not adapter:
+                return True
+
+            reply_anchor = self._reply_anchor_for_event(event)
+            thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+            message = self._busy_drain_admission(event, session_key)
+
+            await adapter._send_with_retry(
+                chat_id=event.source.chat_id,
+                content=message,
+                reply_to=event.message_id,
+                metadata=thread_meta,
+            )
             return True
-        if await self._route_plaintext_approval_while_busy(event, session_key):
-            return True
-        adapter = self._delivery_adapter_for(event.source)
+
+        # Normal busy case (agent actively running a task)
+        adapter = self._adapter_for_source(event.source)
         if not adapter:
             return False  # let default path handle it
-        # Internal synthetic events (delegation / background completions) must never interrupt or
-        # steer; they surface as a NEW turn when idle. Plugin events carry untrusted payload text, so
-        # queue them through the FIFO (security metadata kept apart).
-        if getattr(event, "internal", False):
+
+        # --- Internal synthetic events must never interrupt/steer ---
+        # Async-delegation completions (delegate_agent(background=true)) and
+        # background-process completions (terminal notify_on_complete) re-enter
+        # the originating session as internal MessageEvents. When the session
+        # is busy, treating them like a user TEXT message means interrupt-mode
+        # aborts the active turn AND sends a "⚡
+        # Interrupting current task" ack — exactly the opposite of the design
+        # invariant that a completion surfaces as a NEW turn only when idle and
+        # never splices into a running turn. Plugin events carry untrusted
+        # payload text, so queue those through the gateway FIFO to keep their
+        # security metadata separate from pending user input.
+        if getattr(event, "internal", False) and not event.allow_gateway_control:
             self._queue_or_replace_pending_event(session_key, event)
             return True
-        if (
-            event.message_type == MessageType.TEXT
-            and self._effective_busy_text_mode(event.source) == "queue"
-            and effective_mode != "steer"
-        ):
+        if getattr(event, "internal", False):
             return False
 
         _busy_state = self._peek_session_state(session_key)
         running_agent = _busy_state.turn.agent if _busy_state else None
-        _steer = await self._resolve_busy_steer_or_redirect(event, session_key, effective_mode, running_agent)
-        effective_mode, redirected = _steer.effective_mode, _steer.redirected
-        # Queue as the next turn — skipped after a successful steer/redirect (the text is already in
-        # the run and must NOT replay). FIFO gives each text its own turn (raw merge would join them).
-        if not _steer.steered and not redirected:
-            self._queue_or_replace_pending_event(session_key, event)
-        # Store the message so it's processed as the next turn after the current run finishes (or is
-        # interrupted). Skip this for a successful steer — the text already landed inside the run and must
-        # NOT also be replayed as a next-turn user message. Route through _queue_or_replace_pending_event
-        # (the same FIFO infrastructure used by busy queue-mode and /queue) rather than a raw
-        # merge_pending_message_event(merge_text=True). The raw merge newline-joins consecutive TEXT
-        # follow-ups into a SINGLE pending turn, destroying message boundaries — so two separate user
-        # messages sent while the agent was busy (interrupt mode, or a steer that fell back to queue)
-        # arrived as one mashed-together turn (#43066 sub-bug 2). The FIFO path gives each text its own turn
-        # in arrival order while still preserving photo-burst / album merge semantics for media.
-        is_queue_mode = effective_mode == "queue"
-        is_steer_mode = effective_mode == "steer"
-        is_redirect_mode = effective_mode == "interrupt" and redirected
-        if (
-            effective_mode == "interrupt" and not redirected
-            and running_agent and running_agent is not _AGENT_PENDING_SENTINEL
-        ):
-            await self._interrupt_running_agent_for_busy_event(event, adapter, running_agent)
 
-        # Disabled ack: still process input. Checked before debounce so an undelivered ack never
-        # stamps the "last ack" timestamp.
-        if os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() != "true":
-            logger.debug("Busy ack suppressed for session %s", session_key)
-            return True  # input still processed, just no ack sent
-
-        if await self._maybe_react_discord_busy_steer(
-            event, adapter, session_key, steered=_steer.steered, is_steer_mode=is_steer_mode
-        ):
-            return True
-
-        # Debounce (30s) before the config-heavy display lookup.
-        now = time.time()
-        if now - (_busy_state.turn.busy_ack_ts if _busy_state else 0) < 30:
-            return True  # interrupt sent (if not queue), ack already delivered recently
-
-        if is_steer_mode and not self._busy_steer_ack_enabled(event, session_key):
-            return True
-
-        self._session_state(session_key).turn.busy_ack_ts = now
-
-        message = self._compose_busy_ack_message(
-            event, now, _busy_state, running_agent, is_steer_mode=is_steer_mode,
-            is_queue_mode=is_queue_mode, is_redirect_mode=is_redirect_mode,
-            demoted_for_subagents=_steer.demoted_for_subagents,
-            demoted_for_compression=_steer.demoted_for_compression,
+        # #30170 — Subagent protection. ``AIAgent.interrupt()`` cascades
+        # to every entry in the parent's ``_active_children`` list and
+        # aborts in-flight ``delegate_agent`` work. Demote ``interrupt``
+        # to ``queue`` when the parent is currently driving subagents so
+        # a conversational follow-up doesn't destroy minutes of subagent
+        # work. Explicit ``/stop`` and ``/new`` slash commands go through
+        # ``_interrupt_and_clear_session`` and are unaffected — the
+        # operator still has a way to force-cancel everything.
+        # #56391 — Compression protection: context compression is
+        # interrupt-protected (#23975), but an interrupt here starts a new
+        # turn against the pre-rotation parent session while the
+        # still-running compression later rotates the id out from under
+        # it, forking orphaned compression siblings.
+        # The demotions and the text-only redirect are shared with the
+        # _handle_message priority fast-path: one resolver, not two
+        # hand-maintained copies.
+        outcome = await self._resolve_busy_steer_or_redirect(
+            event, session_key, running_agent
         )
-        await self._send_busy_ack_reply(event, adapter, message)
+        effective_mode = outcome.effective_mode
+        demoted_for_subagents = outcome.demoted_for_subagents
+        demoted_for_compression = outcome.demoted_for_compression
+        redirected = outcome.redirected
+
+        # Store the message so it's processed as the next turn after the
+        # current run finishes (or is interrupted).  Skip this for a
+        # successful redirect — the text already landed inside the run and
+        # must NOT also be replayed as a next-turn user message.
+        #
+        # Route through _queue_or_replace_pending_event (the same FIFO
+        # infrastructure used by busy queue-mode and /queue) rather than a
+        # raw merge_pending_message_event(merge_text=True). The raw merge
+        # newline-joins consecutive TEXT follow-ups into a SINGLE pending
+        # turn, destroying message boundaries — so two separate user
+        # messages sent while the agent was busy (interrupt mode) arrived as
+        # one mashed-together turn (#43066 sub-bug 2). The FIFO path gives each text its own
+        # turn in arrival order while still preserving photo-burst / album
+        # merge semantics for media.
+        if not redirected:
+            self._queue_or_replace_pending_event(session_key, event)
+
+        # If not demoted to queue, interrupt the running agent immediately.
+        # This aborts in-flight tool calls and causes the agent loop to exit
+        # at the next check point.
+        if (
+            effective_mode == "interrupt"
+            and not redirected
+            and running_agent
+            and running_agent is not _AGENT_PENDING_SENTINEL
+        ):
+            try:
+                _interrupt_text = event.text
+                _media_urls = getattr(event, "media_urls", None) or []
+                if not _interrupt_text and _media_urls:
+                    _interrupt_text = _build_media_placeholder(event)
+                running_agent.interrupt(_interrupt_text)
+            except Exception:
+                pass  # don't let interrupt failure block the ack
+
+        await self._send_busy_ack(event, adapter, session_key, running_agent, outcome)
+
         return True
 
     # Slash name → handler method is ``_handle_<name>_command`` (``-`` → ``_``) except these.
@@ -1046,17 +1123,17 @@ class GatewayBusySessionMixin:
     }
     # Ordinary slash handlers shared by idle and busy dispatch.
     _PLAIN_COMMANDS = (
-        "status", "context", "restart", "approve", "deny", "pause", "agents", "bg", "btw",
-        "kanban", "subgoal", "heartbeat", "busy", "yolo", "verbose", "footer", "help",
-        "commands", "profile", "login", "update", "version",
+        "status", "context", "restart", "pause", "agents", "bg", "btw",
+        "subgoal", "verbose", "help",
+        "commands", "profile", "update", "version",
     )
     # Dispatched only on the idle path (busy dispatch has its own allowlist).
     _IDLE_COMMANDS = (
-        "topic", "whoami", "platform", "stop", "reasoning", "memory", "skills", "fast",
-        "approvals", "model", "codex-runtime", "personality", "suggestions", "save", "retry",
-        "setnotify", "clearnotify", "compress", "usage", "topup", "insights", "reload-mcp", "reload-skills",
-        "bundles", "debug", "title", "resume", "sessions", "branch", "rollback", "diff", "goal",
-        "loop", "refine", "review", "voice",
+        "topic", "whoami", "platform", "stop", "memory", "skills",
+        "codex-runtime", "suggestions", "save", "retry",
+        "setnotify", "clearnotify", "compress", "insights", "reload-mcp", "reload-skills",
+        "debug", "title", "resume", "sessions", "branch", "rollback", "diff",
+        "loop", "refine", "review",
     )
 
     def _command_handler_table(self, names) -> Dict[str, Any]:
@@ -1088,7 +1165,7 @@ class GatewayBusySessionMixin:
 
     # busy_handler key (hermes_cli/commands.py CommandDef) → mid-run variant ``_busy_<key>_command``.
     _BUSY_SPECIAL_HANDLERS: Dict[str, str] = {
-        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "queue", "steer", "egress", "goal", "loop")
+        k: f"_busy_{k}_command" for k in ("stop", "new", "incognito", "queue", "loop")
     }
 
     async def _dispatch_busy_slash_command(self, event: MessageEvent, cmd_def, quick_key: str, source):
@@ -1096,8 +1173,8 @@ class GatewayBusySessionMixin:
 
         Order: ``busy_handler`` (mid-run variant) → ``busy_policy == "dispatch"`` (normal handler)
         → catch-all reject text. Rejecting is required rather than falling through to
-        interrupt + discard: commands like /model, /reasoning, /voice, /insights, /title,
-        /resume, /retry, /undo, /compress, /usage, /reload-mcp, /setnotify, /reset (all
+        interrupt + discard: commands like /insights, /title,
+        /resume, /retry, /undo, /compress, /reload-mcp, /setnotify (all
         registered as Discord slash commands) would interrupt the agent AND get silently
         discarded by the slash-command safety net, producing a zero-char response.
         See #5057, #6252, #10370.
@@ -1145,18 +1222,9 @@ class GatewayBusySessionMixin:
         estop.engage(reason=args or None)
         suffix = f" (reason: {args})" if args else ""
         return (
-            f"⏸️ Paused{suffix}. New cron/kanban/gateway work is on hold; "
+            f"⏸️ Paused{suffix}. New cron/gateway work is on hold; "
             "in-flight work finishes normally. Use `/pause off` to resume."
         )
-
-    async def _busy_start_command(self, event: MessageEvent, quick_key: str, source):
-        # Telegram's /start is a platform ping (bot launch/deep-link), not a user command.
-        logger.info("Ignoring /start platform ping for active session %s", quick_key)
-        return ""
-
-    async def _busy_egress_command(self, event: MessageEvent, quick_key: str, source):
-        from hermes_cli.proxy_cli import format_status_text
-        return format_status_text()
 
     async def _busy_stop_command(self, event: MessageEvent, quick_key: str, source):
         # Hard-kill: a soft interrupt can't reach a truly hung executor thread.
@@ -1177,6 +1245,15 @@ class GatewayBusySessionMixin:
             quick_key, source, interrupt_reason=_INTERRUPT_REASON_RESET, invalidation_reason="new_command",
         )
         return await self._handle_reset_command(event)
+
+    async def _busy_incognito_command(self, event: MessageEvent, quick_key: str, source):
+        # Same shape as _busy_new_command: the reset must bypass the running-agent guard, and the
+        # incognito flag is stamped on the NEW entry only after the reset lands.
+        from gateway.run import _INTERRUPT_REASON_RESET
+        await self._interrupt_and_clear_session(
+            quick_key, source, interrupt_reason=_INTERRUPT_REASON_RESET, invalidation_reason="incognito_command",
+        )
+        return await self._handle_incognito_command(event)
 
     async def _busy_queue_command(self, event: MessageEvent, quick_key: str, source):
         # Each /queue is its own full agent turn, run FIFO after the current run; never merged.
@@ -1202,42 +1279,6 @@ class GatewayBusySessionMixin:
             ), adapter)
         depth = self._queue_depth(quick_key, adapter=adapter)
         return "Queued for the next turn." + (f" ({depth} queued)" if depth > 1 else "")
-
-    async def _busy_steer_command(self, event: MessageEvent, quick_key: str, source):
-        # /steer lands BETWEEN tool-call iterations of the same run (appended to the last tool
-        # result) — no interrupt, no new user turn, no role-alternation violation.
-        from gateway.run import _AGENT_PENDING_SENTINEL
-        steer_text = event.get_command_args().strip()
-        if not steer_text:
-            return "Usage: /steer <prompt>"
-        _steer_state = self._peek_session_state(quick_key)
-        running_agent = _steer_state.turn.agent if _steer_state else None
-
-        def _queue_fallback(reply: str) -> str:
-            # Turn-boundary fallback: queue the steer text as its own follow-up turn.
-            adapter = self._delivery_adapter_for(source)
-            if adapter:
-                self._enqueue_fifo(quick_key, MessageEvent(
-                    text=steer_text, message_type=MessageType.TEXT, source=event.source,
-                    message_id=event.message_id, channel_prompt=event.channel_prompt,
-                    channel_context=event.channel_context,
-                ), adapter)
-            return reply
-
-        if running_agent is _AGENT_PENDING_SENTINEL:
-            return _queue_fallback("Agent still starting — /steer queued for the next turn.")
-        if not running_agent or not hasattr(running_agent, "steer"):
-            return _queue_fallback("No active agent — /steer queued for the next turn.")
-        try:
-            accepted = self._steer_running_agent(running_agent, self._steer_text_with_origin(steer_text, event))
-        except Exception as exc:
-            logger.warning("Steer failed for session %s: %s", quick_key, exc)
-            return f"⚠️ Steer failed: {exc}"
-        if not accepted:
-            return "Steer rejected (empty payload)."
-        preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
-        target = "run and its active subagent(s)" if self._agent_has_active_subagents(running_agent) else "run"
-        return f"⏩ Steer queued into current {target} — arrives after the next tool call: '{preview}'"
 
     async def _busy_goal_command(self, event: MessageEvent, quick_key: str, source):
         # Control verbs are safe mid-run (state only); setting new goal text is rejected so we don't
@@ -1347,60 +1388,6 @@ class GatewayBusySessionMixin:
             if not thread_id or not tail or _tail_has_slot(tail, thread_id)
         ]
 
-    def _is_stale_restart_redelivery(self, event: MessageEvent) -> bool:
-        """True if this /restart is a Telegram re-delivery we already handled.
-
-        The previous gateway wrote ``.restart_last_processed.json`` (platform + update_id). A
-        /restart with update_id <= that value is a redelivery when this process booted from that
-        restart; otherwise the marker must be < 5 minutes old. Telegram only (numeric ordering).
-        """
-        from gateway.run import _hermes_home
-        if event is None or event.source is None or event.platform_update_id is None:
-            return False
-        try:
-            if event.source.platform.value != "telegram":
-                return False
-        except Exception:
-            return False
-
-        try:
-            marker_path = _hermes_home / ".restart_last_processed.json"
-            if not marker_path.exists():
-                # Missing marker: a redelivered /restart would otherwise re-restart forever. Suppress
-                # ONLY when this process booted from a chat /restart AND is within a short post-boot
-                # window; consume the flag one-shot so a later legitimate /restart is honored.
-                if (
-                    # Belt-and-suspenders for when the dedup marker goes missing (manually cleaned up, or
-                    # the previous cycle's write failed). Without a marker the update_id comparison below
-                    # can't run, so a redelivered /restart would sail through and re-restart the gateway —
-                    # an infinite loop (issue #18528).
-                    getattr(self, "_booted_from_restart", False)
-                    and time.time() - getattr(self, "_startup_time", 0.0) < 60
-                ):
-                    self._booted_from_restart = False
-                    return True
-                return False
-            data = json.loads(marker_path.read_text(encoding="utf-8"))
-        except Exception:
-            return False
-
-        recorded_uid = data.get("update_id")
-        if (
-            data.get("platform") != "telegram"
-            or not isinstance(recorded_uid, int)
-            or event.platform_update_id > recorded_uid
-        ):
-            return False
-
-        # A service-managed restart can outlast the 5-minute trust window; consume the boot
-        # signal one-shot.
-        if getattr(self, "_booted_from_restart", False):
-            self._booted_from_restart = False
-            return True
-
-        # Staleness guard: an old marker (crash recovery) must not swallow a fresh /restart.
-        requested_at = data.get("requested_at")
-        return not (isinstance(requested_at, (int, float)) and time.time() - requested_at > 300)
 
     async def _handle_suggestions_command(self, event: MessageEvent) -> str:
         """/suggestions via the shared handler (origin = event source so jobs deliver back here)."""
@@ -1429,97 +1416,12 @@ class GatewayBusySessionMixin:
             from hermes_cli.blueprint_cmd import BlueprintCommandResult
             return BlueprintCommandResult(f"Cron blueprint command failed: {e}")
 
-    async def _maybe_confirm_destructive_slash(
-        self, *, event: MessageEvent, command: str, title: str, detail: str, execute
-    ) -> Union[str, "EphemeralReply", None]:
-        """Gate a destructive session slash command (/new, /reset, /undo).
-
-        ``execute()`` (async → str | EphemeralReply) runs immediately when
-        ``approvals.destructive_slash_confirm`` is off; otherwise via ``_request_slash_confirm``:
-        ``once`` runs it, ``always`` persists the opt-out then runs it, ``cancel`` skips it.
-        """
-        confirm_required = True
-        try:
-            approvals = self._read_user_config().get("approvals")
-            if isinstance(approvals, dict):
-                confirm_required = bool(approvals.get("destructive_slash_confirm", True))
-        except Exception:
-            pass
-        if not confirm_required:
-            return await execute()
-
-        session_key = self._session_key_for_source(event.source)
-
-        async def _on_confirm(choice: str):
-            # Via the class, not ``self``: tests drive this gate on a bare SimpleNamespace runner.
-            return await GatewayBusySessionMixin._run_confirmed_destructive_slash(
-                choice, command, execute, session_key
-            )
-
-        _p = self._typed_command_prefix_for(event.source.platform)
-        prompt_message = (
-            f"⚠️ **Confirm /{command}**\n\n"
-            f"{detail}\n\n"
-            "Choose:\n"
-            "• **Approve Once** — proceed this time only\n"
-            "• **Always Approve** — proceed and silence this prompt permanently\n"
-            "• **Cancel** — keep current conversation\n\n"
-            f"_Text fallback: reply `{_p}approve`, `{_p}always`, or `{_p}cancel`._"
-        )
-        return await self._request_slash_confirm(
-            event=event, command=command, title=title, message=prompt_message, handler=_on_confirm
-        )
-
-    _DESTRUCTIVE_OPTOUT_NOTE = {
-        True: (
-            "\n\nℹ️ Future /clear, /new, /reset, and /undo will run "
-            "without confirmation. Re-enable via "
-            "`approvals.destructive_slash_confirm: true` in config.yaml."
-        ),
-        # The user did approve this run, so the action still goes ahead, but the preference did
-        # not stick and the prompt will be back next time. Say so rather than promising an
-        # opt-out that was never written.
-        False: (
-            "\n\n⚠️ Could not save that preference (config.yaml is not "
-            "writable), so /clear, /new, /reset, and /undo will ask "
-            "again next time. To silence it permanently, set "
-            "`approvals.destructive_slash_confirm: false` in config.yaml."
-        ),
-    }
-
-    @staticmethod
-    async def _run_confirmed_destructive_slash(choice: str, command: str, execute, session_key: str):
-        """Confirm-callback body: ``cancel`` → message; ``always`` persists the opt-out, then runs."""
-        if choice == "cancel":
-            return f"🟡 /{command} cancelled. Conversation unchanged."
-        persisted = False
-        if choice == "always":
-            try:
-                from cli import save_config_value
-                # save_config_value swallows its own errors and reports the outcome in the return
-                # value, so the try block alone says nothing about whether the write landed.
-                persisted = bool(save_config_value("approvals.destructive_slash_confirm", False))
-                if persisted:
-                    logger.info("User opted out of destructive slash confirm (session=%s)", session_key)
-                else:
-                    logger.warning(
-                        "Could not persist destructive_slash_confirm=false "
-                        "(session=%s); config.yaml is not writable", session_key,
-                    )
-            except Exception as exc:
-                logger.warning("Failed to persist destructive_slash_confirm=false: %s", exc)
-        result = await execute()
-        # Only plain-string results get the note: it would mangle an EphemeralReply.
-        if choice == "always" and isinstance(result, str):
-            return result + GatewayBusySessionMixin._DESTRUCTIVE_OPTOUT_NOTE[persisted]
-        return result
 
     async def _request_slash_confirm(
-        self, *, event: MessageEvent, command: str, title: str, message: str, handler
+        self, *, event: MessageEvent, command: str, title: str, message: str, handler,
+        include_always: bool = True,
     ) -> Optional[str]:
-        """Ask the user to confirm a slash command; ``handler(choice)`` runs on "once"/"always"/
-        "cancel" and its return is sent as a message. Returns None if buttons rendered, else the
-        text-fallback message (which IS the ack)."""
+        """Ask the user to confirm a slash command and invoke ``handler(choice)``."""
         from tools import slash_confirm as _slash_confirm_mod
         source = event.source
         session_key = self._session_key_for_source(source)
@@ -1531,7 +1433,9 @@ class GatewayBusySessionMixin:
         confirm_id = f"{next(counter)}"
 
         # Register FIRST so a fast button click cannot race the send_slash_confirm return.
-        _slash_confirm_mod.register(session_key, confirm_id, command, handler)
+        choices = ("once", "always", "cancel") if include_always else ("once", "cancel")
+        _slash_confirm_mod.register(
+            session_key, confirm_id, command, handler, allowed_choices=choices)
 
         adapter = self._delivery_adapter_for(source)
         metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
@@ -1540,7 +1444,7 @@ class GatewayBusySessionMixin:
             try:
                 button_result = await adapter.send_slash_confirm(
                     chat_id=source.chat_id, title=title, message=message, session_key=session_key,
-                    confirm_id=confirm_id, metadata=metadata,
+                    confirm_id=confirm_id, metadata=metadata, include_always=include_always,
                 )
                 if button_result and getattr(button_result, "success", False):
                     return None  # buttons rendered — no redundant text ack
@@ -1552,8 +1456,8 @@ class GatewayBusySessionMixin:
                 # rendered, so a later reply must not be captured as an answer
                 # to an invisible prompt.
                 #
-                # Classify the STRUCTURED response (see _approval_send_outcome):
-                # a code-only decline has no marker colon in its rendered text,
+                # Classify the STRUCTURED response: a code-only decline has no marker colon in its
+                # rendered text, and an ambiguous result is not a definite refusal.
                 # and an ambiguous result must not be treated as a definite
                 # refusal.
                 from gateway.relay.egress import declined_send

@@ -92,7 +92,7 @@ class TestGuidanceReachesTheSystemPrompt:
 
         import agent.system_prompt as system_prompt
 
-        agent = SimpleNamespace(valid_tool_names={"skill_manage"}, _kanban_worker_guidance="")
+        agent = SimpleNamespace(valid_tool_names={"skill_manage"})
         assert SKILLS_GUIDANCE in (system_prompt._tool_guidance_block(agent) or "")
         agent.valid_tool_names = {"terminal"}
         assert SKILLS_GUIDANCE not in (system_prompt._tool_guidance_block(agent) or "")

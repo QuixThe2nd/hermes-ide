@@ -255,7 +255,7 @@ def test_update_phase_runs_shared_registry_and_writes_boot_records(
     root = tmp_path / "payload"
     root.mkdir()
     (root / "install-stamp.json").write_text(
-        json.dumps({"commit": "cafe1234", "payload": "full", "updateMechanism": "electron-updater"})
+        json.dumps({"commit": "cafe1234", "distribution": "docker", "updateMechanism": "external"})
     )
     monkeypatch.setattr(boot_bootstrap, "default_project_root", lambda: root)
 
@@ -287,7 +287,7 @@ def test_update_phase_propagates_step_failure(tmp_path, monkeypatch):
     root = tmp_path / "payload"
     root.mkdir()
     (root / "install-stamp.json").write_text(
-        json.dumps({"commit": "cafe1234", "payload": "full", "updateMechanism": "electron-updater"})
+        json.dumps({"commit": "cafe1234", "distribution": "docker", "updateMechanism": "external"})
     )
     monkeypatch.setattr(boot_bootstrap, "default_project_root", lambda: root)
     monkeypatch.setattr(

@@ -13,17 +13,16 @@ from cli import HermesCLI
 OLD_CHAIN_COMMANDS = [
     "exit", "quit", "help", "palette", "whoami", "profile", "tools", "toolsets",
     "config", "redraw", "clear", "history", "title", "handoff", "new", "resume",
-    "sessions", "model", "codex-runtime", "personality", "pet", "hatch", "retry",
+    "sessions", "codex-runtime", "retry",
     "prompt", "undo", "branch", "worktree", "save", "cron", "suggestions",
-    "blueprint", "curator", "kanban", "skills", "learn", "init", "memory",
-    "platforms", "status", "context", "egress", "statusbar", "diff", "battery",
-    "timestamps", "verbose", "focus", "footer", "yolo", "approvals", "reasoning",
-    "fast", "compress", "usage", "subscription", "topup", "insights", "copy",
+    "blueprint", "skills", "learn", "init", "memory",
+    "platforms", "status", "context", "statusbar", "diff", "battery",
+    "timestamps", "verbose", "focus", "compress", "subscription", "insights", "copy",
     "debug", "update", "version", "paste", "image", "reload", "reload-mcp",
-    "reload-skills", "bundles", "browser", "plugins", "rollback", "snapshot",
+    "reload-skills", "browser", "plugins", "rollback", "snapshot",
     "export", "import", "stop", "agents", "journey", "bg", "btw", "queue",
-    "steer", "goal", "heartbeat", "refine", "review", "loop", "plan", "moa",
-    "subgoal", "skin", "voice", "wake", "busy", "indicator",
+    "goal", "refine", "review", "loop", "plan",
+    "subgoal", "skin", "indicator",
 ]
 
 
@@ -48,8 +47,7 @@ def test_registry_names_resolve_into_the_table():
         assert cmd is not None and HermesCLI._slash_handler(cmd.name) is not None, name
     # registry commands the CLI never handled inline must still fall through
     dispatched = {c.name for c in COMMAND_REGISTRY if HermesCLI._slash_handler(c.name)}
-    # /login has no old branch; it resolves through the naming-convention fallback.
-    assert dispatched == set(OLD_CHAIN_COMMANDS) - {"exit"} | {"quit", "login"}
+    assert dispatched == set(OLD_CHAIN_COMMANDS) - {"exit"} | {"quit"}
 
 
 def _cli():
@@ -62,12 +60,11 @@ def _cli():
 
 def test_dispatch_return_semantics_and_side_effects():
     c = _cli()
-    with patch.object(HermesCLI, "_toggle_yolo", return_value=None) as m, \
-            patch("hermes_cli.plugins.fire_pre_command_hook") as hook:
-        assert c.process_command("/yolo") is True
-        m.assert_called_once_with()
+    with patch("hermes_cli.plugins.fire_pre_command_hook") as hook, \
+            patch.object(HermesCLI, "_show_session_status", return_value=None):
+        assert c.process_command("/status") is True
         hook.assert_called_once()
-        assert hook.call_args.kwargs["command"] == "yolo"
+        assert hook.call_args.kwargs["command"] == "status"
     assert c._pending_resume_sessions is None  # non-resume command disarms it
 
     c = _cli()
@@ -80,9 +77,9 @@ def test_dispatch_return_semantics_and_side_effects():
     assert c.process_command("/exit") is False
     c = _cli()
     with patch.object(HermesCLI, "_handle_handoff_command", return_value=False):
-        assert c.process_command("/handoff telegram") is False
+        assert c.process_command("/handoff discord") is False
     with patch.object(HermesCLI, "_handle_handoff_command", return_value=True):
-        assert c.process_command("/handoff telegram") is True
+        assert c.process_command("/handoff discord") is True
     with patch.object(HermesCLI, "_handle_update_command", return_value=True):
         assert c.process_command("/update") is False
     with patch.object(HermesCLI, "_handle_update_command", return_value=False):

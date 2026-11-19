@@ -3,8 +3,8 @@ in config.yaml must survive ``_apply_env_overrides`` when that platform's
 credentials are present in the environment.
 
 Before the fix, twelve credential-presence branches (weixin, whatsapp_cloud,
-homeassistant, email, sms, dingtalk, feishu, wecom, wecom_callback, bluebubbles,
-qqbot, yuanbao) force-set ``enabled = True`` unconditionally, while Telegram /
+homeassistant, email, sms, feishu, bluebubbles,
+qqbot, yuanbao) force-set ``enabled = True`` unconditionally, while
 Discord / Slack routed through ``_enable_from_env`` and honored the
 ``_enabled_explicit`` marker.  These tests drive the real ``load_gateway_config``
 against a temp HERMES_HOME — real YAML I/O, no mocks of the code under test.
@@ -38,13 +38,7 @@ CRED_ENV = {
         "EMAIL_SMTP_HOST": "smtp.example.com",
     },
     "sms": {"TWILIO_ACCOUNT_SID": "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"},
-    "dingtalk": {"DINGTALK_CLIENT_ID": "ding-id", "DINGTALK_CLIENT_SECRET": "ding-secret"},
     "feishu": {"FEISHU_APP_ID": "cli_feishu", "FEISHU_APP_SECRET": "feishu-secret"},
-    "wecom": {"WECOM_BOT_ID": "wecom-bot", "WECOM_SECRET": "wecom-secret"},
-    "wecom_callback": {
-        "WECOM_CALLBACK_CORP_ID": "corp-id",
-        "WECOM_CALLBACK_CORP_SECRET": "corp-secret",
-    },
     "bluebubbles": {
         "BLUEBUBBLES_SERVER_URL": "http://127.0.0.1:1234",
         "BLUEBUBBLES_PASSWORD": "bb-password",
@@ -52,13 +46,13 @@ CRED_ENV = {
     "qqbot": {"QQ_APP_ID": "qq-app", "QQ_CLIENT_SECRET": "qq-secret"},
     "yuanbao": {"YUANBAO_APP_ID": "yb-app", "YUANBAO_APP_SECRET": "yb-secret"},
     # control: the pattern that always honored the explicit disable
-    "telegram": {"TELEGRAM_BOT_TOKEN": "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"},
+    "discord": {"DISCORD_BOT_TOKEN": "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"},
 }
 
 _PLATFORM_ENV_PREFIXES = (
-    "TELEGRAM_", "DISCORD_", "SLACK_", "WEIXIN_", "WHATSAPP_", "HASS_", "EMAIL_",
-    "TWILIO_", "DINGTALK_", "FEISHU_", "WECOM_", "BLUEBUBBLES_", "QQ_", "QQBOT_",
-    "YUANBAO_", "GATEWAY_RELAY", "SIGNAL_", "MATTERMOST_", "MATRIX_",
+    "DISCORD_", "SLACK_", "WEIXIN_", "WHATSAPP_", "HASS_", "EMAIL_",
+    "TWILIO_", "FEISHU_", "BLUEBUBBLES_", "QQ_", "QQBOT_",
+    "YUANBAO_", "GATEWAY_RELAY", "SIGNAL_", "MATRIX_",
 )
 
 
@@ -199,6 +193,6 @@ def test_every_env_enable_branch_is_named_for_the_warning():
     routed = {Platform[name] for name in re.findall(r"_enable_from_env\(config, Platform\.([A-Z_]+)\)", src)}
     routed |= {step.platform for step in gateway_config_env._ENV_STEPS if isinstance(step, gateway_config_env._Cred)}
     routed.add(Platform.SLACK)  # Slack has its own inline copy of the logic
-    assert len(routed) > 15
+    assert len(routed) >= 15
     missing = {p.value for p in routed} - {p.value for p in gateway_config_env._ENV_ENABLE_CREDENTIALS}
     assert not missing, f"platforms without a credential entry for the explicit-disable warning: {missing}"

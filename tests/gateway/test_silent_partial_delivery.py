@@ -9,7 +9,7 @@ non-retryable error string, so the delivery-obligation ledger's reconnect
 sweep never replayed it — the turn's output was silently lost until a full
 process restart.
 
-#98552 (Telegram): a finalize path that sets ``final_content_delivered=True``
+#98552: a finalize path that sets ``final_content_delivered=True``
 without recording what was actually delivered produced the same false
 positive on a 624-char message truncated at 333 chars.
 
@@ -251,7 +251,6 @@ def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.adapters = {adapter.platform: adapter}
-    runner._voice_mode = {}
     runner._prefill_messages = []
     runner._ephemeral_system_prompt = ""
     runner._reasoning_config = None

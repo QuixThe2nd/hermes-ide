@@ -1,7 +1,7 @@
 """Tests for secret exfiltration prevention in browser and web tools."""
 
 import json
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 import pytest
 
 
@@ -28,70 +28,33 @@ class TestBrowserSecretExfil:
         parsed = json.loads(result)
         assert parsed["success"] is False
 
-    def test_cloud_browser_allows_credential_named_query_param(self):
-        """Magic links / OAuth callbacks / signed assets carry ``?token=``-style params and must
-        reach a cloud browser too: the browser is where the agent signs in, and it already sees the
-        session's cookies and typed passwords. Only Hermes-secret-shaped values stay blocked."""
+    def test_allows_opaque_oauth_query_but_blocks_shaped_secret(self):
+        """Opaque OAuth/magic-link values are valid; Hermes-secret-shaped values are not."""
         from tools.browser_tool import browser_navigate
 
         url = "https://example.com/callback?token=opaque-oauth-code&signature=abc123"
-        mock_result = {"success": True, "data": {"title": "ok", "url": url}}
-        with patch("tools.browser_tool_cloud._is_local_backend", return_value=False), \
-             patch("tools.browser_tool._navigation_session_key", return_value="default"), \
-             patch("tools.browser_tool_session._get_session_info", return_value={"_first_nav": False}), \
-             patch("tools.browser_tool_session._run_browser_command", return_value=mock_result) as mock_run:
+        with (
+            patch("tools.browser_tool._track_activity", return_value="default"),
+            patch("tools.browser_tool._camofox.camofox_navigate", return_value='{"success": true}') as navigate,
+        ):
             allowed = json.loads(browser_navigate(url))
             blocked = json.loads(browser_navigate("https://example.com/callback?token=" + "sk-or-v1-" + "b" * 30))
 
         assert allowed["success"] is True
         assert blocked["success"] is False and "Blocked" in blocked["error"]
-        assert all(call.args[1] != "open" or "sk-or-v1-" not in call.args[2][0] for call in mock_run.call_args_list)
-
-    def test_local_browser_allows_opaque_sensitive_query_param(self):
-        """Local browser/CDP sessions may navigate magic-link style URLs."""
-        from tools.browser_tool import browser_navigate
-
-        mock_result = {"success": True, "data": {"title": "ok", "url": "https://example.com/callback?token=opaque-oauth-code"}}
-        with patch("tools.browser_tool_session._run_browser_command", return_value=mock_result), \
-             patch("tools.browser_tool_session._get_session_info", return_value={"_first_nav": False}), \
-             patch("tools.browser_tool_cloud._is_local_backend", return_value=True):
-            result = browser_navigate("https://example.com/callback?token=opaque-oauth-code")
-
-        parsed = json.loads(result)
-        assert parsed["success"] is True
-
-    def test_allows_normal_url(self):
-        """Normal URLs pass the secret check (may fail for other reasons)."""
-        from tools.browser_tool import browser_navigate
-        # Patch the actual browser command — we only care that the secret
-        # check doesn't block a clean URL, not that Chrome starts in CI.
-        mock_result = {"success": True, "data": {"title": "ok", "url": "https://github.com/NousResearch/hermes-agent"}}
-        with patch("tools.browser_tool_session._run_browser_command", return_value=mock_result), \
-             patch("tools.browser_tool_session._get_session_info", return_value={"_first_nav": False}), \
-             patch("tools.browser_tool_cloud._is_local_backend", return_value=True):
-            result = browser_navigate("https://github.com/NousResearch/hermes-agent")
-        parsed = json.loads(result)
-        # Should NOT be blocked by secret detection
-        assert "API key or token" not in parsed.get("error", "")
+        navigate.assert_called_once_with(url, None)
 
     def test_normalizes_non_ascii_url_before_navigation(self):
         from tools.browser_tool import browser_navigate
 
-        captured = {}
+        with (
+            patch("tools.browser_tool._track_activity", return_value="default"),
+            patch("tools.browser_tool._camofox.camofox_navigate", return_value='{"success": true}') as navigate,
+        ):
+            result = json.loads(browser_navigate("https://wttr.in/Köln"))
 
-        def mock_run(_session_key, command, args, **_kwargs):
-            if command == "open":
-                captured["url"] = args[0]
-            return {"success": True, "data": {"title": "ok", "url": args[0]}}
-
-        with patch("tools.browser_tool_session._run_browser_command", side_effect=mock_run), \
-             patch("tools.browser_tool_session._get_session_info", return_value={"_first_nav": False}), \
-             patch("tools.browser_tool_cloud._is_local_backend", return_value=True):
-            result = browser_navigate("https://wttr.in/Köln")
-
-        parsed = json.loads(result)
-        assert parsed["success"] is True
-        assert captured["url"] == "https://wttr.in/K%C3%B6ln"
+        assert result["success"] is True
+        navigate.assert_called_once_with("https://wttr.in/K%C3%B6ln", None)
 
 
 class TestWebExtractSecretExfil:
@@ -228,12 +191,6 @@ class TestBrowserSnapshotRedaction:
         assert "Dashboard" in content
         assert "ref=e5" in content
 
-    def test_no_llm_summarization_entry_points(self):
-        """The auxiliary-LLM snapshot path must not exist anymore."""
-        import tools.browser_tool as bt
-
-        assert not hasattr(bt, "_extract_relevant_content")
-        assert not hasattr(bt, "_get_extraction_model")
 
 
 class TestCamofoxAnnotationRedaction:
@@ -273,40 +230,3 @@ class TestCamofoxAnnotationRedaction:
         assert "PATH=/usr/local/bin" in result
 
 
-class TestBrowserSupervisorRedaction:
-    """Verify supervisor dialog snapshots redact page-originated secrets."""
-
-    def test_pending_and_recent_dialog_messages_redacted(self):
-        from tools.browser_supervisor import SupervisorSnapshot
-        from tools.browser_supervisor_dialogs import DialogRecord, PendingDialog
-
-        fake_key = "sk-" + "SUPERVISORDIALOGSECRET1234567890"
-        snapshot = SupervisorSnapshot(
-            pending_dialogs=(PendingDialog(
-                id="d1",
-                type="prompt",
-                message=f"Enter API key {fake_key}",
-                default_prompt=fake_key,
-                opened_at=1.0,
-                cdp_session_id="session-1",
-            ),),
-            recent_dialogs=(DialogRecord(
-                id="d2",
-                type="alert",
-                message=f"Recent key {fake_key}",
-                opened_at=1.0,
-                closed_at=2.0,
-                closed_by="agent",
-            ),),
-            frame_tree={"top": {"frame_id": "f1", "url": "about:blank", "origin": "null", "is_oopif": False}},
-            active=True,
-            cdp_url="ws://example.invalid/devtools/browser/mock",
-            task_id="test",
-        )
-
-        result = snapshot.to_dict()
-        serialized = str(result)
-        assert "SUPERVISORDIALOGSECRET" not in serialized
-        assert result["pending_dialogs"][0]["message"].startswith("Enter API key sk-")
-        assert result["pending_dialogs"][0]["default_prompt"].startswith("sk-")
-        assert result["recent_dialogs"][0]["message"].startswith("Recent key sk-")

@@ -210,7 +210,7 @@ def suppress_platform_ver_console() -> None:
     """Stub ``platform._syscmd_ver`` on Windows so it never flashes a console. No-op elsewhere.
 
     ``platform.win32_ver()`` shells out ``cmd /c ver`` without CREATE_NO_WINDOW, so a windowless
-    parent (pythonw gateway, kanban workers) flashes a cmd window whenever a dependency touches
+    parent (pythonw gateway, automation workers) flashes a cmd window whenever a dependency touches
     ``platform.uname()`` at import. With the stub, ``win32_ver()`` takes its documented fallback to
     ``sys.getwindowsversion()`` — same data, in-process. Call before heavy imports.
     """

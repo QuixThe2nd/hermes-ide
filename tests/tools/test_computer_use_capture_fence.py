@@ -48,7 +48,6 @@ def test_frame_captured_across_a_takeover_is_dropped_before_any_sink(monkeypatch
     from tools.computer_use import tool
 
     monkeypatch.setattr(tool, "_get_backend", lambda session_id="": _TakeoverBackend())
-    monkeypatch.setattr(tool, "_request_approval", lambda *a, **k: None)
     leaked = _spy_sinks(monkeypatch, tool)
     res = json.loads(tool.handle_computer_use(args))
     assert res["code"] == "human_has_control", res

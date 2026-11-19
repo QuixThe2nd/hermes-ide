@@ -387,7 +387,7 @@ exec /bin/mv "$@"
     completed = subprocess.run([str(script), str(destination)], env=env,
                                text=True, capture_output=True, timeout=30)
     assert completed.returncode == 97
-    assert (destination / "2.47.3" / "old-marker").read_text(encoding="utf-8") == "old"
+    assert (destination / "2.47.3" / "old-marker").read_text(encoding="utf-8-sig") == "old"
     assert not (destination / "2.47.3" / "new-marker").exists()
     assert not (destination / ".current.new").exists()
     assert subprocess.run([str(destination / "current" / "DiscordChatExporter.Cli")],

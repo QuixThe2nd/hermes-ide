@@ -9,7 +9,7 @@ from gateway.session import SessionSource
 def _make_runner() -> GatewayRunner:
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")}
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="fake")}
     )
     runner.adapters = {}
     runner._pending_native_image_paths_by_session = {}
@@ -20,7 +20,7 @@ def _make_runner() -> GatewayRunner:
 
 def _source() -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="273403055",
         chat_type="dm",
         user_id="42",

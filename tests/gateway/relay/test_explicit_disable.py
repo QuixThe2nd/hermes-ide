@@ -117,17 +117,17 @@ def test_predicate_agrees_with_loader_and_keeps_native_adapters(profile, monkeyp
 def test_legacy_json_disable_is_advisory_like_other_platforms(profile, monkeypatch):
     (profile / "gateway.json").write_text(json.dumps({"platforms": {
         "relay": {"enabled": False},
-        "telegram": {"enabled": False},
+        "discord": {"enabled": False},
     }}))
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "native-telegram-test-token")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "native-direct-platform-test-token")
     monkeypatch.setenv("GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS", "true")
     config = load_gateway_config()
 
     # Only a YAML ``enabled`` key sets ``_enabled_explicit``; env presence (the URL, the token)
-    # re-enables a gateway.json disable for relay exactly as it does for telegram.
+    # re-enables a gateway.json disable for relay exactly as it does for discord.
     assert relay.relay_explicitly_disabled() is False
     assert config.platforms[Platform.RELAY].enabled is True
-    assert config.platforms[Platform.TELEGRAM].enabled is True
+    assert config.platforms[Platform.DISCORD].enabled is True
 
 
 def test_malformed_user_yaml_drops_the_yaml_layer_for_both_readers(profile, monkeypatch):

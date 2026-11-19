@@ -1,9 +1,8 @@
 """Tests for structured send-error classification (SendResult.error_kind).
 
 Covers the platform-neutral ``classify_send_error`` vocabulary in
-``gateway/platforms/base.py`` and its wiring into the Telegram adapter's
-``send()`` failure path, so consumers can branch on a typed category instead
-of substring-matching the raw provider message.
+``gateway/platforms/base.py``, so consumers can branch on a typed category
+instead of substring-matching the raw provider message.
 """
 
 import pytest
@@ -56,34 +55,3 @@ def test_every_classification_is_in_the_vocabulary():
     ]
     for s in samples:
         assert classify_send_error(None, s) in SEND_ERROR_KINDS
-
-
-def test_telegram_send_failure_populates_error_kind():
-    """Telegram send() failures carry a typed error_kind alongside error."""
-    import asyncio
-    from unittest.mock import AsyncMock, MagicMock
-
-    from gateway.config import PlatformConfig
-    from plugins.platforms.telegram.adapter import TelegramAdapter
-
-    cfg = PlatformConfig(enabled=True, token="fake-token", extra={})
-    adapter = TelegramAdapter(cfg)
-
-    # Minimal bot whose send_message raises a parse/entity rejection.
-    bot = MagicMock()
-    bot.send_message = AsyncMock(
-        side_effect=Exception("Bad Request: can't parse entities: bad tag")
-    )
-    bot.send_chat_action = AsyncMock()
-    # Force the legacy (non-rich) path and a connected bot.
-    adapter._bot = bot
-    adapter._rich_messages_enabled = False
-
-    result = asyncio.run(adapter.send("123", "<b>broken"))
-    assert result.success is False
-    # Telegram has a plain-text fallback for parse errors inside the send loop,
-    # so a raw parse failure that still escapes is classified for consumers.
-    assert result.error_kind in SEND_ERROR_KINDS
-    assert result.error_kind != "unknown" or result.error
-
-

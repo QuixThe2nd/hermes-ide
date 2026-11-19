@@ -43,7 +43,7 @@ class TestStreamingModeAlias:
 
     Regression for a live config footgun: ``streaming: {mode: auto}`` was
     silently ignored (mode was never read), so streaming stayed disabled and
-    the whole reply buffered before the first Telegram send.
+    the whole reply buffered before the first platform send.
     """
 
     def test_mode_auto_enables_streaming(self):

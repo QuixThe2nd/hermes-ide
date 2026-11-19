@@ -16,7 +16,7 @@ from gateway.session import SessionSource, build_session_key
 
 class _ClarifyBypassAdapter(BasePlatformAdapter):
     def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.DISCORD)
 
     async def connect(self):
         return True
@@ -36,7 +36,7 @@ def _event(text="custom answer"):
         text=text,
         message_type=MessageType.TEXT,
         source=SessionSource(
-            platform=Platform.TELEGRAM,
+            platform=Platform.DISCORD,
             chat_id="12345",
             chat_type="private",
             user_id="user1",
@@ -58,7 +58,7 @@ def _clear_clarify_state():
 async def test_active_session_routes_typed_choice_clarify_reply_to_runner_not_busy_queue():
     """Typed text must resolve a pending choice clarify even while the agent is busy.
 
-    Telegram button clarifies keep the adapter session active while the agent
+    Button clarifies keep the adapter session active while the agent
     thread blocks on ``wait_for_response``.  If the adapter only bypasses for
     entries already marked ``awaiting_text``, typed replies to the visible
     multi-choice prompt are handled as busy follow-ups and the clarify wait is

@@ -22,7 +22,6 @@ from tools.connectors.gateway.merge import (
     splice_remote_results,
 )
 from tools.connectors.gateway.names import (
-    CONNECTOR_BATCH_SENTINEL,
     format_connector_name,
     parse_connector_name,
 )
@@ -47,13 +46,12 @@ def test_parse_round_trips_and_keeps_tool_slug_underscores():
         None,
         42,
         "",
-        "tool_search",
+        "not_a_connector",
         "connectors__",
         "connectors____",
         "connectors__gmail",
         "connectors__gmail__",
         "connectors____GMAIL_SEND_EMAIL",
-        CONNECTOR_BATCH_SENTINEL,  # planner sentinel is not a callable name
     ],
 )
 def test_parse_rejects_malformed_names_without_raising(bad):
@@ -306,31 +304,16 @@ def test_connectors_available_requires_both_legs_and_fails_closed():
     assert connectors_available(config_loader=boom, entitlement_check=lambda: True) is False
 
 
-@pytest.mark.parametrize(
-    "claims, rolled_out",
-    [
-        # Paid access alone does not enable connectors: the gateway 404s this account.
-        ({"paid_access": True, "tool_access": {"enabled": True, "coverage": {}}}, False),
-        ({"paid_access": True, "managed_tools": True}, True),
-        ({"paid_access": False, "managed_tools": True}, True),
-        ({"managed_tools": False}, False),
-        ({"managed_tools": "true"}, False),  # only a literal boolean counts
-    ],
-)
-def test_account_gate_reads_the_portal_claim_not_entitlement(monkeypatch, claims, rolled_out):
-    """The account leg mirrors the gateway's own gate: the ``managed_tools`` claim the portal
-    mints. A token without it is not enabled however entitled it is."""
-    import time
+def test_default_gate_is_gateway_reachability(monkeypatch):
+    """The default entitlement leg is reachability — a resolvable connector gateway origin plus
+    a gateway token — never an account claim."""
+    from tools.connectors.gateway import config as gateway_config
 
-    from hermes_cli import nous_account
-    from tools.connectors.gateway.config import managed_tools_rolled_out
+    monkeypatch.setenv("CONNECTOR_GATEWAY_URL", "https://connector-gateway.example.test")
+    monkeypatch.setattr("tools.managed_tool_gateway.read_gateway_user_token", lambda: "tok")
+    assert gateway_config.connectors_available(
+        config_loader=lambda: ConnectorConfig(enabled=True)) is True
 
-    monkeypatch.setattr(
-        "hermes_cli.auth._decode_jwt_claims", lambda token: {"exp": time.time() + 3600, **claims})
-    account = nous_account._info_from_valid_jwt("tok", {}, None, 60)
-    assert account is not None and account.logged_in
-
-    monkeypatch.setattr(nous_account, "get_nous_portal_account_info", lambda **kw: account)
-    assert managed_tools_rolled_out() is rolled_out
-    assert connectors_available(config_loader=lambda: ConnectorConfig(enabled=True),
-                                entitlement_check=managed_tools_rolled_out) is rolled_out
+    monkeypatch.setattr("tools.managed_tool_gateway.read_gateway_user_token", lambda: None)
+    assert gateway_config.connectors_available(
+        config_loader=lambda: ConnectorConfig(enabled=True)) is False

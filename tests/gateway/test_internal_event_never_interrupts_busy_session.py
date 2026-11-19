@@ -20,24 +20,11 @@ turn.
 
 from __future__ import annotations
 
-import sys
 import threading
-import types
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-# Minimal telegram stubs so gateway imports cleanly (mirrors sibling tests).
-_tg = types.ModuleType("telegram")
-_tg.constants = types.ModuleType("telegram.constants")
-_ct = MagicMock()
-_ct.SUPERGROUP = "supergroup"
-_ct.GROUP = "group"
-_ct.PRIVATE = "private"
-_tg.constants.ChatType = _ct
-sys.modules.setdefault("telegram", _tg)
-sys.modules.setdefault("telegram.constants", _tg.constants)
-sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 
 from gateway.platforms.base import (
     SessionSource,
@@ -49,7 +36,7 @@ from gateway.run import GatewayRunner  # noqa: E402
 
 def _make_internal_event(text: str = "[async delegation completed]") -> MessageEvent:
     source = SessionSource(
-        platform=MagicMock(value="telegram"),
+        platform=MagicMock(value="discord"),
         chat_id="123",
         chat_type="private",
         user_id="user1",
@@ -87,7 +74,7 @@ def _make_adapter() -> MagicMock:
     adapter._send_with_retry = AsyncMock()
     adapter.config = MagicMock()
     adapter.config.extra = {}
-    adapter.platform = MagicMock(value="telegram")
+    adapter.platform = MagicMock(value="discord")
     return adapter
 
 

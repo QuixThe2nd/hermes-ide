@@ -88,6 +88,7 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     """Patch ``_cmd_update_impl`` helpers. Mirrors test_update_head_moved_gate."""
     monkeypatch.setattr(hermes_main.subprocess, "run", run_side_effect)
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("pm.sync_venv", lambda *a, **k: None)
     (tmp_path / ".git").mkdir()
     monkeypatch.setattr(hermes_main, "_resolve_update_branch", lambda args: "main")
     monkeypatch.setattr(hermes_main, "_is_windows", lambda: False)
@@ -1087,6 +1088,26 @@ def test_run_pending_restart_true_when_no_gateways(monkeypatch, capsys):
     assert "Pending fleet restart completed" in capsys.readouterr().out
 
 
+def test_pending_restart_leaves_unacknowledged_manual_gateway_untouched(monkeypatch):
+    """Catch-up must not resurrect the old stop-then-restart lifecycle."""
+    from hermes_cli import gateway
+
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway, "find_gateway_pids", lambda **kwargs: [4242])
+    monkeypatch.setattr(gateway, "find_profile_gateway_processes", lambda **kwargs: [])
+    monkeypatch.setattr(gateway, "_get_service_pids", lambda **kwargs: set())
+    monkeypatch.setattr(update_cmd_fleet, "_drain_or_signal_gateway_for_update", lambda *args: None)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("an unacknowledged live gateway must not be stopped")
+
+    monkeypatch.setattr(gateway, "kill_gateway_processes", forbidden)
+    monkeypatch.setattr(gateway, "_wait_for_gateway_exit", forbidden)
+    monkeypatch.setattr(gateway.os, "kill", forbidden)
+
+    assert update_cmd._run_pending_fleet_restart() is False
+
+
 # ---------------------------------------------------------------------------
 # Serve-only fleets: no gateway PIDs, but systemd-managed serve/dashboard
 # units still run pre-update code (Codex P1 B)
@@ -1659,7 +1680,7 @@ def test_startup_warn_silent_when_failed_receipt_already_restarted_fleet(monkeyp
         json.dumps(
             {
                 "outcome": "failed", "exit_code": 1,
-                "stop_reason": "AttributeError: module 'hermes_cli.main_dashboard' has no attribute 'x'",
+                "stop_reason": "AttributeError: module 'hermes_cli.dashboard_procs' has no attribute 'x'",
                 "pre_update": {"sha": pre}, "post_update": {"sha": pulled},
                 "gateway_restart": {
                     "restarted_services": ["hermes-gateway"], "relaunched_profiles": [],

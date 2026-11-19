@@ -166,21 +166,12 @@ _EXTRA_KEYS = frozenset({
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
     "agent_key_obtained_at", "tls", "secret_source", "secret_fingerprint",
-    # Nous guest identity (``auth_method: anonymous``): the anon_ credential is the refresh material.
-    "auth_method", "account_tier", "anon_token", "user_id", "org_id",
     # Classified failure semantics for the last exhaustion (agent/error_classifier.py).
     # Providers return 403 for both an edge throttle and a spending limit, so the
     # raw status cannot size a cooldown; persisted so a restart doesn't downgrade
     # a billing bench to a 60s transient cooldown.
     "failure_reason",
 })
-
-# Nous singleton metadata mirrored between auth.json state and ``entry.extra``.
-_NOUS_EXTRA_STATE_KEYS = (
-    "obtained_at", "expires_in", "agent_key_id",
-    "agent_key_expires_in", "agent_key_reused", "agent_key_obtained_at",
-    "auth_method", "account_tier", "anon_token", "user_id", "org_id",
-)
 
 # ``replace(entry, **_CLEAR_STATUS)`` returns an entry with no error state.
 _CLEAR_STATUS: Dict[str, Any] = {
@@ -275,28 +266,10 @@ class PooledCredential:
 
     @property
     def runtime_api_key(self) -> str:
-        if self.provider == "nous":
-            # Nous stores the runtime inference credential in agent_key for
-            # compatibility. It must be a NAS invoke JWT.
-            for token, expires_at in (
-                (self.agent_key, self.agent_key_expires_at),
-                (self.access_token, self.expires_at),
-            ):
-                if (
-                    isinstance(token, str)
-                    and token.strip()
-                    and auth_mod._nous_invoke_jwt_is_usable(
-                        token, scope=getattr(self, "scope", None), expires_at=expires_at,
-                    )
-                ):
-                    return token.strip()
-            return ""
         return str(self.access_token or "")
 
     @property
     def runtime_base_url(self) -> Optional[str]:
-        if self.provider == "nous":
-            return self.inference_base_url or self.base_url
         if self.provider == "openai-codex":
             # Pool rows keep the canonical ChatGPT URL; the profile-scoped proxy override must win
             # for every reader of the row — initial resolution AND a 401/429 rotation
@@ -762,7 +735,7 @@ _TOKENS_SINGLETON_PROVIDERS: Dict[str, Tuple[str, str, str, str]] = {
 
 # Providers whose pooled OAuth entries ``_refresh_entry_impl`` can actually refresh. Any other
 # provider is returned unchanged by that path, so callers must not report a refresh for them.
-REFRESHABLE_OAUTH_PROVIDERS = frozenset({"anthropic", "nous", *_TOKENS_SINGLETON_PROVIDERS})
+REFRESHABLE_OAUTH_PROVIDERS = frozenset({"anthropic", *_TOKENS_SINGLETON_PROVIDERS})
 
 # Providers whose refresh tokens are single-use: the sync -> POST -> write-back
 # sequence must be serialized across processes under the auth-store flock.
@@ -777,7 +750,6 @@ _REFRESH_TIMEOUT_ENV_VARS = {
 # re-auth another process wrote to the provider's store.
 _RESYNC_SOURCE = {
     "anthropic": "claude_code",
-    "nous": "device_code",
     "openai-codex": "device_code",
     "xai-oauth": "device_code",
 }
@@ -1172,47 +1144,12 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             logger.debug("Failed to sync %s entry from auth.json: %s", display, exc)
         return entry
 
-    def _sync_nous_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
-        """Sync a Nous device_code entry from auth.json ``providers.nous`` if state differs.
-
-        Another process refreshing via ``resolve_nous_runtime_credentials``
-        writes fresh tokens under ``_auth_store_lock``; adopting them avoids a
-        "refresh token reuse" revocation on the Nous Portal.
-        """
-        if self.provider != "nous" or entry.source != "device_code":
-            return entry
-        try:
-            with _auth_store_lock():
-                state = _load_provider_state(_load_auth_store(), "nous")
-            if not state:
-                return entry
-            comparable = {
-                key: state.get(key)
-                for key in (
-                    "access_token", "refresh_token", "expires_at",
-                    "agent_key", "agent_key_expires_at", "inference_base_url",
-                )
-            }
-            if not any(v not in (None, "") and getattr(entry, k, None) != v for k, v in comparable.items()):
-                return entry
-            logger.debug("Pool entry %s: syncing Nous state from auth.json", entry.id)
-            field_updates: Dict[str, Any] = dict(_CLEAR_STATUS)
-            field_updates.update({k: v for k, v in comparable.items() if v})
-            extra_updates = dict(entry.extra)
-            extra_updates.update(
-                {k: state[k] for k in _NOUS_EXTRA_STATE_KEYS if state.get(k) is not None}
-            )
-            return self._adopt(entry, extra=extra_updates, **field_updates)
-        except Exception as exc:
-            logger.debug("Failed to sync Nous entry from auth.json: %s", exc)
-        return entry
-
     def _sync_device_code_entry_to_auth_store(self, entry: PooledCredential) -> None:
         """Write refreshed pool entry tokens back to auth.json ``providers.<id>``.
 
         Otherwise the next ``load_pool()`` re-seeds the stale singleton state
         over the fresh entry — potentially a consumed single-use refresh
-        token. Applies to Nous, OpenAI Codex and xAI OAuth singletons.
+        token. Applies to OpenAI Codex and xAI OAuth singletons.
 
         ``set_active=False`` everywhere: a sync-back is a token-rotation side
         effect, not the user choosing a provider; ``_save_provider_state``
@@ -1220,7 +1157,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         """
         # Only singleton-seeded entries sync back; ``manual:*`` entries are
         # independent credentials and must not write to the singleton.
-        if entry.source != "device_code" or self.provider not in ("nous", *_TOKENS_SINGLETON_PROVIDERS):
+        if entry.source != "device_code" or self.provider not in _TOKENS_SINGLETON_PROVIDERS:
             return
         try:
             with _auth_store_lock():
@@ -1237,18 +1174,6 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 
     def _apply_entry_to_singleton_state(self, entry: PooledCredential, state: Dict[str, Any]) -> bool:
         """Copy *entry*'s tokens into the provider's auth.json ``state`` in place."""
-        if self.provider == "nous":
-            state["access_token"] = entry.access_token
-            for key in ("refresh_token", "expires_at", "agent_key", "agent_key_expires_at"):
-                if getattr(entry, key):
-                    state[key] = getattr(entry, key)
-            for extra_key in _NOUS_EXTRA_STATE_KEYS:
-                val = entry.extra.get(extra_key)
-                if val is not None:
-                    state[extra_key] = val
-            if entry.inference_base_url:
-                state["inference_base_url"] = entry.inference_base_url
-            return True
         tokens = state.get("tokens")
         if not isinstance(tokens, dict):
             return False
@@ -1456,18 +1381,6 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             elif self.provider in _TOKENS_SINGLETON_PROVIDERS:
                 entry = self._sync_entry_from_auth_store(entry)
                 updated = self._post_tokens_refresh(entry)
-            elif self.provider == "nous":
-                stale_key = entry.runtime_api_key or entry.agent_key or entry.access_token
-                synced = self._sync_nous_entry_from_auth_store(entry)
-                if synced is not entry:
-                    entry = synced
-                    # A peer already rotated and persisted a usable key: adopt
-                    # it without consuming the single-use refresh token again.
-                    if force and entry.runtime_api_key and entry.runtime_api_key != stale_key:
-                        logger.debug("Nous entry %s: adopting peer-rotated token, skipping refresh", entry.id)
-                        return entry
-                auth_mod.resolve_nous_runtime_credentials(force_refresh=force, stale_access_token=stale_key or None)
-                updated = self._sync_nous_entry_from_auth_store(entry)
             else:
                 return entry
         except _RefreshDone as done:
@@ -1551,7 +1464,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             # Terminal error with no newer tokens: the stored refresh_token is
             # dead. Clear it from auth.json so the next session does not
             # re-seed the revoked credentials, and drop singleton-seeded
-            # entries from the pool (mirrors the Nous quarantine path).
+            # entries from the pool.
             if getattr(auth_mod, terminal_fn_name)(exc):
                 # WARNING, not debug: this is the moment a login is lost. At the default log level a
                 # silent quarantine looked like "I logged in once and Hermes keeps failing" (#113023).
@@ -1560,31 +1473,6 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     "Re-run 'hermes auth add %s' to sign in again.", display, exc, self.provider)
                 self._clear_terminal_tokens_state(entry, exc)
                 self._quarantine_sources(entry, {"device_code"})
-                self._mark_dead_refresh_grant(entry, exc)
-                return None
-        elif self.provider == "nous":
-            synced = self._sync_nous_entry_from_auth_store(entry)
-            if synced.refresh_token != entry.refresh_token:
-                logger.debug("Nous refresh failed but auth.json has newer tokens — adopting")
-                updated = self._adopt(synced, **_MARK_OK)
-                self._sync_device_code_entry_to_auth_store(updated)
-                return updated
-            if isinstance(exc, TimeoutError):
-                # Lost the auth-store lock race under heavy fan-out. That says
-                # nothing about the credential — benching it here emptied the
-                # pool for ~120 sessions ("matched no nous entry ... pool size
-                # 0"). The caller's retry re-syncs once the winner persisted.
-                logger.debug("Nous refresh skipped: auth store lock busy; not benching entry")
-                return entry
-            if auth_mod._is_terminal_nous_refresh_error(exc):
-                logger.warning(
-                    "Nous refresh token is terminally invalid (%s); clearing local token state. "
-                    "Re-run 'hermes auth add nous' to sign in again.", exc)
-                self._clear_terminal_nous_state(entry, exc)
-                self._quarantine_sources(
-                    entry,
-                    {auth_mod.NOUS_DEVICE_CODE_SOURCE, f"manual:{auth_mod.NOUS_DEVICE_CODE_SOURCE}"},
-                )
                 self._mark_dead_refresh_grant(entry, exc)
                 return None
         self._mark_exhausted(entry, None)
@@ -1638,27 +1526,6 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         except Exception as clear_exc:
             logger.debug("Failed to clear terminal %s OAuth state: %s", display, clear_exc)
 
-    def _clear_terminal_nous_state(self, entry: PooledCredential, exc: Exception) -> None:
-        try:
-            with _auth_store_lock():
-                auth_store = _load_auth_store()
-                state = _load_provider_state(auth_store, "nous") or {
-                    "client_id": entry.client_id,
-                    "portal_base_url": entry.portal_base_url,
-                    "inference_base_url": entry.inference_base_url,
-                    "token_type": entry.token_type,
-                    "scope": entry.scope,
-                    "tls": entry.tls,
-                }
-                store_refresh = str(state.get("refresh_token") or "").strip()
-                if not store_refresh or store_refresh == str(entry.refresh_token or "").strip():
-                    auth_mod._quarantine_nous_oauth_state(state, exc, reason="credential_pool_refresh_failure")
-                    auth_mod._quarantine_nous_pool_entries(auth_store, exc, reason="credential_pool_refresh_failure")
-                    _save_provider_state(auth_store, "nous", state)
-                    _save_auth_store(auth_store)
-        except Exception as clear_exc:
-            logger.debug("Failed to clear terminal Nous OAuth state: %s", clear_exc)
-
     def _codex_quota_restored_upstream(self, entry: PooledCredential) -> bool:
         """Live-check whether an exhausted Codex entry's quota reset early.
 
@@ -1710,8 +1577,6 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             return auth_mod._xai_access_token_is_expiring(
                 entry.access_token, auth_mod._xai_proactive_refresh_skew_seconds(entry.access_token),
             )
-        # Nous refresh can require network access and happens when runtime
-        # credentials are actually resolved, not on enumeration/selection.
         return False
 
     # ---- selection ---------------------------------------------------------
@@ -1770,8 +1635,6 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             return entry
         if self.provider == "anthropic":
             return self._sync_anthropic_entry_from_credentials_file(entry)
-        if self.provider == "nous":
-            return self._sync_nous_entry_from_auth_store(entry)
         return self._sync_entry_from_auth_store(entry)
 
     def _available_entries(
@@ -2340,40 +2203,6 @@ def _seed_anthropic_singletons(seed: _Seeder) -> None:
             })
 
 
-def _seed_nous_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
-    state = _load_provider_state(auth_store, "nous")
-    has_runtime_material = bool(
-        isinstance(state, dict)
-        and (str(state.get("access_token") or "").strip() or str(state.get("agent_key") or "").strip())
-    )
-    if state and not has_runtime_material:
-        seed.changed |= _retain_sources_not_in(seed.entries, {"device_code", "manual:device_code"})
-    if not (state and has_runtime_material):
-        return
-    # Prefer a user-supplied label embedded in the singleton state (``hermes
-    # auth add nous --label <name>``) over the token-derived fingerprint.
-    custom_label = str(state.get("label") or "").strip()
-    seed.upsert("device_code", {
-        "auth_type": AUTH_TYPE_OAUTH,
-        "access_token": state.get("access_token", ""),
-        "refresh_token": state.get("refresh_token"),
-        "expires_at": state.get("expires_at"),
-        "token_type": state.get("token_type"),
-        "scope": state.get("scope"),
-        "client_id": state.get("client_id"),
-        "portal_base_url": state.get("portal_base_url"),
-        "inference_base_url": state.get("inference_base_url"),
-        "agent_key": state.get("agent_key"),
-        "agent_key_expires_at": state.get("agent_key_expires_at"),
-        # Refresh timestamps let freshness-sensitive consumers (self-heal
-        # hooks, pruning by age) tell just-refreshed credentials from stale
-        # ones (#15099).
-        **{key: state.get(key) for key in _NOUS_EXTRA_STATE_KEYS},
-        "tls": state.get("tls") if isinstance(state.get("tls"), dict) else None,
-        "label": custom_label or label_from_token(state.get("access_token", ""), "device_code"),
-    })
-
-
 def _seed_copilot_singleton(seed: _Seeder) -> None:
     # Copilot tokens are resolved dynamically via `gh auth token` or env vars
     # (COPILOT_GITHUB_TOKEN / GH_TOKEN); they don't live in the auth store.
@@ -2501,8 +2330,6 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
     auth_store = _load_auth_store()
     if provider == "anthropic":
         _seed_anthropic_singletons(seed)
-    elif provider == "nous":
-        _seed_nous_singleton(seed, auth_store)
     elif provider == "copilot":
         _seed_copilot_singleton(seed)
     elif provider == "qwen-oauth":

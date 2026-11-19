@@ -1002,7 +1002,7 @@ def build_cache_parity_fork(
         inherited_scope = resolve_prompt_cache_scope_safe(agent)
         if inherited_scope:
             review_agent._inherited_cache_scope = inherited_scope
-        # Same reason for the Portal ``conversation=`` tag: with no DB the fork's own
+        # Same reason for the conversation-affinity tag: with no DB the fork's own
         # _conversation_root_id() falls back to the parent's PHYSICAL id, so after a compression
         # rotation the review's usage was attributed to a different conversation than its parent.
         review_agent._cached_conversation_root = agent._conversation_root_id()
@@ -1014,21 +1014,6 @@ def build_cache_parity_fork(
     return review_agent, _rt, _routed
 
 
-# Install a non-interactive approval callback on this worker thread so any dangerous-command guard the
-# review agent trips resolves to "deny" instead of falling back to input() -- which deadlocks against the
-# parent's prompt_toolkit TUI (#15216). Same pattern as _subagent_auto_deny in tools/delegate_tool.py.
-def _bg_review_auto_deny(command, description, **kwargs):
-    """Non-interactive approval: dangerous-command guards resolve to "deny" instead of input(),
-    which would deadlock against the parent's TUI."""
-    logger.warning("Background review auto-denied dangerous command: %s (%s)", command, description)
-    return "deny"
-
-
-def _set_thread_approval_callback(callback: Any) -> None:
-    from tools.terminal_tool import set_approval_callback
-
-    with suppress(Exception):
-        set_approval_callback(callback)
 
 
 def _track_review_fork(agent: Any, review_agent: Any, *, register: bool) -> None:
@@ -1205,7 +1190,6 @@ def _run_review_in_thread(
     if review_run is not None and review_run.cancel_requested.is_set():
         finish_background_review_run(agent, review_run)
         return
-    _set_thread_approval_callback(_bg_review_auto_deny)
     # A client that can't carry Hermes tool calls back would spawn a fork that cannot write
     # anything. Checked BEFORE the thread-scoped silence so the warning is not swallowed; cheap
     # check first so the normal path never resolves the runtime twice.
@@ -1216,7 +1200,6 @@ def _run_review_in_thread(
             "auxiliary.background_review.{provider,model} to route the review to a normal model.",
             getattr(agent, "provider", "?"),
         )
-        _set_thread_approval_callback(None)
         return
     st = _ReviewForkState()
     try:
@@ -1224,7 +1207,7 @@ def _run_review_in_thread(
         # other thread's console for the whole review.
         # A process-global ``contextlib.redirect_stdout(devnull)`` here would also blank
         # ``sys.stdout``/``sys.stderr`` for every other thread — including a gateway event-loop thread
-        # driving a Telegram long-poll — for the full duration of the review (tens of seconds), swallowing
+        # driving a platform long-poll — for the full duration of the review (tens of seconds), swallowing
         # their console output (#55769 / #55925). ``thread_scoped_silence`` routes only this thread's writes
         # to devnull and leaves all other threads on the real streams.
         with thread_scoped_silence():
@@ -1270,8 +1253,6 @@ def _run_review_in_thread(
         if st.review_agent is not None:
             with suppress(Exception), thread_scoped_silence():
                 _release_fork_clients(st.review_agent)
-        # Clear the approval callback so a recycled thread-id doesn't inherit it.
-        _set_thread_approval_callback(None)
 
 
 # (review_memory, review_skills) -> prompt attribute name; skills-only is also the default.

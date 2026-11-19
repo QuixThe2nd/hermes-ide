@@ -141,3 +141,11 @@ async def test_reactions_disabled_via_env(adapter, monkeypatch):
     adapter.send.assert_awaited_once()
 
 
+def test_raw_decision_reaction_route_removed(adapter):
+    """``resolve_ticket`` is removed: the raw-reaction dispatch whose only
+    consumer was ``handle_resolve_reaction`` is gone with it. A ✅/❌
+    reaction therefore has no path into a deleted module — nothing to
+    patch, nothing to raise."""
+    assert not hasattr(DiscordAdapter, "_dispatch_raw_reaction")
+    assert not hasattr(adapter, "_dispatch_raw_reaction")
+

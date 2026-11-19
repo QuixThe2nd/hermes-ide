@@ -33,9 +33,13 @@ def get_active_provider() -> Optional[ImageGenProvider]:
     configured = configured_provider_name("image_gen", logger)
     snapshot = _registry.merged()
     if configured:
-        if snapshot.get(configured) is not None:
-            return snapshot[configured]
-        logger.debug("image_gen.provider='%s' configured but not registered; falling back", configured)
+        provider = snapshot.get(configured)
+        if provider is None:
+            # Unknown names fail closed. Do not silently switch backends.
+            logger.error(
+                "image_gen.provider=%r is not registered; failing closed", configured)
+            return None
+        return provider
 
     def _available(p: ImageGenProvider) -> bool:
         return is_available_safe(p, logger, "image_gen provider %s.is_available() raised %s")

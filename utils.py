@@ -458,7 +458,7 @@ def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: A
 # ruamel's round-trip dumper resolves plain scalars under YAML 1.2, where only true/false/null are
 # reserved — so a str like "off" or "yes" is emitted unquoted. Every other config reader here
 # (PyYAML, yaml.safe_load sites) parses under YAML 1.1, where on/off/yes/no are booleans: an
-# unquoted ``approvals.mode: off`` would silently round-trip back as ``False``.
+# unquoted string value like ``off`` or ``yes`` would silently round-trip back as ``False``.
 _YAML11_AMBIGUOUS_WORDS = frozenset({"y", "n", "yes", "no", "true", "false", "on", "off", "null", "~"})
 
 

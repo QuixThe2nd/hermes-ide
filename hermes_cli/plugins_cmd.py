@@ -21,6 +21,7 @@ from hermes_cli.cli_output import line_input
 from hermes_cli.config import cfg_get
 from hermes_cli.plugin_capabilities import _child_dict
 from hermes_cli.secret_prompt import masked_secret_prompt
+from hermes_cli.fs_utils import rmtree_force as _rmtree_force
 from utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
@@ -390,21 +391,50 @@ def _install_python_dependencies(target: Path, console, *, skip: bool = False) -
 def _install_plugin_python_deps(
     manifest: dict, target: Path, console
 ) -> tuple[bool, Optional[str]]:
-    """Consent + try-resolve for plugin python deps (settled 2026-09-02).
+    """Consent gate for plugin python deps (settled 2026-09-02; C13 rework).
 
-    y/n prompt (auto-NO when non-interactive) → materialize the legacy
-    bridge if needed → resolve through the pm workspace union. Returns
-    (installed, reason): installed=True when the deps resolve; on
-    conflict the resolver's message is the reason. Never raises — the
-    caller keeps the plugin installed-but-disabled on failure.
+    Node sidecar: y/n prompt → ``npm ci`` into the plugin's OWN
+    node_modules (separate question, failure never blocks enable).
+    Python deps: NO resolution here — the resolve runs inside the ONE
+    admission transaction when the enable commits
+    (:func:`_admit_and_save_plugin_sets`), so the environment and the
+    config always change together or not at all. Returns (consented,
+    reason): consented=True when the user accepted (or no prompt was
+    needed); a decline/skip returns False and NOTHING is installed.
+    Never raises — the caller keeps the plugin installed-but-disabled.
     """
     deps = manifest.get("python_dependencies") or []
     if not isinstance(deps, list):
         return True, None
     deps = [d.strip() for d in deps if isinstance(d, str) and d.strip()]
     has_pyproject = (target / "pyproject.toml").is_file()
-    if not deps and not has_pyproject:
-        return True, None  # no declared python deps at all
+    has_package_json = (target / "package.json").is_file()
+    if not deps and not has_pyproject and not has_package_json:
+        return True, None  # no declared deps at all
+
+    # Node sidecar (package.json): the npm ci executor — separate consent
+    # question, same try-then-enable posture. Failure never blocks the
+    # python path below.
+    node_reason = None
+    if has_package_json:
+        console.print(f"\n[bold]{manifest.get('name', 'this plugin')}[/bold] declares Node dependencies (package.json).")
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            try:
+                node_answer = input(
+                    "  Install them into the plugin's own node_modules now? [y/N]: "
+                ).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                node_answer = ""
+        else:
+            node_answer = ""
+        if node_answer in {"y", "yes"}:
+            from pm.workspace import install_node_sidecar
+
+            node_reason = install_node_sidecar(target)
+            if node_reason:
+                console.print(f"[yellow]⚠[/yellow] Node deps: {node_reason}")
+        else:
+            console.print("[dim]Skipped Node deps — run `hermes plugins install` again to retry.[/dim]\n")
 
     plugin_name = manifest.get("name", "this plugin")
     console.print(
@@ -438,39 +468,9 @@ def _install_plugin_python_deps(
         )
         return False, "dependency install declined"
 
-    # Route through pm.sync_venv — the ONE sync authority: it owns the
-    # lazy-off gate, the frozen-set refusal, the workspace union (with
-    # bisect + write-back), and the universal receipt. plugins install
-    # never drives uv itself (settled: it only drops the folder; the
-    # sync step does the rest). The plugin is NOT yet in plugins.enabled,
-    # so the resolve runs the WOULD-BE union: enabled members + this
-    # plugin, as a dry check via resolve_union (bisect decisions for
-    # the not-yet-enabled plugin are advisory here — the real sync
-    # after enable re-runs the union through sync_venv).
-    try:
-        from pm.ensure import lazy_installs_allowed
-        from pm.workspace import enabled_member_dirs, materialize_legacy_pyproject, resolve_union
-
-        # Legacy manifest-only plugins need their generated pyproject
-        # before the union can see their deps (no-op when lazy-off).
-        materialize_legacy_pyproject(target)
-        if not lazy_installs_allowed():
-            return False, "lazy installs are disabled — install the deps manually"
-        from pm.packages import Venv
-
-        members = enabled_member_dirs()
-        survivors, decisions = resolve_union(
-            members + ([target] if target not in members else []),
-            venv_dir=Venv().venv_dir(),
-        )
-        if target not in survivors:
-            reason = next(
-                (d["reason"] for d in decisions if d["plugin"] == target.name),
-                "did not resolve",
-            )
-            return False, reason
-    except Exception as exc:
-        return False, str(exc)
+    # Consent only — the python-deps resolution itself runs inside the ONE
+    # admission transaction at enable-commit time (C13): env + config move
+    # together or not at all.
     return True, None
 
 
@@ -777,7 +777,7 @@ def _swap_in_plugin(tmp_target: Path, target: Path, backup: Path, old_metadata: 
         _write_install_metadata(new_metadata)
     except Exception:
         if target.exists():
-            shutil.rmtree(target)
+            _rmtree_force(target)
         if replaced_existing and backup.exists():
             os.replace(backup, target)
         if old_metadata:
@@ -938,43 +938,58 @@ def cmd_install(
             f"[yellow]Warning:[/yellow] {installed_name} doesn't contain plugin.yaml, "
             f"plugin.json, or __init__.py. It may not be a valid Hermes plugin.")
     _prompt_plugin_env_vars(installed_manifest, console)
-    deps_ok = _install_python_dependencies(target, console, skip=no_deps)
-    deps_reason = None if deps_ok else "Python dependencies did not install"
-    _display_after_install(target, identifier)
 
     should_enable = enable
+    if should_enable is None:
+        should_enable = _is_tty() and _ask_yes(f"  Enable '{installed_name}' now? [y/N]: ")
+    deps_ok, deps_reason = (True, None)
+    if should_enable and not no_deps:
+        deps_ok, deps_reason = _install_plugin_python_deps(installed_manifest, target, console)
+
+    _display_after_install(target, identifier)
+
+    # ONE admission transaction for the enable (C13): resolve the candidate
+    # union (enabled members + this target) and commit the config in the
+    # same step — env and config change together or not at all. No
+    # duplicate sync here: nothing was resolved before this point.
     if should_enable and not deps_ok:
-        # Explicitly requested enable, but the deps did not install:
-        # enabling would break the venv union on the next sync. Refuse
-        # with the reason.
+        # Consent declined/skipped: nothing was installed or changed, so
+        # enabling is refused without touching config or environment.
         console.print(
             f"[red]✗[/red] Cannot enable [bold]{installed_name}[/bold]: "
-            f"its Python dependencies did not resolve: {deps_reason}"
+            f"{deps_reason}"
         )
         console.print(
             "[dim]The plugin stays installed but disabled; re-enable "
             "after resolving the conflict.[/dim]"
         )
         should_enable = False
-    if should_enable is None:
-        if deps_ok and _is_tty():
-            should_enable = _ask_yes(f"  Enable '{installed_name}' now? [y/N]: ")
-        else:
-            should_enable = False
-            if not deps_ok:
-                console.print(
-                    f"[yellow]Plugin [bold]{installed_name}[/bold] installed "
-                    f"but NOT enabled — Python dependencies did not resolve:[/yellow]"
-                )
-                console.print(f"  [dim]{deps_reason}[/dim]")
-                console.print(
-                    "[dim]Re-enable after resolving the conflict "
-                    f"(hermes plugins enable {installed_name}).[/dim]\n"
-                )
 
     if should_enable:
-        _set_plugin_enabled(installed_name, enable=True)
-        console.print(f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.")
+        from hermes_cli.plugins_admission import AdmissionRefused
+
+        enabled = _get_enabled_set()
+        disabled = _get_disabled_set()
+        enabled.add(installed_name)
+        disabled.discard(installed_name)
+        try:
+            _admit_and_save_plugin_sets(
+                enabled,
+                disabled,
+                extra_dirs=[target],
+                resolve_deps=not no_deps,
+                console=console,
+                action=f"Enable '{installed_name}'",
+            )
+        except AdmissionRefused:
+            console.print(
+                "[dim]The plugin stays installed but disabled; re-enable "
+                "after resolving the conflict.[/dim]"
+            )
+        else:
+            console.print(
+                f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.",
+            )
     else:
         console.print(
             f"[dim]Plugin installed but not enabled. "
@@ -1013,7 +1028,7 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None)
     return output
 
 
-def cmd_update(name: str) -> None:
+def cmd_update(name: str, *, interactive: bool = True) -> None:
     """Update an installed plugin by pulling latest from its git remote."""
     from rich.markup import escape
     from hermes_cli import plugins_cmd_catalog as catalog
@@ -1037,16 +1052,43 @@ def cmd_update(name: str) -> None:
     _rescan_after_update(target, name, console)
     _post_pull_housekeeping(target, console)
 
-    # Re-consent when the new version declares capabilities the granted set lacks or the
-    # declared set changed; additions stay ungranted until the user says yes (fail closed).
-    # See #64228.
+    # Member-manifest plugins: the pull may have changed its pyproject
+    # pins — re-sync the union so new deps land (Task 5, plugin
+    # auto-update plan). The venv stamp now includes member pyproject
+    # CONTENT (Task 4), so a pins change forces the re-lock; a
+    # content-identical pull is a no-op stamp match. Failures surface
+    # the resolver's message (conflict = loud refusal, bisect +
+    # write-back ride the shipped sync path) but never fail the update
+    # itself — the plugin code is already updated.
+    if (target / "pyproject.toml").is_file():
+        try:
+            import pm
+            pm.sync_venv(explicit=True)
+        except Exception as exc:
+            console.print(
+                f"[yellow]⚠[/yellow] Dependency re-sync failed for "
+                f"{name}: {exc}"
+            )
+            console.print(
+                "[dim]The plugin code updated; run `hermes pm install` "
+                "to retry the dependency sync.[/dim]"
+            )
+
+    # Update-time re-consent (#64228): if the new version declares
+    # capabilities the granted set lacks, surface the diff and require
+    # re-consent for the additions. The stored consent hash detects a
+    # changed declaration; additions stay ungranted until the user says yes
+    # (non-interactive updates leave them ungranted — fail closed).
     updated_manifest = _read_manifest(target)
     plugin_id = updated_manifest.get("name") or target.name
     declared_caps = _declared_capabilities_from_manifest(updated_manifest, plugin_id)
     if declared_caps:
         from hermes_cli.plugin_capabilities import declared_set_changed, pending_capabilities
         if pending_capabilities(plugin_id, declared_caps) or declared_set_changed(plugin_id, declared_caps):
-            _run_capability_consent(console, plugin_id, declared_caps, context="update")
+            if interactive:
+                _run_capability_consent(console, plugin_id, declared_caps, context="update")
+            else:
+                console.print(f"[yellow]Plugin {plugin_id} has new capabilities; review them with `hermes plugins capabilities {plugin_id}`.[/yellow]")
 
     out = output.strip()
     if "Already up to date" in out:
@@ -1079,43 +1121,18 @@ def _rescan_after_update(target: Path, name: str, console) -> None:
 
 
 def _post_pull_housekeeping(target: Path, console) -> None:
-    """After ``git pull``: drop stale ``__pycache__``, copy any new ``.example`` files, and install
-    dependencies the new revision declares (a version bump commonly adds or moves a package)."""
+    """After ``git pull``: drop stale ``__pycache__`` and copy any new ``.example`` files."""
     # Same stale-bytecode class as the main checkout (#6207/#60242): the pull just changed .py files under
     # this plugin dir, so drop any __pycache__ compiled from the previous revision.
     _clear_plugin_bytecode(target)
-
-    # Member-manifest plugins: the pull may have changed its pyproject
-    # pins — re-sync the union so new deps land (Task 5, plugin
-    # auto-update plan). The venv stamp now includes member pyproject
-    # CONTENT (Task 4), so a pins change forces the re-lock; a
-    # content-identical pull is a no-op stamp match. Failures surface
-    # the resolver's message (conflict = loud refusal, bisect +
-    # write-back ride the shipped sync path) but never fail the update
-    # itself — the plugin code is already updated.
-    if (target / "pyproject.toml").is_file():
-        try:
-            import pm
-            pm.sync_venv(explicit=True)
-        except Exception as exc:
-            console.print(
-                f"[yellow]⚠[/yellow] Dependency re-sync failed for "
-                f"{target.name}: {exc}"
-            )
-            console.print(
-                "[dim]The plugin code updated; run `hermes pm install` "
-                "to retry the dependency sync.[/dim]"
-            )
-
     _copy_example_files(target, console)
-    _install_python_dependencies(target, console)
 
 
 def _remove_plugin_core(target: Path) -> None:
     """Remove one plugin and its metadata without splitting their state."""
     metadata = _read_install_metadata()
     if target.name not in metadata:
-        shutil.rmtree(target)
+        _rmtree_force(target)
         return
     updated = {k: v for k, v in metadata.items() if k != target.name}
     staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.remove-", dir=target.parent))
@@ -1133,7 +1150,7 @@ def _remove_plugin_core(target: Path) -> None:
             ) from restore_exc
         shutil.rmtree(staging, ignore_errors=True)
         raise
-    shutil.rmtree(staging)
+    _rmtree_force(staging)
 
 
 def cmd_remove(name: str) -> None:
@@ -1164,26 +1181,45 @@ def _save_enabled_set(enabled: set) -> None:
 
 
 def _save_plugin_sets(enabled: set, disabled: set) -> None:
-    _save_enabled_set(enabled)
-    _save_disabled_set(disabled)
+    from hermes_cli.plugins_admission import admit_plugin_set_change
+
+    admit_plugin_set_change(enabled, disabled, active_plugins_dir=_plugins_dir())
 
 
-_BASIC_AUTH_PLUGIN_KEYS = frozenset({"basic", "dashboard_auth/basic"})
+def _admit_and_save_plugin_sets(
+    enabled: set, disabled: set, *, extra_dirs=(), console=None, action: str = "enable",
+    resolve_deps: bool = True,
+) -> None:
+    """ONE admission authority for proposed enabled/disabled sets (C13):
+    the candidate union is resolved against the ACTIVE environment and
+    the config commits inside the same locked pm transaction (sync's
+    ``before_publish`` hook) — a refusal or a config-write failure
+    publishes nothing: previous config bytes AND previous environment
+    stay exactly in place. Raises :class:`AdmissionRefused` (UI callers
+    catch and surface it — admission never auto-disables to fit)."""
+    from hermes_cli.plugins_admission import AdmissionRefused, admit_plugin_set_change
 
-
-def ensure_basic_auth_plugin_enabled_in_config(cfg: dict) -> bool:
-    """Drop the bundled basic dashboard-auth plugin from ``plugins.disabled`` in *cfg*.
-
-    ``hermes setup`` / ``hermes plugins disable basic`` can park it there while
-    ``dashboard.basic_auth`` is configured, and password auth then silently fails.
-    Returns True when modified.
-    """
-    plugins_cfg = cfg.get("plugins")
-    disabled = plugins_cfg.get("disabled") if isinstance(plugins_cfg, dict) else None
-    if not isinstance(disabled, list) or not (set(disabled) & _BASIC_AUTH_PLUGIN_KEYS):
-        return False
-    plugins_cfg["disabled"] = sorted(set(disabled) - _BASIC_AUTH_PLUGIN_KEYS)
-    return True
+    try:
+        if resolve_deps:
+            admit_plugin_set_change(
+                enabled, disabled, active_plugins_dir=_plugins_dir(), extra_dirs=extra_dirs
+            )
+        else:
+            # --no-deps is a true resolution skip: publish only the requested
+            # config selection and leave the active environment untouched.
+            from hermes_cli.plugins_admission import commit_plugin_sets
+            try:
+                commit_plugin_sets(enabled, disabled)
+            except Exception as exc:
+                raise AdmissionRefused(str(exc)) from exc
+    except AdmissionRefused as exc:
+        if console is not None:
+            console.print(f"[red]✗[/red] {action} refused: {exc}")
+            console.print(
+                "[dim]config.yaml and the active environment are unchanged. "
+                "Run `hermes pm install` to resolve dependencies, then retry.[/dim]"
+            )
+        raise
 
 
 def _discard_key_and_leaf(names: set, key: str) -> None:
@@ -1194,7 +1230,7 @@ def _discard_key_and_leaf(names: set, key: str) -> None:
 
 
 def _set_plugin_enabled(name: str, *, enable: bool) -> None:
-    """Move *name* between the enabled allow-list and the disabled deny-list and persist both."""
+    """Persist the proposed selection through the same dependency transaction."""
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
     (enabled.add if enable else enabled.discard)(name)
@@ -1271,7 +1307,7 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         manifest_name = next((e[0] for e in _discover_all_plugins() if e[5] == key), None)
         if manifest_name is not None:
             disabled.discard(manifest_name)
-        _save_plugin_sets(enabled, disabled)
+        _admit_and_save_plugin_sets(enabled, disabled, console=console, action=f"Enable '{key}'")
         console.print(f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled. Takes effect on next session.")
 
     # Built-in tool override is a privileged grant; bundled plugins are trusted.
@@ -1672,40 +1708,15 @@ def cmd_trust_update_url(name: str) -> None:
 
 def cmd_check_updates(args: Any | None = None) -> None:
     """Read-only: is any installed plugin outdated? NEVER mutates."""
-    import urllib.error
-    import urllib.request
-
     from rich.console import Console
     from rich.table import Table
-
-    from hermes_cli.plugins_updates import _default_pypi_latest, run_checks
 
     console = Console()
     plugins_dir = _plugins_dir()
 
-    def _fetch(url: str) -> str:
-        with urllib.request.urlopen(url, timeout=10.0) as resp:
-            data = resp.read(1 * 1024 * 1024)
-        return data.decode("utf-8", errors="replace")
+    from hermes_cli.plugins_updates import run_checks
 
-    def _ls_remote(source: str) -> str:
-        git_exe = _resolve_git_executable()
-        proc = subprocess.run(
-            [git_exe or "git", "ls-remote", source, "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError((proc.stderr or "ls-remote failed").strip()[:200])
-        # 'sha\trefs/heads/...' or empty
-        out = (proc.stdout or "").strip()
-        return out.split("\t")[0] if out else ""
-
-    results = run_checks(
-        plugins_dir, fetch=_fetch, ls_remote=_ls_remote,
-        pip_pypi_latest=_default_pypi_latest,
-    )
+    results = run_checks(plugins_dir)
 
     if getattr(args, "json", False):
         print(json.dumps([r.to_json() for r in results], indent=2))
@@ -1967,7 +1978,10 @@ def _persist_plugin_selection(plugin_keys, chosen, disabled) -> tuple[bool, set]
 
     changed = new_enabled != _get_enabled_set() or new_disabled != disabled
     if changed:
-        _save_plugin_sets(new_enabled, new_disabled)
+        # C13: the composite UI's candidate goes through the ONE admission
+        # authority — refusal raises AdmissionRefused BEFORE any config
+        # write; the caller surfaces it and the selection stays unsaved.
+        _admit_and_save_plugin_sets(new_enabled, new_disabled, action="Save plugin selection")
     return changed, new_enabled
 
 
@@ -2081,7 +2095,17 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected, disab
     curses.wrapper(_draw)
     flush_stdin()
 
-    changed, new_enabled = _persist_plugin_selection(plugin_keys, chosen, disabled)
+    from hermes_cli.plugins_admission import AdmissionRefused
+
+    try:
+        changed, new_enabled = _persist_plugin_selection(plugin_keys, chosen, disabled)
+    except AdmissionRefused as exc:
+        console.print(f"[red]✗[/red] Plugin selection refused, not saved: {exc}")
+        console.print(
+            "[dim]config.yaml and the active environment are unchanged. "
+            "Run `hermes pm install` to resolve, then retry.[/dim]"
+        )
+        return
     if changed:
         console.print(
             f"\n[green]\u2713[/green] General plugins: {len(new_enabled)} enabled, "
@@ -2120,7 +2144,7 @@ def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected, disable
             except (ValueError, KeyboardInterrupt, EOFError):
                 return
             print()
-        _persist_plugin_selection(plugin_keys, chosen, disabled)
+        _save_plugin_selection_fallback(plugin_keys, chosen, disabled)
 
     if categories:
         print(color("\n  Provider Plugins", Colors.YELLOW))
@@ -2136,6 +2160,17 @@ def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected, disable
         except (ValueError, KeyboardInterrupt, EOFError):
             pass
     print()
+
+
+def _save_plugin_selection_fallback(plugin_keys, chosen, disabled) -> None:
+    """The text fallback's save: same admission authority, refusal printed."""
+    from hermes_cli.plugins_admission import AdmissionRefused
+
+    try:
+        _persist_plugin_selection(plugin_keys, chosen, disabled)
+    except AdmissionRefused as exc:
+        print(f"  Plugin selection refused, not saved: {exc}")
+        print("  config.yaml and the active environment are unchanged.")
 
 
 def dashboard_install_plugin(
@@ -2184,9 +2219,19 @@ def dashboard_install_plugin(
     except PluginOperationError as exc:
         return {"ok": False, "error": str(exc)}
 
+    deps: list[str] = []
     if enable:
-        _set_plugin_enabled(installed_name, enable=True)
-    deps = _install_python_dependencies_quietly(target, warnings)
+        from hermes_cli.plugins_admission import AdmissionRefused
+
+        try:
+            _set_plugin_enabled(installed_name, enable=True)
+        except AdmissionRefused as exc:
+            return {
+                "ok": False, "error": f"enable refused: {exc}",
+                "plugin_name": installed_name, "enabled": False,
+            }
+    else:
+        deps = _install_python_dependencies_quietly(target, warnings)
     ap = target / "after-install.md"
     return {
         "ok": True, "plugin_name": installed_name, "warnings": warnings,
@@ -2262,7 +2307,12 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
     dis = _get_disabled_set()
     if ((name in en and name not in dis) if enabled else (name not in en and name in dis)):
         return {"ok": True, "name": name, "unchanged": True}
-    _set_plugin_enabled(name, enable=enabled)
+    from hermes_cli.plugins_admission import AdmissionRefused
+
+    try:
+        _set_plugin_enabled(name, enable=enabled)
+    except AdmissionRefused as exc:
+        return {"ok": False, "error": str(exc), "name": name, "unchanged": True}
     _toggle_plugin_toolset(name, enable=enabled)
     return {"ok": True, "name": name, "unchanged": False}
 
@@ -2427,7 +2477,7 @@ def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:
     """Delete a plugin tree under ``~/.hermes/plugins/`` only."""
     plugins_dir = _plugins_dir()
     if any(n == name and src == "bundled" for n, _ver, _d, src, _path, _key in _discover_all_plugins()):
-        return {"ok": False, "error": "Bundled plugins cannot be removed from the dashboard."}
+        return {"ok": False, "error": "Bundled plugins cannot be removed."}
     target = _user_installed_plugin_dir(name)
     if target is None:
         return {"ok": False, "error": f"Plugin '{name}' was not found under {plugins_dir}."}

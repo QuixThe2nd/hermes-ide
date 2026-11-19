@@ -1,9 +1,9 @@
 """Tests for hermes_cli.agent_import — ``hermes import-agent``.
 
 Covers: source detection, Claude Code and Codex parsing, mapping into the
-real Hermes stores (memories/MEMORY.md, config.yaml command_allowlist /
-approvals.deny / mcp_servers, skills/), dry-run write-nothing guarantees,
-malformed-input skip reports, and the never-import-secrets rule.
+real Hermes stores (memories/MEMORY.md, config.yaml mcp_servers, skills/),
+dry-run write-nothing guarantees, malformed-input skip reports, and the
+never-import-secrets rule.
 
 Uses the profile_env fixture pattern from tests/hermes_cli/test_profiles.py:
 Path.home() and HERMES_HOME are redirected to tmp_path so nothing touches
@@ -19,7 +19,6 @@ import yaml
 from hermes_cli.agent_import import (
     ENTRY_DELIMITER,
     AgentImporter,
-    claude_rule_to_command_pattern,
     detect_agents,
     extract_markdown_entries,
     is_secret_key,
@@ -189,17 +188,8 @@ class TestDetection:
 
     def test_unsupported_agent_raises(self, hermes_home, tmp_path):
         with pytest.raises(ValueError):
-            AgentImporter("cursor", tmp_path, hermes_home)
+            AgentImporter("unknown-agent", tmp_path, hermes_home)
 
-
-class TestRuleMapping:
-    def test_bash_rule_plain(self):
-        assert claude_rule_to_command_pattern("Bash(npm run build)") == "npm run build"
-
-
-    def test_non_bash_rule_is_none(self):
-        assert claude_rule_to_command_pattern("Read(~/.zshrc)") is None
-        assert claude_rule_to_command_pattern("WebFetch") is None
 
 
 class TestSecretDetection:
@@ -258,15 +248,6 @@ class TestClaudeCodeImport:
     def report(self, claude_tree, hermes_home):
         return run_import("claude-code", claude_tree, hermes_home, execute=True)
 
-
-    def test_allowlist_lands_in_config_yaml(self, report, hermes_home):
-        config = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
-        allow = config["command_allowlist"]
-        assert "npm run build" in allow
-        assert "npm run test*" in allow
-        assert "git diff *" in allow
-        # non-Bash rules must not leak in
-        assert not any("Read(" in p for p in allow)
 
 
 
@@ -471,31 +452,22 @@ class TestExistingMemoryStorePreserved:
 EXISTING_CONFIG = """\
 model: hermes-4-405b
 api_key_env: OPENROUTER_API_KEY
-command_allowlist:
-  - ls *
-  - cat *
-approvals:
-  deny:
-    - shutdown *
 mcp_servers:
   local-notes:
     command: uvx
     args:
       - notes-mcp
-telegram:
+discord:
   enabled: true
   chat_id: 12345
 """
 
 MALFORMED_CONFIG = """\
 model: hermes-4-405b
-command_allowlist:
-  - ls *
-   - cat *
-approvals: [unclosed
+mcp_servers: [unclosed
 """
 
-CONFIG_WRITING_KINDS = ("command-allowlist", "command-denylist", "mcp-servers")
+CONFIG_WRITING_KINDS = ("mcp-servers",)
 
 
 class TestExistingConfigPreserved:
@@ -577,7 +549,7 @@ class TestExistingConfigPreserved:
         report = run_import("claude-code", claude_tree, hermes_home, execute=True)
 
         assert config_path.read_bytes() == before
-        reasons = [i["reason"] for i in self.items_for(report, "command-allowlist")]
+        reasons = [i["reason"] for i in self.items_for(report, "mcp-servers")]
         assert any("YAML mapping" in r for r in reasons)
 
     def test_dry_run_reports_the_refusal_rather_than_a_preview(
@@ -604,13 +576,9 @@ class TestExistingConfigPreserved:
         # Untouched sections survive verbatim.
         assert merged["model"] == "hermes-4-405b"
         assert merged["api_key_env"] == "OPENROUTER_API_KEY"
-        assert merged["telegram"] == {"enabled": True, "chat_id": 12345}
-        # Merged-into sections keep their existing members ...
-        assert "ls *" in merged["command_allowlist"]
-        assert "shutdown *" in merged["approvals"]["deny"]
+        assert merged["discord"] == {"enabled": True, "chat_id": 12345}
+        # Existing and imported MCP servers coexist.
         assert "local-notes" in merged["mcp_servers"]
-        # ... alongside the imported ones.
-        assert "npm run build" in merged["command_allowlist"]
         assert "github" in merged["mcp_servers"]
 
     def test_absent_config_is_still_created(
@@ -621,7 +589,7 @@ class TestExistingConfigPreserved:
         run_import("claude-code", claude_tree, hermes_home, execute=True)
 
         created = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        assert "npm run build" in created["command_allowlist"]
+        assert "github" in created["mcp_servers"]
 
     def test_empty_config_is_treated_as_absent(
             self, claude_tree, hermes_home, config_path):
@@ -630,7 +598,7 @@ class TestExistingConfigPreserved:
         run_import("claude-code", claude_tree, hermes_home, execute=True)
 
         created = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        assert "npm run build" in created["command_allowlist"]
+        assert "github" in created["mcp_servers"]
 
     # -- the write itself --------------------------------------------------
 
@@ -643,6 +611,7 @@ class TestExistingConfigPreserved:
         leftovers = [p.name for p in hermes_home.glob(".tmp*")]
         assert leftovers == []
 
+    @pytest.mark.require_symlinks
     def test_symlinked_config_stays_a_symlink(
             self, claude_tree, hermes_home, tmp_path, config_path):
         """A non-atomic ``write_text`` would follow it; ``os.replace`` would
@@ -654,7 +623,7 @@ class TestExistingConfigPreserved:
         run_import("claude-code", claude_tree, hermes_home, execute=True)
 
         assert config_path.is_symlink()
-        assert "npm run build" in real.read_text(encoding="utf-8")
+        assert "github" in real.read_text(encoding="utf-8")
 
     def test_failed_write_does_not_truncate_the_existing_config(
             self, hermes_home, config_path, monkeypatch):
@@ -704,7 +673,7 @@ class TestCliWiring:
         subparsers = parser.add_subparsers(dest="command")
         build_import_agent_parser(subparsers, cmd_import_agent=lambda a: None)
         with pytest.raises(SystemExit):
-            parser.parse_args(["import-agent", "cursor"])
+            parser.parse_args(["import-agent", "unknown-agent"])
 
     def test_command_dry_run_via_cli_writes_nothing(
             self, claude_tree, hermes_home, capsys):
@@ -718,7 +687,7 @@ class TestCliWiring:
         import_agent_command(args)
         out = capsys.readouterr().out
         assert "Dry Run Results" in out
-        assert "command-allowlist" in out
+        assert "mcp-servers" in out
         # Baseline config.yaml/SOUL.md may be seeded by save_config() before
         # the preview runs — but nothing from the IMPORT itself may land:
         assert not (hermes_home / "memories" / "MEMORY.md").exists()

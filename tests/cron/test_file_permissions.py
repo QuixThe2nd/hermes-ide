@@ -15,10 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="POSIX permission bits are not implemented on native Windows",
-)
+pytestmark = pytest.mark.platforms("linux")
 
 
 class TestCronFilePermissions(unittest.TestCase):

@@ -56,10 +56,6 @@ class CLITerminalMixin:
         if getattr(self, "_terminal_io_broken", False):
             return
         self._terminal_io_broken = True
-        try:
-            self._pet_stop_anim()
-        except Exception:
-            pass
         logger.warning(
             "Terminal I/O broken%s — freezing UI paints to avoid redraw storm (#81521)",
             f" ({reason})" if reason else "")
@@ -132,7 +128,6 @@ class CLITerminalMixin:
         if getattr(self, "_terminal_io_broken", False):
             return
         _replay_output_history()
-        self._pet_queue_kitty_frame()
         self._app_invalidate(app, "force_full_redraw", swallow=True)
 
     def _schedule_focus_regain_redraw(self, min_interval: float = 1.0) -> None:
@@ -250,8 +245,6 @@ class CLITerminalMixin:
                 pass
         if new_width is not None:
             self._last_resize_width = new_width
-        if width_changed:
-            self._pet_queue_kitty_frame()
         original_on_resize()
         self._schedule_status_bar_unsuppress(app)
 
@@ -350,7 +343,7 @@ class CLITerminalMixin:
     def _write_osc52_clipboard(self, text: str) -> None:
         """Copy *text* to the terminal clipboard via OSC 52.
 
-        Wrapped for tmux/screen passthrough (mirrors ui-tui/src/lib/osc52.ts) — without
+        Wrapped for tmux/screen passthrough — without
         the DCS wrapper the multiplexer consumes the sequence and the copy is lost.
         """
         payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
@@ -399,7 +392,7 @@ class CLITerminalMixin:
         ``run_in_terminal`` cooked→raw restore leaves it line-buffering while prompt_toolkit
         believes it owns raw mode — CLI looks dead, process is healthy). Skipped while
         ``run_in_terminal`` legitimately holds cooked mode, while the agent runs
-        (approval/sudo prompts touch the tty), and on Windows (no termios).
+        (interactive/sudo prompts touch the tty), and on Windows (no termios).
         """
         from cli import _DIM, _RST, _cprint, _heal_cooked_mode_drift, logger
         if os.name == "nt":

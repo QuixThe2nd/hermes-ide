@@ -287,7 +287,7 @@ async def _run_drain(ctx, expected_deliveries, timeout=4.0):
     ``expected_deliveries`` counts send+edit ATTEMPTS (successes and
     failures alike) so fail-soft paths can be asserted too.
     """
-    from gateway.run import TurnRunner
+    from gateway.run_turn_runner import TurnRunner
 
     runner = TurnRunner(_StubGatewayRunner(), ctx)
     task = asyncio.create_task(runner.send_tool_stage_embeds())
@@ -1154,7 +1154,7 @@ async def test_drain_send_failure_fails_soft_and_later_events_retry():
 
 @pytest.mark.asyncio
 async def test_drain_noop_without_queue_or_adapter():
-    from gateway.run import TurnRunner
+    from gateway.run_turn_runner import TurnRunner
 
     runner = TurnRunner(_StubGatewayRunner(), TurnContext(stage_event_queue=None))
     assert await runner.send_tool_stage_embeds() is None
@@ -1166,7 +1166,7 @@ async def test_drain_noop_without_queue_or_adapter():
 
 
 def test_stage_event_callback_without_queue_is_silent():
-    from gateway.run import TurnRunner
+    from gateway.run_turn_runner import TurnRunner
 
     ctx = TurnContext(stage_event_queue=None)
     runner = TurnRunner(_StubGatewayRunner(), ctx)
@@ -1175,7 +1175,7 @@ def test_stage_event_callback_without_queue_is_silent():
 
 
 def test_stage_event_callback_enqueues_only_while_run_is_current():
-    from gateway.run import TurnRunner
+    from gateway.run_turn_runner import TurnRunner
 
     ctx = TurnContext(
         stage_event_queue=queue_mod.Queue(),
@@ -1192,7 +1192,7 @@ async def test_full_path_real_tool_events_render_through_drain(
     monkeypatch, configured_moa
 ):
     """moa_ask -> bus -> queue -> drain -> adapter, one embed."""
-    from gateway.run import TurnRunner
+    from gateway.run_turn_runner import TurnRunner
     from tools import moa_tool
 
     _install_consult_fakes(monkeypatch, ["advice one", "advice two", "advice three"])
@@ -1424,7 +1424,7 @@ class _FastFailTerminalAdapter(_RecordingStageAdapter):
 @pytest.mark.asyncio
 async def test_drain_cancel_delivers_inflight_terminal():
     """Cancel during a blocked terminal send/edit must not drop the dequeued event."""
-    from gateway.run import TurnRunner
+    from gateway.run_turn_runner import TurnRunner
 
     adapter = _BlockingTerminalStageAdapter()
     ctx = _stage_ctx(adapter)
@@ -1467,7 +1467,7 @@ async def test_drain_cancel_delivers_inflight_terminal():
 @pytest.mark.asyncio
 async def test_drain_cancel_after_terminal_side_effect_is_exactly_once():
     """Post-side-effect/pre-return cancel must not duplicate the terminal embed."""
-    from gateway.run import TurnRunner
+    from gateway.run_turn_runner import TurnRunner
 
     adapter = _PostSideEffectBlockAdapter()
     ctx = _stage_ctx(adapter)
@@ -1516,7 +1516,7 @@ async def test_drain_cancel_after_terminal_side_effect_is_exactly_once():
 @pytest.mark.asyncio
 async def test_drain_double_cancel_is_exactly_once():
     """Nested cancel during shield recovery must not start a duplicate delivery."""
-    from gateway.run import TurnRunner
+    from gateway.run_turn_runner import TurnRunner
 
     adapter = _PostSideEffectBlockAdapter()
     ctx = _stage_ctx(adapter)
@@ -1651,7 +1651,7 @@ class _WedgedIntermediateAdapter(_RecordingStageAdapter):
 @pytest.mark.asyncio
 async def test_drain_unknown_pin_parks_then_delivers_terminal_once(monkeypatch):
     """Intermediate UNKNOWN pin must not drop a later terminal stage event."""
-    from gateway.run import TurnRunner
+    from gateway.run_turn_runner import TurnRunner
 
     monkeypatch.setattr(TurnRunner, "_STAGE_DELIVERY_RECOVER_TIMEOUT", 0.2)
 
@@ -1726,7 +1726,7 @@ async def test_drain_unknown_pin_parks_then_delivers_terminal_once(monkeypatch):
 @pytest.mark.asyncio
 async def test_drain_harvest_timeout_pins_delivery_no_retry(monkeypatch):
     """Harvest timeout pins the live task; no duplicate retry."""
-    from gateway.run import TurnRunner
+    from gateway.run_turn_runner import TurnRunner
 
     monkeypatch.setattr(TurnRunner, "_STAGE_DELIVERY_RECOVER_TIMEOUT", 0.2)
 
@@ -1784,7 +1784,7 @@ async def test_stop_drain_unknown_pin_bounded_returns_without_teardown_block(
     monkeypatch,
 ):
     """Stop drain must return on UNKNOWN pin within _STAGE_STOP_DRAIN_TIMEOUT."""
-    from gateway.run import TurnRunner
+    from gateway.run_turn_runner import TurnRunner
 
     monkeypatch.setattr(TurnRunner, "_STAGE_DELIVERY_RECOVER_TIMEOUT", 0.2)
     monkeypatch.setattr(TurnRunner, "_STAGE_STOP_DRAIN_TIMEOUT", 0.3)
@@ -1880,7 +1880,7 @@ async def test_stop_drain_unknown_pin_bounded_returns_without_teardown_block(
 @pytest.mark.asyncio
 async def test_drain_unknown_timeout_pins_delivery_no_retry(monkeypatch):
     """Cancel with a live delivery pins UNKNOWN immediately; no duplicate retry."""
-    from gateway.run import TurnRunner
+    from gateway.run_turn_runner import TurnRunner
 
     monkeypatch.setattr(TurnRunner, "_STAGE_DELIVERY_RECOVER_TIMEOUT", 0.2)
 
@@ -1995,7 +1995,7 @@ async def test_drain_terminal_second_failure_has_no_third_attempt():
 @pytest.mark.asyncio
 async def test_drain_cancel_while_blocked_creates_no_new_deliveries():
     """Cancellation flush must not claim or deliver queued events."""
-    from gateway.run import TurnRunner
+    from gateway.run_turn_runner import TurnRunner
 
     adapter = _BlockingTerminalStageAdapter()
     ctx = _stage_ctx(adapter)
@@ -2054,7 +2054,7 @@ async def test_drain_cancel_while_blocked_creates_no_new_deliveries():
 @pytest.mark.asyncio
 async def test_drain_cancel_during_idle_sleep_creates_no_deliveries(monkeypatch):
     """Teardown cancel during idle sleep must not create deliveries from the queue."""
-    from gateway.run import TurnRunner
+    from gateway.run_turn_runner import TurnRunner
 
     adapter = _RecordingStageAdapter()
     ctx = _stage_ctx(adapter)
@@ -2092,7 +2092,7 @@ async def test_drain_cancel_during_idle_sleep_creates_no_deliveries(monkeypatch)
 @pytest.mark.asyncio
 async def test_drain_stop_path_delivers_terminal_not_discarding():
     """When the turn stops, flush terminal state instead of discarding the queue."""
-    from gateway.run import TurnRunner
+    from gateway.run_turn_runner import TurnRunner
 
     adapter = _RecordingStageAdapter()
     ctx = _stage_ctx(adapter)
@@ -2474,6 +2474,70 @@ async def test_discord_stage_embed_renders_per_slot_roster():
 
 
 @pytest.mark.asyncio
+async def test_discord_roster_puts_successes_first_with_stable_status_groups():
+    adapter, sent, _, _ = _make_discord_stage_adapter()
+    slots = [
+        {"index": 0, "provider": "prov", "model": "failed-first", "status": "failed"},
+        {"index": 1, "provider": "prov", "model": "success-first", "status": "responded"},
+        {"index": 2, "provider": "prov", "model": "waiting", "status": "waiting"},
+        {"index": 3, "provider": "prov", "model": "success-second", "status": "responded"},
+        {"index": 4, "provider": "prov", "model": "skipped", "status": "skipped"},
+        {"index": 5, "provider": "prov", "model": "failed-second", "status": "failed"},
+        {"index": 6, "provider": "prov", "model": "empty", "status": "empty"},
+        {"index": 7, "provider": "prov", "model": "unparsed", "status": "unparsed"},
+        {"index": 8, "provider": "prov", "model": "unknown", "status": "future-status"},
+    ]
+    original_slots = [dict(row) for row in slots]
+    event = _stage_event(
+        "moa_ask", "inv-status-order", "complete", "partial",
+        advisors=len(slots), slots=slots,
+    )
+
+    result = await adapter.send_tool_stage_embed("555", event)
+
+    assert result.success is True
+    assert sent["embed"].description.splitlines()[1:] == [
+        "✅ prov:success-first",
+        "✅ prov:success-second",
+        "❌ prov:failed-first",
+        "⏳ prov:waiting",
+        "⏭️ prov:skipped",
+        "❌ prov:failed-second",
+        "◌ prov:empty",
+        "⚠️ prov:unparsed",
+        "❔ prov:unknown",
+    ]
+    # Display ordering must not reorder the structured event or its slot rows.
+    assert event["slots"] == original_slots
+
+
+@pytest.mark.asyncio
+async def test_discord_roster_orders_successes_before_applying_row_cap():
+    adapter, sent, _, _ = _make_discord_stage_adapter()
+    slots = [
+        {"index": i, "provider": "prov", "model": f"model-{i}", "status": "failed"}
+        for i in range(24)
+    ] + [
+        {"index": i, "provider": "prov", "model": f"model-{i}", "status": "responded"}
+        for i in range(24, 30)
+    ]
+    event = _stage_event(
+        "moa_ask", "inv-ordered-cap", "complete", "partial",
+        advisors=len(slots), slots=slots,
+    )
+
+    result = await adapter.send_tool_stage_embed("555", event)
+
+    assert result.success is True
+    lines = sent["embed"].description.splitlines()
+    roster_lines = [line for line in lines if line.startswith(("✅", "❌"))]
+    assert len(roster_lines) == 24
+    assert roster_lines[:6] == [f"✅ prov:model-{i}" for i in range(24, 30)]
+    assert roster_lines[6:] == [f"❌ prov:model-{i}" for i in range(18)]
+    assert lines[-1] == "… +6 more omitted"
+
+
+@pytest.mark.asyncio
 async def test_discord_roster_groups_rounds_and_keeps_duplicate_rows_distinct():
     adapter, sent, _, _ = _make_discord_stage_adapter()
 
@@ -2569,7 +2633,7 @@ async def test_full_path_per_slot_events_render_in_real_embed(
     monkeypatch, configured_moa
 ):
     """Real moa_ask → bus → drain → real DiscordAdapter → real embed lines."""
-    from gateway.run import TurnRunner
+    from gateway.run_turn_runner import TurnRunner
     from tools import moa_tool
 
     _install_progress_fan_out(
@@ -2631,7 +2695,7 @@ async def test_full_path_per_slot_events_render_in_real_embed(
 
 def test_plain_platform_adapters_do_not_expose_stage_embed_capability():
     """The gateway gate selects Discord only: the base adapter must not
-    grow the renderer, so Telegram/Slack/etc. never match the hasattr check."""
+    grow the renderer, so Slack/Matrix/etc. never match the hasattr check."""
     from gateway.platforms.base import BasePlatformAdapter
 
     assert not hasattr(BasePlatformAdapter, "send_tool_stage_embed")

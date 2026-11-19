@@ -1,7 +1,7 @@
 """Oversized TEXT parts inside a multimodal tool envelope must go through the same persistence
-policy as string results (#95429): a ``browser_exec`` call that captured a screenshot bakes its
-whole stdout into the envelope's text part, and that used to bypass ``maybe_persist_tool_result``
-and ride every later provider request inline (760K chars -> multi-megabyte requests)."""
+policy as string results (#95429): a ``browser_vision`` result that captured a screenshot baked
+its whole text part into the envelope, bypassed ``maybe_persist_tool_result``, and rode every
+later provider request inline (760K chars -> multi-megabyte requests)."""
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,7 +12,7 @@ from tests.agent.test_tool_call_incremental_persistence import _make_agent, _moc
 
 
 def _run_sequential(agent, function_result):
-    tool_calls = [_mock_tool_call(name="browser_exec", call_id="call_browser")]
+    tool_calls = [_mock_tool_call(name="browser_vision", call_id="call_browser")]
     messages: list = []
     assistant_message = SimpleNamespace(content="", tool_calls=tool_calls)
     agent._flush_messages_to_session_db = MagicMock()
@@ -26,7 +26,7 @@ def _run_sequential(agent, function_result):
 
 
 def _envelope(text: str) -> dict:
-    # Real browser_exec shape: the content text carries an extra screenshot note the summary lacks.
+    # Real browser_vision shape: the content text carries an extra screenshot note the summary lacks.
     return {"_multimodal": True, "text_summary": text, "meta": {"screenshot_path": "/tmp/shot.png"},
             "content": [{"type": "text", "text": text + "\nscreenshot captured"},
                         {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,QUJD"}}]}

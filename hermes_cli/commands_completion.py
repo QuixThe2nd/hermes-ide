@@ -11,37 +11,12 @@ import subprocess
 import time
 from collections.abc import Callable, Iterable, Mapping
 from itertools import chain
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.completion import Completer, Completion
 
 from hermes_cli.commands import COMMANDS, SUBCOMMANDS
-
-# (config-file signature, personalities) memo for /personality completion.
-_personalities_memo: Optional[
-    Tuple[Tuple[Optional[str], Optional[int], Optional[int]], Dict[str, Any]]
-] = None
-
-
-def _personalities_from_cli_config() -> Dict[str, Any]:
-    """``available_personalities(load_cli_config())`` memoised on config path+signature:
-    load_cli_config() is a full YAML parse + deep merge and the completer runs per keystroke.
-    Falls back to a fresh load when the file cannot be stat'ed."""
-    global _personalities_memo
-    from cli import load_cli_config
-    from utils import file_signature
-    from hermes_cli.personality import available_personalities
-    try:
-        from hermes_cli.config import get_config_path
-        cfg_path = get_config_path()
-        st = cfg_path.stat()
-        sig = (str(cfg_path), *file_signature(st))
-    except Exception:
-        sig = (None, None, None, None, None)
-    if _personalities_memo is None or _personalities_memo[0] != sig:
-        _personalities_memo = (sig, available_personalities(load_cli_config()))
-    return _personalities_memo[1]
 
 
 def _file_size_label(path: str) -> str:
@@ -96,17 +71,6 @@ def _skin_completions(sub_text: str, sub_lower: str):
     """/skin — available skins."""
     from hermes_cli.skin_engine import list_skins
     rows = ((s["name"], s.get("description", "") or s.get("source", "")) for s in list_skins())
-    yield from _prefix_completions(rows, sub_text)
-
-
-@_quiet
-def _personality_completions(sub_text: str, sub_lower: str):
-    """/personality — ``none`` plus configured personalities."""
-    from hermes_cli.personality import describe_personality
-    personalities = _personalities_from_cli_config()
-    rows = chain(
-        [("none", "clear personality overlay")],
-        ((name, describe_personality(prompt)) for name, prompt in personalities.items()))
     yield from _prefix_completions(rows, sub_text)
 
 
@@ -172,7 +136,6 @@ def _handoff_completions(sub_text: str, sub_lower: str):
 # run while the first argument is typed; /tools and /handoff parse multi-word input themselves.
 _DYNAMIC_COMPLETIONS: dict[str, tuple[Callable[..., Any], bool]] = {
     "/skin": (_skin_completions, True),
-    "/personality": (_personality_completions, True),
     "/tools": (_tools_completions, False),
     "/handoff": (_handoff_completions, False)}
 
@@ -259,13 +222,12 @@ def _score_path(filepath: str, query: str) -> int:
 class SlashCommandCompleter(Completer):
     """Autocomplete for built-in slash commands, subcommands, and skill commands."""
 
-    # Bare-run picker commands get no trailing space: "/model " would block the picker.
-    _PICKER_COMMANDS = frozenset({"model", "skin", "personality"})
+    # Bare-run picker commands get no trailing space: "/skin " would block the picker.
+    _PICKER_COMMANDS = frozenset({"skin"})
 
     # Module-level helpers exposed as staticmethods for existing callers/tests.
     _extract_path_word = staticmethod(_extract_path_word)
     _path_completions = staticmethod(_path_completions)
-    _personality_completions = staticmethod(_personality_completions)
     _tools_completions = staticmethod(_tools_completions)
 
     def __init__(

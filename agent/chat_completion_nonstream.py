@@ -178,7 +178,7 @@ class _NonStreamRequest:
             "(%.0fs > %.0fs, model=%s). Backend accepted the connection "
             "but sent no stream events. Killing connection so the retry loop can reconnect.", elapsed,
             wd.ttfb_timeout, self._model())
-        agent._buffer_diagnostic_status(
+        agent._buffer_transient_reconnect_notice(
             f"⚠️ No first stream event from provider in {int(elapsed)}s (codex stream, model: {self._model()}). "
             f"Reconnecting." + (f" {silent_hint}" if silent_hint else ""))
         self._abort_request("codex_ttfb_kill")
@@ -202,7 +202,7 @@ class _NonStreamRequest:
             "(threshold %.0fs, model=%s, context=~%s tokens). Killing "
             "connection so the retry loop can reconnect.", event_stale_elapsed, arm_point, wd.idle_timeout,
             self._model(), f"{wd.est_tokens:,}")
-        agent._buffer_diagnostic_status(
+        agent._buffer_transient_reconnect_notice(
             f"⚠️ Codex stream sent no events for {int(event_stale_elapsed)}s after {arm_point} "
             f"(model: {self._model()}). Reconnecting.")
         self._abort_request("codex_stream_idle_kill")

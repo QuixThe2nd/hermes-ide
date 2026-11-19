@@ -11,7 +11,7 @@ Key design decisions:
 - FTS5 virtual table for fast text search across all session messages
 - Compression-triggered session splitting via parent_session_id chains
 - Batch runner and RL trajectories are NOT stored here (separate systems)
-- Session source tagging ('cli', 'telegram', 'discord', etc.) for filtering
+- Session source tagging ('cli', 'discord', etc.) for filtering
 """
 
 import asyncio
@@ -63,6 +63,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple, Ty
 
 import hermes_state_holders as _state_holders
 import hermes_state_lockguard as _lockguard
+from hermes_state_guard import _running_under_pytest
 from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _BRANCH_CHILD_SQL,
     _COMPRESSION_CHILD_SQL,
@@ -113,7 +114,7 @@ from hermes_state_holders import read_only_db_uri
 from hermes_state_portability import SessionPortabilityMixin
 from hermes_state_schema import SessionSchemaMixin
 from hermes_state_dbfile import (
-    _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement,
+    _fd_is_truly_unlinked, _prepare_connection_retirement,
     _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
     _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, is_zeroed_state_db, quarantine_cross_process_lock,
     quarantine_invalid_state_db,
@@ -121,14 +122,17 @@ from hermes_state_dbfile import (
 )
 from hermes_state_rewind import SessionRewindMixin
 from hermes_state_wal import (
-    _WAL_INCOMPAT_MARKERS, _on_disk_journal_mode, apply_database_pragmas, apply_wal_with_fallback,
+    _WAL_INCOMPAT_MARKERS, _apply_wal_size_limit, _on_disk_journal_mode,
+    apply_database_pragmas, apply_wal_with_fallback,
 )
-from hermes_state_repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
+from hermes_state_repair import (
+    _bump_schema_cookie, _claim_repair_attempt, _existing_malformed_backups,
+    _mask_volatile_header, preflight_db_writability, repair_state_db_schema,
+)
 from hermes_state_search import SessionSearchMixin
 from hermes_state_messages import SessionMessagesMixin
-from hermes_state_sessions import SessionSessionsMixin
+from hermes_state_sessions import SessionSessionsMixin, _cwd_prefix_clause, _workspace_key_clause
 from hermes_state_fts import SessionFtsSetupMixin
-from hermes_state_telegram import SessionTelegramTopicsMixin
 from hermes_state_profile_repair import SessionProfileRepairMixin
 from hermes_state_compression import SessionCompressionMixin
 from hermes_state_gateway import SessionGatewayMixin
@@ -431,44 +435,11 @@ _MODEL_CONFIG_ROW_MISSING = object()
 
 # Billing-bucket classes that aren't a routable provider identity on their
 # own — used by session_gateway_runtime's billing_provider fallback and by
-# tui_gateway.server._stored_session_runtime_overrides. A session that
+# a session-runtime override store. A session that
 # persisted only one of these (never ran /model) must fall back to the
 # ambient config default rather than restore a bare bucket. Shared here so
-# both consumers stay in sync (previously duplicated as a set in
-# tui_gateway/server.py).
+# both consumers stay in sync.
 _BARE_BILLING_PROVIDERS = frozenset({"auto", "custom"})
-
-
-def _cwd_prefix_clause(cwd_prefix: str) -> Tuple[str, List[str]]:
-    prefix = cwd_prefix.rstrip("/\\") or cwd_prefix
-    # ``_`` and ``%`` are LIKE wildcards but ordinary characters in a path
-    # (``my_project``), so an unescaped prefix also matches sibling directories.
-    # Escape the needle and pair it with ESCAPE; the literal separator
-    # backslash in the Windows pattern needs escaping for the same reason. The
-    # ``=`` arm is an exact compare and keeps the raw prefix.
-    esc = _escape_like(prefix)
-    return (
-        "(s.cwd = ? OR s.cwd LIKE ? ESCAPE '\\' OR s.cwd LIKE ? ESCAPE '\\')",
-        [prefix, f"{esc}/%", f"{esc}\\\\%"],
-    )
-
-
-def _workspace_key_clause(key: str) -> Tuple[str, List[str]]:
-    """Match sessions whose ``workspace_key(row)`` equals ``key``.
-
-    Mirrors :func:`workspace_key`: a session belongs to workspace ``key``
-    when its recorded ``git_repo_root`` equals ``key``, or — for rows that
-    predate per-session git metadata — when its ``cwd`` is at or under
-    ``key`` (so a session started in ``repo/src`` still groups with ``repo``).
-    Used by ``hermes -c``/``--resume`` to continue the most recent session in
-    the *current* workspace rather than the global MRU.
-    """
-    prefix = key.rstrip("/\\") or key
-    cwd_clause, cwd_params = _cwd_prefix_clause(prefix)
-    return (
-        f"(s.git_repo_root = ? OR (COALESCE(s.git_repo_root, '') = '' AND {cwd_clause}))",
-        [prefix, *cwd_params],
-    )
 
 
 def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
@@ -991,15 +962,6 @@ def _real_platform_state_root() -> Optional[Path]:
 _TEST_ISOLATION_MARKER_ENV = "HERMES_TEST_ISOLATION"
 
 
-def _running_under_pytest() -> bool:
-    """True when this process (or a parent test process) is a pytest run."""
-    return bool(
-        os.environ.get("PYTEST_CURRENT_TEST")
-        or os.environ.get("PYTEST_VERSION")
-        or os.environ.get(_TEST_ISOLATION_MARKER_ENV)
-    )
-
-
 #: Names that identify a pytest launcher in a process command line.  Matched
 #: against the *basename* of each argv token so ``/tmp/pytest-of-dev/...``
 #: paths — which do show up in real argv — cannot false-positive.
@@ -1156,8 +1118,8 @@ def _ensure_test_isolation(db_path: Path) -> None:
 #
 # On those filesystems ``PRAGMA journal_mode=WAL`` raises
 # ``sqlite3.OperationalError: locking protocol`` (SQLITE_PROTOCOL).  If we
-# propagate that, every feature backed by state.db / kanban.db breaks
-# silently — /resume, /title, /history, /branch, kanban dispatcher, etc.
+# propagate that, every feature backed by state.db breaks
+# silently — /resume, /title, /history, /branch, etc.
 #
 # ZFS is a separate case: its COW + mmap semantics can corrupt the WAL
 # shared-memory (-shm) file under concurrent connection bursts, presenting
@@ -1189,16 +1151,14 @@ _WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024  # 64 MiB
 # Last SessionDB() init error, per-process.  Surfaced in /resume and
 # related slash-command error strings so users know WHY the DB is
 # unavailable instead of getting a bare "Session database not available."
-# Only SessionDB.__init__ writes to this; kanban_db.connect() failures
-# do not update it (by design — kanban failures are reported via their
-# own caller's error handling, not via /resume-style slash commands).
+# Only SessionDB.__init__ writes to this; other database users report
+# failures through their own caller's error handling, not /resume-style commands.
 _last_init_error: Optional[str] = None
 _last_init_error_lock = threading.Lock()
 
 # Paths for which we've already logged a WAL-fallback WARNING.  Without
-# this, kanban_db.connect() (called on every kanban operation — see
-# hermes_cli/kanban_db.py for ~30 call sites) would re-log the same
-# filesystem-incompat warning on every connection, filling errors.log.
+# this, repeated connections would re-log the same filesystem-incompat
+# warning, filling errors.log.
 _wal_fallback_warned_paths: set[str] = set()
 _wal_fallback_warned_lock = threading.Lock()
 
@@ -1224,7 +1184,7 @@ def _set_last_init_error(msg: Optional[str]) -> None:
     Thread-safe via _last_init_error_lock.  Callers pass a message to
     record a failure or None to clear.  SessionDB.__init__ only calls
     this to SET on failure — it deliberately does NOT clear on success,
-    because in a multi-threaded caller (e.g. gateway / web_server per-
+    because in a multi-threaded caller (e.g. gateway / a per-
     request SessionDB() instantiation), a concurrent successful open
     racing past a different thread's failure would erase the cause
     string that thread's /resume handler is about to format.  Explicit
@@ -1418,17 +1378,6 @@ def _strip_stale_tool_call_markers(
     return messages
 
 
-def _normalize_telegram_topic_profile_name(profile_name: Optional[str] = None) -> str:
-    """Normalize profile namespace for Telegram topic-mode tables.
-
-    Empty / missing values map to ``\"default\"`` so non-multiplexed gateways
-    keep a single namespace. Multiplexed callers must pass the *routed*
-    profile (``source.profile``), never the process-global active profile.
-    """
-    name = str(profile_name or "").strip()
-    return name if name else "default"
-
-
 def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
     """Read the journal mode from the SQLite DB header on disk.
 
@@ -1468,45 +1417,6 @@ def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
             "_on_disk_journal_mode: retries exhausted on disk read (%s)", last_exc
         )
     return None
-
-
-def _apply_wal_size_limit(conn: sqlite3.Connection) -> None:
-    """Bound the WAL so it returns space to the OS after big transactions.
-
-    SQLite's default ``journal_size_limit`` is -1 (unlimited): after a
-    checkpoint the WAL file is *reused in place* and never truncated, so
-    ``state.db-wal`` permanently retains the high-water mark of the largest
-    transaction ever run against it.
-
-    A single bulk operation is enough to strand gigabytes. Observed on a
-    3.0 GB ``state.db``: ``hermes sessions optimize`` (FTS merge + VACUUM)
-    rewrites every page through the WAL, leaving a **3.07 GB**
-    ``state.db-wal`` sitting next to the database indefinitely — the host
-    went from 6.9 GB free to 772 MB (100% full) and stayed there, because
-    nothing shrinks the WAL back down. An explicit
-    ``PRAGMA wal_checkpoint(TRUNCATE)`` reclaimed the full 3.07 GB, which
-    confirms the space was pure slack rather than live data.
-
-    That also makes the maintenance command self-defeating on exactly the
-    databases that need it most: the larger the DB, the larger the WAL it
-    strands, so ``optimize`` can consume more disk than it frees.
-
-    ``journal_size_limit`` makes SQLite truncate the WAL back to the limit
-    at each checkpoint. 64 MiB is comfortably above normal transaction
-    sizes (so steady-state commits never pay a truncate) while capping the
-    stranded slack at a bounded, predictable figure.
-
-    ``hermes_cli/kanban_db.py`` already bounds its WAL growth with
-    ``wal_autocheckpoint=100``; the session store — by far the larger
-    database — had no equivalent.
-
-    Best-effort: never raises. A failure here only costs disk slack, and
-    must not prevent the database from opening.
-    """
-    try:
-        conn.execute(f"PRAGMA journal_size_limit={_WAL_SIZE_LIMIT_BYTES}")
-    except sqlite3.OperationalError as exc:  # pragma: no cover - defensive
-        logger.debug("journal_size_limit not applied: %s", exc)
 
 
 def _apply_macos_checkpoint_barrier(conn: sqlite3.Connection) -> None:
@@ -1711,13 +1621,9 @@ def apply_wal_with_fallback(
     NFS-homed installs keep working.
 
     The ERROR is deduplicated per ``db_label``: repeated connections to the
-    same underlying DB (e.g. kanban_db.connect() which is called on every
-    kanban operation) log once per process, not once per call.  Different
-    db_labels log independently, so state.db and kanban.db each get one error
-    on the same NFS mount.
-
-    Shared by :class:`SessionDB` and ``hermes_cli.kanban_db.connect`` so
-    both databases get identical fallback behavior.
+    same underlying DB log once per process, not once per call. Different
+    db_labels log independently, so each database gets one error on the
+    same NFS mount.
 
     Never downgrades to DELETE if the on-disk DB header reports WAL — see
     _on_disk_journal_mode.  That holds for both the NFS path and the
@@ -2083,9 +1989,8 @@ def _log_journal_mode_upgrade_once(db_label: str, previous_mode: str) -> None:
     or which lever makes it stick. So this says what happened and names the
     durable setting, without claiming a degradation that is not there.
 
-    Deduped per process per ``db_label`` like its siblings: kanban opens a
-    fresh connection per operation, so an undeduped line here would be a log
-    flood rather than a signal.
+    Deduped per process per ``db_label`` like its siblings: repeated opens
+    must not turn one persistent condition into a log flood.
     """
     with _journal_upgrade_warned_lock:
         if db_label in _journal_upgrade_warned_paths:
@@ -2109,12 +2014,11 @@ def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
     """Log a single ERROR per (process, db_label) about WAL fallback.
 
     ERROR (not WARNING): a DB silently dropped to DELETE means a real loss of
-    concurrency — under the kanban dispatcher + workers a write blocks readers,
-    surfacing as SQLITE_BUSY/lock contention — so it must be loud, not cosmetic.
+    concurrency — under concurrent writers a write blocks readers, surfacing
+    as SQLITE_BUSY/lock contention — so it must be loud, not cosmetic.
 
-    Without this dedup, NFS users running kanban (which opens a fresh
-    connection on every operation — see hermes_cli/kanban_db.py) would
-    fill errors.log with hundreds of identical errors per hour.
+    Without this dedup, repeated connections on NFS would fill errors.log
+    with identical errors.
     """
     with _wal_fallback_warned_lock:
         if db_label in _wal_fallback_warned_paths:
@@ -2629,8 +2533,7 @@ def _cross_process_repair_lock(db_path: Path):
 
     Yields True when this process holds the repair lock for *db_path*, False
     when the bounded acquire timed out or the lock file could not be opened at
-    all.  Unlike the kanban init lock — whose critical section is idempotent,
-    so proceeding without the lock is merely redundant work — proceeding here
+    all.  Unlike an idempotent initialization lock, proceeding here
     would be exactly the unsafe interleaving we are trying to prevent, so a
     caller that gets False must NOT do surgery.
 
@@ -2791,31 +2694,6 @@ def _release_auto_maintenance_lock(handle: Any) -> None:
         handle.close()
 
 
-def _bump_schema_cookie(conn: sqlite3.Connection) -> None:
-    """Increment the schema cookie after direct ``sqlite_master`` surgery.
-
-    Ordinary DDL bumps this counter for free, and every other connection
-    compares it before running a prepared statement — that is how they learn
-    to discard a cached schema.  Editing ``sqlite_master`` under
-    ``PRAGMA writable_schema=ON`` does NOT bump it, so live connections in
-    other processes keep compiling statements against the schema we just
-    deleted objects from — e.g. writing ``messages`` rows through triggers
-    into ``messages_fts*`` shadow tables that no longer exist.  SQLite's
-    writable_schema documentation calls out incrementing ``schema_version``
-    as the required companion to such an edit.
-
-    Best-effort and never raises: a failed bump leaves exactly the
-    pre-existing behaviour, and the repair itself is still worth completing.
-    """
-    try:
-        current = conn.execute("PRAGMA schema_version").fetchone()[0]
-        # Wraps within the 32-bit signed range SQLite stores this in; the
-        # comparison other connections make is equality, not ordering.
-        conn.execute(f"PRAGMA schema_version={(int(current) + 1) & 0x7FFFFFFF}")
-    except (sqlite3.DatabaseError, TypeError, IndexError) as exc:
-        logger.warning("Could not bump state.db schema cookie: %s", exc)
-
-
 # ── Repair-loop bounding + dead-backup hygiene (#86747) ─────────────────────
 #
 # ``_claim_repair_attempt`` above is an in-memory set: it bounds the loop
@@ -2861,15 +2739,6 @@ _FINGERPRINT_SAMPLE_BYTES = 65536
 # byte 100 and stays in the sample.
 _FINGERPRINT_VOLATILE_HEADER_RANGES = ((24, 28), (92, 96))
 
-
-def _mask_volatile_header(head: bytes) -> bytes:
-    """Zero the commit-counter fields so ordinary writes don't re-key the ledger."""
-    if len(head) < 96:
-        return head
-    buf = bytearray(head)
-    for start, end in _FINGERPRINT_VOLATILE_HEADER_RANGES:
-        buf[start:end] = b"\x00" * (end - start)
-    return bytes(buf)
 
 # Free-space headroom for the pre-repair forensic backup. The backup is a
 # full raw copy of the damaged DB (plus its -wal/-shm sidecars), so a repair
@@ -3233,21 +3102,6 @@ def _record_repair_outcome(
         logger.warning("Could not update state.db repair ledger: %s", exc)
 
 
-def _existing_malformed_backups(db_path: Path) -> "List[Path]":
-    """Timestamped forensic backups of *db_path*, newest first."""
-    prefix = f"{db_path.name}.malformed-backup-"
-    try:
-        found = [
-            p
-            for p in db_path.parent.iterdir()
-            if p.name.startswith(prefix)
-            and not p.name.endswith(_DB_SIDECAR_SUFFIXES)
-        ]
-    except OSError:
-        return []
-    return sorted(found, key=lambda p: p.name, reverse=True)
-
-
 def _prune_malformed_backups(db_path: Path, keep: int = _MAX_MALFORMED_BACKUPS) -> None:
     """Delete all but the *keep* newest forensic backups (and sidecars)."""
     for stale in _existing_malformed_backups(db_path)[keep:]:
@@ -3492,7 +3346,7 @@ def preflight_db_writability(
       open path checkpoints its committed frames into the DB as intended.
 
     ``:memory:`` and ``file:`` URI paths are skipped (no plain on-disk files
-    to check). Shared by :class:`SessionDB` and ``hermes_cli.kanban_db``.
+    to check).
     """
     raw = str(db_path)
     if raw == ":memory:" or raw.startswith("file:"):
@@ -4918,7 +4772,7 @@ def refuse_deleted_wal_generation(db_path) -> None:
 # working for every call site and test that imports from here.
 #
 # Routing rules (see hermes_state_registry for the full lifecycle):
-#   - Long-lived in-process callers (gateway, tui_gateway, cron,
+#   - Long-lived in-process callers (gateway, cron,
 #     in-process tools) share ONE writer connection per resolved path
 #     via get_shared_session_db().
 #   - CLI one-shots, recovery flows, and read-only cross-profile opens
@@ -5473,8 +5327,6 @@ class SessionDB(
     SessionFtsSetupMixin,
     SessionSearchMixin,
     SessionSchemaMixin,
-    SessionPortabilityMixin,
-    SessionTelegramTopicsMixin,
     SessionCompressionMixin,
     SessionGatewayMixin,
     SessionMaintenanceMixin,
@@ -5483,6 +5335,7 @@ class SessionDB(
     SessionMessagesMixin,
     SessionRewindMixin,
     SessionProfileRepairMixin,
+    SessionPortabilityMixin,
 ):
     """
     SQLite-backed session storage with FTS5 search.
@@ -5499,7 +5352,6 @@ class SessionDB(
     _AUTO_PRUNE_STALE_OPEN_SOURCES: Tuple[str, ...] = (
         "cli",
         "cron",
-        "kanban",
         "acp",
         "api_server",
         "subagent",
@@ -7235,7 +7087,7 @@ class SessionDB(
         if not sys.platform.startswith("linux") or psutil is None:
             return []
         try:
-            from hermes_cli.dashboard_procs import _is_ephemeral_port_zero_backend
+            from hermes_state_dbfile import _is_ephemeral_port_zero_backend
         except Exception:
             return []
 
@@ -7412,7 +7264,7 @@ class SessionDB(
         idle window and a GC cycle" is not a release policy.  Call sites
         owning a handle are still expected to close it deterministically
         (see the ownership comments in ``run_agent.py`` and
-        ``tui_gateway/methods_session.py``).
+        the RPC session surface).
 
         This makes the correct usage the easy one, so an owning scope can be
         exception-safe by construction rather than by remembering a
@@ -8385,8 +8237,8 @@ class SessionDB(
             # tuple so we never cross chats/threads/users.
             if chat_id is None or chat_type is None:
                 return None
-            # Profile fence (#74285): a Telegram DM's peer tuple is identical
-            # for every bot (chat_id == user_id, no thread), so a sibling
+            # Profile fence (#74285): a legacy messaging DM's peer tuple can be
+            # identical for every bot (chat_id == user_id, no thread), so a sibling
             # profile's row written into this store before the per-profile
             # partition (legacy data) would otherwise be adopted here. Every
             # profile-tree store has one owner; a row is ours when its
@@ -10833,7 +10685,7 @@ class SessionDB(
         cached agent accumulates across messages).
         """
         # Ensure the session row exists so the UPDATE doesn't silently affect
-        # 0 rows.  Under concurrent load (cron + kanban + delegate_agent) the
+        # 0 rows.  Under concurrent load (cron + delegate_agent) the
         # initial create_session() may have failed due to SQLite locking.
         # INSERT OR IGNORE is cheap and idempotent.
         self._insert_session_row(session_id, "unknown", model=model)
@@ -11248,7 +11100,7 @@ class SessionDB(
         created compression/branch children whose copied activity is old.
 
         Only pass sources whose lifecycle the caller owns (never messaging-gateway
-        platforms like ``telegram`` — ending those triggers the #60609 routing
+        platforms like ``discord`` — ending those triggers the #60609 routing
         loop). ``exclude_ids`` spares rows this process still holds in memory
         (a ``session.resume`` that landed during the startup grace window).
         ``exclude_pinned`` is intended for broad automatic sweeps; pinned rows
@@ -11362,7 +11214,7 @@ class SessionDB(
         return self._execute_write(_do) or []
 
     # ── Cross-backend heartbeat API (#94895) ───────────────────────────
-    # Each serve / tui_gateway process registers a heartbeat row at startup
+    # Each serve backend process registers a heartbeat row at startup
     # and refreshes ``last_heartbeat`` periodically. The startup orphan
     # sweep reads these rows to avoid reaping sessions owned by another
     # still-live backend that just happens to be idle. Backends remove
@@ -11464,9 +11316,9 @@ class SessionDB(
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a session by ID."""
-        # Cost/usage readers (/status, /usage, gateway endpoints) reach the
-        # row through here; drain queued token deltas so they see exact
-        # totals. No-op attribute check when nothing is queued.
+        # Cost/usage readers (/status, gateway endpoints) reach the row
+        # through here; drain queued token deltas so they see exact totals.
+        # No-op attribute check when nothing is queued.
         self.flush_token_counts()
         with self._read_ctx() as conn:
             cursor = conn.execute(
@@ -12045,7 +11897,7 @@ class SessionDB(
         flag: a hidden session is dropped from the default
         :meth:`list_sessions_rich` listing (which omits ``include_hidden``) but
         stays fully resumable by the surface that owns it — useful for plugins
-        that manage their own sessions (e.g. kanban) and don't want them
+        that manage their own sessions and don't want them
         cluttering the shared recents list. Like :meth:`set_session_archived`
         / :meth:`set_session_pinned` the whole compression chain is flipped as
         a unit, so hiding the surfaced tip hides the root (and vice-versa) no
@@ -13382,7 +13234,7 @@ class SessionDB(
         if role is 'tool' or tool_calls is present).
 
         ``platform_message_id`` is the external messaging platform's own
-        message ID (e.g. Telegram update_id, Yuanbao msg_id).  It is
+        message ID (e.g. Yuanbao msg_id).  It is
         independent of the SQLite autoincrement primary key and is used by
         platform-specific flows like yuanbao's recall guard to redact a
         message by its platform-side identifier.
@@ -14831,8 +14683,8 @@ class SessionDB(
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to deserialize tool_calls in conversation replay, falling back to []")
                     msg["tool_calls"] = []
-            # Surface the platform-side message id (e.g. yuanbao msg_id,
-            # telegram update_id) so platform-specific flows like recall
+            # Surface the platform-side message id (e.g. yuanbao msg_id)
+            # so platform-specific flows like recall
             # can match by external identifier instead of having to fall
             # back to content-match heuristics.  Exposed as ``message_id``
             # for backward compatibility with the JSONL transcript shape.
@@ -15244,7 +15096,7 @@ class SessionDB(
         ``parent_session_id``, and delegate subagents hang off their
         parent the same way. Walking to the root gives every segment of
         one user-facing conversation (and its delegation tree) a single
-        identifier — used for Nous Portal ``conversation=`` usage tagging.
+        identifier — used for conversation-scoped usage tagging.
         Returns *session_id* unchanged when it has no recorded parent.
         """
         chain = self._session_lineage_root_to_tip(session_id)
@@ -15879,7 +15731,7 @@ class SessionDB(
         The peer is ``(session_key, source)``, the SAME identity tuple recovery
         uses — never the key alone.  ``X-Hermes-Session-Key`` accepts any
         authenticated caller-supplied string, so an API conversation may
-        legally carry the same key as a Telegram row in one database; keying
+        legally carry the same key as a messaging-platform row in one database; keying
         on the string alone would let a ``/new`` on that unrelated row rotate
         this conversation's affinity identity while recovery correctly refuses
         to cross the same line.
@@ -16899,41 +16751,6 @@ class SessionDB(
             )
         self._execute_write(_do)
 
-    def retag_kanban_worker_sessions(self, workspaces_root: str) -> int:
-        """Retag legacy kanban worker rows from ``cli`` to ``kanban``.
-
-        Workers used to spawn without ``HERMES_SESSION_SOURCE``, so their runs
-        landed as untitled ``cli`` rows and the sidebar rendered one per attempt
-        labeled with the worker's own prompt. New workers tag themselves; this
-        reclaims the rows already on disk so they drop out of the session lists
-        too. Identified by cwd under the board's workspaces root — a path only
-        the dispatcher ever runs a session in.
-
-        Gated per workspaces root (``state_meta``) so each board reclaims its
-        own rows exactly once. Returns the number of rows retagged.
-        """
-        prefix = str(workspaces_root).rstrip("/\\")
-        if not prefix:
-            return 0
-
-        gate = f"kanban_worker_source_retagged:{prefix}"
-        if self.get_meta(gate) == "1":
-            return 0
-
-        def _do(conn):
-            cursor = conn.execute(
-                "UPDATE sessions SET source = 'kanban' "
-                "WHERE source = 'cli' AND (cwd = ? OR cwd LIKE ? ESCAPE '\\')",
-                (prefix, _escape_like(prefix) + "/%"),
-            )
-            # Read rowcount before set_meta reuses this cursor for its INSERT,
-            # which would otherwise overwrite it with the meta write's count.
-            retagged = cursor.rowcount or 0
-            self.set_meta(gate, "1", cursor=cursor)
-            return retagged
-
-        return self._execute_write(_do)
-
     def list_meta_prefix(self, prefix: str) -> List[Tuple[str, str]]:
         """Return ``[(key, value), ...]`` for state_meta keys with ``prefix``.
 
@@ -17164,560 +16981,6 @@ class SessionDB(
 
         return self._execute_write(_do)
 
-    def apply_telegram_topic_migration(self) -> None:
-        """Create Telegram DM topic-mode tables on explicit /topic opt-in.
-
-        This migration is deliberately not part of automatic SessionDB startup
-        reconciliation. Operators must be able to upgrade Hermes, keep the old
-        Telegram bot behavior running, and only mutate topic-mode state when the
-        user executes /topic to opt into the feature.
-
-        Schema versions:
-          v1 — initial shape (no ON DELETE CASCADE on session_id FK)
-          v2 — session_id FK gets ON DELETE CASCADE so session pruning
-               automatically clears bindings.
-          v3 — ``profile_name`` dimension on both tables so multiplexed
-               gateways (shared ``state.db``) isolate topic mode/bindings
-               per Hermes profile (issue #76423).
-        """
-        # (table, column list, DDL body). ``profile_name`` leads the primary
-        # key so multiplexed profiles sharing one state.db never collide on a
-        # private chat_id (which is the user id, identical across bots).
-        tables = (
-            (
-                "telegram_dm_topic_mode",
-                "profile_name, chat_id, user_id, enabled, activated_at, updated_at, "
-                "has_topics_enabled, allows_users_to_create_topics, "
-                "capability_checked_at, intro_message_id, pinned_message_id",
-                """
-                    profile_name TEXT NOT NULL DEFAULT 'default',
-                    chat_id TEXT NOT NULL,
-                    user_id TEXT NOT NULL,
-                    enabled INTEGER NOT NULL DEFAULT 1,
-                    activated_at REAL NOT NULL,
-                    updated_at REAL NOT NULL,
-                    has_topics_enabled INTEGER,
-                    allows_users_to_create_topics INTEGER,
-                    capability_checked_at REAL,
-                    intro_message_id TEXT,
-                    pinned_message_id TEXT,
-                    PRIMARY KEY (profile_name, chat_id)
-                """,
-            ),
-            (
-                "telegram_dm_topic_bindings",
-                "profile_name, chat_id, thread_id, user_id, session_key, "
-                "session_id, managed_mode, linked_at, updated_at",
-                """
-                    profile_name TEXT NOT NULL DEFAULT 'default',
-                    chat_id TEXT NOT NULL,
-                    thread_id TEXT NOT NULL,
-                    user_id TEXT NOT NULL,
-                    session_key TEXT NOT NULL,
-                    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-                    managed_mode TEXT NOT NULL DEFAULT 'auto',
-                    linked_at REAL NOT NULL,
-                    updated_at REAL NOT NULL,
-                    PRIMARY KEY (profile_name, chat_id, thread_id)
-                """,
-            ),
-        )
-
-        def _do(conn):
-            for table, columns, ddl in tables:
-                # Fresh installs get the v3 shape immediately.
-                conn.execute(f"CREATE TABLE IF NOT EXISTS {table} ({ddl})")
-                have = {row[1] for row in conn.execute(f"PRAGMA table_info('{table}')")}
-                if "profile_name" in have:
-                    continue
-                # Pre-profile shape (v1 or v2) → v3. SQLite can't ALTER a
-                # primary key (or a foreign key), so rebuild; this also
-                # supplies the v2 ON DELETE CASCADE for v1 bindings tables.
-                # Legacy rows land in the "default" namespace only — never
-                # replicated across profiles.
-                legacy_columns = columns.replace("profile_name, ", "", 1)
-                conn.executescript(
-                    f"""
-                    CREATE TABLE {table}_new ({ddl});
-                    INSERT INTO {table}_new ({columns})
-                        SELECT 'default', {legacy_columns} FROM {table};
-                    DROP TABLE {table};
-                    ALTER TABLE {table}_new RENAME TO {table};
-                    """
-                )
-
-            # Indexes after any rebuild so they always target the v3 shape
-            # (a legacy table lacking profile_name can't take the user index).
-            conn.executescript(
-                """
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_session
-                ON telegram_dm_topic_bindings(session_id);
-
-                CREATE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_user
-                ON telegram_dm_topic_bindings(profile_name, user_id, chat_id);
-                """
-            )
-
-            conn.execute(
-                "INSERT INTO state_meta (key, value) VALUES (?, ?) "
-                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                ("telegram_dm_topic_schema_version", "3"),
-            )
-        self._execute_write(_do)
-
-    def enable_telegram_topic_mode(
-        self,
-        *,
-        chat_id: str,
-        user_id: str,
-        profile_name: str = "default",
-        has_topics_enabled: Optional[bool] = None,
-        allows_users_to_create_topics: Optional[bool] = None,
-    ) -> None:
-        """Enable Telegram DM topic mode for one private chat/user.
-
-        This method intentionally owns the explicit topic migration. Ordinary
-        SessionDB startup must not create these side tables.
-
-        ``profile_name`` namespaces rows under a shared multiplex ``state.db``
-        (issue #76423). Callers handling a multiplexed event must pass the
-        routed profile from ``source.profile``, not the process-global active
-        profile.
-        """
-        self.apply_telegram_topic_migration()
-        now = time.time()
-        profile_name = _normalize_telegram_topic_profile_name(profile_name)
-
-        def _to_int(value: Optional[bool]) -> Optional[int]:
-            if value is None:
-                return None
-            return 1 if value else 0
-
-        def _do(conn):
-            conn.execute(
-                """
-                INSERT INTO telegram_dm_topic_mode (
-                    profile_name, chat_id, user_id, enabled, activated_at, updated_at,
-                    has_topics_enabled, allows_users_to_create_topics,
-                    capability_checked_at
-                ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)
-                ON CONFLICT(profile_name, chat_id) DO UPDATE SET
-                    user_id = excluded.user_id,
-                    enabled = 1,
-                    updated_at = excluded.updated_at,
-                    has_topics_enabled = excluded.has_topics_enabled,
-                    allows_users_to_create_topics = excluded.allows_users_to_create_topics,
-                    capability_checked_at = excluded.capability_checked_at
-                """,
-                (
-                    profile_name,
-                    str(chat_id),
-                    str(user_id),
-                    now,
-                    now,
-                    _to_int(has_topics_enabled),
-                    _to_int(allows_users_to_create_topics),
-                    now,
-                ),
-            )
-        self._execute_write(_do)
-
-    def disable_telegram_topic_mode(
-        self,
-        *,
-        chat_id: str,
-        profile_name: str = "default",
-        clear_bindings: bool = True,
-    ) -> None:
-        """Disable Telegram DM topic mode for one private chat.
-
-        When ``clear_bindings`` is True (default) the (chat_id, thread_id)
-        bindings for this chat are also cleared so re-enabling later
-        starts from a clean slate. Set to False if the operator wants to
-        preserve bindings for a later re-enable.
-
-        Never creates the topic-mode tables from scratch; if they don't
-        exist there is nothing to disable and the call is a no-op.
-        """
-        profile_name = _normalize_telegram_topic_profile_name(profile_name)
-
-        def _do(conn):
-            try:
-                conn.execute(
-                    "UPDATE telegram_dm_topic_mode SET enabled = 0, updated_at = ? "
-                    "WHERE profile_name = ? AND chat_id = ?",
-                    (time.time(), profile_name, str(chat_id)),
-                )
-                if clear_bindings:
-                    conn.execute(
-                        "DELETE FROM telegram_dm_topic_bindings "
-                        "WHERE profile_name = ? AND chat_id = ?",
-                        (profile_name, str(chat_id)),
-                    )
-            except sqlite3.OperationalError:
-                # Tables don't exist yet — nothing to disable.
-                return
-        self._execute_write(_do)
-
-    def is_telegram_topic_mode_enabled(
-        self,
-        *,
-        chat_id: str,
-        user_id: str,
-        profile_name: str = "default",
-    ) -> bool:
-        """Return whether Telegram DM topic mode is enabled for this chat/user."""
-        profile_name = _normalize_telegram_topic_profile_name(profile_name)
-        with self._read_ctx() as conn:
-            try:
-                row = conn.execute(
-                    """
-                    SELECT enabled FROM telegram_dm_topic_mode
-                    WHERE profile_name = ? AND chat_id = ? AND user_id = ?
-                    """,
-                    (profile_name, str(chat_id), str(user_id)),
-                ).fetchone()
-            except sqlite3.OperationalError:
-                return False
-        if row is None:
-            return False
-        enabled = row["enabled"] if isinstance(row, sqlite3.Row) else row[0]
-        return bool(enabled)
-
-    def get_telegram_topic_binding(
-        self,
-        *,
-        chat_id: str,
-        thread_id: str,
-        profile_name: str = "default",
-    ) -> Optional[Dict[str, Any]]:
-        """Return the session binding for a Telegram DM topic, if present."""
-        profile_name = _normalize_telegram_topic_profile_name(profile_name)
-        with self._read_ctx() as conn:
-            try:
-                row = conn.execute(
-                    """
-                    SELECT * FROM telegram_dm_topic_bindings
-                    WHERE profile_name = ? AND chat_id = ? AND thread_id = ?
-                    """,
-                    (profile_name, str(chat_id), str(thread_id)),
-                ).fetchone()
-            except sqlite3.OperationalError:
-                return None
-        return dict(row) if row else None
-
-    def list_telegram_topic_bindings_for_chat(
-        self,
-        *,
-        chat_id: str,
-        profile_name: str = "default",
-    ) -> List[Dict[str, Any]]:
-        """All Telegram DM topic bindings for one chat, newest first.
-
-        Read-only; returns [] if the bindings table doesn't exist yet
-        (does not trigger the topic-mode migration).
-        """
-        profile_name = _normalize_telegram_topic_profile_name(profile_name)
-        with self._read_ctx() as conn:
-            try:
-                rows = conn.execute(
-                    "SELECT * FROM telegram_dm_topic_bindings "
-                    "WHERE profile_name = ? AND chat_id = ? "
-                    "ORDER BY updated_at DESC",
-                    (profile_name, str(chat_id)),
-                ).fetchall()
-            except sqlite3.OperationalError:
-                return []
-        return [dict(row) for row in rows]
-
-    def get_telegram_topic_binding_by_session(
-        self,
-        *,
-        session_id: str,
-    ) -> Optional[Dict[str, Any]]:
-        """Return the Telegram DM topic binding for a given session_id, if present.
-
-        Uses the UNIQUE INDEX on telegram_dm_topic_bindings(session_id) for an
-        efficient reverse lookup. Returns None when the session has no binding or
-        the table does not exist yet.
-        """
-        with self._read_ctx() as conn:
-            try:
-                row = conn.execute(
-                    """
-                    SELECT * FROM telegram_dm_topic_bindings
-                    WHERE session_id = ?
-                    """,
-                    (str(session_id),),
-                ).fetchone()
-            except sqlite3.OperationalError:
-                return None
-        return dict(row) if row else None
-
-    def delete_telegram_topic_binding(
-        self,
-        *,
-        chat_id: str,
-        thread_id: str,
-        profile_name: str = "default",
-    ) -> int:
-        """Remove the binding row for a single (chat, thread) pair.
-
-        Called when the Telegram Bot API confirms a topic was deleted
-        externally (``Thread not found`` after the same-thread retry
-        already failed).  Without this prune, the stale row keeps
-        living in ``telegram_dm_topic_bindings`` and the
-        recovery logic in ``gateway.run._recover_telegram_topic_thread_id``
-        cheerfully redirects future inbound messages to the deleted
-        topic, causing tool progress, approvals, and replies to land
-        in the wrong place.  Issue #31501.
-
-        When this prune removes the chat's *last* remaining binding,
-        the chat's row in ``telegram_dm_topic_mode`` is also flipped to
-        ``enabled = 0`` in the same transaction.  Otherwise the chat
-        would be left in topic mode with zero lanes — and
-        ``gateway.run._recover_telegram_topic_thread_id`` keeps treating
-        the chat as topic-enabled, lobby messages keep hunting for a
-        binding that no longer exists, and a user who disabled topics in
-        the Telegram client (rather than via ``/topic off``) stays stuck
-        until the next send happens to fail. Clearing the flag makes
-        recovery fully stand down once the dead topics are gone.
-
-        Returns the number of binding rows deleted (0 when the binding
-        was already absent or the topic-mode tables haven't been
-        migrated yet — both are silent no-ops; we never raise from
-        a cleanup hot path).
-        """
-        chat_id = str(chat_id)
-        thread_id = str(thread_id)
-        profile_name = _normalize_telegram_topic_profile_name(profile_name)
-        deleted = {"count": 0}
-
-        def _do(conn):
-            try:
-                cursor = conn.execute(
-                    """
-                    DELETE FROM telegram_dm_topic_bindings
-                    WHERE profile_name = ? AND chat_id = ? AND thread_id = ?
-                    """,
-                    (profile_name, chat_id, thread_id),
-                )
-                deleted["count"] = cursor.rowcount or 0
-            except sqlite3.OperationalError:
-                # Tables don't exist yet — nothing to prune.
-                deleted["count"] = 0
-                return
-            if not deleted["count"]:
-                return
-            # If that was the chat's last binding, disable topic mode for
-            # the chat so recovery stops steering lobby messages at a now
-            # empty lane set. Same transaction → no read-after-prune race.
-            try:
-                remaining = conn.execute(
-                    """
-                    SELECT 1 FROM telegram_dm_topic_bindings
-                    WHERE profile_name = ? AND chat_id = ? LIMIT 1
-                    """,
-                    (profile_name, chat_id),
-                ).fetchone()
-                if remaining is None:
-                    conn.execute(
-                        "UPDATE telegram_dm_topic_mode "
-                        "SET enabled = 0, updated_at = ? "
-                        "WHERE profile_name = ? AND chat_id = ?",
-                        (time.time(), profile_name, chat_id),
-                    )
-            except sqlite3.OperationalError:
-                # telegram_dm_topic_mode absent — binding prune still stands.
-                pass
-
-        self._execute_write(_do)
-        return deleted["count"]
-
-    def bind_telegram_topic(
-        self,
-        *,
-        chat_id: str,
-        thread_id: str,
-        user_id: str,
-        session_key: str,
-        session_id: str,
-        managed_mode: str = "auto",
-        profile_name: str = "default",
-    ) -> None:
-        """Bind one Telegram DM topic thread to one Hermes session.
-
-        A Hermes session may only be linked to one Telegram topic in MVP.
-        Rebinding the same topic to the same session is idempotent; trying to
-        link the same session to a different topic raises ValueError.
-        """
-        self.apply_telegram_topic_migration()
-        now = time.time()
-        chat_id = str(chat_id)
-        thread_id = str(thread_id)
-        user_id = str(user_id)
-        session_key = str(session_key)
-        session_id = str(session_id)
-        profile_name = _normalize_telegram_topic_profile_name(profile_name)
-
-        def _do(conn):
-            existing_session = conn.execute(
-                """
-                SELECT profile_name, chat_id, thread_id
-                FROM telegram_dm_topic_bindings
-                WHERE session_id = ?
-                """,
-                (session_id,),
-            ).fetchone()
-            if existing_session is not None:
-                if isinstance(existing_session, sqlite3.Row):
-                    linked_profile = existing_session["profile_name"]
-                    linked_chat = existing_session["chat_id"]
-                    linked_thread = existing_session["thread_id"]
-                else:
-                    linked_profile, linked_chat, linked_thread = existing_session
-                if (
-                    str(linked_profile) != profile_name
-                    or str(linked_chat) != chat_id
-                    or str(linked_thread) != thread_id
-                ):
-                    raise ValueError("session is already linked to another Telegram topic")
-
-            conn.execute(
-                """
-                INSERT INTO telegram_dm_topic_bindings (
-                    profile_name, chat_id, thread_id, user_id, session_key, session_id,
-                    managed_mode, linked_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(profile_name, chat_id, thread_id) DO UPDATE SET
-                    user_id = excluded.user_id,
-                    session_key = excluded.session_key,
-                    session_id = excluded.session_id,
-                    managed_mode = excluded.managed_mode,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    profile_name,
-                    chat_id,
-                    thread_id,
-                    user_id,
-                    session_key,
-                    session_id,
-                    managed_mode,
-                    now,
-                    now,
-                ),
-            )
-        self._execute_write(_do)
-
-    def is_telegram_session_linked_to_topic(self, *, session_id: str) -> bool:
-        """Return True if a Hermes session is already bound to any Telegram DM topic.
-
-        Read-only: does NOT trigger the telegram-topic migration. If the
-        topic-mode tables have not been created yet (i.e. nobody has run
-        ``/topic`` in this profile), the session is by definition unbound
-        and we return False.
-        """
-        with self._read_ctx() as conn:
-            try:
-                row = conn.execute(
-                    """
-                    SELECT 1 FROM telegram_dm_topic_bindings
-                    WHERE session_id = ?
-                    LIMIT 1
-                    """,
-                    (str(session_id),),
-                ).fetchone()
-            except sqlite3.OperationalError:
-                return False
-        return row is not None
-
-    def list_unlinked_telegram_sessions_for_user(
-        self,
-        *,
-        chat_id: str,
-        user_id: str,
-        profile_name: str = "default",
-        limit: int = 10,
-    ) -> List[Dict[str, Any]]:
-        """List previous Telegram sessions for this user that are not bound to a topic.
-
-        Read-only: does NOT trigger the telegram-topic migration. If the
-        topic-mode tables are absent, fall back to a simpler query that
-        just returns this user's Telegram sessions — there can't be any
-        bindings yet.
-
-        Scoped by ``profile_name`` so multiplexed profiles do not surface
-        each other's unlinked sessions (issue #76423).
-        """
-        profile_name = _normalize_telegram_topic_profile_name(profile_name)
-        # sessions.profile_name is NULL/empty for legacy rows → treat as default.
-        profile_clause = "AND COALESCE(NULLIF(TRIM(s.profile_name), ''), 'default') = ?"
-        with self._read_ctx() as conn:
-            try:
-                rows = conn.execute(
-                    f"""
-                    SELECT s.*,
-                        COALESCE(sp.prompt, s.system_prompt)
-                            AS _system_prompt_resolved,
-                        COALESCE(
-                            (SELECT {_PREVIEW_RAW_SELECT}
-                             FROM messages m
-                             WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
-                               AND {_PREVIEW_ELIGIBLE_SQL}
-                             ORDER BY m.timestamp, m.id LIMIT 1),
-                            ''
-                        ) AS _preview_raw,
-                        {_sql_session_last_active("s")} AS last_active
-                    FROM sessions s
-                    LEFT JOIN system_prompts sp
-                      ON sp.hash = s.system_prompt_hash
-                    WHERE s.source = 'telegram'
-                      AND s.user_id = ?
-                      {profile_clause}
-                      AND NOT EXISTS (
-                          SELECT 1 FROM telegram_dm_topic_bindings b
-                          WHERE b.session_id = s.id
-                      )
-                    ORDER BY last_active DESC, s.started_at DESC
-                    LIMIT ?
-                    """,
-                    (str(user_id), profile_name, int(limit)),
-                ).fetchall()
-            except sqlite3.OperationalError:
-                # telegram_dm_topic_bindings doesn't exist yet — no bindings
-                # means every telegram session for this user is "unlinked".
-                rows = conn.execute(
-                    f"""
-                    SELECT s.*,
-                        COALESCE(sp.prompt, s.system_prompt)
-                            AS _system_prompt_resolved,
-                        COALESCE(
-                            (SELECT {_PREVIEW_RAW_SELECT}
-                             FROM messages m
-                             WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
-                               AND {_PREVIEW_ELIGIBLE_SQL}
-                             ORDER BY m.timestamp, m.id LIMIT 1),
-                            ''
-                        ) AS _preview_raw,
-                        {_sql_session_last_active("s")} AS last_active
-                    FROM sessions s
-                    LEFT JOIN system_prompts sp
-                      ON sp.hash = s.system_prompt_hash
-                    WHERE s.source = 'telegram'
-                      AND s.user_id = ?
-                    ORDER BY last_active DESC, s.started_at DESC
-                    LIMIT ?
-                    """,
-                    (str(user_id), int(limit)),
-                ).fetchall()
-
-        sessions: List[Dict[str, Any]] = []
-        for row in rows:
-            session = self._session_row_dict(row)
-            session["preview"] = _shape_preview(session.pop("_preview_raw", ""))
-            sessions.append(session)
-        return sessions
 
     # ── Space reclamation ──
 
@@ -17865,7 +17128,7 @@ class SessionDB(
         are removed as part of the same sweep (issue #3015).
 
         Stale-open reconciliation (#54189): several state-owned producers
-        (cron, kanban workers, subagents, one-shot CLI runs) never set
+        (cron, historical kanban workers, subagents, one-shot CLI runs) never set
         ``ended_at`` when their process dies, and ``prune_sessions`` only
         deletes ended rows — so retention was a no-op exactly where growth
         concentrates. After pruning, this pass closes open rows from

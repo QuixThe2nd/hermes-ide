@@ -124,6 +124,7 @@ class TestUninstallPathTraversal:
         assert ok is False
         assert victim.exists()
 
+    @pytest.mark.require_symlinks
     def test_symlink_escape_rejected(self, tmp_path, hub_setup):
         """Symlinks inside SKILLS_DIR that point outside must be refused
         after realpath resolution."""
@@ -262,7 +263,7 @@ class TestListPendingLock:
         from gateway.pairing import PairingStore
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
-            store.generate_code("telegram", "user1", "Alice")
-            pending = store.list_pending("telegram")
+            store.generate_code("discord", "user1", "Alice")
+            pending = store.list_pending("discord")
         assert len(pending) == 1
         assert pending[0]["user_id"] == "user1"

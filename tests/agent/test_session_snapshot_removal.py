@@ -6,8 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from agent.agent_init import _init_session_state
-from agent.session_persistence import SessionPersistenceMixin
 from hermes_state import SessionDB
+from run_agent import AIAgent
 
 
 @pytest.mark.parametrize("legacy_enabled", [False, True])
@@ -16,7 +16,7 @@ def test_persistence_never_snapshots_but_explicit_save_works(tmp_path, monkeypat
     (tmp_path / "config.yaml").write_text(
         f"sessions:\n  write_json_snapshots: {str(legacy_enabled).lower()}\n", encoding="utf-8")
     db = SessionDB(db_path=tmp_path / "state.db")
-    agent = SessionPersistenceMixin()
+    agent = object.__new__(AIAgent)
     agent.max_iterations = 1
     _init_session_state(agent, "snapshot-removal", db, None, None, None, False, 1, 1, 1)
     agent.model = "fixture"

@@ -18,7 +18,7 @@ _UNSET = object()
 _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar("_HERMES_HOME_OVERRIDE", default=_UNSET)
 
 # TUI busy-indicator styles (CLI /indicator, TUI gateway config, /help registry).
-# Keep in sync with INDICATOR_STYLES / DEFAULT_INDICATOR_STYLE in ui-tui/src/app/interfaces.ts.
+# Keep in sync with the TUI indicator styles table.
 INDICATOR_STYLES: tuple[str, ...] = ("ascii", "emoji", "kaomoji", "unicode")
 DEFAULT_INDICATOR_STYLE: str = "kaomoji"
 
@@ -126,6 +126,7 @@ def hermes_home_key(path: str | Path | None = None) -> str:
     """Stable registry key for a Hermes home/profile dir.
 
     ``strict=False`` so profiles whose directories don't exist yet still get a key.
+    A falsy path (``None`` or empty) resolves to the active default home.
 
     The resolved value is remembered per input path. A directory that does
     not exist yet is resolved without touching the cache, because the answer
@@ -153,6 +154,26 @@ def reset_hermes_home_key_cache() -> None:
     _HOME_KEY_CACHE.clear()
 
 
+def normalize_scope(scope: str | Path | None) -> str | None:
+    """Normalize a WRITE-side registry scope key, preserving ``None``.
+
+    Two different contracts live on the same registries — do not unify them:
+
+    * **Write / slot paths** (``register_*``, ``snapshot_registration``,
+      ``restore_registration``, tool-registry slot lookup): ``None`` means
+      the process-global layer and must stay ``None``. Use this function.
+    * **Read paths** (``list_providers``, ``get_provider``): ``None`` means
+      "the active home's scope" and must go through :func:`hermes_home_key`
+      (falsy input resolves to the active default home). Using this
+      function there hides every scoped registration — the exact bug
+      fixed after e66a627aa5.
+
+    Both normalize non-None values identically (resolved absolute path,
+    normcase on Windows) so writes and reads agree on the key.
+    """
+    return hermes_home_key(scope) if scope is not None else None
+
+
 def get_process_hermes_home() -> Path:
     """Hermes home of the running process, ignoring task overrides.
 
@@ -174,11 +195,15 @@ LOCAL_RUNTIME_ROOT_DIRS: frozenset[str] = frozenset({"models", "runtimes", "node
 _default_hermes_root_memo: "tuple[str, str, Path] | None" = None
 
 
-def get_default_hermes_root() -> Path:
-    """Root Hermes dir for profile-level ops: ``<root>`` when ``HERMES_HOME=<root>/profiles/<name>``."""
+def get_default_hermes_root(*, home: str | Path | None = None) -> Path:
+    """Root Hermes dir for profile-level ops: ``<root>`` when ``HERMES_HOME=<root>/profiles/<name>``.
+
+    Pass ``home=<home>`` to resolve an explicit home without touching the process
+    environment; ``None`` (default) reads the process ``HERMES_HOME`` as before.
+    """
     global _default_hermes_root_memo
     native_home = _get_platform_default_hermes_home()
-    env_home = os.environ.get("HERMES_HOME", "").strip()
+    env_home = str(home) if home is not None else os.environ.get("HERMES_HOME", "").strip()
     env_path = _expand_hermes_home(env_home) if env_home else None
     memo_key = (str(native_home), str(env_path) if env_path is not None else "")
     memo = _default_hermes_root_memo
@@ -772,24 +797,6 @@ def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
     return merged
 
 
-def agent_browser_runnable(path: str | None) -> bool:
-    """True when *path* is an agent-browser CLI that runs (``--version`` exits 0) or the npx fallback.
-
-    Dead/wrong-arch/hung binaries are rejected so callers try the next candidate.
-
-    A bare presence check (``shutil.which`` / ``Path.exists``) is not enough: agent-browser's npm
-    ``postinstall`` re-points a *global* install symlink (e.g. ``/opt/homebrew/bin/agent-browser``) at our
-    local ``node_modules/agent-browser/bin/...`` binary, which then disappears on the next ``hermes update``
-    — leaving a **dangling symlink** that ``which`` still reports but exec fails on with exit 127 (issue
-    #48521). Callers that trust such a path silently break every browser tool.
-    """
-    if not path:
-        return False
-    # The npx fallback is a two-token command string, not a path; npx validates at run time.
-    if " " in path and path.split()[0].endswith("npx"):
-        return True
-    return _is_executable_file(path) and _version_probe_ok(path)
-
 
 def _legacy_path_has_content(path: Path) -> bool:
     """True iff *path* is a non-directory file or a populated directory.
@@ -1367,32 +1374,6 @@ def get_env_path() -> Path:
     return get_hermes_home() / ".env"
 
 
-def apply_ipv4_preference(force: bool = False) -> None:
-    """Monkey-patch ``socket.getaddrinfo`` to prefer IPv4 when *force* is True.
-
-    Broken-IPv6 hosts hang on AAAA for the full TCP timeout; ``AF_UNSPEC`` resolves as ``AF_INET``,
-    falling back to full resolution when no A record exists (pure-IPv6 hosts still work).
-    """
-    if not force:
-        return
-
-    import socket
-
-    if getattr(socket.getaddrinfo, "_hermes_ipv4_patched", False):
-        return
-    _original_getaddrinfo = socket.getaddrinfo
-
-    def _ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-        if family == 0:  # AF_UNSPEC — caller didn't request a specific family
-            try:
-                return _original_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
-            except socket.gaierror:  # no A record — pure-IPv6 host
-                return _original_getaddrinfo(host, port, family, type, proto, flags)
-        return _original_getaddrinfo(host, port, family, type, proto, flags)
-    _ipv4_getaddrinfo._hermes_ipv4_patched = True  # type: ignore[attr-defined]
-    socket.getaddrinfo = _ipv4_getaddrinfo  # type: ignore[assignment]
-
-
 PARTIAL_STREAM_STUB_ID = "partial-stream-stub"
 FINISH_REASON_LENGTH = "length"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -1478,8 +1459,8 @@ def venv_python_path(venv_dir, *, windows: bool | None = None) -> Path:
 # First-party roots: an ImportError naming one means our own tree is inconsistent. The
 # update post-probe shares this set so the guard that BLOCKS and the hint that EXPLAINS agree.
 FIRST_PARTY_MODULE_ROOTS = frozenset({
-    "agent", "acp_adapter", "cli", "cron", "gateway", "model_tools", "plugins",
-    "providers", "tools", "toolsets", "run_agent", "tui_gateway", "utils",
+    "agent", "cli", "cron", "gateway", "model_tools", "plugins",
+    "providers", "tools", "toolsets", "run_agent", "utils",
 })
 
 

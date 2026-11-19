@@ -278,12 +278,12 @@ def test_empty_key_error_names_actual_provider(monkeypatch, capsys):
 # ---------------------------------------------------------------------------
 
 
-def _bench_nous_pool(monkeypatch, **entry_fields):
+def _bench_oauth_pool(monkeypatch, **entry_fields):
     import time
     from agent.credential_pool import STATUS_EXHAUSTED, CredentialPool, PooledCredential
 
-    benched = PooledCredential(id="e1", provider="nous", auth_type="oauth", access_token="x",
-                               refresh_token="r", label="portal", source="manual:device_code",
+    benched = PooledCredential(id="e1", provider="openai-codex", auth_type="oauth", access_token="x",
+                               refresh_token="r", label="codex", source="manual:device_code",
                                priority=0, last_status=STATUS_EXHAUSTED, last_status_at=time.time() - 5,
                                **entry_fields)
     pool = CredentialPool.__new__(CredentialPool)
@@ -307,14 +307,14 @@ def test_benched_credential_prints_cooldown_instead_of_wizard(monkeypatch, capsy
     user to re-authenticate, and never offers the first-run wizard."""
     cli = _import_cli()
     shell = _make_shell(cli, monkeypatch)
-    shell.requested_provider = "nous"
+    shell.requested_provider = "openai-codex"
 
     def _raise(**kwargs):
-        raise AuthError("Hermes is not logged into Nous Portal.", provider="nous",
-                        code="nous_auth_missing", relogin_required=True)
+        raise AuthError("Hermes is not logged into OpenAI Codex.", provider="openai-codex",
+                        code="codex_auth_missing", relogin_required=True)
 
     monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _raise)
-    _bench_nous_pool(monkeypatch, last_error_code=429, last_error_reason="rate_limited")
+    _bench_oauth_pool(monkeypatch, last_error_code=429, last_error_reason="rate_limited")
     _forbid_wizard(monkeypatch, shell)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
 
@@ -325,14 +325,14 @@ def test_benched_credential_prints_cooldown_instead_of_wizard(monkeypatch, capsy
     headline = next(line for line in out.splitlines() if line.strip())
     assert "cooling down after a rate-limit or quota response" in headline and "about 1m" in headline
     assert "failed token refresh" not in out
-    assert "not logged into Nous Portal" in out
+    assert "not logged into OpenAI Codex" in out
     assert "re-authenticate" not in out and "hermes model" not in out
 
 
 def test_auth_json_only_login_explains_instead_of_wizard(monkeypatch, capsys, tmp_path):
-    """auth.json-only shape: logged into Nous but no ``model.provider`` (requested "auto"). The
-    ladder swallows the AuthError and falls through to a keyless OpenRouter fallback; the gate
-    must still explain the real failure rather than treat the profile as a blank install.
+    """auth.json-only shape: logged into an OAuth provider but no ``model.provider`` (requested
+    "auto"). The ladder swallows the AuthError and falls through; the gate must still explain the
+    real failure rather than treat the profile as a blank install.
     Control: the resolver's ``no_provider_configured`` still reaches the wizard."""
     import dataclasses
 
@@ -343,13 +343,13 @@ def test_auth_json_only_login_explains_instead_of_wizard(monkeypatch, capsys, tm
     for key in [k for k in os.environ if k.endswith("_API_KEY")]:
         monkeypatch.delenv(key, raising=False)
 
-    def _nous_fail():
-        raise AuthError("Hermes is not logged into Nous Portal.", provider="nous",
-                        code="nous_auth_missing", relogin_required=True)
+    def _codex_fail():
+        raise AuthError("Hermes is not logged into OpenAI Codex.", provider="openai-codex",
+                        code="codex_auth_missing", relogin_required=True)
 
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **kw: "nous")
-    monkeypatch.setitem(rp._OAUTH_RUNTIME_PROVIDERS, "nous",
-                        dataclasses.replace(rp._OAUTH_RUNTIME_PROVIDERS["nous"], resolve=_nous_fail))
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **kw: "openai-codex")
+    monkeypatch.setitem(rp._OAUTH_RUNTIME_PROVIDERS, "openai-codex",
+                        dataclasses.replace(rp._OAUTH_RUNTIME_PROVIDERS["openai-codex"], resolve=_codex_fail))
 
     cli = _import_cli()
     shell = _make_shell(cli, monkeypatch)
@@ -361,7 +361,7 @@ def test_auth_json_only_login_explains_instead_of_wizard(monkeypatch, capsys, tm
 
     shell._maybe_offer_first_run_setup()
     out = capsys.readouterr().out
-    assert "not logged into Nous Portal" in out
+    assert "not logged into OpenAI Codex" in out
     assert "No inference provider is configured yet" not in out
 
     offered = []

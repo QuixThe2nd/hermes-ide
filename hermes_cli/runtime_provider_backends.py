@@ -1,12 +1,11 @@
 """Provider-specific runtime builders for :mod:`hermes_cli.runtime_provider`: Azure Foundry, the
-OpenRouter / bare-custom fallback resolver, Bedrock, and external-process providers. Origin-internal
+OpenRouter / bare-custom fallback resolver, and external-process providers. Origin-internal
 collaborators are resolved on the origin module at call time via :func:`_rp` so test patches on
 ``hermes_cli.runtime_provider.*`` (``_get_model_config``, ``load_config``, ``has_usable_secret``,
 ``_try_resolve_from_custom_pool``, …) still apply."""
 
 from __future__ import annotations
 
-import os
 import re
 from typing import Any, Dict, Optional
 
@@ -180,50 +179,6 @@ def _resolve_openrouter_runtime(
         api_key = "no-key-required"
     return rp._runtime("custom", rp._resolve_plain_custom_api_mode(model_cfg, base_url), base_url, api_key, source=source)
 
-
-# ── AWS Bedrock ────────────────────────────────────────────────────────────────────────────
-
-
-def _resolve_bedrock_runtime(requested_provider: str, model_cfg: Dict[str, Any], target_model: Optional[str]) -> Dict[str, Any]:
-    """AWS Bedrock with triple-path routing: OpenAI models → Bedrock Mantle's Responses endpoint;
-    Claude → AnthropicBedrock SDK (prompt caching, thinking budgets); others → Converse API.
-    AWS_BEARER_TOKEN_BEDROCK auth is unsupported by AnthropicBedrock (SigV4 only), so bearer users
-    go through Converse regardless of model."""
-    from agent.bedrock_adapter import (bedrock_openai_base_url, has_aws_credentials, is_anthropic_bedrock_model,
-                                       is_openai_bedrock_model, resolve_aws_auth_env_var, resolve_bedrock_bearer_token,
-                                       resolve_bedrock_runtime_region, bedrock_guardrail_config)
-    from hermes_cli.config import load_config  # direct (not the origin delegate), as before
-    rp = _rp()
-    # Explicitly selected bedrock trusts boto3's credential chain (IMDS, ECS/Lambda roles, SSO)
-    # which the env-var check can't detect.
-    is_explicit = requested_provider in {"bedrock", "aws", "aws-bedrock", "amazon-bedrock", "amazon"}
-    if not is_explicit and not has_aws_credentials():
-        raise rp.AuthError(
-            "No AWS credentials found for Bedrock. Configure one of:\n"
-            "  - AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY\n"
-            "  - AWS_PROFILE (for SSO / named profiles)\n"
-            "  - IAM instance role (EC2, ECS, Lambda)\n"
-            "Or run 'aws configure' to set up credentials.",
-            code="no_aws_credentials",
-        )
-    bedrock_cfg = load_config().get("bedrock", {})
-    # Region priority (config.yaml bedrock.region → env → us-east-1) lives in the adapter.
-    region = resolve_bedrock_runtime_region({"bedrock": bedrock_cfg})
-    auth_source = resolve_aws_auth_env_var() or "aws-sdk-default-chain"
-    guardrail_config = bedrock_guardrail_config({"bedrock": bedrock_cfg})
-    current_model = str(target_model or model_cfg.get("default") or "").strip()
-    has_bearer_token = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip())
-    runtime = rp._runtime("bedrock", "bedrock_converse", f"https://bedrock-runtime.{region}.amazonaws.com", "aws-sdk",
-                          source=auth_source, region=region, requested_provider=requested_provider)
-    if is_openai_bedrock_model(current_model):
-        bearer = resolve_bedrock_bearer_token()
-        runtime.update(api_mode="codex_responses", base_url=bedrock_openai_base_url(region), api_key=bearer or "aws-sdk",
-                       source="AWS_BEARER_TOKEN_BEDROCK" if bearer else auth_source, model=current_model, bedrock_openai=True)
-    elif is_anthropic_bedrock_model(current_model) and not has_bearer_token:
-        runtime.update(api_mode="anthropic_messages", bedrock_anthropic=True)
-    if guardrail_config:
-        runtime["guardrail_config"] = guardrail_config
-    return runtime
 
 
 # ── External-process (agent CLI over stdio, e.g. ACP) ──────────────────────────────────────

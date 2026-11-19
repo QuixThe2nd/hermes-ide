@@ -17,19 +17,19 @@ FAKE_SECRET = "sk-" + "A" * 32
 BODY = "Job finished. 3 tasks done, 1 pending."
 
 
-def _telegram_cfg():
+def _discord_cfg():
     from gateway.config import Platform
 
     pconfig = MagicMock()
     pconfig.enabled = True
     cfg = MagicMock()
-    cfg.platforms = {Platform.TELEGRAM: pconfig}
+    cfg.platforms = {Platform.DISCORD: pconfig}
     return cfg
 
 
 def _job(name: str = "daily-report") -> dict:
     return {"id": "report-job", "name": name, "deliver": "origin",
-            "origin": {"platform": "telegram", "chat_id": "123"}}
+            "origin": {"platform": "discord", "chat_id": "123"}}
 
 
 def _flat(call) -> str:
@@ -43,7 +43,7 @@ def _deliver_platform_and_mirror(job: dict, content: str) -> tuple[str, str]:
 
     send = AsyncMock(return_value={"success": True})
     sink = MagicMock(return_value=True)
-    with patch("gateway.config.load_gateway_config", return_value=_telegram_cfg()), \
+    with patch("gateway.config.load_gateway_config", return_value=_discord_cfg()), \
          patch("tools.send_message_tool._send_to_platform", new=send), \
          patch("cron.scheduler_delivery._cron_mirror_delivery_enabled", return_value=True), \
          patch("cron.scheduler_delivery._target_matches_origin", return_value=True), \
@@ -103,7 +103,7 @@ def test_delivery_redaction_is_forced_and_fails_closed(mode, monkeypatch):
     send = AsyncMock(return_value={"success": True})
     try:
         with ExitStack() as stack:
-            stack.enter_context(patch("gateway.config.load_gateway_config", return_value=_telegram_cfg()))
+            stack.enter_context(patch("gateway.config.load_gateway_config", return_value=_discord_cfg()))
             stack.enter_context(patch("tools.send_message_tool._send_to_platform", new=send))
             stack.enter_context(patch("sys.is_finalizing", return_value=False))
             if mode == "redact_secrets_off":

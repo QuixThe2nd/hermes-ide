@@ -1,12 +1,14 @@
 """Async-delegation typing supervisor on BasePlatformAdapter."""
 
 import asyncio
+import queue
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
 
 import tools.async_delegation as ad
+from tools.process_registry import process_registry
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.session import SessionSource, build_session_key
@@ -134,6 +136,68 @@ async def test_last_completion_stops_supervisor_and_platform_typing(make_adapter
 
     assert session_key not in adapter._delegation_typing_tasks
     adapter.stop_typing.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_last_child_finalizing_stops_typing_without_draining_completion(
+    make_adapter, monkeypatch
+):
+    adapter = make_adapter()
+    typing_started = asyncio.Event()
+    release_typing = asyncio.Event()
+
+    async def hold_first_typing_send(*args, **kwargs):
+        typing_started.set()
+        await release_typing.wait()
+
+    adapter.send_typing.side_effect = hold_first_typing_send
+    session_key = _sk()
+    with ad._records_lock:
+        ad._records["d-finalizing"] = {
+            "delegation_id": "d-finalizing",
+            "status": "finalizing",
+            "session_key": session_key,
+            "parent_session_id": "",
+            "interrupt_fn": MagicMock(),
+        }
+        ad._records["d-running"] = {
+            "delegation_id": "d-running",
+            "status": "running",
+            "session_key": session_key,
+            "parent_session_id": "",
+            "interrupt_fn": MagicMock(),
+        }
+    completion = {"type": "async_delegation", "delegation_id": "d-finalizing"}
+    completion_queue = queue.Queue()
+    completion_queue.put(completion)
+    monkeypatch.setattr(process_registry, "completion_queue", completion_queue)
+
+    supervisor = asyncio.create_task(
+        adapter._delegation_typing_supervisor_loop(session_key, "C123")
+    )
+    try:
+        await asyncio.wait_for(typing_started.wait(), timeout=1.0)
+        assert not supervisor.done()
+        assert ad.has_live_for_session(session_key=session_key)
+
+        with ad._records_lock:
+            ad._records["d-running"]["status"] = "finalizing"
+        release_typing.set()
+
+        _, pending = await asyncio.wait({supervisor}, timeout=1.0)
+        assert not pending, "result publication kept the typing supervisor alive"
+        await supervisor
+
+        assert not ad.has_live_for_session(session_key=session_key)
+        adapter.send_typing.assert_awaited_once()
+        adapter.stop_typing.assert_awaited_once()
+        assert completion_queue.qsize() == 1
+        assert completion_queue.queue[0] is completion
+    finally:
+        release_typing.set()
+        if not supervisor.done():
+            supervisor.cancel()
+            await supervisor
 
 
 @pytest.mark.asyncio

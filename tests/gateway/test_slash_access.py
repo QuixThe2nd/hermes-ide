@@ -100,7 +100,7 @@ class TestPolicyForSource:
         assert p.is_admin("111") is True
         assert p.can_run("999", "status") is True
         assert p.can_run("999", "help") is True  # always-allowed floor
-        assert p.can_run("999", "kanban") is False
+        assert p.can_run("999", "model") is False
 
 
     def test_no_admin_list_for_dm_means_unrestricted_in_dm(self):

@@ -87,7 +87,7 @@ class TestWhatsAppCommonUsesSecretScope:
 
     def test_effective_reply_prefix_uses_scope(self, tmp_path, monkeypatch):
         """_effective_reply_prefix respects the profile's WHATSAPP_MODE from scope."""
-        from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
         monkeypatch.delenv("WHATSAPP_MODE", raising=False)
         monkeypatch.delenv("WHATSAPP_REPLY_PREFIX", raising=False)
@@ -97,9 +97,8 @@ class TestWhatsAppCommonUsesSecretScope:
         (tmp_path / ".env").write_text("WHATSAPP_MODE=bot\n")
         tok = ss.set_secret_scope(ss.build_profile_secret_scope(tmp_path))
         try:
-            mixin = object.__new__(WhatsAppBehaviorMixin)
+            mixin = object.__new__(WhatsAppAdapter)
             mixin.config = type("C", (), {"extra": {}})()
-            mixin.name = "test"
             mixin._reply_prefix = None
             mixin.MAX_MESSAGE_LENGTH = 4096
             mixin.DEFAULT_REPLY_PREFIX = "[Reply] "

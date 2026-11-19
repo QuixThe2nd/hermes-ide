@@ -40,12 +40,6 @@ def _exec_version(ctx: CommandContext) -> CommandReply:
     return CommandReply(format_banner_version_label())
 
 
-def _exec_egress(ctx: CommandContext) -> CommandReply:
-    """Core /egress text — Docker egress proxy status."""
-    from hermes_cli.proxy_cli import format_status_text
-    return CommandReply(format_status_text())
-
-
 def _exec_profile(ctx: CommandContext) -> CommandReply:
     """Core /profile data — active profile name + home directory.
 
@@ -66,30 +60,6 @@ def _exec_profile(ctx: CommandContext) -> CommandReply:
         pass
     return CommandReply(f"Profile: {label}\nHome: {home_display}",
                         data={"profile": profile_name, "home": home_display})
-
-
-def _exec_bundles(ctx: CommandContext) -> CommandReply:
-    """Core /bundles data — installed skill bundles listing."""
-    try:
-        from agent.skill_bundles import _bundles_dir, list_bundles
-    except Exception as exc:  # pragma: no cover - env-specific
-        return CommandReply(f"Bundles subsystem unavailable: {exc}", data={"error": str(exc)})
-    bundles = list_bundles()
-    bundles_dir = str(_bundles_dir())
-    if not bundles:
-        return CommandReply(
-            "No skill bundles installed.\n"
-            "Create one with: hermes bundles create <name> --skill <s1> --skill <s2>\n"
-            f"Directory: {bundles_dir}",
-            data={"bundles": [], "dir": bundles_dir})
-    lines = [f"Skill Bundles ({len(bundles)} installed):"]
-    for info in bundles:
-        skills = info.get("skills", [])
-        desc = info.get("description") or f"Load {len(skills)} skills"
-        lines.append(f"/{info['slug']} — {desc} ({len(skills)} skills)")
-        lines.extend(f"    · {s}" for s in skills)
-    lines.append("Invoke a bundle with /<slug> to load all its skills.")
-    return CommandReply("\n".join(lines), data={"bundles": bundles, "dir": bundles_dir})
 
 
 def _skill_commands() -> dict:
@@ -123,7 +93,7 @@ def _exec_help(ctx: CommandContext) -> CommandReply:
 def _exec_commands(ctx: CommandContext) -> CommandReply:
     """Core gateway /commands body — paginated command + skill listing.
 
-    ``ctx.options["page_size"]`` is a surface parameter (Telegram uses 15, everything else 20).
+    ``ctx.options["page_size"]`` is a surface parameter (per-platform overrides; default 20).
     """
     from agent.i18n import t
     from hermes_cli.commands import gateway_help_lines
@@ -171,9 +141,7 @@ def _exec_commands(ctx: CommandContext) -> CommandReply:
 
 EXECUTORS: dict[str, Callable[[CommandContext], CommandReply]] = {
     "version": _exec_version,
-    "egress": _exec_egress,
     "profile": _exec_profile,
-    "bundles": _exec_bundles,
     "gateway_help": _exec_help,
     "gateway_commands": _exec_commands}
 

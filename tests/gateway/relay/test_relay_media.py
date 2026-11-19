@@ -31,8 +31,8 @@ from tests.gateway.relay.stub_connector import StubConnector
 def make_desc(**kw) -> CapabilityDescriptor:
     base = dict(
         contract_version=CONTRACT_VERSION,
-        platform="telegram",
-        label="Telegram",
+        platform="discord",
+        label="Discord",
         max_message_length=4096,
         supports_draft_streaming=False,
         supports_edit=True,
@@ -106,12 +106,12 @@ async def test_local_path_lanes_upload_first(tmp_path: Path):
     adapter, stub, fake = _adapter()
     f = tmp_path / "clip.ogg"
     f.write_bytes(b"oggbytes")
-    result = await adapter.send_voice("chat1", str(f), caption="listen")
+    result = await adapter.send_document("chat1", str(f), caption="listen")
     assert result.success is True
     assert fake.uploads == [(str(f), None)]
     action = stub.sent[-1]
     assert action["op"] == "send_media"
-    assert action["media_kind"] == "voice"
+    assert action["media_kind"] == "document"
     # The wire carries the RE-HOST reference, never the local path.
     assert action["source_url"] == fake.upload_result
     assert str(f) not in str(action)
@@ -143,7 +143,7 @@ def _make_event(media_urls):
         text="look",
         message_type=MessageType.TEXT,
         source=SessionSource(
-            platform="telegram", chat_id="c1", chat_type="dm", user_id="u1"
+            platform="discord", chat_id="c1", chat_type="dm", user_id="u1"
         ),
         media_urls=list(media_urls),
     )

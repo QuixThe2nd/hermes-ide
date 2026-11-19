@@ -14,6 +14,16 @@ from hermes_cli import main_install_repair
 from hermes_cli import update_cmd
 
 
+@pytest.fixture(autouse=True)
+def _isolate_venv_holders(monkeypatch):
+    """The update flow's venv-holder guard sees the live gateway processes on
+    a dev machine and aborts with SystemExit 2 before reaching the branch
+    logic under test.  Isolate it so the test exercises the intended path."""
+    import hermes_cli.main as cli_main
+
+    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: [])
+
+
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
     """Build a side_effect function for subprocess.run that simulates git commands."""
 
@@ -32,6 +42,11 @@ def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
         # git rev-list HEAD..origin/{branch} --count
         if "rev-list" in joined:
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{commit_count}\n", stderr="")
+
+        # The configured source remains origin, including on ZIP fallback.
+        if "remote" in joined and "get-url" in joined and "origin" in joined:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="https://github.com/QuixThe2nd/hermes-ide.git\n", stderr="")
 
         # Fallback: return a successful CompletedProcess with empty stdout
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -82,7 +97,7 @@ def _patch_gateway_discovery(isolated_update_runtime):
          patch("hermes_cli.main._detect_venv_python_processes", return_value=[]), \
          patch("hermes_cli.main._fleet_probe_expected_runtimes", return_value=False), \
          patch("os.kill"), \
-         patch("pm.ensure.sync_venv"), \
+         patch("pm.sync_venv"), \
          patch(
              "hermes_cli.update_inventory.collect_runtime_inventory",
              return_value=SimpleNamespace(runtimes=[], to_dict=lambda: {}),
@@ -182,53 +197,6 @@ class TestCmdUpdateNpmLockfileCache:
         assert cache_roots == [shared_root, shared_root]
 
 
-class TestCmdUpdateTermuxUvBootstrap:
-    """Regression tests for Termux-specific uv bootstrap behavior."""
-
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
-    def test_termux_uv_bootstrap_uses_binary_only_install(
-        self, mock_run, _mock_which, monkeypatch
-    ):
-        from hermes_cli import main as hm
-
-        mock_run.return_value = subprocess.CompletedProcess([], 1, stdout="", stderr="")
-        monkeypatch.setattr(hm, "_is_termux_env", lambda env=None: True)
-
-        uv_bin = update_cmd._ensure_uv_for_termux(["/termux/python", "-m", "pip"])
-
-        assert uv_bin is None
-        assert mock_run.call_count == 1
-        assert mock_run.call_args.args[0] == [
-            "/termux/python",
-            "-m",
-            "pip",
-            "install",
-            "uv",
-            "--only-binary",
-            ":all:",
-        ]
-        assert mock_run.call_args.kwargs["cwd"] == PROJECT_ROOT
-        assert mock_run.call_args.kwargs["check"] is False
-
-    @patch("subprocess.run")
-    def test_termux_reuses_existing_path_uv_without_pip(self, mock_run, monkeypatch):
-        """A uv already on PATH (e.g. ``pkg install uv``) is reused before pip runs."""
-        from hermes_cli import main as hm
-
-        pkg_uv = "/data/data/com.termux/files/usr/bin/uv"
-        monkeypatch.setattr(hm, "_is_termux_env", lambda env=None: True)
-        # Production resolve_uv only checks $HERMES_HOME/bin/uv; model an empty
-        # managed dir so the PATH probe is what surfaces the packaged uv.
-        monkeypatch.setattr("hermes_cli.managed_uv.resolve_uv", lambda: None)
-        monkeypatch.setattr("shutil.which", lambda name: pkg_uv if name == "uv" else None)
-
-        uv_bin = update_cmd._ensure_uv_for_termux(["/termux/python", "-m", "pip"])
-
-        assert uv_bin == pkg_uv
-        mock_run.assert_not_called()
-
-
 class TestUpdateManagedPythonEnvIsolation:
     """Regression for the uv-env isolation fix (third-party UV_PYTHON_INSTALL_DIR
     must not hijack the update's pip install).
@@ -294,16 +262,13 @@ class TestRepairCurrentCheckoutRuntimeRepair:
         from hermes_cli import main as hm
 
         calls: list = []
-        monkeypatch.setattr(hm, "_abort_dependency_sync_if_self_locked", lambda *_a, **k: None)
         monkeypatch.setattr(update_cmd, "_write_update_incomplete_marker", lambda: None)
         monkeypatch.setattr(update_cmd, "_venv_core_imports_healthy", lambda: (True, "ok"))
-        monkeypatch.setattr(update_cmd, "project_venv_dir", lambda _root: tmp_path / "venv")
-        monkeypatch.setattr(
-            update_cmd, "venv_python_path", lambda _d, **k: tmp_path / "venv" / "bin" / "python")
         # pm owns the venv contents now (uv resolution + [all]+lazy sync in one call).
         monkeypatch.setattr("pm.uv", lambda **k: ("uv", {}))
         monkeypatch.setattr("pm.sync_venv", lambda *a, **k: None)
-        monkeypatch.setattr(hm, "_restore_active_tool_dependencies", lambda *a, **k: None)
+        monkeypatch.setattr(hm, "_reapply_plugin_python_dependencies", lambda: None)
+        monkeypatch.setattr(update_cmd, "_repair_node_deps_on_current_checkout", lambda *a, **k: True)
         monkeypatch.setattr(
             hm, "_refresh_active_memory_provider_dependencies", lambda: calls.append("memory"))
         monkeypatch.setattr(hm, "_clear_update_incomplete_marker", lambda: None)
@@ -311,7 +276,7 @@ class TestRepairCurrentCheckoutRuntimeRepair:
 
         assert update_cmd._repair_venv_on_current_checkout(
             assume_yes=True, gateway_mode=False, pre_update_snapshot_id=None,
-            had_desktop_app_before_update=False, active_lazy_features=[],
+            active_lazy_features=[],
             active_tool_dependencies=[], _windows_gateway_resume=None,
         )
         assert calls == ["memory"]
@@ -325,48 +290,10 @@ class TestCmdUpdateBranchFallback:
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
-    def test_update_on_fork_checks_upstream_when_origin_up_to_date(
+    def test_update_on_fork_never_syncs_upstream_when_origin_up_to_date(
         self, mock_run, _mock_which, mock_args, capsys
     ):
-        """Regression for issue #26172: forks whose local HEAD already matches
-        origin/main must still consult upstream/main before printing
-        "Already up to date!" — otherwise a fork that's caught up to its own
-        origin but behind NousResearch/hermes-agent silently misses updates.
-        """
-        from hermes_cli import main as hm
-
-        mock_run.side_effect = _make_run_side_effect(
-            branch="main", verify_ok=True, commit_count="0"
-        )
-
-        with patch.object(
-            hm,
-            "_get_origin_url",
-            return_value="https://github.com/example/hermes-agent.git",
-        ), patch.object(hm, "_sync_with_upstream_if_needed") as sync_mock:
-            cmd_update(mock_args)
-
-        expected_git_cmd = (
-            ["git", "-c", "windows.appendAtomically=false"] if hm._is_windows() else ["git"]
-        )
-        sync_mock.assert_called_once_with(
-            expected_git_cmd,
-            PROJECT_ROOT,
-            assume_yes=False,
-            input_fn=None,
-        )
-        captured = capsys.readouterr()
-        assert "Already up to date!" in captured.out
-
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
-    def test_yes_on_fork_without_upstream_does_not_claim_up_to_date(
-        self, mock_run, _mock_which, capsys
-    ):
-        """#97052 review: genuine fork, no upstream remote, HEAD == origin/main,
-        --yes. The prompt is skipped without mutating remotes, and because the
-        official repo was never consulted the completion line must not claim
-        plain "Already up to date!"."""
+        """A current origin is authoritative even when an upstream remote is configured."""
         from hermes_cli import main as hm
         from hermes_cli import update_cmd
 
@@ -379,23 +306,49 @@ class TestCmdUpdateBranchFallback:
             "_get_origin_url",
             return_value="https://github.com/example/hermes-agent.git",
         ), patch.object(
-            update_cmd, "_has_upstream_remote", return_value=False
+            update_cmd,
+            "_venv_core_imports_healthy",
+            return_value=(True, ""),
         ), patch.object(
-            update_cmd, "_should_skip_upstream_prompt", return_value=False
+            update_cmd, "_update_node_dependencies", return_value=[]
         ), patch.object(
-            update_cmd, "_add_upstream_remote"
-        ) as add_remote, patch.object(
-            update_cmd, "_mark_skip_upstream_prompt"
-        ) as mark_skip, patch("builtins.input") as stdin_input:
+            update_cmd, "_check_and_apply_config_migration"
+        ):
+            cmd_update(mock_args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert not any("upstream" in command for command in commands), commands
+        assert not any("push" in command for command in commands), commands
+        assert "Already up to date!" in capsys.readouterr().out
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_yes_on_fork_reports_origin_up_to_date_without_prompt(
+        self, mock_run, _mock_which, capsys
+    ):
+        """--yes checks only origin and never offers to mutate upstream remotes."""
+        from hermes_cli import main as hm
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/example/hermes-agent.git",
+        ), patch.object(
+            hm, "_resolve_node_runtime_npm", return_value=None
+        ), patch("builtins.input") as stdin_input:
             cmd_update(SimpleNamespace(yes=True))
 
         stdin_input.assert_not_called()
-        add_remote.assert_not_called()
-        mark_skip.assert_not_called()
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert not any("upstream" in command for command in commands), commands
+        assert not any("push" in command for command in commands), commands
         captured = capsys.readouterr()
-        assert "Skipping upstream setup (non-interactive run)." in captured.out
-        assert "official repo not checked" in captured.out
-        assert "Already up to date!" not in captured.out
+        assert "Skipping upstream setup" not in captured.out
+        assert "Already up to date!" in captured.out
 
     @pytest.mark.parametrize(
         ("health_after_repair", "runtime_status", "expected_runtime_checks"),
@@ -428,20 +381,14 @@ class TestCmdUpdateBranchFallback:
             hm,
             "_get_origin_url",
             return_value="https://github.com/example/hermes-agent.git",
-        ), patch.object(hm, "_sync_with_upstream_if_needed"), patch.object(
+        ), patch.object(
             update_cmd,
             "_venv_core_imports_healthy",
             side_effect=[
                 (False, "broken before repair"),
                 (health_after_repair, "broken after repair"),
             ],
-        ), patch.object(
-            hm, "_install_python_dependencies_with_optional_fallback"
-        ), patch.object(
-            hm, "_refresh_active_lazy_features"
-        ), patch.object(
-            hm, "_restore_active_tool_dependencies"
-        ), patch.object(
+        ), patch("pm.sync_venv"), patch.object(
             update_cmd, "_write_update_incomplete_marker"
         ), patch.object(
             hm, "_clear_update_incomplete_marker"
@@ -482,7 +429,7 @@ class TestCmdUpdateBranchFallback:
             hm,
             "_get_origin_url",
             return_value="https://github.com/example/hermes-agent.git",
-        ), patch.object(hm, "_sync_with_upstream_if_needed"), patch.object(
+        ), patch.object(
             update_cmd,
             "_repair_node_deps_on_current_checkout",
             return_value=False,
@@ -499,79 +446,11 @@ class TestCmdUpdateBranchFallback:
         assert exit_info.value.code == 1
         write_gateway_exit.assert_called_once_with(False)
         finalize_receipt.assert_called_once_with("partial")
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
-    def test_fork_upstream_sync_that_moves_head_runs_post_update_steps(
-        self, mock_run, _mock_which, mock_args, capsys
-    ):
-        """A fork sync that pulls code must continue through post-update work."""
-        from hermes_cli import main as hm
-        from hermes_cli import update_cmd
-
-        mock_run.side_effect = _make_run_side_effect(
-            branch="main", verify_ok=True, commit_count="0"
-        )
-
-        # The first two reads bracket the upstream sync (aaaaaaa -> bbbbbbb:
-        # the sync moved HEAD). The NEXT two bracket the pull inside the
-        # normal update path (bbbbbbb -> ccccccc) — the head-moved no-op
-        # guard added after this PR exits 1 when that pair is equal, so the
-        # mock must show the pull advancing HEAD too.
-        shas = iter(["aaaaaaa", "bbbbbbb", "bbbbbbb", "ccccccc"])
-
-        with patch.object(
-            hm,
-            "_get_origin_url",
-            return_value="https://github.com/example/hermes-agent.git",
-        ), patch.object(
-            update_cmd,
-            "_capture_head_sha",
-            side_effect=lambda *_args, **_kwargs: next(shas, "ccccccc"),
-        ), patch(
-            # The full post-update path runs the fleet version check, which
-            # reads the REAL machine's profile gateway_state.json files —
-            # live gateways on a dev box read as STALE vs this checkout and
-            # exit 1. Pin an empty fleet: this test asserts the post-update
-            # path RUNS, not the fleet's health.
-            "hermes_cli.update_receipt.collect_fleet_versions",
-            return_value=[],
-        ), patch(
-            # Same isolation for the restart phase: without these, the real
-            # machine's live gateways enter the restart discovery, the
-            # mocked-subprocess restart phase can't verify replacements, and
-            # the fail-closed contract (#78574) exits 1 (locally the
-            # live-system guard blocks the os.kill outright).
-            "hermes_cli.gateway.find_gateway_pids",
-            return_value=[],
-        ), patch(
-            "hermes_cli.gateway.find_profile_gateway_processes",
-            return_value=[],
-        ), patch(
-            "hermes_cli.gateway._get_service_pids",
-            return_value=set(),
-        ), patch.object(
-            hm, "_sync_with_upstream_if_needed"
-        ), patch.object(
-            hm,
-            "_upgrade_pip_before_lazy_refresh",
-            # Reaching the lazy-refresh step IS the proof the post-update path ran
-            # (the bug returned from "Already up to date!" before it). Abort
-            # the pipeline right here: everything past this point (skills
-            # sync, desktop rebuild, gateway restart, fleet check) would run
-            # for real against the host machine.
-            side_effect=SystemExit(0),
-        ) as post_update_step:
-            with pytest.raises(SystemExit) as exit_info:
-                cmd_update(mock_args)
-
-        assert exit_info.value.code == 0
-        post_update_step.assert_called_once()
-        captured = capsys.readouterr()
-        assert "Already up to date!" not in captured.out
-
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):
         """Dashboard/web updates apply non-interactive migrations before restart."""
         with patch("shutil.which", return_value=None), patch(
+            "hermes_cli.main._resolve_node_runtime_npm", return_value=None
+        ), patch(
             "subprocess.run"
         ) as mock_run, patch("builtins.input") as mock_input, patch(
             "hermes_cli.config.get_missing_env_vars", return_value=["MISSING_KEY"]
@@ -614,6 +493,8 @@ class TestCmdUpdateMigrationPrompt:
     ):
         """Only the version moved → apply non-interactively, never prompt."""
         with patch("shutil.which", return_value=None), patch(
+            "hermes_cli.main._resolve_node_runtime_npm", return_value=None
+        ), patch(
             "subprocess.run"
         ) as mock_run, patch("builtins.input") as mock_input, patch(
             "hermes_cli.config.get_missing_env_vars", return_value=[]
@@ -651,6 +532,8 @@ class TestCmdUpdateMigrationPrompt:
         warnings must be re-surfaced even in the silent branch.
         """
         with patch("shutil.which", return_value=None), patch(
+            "hermes_cli.main._resolve_node_runtime_npm", return_value=None
+        ), patch(
             "subprocess.run"
         ) as mock_run, patch("builtins.input") as mock_input, patch(
             "hermes_cli.config.get_missing_env_vars", return_value=[]
@@ -691,6 +574,8 @@ class TestCmdUpdateMigrationPrompt:
             {"key": "display.new_widget", "description": "New config option: display.new_widget"},
         ]
         with patch("shutil.which", return_value=None), patch(
+            "hermes_cli.main._resolve_node_runtime_npm", return_value=None
+        ), patch(
             "subprocess.run"
         ) as mock_run, patch("builtins.input", return_value="n"), patch(
             "hermes_cli.config.get_missing_env_vars", return_value=env_items
@@ -752,6 +637,7 @@ class TestCmdUpdateProfileSkillSync:
             patch("hermes_cli.profiles.list_profiles", return_value=all_profiles),
             patch("hermes_cli.profiles.seed_profile_skills", side_effect=fake_seed),
             patch("tools.skills_sync.sync_skills", return_value=empty_sync),
+            patch("hermes_cli.main._resolve_node_runtime_npm", return_value=None),
         ):
             cmd_update(mock_args)
 
@@ -786,6 +672,7 @@ class TestCmdUpdateProfileSkillSync:
             patch("hermes_cli.profiles.list_profiles", return_value=[default_p]),
             patch("hermes_cli.profiles.seed_profile_skills", side_effect=fake_seed),
             patch("tools.skills_sync.sync_skills", return_value=empty_sync),
+            patch("hermes_cli.main._resolve_node_runtime_npm", return_value=None),
         ):
             cmd_update(mock_args)
 
@@ -843,7 +730,10 @@ class TestCmdUpdateBranchFlag:
         )
         args = SimpleNamespace(branch="bb/gui")
 
-        cmd_update(args)
+        with patch(
+            "hermes_cli.main._resolve_node_runtime_npm", return_value=None
+        ):
+            cmd_update(args)
 
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
 
@@ -896,26 +786,16 @@ class TestCmdUpdateCheckBranchFlag:
         *,
         verify_ok: bool = True,
         commit_count: str = "0",
-        upstream_fetch_ok: bool = True,
     ):
         """Mock side-effect for the _cmd_update_check git pipeline.
 
-        - ``target_branch``      what we expect compare ref to point at
-        - ``verify_ok``          if False, ``git rev-parse --verify --quiet
-                                 origin/<branch>`` fails (branch missing
-                                 on origin)
-        - ``commit_count``       rev-list count (0 = up-to-date)
-        - ``upstream_fetch_ok``  if False, ``git fetch upstream`` fails
-                                 (forces fallback to origin on branch==main)
+        - ``target_branch``  what we expect compare ref to point at
+        - ``verify_ok``      if False, origin/<branch> fails verification
+        - ``commit_count``   rev-list count (0 = up-to-date)
         """
 
         def side_effect(cmd, **kwargs):
             joined = " ".join(str(c) for c in cmd)
-
-            if "fetch" in joined and "upstream" in joined:
-                rc = 0 if upstream_fetch_ok else 128
-                err = "" if upstream_fetch_ok else "fatal: 'upstream' does not appear to be a git repository\n"
-                return subprocess.CompletedProcess(cmd, rc, stdout="", stderr=err)
 
             if "fetch" in joined and "origin" in joined:
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -987,10 +867,10 @@ class TestCmdUpdateCheckBranchFlag:
 
     @patch("hermes_cli.config.detect_install_method", return_value="git")
     @patch("subprocess.run")
-    def test_check_default_main_still_prefers_upstream(
+    def test_check_default_main_ignores_upstream_remote(
         self, mock_run, _mock_method, capsys
     ):
-        """No --branch (or --branch=None) preserves the upstream-then-origin probe."""
+        """Default --check uses origin/main even when an upstream remote exists."""
         mock_run.side_effect = self._check_side_effect(
             target_branch="main", verify_ok=True, commit_count="0"
         )
@@ -999,11 +879,11 @@ class TestCmdUpdateCheckBranchFlag:
         cmd_update(args)
 
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
-        # Should have tried upstream first.
-        assert any("fetch" in c and "upstream" in c for c in commands), commands
-        # Compare ref is upstream/main (upstream fetch succeeded).
+        assert any("fetch" in c and "origin main" in c for c in commands), commands
+        assert not any("upstream" in c for c in commands), commands
         rev_list_cmds = [c for c in commands if "rev-list" in c]
-        assert any("upstream/main" in c for c in rev_list_cmds), rev_list_cmds
+        assert any("origin/main" in c for c in rev_list_cmds), rev_list_cmds
+        assert not any("upstream/main" in c for c in rev_list_cmds), rev_list_cmds
 
 
 class TestCmdUpdateZipBranchRefusal:
@@ -1028,6 +908,60 @@ class TestCmdUpdateZipBranchRefusal:
         assert "not supported" in out
         # No actual download attempted.
         assert "Downloading latest version" not in out
+
+
+def test_zip_archive_uses_configured_github_origin(tmp_path, monkeypatch):
+    from hermes_cli import main as hermes_main
+    from hermes_cli import update_cmd_zip
+
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        hermes_main, "_get_origin_url",
+        lambda *args: "git@github.com:Example/custom-hermes.git",
+    )
+
+    assert update_cmd_zip._zip_archive_url("main") == (
+        "https://github.com/example/custom-hermes/archive/refs/heads/main.zip"
+    )
+
+
+def test_zip_archive_source_only_install_defaults_to_hermes_ide(tmp_path, monkeypatch):
+    from hermes_cli import main as hermes_main
+    from hermes_cli import update_cmd_zip
+
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+    assert update_cmd_zip._zip_archive_url("main") == (
+        "https://github.com/quixthe2nd/hermes-ide/archive/refs/heads/main.zip"
+    )
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        None,
+        "https://gitlab.com/example/hermes.git",
+        "https://github.com.evil.example/example/hermes.git",
+        "https://github.com@evil.example/example/hermes.git",
+        "git@github.com.evil:example/hermes.git",
+        "https://evil.example/github.com/example/hermes.git",
+    ],
+)
+def test_zip_archive_refuses_unresolvable_origin_without_downloading(
+    tmp_path, monkeypatch, capsys, origin
+):
+    from hermes_cli import main as hermes_main
+    from hermes_cli import update_cmd_zip
+
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(hermes_main, "_get_origin_url", lambda *args: origin)
+    with patch("urllib.request.urlretrieve") as download:
+        with pytest.raises(SystemExit) as exc_info:
+            update_cmd_zip._zip_archive_url("main")
+    assert exc_info.value.code == 1
+    download.assert_not_called()
+    assert "NousResearch" not in capsys.readouterr().out
 
 
 def test_is_termux_env_true_for_termux_prefix():
@@ -1082,16 +1016,13 @@ class TestNodeRuntimeNpmResolution:
             lambda *a, **k: subprocess.CompletedProcess([], 1, stdout="", stderr=""),
         )
 
-        with patch(
-            "tools.browser_tool_install.warm_agent_browser_npx_cache", return_value=True
-        ):
-            failed = update_cmd._update_node_dependencies()
-        assert failed == ["ui-tui, web workspaces"]
+        failed = update_cmd._update_node_dependencies()
+        assert failed == ["ui-tui workspace"]
         out = capsys.readouterr().out
         assert "mixed state" in out
 
     def test_wsl_update_skips_windows_npm_build_paths(self, mock_args, monkeypatch):
-        """A Windows-only npm on WSL must not reach web or desktop builds."""
+        """A Windows-only npm on WSL must not reach web builds."""
         from hermes_cli import main as hm
         import hermes_constants
 
@@ -1112,11 +1043,8 @@ class TestNodeRuntimeNpmResolution:
 
         with patch("subprocess.run") as mock_run, \
              patch.object(main_web_build, "_web_ui_build_needed", return_value=True), \
-             patch.object(hm, "_desktop_packaged_executable", return_value=None), \
-             patch.object(hm, "_desktop_dist_exists", return_value=True), \
              patch.object(hm, "_run_npm_install_deterministic") as mock_npm_install, \
-             patch.object(main_web_build, "_run_with_idle_timeout") as mock_idle_build, \
-             patch.object(hm, "_run_logged_subprocess") as mock_desktop_build:
+             patch.object(main_web_build, "_run_with_idle_timeout") as mock_idle_build:
             mock_run.side_effect = _make_run_side_effect(
                 branch="main", verify_ok=True, commit_count="1"
             )
@@ -1124,169 +1052,15 @@ class TestNodeRuntimeNpmResolution:
 
         mock_npm_install.assert_not_called()
         mock_idle_build.assert_not_called()
-        mock_desktop_build.assert_not_called()
         assert all(
             not call.args or not call.args[0] or call.args[0][0] != windows_npm
             for call in mock_run.call_args_list
         )
 
-    def test_update_rebuilds_desktop_that_disappears_mid_update(self):
-        """A previously packaged Desktop must be rebuilt when its release tree vanishes."""
-        from hermes_cli import main as hm
-        from hermes_cli import update_cmd
-
-        desktop_dir = PROJECT_ROOT / "apps" / "desktop"
-        (desktop_dir / "package.json").write_text("{}", encoding="utf-8")
-        packaged_exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
-        build_ok = subprocess.CompletedProcess([], 0, stdout="", stderr="")
-
-        with (
-            patch.object(
-                hm, "_desktop_packaged_executable", side_effect=[packaged_exe, None]
-            ) as packaged,
-            patch.object(hm, "_desktop_dist_exists", return_value=False),
-            patch.object(hm, "_resolve_node_runtime_npm", return_value="npm.cmd"),
-            patch.object(hm, "_desktop_build_needed", return_value=True),
-            patch.object(hm, "_run_logged_subprocess", return_value=build_ok) as desktop_build,
-        ):
-            had_desktop_app_before_update = update_cmd._desktop_app_present(desktop_dir)
-            assert not update_cmd._desktop_app_present(desktop_dir)
-            update_cmd._rebuild_desktop_after_update(
-                desktop_dir,
-                had_desktop_app_before_update=had_desktop_app_before_update,
-            )
-
-        assert packaged.call_count == 2
-        desktop_build.assert_called_once_with(
-            [hm.sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"],
-            cwd=PROJECT_ROOT,
-            env=ANY,
-        )
-
-    def test_git_failure_zip_fallback_rebuilds_missing_desktop(self, tmp_path, monkeypatch):
-        """The Windows ZIP fallback keeps Desktop intact when replacing ``apps/``.
-
-        Contract updated for the #70337/#87331 release-dir graft: the built
-        desktop app (release/win-unpacked/Hermes.exe) is preserved THROUGH
-        the swap — previously this test pinned the old repair shape (exe
-        deleted by the swap, then rebuilt from scratch). The rebuild hook
-        still runs (mocked _desktop_build_needed=True), but it now finds
-        the packaged exe alive rather than missing.
-        """
-        import zipfile
-
-        from hermes_cli import main as hm
-        from hermes_cli import update_cmd
-
-        project_root = tmp_path / "hermes-agent"
-        (project_root / ".git").mkdir(parents=True)
-        desktop_dir = project_root / "apps" / "desktop"
-        packaged_exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
-        packaged_exe.parent.mkdir(parents=True)
-        packaged_exe.write_bytes(b"desktop")
-
-        def write_source_zip(_url, destination):
-            with zipfile.ZipFile(destination, "w") as archive:
-                archive.writestr("hermes-agent-main/apps/desktop/package.json", "{}")
-
-        def fail_git_fetch(command, **_kwargs):
-            if "fetch" in command:
-                raise subprocess.CalledProcessError(1, command)
-            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-
-        desktop_builds = []
-
-        def rebuild_desktop(*_args, **_kwargs):
-            desktop_builds.append(not packaged_exe.exists())
-            return subprocess.CompletedProcess([], 0, stdout="", stderr="")
-
-        monkeypatch.setattr(hm, "PROJECT_ROOT", project_root)
-        monkeypatch.setattr(hm, "_is_windows", lambda: True)
-        monkeypatch.setattr(hm, "_run_pre_update_backup", lambda _args: None)
-        monkeypatch.setattr(hm, "_pause_windows_gateways_for_update", lambda: None)
-        monkeypatch.setattr(hm, "_get_origin_url", lambda *_args: "")
-        monkeypatch.setattr(
-            hm,
-            "_desktop_packaged_executable",
-            lambda _desktop_dir: packaged_exe if packaged_exe.exists() else None,
-        )
-        monkeypatch.setattr(hm, "_desktop_dist_exists", lambda _desktop_dir: False)
-        monkeypatch.setattr(hm, "_resolve_node_runtime_npm", lambda: "npm.cmd")
-        monkeypatch.setattr(hm, "_desktop_build_needed", lambda *_args, **_kwargs: True)
-        monkeypatch.setattr(hm, "_run_logged_subprocess", rebuild_desktop)
-        monkeypatch.setattr(hm, "_clear_bytecode_cache", lambda *_args: 0)
-        monkeypatch.setattr(hm, "_record_bytecode_fingerprint", lambda: None)
-        monkeypatch.setattr(hm, "_refresh_bootstrap_cache_scripts", lambda _branch: None)
-        monkeypatch.setattr(
-            hm, "_install_python_dependencies_with_optional_fallback", lambda *_args, **_kwargs: None
-        )
-        monkeypatch.setattr(hm, "_refresh_active_memory_provider_dependencies", lambda: None)
-        monkeypatch.setattr(hm, "_build_web_ui", lambda *_args: None)
-        monkeypatch.setattr(update_cmd, "_discard_lockfile_churn", lambda *_args: None)
-        monkeypatch.setattr(update_cmd, "_normalize_managed_eol", lambda *_args: None)
-        monkeypatch.setattr(
-            update_cmd,
-            "_validate_critical_modules_import",
-            lambda *_args: (True, None, None),
-        )
-        monkeypatch.setattr(update_cmd, "_update_node_dependencies", lambda: [])
-        monkeypatch.setattr(update_cmd, "_print_curator_first_run_notice", lambda: None)
-        monkeypatch.setattr(update_cmd, "_print_curator_recent_run_notice", lambda: None)
-        monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda _failures: None)
-        monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: tmp_path / "hermes-home")
-
-        with (
-            patch("hermes_cli.config.load_config", return_value={}),
-            patch("subprocess.run", side_effect=fail_git_fetch),
-            patch("urllib.request.urlretrieve", side_effect=write_source_zip),
-            patch("pm.uv", return_value=("uv", dict(os.environ))),
-            patch(
-                "tools.skills_sync.sync_skills",
-                return_value={
-                    "copied": [],
-                    "updated": [],
-                    "user_modified": [],
-                    "cleaned": [],
-                    "relocated": [],
-                },
-            ),
-            patch("hermes_cli.model_catalog.seed_cache_from_checkout", return_value=False),
-        ):
-            update_cmd._cmd_update_impl(
-                SimpleNamespace(yes=True, force=True, force_venv=True, branch=None),
-                gateway_mode=False,
-            )
-
-        # Release-dir graft (#70337): the packaged exe SURVIVES the swap, so
-        # the rebuild hook observed it present (False), and the bytes are the
-        # original build — never deleted, never rebuilt from nothing.
-        assert desktop_builds == [False]
-        assert packaged_exe.exists()
-        assert packaged_exe.read_bytes() == b"desktop"
-
 
 class TestUpdateNodeDependencies:
-    """Unit tests for _update_node_dependencies — issue #43564.
+    """Workspace installs honor lockfile changes without touching real node_modules."""
 
-    Root package.json has no dependencies of its own: agent-browser
-    resolves at runtime via npx (tools/browser_tool.py), and @streamdown/math
-    moved to apps/desktop/package.json since it's a desktop-only import.
-    With nothing root-only left to protect, a single workspace-scoped
-    install (ui-tui, web) is safe — apps/desktop is simply never named, so
-    its ~200 MB Electron devDependency is never resolved. Skipping is
-    governed by _npm_lockfile_changed (content hash over the lockfile +
-    every workspace package.json), tested separately in
-    TestNpmLockfileChanged.
-    Uses a tmp_path root so tests never touch real node_modules.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _stub_npx_warmup(self):
-        """The npx cache warm-up is covered by its own dedicated test below;
-        stub it out everywhere else so it doesn't add a spurious npm/npx
-        call to the workspace-install assertions in this class."""
-        with patch("tools.browser_tool_install.warm_agent_browser_npx_cache", return_value=True):
-            yield
 
     def _npm_calls(self, mock_run):
         return [
@@ -1324,10 +1098,8 @@ class TestUpdateNodeDependencies:
 
     @patch("subprocess.Popen")
     @patch("shutil.which", return_value="/usr/bin/npm")
-    def test_install_names_ui_tui_and_web_workspaces(self, _which, mock_popen, tmp_path, monkeypatch):
-        """Regression for #43564: install ui-tui + web directly. apps/desktop
-        must never appear, so its Electron postinstall is never triggered.
-        """
+    def test_install_names_ui_tui_workspace(self, _which, mock_popen, tmp_path, monkeypatch):
+        """Regression for #43564: install ui-tui directly."""
         from hermes_cli import main as hm
 
         (tmp_path / "package.json").write_text("{}")
@@ -1342,11 +1114,11 @@ class TestUpdateNodeDependencies:
         calls = self._popen_npm_calls(popen_calls)
         assert len(calls) == 1, f"expected exactly 1 npm call, got: {calls}"
         joined = " ".join(str(a) for a in calls[0])
-        assert "--workspace ui-tui" in joined and "--workspace web" in joined, (
-            f"expected ui-tui + web workspace selectors; actual: {calls[0]}"
+        assert "--workspace ui-tui" in joined, (
+            f"expected ui-tui workspace selector; actual: {calls[0]}"
         )
-        assert "desktop" not in joined, (
-            f"apps/desktop must not appear (avoids ~200 MB Electron download); actual: {calls[0]}"
+        assert "--workspace web" not in joined, (
+            f"the web workspace is removed; actual: {calls[0]}"
         )
         assert "--workspaces=false" not in joined, (
             f"no root-only deps remain to protect; --workspaces=false is unnecessary now; actual: {calls[0]}"
@@ -1357,14 +1129,9 @@ class TestUpdateNodeDependencies:
     def test_install_includes_workspace_root_to_protect_root_devdependencies(
         self, _which, mock_popen, tmp_path, monkeypatch
     ):
-        """Root package.json still owns devDependencies (the shared ESLint
-        flat config every workspace's own eslint.config.mjs imports) even
-        though agent-browser and @streamdown/math were removed from root
-        `dependencies` (#43564). --include-workspace-root keeps them from
-        being pruned by this scoped install, while --workspace ui-tui
-        --workspace web still excludes the unnamed apps/desktop workspace
-        (confirmed empirically against npm 10.9.8 and 11.9.0 in PR #44772
-        review)."""
+        """Root package.json owns the shared ESLint flat-config devDependencies
+        imported by every workspace. --include-workspace-root keeps them from
+        being pruned by this scoped install."""
         from hermes_cli import main as hm
 
         (tmp_path / "package.json").write_text("{}")
@@ -1380,7 +1147,6 @@ class TestUpdateNodeDependencies:
         assert len(calls) == 1
         joined = " ".join(str(a) for a in calls[0])
         assert "--include-workspace-root" in joined
-        assert "desktop" not in joined
 
     @patch("subprocess.Popen")
     @patch("shutil.which", return_value="/usr/bin/npm")
@@ -1460,27 +1226,6 @@ class TestUpdateNodeDependencies:
 
         assert not recorded, "lockfile hash must not be recorded when npm install fails"
 
-    @patch("subprocess.Popen")
-    @patch("shutil.which", return_value="/usr/bin/npm")
-    def test_warms_npx_agent_browser_cache_regardless_of_install_result(
-        self, _which, mock_popen, tmp_path, monkeypatch
-    ):
-        """The npx warm-up must fire even when the workspace install fails —
-        it's independent of ui-tui/web dependency state (#43564)."""
-        from hermes_cli import main as hm
-
-        (tmp_path / "package.json").write_text("{}")
-        (tmp_path / "package-lock.json").write_text("{}")
-        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        monkeypatch.setattr(hm, "_npm_lockfile_changed", lambda root: True)
-        mock_popen.side_effect = self._make_popen([], returncode=1, stderr_lines=["npm ERR!\n"])
-
-        with patch(
-            "tools.browser_tool_install.warm_agent_browser_npx_cache", return_value=True
-        ) as mock_warm:
-            update_cmd._update_node_dependencies()
-
-        mock_warm.assert_called_once()
 
     @patch("subprocess.run")
     @patch("shutil.which", return_value=None)
@@ -1490,6 +1235,7 @@ class TestUpdateNodeDependencies:
 
         (tmp_path / "package.json").write_text("{}")
         monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(hm, "_resolve_node_runtime_npm", lambda: None)
 
         update_cmd._update_node_dependencies()
 

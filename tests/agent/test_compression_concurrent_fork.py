@@ -211,7 +211,7 @@ def test_compression_activity_heartbeat_emits_client_status_events(tmp_path: Pat
     heartbeats = [e for e in status_events if e[1] == COMPACTION_HEARTBEAT_STATUS]
     assert heartbeats, "no heartbeat status reached the client"
     # Same "lifecycle" key as the other compaction statuses so the TUI gateway
-    # re-tags it to kind="compacting" and Telegram edits one bubble in place.
+    # re-tags it to kind="compacting" and the gateway edits one bubble in place.
     assert {event for event, _ in heartbeats} == {"lifecycle"}
     assert is_compaction_progress_status(COMPACTION_HEARTBEAT_STATUS)
     # Exactly one routine start line precedes the first heartbeat; the
@@ -830,7 +830,7 @@ def test_fence_cancelled_compression_leaves_lock_reacquirable(tmp_path: Path) ->
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "HYGIENE_LOCK_REACQUIRE"
-    db.create_session(session_id, source="telegram")
+    db.create_session(session_id, source="discord")
 
     agent = _build_agent_with_db(db, session_id)
     agent.compression_in_place = True

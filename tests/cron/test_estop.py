@@ -1,8 +1,8 @@
 """Global emergency stop (`hermes pause` / `hermes resume`) — agent/estop.py.
 
-The ESTOP sentinel is a resumable pause for NEW work only: cron dispatch,
-kanban dispatch, and new gateway turns are halted while it is engaged; work
-already in flight is never touched. Removing the sentinel (`hermes resume`)
+The ESTOP sentinel is a resumable pause for NEW work only: cron dispatch
+and new gateway turns are halted while it is engaged; work already in
+flight is never touched. Removing the sentinel (`hermes resume`)
 restores normal operation with no restart.
 
 Ported from: gastownhall/gastown estop.go (MIT); related prior art: #26778
@@ -158,19 +158,6 @@ def test_cron_tick_resumes_after_disengage(hermes_home, monkeypatch):
     estop.disengage()
     scheduler.tick(verbose=False)
     assert calls == [1], "resume must restore normal cron dispatch"
-
-
-# ── kanban dispatcher integration ───────────────────────────────────────────
-
-
-def test_kanban_dispatch_blocked_when_engaged(hermes_home):
-    from gateway.kanban_watchers_common import _kanban_dispatch_allowed
-
-    assert _kanban_dispatch_allowed() is True
-    estop.engage(reason="test")
-    assert _kanban_dispatch_allowed() is False
-    estop.disengage()
-    assert _kanban_dispatch_allowed() is True
 
 
 # ── gateway turn-start integration ──────────────────────────────────────────

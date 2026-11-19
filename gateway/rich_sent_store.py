@@ -1,7 +1,7 @@
 """Local index of what we've sent (and, for WhatsApp, received) keyed by ``(chat_id, message_id)``.
 
-Telegram does NOT echo a rich message's content back in ``reply_to_message`` (``.text``/``.caption``
-empty, ``.api_kwargs`` None), and WhatsApp quotes carry only the quoted message's id (Cloud API) or a
+Some platforms do NOT echo a rich message's content back in their reply-to payload, and
+WhatsApp quotes carry only the quoted message's id (Cloud API) or a
 thumbnail stub (Baileys) — never the original bytes. So a reply to something we sent arrives with no
 quotable text and no way to re-fetch a quoted attachment. We remember ``message_id -> text`` and
 ``message_id -> [(local_path, mime)]`` at send/receive time and look them up by ``reply_to_id`` on

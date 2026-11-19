@@ -25,12 +25,12 @@ _SILENT_BACKGROUND_HINT = (
     'daemons).'
 )
 
-# Headless one-shot runners (Kanban workers, cron, hermes -z, stateless HTTP)
-# cannot receive an async completion, so recommending notify_on_complete=true
-# is a false recovery path (pc_9eaef6f2ffd8 / pc_7ddf045def95).
+# Headless one-shot runners (cron, hermes -z, stateless HTTP) cannot receive
+# an async completion, so recommending notify_on_complete=true is a false
+# recovery path (pc_9eaef6f2ffd8 / pc_7ddf045def95).
 _HEADLESS_SILENT_BACKGROUND_HINT = (
     'background=true is silent in this session. notify_on_complete is not available here '
-    '(a one-shot runner such as `hermes -z`, a cron job, a Kanban worker, or a stateless '
+    '(a one-shot runner such as `hermes -z`, a cron job, or a stateless '
     'HTTP endpoint). Track the session_id and use process(action=\'poll\') or '
     "process(action='wait') to learn the outcome."
 )
@@ -69,7 +69,7 @@ _HOMEBREW_CI_POLLER_HINT = (
 _ASYNC_UNSUPPORTED_NOTE = (
     'notify_on_complete / watch_patterns are not available in this session — it cannot receive '
     'an async completion after the turn ends (a one-shot runner such as `hermes -z`, a cron '
-    'job, a Kanban worker, or a stateless HTTP endpoint). The process is running in the '
+    'job, or a stateless HTTP endpoint). The process is running in the '
     "background; retrieve its result with process(action='poll') or process(action='wait')."
 )
 
@@ -116,8 +116,8 @@ def _spawn(process_registry, *, env, env_type, command, cwd, effective_task_id, 
 
 
 def _apply_async_support(proc_session, result_data, notify_on_complete, watch_patterns):
-    """Finite sessions (stateless HTTP, one-shot Kanban workers) can't route a
-    completion back after the turn ends: drop the flags and tell the agent to
+    """Finite sessions (stateless HTTP and other one-shot runners) can't route
+    a completion back after the turn ends: drop the flags and tell the agent to
     poll. Otherwise stamp gateway routing. Returns (notify, watch_patterns)."""
     if not (notify_on_complete or watch_patterns):
         return notify_on_complete, watch_patterns

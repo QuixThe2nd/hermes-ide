@@ -14,7 +14,7 @@ ACTIVITY_DESCRIPTION_MAX = 120
 
 # Durable SessionDB heartbeat cadence. Contract: MUST stay >= 30s — the SessionDB write path is contended and
 # this observation-only projection never justifies extra write pressure. A code constant on purpose (no config
-# can make it a high-frequency writer); matches the kanban auto-heartbeat. force_persist (terminal stamps) is the only bypass.
+# can make it a high-frequency writer); force_persist (terminal stamps) is the only bypass.
 SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS = 60.0
 
 

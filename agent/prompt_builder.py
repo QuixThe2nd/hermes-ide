@@ -33,8 +33,8 @@ from utils import atomic_json_write, file_signature
 logger = logging.getLogger(__name__)
 
 
-# Default read deadline for context files (SOUL.md, AGENTS.md, .cursorrules,
-# ...); overridable via ``context_file_read_timeout`` in config.yaml.
+# Default read deadline for context files (SOUL.md, AGENTS.md, ...);
+# overridable via ``context_file_read_timeout`` in config.yaml.
 # Intentionally short: network-backed filesystems (iCloud Drive, OneDrive,
 # NFS) can fault-in an evicted file and block a cold read indefinitely, which
 # stalls system-prompt assembly before the first turn.
@@ -49,7 +49,9 @@ def _get_context_file_read_timeout() -> float:
     return _CONTEXT_FILE_READ_TIMEOUT_SECS
 
 
-def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Optional[str]:
+def _read_text_with_timeout(
+    path: Path, timeout: Optional[float] = None, encoding: str = "utf-8-sig"
+) -> Optional[str]:
     """``path.read_text()`` on a daemon thread so a slow file can't stall startup.
 
     Returns the text, or ``None`` after *timeout* seconds (logged at WARNING;
@@ -63,7 +65,7 @@ def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Opti
 
     def _reader() -> None:
         try:
-            result.put((True, path.read_text(encoding="utf-8-sig")))
+            result.put((True, path.read_text(encoding=encoding)))
         except Exception as exc:  # re-raised on the caller thread
             result.put((False, exc))
 
@@ -79,17 +81,16 @@ def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Opti
 
 
 def _scan_context_content(content: str, filename: str, *, user_authored: bool = False) -> str:
-    """Scan a context file (AGENTS.md, .cursorrules, SOUL.md) for injection; matches are BLOCKED.
+    """Scan a context file (AGENTS.md, CLAUDE.md, SOUL.md) for injection; matches are BLOCKED.
 
     "context" scope only (strict-scope SSH-backdoor/persistence/exfil patterns are too aggressive for a
     cloned repo's docs); blocking, not warning, because the file would otherwise enter the prompt verbatim.
 
     *user_authored* (SOUL.md in the user's own HERMES_HOME): a hit is WARNED and the file still loads.
-    SOUL.md sits in the same trust class as config.yaml — file-tool writes to it go through the
-    protected-instruction approval gate (``tools/file_tools_write_guards.py``) and project checkouts never
-    supply it — so a user who *documents* "ignore previous instructions" in their security guidance
+    SOUL.md is user-authored and project checkouts never supply it — so a user
+    who *documents* "ignore previous instructions" in their security guidance
     must not lose their whole identity file to a one-line log entry (#112570). Project-dir files
-    (repo AGENTS.md / .cursorrules / .hermes.md) arrive with the checkout and keep blocking, and so does
+    (repo AGENTS.md / CLAUDE.md / .hermes.md) arrive with the checkout and keep blocking, and so does
     a SOUL.md owned by a profile distribution (``hermes profile install <git-url>`` copies it in unscanned;
     ``load_soul_md`` passes ``user_authored=False`` when ``distribution.yaml`` owns the file).
     """
@@ -268,90 +269,6 @@ SKILLS_GUIDANCE = (
     "remaining `[SKILL_PRUNED]` markers for that same skill; they are historical artifacts of earlier compactions."
 )
 
-KANBAN_GUIDANCE = (
-    "# Kanban task execution protocol\n"
-    "You have been assigned ONE task from the shared board at `~/.hermes/kanban.db`. Your task id is in "
-    "`$HERMES_KANBAN_TASK`; your workspace is `$HERMES_KANBAN_WORKSPACE`. The `kanban_*` tools in your schema are your "
-    "primary coordination surface — they write directly to the shared SQLite DB and work regardless of terminal "
-    "backend (local/docker/modal/ssh).\n"
-    "\n"
-    "## Lifecycle\n\n"
-    "1. **Orient.** Call `kanban_show()` first (no args — it defaults to your task). The response includes title, "
-    "body, parent-task handoffs (summary + metadata), any prior attempts on this task if you're a retry, the full "
-    "comment thread, and a pre-formatted `worker_context` you can treat as ground truth.\n"
-    "2. **Work inside the workspace.** `cd $HERMES_KANBAN_WORKSPACE` before any file operations. The workspace is "
-    "yours for this run. Don't modify files outside it unless the task explicitly asks.\n"
-    "3. **Heartbeat on long operations.** Call `kanban_heartbeat(note=...)` every few minutes during long subprocesses "
-    "(training, encoding, crawling). Skip heartbeats for short tasks. **If your task may run longer than 1 hour, you "
-    "MUST call `kanban_heartbeat` at least once an hour** — the dispatcher reclaims tasks running past "
-    "`kanban.dispatch_stale_timeout_seconds` (default 4 hours) when no heartbeat has arrived in the last hour. A "
-    "reclaim re-queues the task as `ready` without penalty (no failure counter tick), but you lose your current run's "
-    "progress.\n"
-    "4. **Block on genuine ambiguity.** If you need a human decision you cannot infer (missing credentials, UX choice, "
-    "paywalled source, peer output you need first), call `kanban_block(reason=\"...\")` and stop. Don't guess. The "
-    "user will unblock with context and the dispatcher will respawn you.\n"
-    "5. **Finish with the review model encoded by the task graph.** Always include the structured handoff (`summary`, "
-    "`metadata`) on the lifecycle transition itself; never put secrets, tokens, or raw PII in these durable fields. If "
-    "`kanban_show()` lists child IDs, inspect those cards with `kanban_show(task_id=...)` before choosing the terminal "
-    "action. When any pre-created review, QA, or release child depends on your task, call `kanban_complete`: your "
-    "implementation phase is done, and completion is what releases those children. Never sticky-block that parent for "
-    "`review-required` and never request same-card review as well — either choice would strand or duplicate the "
-    "downstream lane. Otherwise, when this same task needs review before it is final, call "
-    "`kanban_request_review(summary=..., metadata=..., reviewer=<optional-profile>)`. The reviewer approves with "
-    "`kanban_complete`, returns actionable rework with `kanban_request_changes`, or uses `kanban_block` only for a "
-    "genuine external escalation. Review is not a block, so repeated review cycles do not trip unblock-loop "
-    "detection.\n"
-    "6. **If follow-up work appears, create it; don't do it.** Use `kanban_create(title=..., assignee=<right-profile>, "
-    "parents=[your-task-id])` to spawn a child task for the appropriate specialist profile instead of scope-creeping "
-    "into the next thing.\n"
-    "7. **Flag collision hotspots; don't pile on.** If your change keeps colliding with sibling branches in one file, "
-    "or a file your diff touches shows up in other cards' recent comments, do not silently add more to it: leave a "
-    "`kanban_comment` starting with `hotspot: <path> — <one-line reason>` on your card and repeat the flag in your "
-    "completion metadata, so the orchestrator can decompose that file before more work lands on it.\n"
-    "\n"
-    "## Orchestrator mode\n\n"
-    "If your task is itself a decomposition task (e.g. a planner profile given a high-level goal), use `kanban_create` "
-    "to fan out into child tasks — one per specialist, each with an explicit `assignee` and `parents=[...]` to express "
-    "dependencies. Then `kanban_complete` your own task with a summary of the decomposition. Do NOT execute the work "
-    "yourself; your job is routing, not implementation.\n"
-    "\n"
-    "**Decision ownership.** Design decisions belong to you, the orchestrator, not to workers — settle naming schemes, "
-    "schemas, file formats, and API shapes before fanning out. Never let two subtree cards decide the same question: "
-    "if two tasks would each pick one, decide it yourself and write the decision into BOTH card bodies. Every child "
-    "card body must carry the decisions it depends on, because workers cannot see sibling context.\n"
-    "\n"
-    "## Reference details that change outcomes\n\n"
-    "- **Workspace.** `cd $HERMES_KANBAN_WORKSPACE` first. For a `worktree` kind with no `.git`, `git worktree add "
-    "<path> ${HERMES_KANBAN_BRANCH:-wt/$HERMES_KANBAN_TASK}` from the main repo, then cd there. For a project-linked "
-    "task the workspace is a fresh `<repo>/.worktrees/<task-id>` and `$HERMES_KANBAN_BRANCH` a deterministic "
-    "`<project-slug>/<task-id>` — the main repo is two levels up, so run `git worktree add` from there.\n"
-    "- **Deliverables.** Files a human wants go in `kanban_complete(artifacts=[<absolute paths>])` (top-level param; "
-    "paths in `metadata` are NOT uploaded). Files must exist at completion.\n"
-    "- **Attachments.** Attach real downloadable artifacts instead of pasting links in comments: `kanban_attach` "
-    "(base64) or `kanban_attach_url` (server-side public http(s) fetch); 25 MB cap, `kanban_attachments` lists them. "
-    "Workers may only attach to their own task.\n"
-    "- **Created cards.** List ids in `kanban_complete(created_cards=[...])` ONLY when captured from a successful "
-    "`kanban_create` return — never invent or paste ids; the kernel rejects the completion on any phantom id.\n"
-    "- **Orchestrating: discover profiles first.** The dispatcher SILENTLY drops a card with an unknown assignee (it "
-    "sits in `ready` forever). Ground every assignee in a real profile (`hermes profile list`, or ask the user), and "
-    "express dependencies via `parents=[...]` on `kanban_create`, not prose.\n"
-    "\n"
-    "## Do NOT\n\n"
-    "- Do not shell out to `hermes kanban <verb>` for board operations. Use the `kanban_*` tools — they work across "
-    "all terminal backends.\n"
-    "- Do not complete a task you didn't actually finish. Block it.\n"
-    "- Do not call `clarify` to ask questions. You are running headless — "
-    "there is no live user to answer. The call will time out and the task "
-    "will sit silently in `running` with no signal to the operator. Instead: "
-    "`kanban_comment` the context, then `kanban_block(reason=...)` so the "
-    "task surfaces on the board as needing input.\n"
-    "- Do not assign follow-up work to yourself. Assign it to the right "
-    "specialist profile.\n"
-    "- Do not call `delegate_agent` as a board substitute. `delegate_agent` is "
-    "for short reasoning subtasks inside your own run; board tasks are for "
-    "cross-agent handoffs that outlive one API loop."
-)
-
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do or plan to do without actually doing "
@@ -426,7 +343,7 @@ PARALLEL_TOOL_CALL_GUIDANCE = (
 )
 
 # Universal tool-call narration guidance.  Addresses a visibility failure
-# mode on chat platforms (Discord/Telegram/Slack): models silently fire long
+# mode on chat platforms (Discord/Slack): models silently fire long
 # chains of tool calls with no visible explanation, leaving the user staring
 # at a frozen chat with no idea what is happening or whether the agent went
 # off the rails.  This block instructs the model to narrate each tool call —
@@ -664,7 +581,7 @@ _LOCAL_CRON_DELIVERY_NOTE = (
     "Cron jobs scheduled from this session are LOCAL-ONLY: their output is saved (viewable via cronjob "
     "action='list') but is NOT delivered back into this session — there is no live-delivery channel here. If "
     "the user wants to be notified when a job runs, the job's `deliver` must target a gateway-connected "
-    "messaging platform (e.g. deliver='telegram' or 'all'). Do not promise that a deliver='origin' or "
+    "messaging platform (e.g. deliver='discord' or 'all'). Do not promise that a deliver='origin' or "
     "default-deliver cron job will message them in this session."
 )
 
@@ -678,17 +595,9 @@ PLATFORM_HINTS = {
     "whatsapp_cloud": (
         "You are on WhatsApp (Meta Business Cloud API). Standard markdown auto-converts to WhatsApp syntax "
         "\u2014 write markdown freely. No tables \u2014 use bullets or labeled lines. "
-        f"{_MEDIA_NATIVE}Images (.jpg, .png) send as photos, videos (.mp4) inline, audio as voice/audio, other files as "
-        "documents; ![alt](url) works. NOTE: Meta refuses free-form replies when the user hasn't messaged in "
+        f"{_MEDIA_NATIVE}Images (.jpg, .png) send as photos, videos (.mp4) inline, other files (audio "
+        "included) as documents; ![alt](url) works. NOTE: Meta refuses free-form replies when the user hasn't messaged in "
         "24h (error 131047) \u2014 relevant only for delayed/scheduled sends."
-    ),
-    "telegram": (
-        "You are on Telegram. Standard Markdown auto-converts: **bold**, "
-        "*italic*, ~~strikethrough~~, ||spoiler||, `code`, ```blocks```, "
-        "[links](url), ## headers. Prefer bullets or labeled lines for structured data (no tables). "
-        f"{_MEDIA_NATIVE}Images (.png, .jpg, .webp) send as photos, videos (.mp4) play inline; image URLs via ![alt](url) send as "
-        "photos. Audio: add [[audio_as_voice]] on its own line to send ANY audio file as a native voice bubble "
-        "(non-Opus transcodes automatically); without it, .mp3/.m4a arrive as audio files, other formats as documents."
     ),
     "discord": (
         "You are in a Discord server or group chat communicating with your user. Discord renders standard "
@@ -765,27 +674,19 @@ PLATFORM_HINTS = {
         "natively: include MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, .heic) appear "
         "as photos and other files arrive as attachments."
     ),
-    "mattermost": (
-        "You are in a Mattermost workspace communicating with your user. Mattermost renders standard "
-        "Markdown — headings, bold, italic, code blocks, and tables all work. You can send media files "
-        "natively: include MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, .webp) are "
-        "uploaded as photo attachments, audio and video as file attachments. Image URLs in markdown format "
-        "![alt](url) are rendered as inline previews automatically."
-    ),
     "matrix": (
         "You are in a Matrix room. Your markdown converts to HTML \u2014 bold, italic, code, headings, lists, "
         "blockquotes, and links render. Do NOT use tables (popular clients like Element X collapse them into run-on "
         "text \u2014 use '**Label:** value' lines or bullets), and avoid ||spoilers||, ~~strikethrough~~, and "
         "checkboxes (they appear as literal characters). Prefer [descriptive text](url) over bare URLs. "
-        f"{_MEDIA_NATIVE}Images send as inline photos, audio (.ogg, .mp3) as voice/audio "
-        "messages, video (.mp4) inline, other files as attachments."
+        f"{_MEDIA_NATIVE}Images send as inline photos, video (.mp4) inline, audio and other "
+        "files as attachments."
     ),
     "feishu": (
         "You are in a Feishu (Lark) workspace communicating with your user. Feishu renders Markdown in "
         "messages — bold, italic, code blocks, and links are supported. You can send media files natively: "
         "include MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, .webp) are uploaded and "
-        "displayed inline, audio files as native voice messages (non-Opus formats are transcoded "
-        "automatically; without ffmpeg they fall back to file attachments), and other files as attachments."
+        "displayed inline, and audio and other files as downloadable attachments."
     ),
     "weixin": (
         "You are on Weixin/WeChat. Markdown formatting is supported, so you may use it when it improves readability, "
@@ -793,12 +694,6 @@ PLATFORM_HINTS = {
         "MEDIA:/absolute/path/to/file in your response. Images are sent as native photos, videos play inline when "
         "supported, and other files arrive as downloadable documents. You can also include image URLs in markdown "
         "format ![alt](url) and they will be downloaded and sent as native media when possible."
-    ),
-    "wecom": (
-        "You are on WeCom (\u4f01\u4e1a\u5fae\u4fe1). Markdown is supported. "
-        f"{_MEDIA_NATIVE}Images (.jpg, .png, .webp) send as photos (\u226410 MB), other files as documents (\u226420 MB), videos "
-        "(.mp4) play inline. Voice messages must be AMR \u2014 other audio formats send as file attachments. Image "
-        "URLs via ![alt](url) are downloaded and sent as photos. Never claim you lack file-sending."
     ),
     "qqbot": (
         "You are on QQ, a popular Chinese messaging platform. QQ supports markdown formatting "
@@ -828,25 +723,6 @@ PLATFORM_HINTS = {
     # 'desktop' or 'tui'). If a real WebUI chat surface ships, write a hint from its actual renderer.
 }
 
-# Telegram rich-messages extension — injected only with
-# ``platforms.telegram.extra.rich_messages: true`` (gateway.* or top-level).
-# NOTE: a "webui" hint lived here until 2026-08-29. It was a ghost (verified in the all-platform hint audit,
-# PR #97873): no code path constructs platform="webui" — the dashboard chat resolves to 'desktop' or 'tui'
-# (tui_gateway/server.py:_resolve_session_platform), and the browser chat tab is an xterm.js PTY hosting the
-# TUI, not an HTML chat renderer. Its content (tables/LaTeX/Mermaid, MEDIA: rich previews incl. Excalidraw)
-# described a renderer that does not exist anywhere in web/. If a real WebUI chat surface ships, write a
-# hint from its actual renderer — do not resurrect this text.
-TELEGRAM_RICH_MESSAGES_HINT = (
-    "Telegram now supports rich Markdown, so lean into it: whenever it makes the answer clearer or easier to scan, "
-    "actively reach for real Markdown tables (pipe `| col | col |` syntax), bullet and numbered lists, task lists (`- "
-    "[ ]` / `- [x]`), headings, nested blockquotes, collapsible details, footnotes/references, math/formulas (`$...$`, "
-    "`$$...$$`), underline, subscript/superscript, marked (highlighted) text, and anchors. Default to structured "
-    "formatting over dense paragraphs for any comparison, set of steps, key/value summary, or tabular data. Prefer "
-    "real Markdown tables and task lists over hand-built bullet substitutes when presenting structured data; these "
-    "degrade gracefully (tables become readable bullet groups) when rich rendering is unavailable, but advanced "
-    "constructs like math and collapsible details may render as plain source text in that case. "
-)
-
 # Environment hints — the machine/OS the agent's tools actually run on
 # (PLATFORM_HINTS describe the messaging channel instead).
 WSL_ENVIRONMENT_HINT = (
@@ -859,16 +735,10 @@ WSL_ENVIRONMENT_HINT = (
 
 # Backends that run commands (and every file tool) in a separate container / remote host: host OS/$HOME/cwd
 # would mislead, so the agent only sees the machine it can touch.
-_REMOTE_TERMINAL_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "ssh", "vercel_sandbox", "managed_modal"})
+_REMOTE_TERMINAL_BACKENDS = frozenset({"ssh"})
 
 # Used when the live probe fails: only what the backend choice implies — never an invented cwd/user/$HOME.
 _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
-    "docker": "a Docker container (Linux)",
-    "singularity": "a Singularity container (Linux)",
-    "modal": "a Modal sandbox (Linux)",
-    "managed_modal": "a managed Modal sandbox (Linux)",
-    "daytona": "a Daytona workspace (Linux)",
-    "vercel_sandbox": "a Vercel sandbox (Linux)",
     "ssh": "a remote host reached over SSH (likely Linux)",
 }
 
@@ -938,8 +808,6 @@ def _tenv_read(name: str, default: str = "") -> str:
     return terminal_env(name, default)
 
 
-_BACKEND_IMAGE_KEYS = {b: f"{b}_image" for b in ("docker", "singularity", "modal", "daytona")}
-# (config key, default) pairs forwarded to _create_environment's container_config.
 # Single-line POSIX probe; `2>/dev/null` keeps a missing binary from polluting output.
 _BACKEND_PROBE_CMD = (
     "printf 'os=%s\\nkernel=%s\\nhome=%s\\ncwd=%s\\nuser=%s\\n' \"$(uname -s 2>/dev/null || echo unknown)\" "
@@ -950,18 +818,14 @@ _BACKEND_PROBE_CMD = (
 
 def _run_backend_probe(env_type: str, terminal_tool) -> str:
     """Execute the probe command inside a freshly built backend; "" when it yields nothing."""
-    from tools.terminal_tool_backends import _container_config_from_config, _create_environment, _ssh_config_from_config
+    from tools.terminal_tool_backends import _create_environment, _ssh_config_from_config
     from tools.terminal_tool_lifecycle import _cleanup_env
 
     config = terminal_tool._get_env_config()
-    # Same container_config shaper as the live terminal path: a private copy of the key table here
-    # drifted (no docker_network) and gave the probe a bridge-networked container under lockdown.
     env = _create_environment(
-        env_type=env_type, image=config.get(_BACKEND_IMAGE_KEYS[env_type], "") if env_type in _BACKEND_IMAGE_KEYS else "", cwd=config.get("cwd", ""),
+        env_type=env_type, image="", cwd=config.get("cwd", ""),
         timeout=config.get("timeout", 180),
         ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
-        container_config=(_container_config_from_config(config)
-                          if terminal_tool._is_container_backend(env_type) else None),
         task_id="prompt-backend-probe", host_cwd=config.get("host_cwd"),
         # Only ssh honors this: an isolated ControlMaster socket and no remote dir setup / file sync /
         # snapshot. A normal SSHEnvironment would upload the whole ~/.hermes tree just to run `uname`,
@@ -1577,8 +1441,8 @@ def load_soul_md(context_length: Optional[int] = None, home_override: "Path | No
         if not content:
             return None
         # `hermes profile install <git-url>` / `profile update` plant a third-party SOUL.md into a
-        # distribution profile (hermes_cli/profile_distribution.py, DEFAULT_DIST_OWNED) with no scan and no
-        # approval gate, so it is NOT the user's own file: when distribution.yaml owns SOUL.md (a manifest
+        # distribution profile (hermes_cli/profile_distribution.py, DEFAULT_DIST_OWNED) with no scan,
+        # so it is NOT the user's own file: when distribution.yaml owns SOUL.md (a manifest
         # with no `distribution_owned` list owns the whole payload) a scanner hit keeps BLOCKING.
         from hermes_cli.profile_distribution import read_manifest
         try:
@@ -1663,14 +1527,6 @@ def _claude_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
     return found
 
 
-def _cursorrules_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
-    """.cursorrules + .cursor/rules/*.mdc — cwd only; every non-empty file is concatenated."""
-    candidates: list[tuple[str, Path]] = [(".cursorrules", cwd_path / ".cursorrules")]
-    cursor_rules_dir = cwd_path / ".cursor" / "rules"
-    if _is_dir_or_denied(cursor_rules_dir):
-        candidates += [(f".cursor/rules/{f.name}", f) for f in sorted(cursor_rules_dir.glob("*.mdc"))]
-    return [(label, path, _read_context_file(path)) for label, path in candidates if _exists_or_denied(path)]
-
 
 # Project-context types in priority order: the first type with any non-empty file wins, later types are
 # shadowed. Both the prompt build (loaders below) and the /context manifest
@@ -1679,7 +1535,6 @@ _CONTEXT_FILE_CANDIDATES = {
     "hermes_md": _hermes_md_candidates,
     "agents_md": _agents_md_candidates,
     "claude_md": _claude_md_candidates,
-    "cursorrules": _cursorrules_candidates,
 }
 
 
@@ -1740,18 +1595,6 @@ def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     return ""
 
 
-def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> str:
-    """.cursorrules + .cursor/rules/*.mdc — cwd only, concatenated."""
-    cursorrules_content = "".join(
-        f"## {label}\n\n{_scan_context_content(content, label)}\n\n"
-        for label, _path, content in _cursorrules_candidates(cwd_path) if content
-    )
-    if not cursorrules_content:
-        return ""
-    return _truncate_content(cursorrules_content, ".cursorrules", context_length=context_length,
-                             read_path=str(cwd_path / ".cursorrules"))
-
-
 def build_context_files_prompt(
     cwd: Optional[str] = None, skip_soul: bool = False, context_length: Optional[int] = None,
     allow_install_tree_fallback: bool = False, home_override: "Path | None" = None,
@@ -1759,7 +1602,7 @@ def build_context_files_prompt(
     """Discover and load context files for the system prompt (each capped, see ``_get_context_file_max_chars``).
 
     Only ONE project context type loads, first found wins: .hermes.md/HERMES.md (walk to git root) →
-    AGENTS.md chain (git root → cwd) → CLAUDE.md (cwd) → .cursorrules + .cursor/rules/*.mdc (cwd). SOUL.md
+    AGENTS.md chain (git root → cwd) → CLAUDE.md (cwd). SOUL.md
     from HERMES_HOME is independent and always included unless *skip_soul* (already the identity slot).
     """
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
@@ -1771,7 +1614,7 @@ def build_context_files_prompt(
         sections = []
     else:
         sections = [_load_hermes_md(cwd_path, context_length) or _load_agents_md(cwd_path, context_length)
-                    or _load_claude_md(cwd_path, context_length) or _load_cursorrules(cwd_path, context_length)]
+                    or _load_claude_md(cwd_path, context_length)]
     if not skip_soul:
         sections.append(load_soul_md(context_length, home_override=home_override))
     sections = [s for s in sections if s]

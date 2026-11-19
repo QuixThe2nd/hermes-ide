@@ -418,7 +418,9 @@ def test_gc_protected_names_live_partial(tmp_path):
     assert "abc.ranges" in protected  # either half protects the pair
     assert "old.part" not in protected
 
-    # A grace window of zero protects nothing.
+    # Filesystem timestamps can be slightly ahead of the wall clock.
+    future = time.time() + 60
+    os.utime(partials / "abc.part", (future, future))
     assert gc_protected_names(partials, grace_seconds=0) == set()
 
 

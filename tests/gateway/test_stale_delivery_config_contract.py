@@ -24,7 +24,7 @@ class TestStaleDefaultDestinationKeyTolerated:
     def test_from_dict_ignores_stale_platform_key(self):
         pc = PlatformConfig.from_dict({
             "enabled": True,
-            "home_channel": {"platform": "telegram", "chat_id": "555", "name": "Home"},
+            "home_channel": {"platform": "discord", "chat_id": "555", "name": "Home"},
         })
 
         assert pc.enabled is True
@@ -37,10 +37,10 @@ class TestStaleDefaultDestinationKeyTolerated:
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text(
             "platforms:\n"
-            "  telegram:\n"
+            "  discord:\n"
             "    enabled: true\n"
             "    home_channel:\n"
-            "      platform: telegram\n"
+            "      platform: discord\n"
             "      chat_id: '555'\n"
             "      name: Home\n",
             encoding="utf-8",
@@ -49,10 +49,10 @@ class TestStaleDefaultDestinationKeyTolerated:
 
         config = load_gateway_config()  # must not raise
 
-        telegram = config.platforms[Platform.TELEGRAM]
-        assert telegram.enabled is True
-        assert telegram.notification_channel is None
-        assert "home_channel" not in telegram.to_dict()
+        discord = config.platforms[Platform.DISCORD]
+        assert discord.enabled is True
+        assert discord.notification_channel is None
+        assert "home_channel" not in discord.to_dict()
 
 
 @pytest.mark.asyncio
@@ -74,12 +74,12 @@ async def test_setnotify_persists_and_loads_unchanged(tmp_path, monkeypatch):
     # Reloaded through the real loader, the persisted target is unchanged
     # (including the authenticated-user provenance captured with it).
     reloaded = load_gateway_config()
-    assert reloaded.get_notification_channel(Platform.TELEGRAM) == DeliveryTarget(
-        platform=Platform.TELEGRAM,
+    assert reloaded.get_notification_channel(Platform.DISCORD) == DeliveryTarget(
+        platform=Platform.DISCORD,
         chat_id="restarts-42",
         name="Gateway Restarts",
         thread_id="topic-7",
         user_id="u1",
     )
     raw = load_config()
-    assert raw["platforms"]["telegram"]["notification_channel"]["thread_id"] == "topic-7"
+    assert raw["platforms"]["discord"]["notification_channel"]["thread_id"] == "topic-7"

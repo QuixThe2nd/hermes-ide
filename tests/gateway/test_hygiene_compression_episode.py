@@ -58,6 +58,7 @@ from agent.compression_status import (
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent
+from gateway.run_turn_runner import TurnRunner
 from gateway.session import SessionEntry, SessionSource
 
 SESSION_KEY = "agent:main:discord:dm:12345"
@@ -77,7 +78,7 @@ class DiscordEpisodeAdapter(BasePlatformAdapter):
     """Discord-shaped fake: edits bubbles, no send_or_update_status.
 
     This is the surface `_adapter_uses_compression_episode_rail` selects —
-    platform discord, editable, without the Telegram/Slack per-status-key
+    platform discord, editable, without the Slack-style per-status-key
     editing method.
     """
 
@@ -110,12 +111,12 @@ class DiscordEpisodeAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
-class TelegramNoticeAdapter(BasePlatformAdapter):
-    """Non-rail fake: every status is a fresh plain send, as on Telegram."""
+class PlainNoticeAdapter(BasePlatformAdapter):
+    """Non-rail fake: every status is a fresh plain send."""
 
     def __init__(self):
         super().__init__(
-            PlatformConfig(enabled=True, token="fake-token"), Platform.TELEGRAM
+            PlatformConfig(enabled=True, token="fake-token"), Platform.DISCORD
         )
         self.sent = []
 
@@ -151,7 +152,6 @@ def _build_runner(gateway_run, adapter, fake_db, platform):
         platforms={platform: PlatformConfig(enabled=True, token="fake-token")}
     )
     runner.adapters = {platform: adapter}
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = SessionEntry(
@@ -170,7 +170,6 @@ def _build_runner(gateway_run, adapter, fake_db, platform):
     runner.session_store.append_to_transcript = MagicMock()
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_db = SimpleNamespace(_db=fake_db)
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
@@ -547,7 +546,7 @@ async def test_timeout_closes_card_as_failure_never_success(monkeypatch, tmp_pat
 
 @pytest.mark.asyncio
 async def test_non_episode_rail_adapter_gets_no_card(monkeypatch, tmp_path):
-    """Telegram (no episode rail): no card, no lifecycle lines at all — the
+    """Non-rail adapter (no episode rail): no card, no lifecycle lines at all — the
     legacy plain notices stay byte-identical."""
     gateway_run = importlib.import_module("gateway.run")
     gateway_run._reset_compression_episodes()
@@ -556,11 +555,11 @@ async def test_non_episode_rail_adapter_gets_no_card(monkeypatch, tmp_path):
     _write_episode_config(tmp_path)
     _install_fakes(monkeypatch, gateway_run, tmp_path, FencedStreamingAgent)
 
-    adapter = TelegramNoticeAdapter()
-    runner = _build_runner(gateway_run, adapter, fake_db, Platform.TELEGRAM)
+    adapter = PlainNoticeAdapter()
+    runner = _build_runner(gateway_run, adapter, fake_db, Platform.DISCORD)
 
     result = await asyncio.wait_for(
-        runner._handle_message(_make_event(Platform.TELEGRAM)), timeout=15
+        runner._handle_message(_make_event(Platform.DISCORD)), timeout=15
     )
     assert result == "ok"
 
@@ -580,7 +579,7 @@ async def test_non_episode_rail_adapter_gets_no_card(monkeypatch, tmp_path):
     assert any(
         "deferred" in c.lower() or "still streaming" in c.lower()
         for c in _sent_contents(adapter)
-    ), f"turn-hold deferral notice missing on Telegram: {_sent_contents(adapter)}"
+    ), f"turn-hold deferral notice missing on non-rail adapter: {_sent_contents(adapter)}"
 
     agent = FencedStreamingAgent.last_instance
     agent.release_worker.set()
@@ -766,7 +765,7 @@ async def test_agent_rail_independent_of_open_hygiene_card(monkeypatch, tmp_path
 
     # The real agent-rail consumer (TurnRunner._status_callback_sync) on a
     # ctx bound to the SAME adapter/chat/session as the hygiene card.
-    turn_runner = gateway_run.TurnRunner(
+    turn_runner = TurnRunner(
         runner,
         SimpleNamespace(
             _status_adapter=adapter,
@@ -782,6 +781,9 @@ async def test_agent_rail_independent_of_open_hygiene_card(monkeypatch, tmp_path
             _status_thread_metadata=None,
             _loop_for_step=asyncio.get_running_loop(),
             _cleanup_progress=False,
+            mute_notification_reply=False,
+            user_config={},
+            deliver_visible=lambda fn: fn(),
             _cleanup_msg_ids=[],
             tool_progress_enabled=False,
             progress_queue=None,

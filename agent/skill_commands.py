@@ -22,8 +22,8 @@ _skill_commands_project: Optional[str] = None
 # freshness lookup always see a consistent snapshot. Scanning stays outside.
 _publish_lock = threading.Lock()
 # ``\w`` keeps Unicode letters (CJK, Cyrillic) so a ``name: 小说拆条`` skill registers ``/小说拆条``
-# instead of slugging to "" and being dropped (#12351); Telegram's ``[a-z0-9_]`` menu limit is
-# applied by hermes_cli/commands_platforms.py, not here.
+# instead of slugging to "" and being dropped (#12351); platform command-menu
+# charset limits are applied by hermes_cli/commands_platforms.py, not here.
 _SKILL_INVALID_CHARS = re.compile(r"[^\w-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
@@ -56,7 +56,7 @@ SKILL_EXCERPT_JOINT = "\x1e"
 
 def slugify_skill_name(name: str) -> str:
     """Normalize a skill/bundle name to a ``/command`` slug (``Foo Bar`` -> ``foo-bar``);
-    strips chars (``+``, ``/``) that would make invalid Telegram command names."""
+    strips chars (``+``, ``/``) that would make invalid platform command names."""
     cmd = _SKILL_INVALID_CHARS.sub("", name.lower().replace(" ", "-").replace("_", "-"))
     return _SKILL_MULTI_HYPHEN.sub("-", cmd).strip("-")
 
@@ -230,11 +230,14 @@ def _setup_note(loaded_skill: dict[str, Any]) -> Optional[str]:
 def _supporting_files(loaded_skill: dict[str, Any], skill_dir: Path | None) -> list[str]:
     """Skill-relative support file paths: from ``linked_files`` or a disk walk."""
     linked = (loaded_skill.get("linked_files") or {}).values()
-    supporting = [entry for entries in linked if isinstance(entries, list) for entry in entries]
+    supporting = [Path(entry).as_posix() for entries in linked if isinstance(entries, list) for entry in entries]
     if not supporting and skill_dir:
         for subdir in ("references", "templates", "scripts", "assets"):
             files = sorted((skill_dir / subdir).rglob("*"))
-            supporting += [str(f.relative_to(skill_dir)) for f in files if f.is_file() and not f.is_symlink()]
+            # as_posix so the listed path matches the footer's
+            # examples (scripts/foo.js) on every OS —
+            # str(relative_to) emits backslashes on Windows.
+            supporting += [f.relative_to(skill_dir).as_posix() for f in files if f.is_file() and not f.is_symlink()]
     return supporting
 
 
@@ -357,7 +360,7 @@ def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dic
     if any(part in _SCAN_SKIP_PARTS for part in skill_md.parts):
         return
     frontmatter, body = _parse_frontmatter(skill_md.read_text(encoding='utf-8-sig'))
-    # OS gate is hard; environment gate (kanban/docker/s6) is offer-time only.
+    # OS gate is hard; environment gate (docker/s6) is offer-time only.
     if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter):
         return
     name = frontmatter.get('name', skill_md.parent.name)
@@ -444,7 +447,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
 
 def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     """Return the current skill commands mapping (scan first if empty). Rescans
-    when the platform scope (one gateway serving Telegram and Discord) or the
+    when the platform scope (one gateway serving Discord and Slack) or the
     active profile's home (Desktop profile switch) or the session's project root (two sessions in two
     repos) changes, so each sees its own ``platform_disabled`` / ``external_dirs`` / project-skill view.
 
@@ -489,7 +492,7 @@ def reload_skills() -> Dict[str, Any]:
 
 def resolve_skill_command_key(command: str) -> Optional[str]:
     """Resolve a user-typed /command to its canonical ``/slug`` key, or None.
-    ``_`` ≡ ``-``: Telegram disallows hyphens, so ``/claude-code`` arrives as ``/claude_code``."""
+    ``_`` ≡ ``-``: platform menus disallow hyphens, so ``/claude-code`` arrives as ``/claude_code``."""
     return resolve_slash_key(command, get_skill_commands())
 
 
@@ -631,6 +634,26 @@ def build_preloaded_skills_prompt(
         already_loaded=excluded_loaded_names,
     )
     return "\n\n".join(prompt_parts), loaded_names, missing
+
+
+def available_skill_names() -> list[str]:
+    """Sorted names of skills the active profile can actually load (for error messages)."""
+    try:
+        return sorted(name.lstrip("/") for name in scan_skill_commands())
+    except Exception:
+        return []
+
+
+def unknown_skills_error(missing: list[str]) -> ValueError:
+    """Fail-closed error for ``-s`` naming only skills the active profile does not have.
+
+    pc_e08d2fc3eab2: a bare ``Unknown skill(s): x`` after spawn leaves the operator guessing
+    whether the name is a typo or simply absent from this profile; listing what *is* available
+    turns the dead end into a self-service fix.
+    """
+    names = available_skill_names()
+    suffix = f" Available skills on this profile: {', '.join(names)}." if names else ""
+    return ValueError(f"Unknown skill(s): {', '.join(missing)}.{suffix}")
 
 
 def resolve_auto_load_skills(user_config: dict | None = None) -> list[str]:

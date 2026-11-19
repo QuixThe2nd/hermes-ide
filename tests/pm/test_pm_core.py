@@ -100,7 +100,6 @@ def pm_env(tmp_path, served, monkeypatch):
 
     ensure_mod = importlib.import_module("pm.ensure")
     monkeypatch.setattr(ensure_mod, "lazy_installs_allowed", lambda: True)
-    paths._stamp.cache_clear()
 
     saved = dict(registry._packages)
     registry._packages.clear()
@@ -351,15 +350,14 @@ def test_corrupt_facts_degrades_to_empty(pm_env):
     assert (runtime / "facts.corrupt").is_file()
 
 
-def test_sealed_install_refuses_even_explicit(pm_env, monkeypatch):
-    from pm.ensure import ensure
+def test_sealed_install_explicit_addition_leaves_payload_unchanged(pm_env, monkeypatch):
+    from pm.ensure import ensure, is_installed
 
     _, runtime, *_ = pm_env
-    (runtime.parent / "manifest.json").write_text(
-        '{"schema": 1}', encoding="utf-8"
-    )
-    with pytest.raises(InstallError, match="sealed"):
-        ensure("faketool", base_env={}, explicit=True)
+    (runtime.parent / "manifest.json").write_text('{"schema": 1}', encoding="utf-8")
+    ensure("faketool", base_env={}, explicit=True)
+    assert is_installed("faketool")
+    assert not (runtime / "facts.json").exists()
 
 
 def test_concurrent_installs_do_not_clobber(pm_env):
@@ -590,7 +588,6 @@ def test_adopt_noop_without_facts(pm_env, monkeypatch):
     from pm import paths
 
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(paths.store_root() / "nowhere"))
-    paths._stamp.cache_clear()
     assert pm.adopt() is False
 
 
@@ -632,10 +629,28 @@ def test_sync_venv_unions_extras(venv_env):
     from pm.ensure import sync_venv
 
     _, fake = venv_env
-    sync_venv(["telegram"])
+    sync_venv(["matrix"])
     sync_venv(["anthropic"])
-    sync_venv(["telegram"])
-    assert fake.applied == [["telegram"], ["anthropic", "telegram"]]
+    sync_venv(["matrix"])
+    assert fake.applied == [["matrix"], ["anthropic", "matrix"]]
+
+
+def test_sync_venv_drops_retired_persisted_extras(venv_env):
+    """PR #548 removed acp/wecom from pyproject; ghost extras in facts must not reach apply."""
+    from pm.ensure import sync_venv
+    from pm.paths import runtime_facts_path
+
+    _, fake = venv_env
+    Facts(runtime_facts_path()).record_state(
+        "venv", "stale-stamp", ["acp", "matrix"],
+    )
+    sync_venv()
+    applied = fake.applied[-1]
+    assert "acp" not in applied
+    assert "matrix" in applied
+    recorded = Facts(runtime_facts_path()).get("venv") or {}
+    assert "acp" not in recorded.get("extras", [])
+    assert "matrix" in recorded.get("extras", [])
 
 
 def test_check_reports_venv_drift_and_missing_tools(venv_env):
@@ -703,75 +718,36 @@ def test_bundle_closure_uv_stays_internal_node_npm_ship(monkeypatch, tmp_path):
     assert "node" in names and "npm" in names
 
 
-def test_arch_guard_allows_emulated_x64_on_win32_arm64(monkeypatch, tmp_path):
-    """agent-browser on win32-arm64 ships the x64 PE (emulated). The guard
-    must not reject it when the package declares the target emulated."""
-    import pm.cli as cli
-    from pm.lock import Facts, Lockfile
+
+
+def test_python_stage_drops_unloadable_x64_vc_runtime_on_arm64(monkeypatch, tmp_path):
+    import pm.packages as packages
     from pm.registry import get_package
 
-    store = tmp_path / "store"
-    entry = store / "agent-browser-0.35.1"
-    bin_dir = entry / "bin"
-    bin_dir.mkdir(parents=True)
-    # A real x64 PE header (MZ + PE sig + machine 0x8664).
-    x64_pe = (
-        b"MZ" + b"\0" * 58 + (0x80).to_bytes(4, "little")
-        + b"PE\0\0" + (0x8664).to_bytes(2, "little") + b"\0" * 54
-    )
-    (bin_dir / "agent-browser-win32-x64.exe").write_bytes(x64_pe)
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "vcruntime140_1.dll").write_bytes(b"x64")
+    (staged / "vcruntime140.dll").write_bytes(b"arm64")
 
-    lock = Lockfile(tmp_path / "lock.json")
-    lock.set_pin("agent-browser", "0.35.1", {"any": {"url": "x", "sha256": "0" * 64}})
-    lock.save()
-    monkeypatch.setattr("pm.cli._lockfile", lambda: lock)
-    monkeypatch.setattr("pm.cli.current_target", lambda: "win32-arm64")
-    monkeypatch.setattr("pm.cli.get_package", lambda name: get_package(name))
+    monkeypatch.setattr(packages, "_macos_sign_managed_python", lambda p: False)
+    get_package("python").stage(None, staged, "3.11.16", "win32-arm64")
 
-    facts = Facts(store / "facts.json")
-    facts.record("agent-browser", "0.35.1", entry.name, {}, store)
-
-    problems = cli._arch_guard(store)
-    assert problems == []
+    assert not (staged / "vcruntime140_1.dll").exists()
+    assert (staged / "vcruntime140.dll").is_file()
 
 
-def test_drop_unloadable_runtime_files_removes_only_arm64_x64_vc_runtime(monkeypatch, tmp_path):
-    import pm.cli as cli
+def test_python_stage_keeps_vc_runtimes_on_other_targets(monkeypatch, tmp_path):
+    import pm.packages as packages
+    from pm.registry import get_package
 
-    store = tmp_path / "store"
-    entry = store / "python-3.11-win32-arm64"
-    entry.mkdir(parents=True)
-    stray = entry / "vcruntime140_1.dll"
-    keep = entry / "vcruntime140.dll"
-    stray.write_bytes(b"x64")
-    keep.write_bytes(b"arm64")
-    facts = Facts(store / "facts.json")
-    facts.record("python", "3.11", entry.name, {}, store)
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "vcruntime140_1.dll").write_bytes(b"x64")
 
-    monkeypatch.setattr(cli, "_facts", lambda: facts)
-    monkeypatch.setattr(cli, "current_target", lambda: "win32-arm64")
-    cli._drop_unloadable_runtime_files(store)
+    monkeypatch.setattr(packages, "_macos_sign_managed_python", lambda p: False)
+    get_package("python").stage(None, staged, "3.11.16", "win32-x64")
 
-    assert not stray.exists()
-    assert keep.is_file()
-
-
-def test_drop_unloadable_runtime_files_keeps_other_targets(monkeypatch, tmp_path):
-    import pm.cli as cli
-
-    store = tmp_path / "store"
-    entry = store / "python-3.11-win32-x64"
-    entry.mkdir(parents=True)
-    runtime = entry / "vcruntime140_1.dll"
-    runtime.write_bytes(b"x64")
-    facts = Facts(store / "facts.json")
-    facts.record("python", "3.11", entry.name, {}, store)
-
-    monkeypatch.setattr(cli, "_facts", lambda: facts)
-    monkeypatch.setattr(cli, "current_target", lambda: "win32-x64")
-    cli._drop_unloadable_runtime_files(store)
-
-    assert runtime.is_file()
+    assert (staged / "vcruntime140_1.dll").is_file()
 
 
 def test_verify_missing_binary_reports_path_and_listing(tmp_path):

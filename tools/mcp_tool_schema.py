@@ -229,7 +229,7 @@ def _normalize_name_filter(value: Any, label: str) -> set[str]:
 
 def matches_name_filter(tool_name: str, patterns: set[str]) -> bool:
     """True if ``tool_name`` matches any entry: exact names literally, entries with
-    ``*``/``?``/``[`` as case-sensitive globs (same semantics as ``approvals.deny``). Exact
+    ``*``/``?``/``[`` as case-sensitive globs. Exact
     membership is checked first so big lists stay O(1)."""
     if not patterns:
         return False

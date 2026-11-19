@@ -50,6 +50,9 @@ _CHECKOUT_HEURISTICS = (
 _EXCLUDED_AUTOCOMPLETE = {"new-password", "one-time-code"}
 
 _RE_EXCLUDED_PASSWORD = re.compile(r"\b(?:new|confirm|create|repeat)\s*password\b")
+
+_RE_RESET_NEW_PASSWORD = re.compile(r"\b(?:new|create)\s*password\b")
+_RE_RESET_CONFIRM_PASSWORD = re.compile(r"\b(?:confirm|repeat|retype|verify)\s*(?:new\s*)?password\b")
 _RE_EMAIL = re.compile(r"\b(?:e[\s-]?mail|email address)\b")
 _RE_TEL = re.compile(r"\b(?:phone|telephone|mobile)\b")
 _RE_USERNAME = re.compile(
@@ -126,6 +129,45 @@ def classify_login_control(control: LoginControl) -> Optional[ClassifiedLoginCon
     if _RE_USERNAME.search(searchable):
         return ClassifiedLoginControl(control, 70, "username")
     return None
+
+
+
+def classify_password_reset_control(control: LoginControl) -> Optional[ClassifiedLoginControl]:
+    """Classify only explicitly marked new/confirmation password controls.
+
+    Reset intent never broadens ordinary password matching: an unlabelled password input can be
+    the current-password challenge and is not a reset target.
+    """
+    autocomplete_tokens = [t for t in control.autocomplete.lower().split() if t]
+    if control.type != "password" or any(t in ("current-password", "one-time-code") for t in autocomplete_tokens):
+        return None
+    searchable = _normalize_text(" ".join(part for part in (control.name, control.label) if part))
+    exact = 100 if "new-password" in autocomplete_tokens else 90
+    if _RE_RESET_CONFIRM_PASSWORD.search(searchable):
+        return ClassifiedLoginControl(control, exact, "confirm-password")
+    if _RE_RESET_NEW_PASSWORD.search(searchable) or "new-password" in autocomplete_tokens:
+        return ClassifiedLoginControl(control, exact, "new-password")
+    return None
+
+
+class AmbiguousPasswordResetError(ValueError):
+    """The page does not identify one safe new-password target and optional confirmation."""
+
+
+def select_password_reset_fills(
+    classified: List[ClassifiedLoginControl], password: str,
+) -> List[Dict[str, Any]]:
+    """Fill one new-password control and, when explicit, its same-form confirmation."""
+    new = [c for c in classified if c.token == "new-password"]
+    confirmations = [c for c in classified if c.token == "confirm-password"]
+    if not password or not new:
+        return []
+    if len(new) != 1 or len(confirmations) > 1:
+        raise AmbiguousPasswordResetError("multiple new-password or confirmation controls")
+    selected = [new[0], *confirmations]
+    if len(selected) == 2 and selected[0].control.form_index != selected[1].control.form_index:
+        raise AmbiguousPasswordResetError("new-password and confirmation controls belong to different forms")
+    return [{"index": c.control.index, "token": c.token, "value": password} for c in selected]
 
 
 _RE_OTP = re.compile(
@@ -289,9 +331,10 @@ def build_fill_js(fills: List[Dict[str, Any]], expected_origin: str, nonce: str 
     evaluated script, immediately before any write. If the page navigated between inspection and fill
     (TOCTOU), the script writes nothing and returns ``{"refused": "origin_changed", "found": <actual>}``:
     proof scope equals mutation scope (#88706). Targets resolve by the ``<nonce>:<index>`` stamp of
-    THIS inspection; a ``current-password`` fill additionally requires ``type=password``; ``<select>``
-    controls (country, state, expiry month) match an option by value or visible text. No marker is
-    left on filled controls so later model-driven DOM reads cannot address them deterministically.
+    THIS inspection; neither a DOM reflow nor a second inspection in between can redirect the password
+    into another field. Password fills require ``type=password``; ``<select>`` controls (country, state,
+    expiry month) match an option by value or visible text. No marker is left on filled controls so later
+    model-driven DOM reads cannot address them deterministically.
     """
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
@@ -311,7 +354,8 @@ _FILL_JS_TEMPLATE = """(() => {
   const norm = (t) => String(t || "").trim().toLowerCase();
   for (const f of fills) {
     const el = document.querySelector('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]');
-    if (!el || (f.token === "current-password" && el.type !== "password")) continue;
+    const passwordTokens = ["current-password", "new-password", "confirm-password"];
+    if (!el || (passwordTokens.includes(f.token) && el.type !== "password")) continue;
     try {
       if (el.tagName === "SELECT") {
         const want = norm(f.value);

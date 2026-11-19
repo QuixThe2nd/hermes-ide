@@ -165,7 +165,7 @@ def _manual_run_delivery_note(deliver: str, refreshed: Dict[str, Any]) -> str:
     ``last_delivery_error`` so the summary never claims success over a failed delivery.
 
     Follows the refreshed job record (#83993): ``run_one_job`` writes ``last_delivery_error`` via
-    ``mark_job_run`` when the post-run delivery (telegram/discord/…) failed, and the summary must not claim
+    ``mark_job_run`` when the post-run delivery (cron/bot-chat/…) failed, and the summary must not claim
     success over that record — the calling agent relays this line to the user. Local jobs never deliver; an
     empty/missing error keeps the legacy wording byte-for-byte.
     """
@@ -231,7 +231,7 @@ def _run_heartbeat(job_name: str):
         # executes the job synchronously on the caller's thread, and a cron job is itself a full agent run
         # that routinely takes minutes. The calling turn emits no tool activity for that entire window, so
         # the gateway inactivity watchdog concludes the agent is hung and kills the parent turn (#76502).
-        # Fire a heartbeat into the caller's activity tracker (the same signal tool progress uses) while the
+        # Fire a heartbeat into the caller's activity tracker (the same heartbeat tool progress uses) while the
         # job runs, so the watchdog sees a working tool instead of a silent one — mirrors the delegate_task
         # heartbeat pattern. Best-effort: if no activity callback is registered (direct Python callers,
         # tests), behavior is unchanged.
@@ -417,11 +417,11 @@ def _background_session_key(session_id: Optional[str]) -> str:
     """Routing key for a detached completion, captured on THIS thread (contextvars don't
     cross the pool). Empty string = no durable consumer."""
     try:
-        from tools.approval_context import get_current_session_key
+        from tools.session_context import get_current_session_key
         session_key = get_current_session_key(default="")
     except Exception:
         session_key = ""
-    # CLI path: the approval contextvar is only bound during gateway/TUI turns; the CLI
+    # CLI path: the tool session context is only bound during gateway/TUI turns; the CLI
     # drain filters completions by the durable session id, and an empty key would fail
     # closed (completion never claimable).
     return session_key or (str(session_id) if session_id else "")
@@ -475,7 +475,7 @@ def _try_dispatch_background_run(
     -------
     None
         Background delivery unavailable on this session runtime (one-shot
-        ``hermes -z``, stateless HTTP, Kanban worker, nested cron run).
+        ``hermes -z``, stateless HTTP, nested cron run).
         Caller falls back to the synchronous path unchanged.
     dict
         ``{"claimed": False, "success": False, "error": ...}`` — claim lost;
@@ -505,7 +505,7 @@ def _try_dispatch_background_run(
     # Routing capture BEFORE the claim: no routable session = no durable consumer for a detached
     # completion, so don't claim-and-dispatch (direct callers like `hermes cron run` exit right after).
     session_key = _background_session_key(session_id)
-    # CLI path: the approval contextvar is only bound during gateway/TUI turns. The CLI drain filters
+    # CLI path: the tool session context is only bound during gateway/TUI turns. The CLI drain filters
     # completions by the durable agent session id (#64240), so stamp it as the key — an empty key would fail
     # closed and the completion could never be claimed.
     if not session_key:
@@ -1111,6 +1111,14 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
     "parameters": {
         "type": "object",
         "properties": {
+            "description": {
+                "type": "string",
+                "description": (
+                    "One short phrase (max ~80 chars) saying WHY you are calling this, "
+                    "e.g. 'clean up the stale backup monitor'. Shown to the user as progress. "
+                    "Never put secrets here."
+                ),
+            },
             "paused": {"type": "boolean", "description": "Create only: persist disabled atomically. Resume to schedule; explicit run remains available. Default false."},
             "paused_reason": {"type": "string", "description": "Create only: auditable reason; requires paused=true."},
             "action": {
@@ -1144,7 +1152,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "deliver": {
                 "type": "string",
-                "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), 'inbox' or 'inbox:<guild_id>' (Discord: resolves to the provisioned inbox channel; on first delivery a job-named thread is auto-created under it and the token is persisted as discord:<inbox_id>:<thread_id>; 'inbox:<guild_id>' additionally validates the guild match; also valid in failure_deliver, where it resolves to the plain inbox channel without minting threads), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585'). Comma-combine like 'origin,local'. A bare platform name (e.g. 'slack') is NOT a valid target — there is no per-platform default destination; always give an explicit platform:chat_id."
+                "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), 'inbox' or 'inbox:<guild_id>' (Discord: resolves to the provisioned inbox channel; on first delivery a job-named thread is auto-created under it and the token is persisted as discord:<inbox_id>:<thread_id>; 'inbox:<guild_id>' additionally validates the guild match; also valid in failure_deliver, where it resolves to the plain inbox channel without minting threads), or platform:chat_id:thread_id (e.g. 'discord:999888777:555444333'). Comma-combine like 'origin,local'. A bare platform name (e.g. 'discord') is NOT a valid target — there is no per-platform default destination; always give an explicit platform:chat_id."
             },
             "failure_deliver": {
                 "type": "string",
@@ -1200,11 +1208,7 @@ def check_cronjob_requirements() -> bool:
     """Available in interactive CLI mode and gateway/messaging platforms (the scheduler is
     internal; no crontab needed). Flags must be explicitly truthy via ``env_var_enabled``."""
     from utils import env_var_enabled
-    return (
-        env_var_enabled("HERMES_INTERACTIVE")
-        or env_var_enabled("HERMES_GATEWAY_SESSION")
-        or env_var_enabled("HERMES_EXEC_ASK")
-    )
+    return env_var_enabled("HERMES_INTERACTIVE") or env_var_enabled("HERMES_GATEWAY_SESSION")
 
 
 # Agent-facing arguments forwarded verbatim to cronjob(). model / provider / base_url are

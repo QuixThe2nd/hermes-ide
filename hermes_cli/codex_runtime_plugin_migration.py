@@ -384,7 +384,7 @@ def _build_hermes_tools_mcp_entry() -> dict:
 
     HERMES_HOME passes through only IF SET, read from os.environ (not get_hermes_home()): when
     unset the codex subprocess must inherit its launcher's runtime HERMES_HOME (systemd, gateway,
-    kanban), not a migrate-time default burned into config.toml that pins the wrong profile. The
+    automation), not a migrate-time default burned into config.toml that pins the wrong profile. The
     pytest-tempdir guard keeps a sibling test's monkeypatched HERMES_HOME out of the user's real
     config. PYTHONPATH passes through so a worktree-launched hermes finds the branch's modules.
     """
@@ -393,7 +393,7 @@ def _build_hermes_tools_mcp_entry() -> dict:
     # HERMES_HOME passes through IF SET so the MCP subprocess sees the same config / auth / sessions DB as
     # the parent CLI. Read from os.environ (not get_hermes_home()) on purpose: when the env var is unset we
     # want codex's subprocess to inherit whatever HERMES_HOME its launcher sets at runtime (systemd unit,
-    # gateway, kanban dispatcher, custom shell), rather than burning the migrate-time resolved default into
+    # gateway, automation dispatcher, custom shell), rather than burning the migrate-time resolved default into
     # config.toml — that would override the launcher's HERMES_HOME and pin the subprocess to the wrong
     # profile. The pytest-tempdir guard below catches the issue #26250 Bug C scenario: a sibling test's
     # monkeypatch.setenv("HERMES_HOME", tmp_path) would otherwise leak a transient pytest tempdir into the

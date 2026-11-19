@@ -73,16 +73,6 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
             return content
         return cls._OUTBOUND_ODD_SPACE_RE.sub(" ", cls._OUTBOUND_INVISIBLE_CHARS_RE.sub("", content))
 
-    def _effective_reply_prefix(self) -> str:
-        """Prefix for outgoing replies in self-chat mode (Cloud API overrides to ``""``)."""
-        if (_get_wsecret("WHATSAPP_MODE", default="self-chat") or "self-chat") != "self-chat":
-            return ""
-        if self._reply_prefix is not None:
-            return self._reply_prefix.replace("\\n", "\n")
-        env_prefix = _get_wsecret("WHATSAPP_REPLY_PREFIX")
-        if env_prefix is not None:
-            return env_prefix.replace("\\n", "\n")
-        return self.DEFAULT_REPLY_PREFIX
 
     def _outgoing_chunk_limit(self) -> int:
         """Reserve room for the reply prefix; floor keeps space for pagination/fence repair."""
@@ -99,8 +89,8 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
     def _whatsapp_observe_unmentioned_group_messages(self) -> bool:
         """Return whether skipped unmentioned group messages are stored as context.
 
-        When enabled with ``require_mention``, WhatsApp groups match the
-        Telegram observe-unmentioned UX: ordinary group chatter is stored on
+        When enabled with ``require_mention``, WhatsApp groups use the
+        observe-unmentioned UX: ordinary group chatter is stored on
         the shared group session transcript, but the agent only dispatches
         when the bot is explicitly addressed (mention / reply-to-bot /
         wake-word pattern / slash command).
@@ -328,7 +318,7 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
     def _should_observe_unmentioned_group_message(self, data: Dict[str, Any]) -> bool:
         """Return True when a group message should be stored but not dispatched.
 
-        Mirrors Telegram's observe-unmentioned gate: only messages that the
+        Mirrors the observe-unmentioned gate: only messages that the
         ``require_mention`` gate is about to DROP are observable. Anything the
         gate would dispatch (mention, reply-to-bot, wake-word pattern, slash
         command) belongs to the normal dispatcher, and DMs / broadcasts /
@@ -472,7 +462,7 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
             # slash-access control (_check_slash_access / policy_for_source)
             # can identify the sender — a shared user_id=None source is never
             # an admin. Still inject the channel prompt for group context.
-            # (Same contract as Telegram's COMMAND branch, #67816.)
+            # (Same contract as the COMMAND branch, #67816.)
             return dataclasses.replace(event, channel_prompt=channel_prompt)
         return dataclasses.replace(
             event,
@@ -542,7 +532,7 @@ def whatsapp_session_is_paired(session_path) -> bool:
     if not creds_path.exists():
         return False
     try:
-        payload = json.loads(creds_path.read_text(encoding="utf-8"))
+        payload = json.loads(creds_path.read_text(encoding="utf-8-sig"))
     except OSError:
         # Presence was the old signal. Callers (and tests) that stub
         # Path.exists without a readable file should still proceed.

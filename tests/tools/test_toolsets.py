@@ -1,7 +1,7 @@
 """Tests for toolsets.py — toolset resolution, validation, and composition."""
 
 import toolsets as toolsets_mod
-from tools.registry import ToolRegistry
+from tools.registry import ToolRegistry, discover_builtin_tools, registry
 from toolsets import (
     TOOLSETS,
     get_toolset,
@@ -232,7 +232,7 @@ class TestToolsetConsistency:
         on hermes-discord, gated on DISCORD_BOT_TOKEN) are allowed on top —
         the invariant is that the core set is identical across platforms.
         """
-        platforms = ["hermes-cli", "hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant"]
+        platforms = ["hermes-cli", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant"]
         tool_sets = [set(TOOLSETS[p]["tools"]) for p in platforms]
         # All platforms must contain the shared core; platform-specific
         # extras are OK (subset check, not equality).
@@ -242,6 +242,31 @@ class TestToolsetConsistency:
         # Sanity: the shared core must be non-trivial (i.e. we didn't
         # silently let a platform diverge so far that nothing is shared).
         assert len(core) > 20, f"Suspiciously small shared core: {len(core)} tools"
+
+
+class TestDiscordApproveActionRemoved:
+    """``discord_approve_action`` is removed from the fork; the sibling
+    Discord tools must survive the removal and no toolset may still
+    advertise the removed tool."""
+
+    def test_not_registered_after_discovery(self):
+        discover_builtin_tools()
+        assert registry.get_entry("discord_approve_action") is None
+
+    def test_absent_from_discord_toolsets(self):
+        assert "discord_approve_action" not in TOOLSETS["discord"]["tools"]
+        assert "discord_approve_action" not in TOOLSETS["hermes-discord"]["tools"]
+        # The description must not advertise a capability no toolset offers.
+        assert "approve" not in TOOLSETS["discord"]["description"].lower()
+
+    def test_discord_siblings_remain(self):
+        discover_builtin_tools()
+        for tool in ("discord", "discord_admin"):
+            assert registry.get_entry(tool) is not None
+        assert "discord" in TOOLSETS["discord"]["tools"]
+        assert "discord_admin" in TOOLSETS["discord_admin"]["tools"]
+        for tool in ("discord", "discord_admin"):
+            assert tool in TOOLSETS["hermes-discord"]["tools"]
 
 
 class TestPluginToolsets:

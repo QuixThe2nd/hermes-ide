@@ -41,7 +41,7 @@ MANIFEST_FILE = SKILLS_DIR / ".bundled_manifest"
 # reset_bundled_skill() DELETE) against the wrong profile. Accessors honor an explicitly
 # patched module global and otherwise re-resolve on every call.
 # Same bug class and same fix as skills_tool (f8723c478) and skill_manager_tool (c6a3d412d): long-lived
-# multi-profile runtimes (Dashboard console, TUI/Desktop backend, cron, kanban workers) import this module
+# multi-profile runtimes (Dashboard console, TUI/Desktop backend, cron, automation workers) import this module
 # once under the launch HERMES_HOME and later scope requests to a different profile via
 # set_hermes_home_override(). See #65828.
 _HERMES_HOME_AT_IMPORT = HERMES_HOME

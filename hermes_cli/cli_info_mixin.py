@@ -1,4 +1,4 @@
-"""Informational views and reload flows for the interactive CLI: banner, help, tools, usage,
+"""Informational views and reload flows for the interactive CLI: banner, help, tools,
 insights, MCP/skills reload, bang shell.
 
 Mixin split out of ``cli.py``; bound onto ``HermesCLI`` via the MRO. cli.py-internal symbols are
@@ -7,7 +7,6 @@ imported LAZILY inside each method — the mixin never imports ``cli`` at module
 
 from __future__ import annotations
 
-import concurrent.futures
 import logging
 import os
 import shutil
@@ -18,7 +17,6 @@ from hermes_constants import is_termux as _is_termux_environment
 from rich.markup import escape as _escape
 from utils import base_url_hostname, file_signature
 
-from hermes_cli.cli_modal_mixin import _gated_confirm
 from hermes_cli.colors import Colors as _Colors
 
 CONFIG_WATCH_INTERVAL = 5.0  # seconds between config.yaml stat() calls
@@ -39,7 +37,6 @@ _TOOL_PROGRESS_LABELS = {
 
 _RELOAD_MCP_CHOICES = [
     ("once", "Approve Once", "reload now"),
-    ("always", "Always Approve", "reload now and silence this prompt permanently"),
     ("cancel", "Cancel", "leave MCP tools unchanged")]
 _RELOAD_MCP_DETAIL = (
     "Reloading MCP servers rebuilds the tool set for this session and\n"
@@ -72,7 +69,7 @@ def _skill_line(item: dict) -> str:
 
 
 class CLIInfoMixin:
-    """Informational views and reload flows for the interactive CLI: banner, help, tools, usage,
+    """Informational views and reload flows for the interactive CLI: banner, help, tools,
     insights, MCP/skills reload, bang shell."""
 
     def _show_plugin_compat_notice(self) -> None:
@@ -234,17 +231,7 @@ class CLIInfoMixin:
 
         self._console_print()
 
-    def _fast_command_available(self) -> bool:
-        try:
-            from hermes_cli.models import model_supports_fast_mode
-        except Exception:
-            return False
-        agent = getattr(self, "agent", None)
-        return model_supports_fast_mode(getattr(agent, "model", None) or getattr(self, "model", None))
-
     def _command_available(self, slash_command: str) -> bool:
-        if slash_command == "/fast":
-            return self._fast_command_available()
         return True
 
     def show_help(self, arg: str = ""):
@@ -366,11 +353,8 @@ class CLIInfoMixin:
         """Display available tools with kawaii ASCII art."""
         from cli import get_tool_definitions
         from model_tools import get_toolset_for_tool
-        # Pre-assembly list: /tools is a discovery surface, so it must show the full catalog
-        # including tools deferred behind the tool_search bridge (users verify MCP installs here).
         tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
-                                     disabled_toolsets=self.disabled_toolsets, quiet_mode=True,
-                                     skip_tool_search_assembly=True)
+                                     disabled_toolsets=self.disabled_toolsets, quiet_mode=True)
         if not tools:
             print("(;_;) No tools available")
             return
@@ -476,7 +460,7 @@ class CLIInfoMixin:
         """
         from cli import _rich_text_from_ansi
         from hermes_cli.bang_shell import (
-            USAGE_HINT, bang_shell_enabled, check_bang_approval, is_bang_command,
+            USAGE_HINT, bang_shell_enabled, is_bang_command,
             parse_bang_command, resolve_bang_cwd, run_bang_command)
 
         if not is_bang_command(text):
@@ -491,12 +475,6 @@ class CLIInfoMixin:
             self._console_print(f"[dim]{USAGE_HINT}[/]")
             return True
 
-        approval = check_bang_approval(command)
-        if not approval.get("approved"):
-            message = approval.get("message") or (
-                f"Command denied: {approval.get('description', 'flagged as dangerous')}")
-            self._console_print(f"[bold red]{_escape(str(message))}[/]")
-            return True
 
         exit_code = run_bang_command(
             command,
@@ -522,7 +500,6 @@ class CLIInfoMixin:
             print("  Messaging Platform Configuration:")
             print("  " + "-" * 55)
             platform_status = {
-                Platform.TELEGRAM: ("Telegram", "TELEGRAM_BOT_TOKEN"),
                 Platform.DISCORD: ("Discord", "DISCORD_BOT_TOKEN"),
                 Platform.SLACK: ("Slack", "SLACK_BOT_TOKEN"),
                 Platform.WHATSAPP: ("WhatsApp", "WHATSAPP_ENABLED")}
@@ -548,7 +525,6 @@ class CLIInfoMixin:
             print()
             print("  To configure the gateway:")
             print("    1. Set environment variables:")
-            print("       TELEGRAM_BOT_TOKEN=your_token")
             print("       DISCORD_BOT_TOKEN=your_token")
             print(f"    2. Or configure settings in {display_hermes_home()}/config.yaml")
             print()
@@ -602,43 +578,6 @@ class CLIInfoMixin:
 
         _cprint(_TOOL_PROGRESS_LABELS.get(self.tool_progress_mode, ""))
 
-    def _handle_usage_command(self, cmd_original: str):
-        """Dispatch `/usage [reset [--force]]`: bare `/usage` is the classic display; `reset`
-        redeems one banked Codex rate-limit reset credit (refuses unless exhausted or --force)."""
-        parts = cmd_original.split()
-        args = [p.lower() for p in parts[1:]]
-        if args and args[0] == "reset":
-            self._usage_reset(force="--force" in args[1:])
-            return
-        if args:
-            print(f"  Unknown /usage subcommand: {' '.join(parts[1:])}. Try /usage or /usage reset [--force].")
-            return
-        self._show_usage()
-
-    def _agent_or_self(self, name: str):
-        """Provider-ish attribute from the live agent, falling back to the CLI's own value."""
-        return (getattr(self.agent, name, None) if self.agent else None) or getattr(self, name, None)
-
-    def _usage_reset(self, force: bool = False):
-        """`/usage reset [--force]` — redeem one banked Codex reset credit."""
-        if str(self._agent_or_self("provider") or "").strip().lower() != "openai-codex":
-            print("  Banked usage resets are only available on the openai-codex provider.")
-            print("  Switch with `/model` or `hermes auth` first.")
-            return
-        from agent.account_usage import redeem_codex_reset_credit
-
-        print("  ⏳ Checking banked reset credits...")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
-            try:
-                result = _pool.submit(
-                    redeem_codex_reset_credit, base_url=self._agent_or_self("base_url"),
-                    api_key=self._agent_or_self("api_key"), force=force,
-                ).result(timeout=45.0)
-            except concurrent.futures.TimeoutError:
-                print("  ❌ Timed out talking to the Codex backend — try again shortly.")
-                return
-        print(f"  {result.message}")
-
     def _show_context_breakdown(self, cmd_original: str = ""):
         """`/context [all]` — 5×20 glyph grid (cell ≈ 1% of the window) plus an estimated
         per-category table; `all` appends per-skill / per-toolset costs. Read-only: same chars/4
@@ -678,110 +617,6 @@ class CLIInfoMixin:
         for line in render_context_breakdown_lines(payload, details=details, grid=True) + ([""] + file_lines if file_lines else []):
             print(f"  {line}")
         print()
-
-    def _show_usage(self):
-        """Rate limits + session token usage (when a live agent exists) + Nous credits.
-
-        The Nous credits block is agent-independent (portal fetch), so it runs even with no live
-        agent — the TUI's /usage slash-worker resumes the session WITHOUT building an agent.
-        """
-        from cli import datetime, format_duration_compact
-
-        def _credits_or(fallback: str) -> None:
-            # Account limits (e.g. Codex subscription windows) need only the configured provider
-            # plus on-disk credentials, so they render without a live agent too (#42904).
-            shown = self._print_account_limits()
-            if self._print_nous_credits_block():
-                self._print_usage_cta()
-            elif not shown:
-                print(fallback)
-
-        if not self.agent:
-            _credits_or("(._.) No active agent -- send a message first.")
-            return
-        agent = self.agent
-        calls = agent.session_api_calls
-        if calls == 0:
-            _credits_or("(._.) No API calls made yet in this session.")
-            return
-
-        rl_state = agent.get_rate_limit_state()
-        if rl_state and rl_state.has_data:
-            from agent.rate_limit_tracker import format_rate_limit_display
-            print()
-            print(format_rate_limit_display(rl_state))
-            print()
-
-        input_tokens = getattr(agent, "session_input_tokens", 0) or 0
-        output_tokens = getattr(agent, "session_output_tokens", 0) or 0
-        reasoning_tokens = getattr(agent, "session_reasoning_tokens", 0) or 0
-        compressor = agent.context_compressor
-        last_prompt = compressor.last_prompt_tokens if compressor.last_prompt_tokens > 0 else 0
-        ctx_len = compressor.context_length
-        pct = min(100, (last_prompt / ctx_len * 100)) if ctx_len else 0
-        elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())
-
-        print("  📊 Session Token Usage")
-        print(f"  {'─' * 40}")
-        print(f"  Model:                     {agent.model}")
-        print(f"  Input tokens:              {input_tokens:>10,}")
-        print(f"  Output tokens:             {output_tokens:>10,}")
-        if reasoning_tokens:
-            print(f"  ↳ Reasoning (subset):      {reasoning_tokens:>10,}")
-        print(f"  Prompt tokens (total):     {agent.session_prompt_tokens:>10,}")
-        print(f"  Completion tokens:         {agent.session_completion_tokens:>10,}")
-        print(f"  Total tokens:              {agent.session_total_tokens:>10,}")
-        print(f"  API calls:                 {calls:>10,}")
-        print(f"  Session duration:          {elapsed:>10}")
-        print(f"  {'─' * 40}")
-        from agent.context_breakdown import context_display_source
-        mark = "~" if context_display_source(compressor) != "provider_usage" else ""
-        from agent.context_pin import context_pin_suffix
-        print(f"  Current context:  {mark}{last_prompt:,} / {ctx_len:,} ({mark}{pct:.0f}%)"
-              f"{context_pin_suffix(ctx_len, getattr(agent, '_config_context_length', None))}")
-        print(f"  Messages:         {len(self.conversation_history)}")
-        print(f"  Compressions:     {compressor.compression_count}")
-
-        self._print_account_limits()
-
-        if self._print_nous_credits_block():
-            self._print_usage_cta()
-
-        if self.verbose:
-            logging.getLogger().setLevel(logging.DEBUG)
-            for noisy in ('openai', 'openai._base_client', 'httpx', 'httpcore', 'asyncio', 'hpack', 'grpc', 'modal'):
-                logging.getLogger(noisy).setLevel(logging.WARNING)
-        else:
-            logging.getLogger().setLevel(logging.INFO)
-
-    def _print_account_limits(self) -> bool:
-        """Provider account limits block for `/usage`; True if anything printed.
-
-        Uses the live agent's route when present, else the CLI's own configured provider (the
-        TUI/Desktop slash-worker runs without an agent). Fetched off-thread with a hard timeout so
-        slow provider APIs don't hang the prompt; failures are non-fatal. Lazy import: pulls the
-        OpenAI SDK chain.
-        """
-        provider = self._agent_or_self("provider")
-        if not provider:
-            return False
-        from agent.account_usage import fetch_account_usage, render_account_usage_lines
-        account_snapshot = None
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
-            try:
-                account_snapshot = _pool.submit(
-                    fetch_account_usage, provider, base_url=self._agent_or_self("base_url"),
-                    api_key=self._agent_or_self("api_key"),
-                ).result(timeout=10.0)
-            except (concurrent.futures.TimeoutError, Exception):
-                account_snapshot = None
-        account_lines = [f"  {line}" for line in render_account_usage_lines(account_snapshot)]
-        if not account_lines:
-            return False
-        print()
-        for line in account_lines:
-            print(line)
-        return True
 
     def _show_insights(self, command: str = "/insights"):
         """Show usage insights and analytics from session history (`--days N` / `N`, `--source`)."""
@@ -854,7 +689,7 @@ class CLIInfoMixin:
 
         self._config_sig = sig
         try:
-            with open(cfg_path, encoding="utf-8") as f:
+            with open(cfg_path, encoding="utf-8-sig") as f:
                 new_cfg = _yaml.safe_load(f) or {}
         except Exception:
             return
@@ -888,19 +723,18 @@ class CLIInfoMixin:
         threading.Thread(target=self._reload_mcp, daemon=True).start()
 
     def _confirm_and_reload_mcp(self, cmd_original: str = "") -> None:
-        """Interactive /reload-mcp — confirm (Approve Once / Always Approve / Cancel, gated by
-        ``approvals.mcp_reload_confirm``, default on), then reload. The config watcher's
-        auto-reload calls ``_reload_mcp`` directly. Reloading invalidates the provider prompt cache
-        (tool schemas are baked into the system prompt), hence the warning."""
-        choice = _gated_confirm(
-            self, "reload-mcp", "mcp_reload_confirm",
+        """Confirm once, then reload MCP; legacy approval config is ignored."""
+        raw = self._prompt_text_input_modal(
             title="⚠️  /reload-mcp — Prompt cache invalidation warning",
-            detail=_RELOAD_MCP_DETAIL,
-            choices=_RELOAD_MCP_CHOICES,
-            unchanged="MCP tools unchanged.",
-            always_msg="🔒 Future /reload-mcp calls will run without confirmation.",
-            once_verb="reloading")
-        if choice is None:
+            detail=_RELOAD_MCP_DETAIL, choices=_RELOAD_MCP_CHOICES)
+        choice = self._normalize_slash_confirm_choice(raw, _RELOAD_MCP_CHOICES)
+        if choice != "once":
+            if raw is None:
+                print("🟡 /reload-mcp cancelled (no input).")
+            elif choice is None:
+                print(f"🟡 Unrecognized choice '{raw}'. /reload-mcp cancelled.")
+            else:
+                print("🟡 /reload-mcp cancelled. MCP tools unchanged.")
             return
         with self._busy_command(self._slow_command_status(cmd_original)):
             self._reload_mcp()

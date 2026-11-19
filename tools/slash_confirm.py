@@ -1,11 +1,7 @@
 """Generic slash-command confirmation primitive (gateway-side).
 
-Slash commands with an expensive side effect (currently only ``/reload-mcp``, which invalidates
-the provider prompt cache) route through here. Button-UI adapters render Approve Once / Always
-Approve / Cancel and call ``resolve()``; text-only adapters get a prompt and the gateway
-intercepts ``/approve``, ``/always``, ``/cancel``. State is module-level (like ``tools.approval``)
-so adapters can resolve without a ``GatewayRunner`` backreference. The CLI has its own
-synchronous variant (``_prompt_slash_confirm`` in ``cli.py``).
+Adapters render the registered choices and call ``resolve()``; text-only adapters use the
+gateway's reply interception. State is module-level so adapters need no runner backreference.
 """
 
 from __future__ import annotations
@@ -17,7 +13,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-# session_key -> {"confirm_id", "command", "handler", "created_at"}
+# session_key -> {"confirm_id", "command", "handler", "created_at", "allowed_choices"}
 _pending: Dict[str, Dict[str, Any]] = {}
 _lock = threading.RLock()
 
@@ -27,11 +23,14 @@ DEFAULT_TIMEOUT_SECONDS = 300
 
 
 def register(session_key: str, confirm_id: str, command: str,
-             handler: Callable[[str], Awaitable[Optional[str]]]) -> None:
+             handler: Callable[[str], Awaitable[Optional[str]]],
+             allowed_choices: tuple[str, ...] = ("once", "always", "cancel")) -> None:
     """Register a pending confirm, superseding any prior one for the session."""
     with _lock:
-        _pending[session_key] = {"confirm_id": confirm_id, "command": command,
-                                 "handler": handler, "created_at": time.time()}
+        _pending[session_key] = {
+            "confirm_id": confirm_id, "command": command, "handler": handler,
+            "created_at": time.time(), "allowed_choices": allowed_choices,
+        }
 
 
 def get_pending(session_key: str) -> Optional[Dict[str, Any]]:
@@ -63,16 +62,14 @@ def clear_if_stale(session_key: str, timeout: float = DEFAULT_TIMEOUT_SECONDS) -
 
 async def resolve(session_key: str, confirm_id: str, choice: str,
                   timeout: float = DEFAULT_TIMEOUT_SECONDS) -> Optional[str]:
-    """Run the pending handler with ``choice`` ("once" / "always" / "cancel").
-
-    Returns the handler's output string, or None if the confirm was stale, already resolved,
-    or the confirm_id doesn't match (superseded prompt).
-    """
+    """Run a pending handler with an allowed choice."""
     with _lock:
         entry = _pending.get(session_key)
         if not entry or entry.get("confirm_id") != confirm_id:
             return None
-        # Pop before running so duplicate callbacks (button double-click) cannot run it twice.
+        if choice not in entry.get("allowed_choices", ("once", "always", "cancel")):
+            return "This prompt does not offer that choice. Reply /cancel to dismiss it."
+        # Pop before running so duplicate callbacks cannot run it twice.
         _pending.pop(session_key, None)
         if _is_stale(entry, timeout):
             return None

@@ -278,9 +278,9 @@ class TestFallbackChainAdvancement:
         assert rebuilt["base_url"] == portal
         assert agent._anthropic_client is not None
 
-    def test_nous_non_anthropic_fallback_stays_on_chat_completions(self):
-        portal = "https://inference-api.nousresearch.com/v1"
-        fbs = [{"provider": "nous", "model": "hermes-4-405b"}]
+    def test_non_anthropic_fallback_stays_on_chat_completions(self):
+        portal = "https://openrouter.ai/api/v1"
+        fbs = [{"provider": "openrouter", "model": "hermes-4-405b"}]
         agent = _make_agent(fallback_model=fbs)
         with (
             patch(

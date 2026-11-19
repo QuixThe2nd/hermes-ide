@@ -37,7 +37,7 @@ def build_gateway_parser(
 ) -> None:
     """Attach the ``gateway`` and ``proxy`` subcommands to ``subparsers``."""
     gateway_parser = subparsers.add_parser("gateway", help="Messaging gateway management",
-        description="Manage the messaging gateway (Telegram, Discord, WhatsApp, Weixin, and more)")
+        description="Manage the messaging gateway (Discord, WhatsApp, Weixin, and more)")
     gateway_subparsers = gateway_parser.add_subparsers(dest="gateway_command")
 
     gateway_run = gateway_subparsers.add_parser(
@@ -52,14 +52,6 @@ def build_gateway_parser(
             "already supervises this profile. Without --force, the command "
             "refuses because a second dispatcher escapes the service and can "
             "corrupt shared gateway state.")
-    _flag(gateway_run, "--no-supervise",
-        help="Inside the s6-overlay Docker image, normally `gateway run` is "
-            "automatically redirected to the supervised s6 service (so the "
-            "gateway gets auto-restart on crash, plus a supervised dashboard "
-            "if HERMES_DASHBOARD is set). Pass --no-supervise to opt out and "
-            "get the historical pre-s6 foreground behavior: the gateway is "
-            "the container's main process and the container exits with the "
-            "gateway's exit code. No effect outside an s6 container.")
     _flag(gateway_run, "--external-supervisor",
         help="Declare that an external process manager owns this foreground "
             "gateway. In-chat restarts and updates exit back to that manager "
@@ -69,22 +61,35 @@ def build_gateway_parser(
     add_accept_hooks_flag(gateway_parser)
 
     gateway_start = gateway_subparsers.add_parser(
-        "start", help="Start the installed systemd/launchd background service")
+        "start", help="Start the installed systemd/launchd background service",
+        description="Start the gateway as a FRESH process (no drain, no successor — "
+                    "unlike restart, which hands over from a running gateway).")
     _add_system_flag(gateway_start)
     _flag(gateway_start, "--all",
         help="Kill ALL stale gateway processes across all profiles before starting")
     _flag(gateway_start, "--force", help=_FORCE_SERVED_PROFILE_HELP)
     _add_compat_platform_flag(gateway_start)
 
-    gateway_stop = gateway_subparsers.add_parser("stop", help="Stop gateway service")
+    gateway_stop = gateway_subparsers.add_parser(
+        "stop", help="Stop gateway service",
+        description="Stop the gateway: admission closes, in-flight work drains, then the "
+                    "process exits. No successor is started (unlike restart).")
     _add_system_flag(gateway_stop)
     _flag(gateway_stop, "--all", help="Stop ALL gateway processes across all profiles")
 
-    gateway_restart = gateway_subparsers.add_parser("restart", help="Restart gateway service")
+    gateway_restart = gateway_subparsers.add_parser(
+        "restart", help="Restart gateway service",
+        description="Restart the gateway through the ONE restart pipeline (same as /restart "
+                    "and the agent restart tool): a successor takes new work, in-flight "
+                    "sessions drain undisturbed, then this process exits. "
+                    "Unlike stop→start, adapters hand over to the successor.")
     _add_system_flag(gateway_restart)
     _flag(gateway_restart, "--all",
         help="Kill ALL gateway processes across all profiles before restarting")
-    _flag(gateway_restart, "--force", help=_FORCE_SERVED_PROFILE_HELP)
+    _flag(gateway_restart, "--force",
+        help="Bypass the graceful successor-first drain and force a supervisor restart; "
+            "this interrupts active chats. Also starts a separate gateway for a profile "
+            "already served by the default multiplexer (not recommended).")
     _add_compat_platform_flag(gateway_restart)
 
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")
@@ -94,6 +99,7 @@ def build_gateway_parser(
     _add_system_flag(gateway_status)
     _add_compat_platform_flag(gateway_status)
 
+    # gateway install
     gateway_install = gateway_subparsers.add_parser(
         "install", help="Install gateway as a systemd/launchd background service")
     _flag(gateway_install, "--force",
@@ -147,11 +153,12 @@ def build_gateway_parser(
     gateway_enroll = gateway_subparsers.add_parser("enroll",
         help="Enroll this gateway with a relay connector (writes relay auth creds to .env)",
         description="Redeem a single-use enrollment token with a relay connector. "
-            "Authenticates as your Nous Portal account (the connector derives the "
-            "authoritative tenant from it), mints this gateway's per-gateway secret "
-            "and per-tenant delivery key, and writes GATEWAY_RELAY_ID / "
-            "GATEWAY_RELAY_SECRET / GATEWAY_RELAY_DELIVERY_KEY into ~/.hermes/.env. "
-            "Requires being logged in (hermes setup). Not available in managed installs.")
+            "Authenticates with the configured OIDC client credentials or ambient "
+            "identity token (the connector derives the authoritative tenant from it), "
+            "mints this gateway's per-gateway secret and per-tenant delivery key, and "
+            "writes GATEWAY_RELAY_ID / GATEWAY_RELAY_SECRET / "
+            "GATEWAY_RELAY_DELIVERY_KEY into ~/.hermes/.env. Requires gateway.idp "
+            "configuration. Not available in managed installs.")
     gateway_enroll.add_argument("--token", default=None,
         help="The single-use enrollment token from the connector (delivered with "
             "your gateway config). Also settable via GATEWAY_RELAY_ENROLL_TOKEN.")
@@ -171,19 +178,17 @@ def build_gateway_parser(
             "reconnects on its own.")
     gateway_enroll.set_defaults(func=cmd_gateway_enroll)
 
-    # proxy: local OpenAI-compatible proxy attaching the user's OAuth provider credentials,
-    # so external apps (Open WebUI, Karakeep, ...) ride a logged-in subscription.
+    # proxy: local OpenAI-compatible proxy attaching the user's OAuth provider credentials.
     proxy_parser = subparsers.add_parser(
         "proxy", help="Local OpenAI-compatible proxy to OAuth providers",
         description="Run a local HTTP server that forwards OpenAI-compatible requests "
-            "to an OAuth-authenticated provider (e.g. Nous Portal). External "
-            "apps can point at the proxy with any bearer token; the proxy "
-            "attaches your real credentials.")
+            "to an OAuth-authenticated provider. External apps can point at the proxy "
+            "with any bearer token; the proxy attaches your real credentials.")
     proxy_subparsers = proxy_parser.add_subparsers(dest="proxy_command")
 
     proxy_start = proxy_subparsers.add_parser("start", help="Run the proxy in the foreground")
-    proxy_start.add_argument("--provider", default="nous",
-        help="Upstream provider: nous or xai (default: nous). See `hermes proxy providers`.")
+    proxy_start.add_argument("--provider", default="xai",
+        help="Upstream provider: xai (default). See `hermes proxy providers`.")
     proxy_start.add_argument("--host", default=None,
         help="Bind address (default: 127.0.0.1). Use 0.0.0.0 to expose on LAN.")
     proxy_start.add_argument("--port", type=int, default=None, help="Bind port (default: 8645)")

@@ -1,11 +1,20 @@
-"""Regression coverage for timed-out delegation teardown."""
+"""Regression coverage for timed-out delegation teardown.
+
+A healthy worker that outlives the configured cap is ADOPTED onto the
+async-delegation rail, not stopped (see test_delegate_timeout_adoption.py);
+the close-ordering contract below therefore runs against the adopted runner:
+the child is closed only once its worker has settled, never while it runs.
+"""
 
 from __future__ import annotations
 
 import threading
+import time
+from queue import Empty
 from types import SimpleNamespace
 
 from tools import delegate_tool
+from tools.process_registry import process_registry
 
 
 class _SlowUnwindingChild:
@@ -33,16 +42,13 @@ class _SlowUnwindingChild:
         self.started.set()
         # Generous bounds: these gate on events the test sets promptly; a tight bound only
         # turns a load-starved test thread into a spurious early exit that fires close().
-        assert self.interrupted.wait(timeout=10)
-        # Model the real child turn's finally path: it still performs session
-        # activity/SQLite cleanup after the parent requests interruption.
+        # An adopted worker is never interrupted: it simply keeps working until it finishes.
         self.unwinding.set()
         assert self.allow_finish.wait(timeout=10)
         self.finished.set()
         return {
-            "final_response": "",
-            "completed": False,
-            "interrupted": True,
+            "final_response": "late answer",
+            "completed": True,
             "api_calls": 1,
             "messages": [],
         }
@@ -78,6 +84,9 @@ def test_timeout_does_not_close_child_while_worker_is_unwinding(monkeypatch):
     )
 
     assert result["status"] == "timeout"
+    # The healthy worker was adopted, not stopped.
+    assert result.get("delegation_id"), result["error"]
+    assert not child.interrupted.is_set()
     assert child.unwinding.wait(timeout=1)
     try:
         assert not child.closed.is_set(), (
@@ -85,8 +94,18 @@ def test_timeout_does_not_close_child_while_worker_is_unwinding(monkeypatch):
         )
     finally:
         child.allow_finish.set()
-    assert child.finished.wait(timeout=1)
-    assert child.closed.wait(timeout=1)
+    assert child.finished.wait(timeout=5)
+    assert child.closed.wait(timeout=5), "the adopted runner must close the settled child"
     assert not child.close_while_running, (
         "timed-out child.close() raced its still-running conversation thread"
     )
+    # Absorb the adopted unit's terminal event inside this test: it lands on the
+    # shared completion queue and must not leak into a later test's assertions.
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            evt = process_registry.completion_queue.get(timeout=0.5)
+        except Empty:
+            continue
+        if evt.get("type") == "async_delegation" and evt.get("delegation_id") == result["delegation_id"]:
+            break

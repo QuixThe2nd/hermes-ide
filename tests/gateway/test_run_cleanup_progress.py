@@ -1,7 +1,7 @@
 """Tests for opt-in cleanup of temporary progress bubbles.
 
 When ``display.platforms.<plat>.cleanup_progress: true`` is set for a
-platform whose adapter supports message deletion (e.g. Telegram), the
+platform whose adapter supports message deletion (e.g. Discord), the
 tool-progress bubble, "⏳ Working — N min" heartbeats, and status-callback
 messages sent during a run are deleted after the final response is
 delivered.
@@ -47,7 +47,7 @@ class CleanupCaptureAdapter(BasePlatformAdapter):
 
     _next_mid = 100
 
-    def __init__(self, platform=Platform.TELEGRAM):
+    def __init__(self, platform=Platform.DISCORD):
         super().__init__(PlatformConfig(enabled=True, token="***"), platform)
         self.sent = []
         self.edits = []
@@ -148,7 +148,6 @@ def _make_runner(adapter):
     GatewayRunner = gateway_run.GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.adapters = {adapter.platform: adapter}
-    runner._voice_mode = {}
     runner._prefill_messages = []
     runner._ephemeral_system_prompt = ""
     runner._reasoning_config = None
@@ -171,7 +170,7 @@ def _install_fakes(
     agent_cls,
     *,
     cleanup_on: bool,
-    cleanup_platform: Platform = Platform.TELEGRAM,
+    cleanup_platform: Platform = Platform.DISCORD,
 ):
     """Wire up the module stubs every _run_agent test needs."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
@@ -235,14 +234,14 @@ async def test_messaging_agent_forwards_checkpoint_config(monkeypatch, tmp_path)
         },
     )
 
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    source = SessionSource(platform=Platform.DISCORD, chat_id="-1001")
     result = await runner._run_agent(
         message="hello",
         context_prompt="",
         history=[],
         source=source,
         session_id="sess-checkpoints",
-        session_key="agent:main:telegram:group:-1001",
+        session_key="agent:main:discord:group:-1001",
     )
 
     assert result["final_response"] == "done"
@@ -261,8 +260,8 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=True)
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
-    session_key = "agent:main:telegram:group:-1001"
+    source = SessionSource(platform=Platform.DISCORD, chat_id="-1001")
+    session_key = "agent:main:discord:group:-1001"
 
     pre_existing_fired = []
 

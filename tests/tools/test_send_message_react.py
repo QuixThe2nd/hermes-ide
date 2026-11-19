@@ -1,7 +1,7 @@
 """Tests for send_message action='react'/'unreact' dispatch.
 
 Kept separate from ``test_send_message_tool.py`` because that module skips
-wholesale when optional Telegram dependencies are not installed.
+wholesale when optional platform dependencies are not installed.
 """
 
 import json

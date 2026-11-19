@@ -2,7 +2,7 @@
 
 Owns one Codex thread per Hermes session: drives ``turn/start``, consumes
 streaming notifications via CodexEventProjector, bridges server-initiated
-approval requests, translates cancellation, and returns a TurnResult that
+server requests, translates cancellation, and returns a TurnResult that
 AIAgent.run_conversation() splices into ``messages``. Synchronous: the client's
 reader threads feed queues that this adapter polls, like the chat_completions loop.
 """
@@ -27,15 +27,10 @@ from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAM
 
 logger = logging.getLogger(__name__)
 
-
 _STDERR_TAIL_LINES = 12  # stderr tail on generic errors: legible, yet enough for a config/auth diagnostic
 
-# Hermes' tools.terminal.security_mode -> Codex permissions profile id.
 # Missing config -> workspace-write (Codex's own default).
-_HERMES_TO_CODEX_PERMISSION_PROFILE = {
-    "auto": "workspace-write", "approval-required": "read-only-with-approval",
-    "unrestricted": "full-access", "yolo": "full-access",  # yolo: backstop alias used by some skills/tests
-}
+_HERMES_TO_CODEX_PERMISSION_PROFILE = {"auto": "workspace-write"}
 
 
 @dataclass
@@ -182,12 +177,6 @@ def _classify_oauth_failure(primary: str = "", *, stderr: str = "") -> Optional[
     return _OAUTH_REAUTH_HINT if any(n in stderr_l for n in _OAUTH_REFRESH_FAILURE_HINTS) else None
 
 
-@dataclass
-class _ServerRequestRouting:
-    """Default approval policies when no interactive approval_callback is wired in (tests, cron)."""
-
-    auto_approve_exec: bool = False
-    auto_approve_apply_patch: bool = False
 
 
 class CodexAppServerSession:
@@ -196,9 +185,7 @@ class CodexAppServerSession:
     def __init__(
         self, *, cwd: Optional[str] = None, codex_bin: str = "codex",
         codex_home: Optional[str] = None, permission_profile: Optional[str] = None,
-        approval_callback: Optional[Callable[..., str]] = None,
         on_event: Optional[Callable[[dict], None]] = None,
-        request_routing: Optional[_ServerRequestRouting] = None,
         client_factory: Optional[Callable[..., CodexAppServerClient]] = None,
         developer_instructions: Optional[str] = None,
     ) -> None:
@@ -213,9 +200,7 @@ class CodexAppServerSession:
         self._permission_profile = permission_profile or _HERMES_TO_CODEX_PERMISSION_PROFILE.get(
             os.environ.get("HERMES_TERMINAL_SECURITY_MODE", "auto"), "workspace-write"
         )
-        self._approval_callback = approval_callback
         self._on_event = on_event  # Display hook (kawaii spinner ticks etc.)
-        self._routing = request_routing or _ServerRequestRouting()
         self._client_factory = client_factory or CodexAppServerClient
 
         self._client: Optional[CodexAppServerClient] = None
@@ -223,9 +208,6 @@ class CodexAppServerSession:
         self._interrupt_event = threading.Event()
         self._active_turn_id: Optional[str] = None
         self._active_turn_lock = threading.Lock()
-        # In-progress fileChange items by id (item/started -> item/completed):
-        # approval params don't carry the changeset, so this feeds the prompt summary.
-        self._pending_file_changes: dict[str, str] = {}
         self._closed = False
 
     def ensure_started(self) -> str:
@@ -375,7 +357,6 @@ class CodexAppServerSession:
             except Exception:  # pragma: no cover - display callback
                 logger.debug("on_event callback raised", exc_info=True)
         _apply_accounting_notification(result, note)
-        self._track_pending_file_change(note)
         projection = projector.project(note)
         if projection.messages:
             result.projected_messages.extend(projection.messages)
@@ -395,7 +376,7 @@ class CodexAppServerSession:
         self, user_input: Any, *, turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25, post_tool_quiet_timeout: float = 90.0,
     ) -> TurnResult:
-        """Send a user message and block until turn/completed, bridging approvals and projecting items.
+        """Send a user message and block until turn/completed, answering server requests and projecting items.
 
         post_tool_quiet_timeout: if codex emits a tool completion and then goes quiet for this many seconds
         without emitting another item or `turn/completed`, log a warning (once per tool result) and keep
@@ -425,7 +406,7 @@ class CodexAppServerSession:
         self, result: TurnResult, ts: dict, turn_timeout: float, notification_poll_timeout: float,
         post_tool_quiet_timeout: float,
     ) -> None:
-        """Drive an accepted ``turn/start`` to completion: quiet warning, approvals, projection."""
+        """Drive an accepted ``turn/start`` to completion: quiet warning, server requests, projection."""
         projector = CodexEventProjector()
         client = self._client
         result.turn_id = (ts.get("turn") or {}).get("id")
@@ -448,8 +429,7 @@ class CodexAppServerSession:
 
         def on_server_request(sreq: dict) -> bool:
             nonlocal last_tool_completion_at
-            # Drain pending notifications first (bounded) so _pending_file_changes is
-            # current for the approval decision and display events still reach on_event.
+            # Drain pending notifications first (bounded) so display events reach on_event.
             turn_complete = False
             for _ in range(8):
                 pending = client.take_notification(timeout=0)
@@ -463,7 +443,7 @@ class CodexAppServerSession:
                     last_tool_completion_at = time.monotonic()
                 turn_complete = turn_complete or aborted
             self._handle_server_request(sreq)
-            # An approval round-trip is live signal — don't let it trip the quiet warning.
+            # A server-request round-trip is live signal — don't let it trip the quiet warning.
             last_tool_completion_at = None
             return turn_complete
 
@@ -627,7 +607,7 @@ class CodexAppServerSession:
             logger.warning("turn/interrupt timed out")
 
     def _handle_server_request(self, req: dict) -> None:
-        """Answer a codex server request (approval / elicitation) via Hermes' approval flow.
+        """Answer Codex protocol requests; command execution and patches are accepted.
 
         Permission escalations are always declined (the user chose their profile in
         ~/.codex/config.toml); unknown methods get a JSON-RPC error so codex doesn't hang.
@@ -652,82 +632,14 @@ class CodexAppServerSession:
         return {"action": action, "content": None, "_meta": None}
 
     _SERVER_REQUEST_HANDLERS: dict[str, Callable[..., dict]] = {
-        "item/commandExecution/requestApproval": lambda self, p: {"decision": self._decide_exec_approval(p)},
-        "item/fileChange/requestApproval": lambda self, p: {"decision": self._decide_apply_patch_approval(p)},
+        "item/commandExecution/requestApproval": lambda self, p: {"decision": "accept"},
+        "item/fileChange/requestApproval": lambda self, p: {"decision": "accept"},
         "item/permissions/requestApproval": lambda self, p: {"decision": "decline"},
         "mcpServer/elicitation/request": _respond_elicitation,
     }
 
-    def _run_approval_callback(self, auto_approve: bool, prompt: Callable[[], tuple[str, str]], log_label: str) -> str:
-        """Protocol routing only: auto-approve, fail-closed without a callback, else ask via ``prompt()``.
-
-        Approval mode/timeout resolution lives upstream (codex_runtime.py derives the
-        auto flags; the callback runs the shared gate). Do not re-read config here.
-        """
-        if auto_approve:
-            return "accept"
-        if self._approval_callback is None:
-            return "decline"
-        command, description = prompt()
-        try:
-            choice = self._approval_callback(command, description, allow_permanent=False)
-            return _approval_choice_to_codex_decision(choice)
-        except Exception:
-            logger.exception("approval_callback raised on %s", log_label)
-            return "decline"
-
-    def _decide_exec_approval(self, params: dict) -> str:
-        def prompt() -> tuple[str, str]:
-            # ``cwd`` is Optional on codex's side; fall back so the prompt is never empty.
-            description = f"Codex requests exec in {params.get('cwd') or self._cwd or '<unknown>'}"
-            if params.get("reason"):
-                description += f" — {params['reason']}"
-            return params.get("command") or "", description
-
-        return self._run_approval_callback(self._routing.auto_approve_exec, prompt, "exec request")
-
-    def _decide_apply_patch_approval(self, params: dict) -> str:
-        def prompt() -> tuple[str, str]:
-            # Params carry reason + grantRoot only; the changeset comes from _track_pending_file_change.
-            reason, grant_root = params.get("reason"), params.get("grantRoot")
-            change_summary = self._pending_file_changes.get(params.get("itemId") or "") or None
-            parts = [p for p in (reason, change_summary, grant_root and f"grants write to {grant_root}") if p]
-            detail = change_summary or reason
-            return (
-                f"apply_patch: {detail}" if detail else "apply_patch",
-                "; ".join(parts) if parts else "Codex requests to apply a patch",
-            )
-
-        return self._run_approval_callback(self._routing.auto_approve_apply_patch, prompt, "apply_patch")
-
-    def _track_pending_file_change(self, note: dict) -> None:
-        """Track fileChange items (item/started -> item/completed) so the apply_patch prompt can show the changeset."""
-        method = note.get("method", "")
-        item = (note.get("params") or {}).get("item") or {}
-        item_id = item.get("id") or ""
-        if item.get("type") != "fileChange" or not item_id:
-            return
-        if method == "item/completed":
-            self._pending_file_changes.pop(item_id, None)
-        elif method == "item/started":
-            self._pending_file_changes[item_id] = _summarize_file_changes(item.get("changes") or [])
 
 
-def _summarize_file_changes(raw_changes: list) -> str:
-    """One-line ``"<n> add, <m> update: a.py, b.py, +k more"`` summary of a fileChange item's changes."""
-    if not raw_changes:
-        return "1 change pending"
-    changes = [ch for ch in raw_changes if isinstance(ch, dict)]
-    kinds: dict[str, int] = {}
-    for ch in changes:
-        kind = (ch.get("kind") or {}).get("type") or "update"
-        kinds[kind] = kinds.get(kind, 0) + 1
-    paths: list[str] = [ch["path"] for ch in changes if ch.get("path")]
-    counts = ", ".join(f"{n} {k}" for k, n in sorted(kinds.items()))
-    preview = ", ".join(paths[:3])
-    if len(paths) > 3:
-        preview += f", +{len(paths) - 3} more"
-    return f"{counts}: {preview}" if preview else counts
 
 
 def _apply_accounting_notification(result: TurnResult, note: dict) -> None:
@@ -755,14 +667,8 @@ def _apply_accounting_notification(result: TurnResult, note: dict) -> None:
         result.turn_id = params.get("turnId") or result.turn_id
 
 
-# Hermes approval choice -> codex decision (app-server-protocol v2). "deny" and
-# "timeout" both decline — codex has no "prompt expired" wire value.
-_APPROVAL_CHOICE_TO_DECISION = {"once": "accept", "session": "acceptForSession", "always": "acceptForSession"}
 
 
-def _approval_choice_to_codex_decision(choice: str) -> str:
-    """Map a Hermes approval choice onto codex's approval decision wire value."""
-    return _APPROVAL_CHOICE_TO_DECISION.get(choice, "decline")
 
 
 def _has_turn_aborted_marker(text: str) -> bool:

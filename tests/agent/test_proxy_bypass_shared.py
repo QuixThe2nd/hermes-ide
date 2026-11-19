@@ -1,7 +1,7 @@
 """Invariant: the LLM transport (``agent/process_bootstrap``) and the platform adapters
 (``gateway/platforms/base``) answer "is this host in NO_PROXY" with the same matcher, so a
 corporate ``NO_PROXY=10.0.0.0/8`` bypasses the proxy for a self-hosted ``10.x`` model endpoint
-exactly as it does for Telegram/Discord/Slack.
+exactly as it does for Discord/Slack.
 """
 
 import pytest
@@ -43,7 +43,7 @@ def test_llm_and_adapter_paths_bypass_the_same_entries(proxy_env, no_proxy, host
 def test_non_matching_host_keeps_the_proxy_on_both_paths(proxy_env):
     proxy_env.setenv("NO_PROXY", "10.0.0.0/8,*.internal")
     assert _get_proxy_for_base_url("https://api.openai.com/v1") == "http://proxy.corp:3128"
-    assert resolve_proxy_url(target_hosts="api.telegram.org") == "http://proxy.corp:3128"
+    assert resolve_proxy_url(target_hosts="discord.com") == "http://proxy.corp:3128"
     assert not is_host_excluded_by_no_proxy("slack.com")
     assert is_host_excluded_by_no_proxy("files.slack.com", "slack.com")  # explicit value wins
     assert not should_bypass_proxy("notslack.com", no_proxy_value="*.slack.com")

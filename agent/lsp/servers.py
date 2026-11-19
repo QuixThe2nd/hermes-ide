@@ -262,7 +262,7 @@ def _vue_server_major(trees: Sequence[str]) -> int:
     import json
     for tree in trees:
         try:
-            with open(os.path.join(tree, "@vue", "language-server", "package.json"), encoding="utf-8") as fh:
+            with open(os.path.join(tree, "@vue", "language-server", "package.json"), encoding="utf-8-sig") as fh:
                 return int(str(json.load(fh).get("version", "")).split(".")[0])
         except (OSError, ValueError):
             continue

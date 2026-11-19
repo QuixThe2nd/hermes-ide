@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Bridge desktop-only tools to Hermes-desktop renderer events.
 
-The desktop ``tui_gateway`` installs an emitter via :func:`set_emitter`; elsewhere it
+A GUI host installs an emitter via :func:`set_emitter`; elsewhere it
 stays ``None`` and tools report "desktop only". Routing keys off ``HERMES_UI_SESSION_ID``
 so the event lands on the window that owns the turn (the sink is lock-guarded).
 """

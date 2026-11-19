@@ -1,14 +1,9 @@
 # Troubleshooting
 
-### Voice not working
-1. Check `stt.enabled: true` in config.yaml
-2. Verify provider: `pip install faster-whisper` or set API key
-3. In gateway: `/restart`, or the agent can call the `restart` tool itself (same drain path). In CLI: exit and relaunch.
-
 ### Tool not available
 1. `hermes tools` — check if toolset is enabled for your platform
 2. Some tools need env vars (check `.env`)
-3. `/reset` after enabling tools
+3. `/new` after enabling tools
 
 ### Model/provider issues
 1. `hermes doctor` — check config and dependencies
@@ -17,7 +12,7 @@
 4. **Copilot 403**: `gh auth login` tokens do NOT work for Copilot API. You must use the Copilot-specific OAuth device code flow via `hermes model` → GitHub Copilot.
 
 ### Changes not taking effect
-- **Tools/skills:** `/reset` starts a new session with updated toolset
+- **Tools/skills:** `/new` starts a new session with updated toolset
 - **Config changes:** In gateway: `/restart`, or call the `restart` tool (same drain path). In CLI: exit and relaunch.
 - **Code changes:** Restart the CLI or gateway process
 
@@ -76,6 +71,4 @@ hermes config set auxiliary.vision.provider <your_provider>
 hermes config set auxiliary.vision.model <model_name>
 ```
 
-### "Reset permissions" / auto-approving everything
-See `references/security-privacy.md` — wipe the "Always allow" stores, don't touch yolo mode.
 

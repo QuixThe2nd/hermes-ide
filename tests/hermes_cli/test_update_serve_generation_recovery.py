@@ -956,8 +956,8 @@ def test_recovery_module_reports_serve_units_in_a_real_process():
 
 
 def _stub_dashboard_helpers(monkeypatch, **helpers):
-    """Stub the ``hermes_cli.main_dashboard`` helpers the dashboard-cleanup path reads at call time."""
-    from hermes_cli import main_dashboard
+    """Stub the ``hermes_cli.dashboard_procs`` helpers the dashboard-cleanup path reads at call time."""
+    from hermes_cli import dashboard_procs as main_dashboard
 
     for name, value in helpers.items():
         monkeypatch.setattr(main_dashboard, name, value)
@@ -1016,6 +1016,7 @@ def test_restarted_dashboard_unit_is_not_killed_by_the_continued_scan(monkeypatc
     assert result["killed"] == []
 
 
+@pytest.mark.platforms("posix")
 def test_serve_backend_survives_selection_when_the_dashboard_unit_restarts(monkeypatch):
     """A serve PID owned by a DIFFERENT unit is still selected for recovery."""
     from hermes_cli import dashboard_procs

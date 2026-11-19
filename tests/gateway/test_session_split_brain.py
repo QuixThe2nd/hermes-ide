@@ -1,9 +1,9 @@
-"""Regression tests for issue #11016 — Telegram sessions trapped in
+"""Regression tests for issue #11016 — gateway sessions trapped in
 repeated 'Interrupting current task...' while /stop reports no active task.
 
 Covers three layers of the fix:
 
-1. Adapter-side task ownership (_session_tasks map): /stop, /new, /reset
+1. Adapter-side task ownership (_session_tasks map): /stop, /new
    actually cancel the in-flight adapter task and release the guard in
    order, so follow-up messages reach the new session.
 
@@ -51,7 +51,7 @@ class _StubAdapter(BasePlatformAdapter):
 
 def _make_adapter():
     config = PlatformConfig(enabled=True, token="test-token")
-    adapter = _StubAdapter(config, Platform.TELEGRAM)
+    adapter = _StubAdapter(config, Platform.DISCORD)
     adapter._busy_text_mode = ""
     adapter.sent_responses = []
 
@@ -64,14 +64,14 @@ def _make_adapter():
 
 def _make_event(text="hello", chat_id="12345"):
     source = SessionSource(
-        platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"
+        platform=Platform.DISCORD, chat_id=chat_id, chat_type="dm"
     )
     return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)
 
 
 def _session_key(chat_id="12345"):
     source = SessionSource(
-        platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"
+        platform=Platform.DISCORD, chat_id=chat_id, chat_type="dm"
     )
     return build_session_key(source)
 
@@ -84,7 +84,7 @@ def _session_key(chat_id="12345"):
 def _make_runner():
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="***")}
     )
     runner.adapters = {}
     runner._running_agents = {}
@@ -97,17 +97,17 @@ def _make_runner():
 
 
 # ===========================================================================
-# Layer 1: Adapter-side session cancellation on /stop /new /reset
+# Layer 1: Adapter-side session cancellation on /stop /new
 # ===========================================================================
 
 
 class TestAdapterSessionCancellation:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("command_text", ["/stop", "/new", "/reset"])
+    @pytest.mark.parametrize("command_text", ["/stop", "/new"])
     async def test_command_cancels_active_task_and_unblocks_follow_up(
         self, command_text
     ):
-        """/stop /new /reset must cancel the adapter task and let follow-ups through."""
+        """/stop /new must cancel the adapter task and let follow-ups through."""
         adapter = _make_adapter()
         sk = _session_key()
         processing_started = asyncio.Event()
@@ -246,7 +246,7 @@ class TestRunnerSessionGenerationGuard:
 
     def test_release_with_stale_generation_blocks(self):
         runner = _make_runner()
-        sk = "agent:main:telegram:dm:12345"
+        sk = "agent:main:discord:dm:12345"
         stale_gen = runner._begin_session_run_generation(sk)
         # /stop bumps the generation — stale run's generation is no longer current.
         runner._invalidate_session_run_generation(sk, reason="stop")

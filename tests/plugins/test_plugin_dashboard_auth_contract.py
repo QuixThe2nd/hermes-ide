@@ -9,8 +9,8 @@ loopback (``X-Hermes-Session-Token`` header) and gated OAuth
 
 Plugins that hand-roll ``fetch`` / ``WebSocket`` and read
 ``window.__HERMES_SESSION_TOKEN__`` directly send an empty token in gated mode
-and 401/1008. That bug shipped in the kanban and achievements plugins and was
-invisible until the dashboard ran gated on hosted Fly agents.
+and 401/1008. That bug shipped in dashboard plugins and was invisible until
+the dashboard ran gated on hosted Fly agents.
 
 This test fails if any bundled plugin's frontend reads the token global
 directly, forcing new/edited plugins through the SDK surface instead. It is
@@ -52,8 +52,7 @@ def test_there_are_plugin_bundles_to_check() -> None:
     doesn't silently turn this guard into a no-op."""
     bundles = _plugin_frontend_bundles()
     names = {b.parent.parent.parent.name for b in bundles}
-    # kanban + hermes-achievements are bundled today; assert at least one is
-    # found so the guard can't pass vacuously.
+    # Assert at least one is found so the guard can't pass vacuously.
     assert bundles, "no plugin dashboard bundles found — glob/layout drift?"
     assert names, "could not resolve plugin names from bundle paths"
 

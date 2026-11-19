@@ -25,7 +25,7 @@ def load_legacy_gateway_json(home: Path) -> Any:
     if not path.exists():
         return {}
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             data = json.load(f) or {}
         logger.info("Loaded legacy %s — consider moving settings to config.yaml", path)
         return data
@@ -86,8 +86,7 @@ def _presence(*keys: str) -> tuple:
 # (yaml key, gw_data key, mode, accept(value) -> bool, transform(value))
 _TOPLEVEL_BRIDGE: tuple = (
     ("quick_commands", "quick_commands", "none", _quick_commands_ok, None),
-    ("stt", "stt", "presence", lambda v: isinstance(v, dict), None),
-    *_presence("stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user"),
+    *_presence("group_sessions_per_user", "thread_sessions_per_user"),
     ("multiplex_profiles", "multiplex_profiles", "gwdata", None, None),
     *_presence("room_link_url"),
     ("profile_routes", "profile_routes", "none", lambda v: isinstance(v, list), None),
@@ -201,8 +200,7 @@ def _str_keyed(value: Any) -> Any:
     return {str(k): v for k, v in value.items()} if isinstance(value, dict) else value
 
 
-_TELEGRAM = frozenset({Platform.TELEGRAM})
-_DISCORD_SLACK = frozenset({Platform.DISCORD, Platform.SLACK})
+_DISCORD_CHANNEL_BINDINGS = frozenset({Platform.DISCORD})
 
 def _plain(*keys: str) -> tuple:
     """Keys copied verbatim into ``extra`` for every platform."""
@@ -215,9 +213,6 @@ _SHARED_KEYS: tuple = (
     ("unauthorized_dm_behavior", None, "dm"),
     ("notice_delivery", None, lambda v: _normalize_choice(v, {"public", "private"}, "public")),
     *_plain("reply_prefix", "reply_in_thread", "cron_continuable_surface", "require_mention", "send_read_receipts"),
-    ("allowed_chats", _TELEGRAM, None),
-    ("group_allowed_chats", _TELEGRAM, None),
-    ("allowed_topics", _TELEGRAM, None),
     *_plain("free_response_channels", "mention_patterns", "exclusive_bot_mentions"),
     # Typed on PlatformConfig (gateway.config.ResponseGateConfig) but bridged verbatim so a
     # root-level ``discord:`` block and a nested ``platforms.discord:`` block both deliver it
@@ -225,12 +220,11 @@ _SHARED_KEYS: tuple = (
     ("response_gate", None, None),
     # Same bridge for the independent emoji reaction gate (gateway.config.ReactionGateConfig).
     ("reaction_gate", None, None),
-    ("observe_unmentioned_group_messages", _TELEGRAM, None),
     *_plain(
         "dm_policy", "allow_from", "allow_admin_from", "user_allowed_commands",
         "group_policy", "group_allow_from", "group_allow_admin_from", "group_user_allowed_commands",
     ),
-    ("channel_skill_bindings", _DISCORD_SLACK, None),
+    ("channel_skill_bindings", _DISCORD_CHANNEL_BINDINGS, None),
     ("channel_prompts", None, _str_keyed),
     *_plain("gateway_restart_notification", "typing_indicator", "typing_status_text"),
 )
@@ -328,9 +322,7 @@ def apply_plugin_yaml_hooks(yaml_cfg: dict, gateway_platforms: Any, platforms_da
 def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
     """The YAML→env bridges that stay in core (per-platform ones live in plugin hooks).
 
-    Top-level ``require_mention`` → Telegram when the ``telegram:`` section has none: users write it
-    alongside ``group_sessions_per_user`` expecting it to work, and the telegram plugin's hook only
-    runs when a telegram block exists. Signal ``require_mention`` → ``SIGNAL_REQUIRE_MENTION`` (env wins).
+    Signal ``require_mention`` → ``SIGNAL_REQUIRE_MENTION`` (env wins).
     ``allow_all_users`` (top-level or ``gateway.allow_all_users``) → ``GATEWAY_ALLOW_ALL_USERS``: every
     allow-all reader (authz mixin, startup access check, own-policy adapters, plugin gates) consults
     that env var, so the bridge is the one seam that makes the YAML key reach all of them (#110690).
@@ -364,20 +356,6 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
             )
         else:
             os.environ.pop("GATEWAY_ALLOW_ALL_USERS", None)
-    tl_require_mention = yaml_cfg.get("require_mention")
-    if tl_require_mention is not None and "require_mention" not in (yaml_cfg.get("telegram") or {}):
-        tg_plat = platforms_data.setdefault(Platform.TELEGRAM.value, {})
-        tg_plat.setdefault("extra", {}).setdefault("require_mention", tl_require_mention)
-        # Also bridge to the TELEGRAM_REQUIRE_MENTION env var that the adapter reads at runtime. This used
-        # to live in the telegram_cfg block in core; it stays in core because it keys off the TOP-LEVEL
-        # require_mention (not a telegram: block), so the telegram plugin's apply_yaml_config_fn hook —
-        # which only runs when a telegram config block exists — can't cover the no-telegram-block case
-        # (#3979).
-        if not skip_env_bridge and not os.getenv("TELEGRAM_REQUIRE_MENTION"):
-            os.environ["TELEGRAM_REQUIRE_MENTION"] = str(tl_require_mention).lower()
-
-    # Telegram settings → env vars / extra: migrated to the telegram plugin's apply_yaml_config_fn hook
-    # (plugins/platforms/telegram/adapter.py). #41112 / #3823.
     # WhatsApp settings → env vars: migrated to the whatsapp plugin's apply_yaml_config_fn hook
     # (plugins/platforms/whatsapp/adapter.py). #41112 / #3823.
     signal_cfg = yaml_cfg.get("signal", {})
@@ -402,11 +380,11 @@ def read_yaml_layers(home: Path) -> dict:
     config_yaml_path = home / "config.yaml"
     yaml_cfg: dict = {}
     if config_yaml_path.exists():
-        with open(config_yaml_path, encoding="utf-8") as f:
+        with open(config_yaml_path, encoding="utf-8-sig") as f:
             yaml_cfg = yaml.safe_load(f) or {}
 
     # Managed scope: overlay administrator-pinned values (this loader bypasses
-    # hermes_cli.config.load_config, so managed quick_commands / stt would otherwise be ignored).
+    # hermes_cli.config.load_config, so managed quick_commands would otherwise be ignored).
     from hermes_cli import managed_scope
     return managed_scope.apply_managed_overlay(yaml_cfg)
 

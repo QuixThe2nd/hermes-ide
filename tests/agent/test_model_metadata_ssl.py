@@ -1,16 +1,19 @@
-"""Tests for _resolve_requests_verify() env var precedence.
+"""Tests for _resolve_requests_verify() trust-source contract.
 
-Verifies that custom provider `/models` fetches honour the three supported
-CA bundle env vars (HERMES_CA_BUNDLE, REQUESTS_CA_BUNDLE, SSL_CERT_FILE)
-in the documented priority order, and that non-existent paths are
-skipped gracefully rather than breaking the request.
+The requests-based ``/models`` probes resolve TLS from per-provider config only
+(``ssl_verify: false``, then ``ssl_ca_cert``); otherwise the OS trust store via
+the process-wide ``truststore`` install. Ambient CA env vars
+(HERMES_CA_BUNDLE, REQUESTS_CA_BUNDLE, SSL_CERT_FILE) were removed as a trust
+authority — these tests assert they no longer steer verification, and that
+missing files / config failures degrade to plain "verify against the OS store".
 
-No filesystem or network I/O required — we use tmp_path to create real
-CA bundle stand-in files and monkeypatch env vars.
+No network I/O: CA env vars point at tmp_path stand-in files only; the OS
+trust store is never written.
 """
 
-from pathlib import Path
+from __future__ import annotations
 
+from pathlib import Path
 
 import pytest
 
@@ -40,16 +43,18 @@ class TestResolveRequestsVerify:
     def test_no_env_returns_true(self, clean_env):
         assert _resolve_requests_verify() is True
 
-
-
-
-    def test_priority_hermes_over_requests(self, clean_env, tmp_path, bundle_file):
+    def test_env_vars_do_not_steer_trust(self, clean_env, tmp_path, bundle_file):
+        """Every legacy CA env var is ignored: trust comes from the OS store, not ambient env."""
         other = tmp_path / "other.pem"
         other.write_text("stub")
         clean_env.setenv("HERMES_CA_BUNDLE", bundle_file)
         clean_env.setenv("REQUESTS_CA_BUNDLE", str(other))
-        assert _resolve_requests_verify() == bundle_file
+        clean_env.setenv("SSL_CERT_FILE", str(other))
+        assert _resolve_requests_verify() is True
 
-
-
-
+    def test_stale_env_var_path_returns_true_not_the_path(self, clean_env, bundle_file):
+        """HERMES_CA_BUNDLE pointing at a real file still resolves to plain ``True`` —
+        the path must never leak into ``verify=`` as the trust source."""
+        clean_env.setenv("HERMES_CA_BUNDLE", bundle_file)
+        assert _resolve_requests_verify() is not bundle_file
+        assert _resolve_requests_verify() is True

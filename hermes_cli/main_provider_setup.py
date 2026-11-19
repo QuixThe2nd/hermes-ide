@@ -53,15 +53,11 @@ def _clear_stale_openai_base_url():
 _AUX_TASKS: list[tuple[str, str, str]] = [
     ("vision", "Vision", "image/screenshot analysis"),
     ("compression", "Compression", "context summarization"),
-    ("approval", "Approval", "smart command approval"),
     ("mcp", "MCP", "MCP tool reasoning"),
     ("title_generation", "Title generation", "session titles"),
     ("review", "Review", "/review reviewer subagent"),
     ("memory_query_rewrite", "Memory query rewrite", "memory retrieval queries"),
-    ("tts_audio_tags", "TTS audio tags", "Gemini TTS tag insertion"),
     ("skills_hub", "Skills hub", "skills search/install"),
-    ("triage_specifier", "Triage specifier", "kanban spec fleshing"),
-    ("kanban_decomposer", "Kanban decomposer", "task decomposition"),
     ("profile_describer", "Profile describer", "auto profile descriptions"),
     ("curator", "Curator", "skill-usage review pass")]
 
@@ -218,8 +214,8 @@ def _aux_config_menu() -> None:
         _say("", "  Auxiliary models — side-task routing", "",
              "  Side tasks (vision, compression, web extraction, etc.) default",
              '  to your main chat model.  "auto" means "use my main model" —',
-             "  Hermes only falls back to a lightweight backend (OpenRouter,",
-             "  Nous Portal) if the main model is unavailable.  Override a",
+             "  Hermes only falls back to a lightweight OpenRouter backend",
+             "  if the main model is unavailable.  Override a task below",
              "  task below if you want it pinned to a specific provider/model.", "")
 
         menu_tasks = _all_aux_tasks() + [(_DELEGATION_TASK_KEY, _DELEGATION_TASK_NAME, _DELEGATION_TASK_DESC)]
@@ -921,14 +917,6 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
         else:
             slug = row["slug"]
             label = canonical_descs.get(slug, provider_labels.get(slug, slug))
-            if slug == "nous":
-                # Same free-tier rule as the gateway/TUI pickers: relabel for a guest, hide
-                # when nous.guest is off, untouched for a real account.
-                from hermes_cli.model_switch_providers import _free_tier_nous_row
-                tier_row = _free_tier_nous_row({"name": label, "models": []})
-                if tier_row is None:
-                    continue
-                label = tier_row["name"]
             _add(slug, label, [], bool(active) and slug == active)
 
     for key, provider_info in custom_provider_map.items():

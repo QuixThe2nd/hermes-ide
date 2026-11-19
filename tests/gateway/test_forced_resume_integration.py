@@ -18,8 +18,7 @@ The contract under proof (RESUME §1/§2/§3):
 * each replacement result persists exactly once, and the persisted
   transcript carries no synthetic recovery row;
 * a REAL user message arriving during recovery runs verbatim, unwrapped,
-  after the completed assistant→tool batch;
-* cooperative restarts keep their safe-pause guidance (regression).
+  after the completed assistant→tool batch.
 
 Deliberately NO import from ``gateway.forced_resume_replay``: the module's
 symbols changed across the fix, and importing them would turn a base-commit
@@ -30,6 +29,7 @@ reasons — against the pre-fix implementation.
 """
 
 import json
+import os
 import time
 from datetime import datetime
 from types import SimpleNamespace
@@ -38,7 +38,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from gateway.config import Platform
-from gateway.run import TurnRunner
+from gateway.run_turn_runner import TurnRunner
 from gateway.session import SessionSource
 from gateway.turn_context import TurnContext
 
@@ -167,7 +167,6 @@ def _gateway_runner(store):
     runner._refresh_fallback_model.return_value = None
     runner._consume_pending_native_image_paths.return_value = []
     runner._consume_pending_turn_sidecar_notes.return_value = []
-    runner._is_telegram_topic_lane.return_value = False
     runner._is_discord_auto_thread_lane.return_value = False
     runner._is_relay_discord_channel_lane.return_value = False
     return runner
@@ -230,8 +229,10 @@ def _make_ctx(agent_cls, history, message, session_key, store_entries,
     )
 
 
-def _run_turn(agent_cls, history, message, reason):
-    store = RecordingSessionStore({f"sk-{reason}": _resume_entry(reason)})
+def _run_turn(agent_cls, history, message, reason, *, entry=None):
+    store = RecordingSessionStore({
+        f"sk-{reason}": entry if entry is not None else _resume_entry(reason)
+    })
     runner = _gateway_runner(store)
     ctx = _make_ctx(agent_cls, history, message, f"sk-{reason}", store._entries)
     TurnRunner(runner, ctx).run_sync()
@@ -259,7 +260,7 @@ def _assert_pairs_strictly(history):
 # ---------------------------------------------------------------------------
 
 
-def _run_and_capture_agent(history, message, reason, results):
+def _run_and_capture_agent(history, message, reason, results, *, entry=None):
     """Run the turn and return (constructed_agent, store)."""
     constructed = []
 
@@ -269,7 +270,7 @@ def _run_and_capture_agent(history, message, reason, results):
             self._results = results
             constructed.append(self)
 
-    store = _run_turn(_Agent, history, message, reason)
+    store = _run_turn(_Agent, history, message, reason, entry=entry)
     assert len(constructed) == 1
     return constructed[0], store
 
@@ -359,24 +360,6 @@ def test_forced_victim_real_user_message_runs_verbatim_after_batch():
     # CURRENT turn (never interleaved inside the batch).
     assert model_history[-1].get("role") == "tool"
     assert model_history[-1].get("tool_call_id") == "call_deploy"
-
-
-def test_cooperative_restart_keeps_pause_guidance_at_model_boundary():
-    """Regression: the session that accepted the cooperative steer still
-    receives its safe-pause guidance — forced transparency must not leak
-    into (or from) the cooperative path."""
-    history = _interrupted_terminal_history()
-    agent, store = _run_and_capture_agent(history, "", "cooperative_restart", {})
-
-    # Cooperative parked sessions do NOT re-run their interrupted calls.
-    assert agent.executions == []
-    assert store.appended == []
-
-    run_message, kwargs = agent.run_calls[0]
-    assert isinstance(run_message, str) and run_message.strip()
-    assert "parked itself" in run_message
-    assert "CONTINUE the parked task" in run_message
-    assert kwargs.get("continue_interrupted_turn") is None
 
 
 def test_text_only_interruption_resumes_without_note():
@@ -473,6 +456,328 @@ def test_text_only_tail_kept_when_real_user_message_arrives():
     assert store.rewrites == []
     model_history = kwargs.get("conversation_history") or []
     assert [row.get("role") for row in model_history] == ["user", "assistant"]
+
+
+
+_RESTART_CLOSE_ROW = (
+    "[Turn ended here: gateway restart was queued by the restart tool]"
+)
+
+_OLD_PROCESS = "pid 3376901"
+_NEW_PID = 3376902
+_NEW_PROCESS = f"pid {_NEW_PID}"
+_EXPECTED_RESTART_RESULT = (
+    "Restarted successfully\n"
+    f"Old process: {_OLD_PROCESS}\n"
+    f"New process: {_NEW_PROCESS}\n"
+    "This is a tool result for you, not a message to send or quote "
+    f"to the user. This chat is no longer running in {_OLD_PROCESS}; "
+    f"you are now running in {_NEW_PROCESS}. Continue the interrupted "
+    "task with your tools until the original work is verified, then "
+    "reply to the user about that work."
+)
+_EXPECTED_RESTART_RESULT_WITHOUT_OLD = (
+    "Restarted successfully\n"
+    f"New process: {_NEW_PROCESS}\n"
+    "This is a tool result for you, not a message to send or quote "
+    f"to the user. You are now running in {_NEW_PROCESS}. Continue "
+    "the interrupted task with your tools until the original work is "
+    "verified, then reply to the user about that work."
+)
+
+def _restart_tool_tail_history(*, timestamp=None, process=_OLD_PROCESS, status=None):
+    """The exact durable shape left by the dying process's restart control."""
+    from plugins.gateway_restart.tool import _result_json
+
+    ts = time.time() if timestamp is None else timestamp
+    name = "restart"
+    arguments = "{}"
+    result = _result_json(
+        SimpleNamespace(_draining=True),
+        status or {"status": "restarting", "active_agents": 1, "via_service": False},
+    )
+    payload = json.loads(result)
+    if process is None:
+        payload.pop("process", None)
+    else:
+        payload["process"] = process
+    result = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+    return [
+        {"role": "user", "content": "restart, then finish my task", "timestamp": ts},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_restart",
+                "type": "function",
+                "function": {"name": name, "arguments": arguments},
+            }],
+            "timestamp": ts,
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_restart",
+            "name": name,
+            "content": result,
+            "timestamp": ts,
+        },
+        {"role": "assistant", "content": _RESTART_CLOSE_ROW, "timestamp": ts},
+    ]
+
+
+def test_restart_tool_tail_continues_with_process_identity(monkeypatch):
+    """The successor identifies both gateway processes without adding chat rows."""
+    monkeypatch.setattr(os, "getpid", lambda: _NEW_PID)
+    agent, store = _run_and_capture_agent(
+        _restart_tool_tail_history(),
+        "", "restart_requester", {},
+    )
+
+    assert len(agent.run_calls) == 1
+    run_message, kwargs = agent.run_calls[0]
+    assert run_message is None
+    assert kwargs.get("continue_interrupted_turn") is True
+    assert kwargs.get("persist_user_message") is None
+    # Continuation consumes the saved result; recovery never dispatches restart.
+    assert agent.executions == []
+
+    model_history = kwargs.get("conversation_history") or []
+    assert [row.get("role") for row in model_history] == ["user", "assistant", "tool"]
+    assert model_history[-1]["tool_call_id"] == "call_restart"
+    assert model_history[-1]["content"] == _EXPECTED_RESTART_RESULT
+    assert all(row.get("content") != _RESTART_CLOSE_ROW for row in model_history)
+    assert all(
+        not str(row.get("content", "")).startswith("[System note:")
+        for row in model_history
+    )
+
+    assert len(store.rewrites) == 1
+    session_id, rewritten, active_only = store.rewrites[0]
+    assert session_id == "test-session"
+    assert active_only is True
+    assert [row.get("role") for row in rewritten] == ["user", "assistant", "tool"]
+    assert rewritten[-1]["content"] == _EXPECTED_RESTART_RESULT
+    assert rewritten[-1]["tool_call_id"] == "call_restart"
+    assert all(row.get("content") != _RESTART_CLOSE_ROW for row in rewritten)
+
+
+def test_chained_restart_tail_continues_with_process_identity(monkeypatch):
+    """A chained (overlap-queued) restart carries the same Old/New identity contract.
+
+    The chained ack names the draining predecessor as ``process``; the
+    successor rewrite must still present Old process = predecessor and
+    New process = itself, never a bare success without identity.
+    """
+    from gateway.run_turn_recovery import _repair_restart_tool_tail
+
+    history = _restart_tool_tail_history(
+        process=_OLD_PROCESS,
+        status={"status": "chained", "active_agents": 1, "via_service": True},
+    )[:-1]
+    monkeypatch.setattr(os, "getpid", lambda: _NEW_PID)
+
+    repair = _repair_restart_tool_tail(history)
+
+    assert repair is not None
+    rewritten, changed = repair
+    assert changed is True
+    assert rewritten[-1]["content"] == _EXPECTED_RESTART_RESULT
+
+
+def test_forwarded_restart_tail_continues_with_process_identity(monkeypatch):
+    """A forwarded (array-overlap) restart carries the same Old/New identity contract.
+
+    The forwarded result names the newest generation that took the request
+    (``forwarded_to``) as ``process``; the successor rewrite must still
+    present Old process = that generation and New process = itself, never a
+    bare success without identity.
+    """
+    from gateway.run_turn_recovery import _repair_restart_tool_tail
+
+    forwarded_pid = _NEW_PID - 1
+    history = _restart_tool_tail_history(
+        process=f"pid {forwarded_pid}",
+        status={
+            "status": "forwarded",
+            "active_agents": 1,
+            "via_service": True,
+            "forwarded_to": forwarded_pid,
+        },
+    )[:-1]
+    monkeypatch.setattr(os, "getpid", lambda: _NEW_PID)
+
+    repair = _repair_restart_tool_tail(history)
+
+    assert repair is not None
+    rewritten, changed = repair
+    assert changed is True
+    assert rewritten[-1]["content"] == _EXPECTED_RESTART_RESULT
+
+
+def test_rich_restart_result_is_trusted_and_idempotent(monkeypatch):
+    """A second recovery pass in the same successor changes nothing."""
+    from gateway.run_turn_recovery import _repair_restart_tool_tail
+
+    history = _restart_tool_tail_history()[:-1]
+    history[-1]["content"] = _EXPECTED_RESTART_RESULT
+    monkeypatch.setattr(os, "getpid", lambda: _NEW_PID)
+
+    repair = _repair_restart_tool_tail(history)
+
+    assert repair is not None
+    rewritten, changed = repair
+    assert changed is False
+    assert rewritten == history
+
+
+def test_restart_result_without_old_process_degrades_gracefully(monkeypatch):
+    """Legacy results still resume, without printing an unknown old identity."""
+    from gateway.run_turn_recovery import _repair_restart_tool_tail
+
+    history = _restart_tool_tail_history(process=None)
+    monkeypatch.setattr(os, "getpid", lambda: _NEW_PID)
+
+    repair = _repair_restart_tool_tail(history)
+
+    assert repair is not None
+    rewritten, changed = repair
+    assert changed is True
+    assert rewritten[-1]["content"] == _EXPECTED_RESTART_RESULT_WITHOUT_OLD
+
+
+@pytest.mark.parametrize("old_process", [_OLD_PROCESS, None])
+def test_restart_success_content_round_trips_through_parser(old_process):
+    """Builder output (with and without the old identity) is the only rich
+    shape the trusted-result parser accepts: parser and builder stay in
+    lockstep when the trailing instruction line is reworded."""
+    from gateway.run_turn_recovery import (
+        _parse_restart_success_content, _restart_success_content,
+    )
+
+    content = _restart_success_content(old_process, _NEW_PROCESS)
+    assert _parse_restart_success_content(content) == (old_process, _NEW_PROCESS)
+
+
+def test_idle_restart_requester_keeps_interactive_recovery_note():
+    """An idle /restart did not interrupt a tool turn and must not fabricate one."""
+    history = [
+        {"role": "user", "content": "/restart", "timestamp": time.time()},
+        {"role": "assistant", "content": "Restarting now.", "timestamp": time.time()},
+    ]
+    agent, store = _run_and_capture_agent(history, "", "restart_requester", {})
+
+    run_message, kwargs = agent.run_calls[0]
+    assert run_message.startswith("[System note: The previous turn")
+    assert "ask what they would like to do next" in run_message
+    assert kwargs.get("persist_user_message") == run_message
+    assert kwargs.get("continue_interrupted_turn") is None
+    assert store.rewrites == []
+
+
+def test_restart_requester_task_final_continues_instead_of_asking():
+    """A restart() turn that already wrote its real final must continue the
+    original task, not ask the user what to do next."""
+    history = _restart_tool_tail_history()
+    history.append({
+        "role": "assistant",
+        "content": "Restart is queued. I'll verify the deploy after it comes back.",
+        "timestamp": time.time(),
+    })
+    agent, store = _run_and_capture_agent(history, "", "restart_requester", {})
+
+    run_message, kwargs = agent.run_calls[0]
+    assert "ask what they would like to do next" not in run_message
+    assert "Continue the original task" in run_message
+    assert "re-verify" in run_message
+    assert "do NOT re-execute" in run_message
+    assert kwargs.get("continue_interrupted_turn") is None
+    assert store.rewrites == []
+    model_history = kwargs.get("conversation_history") or []
+    assert any(
+        "verify the deploy after it comes back" in str(row.get("content") or "")
+        for row in model_history
+    ), [r.get("role") for r in model_history]
+
+
+def test_stale_restart_tail_is_not_rewritten():
+    """An expired interruption marker cannot turn old restart rows into success."""
+    stale_ts = time.time() - 7200
+    entry = SimpleNamespace(
+        resume_pending=True,
+        resume_reason="restart_requester",
+        last_resume_marked_at=stale_ts,
+    )
+    agent, store = _run_and_capture_agent(
+        _restart_tool_tail_history(timestamp=stale_ts),
+        "", "restart_requester", {}, entry=entry,
+    )
+
+    run_message, kwargs = agent.run_calls[0]
+    assert run_message is not None
+    assert kwargs.get("continue_interrupted_turn") is None
+    assert store.rewrites == []
+    assert all(
+        row.get("content") != "Restarted successfully"
+        for row in (kwargs.get("conversation_history") or [])
+    )
+
+
+@pytest.mark.parametrize("tail", ["empty", "non-restart", "later-assistant"])
+def test_non_current_restart_tails_are_not_rewritten(tail):
+    """Only the current restart-tool tail is eligible for transparent continuation."""
+    if tail == "empty":
+        history = []
+    else:
+        history = _restart_tool_tail_history()
+        if tail == "non-restart":
+            history[1]["tool_calls"][0]["function"]["name"] = "terminal"
+            history[2]["name"] = "terminal"
+        else:
+            history.append({
+                "role": "assistant", "content": "Already handled.", "timestamp": time.time(),
+            })
+
+    agent, store = _run_and_capture_agent(history, "", "restart_requester", {})
+
+    run_message, kwargs = agent.run_calls[0]
+    assert run_message is not None
+    assert kwargs.get("continue_interrupted_turn") is None
+    assert store.rewrites == []
+    assert all(
+        row.get("content") != "Restarted successfully"
+        for row in (kwargs.get("conversation_history") or [])
+    )
+
+
+def test_restart_tool_continuation_fails_closed_when_rewrite_fails():
+    """A model must never continue from a repair that was not made durable."""
+    store = RecordingSessionStore(
+        {"sk-restart_requester": _resume_entry("restart_requester")},
+        rewrite_ok=False,
+    )
+    constructed = []
+
+    class _Agent(StubModelAgent):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            constructed.append(self)
+
+    runner = _gateway_runner(store)
+    ctx = _make_ctx(
+        _Agent, _restart_tool_tail_history(), "",
+        "sk-restart_requester", store._entries,
+    )
+
+    TurnRunner(runner, ctx).run_sync()
+    result = ctx.result_holder[0]
+
+    assert len(constructed) == 1
+    agent = constructed[0]
+    assert agent.run_calls == []
+    assert agent.executions == []
+    assert result.get("failed") is True
+    assert result.get("error") == "restart_tool_continuation_rewrite_failed"
+    assert store.appended == []
 
 
 def test_cached_live_history_dangling_batch_still_replays():
@@ -662,28 +967,13 @@ def test_replay_window_observes_real_approval_binding():
     assert "sk-restart_timeout" not in _approval._gateway_notify_cbs
 
 
-@pytest.mark.parametrize(
-    "name,args,cid",
-    [
-        # Direct: the agent-side gateway lifecycle request itself.
-        ("restart", {"action": "restart"}, "call_direct"),
-        # Bridge: a deferred tool_call wrapper naming restart, carrying the
-        # composite id shape the bridge mints.
-        (
-            "tool_call",
-            {"name": "restart", "arguments": "{\"action\": \"restart\"}"},
-            "call_bridge|item_1",
-        ),
-    ],
-)
-def test_lifecycle_only_batch_pairs_durably_without_executing(name, args, cid):
+def test_lifecycle_only_batch_pairs_durably_without_executing():
     """REPAIR2 finding 6: a forced victim whose final batch is ONLY the
-    lifecycle request that caused the bounce (direct restart tool, or a
-    deferred bridge wrapping it) must never re-execute that call.  The
-    batch still CLOSES — one fail-closed UNKNOWN orphan row under the
-    EXACT call id, durably persisted — so the reconstructed transcript
-    pairs and the model continues instead of staring at an unanswered
-    batch."""
+    lifecycle request that caused the bounce must never re-execute that call.
+    The batch still CLOSES — one fail-closed UNKNOWN orphan row under the
+    EXACT call id, durably persisted — so the reconstructed transcript pairs
+    and the model continues instead of staring at an unanswered batch."""
+    name, args, cid = "restart", {"action": "restart"}, "call_direct"
     history = [
         {"role": "user", "content": "restart yourself", "timestamp": time.time()},
         {

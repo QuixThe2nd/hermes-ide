@@ -20,21 +20,8 @@ from typing import Any, Callable, MutableMapping
 # Nested A→B→C is one extra turn; this caps a runaway message_agent chain.
 _MAX_QUIET_NOTIFY_ROUNDS = 8
 
-# Last line a Kanban worker leaves in its own log: ``[kanban-worker-exit] rc=<code>``. A per-tick
-# ``hermes kanban dispatch`` process never reaped the worker, so ``os.waitpid`` cannot tell it how
-# the worker exited; the trailer is the process-independent witness the dead-worker sweep reads
-# instead, so a clean exit without a terminal board call is booked as the same protocol violation
-# (and a 75 as the same rate-limit requeue) whichever process notices the death.
-KANBAN_WORKER_EXIT_TRAILER = "[kanban-worker-exit] rc="
-
-
 def exit_single_query(code: int) -> None:
-    """``sys.exit(code)`` for a one-shot turn; a Kanban worker first writes the exit trailer to its log."""
-    if os.environ.get("HERMES_KANBAN_TASK"):
-        with contextlib.suppress(Exception):
-            # stderr: stdout may be the ``--stream-json`` record stream, and the worker log
-            # captures both streams.
-            print(f"\n{KANBAN_WORKER_EXIT_TRAILER}{int(code)}", file=sys.stderr, flush=True)
+    """Exit a one-shot turn with its outcome code."""
     sys.exit(code)
 
 
@@ -68,7 +55,7 @@ def write_turn_report(path: str | None, *, exit_code: int, error: str = "") -> N
 def read_turn_report(path: str, pid: int) -> dict | None:
     """The child's turn report, or None while absent, unreadable, or written by another process."""
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8-sig") as fh:
             record = json.load(fh)
     except (OSError, ValueError):
         return None
@@ -79,8 +66,8 @@ def read_turn_report(path: str, pid: int) -> dict | None:
 
 @contextlib.contextmanager
 def bind_quiet_session_key(session_id: str):
-    """Bind the approval/session key to *this* quiet session for the enclosing ``with`` block."""
-    from tools.approval_context import reset_current_session_key, set_current_session_key
+    """Bind this quiet session's tool resource key for the enclosing ``with`` block."""
+    from tools.session_context import reset_current_session_key, set_current_session_key
 
     token = set_current_session_key(session_id or "default")
     try:

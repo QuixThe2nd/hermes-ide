@@ -4,8 +4,8 @@ Standalone Web Tools Module
 
 This module provides generic web tools that work with multiple backend providers.
 Backend is selected during ``hermes tools`` setup (web.backend in config.yaml).
-When available, Hermes can route Firecrawl calls through a Nous-hosted tool-gateway
-for Nous Subscribers only.
+When configured with an explicit gateway token, Hermes can route Firecrawl calls
+through a managed tool gateway.
 
 Available tools:
 - web_search_tool: Search the web for information
@@ -13,7 +13,7 @@ Available tools:
 
 Backend compatibility:
 - Exa: https://exa.ai (search, extract)
-- Firecrawl: https://docs.firecrawl.dev/introduction (search, extract; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
+- Firecrawl: https://docs.firecrawl.dev/introduction (search, extract; direct or derived firecrawl-gateway.<domain> with an explicit token)
 - Parallel: https://docs.parallel.ai (search, extract)
 - Tavily: https://tavily.com (search, extract; keyed or opt-in keyless)
 
@@ -88,15 +88,9 @@ from tools.debug_helpers import DebugSession
 # tools.web_tools (the firecrawl plugin reads them via its own import chain).
 from tools.managed_tool_gateway import (  # noqa: F401 — backward-compat names for tests
     build_vendor_gateway_url,
-    peek_nous_access_token as _peek_nous_access_token,
-    read_nous_access_token as _read_nous_access_token,
     resolve_managed_tool_gateway,
 )
-from tools.tool_backend_helpers import (  # noqa: F401
-    managed_nous_tools_enabled,
-    nous_tool_gateway_unavailable_message,
-    prefers_gateway,
-)
+from tools.tool_backend_helpers import prefers_gateway  # noqa: F401
 from tools.url_safety import async_is_safe_url, normalize_url_for_request, sensitive_query_param_name
 import sys
 
@@ -226,8 +220,7 @@ def _get_backend() -> str:
     Reads ``web.backend`` from config.yaml (set by ``hermes tools``). A
     stored backend name is returned as-is — no availability probe, no
     fallback — so the vendor path can raise its own honest error when the
-    selection is broken. The managed ``use_gateway`` selection also resolves
-    to firecrawl with no ladder. Autodetect runs whenever no SHARED web
+    selection is broken. Autodetect runs whenever no SHARED web
     selection was ever stored: per-capability keys (``web.search_backend``,
     ``web.extract_backend``) name only their own capability and never
     reroute the other (#113017).
@@ -237,32 +230,23 @@ def _get_backend() -> str:
         # Strict: the stored selection is final, known name or not — an
         # unknown/typoed name surfaces as the vendor path's honest error
         # rather than silently rerouting through the credential ladder.
-        # The managed "Nous Subscription" selection ("nous") is serviced by
-        # the firecrawl provider, whose client resolver routes it through
-        # the managed Tool Gateway.
-        from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
-
-        if configured == NOUS_MANAGED_PROVIDER:
-            return "firecrawl"
         return configured
 
     from tools.tool_backend_helpers import read_selection
 
     if read_selection("web") is not None:
-        # Shared selection exists (use_gateway) but no shared name: keep
-        # the firecrawl default rather than credential-laddering.
-        # Per-capability keys (web.search_backend / web.extract_backend)
-        # name only their own capability and never reroute the other
-        # (#113017).
+        # Shared selection exists but no shared name: keep the firecrawl
+        # default rather than credential-laddering. Per-capability keys
+        # (web.search_backend / web.extract_backend) name only their own
+        # capability and never reroute the other (#113017).
         return "firecrawl"
 
     # Never-configured install — pick the highest-priority available
-    # backend. Explicit user credentials (TAVILY_API_KEY etc.)
-    # beat the managed-tool-gateway probe so a deliberate setup is not
-    # pre-empted by a Nous OAuth token whose subscription tier may not
-    # actually grant web-search access (the gateway then fails at runtime
-    # with "no subscription" and the tool returns an error to the agent
-    # without falling back). Free-tier backends trail the paid ones.
+    # backend. Explicit user credentials (TAVILY_API_KEY etc.) beat the
+    # tool-gateway probe so a deliberate setup is not pre-empted by a
+    # gateway credential that may not actually grant web-search access
+    # (the gateway then fails at runtime and the tool returns an error to
+    # the agent without falling back). Free-tier backends trail the paid ones.
     backend_candidates = (
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
@@ -686,12 +670,9 @@ def _web_requires_env() -> list[str]:
 
     The gateway env vars are always reported — they're metadata strings
     used by the tool registry to light up the tool when the variable is
-    set.  Gating them on ``managed_nous_tools_enabled()`` only saved
-    string noise in the metadata list, but cost a synchronous HTTP
-    refresh against the Nous portal on every CLI startup (invoked at
-    tool-registration time).  The behavioral contract is: if the env var
-    is set, the tool sees it; if not, it doesn't.  Not-logged-in users
-    simply don't have the vars set, so the extra entries are harmless.
+    set.  The behavioral contract is: if the env var
+    is set, the tool sees it; if not, it doesn't.  Users without
+    the vars set simply don't light the extra entries, so they are harmless.
     """
     return [
         "EXA_API_KEY",

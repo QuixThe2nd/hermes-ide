@@ -9,6 +9,7 @@ put a rarely-used schema on every API call for no benefit.
 
 from __future__ import annotations
 
+from plugins.fallback_watch import register
 from plugins.home_server.core import (  # noqa: F401  (re-exported entry points)
     HomeServerError,
     is_configured,
@@ -16,12 +17,3 @@ from plugins.home_server.core import (  # noqa: F401  (re-exported entry points)
     should_sync,
     sync_if_due,
 )
-
-
-def register(ctx) -> None:
-    """Nothing to register — this plugin is a provisioning library.
-
-    Kept (rather than omitted) so the loader finds a uniform entry point and
-    so importing the plugin has no model-tool or prompt footprint.
-    """
-    return None

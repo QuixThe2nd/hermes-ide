@@ -24,7 +24,6 @@ from tools.terminal_scope import (
     set_terminal_scope,
     terminal_env,
 )
-from tools import browser_tool_cloud as bt_cloud
 
 _LAUNCH_CWD = "/home/launch-user/private"
 _LAUNCH_VOLUMES = '["/host/secret:/data:rw"]'
@@ -89,13 +88,13 @@ def test_routed_turn_reads_every_terminal_consumer_from_profile(
     """Leak matrix through the REAL gateway boundary: a routed local profile
     with its own cwd must be seen as such by every terminal.* consumer —
     terminal_tool config, container key resolution, docker media translation,
-    file_tools/runtime_cwd cwd anchors, and the browser/env_probe backend
-    checks — with none of launch profile A's docker policy showing through."""
+    file_tools/runtime_cwd cwd anchors, and env_probe backend checks — with none
+    of launch profile A's docker policy showing through."""
     import gateway.run as gw
     import tools.terminal_tool as tt
     from agent import runtime_cwd
     from gateway.platforms import base as gbase
-    from tools import browser_tool, env_probe, file_tools_paths
+    from tools import env_probe, file_tools_paths
 
     b_cwd = tmp_path / "b-work"
     b_cwd.mkdir()
@@ -117,7 +116,6 @@ def test_routed_turn_reads_every_terminal_consumer_from_profile(
         )
         assert file_tools_paths._configured_terminal_cwd() == str(b_cwd)
         assert runtime_cwd.resolve_agent_cwd() == b_cwd
-        assert bt_cloud._is_local_backend() is True
         # env_probe bails out with "" for remote backends; a local profile
         # must not be treated as remote just because the launch env is docker.
         assert env_probe._resolve_terminal_backend() == "local"
@@ -168,20 +166,6 @@ def test_gateway_runtime_scope_resets_on_error(tmp_path):
         with gw._profile_runtime_scope(home):
             assert terminal_env("TERMINAL_ENV") == "local"
             raise RuntimeError("turn blew up")
-    assert get_terminal_scope() is None
-
-
-def test_tui_and_cron_boundaries_bind_and_reset(tmp_path):
-    import tui_gateway.server as server
-    from tools.terminal_scope import install_and_reset_profile_terminal_scope
-
-    home = _profile(tmp_path, "dash", "terminal:\n  backend: local\n")
-    with server._session_profile_runtime_scope({"profile_home": str(home)}):
-        assert terminal_env("TERMINAL_ENV") == "local"
-        assert terminal_env("TERMINAL_SSH_HOST") == ""
-    assert get_terminal_scope() is None
-    with install_and_reset_profile_terminal_scope(home):  # cron fire helper
-        assert terminal_env("TERMINAL_ENV") == "local"
     assert get_terminal_scope() is None
 
 

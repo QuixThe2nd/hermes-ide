@@ -12,7 +12,6 @@ from gateway.runtime_footer import (
     _model_short,
     build_footer_line,
     format_runtime_footer,
-    resolve_footer_config,
 )
 
 
@@ -36,10 +35,12 @@ def test_model_short_drops_vendor_prefix(model, expected):
 
 def test_home_relative_cwd_collapses_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    # On Windows os.path.expanduser("~") reads USERPROFILE, not HOME.
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     sub = tmp_path / "projects" / "hermes"
     sub.mkdir(parents=True)
     result = _home_relative_cwd(str(sub))
-    assert result == "~/projects/hermes"
+    assert result == os.path.join("~", "projects", "hermes")
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +49,8 @@ def test_home_relative_cwd_collapses_home(tmp_path, monkeypatch):
 
 def test_format_footer_all_fields(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
+    # On Windows os.path.expanduser("~") reads USERPROFILE, not HOME.
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("TERMINAL_CWD", str(tmp_path / "projects" / "hermes"))
     (tmp_path / "projects" / "hermes").mkdir(parents=True)
     out = format_runtime_footer(
@@ -57,7 +60,7 @@ def test_format_footer_all_fields(monkeypatch, tmp_path):
         cwd=None,  # falls back to TERMINAL_CWD env var
         fields=("model", "context_pct", "cwd"),
     )
-    assert out == "gpt-5.4 · 68% · ~/projects/hermes"
+    assert out == "gpt-5.4 · 68% · " + os.path.join("~", "projects", "hermes")
 
 
 def test_format_footer_skips_missing_context_length():
@@ -71,67 +74,12 @@ def test_format_footer_skips_missing_context_length():
     # context_pct dropped silently; no "?%" artifact
     assert "%" not in out
     assert "gpt-5.4" in out
-    assert "/tmp/wd" in out
-
-
-# ---------------------------------------------------------------------------
-# resolve_footer_config
-# ---------------------------------------------------------------------------
-
-
-def test_resolve_platform_override_wins():
-    user = {
-        "display": {
-            "runtime_footer": {"enabled": True, "fields": ["model"]},
-            "platforms": {
-                "slack": {"runtime_footer": {"enabled": False}},
-            },
-        },
-    }
-    # Telegram picks up the global enable
-    assert resolve_footer_config(user, "telegram")["enabled"] is True
-    # Slack overrides to off
-    assert resolve_footer_config(user, "slack")["enabled"] is False
-
-
-def test_resolve_platform_can_add_fields_only():
-    user = {
-        "display": {
-            "runtime_footer": {"enabled": True},
-            "platforms": {
-                "discord": {"runtime_footer": {"fields": ["context_pct"]}},
-            },
-        },
-    }
-    tg = resolve_footer_config(user, "telegram")
-    assert tg["enabled"] is True
-    assert tg["fields"] == ["model", "context_pct", "cwd"]
-    dc = resolve_footer_config(user, "discord")
-    assert dc["enabled"] is True
-    assert dc["fields"] == ["context_pct"]
+    assert os.path.abspath("/tmp/wd") in out
 
 
 # ---------------------------------------------------------------------------
 # build_footer_line — top-level entry point used by gateway/run.py
 # ---------------------------------------------------------------------------
-
-
-def test_build_footer_per_platform_off_suppresses():
-    user = {
-        "display": {
-            "runtime_footer": {"enabled": True},
-            "platforms": {"slack": {"runtime_footer": {"enabled": False}}},
-        },
-    }
-    out = build_footer_line(
-        user_config=user,
-        platform_key="slack",
-        model="openai/gpt-5.4",
-        context_tokens=10, context_length=100,
-        cwd="/tmp",
-    )
-    assert out == ""
-
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +162,8 @@ def test_format_footer_latency_zero_renders_sub_second():
 
 def test_format_footer_latency_in_field_order(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
+    # On Windows os.path.expanduser("~") reads USERPROFILE, not HOME.
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     out = format_runtime_footer(
         model="openai/gpt-5.4",
         context_tokens=68_000,
@@ -225,79 +175,103 @@ def test_format_footer_latency_in_field_order(monkeypatch, tmp_path):
     assert out == "gpt-5.4 · 68% · 1m05s · ~"
 
 
-def test_build_footer_line_threads_turn_seconds(monkeypatch):
-    monkeypatch.delenv("TERMINAL_CWD", raising=False)
-    out = build_footer_line(
-        user_config={
-            "display": {
-                "runtime_footer": {
-                    "enabled": True,
-                    "fields": ["model", "latency"],
-                }
-            }
-        },
-        platform_key="discord",
-        model="gpt-5.4",
-        context_tokens=0,
-        context_length=None,
-        cwd="",
-        turn_seconds=22.0,
-    )
-    assert out == "gpt-5.4 · 22s"
-
-
 # ---------------------------------------------------------------------------
-# Byte-stability: `latency` is opt-in, so the DEFAULT footer is unchanged.
-#
-# Upstream doctrine: a system prompt / rendered surface must be byte-stable for
-# the life of a conversation.  Adding a field to _DEFAULT_FIELDS would silently
-# change the footer text of every user who already enabled it.  These tests pin
-# the default set and the exact default-config output strings.
+# Default behaviour: footer is ON with the timing + call-count fields; cwd,
+# latency and served_model stay opt-in.
 # ---------------------------------------------------------------------------
 
-_LEGACY_DEFAULT_FIELDS = ["model", "context_pct", "cwd"]
+_DEFAULT_FOOTER_FIELDS = [
+    "model", "context_pct", "turn_time", "api_time", "tool_time", "overhead_time",
+    "api_calls", "tool_calls", "reasoning",
+]
+# An absolute path that survives _home_relative_cwd unchanged on every host
+# (os.path.abspath("/var/data") -> "C:\\var\\data" on Windows, "/var/data" on POSIX).
+_VAR_DATA = os.path.abspath("/var/data")
 
 
-def test_latency_not_in_default_fields():
+def test_default_fields_include_timing_and_exclude_optins():
+    from gateway.runtime_footer import _DEFAULT_FIELDS
+    fields = list(_DEFAULT_FIELDS)
+    assert fields == _DEFAULT_FOOTER_FIELDS
+    for optin in ("cwd", "latency", "served_model"):
+        assert optin not in fields
+
+
+def test_default_fields_end_with_reasoning():
+    """Order contract: reasoning is the last default field, not a full-list snapshot."""
     from gateway.runtime_footer import _DEFAULT_FIELDS
 
-    assert "latency" not in _DEFAULT_FIELDS
-    assert list(_DEFAULT_FIELDS) == _LEGACY_DEFAULT_FIELDS
+    assert _DEFAULT_FIELDS[-1] == "reasoning"
 
 
-def test_resolve_footer_config_default_fields_exclude_latency():
-    assert resolve_footer_config({}, "telegram")["fields"] == _LEGACY_DEFAULT_FIELDS
-    assert resolve_footer_config(
-        {"display": {"runtime_footer": {"enabled": True}}}, "discord"
-    )["fields"] == _LEGACY_DEFAULT_FIELDS
+# ---------------------------------------------------------------------------
+# reasoning — effective reasoning effort (bare level, `off`, or skipped)
+# ---------------------------------------------------------------------------
+
+
+def test_reasoning_field_renders_bare_effort():
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=None, cwd="",
+        reasoning_effort="medium", fields=("reasoning",),
+    )
+    assert out == "medium"
+
+
+def test_reasoning_field_renders_off():
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=None, cwd="",
+        reasoning_effort="off", fields=("reasoning",),
+    )
+    assert out == "off"
+
+
+def test_reasoning_field_skipped_when_unset():
+    """None (no reachable agent / no effort) skips the field silently."""
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=None, cwd="",
+        reasoning_effort=None, fields=("model", "reasoning"),
+    )
+    assert out == "m"
+
+
+def test_enabled_without_fields_gives_timing():
+    out = build_footer_line(
+        model="openai/gpt-5.4",
+        context_tokens=50_000, context_length=1_000_000,
+        turn_time=20.0, api_time=12.0, tool_time=5.0, api_calls=3, tool_calls=9,
+    )
+    assert out == "gpt-5.4 · 5% · 20s · api 12s · tools 5.0s · other 3.0s · 3 calls · 9 tools"
+
+
+@pytest.mark.parametrize("count,expected", [(1, "1 tool"), (9, "9 tools"), (0, ""), (None, "")])
+def test_tool_calls_field(count, expected):
+    out = format_runtime_footer(model=None, context_tokens=0, context_length=None,
+                                tool_calls=count, fields=("tool_calls",))
+    assert out == expected
+
+
+def test_turn_metrics_keeps_timing_and_tool_calls():
+    from gateway.runtime_footer import turn_metrics
+
+    result = {"api_time": 1.5, "tool_time": 2.5, "tool_calls": 4, "final_response": "x"}
+    assert turn_metrics(result) == {"api_time": 1.5, "tool_time": 2.5, "tool_calls": 4}
+    assert turn_metrics(None) == {"api_time": None, "tool_time": None, "tool_calls": None}
 
 
 @pytest.mark.parametrize(
     "model,tokens,window,cwd,expected",
     [
-        ("openai/gpt-5.4", 50_247, 1_000_000, "/var/data", "gpt-5.4 · 5% · /var/data"),
-        ("claude-opus-4-8", 68_000, 100_000, "/var/data", "claude-opus-4-8 · 68% · /var/data"),
-        ("m", 0, None, "/var/data", "m · /var/data"),
-        ("", 10, 100, "/var/data", "10% · /var/data"),
-        ("m", 10, 100, "", "m · 10%"),
+        ("openai/gpt-5.4", 50_247, 1_000_000, _VAR_DATA, "gpt-5.4 · 5%"),
+        ("m", 0, None, _VAR_DATA, "m"),
+        ("", 10, 100, "", "10%"),
     ],
 )
-def test_default_footer_renders_byte_identically(
+def test_default_footer_omits_cwd_and_unmeasured_fields(
     monkeypatch, model, tokens, window, cwd, expected
 ):
-    """Default-config output is byte-for-byte what it was before `latency`.
-
-    Note `turn_seconds` IS supplied — proving that even when the caller
-    measures timing, a default-configured footer does not show it.
-    """
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
     out = format_runtime_footer(
-        model=model,
-        context_tokens=tokens,
-        context_length=window,
-        cwd=cwd,
-        turn_seconds=22.0,
-        # fields deliberately NOT passed — exercises the default.
+        model=model, context_tokens=tokens, context_length=window, cwd=cwd, turn_seconds=22.0,
     )
     assert out == expected
 
@@ -306,17 +280,66 @@ def test_default_build_footer_line_ignores_turn_seconds(monkeypatch):
     """build_footer_line with default fields is unaffected by turn_seconds."""
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
     common = dict(
-        user_config={"display": {"runtime_footer": {"enabled": True}}},
-        platform_key="discord",
         model="openai/gpt-5.4",
         context_tokens=50_247,
         context_length=1_000_000,
-        cwd="/var/data",
+        cwd=_VAR_DATA,
     )
     baseline = build_footer_line(**common)
     with_timing = build_footer_line(**common, turn_seconds=125.0)
-    assert baseline == "gpt-5.4 · 5% · /var/data"
+    assert baseline == "gpt-5.4 · 5%"
     assert with_timing == baseline
+
+
+# ---------------------------------------------------------------------------
+# Default `model` field — shows short served model when proxy differs from request
+# ---------------------------------------------------------------------------
+
+
+def test_default_model_field_shows_served_when_differs(monkeypatch):
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    out = format_runtime_footer(
+        model="hermes",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        served_model="xai/grok-4.6",
+    )
+    assert out.startswith("grok-4.6")
+    assert not out.startswith("hermes")
+
+
+def test_default_model_field_unchanged_without_served_model(monkeypatch):
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    out = format_runtime_footer(
+        model="hermes",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        served_model=None,
+    )
+    assert out.startswith("hermes")
+
+
+def test_default_model_field_unchanged_when_served_equals_request(monkeypatch):
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    out = format_runtime_footer(
+        model="hermes",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        served_model="hermes",
+    )
+    assert out.startswith("hermes")
+
+    out2 = format_runtime_footer(
+        model="grok-4.6",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        served_model="xai/grok-4.6",
+    )
+    assert out2.startswith("grok-4.6")
 
 
 def test_format_footer_served_model_is_opt_in_and_skips_same_model():
@@ -339,3 +362,27 @@ def test_format_footer_served_model_is_opt_in_and_skips_same_model():
     assert format_runtime_footer(
         model="gpt-5.4", context_tokens=0, context_length=None, cwd="/x",
         served_model=None, fields=["served_model"]) == ""
+
+
+def test_default_model_field_ignores_undisplayable_served_hash(monkeypatch):
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    hash_served = "31324f758efb073636feda516865fd641caf2eb384a3e86bd0fe7e5d80aca6c4"
+    out = format_runtime_footer(
+        model="hermes",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        served_model=hash_served,
+    )
+    assert out.startswith("hermes")
+    assert hash_served not in out
+
+    out_served_field = format_runtime_footer(
+        model="hermes",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        served_model=hash_served,
+        fields=["served_model"],
+    )
+    assert out_served_field == ""

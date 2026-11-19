@@ -56,14 +56,6 @@ FROM debian:13.4
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# The pm-pinned Chromium pair lives in the managed tool store at
-# /opt/hermes/tools — outside the /opt/data volume mount, so the
-# build-time install survives the volume overlay at runtime. pm's
-# chromium package fact exports the same value (PLAYWRIGHT_BROWSERS_PATH
-# at the store root); the image ENV names the same directory so
-# Playwright and the browser tool resolve the pinned build even before pm
-# composes tool env.
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/tools
 
 # Install system dependencies in one layer, clear APT cache.
 # tini was previously PID 1 to reap orphaned zombie processes (MCP stdio
@@ -72,12 +64,8 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/tools
 # replaces tini with s6-overlay's /init (PID 1 = s6-svscan), which reaps
 # zombies non-blockingly on SIGCHLD and additionally supervises the main
 # hermes process, the dashboard, and per-profile gateways.
-# The second package list is the shared libraries the pinned Chromium links
-# against. `npx playwright install --with-deps` used to apt-install them as
-# a side effect; pm stages the pinned browser instead (below), so the libs
-# must be declared here. The list is the `ldd ... | grep "not found"` set of
-# the pinned chrome binary in this base image, mapped to trixie package
-# names (see .hermes/plans/termux-removal-commit-spec.md).
+# The second package list provides shared GUI/media libraries used by optional
+# visual tools in this batteries-included image.
 RUN apt-get -o Acquire::Retries=3 update && \
     apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
     ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps git openssh-client docker-cli xz-utils \
@@ -178,52 +166,31 @@ RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && 
 WORKDIR /opt/hermes
 
 # ---------- Pinned toolchain from pm/lock.json (single authority) ----------
-# The image used to assemble uv from a second authority — an astral image
-# tag (ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie) that had already
-# drifted to 0.11.6 while pm/lock.json pinned uv 0.12.3. That is exactly
-# the two-authorities failure the pm design exists to end. The image is now
-# a pin consumer: the stdlib-only pm provisioner reads pm/lock.json and
-# stages the pinned uv + the pinned Chromium pair (sha256-verified at
-# download — the same code path pm.sh/pm.ps1 and the desktop payload use)
-# into the image's own runtime dir, a self-contained store baked under
-# /opt/hermes, outside the /opt/data volume so it survives the overlay.
-# The pinned uv is linked onto PATH so the `uv sync` / `uv pip install`
-# build steps below run the lockfile's uv, not a second download.
-#
-# The Chromium pair is staged here rather than by `npx playwright install`,
-# which fetched whatever revision the npm-resolved playwright wanted,
-# unverified, and recorded no fact. The resolved browser binary path is
-# baked to /etc/hermes/agent-browser-executable-path for stage2-hook.sh:
-# the layout differs per arch (chrome-linux64/chrome on amd64,
-# chromium-linux-arm64/chromium on arm64), so it is resolved at build time
-# and never hunted at boot.
+# The image is a pin consumer: the stdlib-only pm provisioner reads
+# pm/lock.json and stages the pinned uv (sha256-verified at download — the same
+# code path pm.sh/pm.ps1 and the desktop payload use) into the image's own
+# runtime dir under /opt/hermes, outside the /opt/data volume so it survives
+# the overlay. The pinned uv is linked onto PATH so the `uv sync` / `uv pip
+# install` build steps below run the lockfile's uv, not a second download.
 ENV HERMES_RUNTIME_DIR=/opt/hermes/tools
 COPY pm/ pm/
+# pm's lazy imports resolve get_default_hermes_root()/project_venv_dir()
+# from hermes_constants (stdlib-only) at install time — a sealed-stage
+# `python3 -m pm.cli install` fails with "No module named
+# 'hermes_constants'" without it on the path. Copy the module next to pm.
+COPY hermes_constants.py hermes_constants.py
+# PM imports the shared stdlib runtime path and locking owners before deps exist.
+COPY hermes_cli/__init__.py hermes_cli/runtime_paths.py hermes_cli/runtime_state.py hermes_cli/
 RUN set -eu; \
-    python3 -m pm.cli install uv chromium chromium-headless-shell; \
+    python3 -m pm.cli install uv; \
     ln -sf /opt/hermes/tools/uv-*/uv /usr/local/bin/uv; \
-    uv --version; \
-    browser_bin="$(find /opt/hermes/tools/chromium-* -type f \( -name chrome -o -name chromium \) -print -quit)"; \
-    test -n "$browser_bin"; \
-    "$browser_bin" --version; \
-    mkdir -p /etc/hermes; \
-    printf '%s' "$browser_bin" > /etc/hermes/agent-browser-executable-path
+    uv --version
 
 # ---------- Layer-cached dependency install ----------
 # Copy only package manifests first so npm install is cached unless the
 # lockfiles themselves change.
 #
-# ui-tui/packages/hermes-ink/ is copied IN FULL (not just its manifests)
-# because it is referenced as a `file:` workspace dependency from
-# ui-tui/package.json.  Copying the tree up front lets npm resolve the
-# workspace to real content instead of stopping at a bare package.json.
 COPY package.json package-lock.json ./
-COPY web/package.json web/
-COPY ui-tui/package.json ui-tui/
-COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
-# apps/shared/ is copied IN FULL because web/package.json references it as a
-# `file:` workspace dependency (same pattern as hermes-ink above).
-COPY apps/shared/ apps/shared/
 
 # `npm_config_install_links=false` forces npm to install `file:` deps as
 # symlinks instead of copies.  This is the default since npm 10+, which is
@@ -238,22 +205,6 @@ COPY apps/shared/ apps/shared/
 ENV npm_config_install_links=false
 
 RUN npm install --prefer-offline --no-audit --fetch-retries=5 && \
-    npm cache clean --force
-
-# ---------- Photon iMessage sidecar deps (baked, NS-606) ----------
-# The photon plugin's Node sidecar needs its own node_modules
-# (spectrum-ts). The install tree is immutable at runtime, so a lazy
-# `npm ci` on first connect would hit EROFS — bake the deps here instead
-# (deterministic installs, NS-559). The patch script is copied alongside
-# the manifests because package.json's postinstall runs it, which also
-# means the spectrum-ts patch is applied at build time. Layer-cached:
-# only re-runs when the sidecar manifests/patch change.
-COPY plugins/platforms/photon/sidecar/package.json \
-     plugins/platforms/photon/sidecar/package-lock.json \
-     plugins/platforms/photon/sidecar/patch-spectrum-mixed-attachments.mjs \
-     plugins/platforms/photon/sidecar/
-RUN cd plugins/platforms/photon/sidecar && \
-    npm ci --no-audit --fetch-retries=5 && \
     npm cache clean --force
 
 # ---------- Layer-cached Python dependency install ----------
@@ -276,7 +227,7 @@ RUN cd plugins/platforms/photon/sidecar && \
 # git) and `[yc-bench]` (another git dep), neither of which belongs in
 # the published container.
 #
-# Provider packages (anthropic, bedrock, azure-identity) are included
+# Provider packages (anthropic, azure-identity) are included
 # so Docker users can use these providers without requiring runtime
 # lazy-install access to PyPI (often blocked in containerized envs).
 #
@@ -298,24 +249,10 @@ RUN cd plugins/platforms/photon/sidecar && \
 # avoids the cross-platform failures that kept [matrix] out of [all]
 # while still making Matrix work in the published container. Fixes #30399.
 #
-# Google Chat's [google-chat] extra (google-cloud-pubsub + Chat API clients)
-# is baked so hosted/immutable images can enable the adapter without writing
-# the sealed venv. Runtime --install-deps still routes through lazy_deps into
-# HERMES_LAZY_INSTALL_TARGET when the extra is not present.
-#
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix --extra google-chat
-
-# ---------- Frontend build (cached independently from Python source) ----------
-# Copy only the frontend source trees first so that Python-only changes don't
-# invalidate the (relatively slow) web + ui-tui build layer.
-COPY web/ web/
-COPY ui-tui/ ui-tui/
-COPY apps/shared/ apps/shared/
-RUN cd web && npm run build && \
-    cd ../ui-tui && npm run build
+RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra azure-identity --extra hindsight --extra matrix
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
@@ -406,23 +343,6 @@ COPY --chmod=0755 docker/cont-init.d/02-reconcile-profiles /etc/cont-init.d/02-r
 
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
-# Point the TUI launcher at the prebuilt bundle baked at build time (Layer 8:
-# `ui-tui && npm run build`). This makes _make_tui_argv take the prebuilt-bundle
-# fast path (`node --expose-gc /opt/hermes/ui-tui/dist/entry.js`) and skip the
-# _tui_need_npm_install / runtime `npm install` branch entirely — exactly the
-# nix/packaged-release path the launcher was designed for.
-#
-# Why this is required (not just an optimization): the root package-lock.json
-# describes the WHOLE monorepo workspace set (root + web + ui-tui + apps/*),
-# but the image only installs root/web/ui-tui (apps/* — the desktop app — is
-# never `npm install`ed here). So the actualized node_modules permanently
-# disagrees with the canonical lock, _tui_need_npm_install() returns True on
-# every launch, and the runtime `npm install` it triggers (a) can never
-# converge against the partial monorepo and (b) races itself across concurrent
-# embedded-chat (/api/pty) connections → ENOTEMPTY → the chat tab dies with a
-# 502 / "[session ended]". Pointing at the prebuilt bundle sidesteps the whole
-# check. (A separate launcher hardening is tracked independently.)
-ENV HERMES_TUI_DIR=/opt/hermes/ui-tui
 ENV HERMES_HOME=/opt/data
 ENV HERMES_WRITE_SAFE_ROOT=/opt/data
 ENV HERMES_DISABLE_LAZY_INSTALLS=1

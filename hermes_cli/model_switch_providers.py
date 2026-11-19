@@ -372,36 +372,6 @@ def _azure_entra_configured(read_env=os.environ.get) -> bool:
     return bool(str(model_cfg.get("base_url") or "").strip() or read_env("AZURE_FOUNDRY_BASE_URL"))
 
 
-def _has_fast_aws_sdk_signal() -> bool:
-    """True when explicit AWS auth config is present in the environment.
-
-    Deliberately avoids botocore's full credential chain: picker discovery runs for non-Bedrock
-    providers too, and botocore may probe EC2 IMDS (169.254.169.254) before giving up."""
-    def _set(name: str) -> bool:
-        return bool(os.environ.get(name, "").strip())
-    return (
-        _set("AWS_BEARER_TOKEN_BEDROCK")
-        or (_set("AWS_ACCESS_KEY_ID") and _set("AWS_SECRET_ACCESS_KEY"))
-        or any(_set(name) for name in (
-            "AWS_PROFILE", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
-            "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_WEB_IDENTITY_TOKEN_FILE")))
-
-
-def _has_aws_sdk_creds_for_listing(slug: str, current_provider: str) -> bool:
-    """AWS SDK credential check; the full boto3 chain is only consulted for the *current* provider."""
-    if _has_fast_aws_sdk_signal():
-        return True
-    if str(slug or "").strip().lower() != str(current_provider or "").strip().lower():
-        return False
-    try:
-        from agent.bedrock_adapter import has_aws_credentials
-        return bool(has_aws_credentials())
-    except Exception:
-        return False
-
-
-def _is_aws_sdk(pconfig) -> bool:
-    return bool(pconfig) and getattr(pconfig, "auth_type", "") == "aws_sdk"
 
 
 def _live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str, merge_models_dev: bool = True,
@@ -428,76 +398,6 @@ def _first_curated(curated: dict, keys) -> list:
             break
     return model_ids
 
-
-def _aws_live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str,
-                             non_blocking: bool = False) -> list:
-    """Bedrock: live discovery reflects the active region (eu.*, ap.*) rather than the static
-    us.* list; any failure falls back to the curated list."""
-    try:
-        return _live_or_curated_ids(slug, curated, *fallback_keys, merge_models_dev=False,
-                                    non_blocking=non_blocking) or []
-    except Exception:
-        return _first_curated(curated, fallback_keys or (slug,)) or []
-
-
-def _nous_picker_model_ids(curated: dict, force_fresh_nous_tier: bool) -> list:
-    """Nous serves a huge live catalog; the picker shows ONLY the curated agentic list, augmented
-    with the Portal's free/paid recommendations (new models surface without a CLI release) and
-    narrowed by org policy. Mirrors ``_model_flow_nous`` so GUI pickers match the CLI. A failed
-    recommendation fetch still yields a policy-filtered curated list."""
-    model_ids = curated.get("nous", [])
-    try:
-        from hermes_cli.models_pricing import get_pricing_for_provider
-        from hermes_cli.models import (
-            check_nous_free_tier,
-            union_with_portal_free_recommendations,
-            union_with_portal_paid_recommendations,
-        )
-        from hermes_cli.auth import get_provider_auth_state
-        # Cache-only: both Portal unions below discard the pricing map (``model_ids, _ = ...``);
-        # only the appended ids matter, so a live catalog fetch here buys nothing but latency.
-        pricing = get_pricing_for_provider("nous", cached_only=True) or {}
-        try:
-            portal = (get_provider_auth_state("nous") or {}).get("portal_base_url", "") or ""
-        except Exception:
-            portal = ""
-        if check_nous_free_tier(force_fresh=force_fresh_nous_tier):
-            model_ids, _ = union_with_portal_free_recommendations(model_ids, pricing, portal)
-        else:
-            model_ids, _ = union_with_portal_paid_recommendations(model_ids, pricing, portal)
-    except Exception:
-        pass
-    try:
-        from hermes_cli.models_pricing import nous_policy_allowed_ids, restrict_to_nous_policy
-        model_ids = restrict_to_nous_policy(model_ids, nous_policy_allowed_ids(), rescue_empty=True)
-    except Exception:
-        pass
-    return model_ids
-
-
-def _free_tier_nous_row(row: dict) -> dict | None:
-    """The one free-tier rule for a Nous picker row, shared by every row builder.
-
-    ``row`` carries at least ``name`` and ``models``. A guest identity carrying inference turns
-    it into "Nous · free tier" with the single model ``nous/welcome`` (the welcome host serves
-    nothing else). A guest that ``nous.guest: false`` has switched off yields ``None``: no Nous
-    row at all, since there is nothing selectable. A real account (or no Nous state) passes the
-    row through untouched. Builders that compute the full catalog lazily should pass
-    ``models=[]`` and only compute when the returned row still has no models."""
-    from hermes_cli import anon_auth
-    if not anon_auth.has_guest():
-        return row
-    if not anon_auth.guest_enabled():
-        return None
-    out = dict(row)
-    out["name"] = anon_auth.FREE_TIER_LABEL
-    out["models"] = [anon_auth.GUEST_MODEL]
-    out["total_models"] = 1
-    # The explicit flag every consumer keys on (pricing, badges): never the display name. It also
-    # tells the picker this is the free tier's identity, distinct from ``free_tier`` (an account on
-    # the free plan) which pricing sets from the Portal's entitlement read.
-    out["free_tier_row"] = True
-    return out
 
 
 def _cap_models(model_ids: list, max_models: int | None, slug: str = "") -> list:
@@ -661,9 +561,7 @@ def _collect_authed_provider_slugs(
         if has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug):
             _emit(cp.slug, cp.slug)
 
-    # Nous excluded: its picker branch builds from the curated list and never reads the
-    # api_key-only cache entry a prefetch would write.
-    return [s for s in slugs if s != "nous"]
+    return slugs
 
 
 @dataclass
@@ -677,7 +575,6 @@ class _PickerBuild:
     current_model: str
     max_models: int | None
     for_picker: bool
-    force_fresh_nous_tier: bool
     probe_custom_providers: bool
     probe_current_custom_provider: bool
     refresh: bool
@@ -722,12 +619,7 @@ class _PickerBuild:
             "slug": slug, "name": name, "is_current": is_current, "is_user_defined": False,
             "models": _cap_models(model_ids, self.max_models, slug if uncapped_ok else ""),
             "total_models": len(model_ids), "source": source}
-        if slug == "nous":
-            # Free-tier identity: one row "Nous · free tier" / nous/welcome, or no row when
-            # nous.guest is off. Still marks the slug seen so a later lap cannot re-emit it.
-            row = _free_tier_nous_row(row)
-        if row is not None:
-            self.results.append(row)
+        self.results.append(row)
         self.seen_slugs.add(slug.lower())
         self.record_builtin_endpoint(slug)
 
@@ -820,12 +712,9 @@ def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
 
 
 def _overlay_has_creds(b: _PickerBuild, pid: str, hermes_slug: str, overlay) -> bool:
-    """Section-2 credential ladder: env/SDK, external-process executable, auth store, pool,
+    """Section-2 credential ladder: env, external-process executable, auth store, pool,
     anthropic's external credential files."""
-    if overlay.auth_type == "aws_sdk":
-        has_creds = _has_aws_sdk_creds_for_listing(hermes_slug, b.current_provider)
-    else:
-        has_creds = _overlay_has_env_creds(pid, hermes_slug, overlay, os.environ.get)
+    has_creds = _overlay_has_env_creds(pid, hermes_slug, overlay, os.environ.get)
     # External-process providers (copilot-acp) hold no key/token/pool entry by design — the
     # spawned ACP subprocess brings its own auth. "Configured" means the executable resolves.
     # "Configured" means the executable resolves, which is exactly what get_auth_status() reports for them;
@@ -872,7 +761,7 @@ def _overlay_has_creds(b: _PickerBuild, pid: str, hermes_slug: str, overlay) -> 
 
 
 def _lap_overlay_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None:
-    """Section 2: Hermes-only providers (nous, openai-codex, copilot, opencode-go, ...)."""
+    """Section 2: Hermes-only providers (openai-codex, copilot, opencode-go, ...)."""
     from agent.models_dev import PROVIDER_TO_MODELS_DEV
     from hermes_cli.model_switch import _declared_model_ids
     from hermes_cli.providers import HERMES_OVERLAYS
@@ -891,15 +780,6 @@ def _lap_overlay_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
             # appear; falls back to curated when unreachable (or not yet cached on the read path).
             model_ids = _live_or_curated_ids(hermes_slug, b.curated, merge_models_dev=False,
                                              non_blocking=b.non_blocking_catalogs)
-        elif overlay.auth_type == "aws_sdk":
-            model_ids = _aws_live_or_curated_ids(hermes_slug, b.curated, hermes_slug, pid,
-                                                 non_blocking=b.non_blocking_catalogs)
-        elif hermes_slug == "nous":
-            # A guest identity never needs the Portal catalog: add_builtin_row pins nous/welcome
-            # (or drops the row when nous.guest is off), so only a real account fetches.
-            tier_row = _free_tier_nous_row({"name": get_label(hermes_slug), "models": []})
-            real_account = tier_row is not None and not tier_row["models"]
-            model_ids = _nous_picker_model_ids(b.curated, b.force_fresh_nous_tier) if real_account else []
         else:
             model_ids = _live_or_curated_ids(hermes_slug, b.curated, hermes_slug, pid,
                                              non_blocking=b.non_blocking_catalogs)
@@ -932,15 +812,11 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
             sib_vars = set(sib.api_key_env_vars) if sib else set()
             if lit and lit <= sib_vars < set(cp_config.api_key_env_vars) and cp.slug != b.current_provider:
                 continue
-        has_creds = has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug) or (
-            _is_aws_sdk(cp_config) and _has_aws_sdk_creds_for_listing(cp.slug, b.current_provider))
+        has_creds = has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug)
         if not has_creds:
             continue
-        if _is_aws_sdk(cp_config):
-            model_ids = _aws_live_or_curated_ids(cp.slug, b.curated, non_blocking=b.non_blocking_catalogs)
-        else:
-            model_ids = _live_or_curated_ids(cp.slug, b.curated, merge_models_dev=False,
-                                             non_blocking=b.non_blocking_catalogs)
+        model_ids = _live_or_curated_ids(cp.slug, b.curated, merge_models_dev=False,
+                                         non_blocking=b.non_blocking_catalogs)
         b.add_builtin_row(
             cp.slug, cp.label, cp.slug == b.current_provider, model_ids, "canonical", uncapped_ok=False)
 
@@ -1115,14 +991,12 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
 
 def _build_curated_lists(current_provider: str, current_base_url: str, current_model: str,
                         non_blocking: bool = False) -> dict[str, list[str]]:
-    """Curated model lists keyed by hermes provider id, plus the dynamic ones (nous manifest,
-    Ollama Cloud, LM Studio live probe). ``non_blocking`` (GUI read path) takes cached Ollama Cloud
-    ids and warms them in the background rather than waiting on an 8s probe (#114215)."""
-    from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS, get_curated_nous_model_ids
+    """Curated model lists keyed by hermes provider id, plus the dynamic ones (Ollama Cloud,
+    LM Studio live probe). ``non_blocking`` (GUI read path) takes cached Ollama Cloud ids and warms
+    them in the background rather than waiting on an 8s probe (#114215)."""
+    from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
     curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
-    # Remote manifest so new Portal models surface without a release; in-repo snapshot fallback.
-    curated["nous"] = get_curated_nous_model_ids()
     if "ollama-cloud" not in curated:
         from hermes_cli.models import fetch_ollama_cloud_models
         # Read path: cache only; the row's own SWR refresh (cached_provider_model_ids) warms it.
@@ -1152,7 +1026,7 @@ def _build_curated_lists(current_provider: str, current_base_url: str, current_m
 
 def list_authenticated_providers(
     current_provider: str = "", current_base_url: str = "", user_providers: dict = None,
-    custom_providers: list | None = None, *, force_fresh_nous_tier: bool = False,
+    custom_providers: list | None = None, *,
     max_models: int | None = None, current_model: str = "", refresh: bool = False,
     probe_custom_providers: bool = True, probe_current_custom_provider: bool = False,
     for_picker: bool = False, excluded_providers: list | None = None,
@@ -1162,7 +1036,6 @@ def list_authenticated_providers(
     Returns dicts with ``slug`` (the --provider value), ``name``, ``is_current``,
     ``is_user_defined``, ``models`` (up to max_models), ``total_models``, ``source``
     ("built-in", "hermes", "canonical", "user-config", "model-config").
-    ``force_fresh_nous_tier`` bypasses the short Nous tier cache (account-sensitive flows only);
     ``refresh`` busts the model-id disk cache up front (explicit user action only);
     ``probe_custom_providers`` enables live ``/models`` discovery for saved custom endpoints (CLI
     true, GUI false); ``probe_current_custom_provider`` probes only the selected custom endpoint.
@@ -1198,7 +1071,7 @@ def list_authenticated_providers(
     # as (hermes_id / mdev_id / canonical slug).
     b = _PickerBuild(
         current_provider=current_provider, current_base_url=current_base_url, current_model=current_model,
-        max_models=max_models, for_picker=for_picker, force_fresh_nous_tier=force_fresh_nous_tier,
+        max_models=max_models, for_picker=for_picker,
         probe_custom_providers=probe_custom_providers, probe_current_custom_provider=probe_current_custom_provider,
         refresh=refresh, excluded={str(p).strip().lower() for p in (excluded_providers or []) if p},
         non_blocking_catalogs=non_blocking_catalogs,

@@ -39,7 +39,7 @@ class TestTrailingPunctuation:
 
     def test_multipart_extension_not_truncated(self, real_targz):
         media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{real_targz}")
-        assert [p for p, _ in media] == [real_targz]
+        assert media == [real_targz]
 
 
 class TestInlineCodeWrappedTags:
@@ -47,7 +47,7 @@ class TestInlineCodeWrappedTags:
         media, cleaned = BasePlatformAdapter.extract_media(
             f"Here is your file `MEDIA:{real_file}`"
         )
-        assert [p for p, _ in media] == [real_file]
+        assert media == [real_file]
         assert "MEDIA:" not in cleaned
 
 
@@ -56,7 +56,7 @@ class TestEmphasisAndDedupeIntegration:
 
     def test_bold_wrapped_tag_delivers(self, real_file):
         media, cleaned = BasePlatformAdapter.extract_media(f"**MEDIA:{real_file}**")
-        assert [p for p, _ in media] == [real_file]
+        assert media == [real_file]
         assert "MEDIA:" not in cleaned
 
     def test_two_tags_one_line_both_deliver(self, tmp_path):
@@ -65,6 +65,6 @@ class TestEmphasisAndDedupeIntegration:
         a.write_text("1")
         b.write_text("2")
         media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{a} MEDIA:{b}")
-        assert [p for p, _ in media] == [str(a), str(b)]
+        assert media == [str(a), str(b)]
 
 

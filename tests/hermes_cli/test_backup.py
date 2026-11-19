@@ -438,7 +438,7 @@ class TestValidateBackupZip:
 
     def test_state_db_passes(self, tmp_path):
         """A zip containing state.db is accepted as a valid Hermes backup."""
-        from hermes_cli.backup import _validate_backup_zip
+        from hermes_cli.backup_restore import _validate_backup_zip
         zip_path = tmp_path / "backup.zip"
         self._make_zip(zip_path, ["state.db", "sessions/abc.json"])
         with zipfile.ZipFile(zip_path, "r") as zf:
@@ -470,6 +470,11 @@ class TestImport:
         hermes_home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        # Windows: the native default home is %LOCALAPPDATA%\hermes, not
+        # ~\.hermes. Without redirecting LOCALAPPDATA the non-default-home
+        # guard below sees the developer's real install and (correctly)
+        # declines the auto-install, failing the test on Windows only.
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppData" / "Local"))
 
         calls = []
         monkeypatch.setattr(
@@ -703,7 +708,7 @@ class TestValidation:
     def test_validate_with_config(self):
         """Zip with config.yaml passes validation."""
         import io
-        from hermes_cli.backup import _validate_backup_zip
+        from hermes_cli.backup_restore import _validate_backup_zip
 
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
@@ -718,7 +723,7 @@ class TestValidation:
     def test_detect_prefix_only_dirs(self):
         """Prefix detection returns empty for zip with only directory entries."""
         import io
-        from hermes_cli.backup import _detect_prefix
+        from hermes_cli.backup_restore import _detect_prefix
 
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
@@ -944,26 +949,26 @@ class TestImportAtomicWrites:
         dst_home.mkdir()
         hermes_home = dst_home / ".hermes"
         hermes_home.mkdir()
-        honcho = dst_home / ".honcho"
-        honcho.mkdir()
+        provider = dst_home / ".hindsight"
+        provider.mkdir()
         original = '{"peer":"original"}'
-        (honcho / "config.json").write_text(original)
+        (provider / "config.json").write_text(original)
 
         zip_path = tmp_path / "backup.zip"
         self._zip(zip_path, {
             "config.yaml": "model: {}\n",
-            "_external/.honcho/config.json": '{"peer":"replacement"}',
+            "_external/.hindsight/config.json": '{"peer":"replacement"}',
         })
 
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: dst_home)
-        _break_member(monkeypatch, "_external/.honcho/config.json")
+        _break_member(monkeypatch, "_external/.hindsight/config.json")
 
         from hermes_cli.backup import run_import
         run_import(Namespace(zipfile=str(zip_path), force=True))
 
-        assert (honcho / "config.json").read_text() == original
-        assert list(honcho.glob(".config.json.*")) == []
+        assert (provider / "config.json").read_text() == original
+        assert list(provider.glob(".config.json.*")) == []
 
     @pytest.mark.skipif(os.name != "posix", reason="POSIX symlinks")
     def test_symlinked_target_keeps_its_symlink(self, tmp_path, monkeypatch):
@@ -1003,11 +1008,11 @@ class TestImportAtomicWrites:
         hermes_home.mkdir()
         dotfiles = dst_home / "dotfiles"
         dotfiles.mkdir()
-        real = dotfiles / "honcho.json"
+        real = dotfiles / "hindsight.json"
         real.write_text('{"peer":"original"}')
-        honcho = dst_home / ".honcho"
-        honcho.mkdir()
-        link = honcho / "config.json"
+        provider = dst_home / ".hindsight"
+        provider.mkdir()
+        link = provider / "config.json"
         link.symlink_to(real)
 
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -1016,7 +1021,7 @@ class TestImportAtomicWrites:
         zip_path = tmp_path / "backup.zip"
         self._zip(zip_path, {
             "config.yaml": "model: {}\n",
-            "_external/.honcho/config.json": '{"peer":"restored"}',
+            "_external/.hindsight/config.json": '{"peer":"restored"}',
         })
 
         from hermes_cli.backup import run_import
@@ -1050,7 +1055,7 @@ class TestImportAtomicWrites:
         assert target.read_text() == "model: restored\n"
         assert (target.stat().st_mode & 0o777) == 0o644
 
-    @pytest.mark.skipif(os.name != "posix", reason="POSIX ownership")
+    @pytest.mark.platforms("posix")
     def test_restore_preserves_existing_file_owner(self, tmp_path, monkeypatch):
         """A root-run import must not re-own the user's files to root.
 
@@ -1071,7 +1076,7 @@ class TestImportAtomicWrites:
 
         chown_calls: list[tuple[Path, int, int]] = []
         monkeypatch.setattr(
-            "hermes_cli.backup._preserve_file_owner",
+            "hermes_cli.backup_restore._preserve_file_owner",
             lambda p: (123, 456) if Path(p).exists() else None,
         )
         monkeypatch.setattr(
@@ -1087,28 +1092,21 @@ class TestImportAtomicWrites:
         # state.db is newly created, so there is no prior owner to restore.
         assert chown_calls == [(target, 123, 456)]
 
-    @pytest.mark.skipif(not hasattr(os, "fchmod"), reason="needs fchmod present to remove it")
-    def test_mode_is_applied_before_the_replace_without_fchmod(self, tmp_path, monkeypatch):
-        """Covers the Windows branch: no ``fchmod``, so ``chmod`` the temp path.
-
-        Applying the mode only *after* ``atomic_replace`` leaves the published
-        file at mkstemp's 0600 until that chmod lands (and permanently if the
-        process dies in between), and ``atomic_replace``'s EXDEV/EBUSY
-        ``shutil.copystat`` fallback would copy 0600 onto the target. Mirrors
-        the transit-window fix ``atomic_yaml_write`` already carries.
-        """
+    def test_mode_is_applied_before_the_replace(self, tmp_path, monkeypatch):
+        """Publish the correct native permission bits with no permissive window."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         target = hermes_home / "config.yaml"
         target.write_text("model: original\n")
         os.chmod(target, 0o644)
+        expected_mode = target.stat().st_mode & 0o777
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         zip_path = tmp_path / "backup.zip"
         self._zip(zip_path, {"config.yaml": "model: restored\n", "state.db": ""})
 
-        import hermes_cli.backup as backup_mod
+        import hermes_cli.backup_restore as backup_mod
 
         real_replace = backup_mod.atomic_replace
         staged_modes: list[int] = []
@@ -1118,17 +1116,15 @@ class TestImportAtomicWrites:
                 staged_modes.append(os.stat(tmp).st_mode & 0o777)
             return real_replace(tmp, dst)
 
-        monkeypatch.delattr(os, "fchmod")
         monkeypatch.setattr(backup_mod, "atomic_replace", spying_replace)
 
         from hermes_cli.backup import run_import
         run_import(Namespace(zipfile=str(zip_path), force=True))
 
-        # Without the pre-replace chmod this reads 0o600 (mkstemp's mode).
-        assert staged_modes == [0o644]
-        assert (target.stat().st_mode & 0o777) == 0o644
+        assert staged_modes == [expected_mode]
+        assert (target.stat().st_mode & 0o777) == expected_mode
 
-    @pytest.mark.skipif(os.name != "posix", reason="POSIX setuid/setgid bits")
+    @pytest.mark.platforms("posix")
     def test_restore_does_not_carry_setuid_onto_archive_content(
         self, tmp_path, monkeypatch
     ):
@@ -1163,7 +1159,7 @@ class TestImportAtomicWrites:
             {"helper.sh": "#!/bin/sh\necho attacker\n", "state.db": ""},
         )
 
-        import hermes_cli.backup as backup_mod
+        import hermes_cli.backup_restore as backup_mod
 
         real_replace = backup_mod.atomic_replace
         staged_modes: list[int] = []
@@ -1229,9 +1225,10 @@ class TestProfileRestoration:
         from hermes_cli.backup import run_import
         run_import(args)
 
-        # Only valid profile should get a wrapper
-        assert (wrapper_dir / "valid").exists()
-        assert not (wrapper_dir / "empty").exists()
+        # Only valid profile should get a wrapper (Windows uses a .bat shim).
+        suffix = ".bat" if os.name == "nt" else ""
+        assert (wrapper_dir / f"valid{suffix}").exists()
+        assert not (wrapper_dir / f"empty{suffix}").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1503,7 +1500,7 @@ class TestQuickSnapshot:
 
         # Generic pairing store (new location)
         (hermes_home / "platforms" / "pairing").mkdir(parents=True)
-        (hermes_home / "platforms" / "pairing" / "telegram-approved.json").write_text(
+        (hermes_home / "platforms" / "pairing" / "slack-approved.json").write_text(
             '{"12345": {"user_name": "alice"}}'
         )
         (hermes_home / "platforms" / "pairing" / "discord-approved.json").write_text(
@@ -1523,7 +1520,7 @@ class TestQuickSnapshot:
         assert snap_id is not None
 
         snap_dir = hermes_home / "state-snapshots" / snap_id
-        assert (snap_dir / "platforms" / "pairing" / "telegram-approved.json").exists()
+        assert (snap_dir / "platforms" / "pairing" / "slack-approved.json").exists()
         assert (snap_dir / "platforms" / "pairing" / "discord-approved.json").exists()
         assert (snap_dir / "pairing" / "matrix-approved.json").exists()
         assert (snap_dir / "feishu_comment_pairing.json").exists()
@@ -1531,7 +1528,7 @@ class TestQuickSnapshot:
         with open(snap_dir / "manifest.json") as f:
             meta = json.load(f)
         files = meta["files"]
-        assert "platforms/pairing/telegram-approved.json" in files
+        assert "platforms/pairing/slack-approved.json" in files
         assert "platforms/pairing/discord-approved.json" in files
         assert "pairing/matrix-approved.json" in files
         assert "feishu_comment_pairing.json" in files
@@ -1601,12 +1598,14 @@ class TestQuickSnapshot:
         assert "skipping state.db" in out.lower() or "skipping snapshot prune" in out.lower()
 
 
-class TestQuickSnapshotProjectsKanban:
-    """Regression for #52889: projects.db / kanban.db must survive an upgrade.
+class TestQuickSnapshotProjectsStore:
+    """Regression for #52889: projects.db must survive an upgrade.
 
-    Both are per-profile user-created stores outside the git checkout. If they
-    are not in the pre-update snapshot, the post-update ``CREATE TABLE IF NOT
-    EXISTS`` runs against a missing file and every project / board row is lost.
+    It is a per-profile user-created store outside the git checkout. If it
+    is not in the pre-update snapshot, the post-update ``CREATE TABLE IF NOT
+    EXISTS`` runs against a missing file and every project row is lost. (The
+    kanban.db half of the original regression went with the Kanban feature —
+    kanban boards are no longer a managed store.)
     """
 
     @pytest.fixture
@@ -1615,66 +1614,39 @@ class TestQuickSnapshotProjectsKanban:
         home.mkdir()
         # Minimal critical file so the snapshot is non-empty.
         (home / "config.yaml").write_text("model:\n  provider: openrouter\n")
-
-        for name, table, row in (
-            ("projects.db", "projects", ("p1", "demo")),
-            ("kanban.db", "tasks", ("t1", "todo")),
-        ):
-            conn = sqlite3.connect(str(home / name))
-            conn.execute(f"CREATE TABLE {table} (id TEXT PRIMARY KEY, data TEXT)")
-            conn.execute(f"INSERT INTO {table} VALUES (?, ?)", row)
-            conn.commit()
-            conn.close()
-        return home
-
-
-
-    def test_non_default_kanban_board_snapshotted(self, hermes_home):
-        """#52889 completeness: non-default boards live at
-        <root>/kanban/boards/<slug>/kanban.db, not <root>/kanban.db. The
-        ``kanban/boards`` dir entry must capture them too, or multi-board
-        users still lose every board except ``default`` on upgrade."""
-        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
-
-        board_dir = hermes_home / "kanban" / "boards" / "work"
-        board_dir.mkdir(parents=True)
-        conn = sqlite3.connect(str(board_dir / "kanban.db"))
-        conn.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, data TEXT)")
-        conn.execute("INSERT INTO tasks VALUES (?, ?)", ("w1", "ship"))
+        conn = sqlite3.connect(str(home / "projects.db"))
+        conn.execute("CREATE TABLE projects (id TEXT PRIMARY KEY, data TEXT)")
+        conn.execute("INSERT INTO projects VALUES (?, ?)", ("p1", "demo"))
         conn.commit()
         conn.close()
+        return home
+
+    def test_projects_store_snapshotted_and_restored(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
 
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
-        copy = (
-            hermes_home / "state-snapshots" / snap_id
-            / "kanban" / "boards" / "work" / "kanban.db"
-        )
-        assert copy.exists(), "non-default board kanban.db was not snapshotted"
+        copy = hermes_home / "state-snapshots" / snap_id / "projects.db"
+        assert copy.exists(), "projects.db was not snapshotted"
 
-        # Simulate the upgrade wiping the board, then restore it.
-        conn = sqlite3.connect(str(board_dir / "kanban.db"))
-        conn.execute("DELETE FROM tasks")
+        # Simulate the upgrade wiping the store, then restore it.
+        conn = sqlite3.connect(str(hermes_home / "projects.db"))
+        conn.execute("DELETE FROM projects")
         conn.commit()
         conn.close()
 
         assert restore_quick_snapshot(snap_id, hermes_home=hermes_home) is True
-        conn = sqlite3.connect(str(board_dir / "kanban.db"))
-        rows = conn.execute("SELECT * FROM tasks").fetchall()
+        conn = sqlite3.connect(str(hermes_home / "projects.db"))
+        rows = conn.execute("SELECT * FROM projects").fetchall()
         conn.close()
-        assert rows == [("w1", "ship")]
+        assert rows == [("p1", "demo")]
 
-
-
-    def test_board_db_copied_wal_safely(self, hermes_home, monkeypatch):
-        """#52889 W2: a non-default board's .db (dir-branch) must go through the
-        WAL-safe _safe_copy_db, not a raw shutil.copy2, so an open WAL doesn't
-        produce an inconsistent copy."""
+    def test_store_db_copied_wal_safely(self, hermes_home, monkeypatch):
+        """#52889 W2: a store .db must go through the WAL-safe _safe_copy_db, not a
+        raw shutil.copy2, so an open WAL doesn't produce an inconsistent copy."""
         import hermes_cli.backup as bk
         from hermes_cli.backup import create_quick_snapshot
 
-        board = hermes_home / "kanban" / "boards" / "work"
-        board.mkdir(parents=True)
-        conn = sqlite3.connect(str(board / "kanban.db"))
+        conn = sqlite3.connect(str(hermes_home / "projects.db"))
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, data TEXT)")
         conn.execute("INSERT INTO tasks VALUES ('w1', 'ship')")
@@ -1690,9 +1662,8 @@ class TestQuickSnapshotProjectsKanban:
 
         monkeypatch.setattr(bk, "_safe_copy_db", _spy)
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
-        # The board db was copied via _safe_copy_db (not raw copy).
-        assert any(s.endswith("boards/work/kanban.db") for s in called["db"]), called["db"]
-        copy = hermes_home / "state-snapshots" / snap_id / "kanban" / "boards" / "work" / "kanban.db"
+        assert any(s.endswith("projects.db") for s in called["db"]), called["db"]
+        copy = hermes_home / "state-snapshots" / snap_id / "projects.db"
         rows = sqlite3.connect(str(copy)).execute("SELECT * FROM tasks").fetchall()
         assert rows == [("w1", "ship")]
 
@@ -1883,7 +1854,8 @@ class TestPreMigrationBackup:
     def test_restorable_with_hermes_import(self, hermes_home, tmp_path):
         """The zip produced by pre-migration backup must be a valid Hermes
         backup — `hermes import` should accept it."""
-        from hermes_cli.backup import create_pre_migration_backup, _validate_backup_zip
+        from hermes_cli.backup import create_pre_migration_backup
+        from hermes_cli.backup_restore import _validate_backup_zip
         out = create_pre_migration_backup(hermes_home=hermes_home)
         assert out is not None
         with zipfile.ZipFile(out) as zf:
@@ -2132,14 +2104,14 @@ class TestRestoreConfigModelSettingsIfRewritten:
 
 # ---------------------------------------------------------------------------
 # Model route bundle: primary + fallbacks restore as one coupled unit
-# (fallback_quota_reorder promotion racing the update safety net)
+# (automated route promotion racing the update safety net)
 # ---------------------------------------------------------------------------
 
 class TestModelRouteBundleRestore:
     """The primary route and its fallback chain are ONE bundle.
 
-    The fallback_quota_reorder plugin atomically promotes a fallback entry
-    into model.provider/model.default and moves the displaced primary into
+    An automated routing plugin may atomically promote a fallback entry
+    into model.provider/model.default and move the displaced primary into
     fallback_providers. The update safety net used to restore only the
     model.* half of that swap, leaving the post-promotion fallback list —
     so the promoted route ended up in NEITHER list. The restore must
@@ -2344,7 +2316,7 @@ class TestModelRouteBundleRestore:
 
 
 # ---------------------------------------------------------------------------
-# Memory-provider external paths (~/.honcho, ~/.hindsight, ...) — captured via
+# Memory-provider external paths (~/.hindsight, ...) — captured via
 # MemoryProvider.backup_paths() and restored to their original home-relative
 # location, NOT under HERMES_HOME. (backup/import cycle data-loss fix)
 # ---------------------------------------------------------------------------
@@ -2384,6 +2356,7 @@ class TestMemoryProviderExternalPaths:
         (outside / "leak.json").unlink()
         outside.rmdir()
 
+    @pytest.mark.platforms("linux")
     def test_import_restores_external_to_home_relative_location(self, tmp_path, monkeypatch):
         """_external/ members restore to ~/<relpath>, not under HERMES_HOME,
         and credential-shaped files get 0600."""
@@ -2397,7 +2370,7 @@ class TestMemoryProviderExternalPaths:
             zf.writestr("config.yaml", "model: {}\n")
             zf.writestr(".env", "X=1\n")
             zf.writestr("state.db", "")
-            zf.writestr("_external/.honcho/config.json", '{"peer":"bob"}')
+            zf.writestr("_external/.hindsight/config.json", '{"peer":"bob"}')
 
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: dst_home)
@@ -2405,7 +2378,7 @@ class TestMemoryProviderExternalPaths:
         from hermes_cli.backup import run_import
         run_import(Namespace(zipfile=str(zip_path), force=True))
 
-        restored = dst_home / ".honcho" / "config.json"
+        restored = dst_home / ".hindsight" / "config.json"
         assert restored.exists()
         assert restored.read_text() == '{"peer":"bob"}'
         # Credential-shaped file tightened.
@@ -2652,9 +2625,12 @@ class TestImportLiveSessionDatabase:
     ):
         """A refused live-safe restore is a warning, not a counted success."""
         import hermes_cli.backup as backup_mod
+        # _import_db_member (the run_import .db publish path) lives in
+        # hermes_cli.backup_restore and resolves _safe_restore_db there.
+        import hermes_cli.backup_restore as backup_restore_mod
 
         home, live_db, zip_path = self._prepare(tmp_path, monkeypatch)
-        monkeypatch.setattr(backup_mod, "_safe_restore_db", lambda src, dst: False)
+        monkeypatch.setattr(backup_restore_mod, "_safe_restore_db", lambda src, dst: False)
 
         backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True))
 

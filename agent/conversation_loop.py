@@ -79,7 +79,7 @@ from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
 from agent.turn_retry_state import TurnRetryState
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
 # skewed phase mid-turn.
-from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
+from agent.turn_api_call import handle_api_interrupt, perform_api_call
 from agent.turn_api_error import handle_api_error
 from agent.turn_api_request import build_api_request
 from agent.turn_failure_copy import failed_turn_notice, site_copy
@@ -121,8 +121,7 @@ from agent.retry_utils import (  # noqa: F401
     adaptive_rate_limit_backoff, is_zai_coding_overload_error, jittered_backoff,
     zai_coding_overload_retry_ceiling)
 from agent.trajectory import has_incomplete_scratchpad  # noqa: F401
-from agent.turn_recovery import (
-    _image_error_max_dimension, _try_refresh_nous_paid_entitlement_credentials)
+from agent.turn_recovery import _image_error_max_dimension
 from agent.usage_pricing import estimate_usage_cost, normalize_usage  # noqa: F401
 from hermes_constants import PARTIAL_STREAM_STUB_ID  # noqa: F401
 from utils import env_var_enabled  # noqa: F401
@@ -514,20 +513,6 @@ def _ra():
     return run_agent
 
 
-def _nous_entitlement_message(capability: str) -> str:
-    try:
-        from hermes_cli.nous_account import (
-            format_nous_portal_entitlement_message,
-            get_nous_portal_account_info,
-        )
-        account_info = get_nous_portal_account_info(force_fresh=True)
-        return format_nous_portal_entitlement_message(
-            account_info, capability=capability, in_chat=True
-        ) or ""
-    except Exception:
-        return ""
-
-
 def _print_guidance(agent, message: str) -> bool:
     """Print each line of ``message`` as a 💡 hint; False when there is nothing to print."""
     if not message:
@@ -535,10 +520,6 @@ def _print_guidance(agent, message: str) -> bool:
     for line in message.splitlines():
         agent._vprint(f"{agent.log_prefix}   💡 {line}", force=True, diagnostic=True)
     return True
-
-
-def _print_nous_entitlement_guidance(agent, capability: str) -> bool:
-    return _print_guidance(agent, _nous_entitlement_message(capability))
 
 
 def _system_prompt_for_hooks(api_kwargs: Any, request_messages: Any) -> Any:
@@ -554,18 +535,9 @@ def _system_prompt_for_hooks(api_kwargs: Any, request_messages: Any) -> Any:
     return system_prompt
 
 
-def _is_nous_inference_route(provider: str, base_url: str) -> bool:
-    return (provider or "").strip().lower() == "nous" or base_url_host_matches(
-        str(base_url or ""), "inference-api.nousresearch.com"
-    )
-
-
 def _billing_or_entitlement_message(
     *, capability: str, provider: str, base_url: str, model: str, unverified: bool = False
 ) -> str:
-    if _is_nous_inference_route(provider, base_url):
-        return _nous_entitlement_message(capability)
-
     provider_label = (provider or "").strip() or "the selected provider"
     model_label = (model or "").strip() or "the selected model"
 
@@ -844,14 +816,6 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             )
         except Exception as exc:
             logger.warning("on_session_start hook failed: %s", exc)
-
-    # Cold-start credits seed (L3) fallback for the first-turn path; TUI/desktop seed at
-    # session open, so this is idempotent (skips when _credits_state exists). Fail-open.
-    try:
-        from agent.credits_tracker import seed_credits_at_session_start
-        seed_credits_at_session_start(agent)
-    except Exception:
-        logger.debug("cold-start credits seed failed (fail-open)", exc_info=True)
 
     _persist_system_prompt(
         agent,
@@ -1477,11 +1441,6 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
     Returns a turn result dict when a phase ends the turn, else None once the loop is left
     (success, a restart armed on ``s._retry``, interrupt, or retries exhausted)."""
     while s.retry_count < s.max_retries:
-        _ng = _run_phase(nous_rate_limit_guard, agent, s)
-        if _ng.action == "return":
-            return _ng.result
-        if _ng.action == "break":
-            return None
         try:
             _run_phase(build_api_request, agent, s)
             if _run_phase(perform_api_call, agent, s).action == "break":
@@ -1579,6 +1538,12 @@ def _run_conversation_turn(
     agent._ephemeral_reasoning_off = False
     agent._auth_pool_refresh_counts = {}
     agent._last_turn_usage = None
+    # Per-turn transient-reconnect notice gate + extended transport-retry budget
+    # (see agent/status_output.py::_buffer_transient_reconnect_notice and
+    # agent/transport_retry.py) — one reconnect notice per turn, one window per turn.
+    agent._transient_reconnect_notice_sent = False
+    agent._transport_retry_deadline = None
+    agent._transport_retry_attempts = 0
 
     s = _LoopState(
         system_message=system_message, moa_config=moa_config,
@@ -1712,7 +1677,7 @@ def _run_conversation_inlined(
         persist_user_display_metadata: Optional payload for that event
             (e.g. a delegation's task count).
         persist_user_platform_id: Optional platform-side message id (e.g. the
-            Discord/Telegram message id) to store as metadata on that
+            Discord message id) to store as metadata on that
             persisted user message, so restart drain-window recovery can
             dedup an interrupted turn against the transcript.
 
@@ -1860,11 +1825,18 @@ def _run_conversation_inlined(
     # Per-turn diagnostic: a failed compression-tip adoption in a previous
     # turn's flush must not be reported against this turn.
     agent._compression_adoption_failed = False
+    # Per-turn transient-reconnect notice gate + extended transport-retry budget
+    # (see agent/status_output.py::_buffer_transient_reconnect_notice and
+    # agent/transport_retry.py) — one reconnect notice per turn, one window per turn.
+    agent._transient_reconnect_notice_sent = False
+    agent._transport_retry_deadline = None
+    agent._transport_retry_attempts = 0
 
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
     agent._turn_api_time = 0.0
     agent._turn_tool_time = 0.0
+    agent._turn_tool_calls = 0
     final_response = None
     interrupted = False
     failed = False
@@ -1916,6 +1888,10 @@ def _run_conversation_inlined(
     # reused as the final response — not merely because any interim was
     # streamed. (#65919 review: response-loss blocker)
     _pending_verification_response_previewed = False
+    # Answer composed before a `pre_turn_end` continuation. That continuation
+    # answers a meta directive (start a conversation?), so its text must not
+    # replace the user-facing answer — this is what gets delivered.
+    _pre_turn_end_prior_response = None
     # If pre-API compression fires after MoA advisors have produced guidance,
     # retain that ephemeral output and rebase it onto the compacted transcript
     # on the next loop iteration. This prevents a second advisor fan-out.
@@ -3017,57 +2993,6 @@ def _run_conversation_inlined(
         agent._current_api_request_id = api_request_id
 
         while retry_count < max_retries:
-            # ── Nous Portal rate limit guard ──────────────────────
-            # If another session already recorded that Nous is rate-
-            # limited, skip the API call entirely.  Each attempt
-            # (including SDK-level retries) counts against RPH and
-            # deepens the rate limit hole.
-            if agent.provider == "nous":
-                try:
-                    from agent.nous_rate_guard import (
-                        nous_rate_limit_remaining,
-                        format_remaining as _fmt_nous_remaining,
-                    )
-                    _nous_remaining = nous_rate_limit_remaining()
-                    if _nous_remaining is not None and _nous_remaining > 0:
-                        _nous_msg = (
-                            f"Nous Portal rate limit active — "
-                            f"resets in {_fmt_nous_remaining(_nous_remaining)}."
-                        )
-                        agent._buffer_vprint(
-                            f"⏳ {_nous_msg} Trying fallback..."
-                        )
-                        agent._buffer_status(f"⏳ {_nous_msg}")
-                        if agent._try_activate_fallback():
-                            active_system_prompt = _sync_failover_system_message(
-                                agent, api_messages, active_system_prompt)
-                            retry_count = 0
-                            compression_attempts = 0
-                            _retry.primary_recovery_attempted = False
-                            _retry.restart_with_rebuilt_messages = True
-                            break
-                        # No fallback available — surface buffered context
-                        # so user sees the rate-limit message that led here.
-                        agent._flush_status_buffer()
-                        agent._persist_session(messages, conversation_history)
-                        return {
-                            "final_response": (
-                                f"⏳ {_nous_msg}\n\n"
-                                "No fallback provider available. "
-                                "Try again after the reset, or add a "
-                                "fallback provider in config.yaml."
-                            ),
-                            "messages": messages,
-                            "api_calls": api_call_count,
-                            "completed": False,
-                            "failed": True,
-                            "error": _nous_msg,
-                        }
-                except ImportError:
-                    pass
-                except Exception:
-                    pass  # Never let rate guard break the agent loop
-
             try:
                 agent._reset_stream_delivery_tracking()
                 # Per-attempt first-chunk timestamp, refreshed each attempt so
@@ -3196,6 +3121,11 @@ def _run_conversation_inlined(
                         # provider client.  New consumers should read the
                         # sanitised view from ``request["body"]["messages"]``.
                         _request_payload = agent._api_request_payload_for_hook(api_kwargs)
+                        # Raw-kwargs fingerprints BEFORE the ``request=`` preview
+                        # truncation above; see agent/api_request_fingerprints.py.
+                        from agent.api_request_fingerprints import fingerprint_api_request
+
+                        _request_metadata = fingerprint_api_request(api_kwargs)
                         # Anthropic (``system``) and Responses/Codex
                         # (``instructions``) move the system prompt out of
                         # messages; pass it explicitly for observability
@@ -3229,6 +3159,7 @@ def _run_conversation_inlined(
                             max_tokens=agent.max_tokens,
                             started_at=api_start_time,
                             middleware_trace=list(_llm_middleware_trace),
+                            request_metadata=_request_metadata,
                             request=_request_payload,
                         )
                 except Exception:
@@ -3495,14 +3426,6 @@ def _run_conversation_inlined(
                             error_details.append("response is None")
                         else:
                             error_details.append("response.content invalid (not a non-empty list)")
-                elif agent.api_mode == "bedrock_converse":
-                    _btv = agent._get_transport()
-                    if not _btv.validate_response(response):
-                        response_invalid = True
-                        if response is None:
-                            error_details.append("response is None")
-                        else:
-                            error_details.append("Bedrock response invalid (no output or choices)")
                 else:
                     _ctv = agent._get_transport()
                     if not _ctv.validate_response(response):
@@ -3727,11 +3650,6 @@ def _run_conversation_inlined(
                 elif agent.api_mode == "anthropic_messages":
                     _tfr = agent._get_transport()
                     finish_reason = _tfr.map_finish_reason(response.stop_reason)
-                elif agent.api_mode == "bedrock_converse":
-                    # Bedrock response already normalized at dispatch — use transport
-                    _bt_fr = agent._get_transport()
-                    _bedrock_result = _bt_fr.normalize_response(response)
-                    finish_reason = _bedrock_result.finish_reason
                 else:
                     _cc_fr = agent._get_transport()
                     _finish_result = _cc_fr.normalize_response(response)
@@ -3754,7 +3672,7 @@ def _run_conversation_inlined(
                 # Anthropic ``stop_reason="refusal"`` → ``content_filter``;
                 # OpenAI / portal ``finish_reason="content_filter"`` or a
                 # populated ``message.refusal`` (mapped in the chat_completions
-                # transport); Bedrock ``guardrail_intervened``. The content is
+                # transport). The content is
                 # typically empty, so without this branch the response falls
                 # through to the empty-response / invalid-response retry loops
                 # and is mis-surfaced as "rate limited" / "no content after
@@ -3867,7 +3785,7 @@ def _run_conversation_inlined(
 
                     # Normalize the truncated response to a single OpenAI-style
                     # message shape so text-continuation and tool-call retry
-                    # work uniformly across chat_completions, bedrock_converse,
+                    # work uniformly across chat_completions
                     # and anthropic_messages.  For Anthropic we use the same
                     # adapter the agent loop already relies on so the rebuilt
                     # interim assistant message is byte-identical to what
@@ -4000,7 +3918,7 @@ def _run_conversation_inlined(
                             "error": _rep_error,
                         }
 
-                    if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
+                    if agent.api_mode in {"chat_completions", "anthropic_messages"}:
                         assistant_message = _trunc_msg
                         # ── Content-filter stream stall → fallback (#32421) ──
                         # When the provider's output-layer safety filter (e.g.
@@ -4214,7 +4132,7 @@ def _run_conversation_inlined(
                                 "error": "Response remained truncated after 4 continuation attempts",
                             }
 
-                    if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
+                    if agent.api_mode in {"chat_completions", "anthropic_messages"}:
                         assistant_message = _trunc_msg
                         if assistant_message is not None and _trunc_has_tool_calls:
                             _is_stub_stall = (
@@ -4565,7 +4483,7 @@ def _run_conversation_inlined(
                     if agent._session_db and agent.session_id:
                         try:
                             # Ensure the session row exists before attempting UPDATE.
-                            # Under concurrent load (cron/kanban), the initial
+                            # Under concurrent load, the initial
                             # _ensure_db_session() may have failed due to SQLite
                             # locking.  Retry here so per-call token deltas are
                             # not silently lost (UPDATE on a non-existent row
@@ -4655,15 +4573,6 @@ def _run_conversation_inlined(
                 # usable content. Empty responses still loop through the
                 # empty-retry path below; the buffer is cleared when
                 # genuinely successful content is detected later (~L4127).
-                # Clear Nous rate limit state on successful request —
-                # proves the limit has reset and other sessions can
-                # resume hitting Nous.
-                if agent.provider == "nous":
-                    try:
-                        from agent.nous_rate_guard import clear_nous_rate_limit
-                        clear_nous_rate_limit()
-                    except Exception:
-                        pass
                 from agent import relay_llm
 
                 relay_llm.complete_logical_call(
@@ -4925,31 +4834,6 @@ def _run_conversation_inlined(
                     )
                     continue
 
-                # ── Bedrock AnthropicBedrock SDK streaming failure ──
-                # The Anthropic SDK's stream accumulator raises RuntimeError
-                # "Unexpected event order" when Bedrock returns an error event
-                # before message_start (throttling, overload, validation).
-                # Fall back to the native Converse API path for the rest of
-                # this session — it handles these errors gracefully.  Ref: #28156.
-                if (
-                    isinstance(api_error, RuntimeError)
-                    and "unexpected event order" in str(api_error).lower()
-                    and getattr(agent, "provider", "") == "bedrock"
-                    and agent.api_mode == "anthropic_messages"
-                    and not getattr(agent, "_bedrock_converse_fallback_attempted", False)
-                ):
-                    agent._bedrock_converse_fallback_attempted = True
-                    agent.api_mode = "bedrock_converse"
-                    agent._bedrock_region = getattr(agent, "_bedrock_region", None) or "us-east-1"
-                    agent.client = None  # Drop the AnthropicBedrock client
-                    agent._client_kwargs = {}
-                    agent._vprint(
-                        f"{agent.log_prefix}⚠️  AnthropicBedrock SDK streaming failed — "
-                        f"falling back to native Converse API for this session.",
-                        force=True,
-                    )
-                    continue
-
                 status_code = getattr(api_error, "status_code", None)
                 error_context = agent._extract_api_error_context(api_error)
 
@@ -5018,23 +4902,6 @@ def _run_conversation_inlined(
                     retryable=classified.retryable,
                     reason=classified.reason.value,
                 )
-
-                if (
-                    classified.reason == FailoverReason.billing
-                    and _is_nous_inference_route(
-                        getattr(agent, "provider", "") or "",
-                        getattr(agent, "base_url", "") or "",
-                    )
-                    and not _retry.nous_paid_entitlement_refresh_attempted
-                ):
-                    _retry.nous_paid_entitlement_refresh_attempted = True
-                    if _try_refresh_nous_paid_entitlement_credentials(agent):
-                        agent._vprint(
-                            f"{agent.log_prefix}🔐 Nous paid access verified — "
-                            "refreshed runtime credentials and retrying request...",
-                            force=True,
-                        )
-                        continue
 
                 recovered_with_pool, _retry.has_retried_429 = agent._recover_with_credential_pool(
                     status_code=status_code,
@@ -5181,38 +5048,6 @@ def _run_conversation_inlined(
                         agent._buffer_vprint("🔐 Vertex AI token refreshed after 401. Retrying request...")
                         continue
                 if (
-                    agent.api_mode in ("chat_completions", "anthropic_messages")
-                    and agent.provider == "nous"
-                    and status_code == 401
-                    and not _retry.nous_auth_retry_attempted
-                ):
-                    _retry.nous_auth_retry_attempted = True
-                    if agent._try_refresh_nous_client_credentials(force=True):
-                        agent._buffer_vprint(f"🔐 Nous agent key refreshed after 401. Retrying request...")
-                        continue
-                    # Credential refresh didn't help — show diagnostic info.
-                    # Most common causes: Portal OAuth expired/revoked,
-                    # account out of credits, or agent key blocked.
-                    from hermes_constants import display_hermes_home as _dhh_fn
-                    _dhh = _dhh_fn()
-                    _body_text = ""
-                    try:
-                        _body = getattr(api_error, "body", None) or getattr(api_error, "response", None)
-                        if _body is not None:
-                            _body_text = str(_body)[:200]
-                    except Exception:
-                        pass
-                    print(f"{agent.log_prefix}🔐 Nous 401 — Portal authentication failed.")
-                    if _body_text:
-                        print(f"{agent.log_prefix}   Response: {_body_text}")
-                    if not _print_nous_entitlement_guidance(agent, "Nous model access"):
-                        print(f"{agent.log_prefix}   Most likely: Portal OAuth expired, account out of credits, or agent key revoked.")
-                    print(f"{agent.log_prefix}   Troubleshooting:")
-                    print(f"{agent.log_prefix}     • Re-authenticate: hermes auth add nous")
-                    print(f"{agent.log_prefix}     • Check credits / billing: https://portal.nousresearch.com")
-                    print(f"{agent.log_prefix}     • Verify stored credentials: {_dhh}/auth.json")
-                    print(f"{agent.log_prefix}     • Switch providers temporarily: /model <model> --provider openrouter")
-                if (
                     _is_copilot_provider(agent)
                     and status_code == 401
                     and not _retry.copilot_auth_retry_attempted
@@ -5354,7 +5189,7 @@ def _run_conversation_inlined(
                     continue
 
                 # ── Reasoning-mandatory route rejected a disable ──────
-                # The route (Nous Portal / OpenRouter, e.g. GLM-5.3) answers
+                # The route (e.g. GLM-5.3 on OpenRouter) answers
                 # ``reasoning: {enabled: false}`` with HTTP 400.  The catalog
                 # guard in the provider profile normally swallows the
                 # disable, but a process that warmed its capability cache
@@ -5827,74 +5662,6 @@ def _run_conversation_inlined(
                         _retry.primary_recovery_attempted = False
                         _retry.restart_with_rebuilt_messages = True
                         break
-
-                # ── Nous Portal: record rate limit & skip retries ─────
-                # When Nous returns a 429 that is a genuine account-
-                # level rate limit, record the reset time to a shared
-                # file so ALL sessions (cron, gateway, auxiliary) know
-                # not to pile on, then skip further retries -- each
-                # one burns another RPH request and deepens the hole.
-                # The retry loop's top-of-iteration guard will catch
-                # this on the next pass and try fallback or bail.
-                #
-                # IMPORTANT: Nous Portal multiplexes multiple upstream
-                # providers (DeepSeek, Kimi, MiMo, Hermes).  A 429 can
-                # also mean an UPSTREAM provider is out of capacity
-                # for one specific model -- transient, clears in
-                # seconds, nothing to do with the caller's quota.
-                # Tripping the cross-session breaker on that would
-                # block every Nous model for minutes.  We use
-                # ``is_genuine_nous_rate_limit`` to tell the two
-                # apart via the 429's own x-ratelimit-* headers and
-                # the last-known-good state captured on the previous
-                # successful response.
-                if (
-                    is_rate_limited
-                    and agent.provider == "nous"
-                    and classified.reason == FailoverReason.rate_limit
-                    and not recovered_with_pool
-                ):
-                    _genuine_nous_rate_limit = False
-                    try:
-                        from agent.nous_rate_guard import (
-                            is_genuine_nous_rate_limit,
-                            record_nous_rate_limit,
-                        )
-                        _err_resp = getattr(api_error, "response", None)
-                        _err_hdrs = (
-                            getattr(_err_resp, "headers", None)
-                            if _err_resp else None
-                        )
-                        _genuine_nous_rate_limit = is_genuine_nous_rate_limit(
-                            headers=_err_hdrs,
-                            last_known_state=agent._rate_limit_state,
-                        )
-                        if _genuine_nous_rate_limit:
-                            record_nous_rate_limit(
-                                headers=_err_hdrs,
-                                error_context=error_context,
-                            )
-                        else:
-                            logger.info(
-                                "Nous 429 looks like upstream capacity "
-                                "(no exhausted bucket in headers or "
-                                "last-known state) -- not tripping "
-                                "cross-session breaker."
-                            )
-                    except Exception:
-                        pass
-                    if _genuine_nous_rate_limit:
-                        # Re-enter the loop exactly once so the
-                        # top-of-loop Nous guard handles fallback or
-                        # bails cleanly. (Setting retry_count to
-                        # max_retries would make the while condition
-                        # false immediately and the guard would never
-                        # run -- no fallback, generic exhaustion error.)
-                        retry_count = max(0, max_retries - 1)
-                        continue
-                    # Upstream capacity 429: fall through to normal
-                    # retry logic.  A different model (or the same
-                    # model a moment later) will typically succeed.
 
                 is_payload_too_large = (
                     classified.reason == FailoverReason.payload_too_large
@@ -6447,7 +6214,7 @@ def _run_conversation_inlined(
                     # can still surface this shape via TypeError.  Treat
                     # them as retryable so the error classifier's normal
                     # retry/fallback path runs instead of killing the turn
-                    # as non-retryable (which left Telegram users staring
+                    # as non-retryable (which left gateway users staring
                     # at a bare "Non-retryable error" with no recovery).
                     and not (
                         isinstance(api_error, TypeError)
@@ -6577,31 +6344,15 @@ def _run_conversation_inlined(
                             unverified=classified.billing_unverified,
                         ):
                             pass
-                        elif _provider == "nous" and _print_nous_entitlement_guidance(
-                            agent,
-                            "Nous model access",
-                        ):
-                            pass
-                        elif _provider in {"openai-codex", "xai-oauth", "nous"} and status_code == 401:
+                        elif _provider in {"openai-codex", "xai-oauth"} and status_code == 401:
                             if _provider == "openai-codex":
                                 agent._vprint(f"{agent.log_prefix}   💡 Codex OAuth token was rejected (HTTP 401). Your token may have been", force=True)
                                 agent._vprint(f"{agent.log_prefix}      refreshed by another client (Codex CLI, VS Code). To fix:", force=True)
                                 agent._vprint(f"{agent.log_prefix}      1. Run `codex` in your terminal to generate fresh tokens.", force=True)
                                 agent._vprint(f"{agent.log_prefix}      2. Then run `hermes auth` to re-authenticate.", force=True)
-                            elif _provider == "xai-oauth":
+                            else:
                                 agent._vprint(f"{agent.log_prefix}   💡 xAI OAuth token was rejected (HTTP 401). To fix:", force=True)
                                 agent._vprint(f"{agent.log_prefix}      re-authenticate with xAI Grok OAuth (SuperGrok / Premium+) from `hermes model`.", force=True)
-                            else:  # nous
-                                agent._vprint(f"{agent.log_prefix}   💡 Nous Portal OAuth token was rejected (HTTP 401). Your token may be", force=True)
-                                agent._vprint(f"{agent.log_prefix}      expired, revoked, or your account may be out of credits. To fix:", force=True)
-                                agent._vprint(f"{agent.log_prefix}      1. Re-authenticate: hermes portal", force=True)
-                                agent._vprint(f"{agent.log_prefix}      2. Check your portal account: https://portal.nousresearch.com", force=True)
-                                # ``:free`` is OpenRouter slug syntax; Nous Portal will reject
-                                # the model name even after a successful re-auth.
-                                if isinstance(_model, str) and _model.endswith(":free"):
-                                    agent._vprint(f"{agent.log_prefix}      ⚠️  Note: `{_model}` looks like an OpenRouter slug (`:free` suffix).", force=True)
-                                    agent._vprint(f"{agent.log_prefix}         Nous Portal won't recognize that model name. Either switch to a", force=True)
-                                    agent._vprint(f"{agent.log_prefix}         Nous catalog model, or run `/model openrouter:{_model}` to use OpenRouter.", force=True)
                         else:
                             agent._vprint(f"{agent.log_prefix}   💡 Your API key was rejected by the provider. Check:", force=True)
                             agent._vprint(f"{agent.log_prefix}      • Is the key valid? Run: hermes setup", force=True)
@@ -6646,11 +6397,11 @@ def _run_conversation_inlined(
                             force=True,
                         )
                         agent._vprint(
-                            f"{agent.log_prefix}      • Corporate TLS-inspecting proxy? Point Python at its CA bundle:",
+                            f"{agent.log_prefix}      • Corporate TLS-inspecting proxy? Install its root certificate",
                             force=True,
                         )
                         agent._vprint(
-                            f"{agent.log_prefix}        export SSL_CERT_FILE=/path/to/corp-ca.pem  (also REQUESTS_CA_BUNDLE)",
+                            f"{agent.log_prefix}        in the OS certificate store — Hermes trusts what the machine trusts.",
                             force=True,
                         )
                         agent._vprint(
@@ -6748,6 +6499,32 @@ def _run_conversation_inlined(
                         _retry.primary_recovery_attempted = False
                         _retry.restart_with_rebuilt_messages = True
                         break
+                    # Extended transport-retry budget (2026-11-12 incident, mirrors
+                    # settle_unrecovered_error): a transient transport failure with
+                    # no fallback left buys one more attempt inside the configurable
+                    # window, with capped exponential backoff. Raising max_retries by
+                    # exactly one keeps every later failure flowing back here.
+                    from agent.transport_retry import next_transport_retry as _next_transport_retry
+                    from agent.turn_recovery import interruptible_backoff_sleep as _interruptible_backoff_sleep
+
+                    _transport_wait = _next_transport_retry(agent, _retry, classified)
+                    if _transport_wait is not None:
+                        _interrupted = _interruptible_backoff_sleep(
+                            agent, _transport_wait, _retry, messages=messages,
+                            conversation_history=conversation_history, api_call_count=api_call_count,
+                            abort_message="Interrupt detected during extended transport retry wait, aborting.",
+                            interrupt_text=(
+                                f"Operation interrupted: extended transport retry after error "
+                                f"({type(api_error).__name__}: {agent._clean_error_message(str(api_error))})."
+                            ),
+                            activity_label=f"extended transport retry (wait {int(_transport_wait)}s)",
+                        )
+                        if _interrupted is not None:
+                            return _interrupted
+                        if _retry.restart_with_redirected_messages:
+                            break
+                        max_retries += 1
+                        continue
                     # Terminal — flush buffered retry/fallback trace.
                     agent._flush_status_buffer()
                     _final_summary = agent._summarize_api_error(api_error)
@@ -6928,10 +6705,9 @@ def _run_conversation_inlined(
                         "completed": False,
                         "failed": True,
                         "error": _final_summary,
-                        # Surface the classified reason so callers (notably the
-                        # kanban worker path in cli.py) can distinguish a
-                        # transient throttle from a real failure and choose a
-                        # different exit code. ``rate_limit`` / ``billing`` here
+                        # Surface the classified reason so callers can distinguish a
+                        # transient throttle from a real failure and choose an
+                        # appropriate outcome. ``rate_limit`` / ``billing`` here
                         # mean "quota wall, not a task error".
                         "failure_reason": classified.reason.value,
                         # The classifier's own retry verdict — UI surfaces use
@@ -6941,7 +6717,7 @@ def _run_conversation_inlined(
                         # body (#82154) — may be a content-filter rejection.
                         "billing_unverified": _billing_unverified,
                         # Present only for billing walls: structured recovery
-                        # descriptor (provider, billing_url, is_nous, message).
+                        # descriptor (provider, billing_url, message, ...).
                         "billing_block": _billing_block,
                     }
 
@@ -7207,6 +6983,11 @@ def _run_conversation_inlined(
                         finish_reason=finish_reason,
                         message_count=len(api_messages),
                         response_model=getattr(response, "model", None),
+                        # Observed provider response id when the client exposed one.
+                        response_id=getattr(response, "id", None),
+                        # Raw client-usage cache-field presence, BEFORE Hermes
+                        # normalization (absent ≠ null ≠ zero ≠ positive).
+                        usage_cache_presence=agent._usage_cache_presence_for_hook(response),
                         response=agent._api_response_payload_for_hook(
                             response,
                             assistant_message,
@@ -7865,6 +7646,7 @@ def _run_conversation_inlined(
                         pass
 
                 _tool_phase_started = time.perf_counter()
+                agent._turn_tool_calls += len(getattr(assistant_message, "tool_calls", None) or ())
                 try:
                     agent._execute_tool_calls(
                         assistant_message,
@@ -8872,56 +8654,9 @@ def _run_conversation_inlined(
                     _pending_verification_response_previewed = (
                         agent._interim_content_was_streamed(final_response or "")
                     )
-                    final_response = None
-                    continue
-
-                # ── Kanban worker terminal-tool stop guard ─────────────
-                # Workers must end with kanban_complete / kanban_block.
-                # Models sometimes narrate the next step ("Let me write the
-                # report") and stop with finish_reason=stop — a clean exit
-                # that the dispatcher records as protocol_violation. Nudge
-                # once or twice before allowing that exit.
-                try:
-                    from agent.kanban_stop import build_kanban_stop_nudge
-
-                    _kanban_nudge = build_kanban_stop_nudge(
-                        messages=messages,
-                        attempts=getattr(agent, "_kanban_stop_nudges", 0),
-                    )
-                except Exception:
-                    logger.debug("kanban stop-loop check failed", exc_info=True)
-                    _kanban_nudge = None
-
-                if _kanban_nudge:
-                    agent._kanban_stop_nudges = (
-                        getattr(agent, "_kanban_stop_nudges", 0) + 1
-                    )
-                    final_msg["finish_reason"] = "kanban_terminal_required"
-                    final_msg["_kanban_stop_synthetic"] = True
-                    append_message(messages, final_msg)
-                    append_message(messages, {
-                        "role": "user",
-                        "content": _kanban_nudge,
-                        "_kanban_stop_synthetic": True,
-                    })
-                    agent._session_messages = messages
-                    logger.info(
-                        "kanban stop-loop nudge issued (attempt %d) task=%s",
-                        agent._kanban_stop_nudges,
-                        os.environ.get("HERMES_KANBAN_TASK", ""),
-                    )
-                    agent._emit_status(
-                        "⚠️ Kanban worker tried to exit without "
-                        "kanban_complete/kanban_block — nudging to finish"
-                    )
-                    # Same finalizer contract as verify-on-stop: clear
-                    # final_response while continuing so a later budget
-                    # exhaustion path does not treat the narrated stop as
-                    # a completed answer.
-                    _pending_verification_response = final_response
-                    _pending_verification_response_previewed = (
-                        agent._interim_content_was_streamed(final_response or "")
-                    )
+                    # Answer composed before this continuation: it answers the
+                    # meta directive, so it must not replace the user-facing answer.
+                    _pre_turn_end_prior_response = final_response
                     final_response = None
                     continue
 
@@ -9109,6 +8844,13 @@ def _run_conversation_inlined(
                 # break sites that set final_response without appending.
                 break
     
+    # The pre_turn_end gate's continuation answers a meta directive (start a
+    # conversation?), never the user's question. Deliver the answer composed
+    # before it instead of the verdict — otherwise the user sees only e.g.
+    # "nothing worth starting" and the real answer is lost.
+    if _pre_turn_end_prior_response and (final_response or "").strip() and not failed:
+        final_response = _pre_turn_end_prior_response
+
     # Post-loop turn finalization extracted to agent/turn_finalizer.finalize_turn
     # (god-file decomposition Phase 1 step 4). Behavior-neutral: the assembled
     # result dict is returned exactly as before.
@@ -9130,6 +8872,7 @@ def _run_conversation_inlined(
         _pending_verification_response_previewed=_pending_verification_response_previewed,
         turn_api_time=agent._turn_api_time,
         turn_tool_time=agent._turn_tool_time,
+        turn_tool_calls=agent._turn_tool_calls,
     )
     result = export_current_turn_boundary(agent, result, user_message)
     _close_durable_failed_turn(agent, result)
@@ -9188,7 +8931,7 @@ def run_conversation(
         persist_user_display_metadata: Optional payload for that event
             (e.g. a delegation's task count).
         persist_user_platform_id: Optional platform-side message id (e.g. the
-            Discord/Telegram message id) to store as metadata on that
+            Discord message id) to store as metadata on that
             persisted user message, so restart drain-window recovery can
             dedup an interrupted turn against the transcript.
 

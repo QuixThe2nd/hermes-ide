@@ -21,7 +21,6 @@ SITES = [
     ("hermes_cli.cli_commands_mixin", None),
     ("hermes_cli.cli_session_mixin", None),
     ("agent.agent_init", None),
-    ("tui_gateway.server", lambda mod: mod._new_session_key()),
     ("gateway.session_lifecycle", lambda mod: mod._new_session_id(datetime(2026, 1, 2, 3, 4, 5))),
     ("hermes_state_portability", None),
     ("cli", None),

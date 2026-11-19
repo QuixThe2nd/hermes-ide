@@ -10,7 +10,6 @@ Full docs: https://hermes-agent.nousresearch.com/docs/integrations/providers
 |----------|------|----------------|
 | openrouter | API key | `OPENROUTER_API_KEY` |
 | anthropic | API key | `ANTHROPIC_API_KEY` (also `CLAUDE_CODE_OAUTH_TOKEN`) |
-| nous | OAuth device code | `hermes auth add nous` (or `NOUS_API_KEY`) |
 | openai-codex | OAuth | `hermes auth add openai-codex` |
 | qwen-oauth | OAuth | `hermes auth add qwen-oauth` |
 | minimax-oauth | OAuth | `hermes auth add minimax-oauth` |
@@ -26,7 +25,7 @@ Full docs: https://hermes-agent.nousresearch.com/docs/integrations/providers
 | xiaomi | API key | `XIAOMI_API_KEY` |
 | huggingface | Token | `HF_TOKEN` |
 | fireworks / novita / nvidia / deepinfra / gmi / arcee / stepfun / upstage / kilocode / ai-gateway / opencode-zen / opencode-go / ollama-cloud | API key | `<NAME>_API_KEY` |
-| bedrock / vertex / azure-foundry | Cloud SDK / key | AWS SDK creds / Vertex ADC / `AZURE_FOUNDRY_API_KEY` |
+| vertex / azure-foundry | Cloud SDK / key | Vertex ADC / `AZURE_FOUNDRY_API_KEY` |
 | custom | Config | `model.base_url` + `model.api_key` in config.yaml |
 
 Multiple credentials per provider pool and rotate automatically (`hermes auth`).
@@ -34,7 +33,7 @@ Fallback chain when the primary fails: `hermes fallback add|remove|list`.
 
 ### User-defined model aliases
 
-Work with `/model <name>` in CLI and every gateway platform. Resolved by
+Work with `hermes model <name>` (or `model.default` in config.yaml). Resolved by
 `hermes_cli/model_switch.py::resolve_alias()`; user aliases are checked BEFORE
 the built-in table, so a user `sonnet`/`grok` shadows the built-in.
 
@@ -61,7 +60,7 @@ model:
     fav: openrouter/anthropic/claude-sonnet-4.6
 ```
 
-`/model fav` — session-scoped; add `--global` to persist as default.
+`hermes model fav` — applies the alias and persists it as the default.
 
 An alias with its own `base_url` authenticates with its own credential
 (`api_key`, which also accepts a `"${VAR}"` reference, or `key_env`). With

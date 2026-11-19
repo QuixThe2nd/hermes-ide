@@ -149,8 +149,8 @@ def test_docker_config_migrate_restores_backups_after_failed_migration(
     module = _load_script_module()
     config_path = tmp_path / "config.yaml"
     env_path = tmp_path / ".env"
-    original_config = yaml.safe_dump({"_config_version": 12, "gateway": {"provider": "telegram"}})
-    original_env = "TELEGRAM_BOT_TOKEN=test-token\n"
+    original_config = yaml.safe_dump({"_config_version": 12, "gateway": {"provider": "discord"}})
+    original_env = "DISCORD_BOT_TOKEN=test-token\n"
     config_path.write_text(original_config, encoding="utf-8")
     env_path.write_text(original_env, encoding="utf-8")
 
@@ -180,8 +180,8 @@ def test_docker_config_migrate_restores_backups_when_version_does_not_advance(
     module = _load_script_module()
     config_path = tmp_path / "config.yaml"
     env_path = tmp_path / ".env"
-    original_config = yaml.safe_dump({"_config_version": 12, "gateway": {"provider": "telegram"}})
-    original_env = "TELEGRAM_BOT_TOKEN=test-token\n"
+    original_config = yaml.safe_dump({"_config_version": 12, "gateway": {"provider": "discord"}})
+    original_env = "DISCORD_BOT_TOKEN=test-token\n"
     config_path.write_text(original_config, encoding="utf-8")
     env_path.write_text(original_env, encoding="utf-8")
 
@@ -220,14 +220,14 @@ def test_docker_config_migrate_second_boot_preserves_env_byte_for_byte(tmp_path:
         yaml.safe_dump(
             {
                 "_config_version": 12,
-                "gateway": {"provider": "telegram"},
+                "gateway": {"provider": "discord"},
             }
         ),
         encoding="utf-8",
     )
     original_env = (
-        "TELEGRAM_BOT_TOKEN=secret-bot-token\n"
-        "TELEGRAM_ALLOWED_USERS=123456789\n"
+        "DISCORD_BOT_TOKEN=secret-bot-token\n"
+        "DISCORD_ALLOWED_USERS=123456789\n"
         "OPENROUTER_API_KEY=sk-test-provider-key\n"
     )
     env_path.write_text(original_env, encoding="utf-8")

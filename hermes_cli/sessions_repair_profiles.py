@@ -11,9 +11,7 @@ and settles what an earlier release left crossed. This does, for six kinds of cr
 4. ``gateway_routing`` rows in a named profile's store (the routing index lives in the gateway's
    home; #66887 copied every profile's rows into whichever store was scoped) — moved to the routing
    store when absent there, dropped otherwise — and root rows for a namespace no profile claims;
-5. profile-less Telegram topic bindings and ``gateway_voice_mode.json`` entries owned by a
-   non-default bot — relabelled from the evidence of the rows themselves;
-6. ``sessions.json`` mirror entries whose key namespace no served profile claims — dropped, since
+5. ``sessions.json`` mirror entries whose key namespace no served profile claims — dropped, since
    the legacy import re-injects any key the routing DB lacks on every boot.
 
 Legacy ``agent:main:`` rows inside a named profile's store are reported but NOT repaired unless
@@ -38,7 +36,6 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 logger = logging.getLogger(__name__)
 
 _LEGACY_MAIN_CHOICES = ("report", "rekey", "move")
-_VOICE_MODE_FILE = "gateway_voice_mode.json"
 
 
 @dataclass(frozen=True)
@@ -107,8 +104,6 @@ class _EmptyStore:
     def find_crossed_profile_sessions(self, owner):
         return {"mislabelled": [], "foreign": [], "crossed_parents": []}
 
-    def find_profile_less_telegram_topic_rows(self):
-        return []
 
     def list_gateway_routing_rows(self):
         return []
@@ -181,11 +176,9 @@ class RepairPlan:
     def scan(self, session: _Session) -> "RepairPlan":
         for store in self.stores:
             self._scan_sessions(session, store)
-            self._scan_topics(session, store)
         for store in self.stores:
             self._scan_routing(session, store)
         if self.routing_store is not None:
-            self._scan_voice_modes(session, self.routing_store)
             self._scan_sessions_json(self.routing_store)
         return self
 
@@ -252,15 +245,6 @@ class RepairPlan:
     def _move_batch(self, src: Store, dst: Store) -> "_MoveBatch":
         return self._moves.setdefault((src.db_path, dst.db_path), _MoveBatch(src, dst))
 
-    def _scan_topics(self, session: _Session, store: Store) -> None:
-        rows = session.db(store).find_profile_less_telegram_topic_rows()
-        for row in rows:
-            self._add(Finding(
-                "topic_profile_less", store.profile, f"chat {row['chat_id']} thread {row['thread_id']}",
-                f"telegram topic binding labelled 'default' but keyed {row['session_key']!r}",
-                action=f"relabel to {row['key_profile']!r}",
-                _fix=lambda s, st=store, r=row: s.db(st).relabel_telegram_topic_rows([r])))
-
     def _scan_routing(self, session: _Session, store: Store) -> None:
         from hermes_state_profile_repair import session_key_profile
         rows = session.db(store).list_gateway_routing_rows()
@@ -296,39 +280,11 @@ class RepairPlan:
         deleted = session.db(store).delete_gateway_routing_rows([(row["scope"], row["session_key"])])
         return {"routing_adopted": adopted, "routing_deleted": deleted}
 
-    def _scan_voice_modes(self, session: _Session, store: Store) -> None:
-        path = store.home / _VOICE_MODE_FILE
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
-            return
-        if not isinstance(data, dict):
-            return
-        for key in sorted(k for k in data if isinstance(k, str) and k.count(":") == 1):
-            platform, chat_id = key.split(":", 1)
-            owners: Set[str] = set()
-            for st in self.stores:
-                owners |= session.db(st).key_profiles_for_chat(platform, chat_id)
-            if not owners or "default" in owners:
-                continue  # the default bot speaks there: the unprefixed key is its own
-            if len(owners) > 1:
-                self._add(Finding(
-                    "voice_profile_less", store.profile, key,
-                    f"voice mode entry without a profile; chat is held by {sorted(owners)}",
-                    reason="more than one non-default bot speaks in this chat"))
-                continue
-            owner = next(iter(owners))
-            self._add(Finding(
-                "voice_profile_less", store.profile, key,
-                f"voice mode {data[key]!r} without a profile; chat is held only by {owner!r}",
-                action=f"rekey to {owner}:{key}",
-                _fix=lambda s, p=path, k=key, o=owner: _rekey_voice_mode_entry(p, k, o)))
-
     def _scan_sessions_json(self, store: Store) -> None:
         from hermes_state_profile_repair import session_key_profile
         path = store.home / "sessions" / "sessions.json"
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return
         if not isinstance(data, dict):
@@ -417,20 +373,9 @@ def _parents_first(payloads: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return ordered
 
 
-def _rekey_voice_mode_entry(path: Path, key: str, owner: str) -> Dict[str, int]:
-    from utils import atomic_json_write
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if key not in data:
-        return {}
-    data.setdefault(f"{owner}:{key}", data.pop(key))
-    data.pop(key, None)
-    atomic_json_write(path, data)
-    return {"voice_rekeyed": 1}
-
-
 def _drop_sessions_json_entry(path: Path, key: str) -> Dict[str, int]:
     from utils import atomic_json_write
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
     if key not in data:
         return {}
     del data[key]

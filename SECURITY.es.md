@@ -175,14 +175,13 @@ modelo de autorización, pero las reglas a continuación se aplican uniformement
 
 - **Adaptadores de plataforma del gateway.** La mayoría de las integraciones
   de mensajería se distribuyen como plugins empaquetados en
-  `plugins/platforms/<name>/` (Telegram, Discord, Slack, email, SMS, etc.).
+  `plugins/platforms/<name>/` (Discord, Slack, email, SMS, etc.).
   Los tipos base compartidos y un conjunto menor de adaptadores
   legacy/directos viven en `gateway/platforms/` (`base.py`, Signal, servidor
   API, webhooks, …), con descubrimiento y carga diferida vía
   `gateway/platform_registry.py`.
 - **Superficies HTTP expuestas en red.** El adaptador del servidor API, el
-  plugin del dashboard, los endpoints HTTP del plugin kanban, y cualquier
-  otro plugin que vincule un socket de escucha.
+  plugin del dashboard, y cualquier otro plugin que vincule un socket de escucha.
 - **Adaptadores de Editor / IDE.** El adaptador ACP (`acp_adapter/`) e
   integraciones equivalentes que aceptan solicitudes de un proceso cliente local.
 - **El gateway TUI (`tui_gateway/`).** Backend JSON-RPC para la

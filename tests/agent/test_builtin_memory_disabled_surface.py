@@ -5,7 +5,7 @@ false`` stops ``agent_init`` from building a ``MemoryStore``, so the ``memory``
 tool dispatches against ``store=None`` and every call comes back "Memory is not
 available". Before the fix the tool stayed in the schema and MEMORY_GUIDANCE
 stayed in the system prompt, so users running a third-party provider (Hindsight,
-Mem0, …) paid for both on every API call with no way to drop them — listing
+etc.) paid for both on every API call with no way to drop them — listing
 ``memory`` under ``disabled_toolsets`` takes the provider's tools down too.
 
 These tests exercise the real resolution chain (config on disk → check_fn →

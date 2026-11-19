@@ -1,7 +1,7 @@
 # Themes / Skins — Author a Hermes Color Theme
 
 Author a Hermes **skin** — one YAML file that themes the CLI, the TUI, and the
-desktop GUI at once. The skin engine (`hermes_cli/skin_engine.py`) resolves the
+web dashboard at once. The skin engine (`hermes_cli/skin_engine.py`) resolves the
 active skin and the gateway pushes it to every surface, so a file dropped in
 `~/.hermes/skins/` is the theme analogue of a plugin: no code, all surfaces. This
 skill covers writing a good skin and activating it; it does not build GUI theme
@@ -11,7 +11,7 @@ editors or ship built-in presets.
 
 - The user asks for a custom look ("make me a synthwave theme", "dark forest
   vibes", "match my brand colors") for Hermes itself.
-- The user wants the CLI/TUI/desktop to share one coordinated palette.
+- The user wants the CLI/TUI/web dashboard to share one coordinated palette.
 - The user wants to iterate live ("that coral is too loud, make it teal") — edit
   the active skin's YAML and every surface repaints as your tool finishes.
 
@@ -73,7 +73,7 @@ so to recolor *only* tool calls (the classic "change the gold `●`") set `ui_to
    hermes config set display.skin <name>
    ```
    The gateway's skin watcher notices the change and **repaints every surface live
-   within ~a second** — CLI, TUI, and desktop — and the skin appears in
+   within ~a second** — CLI, TUI, and web dashboard — and the skin appears in
    Appearance / `Cmd-K` / `/skin`. You apply it; do NOT tell the user to run
    `/skin` (they still can, but it's your job). The writer emits valid YAML — a
    hand-edit can corrupt the file and break the live gateway (including `/`).
@@ -105,9 +105,9 @@ enumerate.
   guaranteed to parse on every surface.
 - **Set `background`.** Without it the GUI has to guess a base surface from text
   luminance — usable, but you lose control of the app background.
-- **Name collisions**: a skin named like a desktop built-in (`mono`, `slate`,
+- **Name collisions**: a skin named like a built-in (`mono`, `slate`,
   `cyberpunk`, `nous`, `midnight`, `ember`) won't override that built-in on the
-  GUI. Pick a fresh name.
+  web dashboard. Pick a fresh name.
 - **Never hand-edit `config.yaml` to activate.** Use `hermes config set
   display.skin <name>` — a stray indent in a manual edit corrupts the file and
   can break the live gateway (including `/`). One command, always valid.

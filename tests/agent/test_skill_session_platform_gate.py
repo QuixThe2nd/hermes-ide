@@ -17,7 +17,7 @@ def _conds(platforms):
 class TestSessionPlatformGate:
     def test_hidden_on_other_channel(self):
         assert _skill_should_show(_conds(["teams", "cron"]), {"terminal"}, set(), "desktop") is False
-        assert _skill_should_show(_conds(["teams", "cron"]), {"terminal"}, set(), "telegram") is False
+        assert _skill_should_show(_conds(["teams", "cron"]), {"terminal"}, set(), "discord") is False
 
     def test_shown_on_named_channel(self):
         assert _skill_should_show(_conds(["teams", "cron"]), {"terminal"}, set(), "teams") is True

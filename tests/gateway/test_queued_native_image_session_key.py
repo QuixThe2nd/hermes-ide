@@ -19,7 +19,7 @@ _ONE_BY_ONE_PNG = base64.b64decode(
 
 class CaptureAdapter(BasePlatformAdapter):
     def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
+        super().__init__(PlatformConfig(enabled=True, token="***"), Platform.DISCORD)
         self.sent = []
         self.typing = []
 
@@ -72,7 +72,6 @@ def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.adapters = {adapter.platform: adapter}
-    runner._voice_mode = {}
     runner._prefill_messages = []
     runner._ephemeral_system_prompt = ""
     runner._reasoning_config = None
@@ -116,18 +115,18 @@ async def test_queued_followup_uses_pending_event_session_key_for_native_images(
     image_path.write_bytes(_ONE_BY_ONE_PNG)
 
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="-1001",
         chat_type="group",
     )
     pending_source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="-1001",
         chat_type="group",
         thread_id="17585",
     )
 
-    adapter._pending_messages["agent:main:telegram:group:-1001"] = MessageEvent(
+    adapter._pending_messages["agent:main:discord:group:-1001"] = MessageEvent(
         text="describe this",
         message_type=MessageType.PHOTO,
         source=pending_source,
@@ -142,7 +141,7 @@ async def test_queued_followup_uses_pending_event_session_key_for_native_images(
         history=[],
         source=source,
         session_id="sess-native-image-followup",
-        session_key="agent:main:telegram:group:-1001",
+        session_key="agent:main:discord:group:-1001",
     )
 
     assert result["final_response"] == "done-2"

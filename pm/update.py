@@ -301,7 +301,8 @@ def node_latest_versions() -> list[str]:
         v = entry.get("version", "")
         if v.startswith("v"):
             v = v[1:]
-        out.append(v)
+        if re.fullmatch(r"\d+\.\d+\.\d+", v):
+            out.append(v)
     return out
 
 
@@ -329,8 +330,11 @@ def martin_riedl_index() -> dict[str, dict[str, str]]:
         page,
     ):
         osname, arch, epoch, version = m.groups()
-        target = f"{'darwin' if osname == 'macos' else 'linux'}-{arch}"
-        out.setdefault(target, {})[version] = epoch
+        target_arch = "x64" if arch == "amd64" else arch
+        target = f"{'darwin' if osname == 'macos' else 'linux'}-{target_arch}"
+        versions = out.setdefault(target, {})
+        if version not in versions or int(epoch) > int(versions[version]):
+            versions[version] = epoch
     _martin_cache.set(out)
     return out
 
@@ -340,17 +344,16 @@ def martin_riedl_versions(target: str) -> list[str]:
     return list((martin_riedl_index().get(target) or {}).keys())
 
 
-def btbn_index() -> dict[str, list[tuple[str, str]]]:
-    """BtbN/FFmpeg-Builds autobuild index, cached: version -> [(tag, asset)].
+def btbn_index() -> dict[str, dict[str, tuple[str, str]]]:
+    """Newest static GPL Windows asset per target/version, as (tag, name).
 
-    The release tag is a dated autobuild (autobuild-2026-08-28-17-08); the
-    ffmpeg version lives in the asset names (ffmpeg-n9.0.1-11-g<hash>-
-    win64-gpl-9.0.zip). Building the download URL at pin time needs BOTH
-    the tag and the full asset name, so the index keeps them per version."""
+    Releases also contain Linux, shared and LGPL builds. Retain target
+    identity here so discovery and pinning select the same artifact.
+    """
     cached = _btbn_cache.get()
     if cached is not None:
         return cached
-    out: dict[str, list[tuple[str, str]]] = {}
+    out: dict[str, dict[str, tuple[str, str]]] = {}
     for page in range(1, 4):
         data = _get_json(f"https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=30&page={page}")
         if not data:
@@ -363,18 +366,22 @@ def btbn_index() -> dict[str, list[tuple[str, str]]]:
                 continue
             for asset in release.get("assets", []):
                 name = asset.get("name", "")
-                m = re.search(r"(?:^|-)n(\d+\.\d+\.\d+)(?:-|$)", name)
-                if m and m.group(1) not in out:
-                    out[m.group(1)] = [(tag, name)]
+                m = re.fullmatch(
+                    r"ffmpeg-n(\d+\.\d+\.\d+)-.+-win(64|arm64)-gpl-\d+\.\d+\.zip", name
+                )
+                if m:
+                    version, arch = m.groups()
+                    target = "win32-x64" if arch == "64" else "win32-arm64"
+                    out.setdefault(target, {}).setdefault(version, (tag, name))
         if len(data) < 30:
             break
     _btbn_cache.set(out)
     return out
 
 
-def btbn_versions() -> list[str]:
-    """Newest-first ffmpeg versions BtbN autobuilds currently ship."""
-    return list(btbn_index().keys())
+def btbn_versions(target: str) -> list[str]:
+    """Release versions with a supported Windows asset for this target."""
+    return list(btbn_index().get(target, {}))
 
 
 def pbs_build_tags(minor: str, target: str) -> list[str]:

@@ -35,7 +35,7 @@ def _snapshots(home: Path):
     return sorted(p.name for p in d.iterdir() if p.is_dir()) if d.exists() else []
 
 
-def test_prune_only_pass_takes_no_snapshot_but_still_ages_old_ones_out(env, monkeypatch):
+def test_real_pass_takes_snapshot_and_ages_old_ones_out(env, monkeypatch):
     cb, curator, home = env["cb"], env["curator"], env["home"]
     (home / "skills" / "alpha").mkdir()
     (home / "skills" / "alpha" / "SKILL.md").write_text("---\nname: alpha\n---\n", encoding="utf-8")
@@ -45,14 +45,12 @@ def test_prune_only_pass_takes_no_snapshot_but_still_ages_old_ones_out(env, monk
     assert len(_snapshots(home)) == 3
     monkeypatch.setattr(cb, "get_keep", lambda: 1)
 
-    curator.run_curator_review(synchronous=True, consolidate=False)
-    survivors = _snapshots(home)
-    assert len(survivors) == 1, "prune-only pass must apply retention without adding a snapshot"
+    curator.run_curator_review(synchronous=True)
 
-    curator.run_curator_review(synchronous=True, consolidate=True)
+    survivors = _snapshots(home)
+    assert len(survivors) == 1, "real pass must apply retention while adding its snapshot"
     reasons = [r.get("reason") for r in cb.list_backups()]
-    assert "pre-curator-run" in reasons, "consolidation still snapshots first"
-    assert len(reasons) <= 2, "and retention still applies (the new snapshot never prunes itself)"
+    assert "pre-curator-run" in reasons, "consolidation always snapshots first"
 
 
 def test_only_one_process_claims_a_due_pass(env, monkeypatch):

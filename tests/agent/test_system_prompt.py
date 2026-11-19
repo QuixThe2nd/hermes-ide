@@ -19,7 +19,6 @@ def _make_agent(**overrides):
         _task_completion_guidance=False,
         _tool_use_enforcement=False,
         _environment_probe=False,
-        _kanban_worker_guidance="",
         _memory_store=None,
         _memory_manager=None,
         model="",
@@ -55,55 +54,6 @@ def _captured_context_cwd(agent):
     ):
         build_system_prompt_parts(agent)
     return captured["cwd"]
-
-
-@pytest.mark.parametrize("task_id, expected", [(None, False), ("t_worker", True)])
-def test_kanban_guidance_requires_worker_task_at_agent_init(monkeypatch, task_id, expected):
-    """A profile can expose kanban tools without making the session a worker."""
-    from agent.agent_init import _load_tools
-    from agent.prompt_builder import KANBAN_GUIDANCE
-    import model_tools
-
-    if task_id is None:
-        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-    else:
-        monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
-    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
-    monkeypatch.setattr(
-        model_tools,
-        "get_tool_definitions",
-        lambda **_kwargs: [{"function": {"name": "kanban_show"}}],
-    )
-    agent = SimpleNamespace(quiet_mode=True)
-
-    _load_tools(agent, enabled_toolsets=["kanban"], disabled_toolsets=None)
-
-    assert (agent._kanban_worker_guidance == KANBAN_GUIDANCE) is expected
-
-
-@pytest.mark.parametrize("task_id, owner, expected", [
-    (None, True, False),        # interactive session with the kanban toolset enabled
-    ("t_worker", True, True),   # the dispatcher-owned worker
-    ("t_worker", False, False), # cron run / delegate child inheriting the worker's env
-])
-def test_kanban_guidance_fallback_requires_owned_worker_task(monkeypatch, task_id, owner, expected):
-    """Prompt fallback preserves the worker boundary when init was bypassed: tool access
-    is not identity, and an inherited HERMES_KANBAN_TASK is not ownership (#112486)."""
-    from contextlib import nullcontext
-
-    from agent.delegation_context import non_dispatcher_owned_context
-    from agent.prompt_builder import KANBAN_GUIDANCE
-    from agent.system_prompt import _tool_guidance_block
-
-    if task_id is None:
-        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-    else:
-        monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
-    agent = _make_agent(valid_tool_names={"kanban_show"})
-    delattr(agent, "_kanban_worker_guidance")
-
-    with nullcontext() if owner else non_dispatcher_owned_context():
-        assert (_tool_guidance_block(agent) == KANBAN_GUIDANCE) is expected
 
 
 @pytest.mark.parametrize("stores", [(True, True), (False, True), (True, False), (False, False)])
@@ -500,122 +450,6 @@ def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
 
     assert prompt == expected
     assert agent._cached_system_prompt_static == "\n\n".join(expected.split("\n\n")[:4])
-
-
-class TestTelegramRichMessagesHint:
-    """Verify that TELEGRAM_RICH_MESSAGES_HINT is conditionally included."""
-
-    def test_base_hint_without_rich_messages(self, monkeypatch):
-        """When rich_messages is False, only the base hint is used."""
-        agent = _make_agent(platform="telegram")
-        with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
-            mock_cfg.return_value = {
-                "gateway": {"platforms": {"telegram": {"extra": {"rich_messages": False}}}}
-            }
-            stable = _stable_prompt(agent)
-        assert "Standard Markdown auto-converts" in stable
-        assert "lean into it" not in stable
-        assert "task lists" not in stable
-
-    def test_rich_hint_with_rich_messages_enabled(self, monkeypatch):
-        """When rich_messages is True in gateway.platforms, the extension
-        is appended (the canonical/primary location)."""
-        agent = _make_agent(platform="telegram")
-        with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
-            mock_cfg.return_value = {
-                "gateway": {"platforms": {"telegram": {"extra": {"rich_messages": True}}}}
-            }
-            stable = _stable_prompt(agent)
-        assert "lean into it" in stable
-        assert "task lists" in stable
-        assert "math/formulas" in stable
-
-    def test_rich_hint_from_top_level_platforms(self):
-        """Top-level ``platforms.telegram.extra.rich_messages`` is merged
-        alongside gateway.platforms, so it works on its own."""
-        agent = _make_agent(platform="telegram")
-        with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
-            mock_cfg.return_value = {
-                "platforms": {"telegram": {"extra": {"rich_messages": True}}}
-            }
-            stable = _stable_prompt(agent)
-        assert "lean into it" in stable
-        assert "task lists" in stable
-
-    def test_top_level_overrides_gateway_rich_messages(self):
-        """Top-level ``platforms.telegram.extra`` wins over gateway.platforms
-        at the leaf, matching the adapter's merge precedence."""
-        agent = _make_agent(platform="telegram")
-        with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
-            mock_cfg.return_value = {
-                "gateway": {"platforms": {"telegram": {"extra": {"rich_messages": False}}}},
-                "platforms": {"telegram": {"extra": {"rich_messages": True}}},
-            }
-            stable = _stable_prompt(agent)
-        assert "lean into it" in stable
-
-    def test_gateway_extra_other_keys_does_not_block_top_level_rich_messages(self):
-        """When gateway.platforms.telegram.extra has other keys but not
-        rich_messages, the top-level rich_messages still activates."""
-        agent = _make_agent(platform="telegram")
-        with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
-            mock_cfg.return_value = {
-                "gateway": {"platforms": {"telegram": {"extra": {"disable_link_previews": True}}}},
-                "platforms": {"telegram": {"extra": {"rich_messages": True}}},
-            }
-            stable = _stable_prompt(agent)
-        assert "lean into it" in stable
-
-    def test_base_hint_without_config(self, monkeypatch):
-        """When config has no telegram section, only base hint is used."""
-        agent = _make_agent(platform="telegram")
-        with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
-            mock_cfg.return_value = {}
-            stable = _stable_prompt(agent)
-        assert "Standard Markdown auto-converts" in stable
-        assert "lean into it" not in stable
-
-
-    def test_gateway_rich_messages_integration_via_real_config(self, tmp_path, monkeypatch):
-        """End-to-end through the real config-resolution chain: a config.yaml
-        under HERMES_HOME with ``gateway.platforms.telegram.extra.rich_messages``
-        must activate the rich hint. ``load_config_readonly`` is NOT mocked here,
-        so this guards against the exact path-mismatch bug this PR fixes.
-        """
-        config_yaml = (
-            "gateway:\n"
-            "  platforms:\n"
-            "    telegram:\n"
-            "      extra:\n"
-            "        rich_messages: true\n"
-        )
-        home = tmp_path / "hermes_home"
-        home.mkdir()
-        (home / "config.yaml").write_text(config_yaml)
-
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        # Point config resolution at the temp file without mocking the loader:
-        # mirror the pattern used in test_config_env_expansion.py.
-        from hermes_cli import config as _cfgmod
-        monkeypatch.setattr(_cfgmod, "get_config_path", lambda: home / "config.yaml")
-
-        agent = _make_agent(platform="telegram")
-        stable = _stable_prompt(agent)
-        assert "lean into it" in stable
-        assert "task lists" in stable
-
-    def test_malformed_extra_value_falls_back_to_base_hint(self, tmp_path, monkeypatch):
-        """A truthy non-mapping ``extra`` must not crash prompt construction —
-        it should fail open to the base hint (Tek's fail-open concern).
-        """
-        agent = _make_agent(platform="telegram")
-        with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
-            mock_cfg.return_value = {
-                "gateway": {"platforms": {"telegram": {"extra": "not-a-map"}}}
-            }
-            stable = _stable_prompt(agent)
-        assert "Standard Markdown auto-converts" in stable
-        assert "lean into it" not in stable
 
 
 _SKILLS = "SKILLS_INDEX_SENTINEL"

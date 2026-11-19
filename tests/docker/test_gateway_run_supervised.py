@@ -5,7 +5,7 @@ run`` was the standard pattern — the gateway ran as the container's
 main process, container exit code matched gateway exit code, no
 supervision. With s6 as PID 1, the same invocation now auto-redirects
 to the supervised path (`gateway start`) so users get auto-restart on
-crash and a supervised dashboard alongside (when ``HERMES_DASHBOARD=1``).
+crash and stay supervised.
 
 These tests verify the three load-bearing properties of that redirect:
 
@@ -238,59 +238,3 @@ def test_supervised_gateway_does_not_recurse(
         f"wrapper (the redirect heartbeat); found {redirected}. "
         f"ps:\n{docker_exec_sh(container_name, 'ps -eo pid,ppid,cmd').stdout}"
     )
-
-
-def test_dashboard_supervised_when_env_set(
-    built_image: str, container_name: str,
-) -> None:
-    """When ``HERMES_DASHBOARD=1`` is set, ``docker run <image> gateway
-    run`` should result in BOTH the gateway and the dashboard being
-    supervised by s6 — the dashboard slot was always there but only
-    activates with the env var. This is the headline benefit of the
-    redirect: one container = supervised gateway + supervised
-    dashboard, with zero extra user effort.
-    """
-    start_container(
-        built_image, container_name,
-        "HERMES_DASHBOARD=1",
-        cmd="gateway run",
-    )
-
-    # Wait for the redirect to fire (the breadcrumb appears in docker
-    # logs when the CMD process reaches the redirect logic). This is
-    # the same signal the other gateway-run tests use.
-    # A fixed time.sleep(5) was racing: start_container returns when
-    # cont-init finishes, but the redirect (which creates the
-    # gateway-default s6 slot) happens later in the CMD process.
-    wait_for_docker_logs(
-        container_name, "s6 supervision", deadline_s=60.0,
-    )
-
-    # Poll for both slots to report want-up, using the same
-    # _svstat_wants_up helper the other tests use. A simple
-    # `grep 'want up'` is wrong: when the service is already up,
-    # s6-svstat output is "up (pid ...) Ns" with no literal "want up"
-    # — the want-up intent is implied by the absence of "want down".
-    ok_gateway = False
-    end = time.monotonic() + 30.0
-    while time.monotonic() < end:
-        if _svstat_wants_up(container_name, "gateway-default"):
-            ok_gateway = True
-            break
-        time.sleep(0.5)
-    assert ok_gateway, (
-        f"gateway-default slot not want-up: {_svstat(container_name)!r}"
-    )
-
-    ok_dash = False
-    end = time.monotonic() + 30.0
-    while time.monotonic() < end:
-        if _svstat_wants_up(container_name, "dashboard"):
-            ok_dash = True
-            break
-        time.sleep(0.5)
-    assert ok_dash, (
-        f"dashboard slot not want-up: {_svstat(container_name, 'dashboard')!r}"
-    )
-
-

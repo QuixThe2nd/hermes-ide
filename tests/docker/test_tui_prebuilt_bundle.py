@@ -1,6 +1,6 @@
 """Harness: the image ships a prebuilt TUI bundle, not a runtime npm install.
 
-Regression guard for the hosted-chat failure where the embedded dashboard
+Regression guard for the hosted-chat failure where the embedded
 Chat tab died with a 502 / "[session ended]". Root cause: the image installs
 only a subset of the npm monorepo workspaces (root/web/ui-tui, never apps/*),
 so the actualized node_modules permanently disagrees with the canonical
@@ -29,7 +29,7 @@ def _exec_py(image: str, py: str) -> str:
         f"python3 -c {shlex.quote(py)}"
     )
     # Drop to the hermes user (UID 10000) so we exercise the same path the
-    # dashboard PTY child runs as — not root.
+    # PTY child runs as — not root.
     cmd = [
         "docker", "run", "--rm", "--entrypoint", "su", image,
         "hermes", "-s", "/bin/bash", "-c", inner,

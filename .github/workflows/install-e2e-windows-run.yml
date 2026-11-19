@@ -1,44 +1,10 @@
 # Reusable runner for ONE Windows install/update combination.
 #
-# One job, two orthogonal axes: tests/install/windows-e2e.ps1 dispatches its
-# install phase on install-method and its update phase on update-method, so
-# implementing a new pair is a driver function + a gate edit here - never a
-# new job. The driver's phases share state via the workroot, and every leg
-# runs the REAL user surface for its methods:
+# tests/install/windows-e2e.ps1 installs the old ref through its real
+# install.ps1, then updates through `hermes update` or a current installer
+# re-run. Each phase shares state through the isolated workroot.
 #
-#   desktop-installer@latest    the website's Hermes-Setup.exe, downloaded and
-#                               run headed, AutoHotkey clicks Install ->
-#                               Launch, the real Electron window must appear.
-#   installer-script            the irm | iex one-liner: the install.ps1
-#                               shipped AT the OLD ref, headless.
-#   installer-script+desktop    the same one-liner with -IncludeDesktop:
-#                               builds Hermes.exe AND registers Start Menu /
-#                               Desktop shortcuts.
-#   hermes-update               venv hermes.exe update.
-#   open-app-update             the app's own Update button, app launched
-#                               from the installed exe under Playwright's
-#                               Electron driver (Settings -> About ->
-#                               "Update now"); the production hand-off chain
-#                               runs untouched.
-#   hermes-desktop-app-update   the same button, app launched via `hermes
-#                               desktop`: the driver captures the product's
-#                               own spawn (argv/cwd/env) and re-executes it
-#                               under Playwright.
-#
-# Method pairs without a driver arm yet NATIVELY SKIP (grey check, no
-# runner): the capability knowledge lives here, next to the driver, so the
-# caller can dispatch every declared combination without knowing which ones
-# work.
-#
-# Call it:
-#
-#   jobs:
-#     windows:
-#       uses: ./.github/workflows/install-e2e-windows-run.yml
-#       with:
-#         install-method: desktop-installer@latest
-#         update-method: open-app-update
-#         install-ref: v2026.8.3
+# Method pairs without a driver arm natively skip (grey check, no runner).
 
 name: install-e2e windows leg
 
@@ -46,11 +12,11 @@ on:
   workflow_call:
     inputs:
       install-method:
-        description: 'How OLD gets installed. Supported: desktop-installer@latest (website exe, AHK-clicked), installer-script (irm | iex install.ps1) and installer-script+desktop (the same with -IncludeDesktop). Declared-but-TODO methods skip.'
+        description: 'How OLD gets installed. Supported: installer-script (irm | iex install.ps1).'
         required: true
         type: string
       update-method:
-        description: 'How the install updates to HEAD. Supported: open-app-update (Update button under Playwright, from a desktop-bearing install), hermes-desktop-app-update (same button, app launched via hermes desktop), hermes-update, installer-script, installer-script+desktop, desktop-installer@latest (re-download Hermes-Setup.exe, AHK clicks Install over the existing install).'
+        description: 'How the install updates to HEAD. Supported: hermes-update and installer-script.'
         required: true
         type: string
       install-ref:
@@ -58,22 +24,12 @@ on:
         required: false
         type: string
         default: auto
-      tag-has-desktop:
-        description: "Whether install-ref ships the desktop app (apps/desktop). The caller annotates this from the tag's own tree; desktop-method legs from pre-desktop releases natively skip."
-        required: false
-        type: boolean
-        default: true
       leg-id:
         description: 'Artifact-safe matrix leg id (from generate-e2e-matrix.mjs legId). Names this leg''s logs + player artifacts so the report job can link a row to its zip.'
         required: true
         type: string
-      setup-exe-url:
-        description: 'Bootstrap installer to install OLD with. Default: the latest published one — what a user downloads today.'
-        required: false
-        type: string
-        default: https://hermes-assets.nousresearch.com/Hermes-Setup.exe
       timeout-minutes:
-        description: 'Job timeout. The install leg does real toolchain work and the update leg a full Electron rebuild.'
+        description: 'Job timeout. The install and update legs do real toolchain work.'
         required: false
         type: number
         default: 60
@@ -86,29 +42,20 @@ jobs:
     # Short static name on purpose: name expressions render UNEXPANDED on
     # skipped jobs.
     name: e2e
-    # The implemented {install x update} pairs. Two rules feed the table:
-    #   * every desktop-surface method needs the starting tag to ship
-    #     apps/desktop (pre-desktop releases have no window to launch, no
-    #     Update button to click, no -IncludeDesktop to pass);
-    #   * open-app-update needs an OS entry point, which only the
-    #     desktop-bearing installs create.
+    # The implemented {install x update} pairs; anything else natively skips.
     if: >-
-      (inputs.install-method == 'installer-script'
-        || (contains(fromJSON('["installer-script+desktop", "desktop-installer@latest"]'), inputs.install-method) && inputs.tag-has-desktop))
-      && (contains(fromJSON('["hermes-update", "installer-script"]'), inputs.update-method)
-        || (contains(fromJSON('["installer-script+desktop", "hermes-desktop-app-update", "desktop-installer@latest"]'), inputs.update-method) && inputs.tag-has-desktop)
-        || (inputs.update-method == 'open-app-update' && inputs.tag-has-desktop
-            && contains(fromJSON('["desktop-installer@latest", "installer-script+desktop"]'), inputs.install-method)))
+      inputs.install-method == 'installer-script'
+      && contains(fromJSON('["hermes-update", "installer-script"]'), inputs.update-method)
     runs-on: windows-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
     env:
-      # Sibling of the checkout (D:\a\hermes-agent\hermes-desktop-gui-e2e):
+      # Sibling of the checkout (D:\a\hermes-agent\hermes-install-e2e):
       # outside the repo so the staged bare clone and the install never
       # collide with the checkout itself. NOTE: ${{ runner.temp }} is NOT
       # available in job-level env (only github/inputs/matrix/needs/
       # secrets/strategy/vars).
-      HERMES_E2E_WORKROOT: ${{ github.workspace }}\..\hermes-desktop-gui-e2e
+      HERMES_E2E_WORKROOT: ${{ github.workspace }}\..\hermes-install-e2e
 
     steps:
       # Full history: the driver bare-clones this checkout as the repo the
@@ -126,34 +73,34 @@ jobs:
         uses: ./.github/actions/e2e-screen-record
         with:
           mode: start
-          output: ${{ github.workspace }}\gui-e2e-proof\recording.mkv
+          output: ${{ github.workspace }}\install-e2e-proof\recording.mkv
 
       - name: Stage serve repo (main -> ${{ inputs.install-ref }})
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase stage -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase stage -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}"
 
       - name: Install ${{ inputs.install-ref }} (${{ inputs.install-method }})
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase install -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase install -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}"
 
       - name: Update ${{ inputs.install-ref }} -> HEAD (${{ inputs.update-method }})
         id: update
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase update -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase update -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}"
 
       - name: Stage known-failure receipt
         if: steps.update.outputs.known_failure != ''
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Path gui-e2e-proof -Force | Out-Null
-          Copy-Item -LiteralPath (Join-Path $env:HERMES_E2E_WORKROOT 'known-failure.json') -Destination gui-e2e-proof/known-failure.json
+          New-Item -ItemType Directory -Path install-e2e-proof -Force | Out-Null
+          Copy-Item -LiteralPath (Join-Path $env:HERMES_E2E_WORKROOT 'known-failure.json') -Destination install-e2e-proof/known-failure.json
 
       - name: Upload known-failure receipt
         if: steps.update.outputs.known_failure != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: install-e2e-known-${{ steps.update.outputs.known_failure }}--${{ inputs.leg-id }}
-          path: gui-e2e-proof/known-failure.json
+          path: install-e2e-proof/known-failure.json
           if-no-files-found: error
           retention-days: 14
 
@@ -162,22 +109,22 @@ jobs:
         uses: ./.github/actions/e2e-screen-record
         with:
           mode: stop
-          output: ${{ github.workspace }}\gui-e2e-proof\recording.mkv
+          output: ${{ github.workspace }}\install-e2e-proof\recording.mkv
 
       - name: Remux recording for browser playback
         if: always()
         shell: pwsh
         run: |
-          $mkv = "$env:GITHUB_WORKSPACE\gui-e2e-proof\recording.mkv"
+          $mkv = "$env:GITHUB_WORKSPACE\install-e2e-proof\recording.mkv"
           if (Test-Path -LiteralPath $mkv) {
-            & ffmpeg -y -hide_banner -loglevel error -i $mkv -c copy "$env:GITHUB_WORKSPACE\gui-e2e-proof\recording.mp4"
+            & ffmpeg -y -hide_banner -loglevel error -i $mkv -c copy "$env:GITHUB_WORKSPACE\install-e2e-proof\recording.mp4"
           }
 
       - name: Collect proof + logs
         if: always()
         shell: powershell
         run: |
-          $out = "gui-e2e-proof"
+          $out = "install-e2e-proof"
           New-Item -ItemType Directory -Path $out -Force | Out-Null
           $work = $env:HERMES_E2E_WORKROOT
           $home_ = Join-Path $work "hermes-home"
@@ -196,6 +143,6 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: install-e2e-logs-${{ inputs.leg-id }}
-          path: gui-e2e-proof
+          path: install-e2e-proof
           retention-days: 14
           if-no-files-found: ignore

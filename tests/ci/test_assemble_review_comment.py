@@ -238,7 +238,7 @@ def test_assemble_review_status_detail_renders_sensitive_file_links():
 def test_assemble_info_keeps_screenshot_details_visible_below_its_summary():
     statuses = _status("playwright e2e", [{
         "kind": "info",
-        "title": "Desktop E2E screenshots",
+        "title": "CI screenshots",
         "summary": "1 screenshot captured; 0 visual diffs.",
         "detail": "<details>\n<summary>1 captured screenshot</summary>\n\n- [`proof.png`](https://example.test/artifact)\n\n</details>",
     }])

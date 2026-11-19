@@ -20,7 +20,6 @@ def _make_cli_stub():
     cli._terminal_io_broken = False
     cli._resize_recovery_pending = False
     cli._last_invalidate = 0.0
-    cli._pet_anim_running = False
     cli._app = MagicMock()
     return cli
 

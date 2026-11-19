@@ -1,29 +1,23 @@
-"""Generic managed-tool gateway helpers for Nous-hosted vendor passthroughs."""
+"""Generic managed-tool gateway helpers for hosted vendor passthroughs."""
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Callable, Optional
-
-from hermes_constants import get_hermes_home
-from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TOOL_GATEWAY_DOMAIN = "nousresearch.com"
 _DEFAULT_TOOL_GATEWAY_SCHEME = "https"
-_NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 
 
 @dataclass(frozen=True)
 class ManagedToolGatewayConfig:
     vendor: str
     gateway_origin: str
-    nous_user_token: str
+    gateway_token: str
     managed_mode: bool
 
 
@@ -32,52 +26,10 @@ def _clean(value: object) -> Optional[str]:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
-def auth_json_path():
-    """Return the Hermes auth store path, respecting HERMES_HOME overrides."""
-    return get_hermes_home() / "auth.json"
-
-
-def _read_nous_provider_state() -> Optional[dict]:
-    """The profile's Nous state, or None. A free-tier identity counts only while the free tier is on:
-    with ``nous.guest: false`` it is invisible here, so no cached or refreshed token of it is ever
-    attached to a request.
-
-    Reads the profile's own ``auth.json`` through ``get_provider_auth_state`` like every other
-    credential reader."""
-    try:
-        from hermes_cli.auth import get_provider_auth_state
-
-        nous_provider = get_provider_auth_state("nous")
-        if not isinstance(nous_provider, dict):
-            return None
-        from hermes_cli.anon_auth import guest_enabled, is_guest_state
-
-        if is_guest_state(nous_provider) and not guest_enabled():
-            return None
-        return nous_provider
-    except Exception:
-        return None
-
-
-def _parse_timestamp(value: object) -> Optional[datetime]:
-    normalized = _clean(value)
-    if normalized is None:
-        return None
-    try:
-        parsed = datetime.fromisoformat(normalized[:-1] + "+00:00" if normalized.endswith("Z") else normalized)
-    except ValueError:
-        return None
-    return (parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
-
-
-def _access_token_is_expiring(expires_at: object, skew_seconds: int) -> bool:
-    expires = _parse_timestamp(expires_at)
-    return expires is None or (expires - datetime.now(timezone.utc)).total_seconds() <= max(0, int(skew_seconds))
-
-
-def _read_user_token_override() -> Optional[str]:
-    """Read the TOOL_GATEWAY_USER_TOKEN override through the secret scope. Scope verdict is authoritative
-    when installed (a scoped miss must NOT borrow the process env under multiplex); ``os.environ`` only when unscoped."""
+def read_gateway_user_token() -> Optional[str]:
+    """Read the TOOL_GATEWAY_USER_TOKEN credential through the secret scope. Scope verdict is
+    authoritative when installed (a scoped miss must NOT borrow the process env under multiplex);
+    ``os.environ`` only when unscoped."""
     try:
         from agent.secret_scope import UnscopedSecretError, get_secret
 
@@ -88,61 +40,6 @@ def _read_user_token_override() -> Optional[str]:
     except Exception:
         explicit = os.getenv("TOOL_GATEWAY_USER_TOKEN")
     return _clean(explicit)
-
-
-def peek_nous_access_token() -> Optional[str]:
-    """Cheap token probe: env override or cached auth-store token, no expiry check and no network —
-    availability scans must stay off the synchronous OAuth refresh path (:func:`read_nous_access_token`)."""
-    return _read_user_token_override() or _clean((_read_nous_provider_state() or {}).get("access_token"))
-
-
-def read_nous_access_token() -> Optional[str]:
-    """Read a Nous Subscriber OAuth access token from auth store or env override.
-
-    A read: with no Nous identity there is no bearer and the answer is None. The free-tier identity
-    is created by the boot bootstrap (``hermes_cli.free_tier_bootstrap``), never on a token-read
-    path (NS-845 Q1.2). A retired free-tier credential IS replaced here, once: that is the explicit
-    dead-credential rule, shared with inference.
-    """
-    if explicit := _read_user_token_override():
-        return explicit
-    nous_provider = _read_nous_provider_state() or {}
-    if not nous_provider:
-        return None
-    cached_token = peek_nous_access_token()
-    if cached_token and not _access_token_is_expiring(nous_provider.get("expires_at"), _NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS):
-        return cached_token
-    try:
-        from hermes_cli.auth import resolve_nous_access_token
-
-        if refreshed_token := _clean(resolve_nous_access_token(refresh_skew_seconds=_NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS)):
-            return refreshed_token
-    except Exception as exc:
-        # Same dead-credential rule as inference (one place decides it: anon_auth): a retired free-tier
-        # identity is replaced once, here, instead of handing back its stale token forever.
-        from hermes_cli.anon_auth import AnonCredentialDead
-
-        if isinstance(exc, AnonCredentialDead):
-            return _replace_dead_guest_token(nous_provider, str(exc.code or "anon_credential_dead"))
-        logger.debug("Nous access token refresh failed: %s", exc)
-    return cached_token
-
-
-def _replace_dead_guest_token(dead_state: dict, code: str = "anon_credential_dead") -> Optional[str]:
-    from hermes_cli.anon_auth import ANON_ACCOUNT_LOCKED, clear_dead_guest, ensure_portal_identity
-    from hermes_cli.auth import resolve_nous_access_token
-
-    clear_dead_guest(code, dead_token=dead_state.get("anon_token"))
-    # Same rule as inference: a locked account is retired but never silently replaced.
-    if code == ANON_ACCOUNT_LOCKED:
-        return None
-    try:
-        if ensure_portal_identity(explicit=True) is None:
-            return None
-        return _clean(resolve_nous_access_token(refresh_skew_seconds=_NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS))
-    except Exception as exc:
-        logger.debug("Nous free tier replacement after a retired credential failed: %s", exc)
-        return None
 
 
 def get_tool_gateway_scheme() -> str:
@@ -164,30 +61,26 @@ def build_vendor_gateway_url(vendor: str) -> str:
 def resolve_managed_tool_gateway(
     vendor: str, gateway_builder: Optional[Callable[[str], str]] = None,
     token_reader: Optional[Callable[[], Optional[str]]] = None) -> Optional[ManagedToolGatewayConfig]:
-    """Resolve shared managed-tool gateway config for a vendor."""
-    if not managed_nous_tools_enabled():
-        return None
+    """Resolve shared managed-tool gateway config for a vendor: a reachable origin plus a
+    gateway bearer token (``TOOL_GATEWAY_USER_TOKEN``)."""
     gateway_origin = (gateway_builder or build_vendor_gateway_url)(vendor)
-    nous_user_token = (token_reader or read_nous_access_token)()
-    if not gateway_origin or not nous_user_token:
+    gateway_token = (token_reader or read_gateway_user_token)()
+    if not gateway_origin or not gateway_token:
         return None
-    return ManagedToolGatewayConfig(vendor=vendor, gateway_origin=gateway_origin, nous_user_token=nous_user_token, managed_mode=True)
+    return ManagedToolGatewayConfig(vendor=vendor, gateway_origin=gateway_origin, gateway_token=gateway_token, managed_mode=True)
 
 
 def is_managed_tool_gateway_ready(
     vendor: str, gateway_builder: Optional[Callable[[str], str]] = None,
     token_reader: Optional[Callable[[], Optional[str]]] = None) -> bool:
-    """True when a gateway URL and a likely-usable Nous token are present. Defaults to
-    :func:`peek_nous_access_token` (no OAuth refresh); callers about to make a real request use
-    :func:`resolve_managed_tool_gateway` instead."""
-    return resolve_managed_tool_gateway(vendor, gateway_builder=gateway_builder, token_reader=token_reader or peek_nous_access_token) is not None
+    """True when a gateway URL and a gateway token are present (offline probe: no network)."""
+    return resolve_managed_tool_gateway(vendor, gateway_builder=gateway_builder, token_reader=token_reader) is not None
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
 # Names external plugins imported from this module before the Sep 2026 decomposition.
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
 # The whole block is removed by reverting the commit that added it.
-from urllib.parse import urlsplit  # noqa: F401,E402
 from urllib.parse import urlsplit  # noqa: F401,E402
 
 _MANAGED_GATEWAY_VENDOR = "tool"
@@ -196,7 +89,7 @@ def is_managed_nous_gateway_url(
     url: object,
     gateway_builder: Optional[Callable[[str], str]] = None,
 ) -> bool:
-    """True when ``url`` is on the Nous tool-gateway origin this client builds.
+    """True when ``url`` is on the tool-gateway origin this client builds.
 
     Anything granting a URL extra trust — our bearer, reading files off disk to
     upload — must gate on this rather than on a name, so an arbitrary URL can
@@ -218,18 +111,23 @@ def managed_gateway_auth_headers(
     url: object,
     gateway_builder: Optional[Callable[[str], str]] = None,
     token_reader: Optional[Callable[[], Optional[str]]] = None,
+    *,
+    url_predicate: Optional[Callable[[object, Optional[Callable[[str], str]]], bool]] = None,
 ) -> dict:
     """Live auth headers for a managed gateway URL, or ``{}`` when not managed.
 
-    Read fresh on every call rather than cached: a Nous access token expires
-    within the hour, and a long session would otherwise keep presenting a dead
-    bearer. Returns ``{}`` rather than raising when no token is available, so a
-    caller can report "sign in" instead of sending an unauthenticated request.
+    Read fresh on every call rather than cached: the gateway bearer may be
+    rotated, and a long session would otherwise keep presenting a stale one.
+    Returns ``{}`` rather than raising when no token is available, so a caller
+    can report the missing credential instead of sending an unauthenticated
+    request. ``url_predicate`` lets the connector-aware auth surface retain its
+    broader first-party origin set without duplicating bearer handling.
     """
-    if not is_managed_nous_gateway_url(url, gateway_builder):
+    predicate = url_predicate or is_managed_nous_gateway_url
+    if not predicate(url, gateway_builder):
         return {}
 
-    resolved_token_reader = token_reader or read_nous_access_token
+    resolved_token_reader = token_reader or read_gateway_user_token
     try:
         token = resolved_token_reader()
     except Exception as exc:  # pragma: no cover — defensive
@@ -271,7 +169,7 @@ def build_managed_media_uploader(
     """Async ``(data, mime) -> argument value`` uploader for one managed vendor.
 
     Returns ``None`` when there is no usable upload endpoint (not a managed
-    Nous URL, or no ``upload_path``); callers then refuse local paths with a
+    gateway URL, or no ``upload_path``); callers then refuse local paths with a
     clear message instead of silently forwarding them.
 
     The three steps of the protocol:
@@ -283,7 +181,7 @@ def build_managed_media_uploader(
     2. PUT the bytes to that URL. This goes directly to storage — never
        through the gateway — which is what removes the request-size ceiling.
     3. Return ``nous-upload:<token>`` for the tool argument. The token is
-       bound to this Nous principal and is redeemable only through the
+       bound to this gateway principal and is redeemable only through the
        gateway, so it is inert anywhere else it might end up.
     """
     if not is_managed_nous_gateway_url(server_url, gateway_builder):
@@ -302,7 +200,7 @@ def build_managed_media_uploader(
 
         headers = managed_gateway_auth_headers(server_url, gateway_builder, token_reader)
         if not headers:
-            raise RuntimeError("no Nous credential is available for the upload")
+            raise RuntimeError("no gateway credential is available for the upload")
 
         # Two clients on purpose, split by whose address we are trusting.
         #
@@ -363,11 +261,11 @@ def managed_vendor_endpoints(
 ) -> Optional[dict]:
     """Absolute URLs for a managed vendor, or ``None`` when none resolves.
 
-    Address resolution only: entitlement is deliberately not consulted here.
-    What an account may spend on a managed vendor is the gateway's own
-    decision, stated in its refusals, and re-deciding it on the client can only
-    ever disagree with the server. A caller that wants to hide its tools from
-    users who could not call them at all does that in its ``check_fn``.
+    Address resolution only: what an account may spend on a managed vendor is
+    the gateway's own decision, stated in its refusals, and re-deciding it on
+    the client can only ever disagree with the server. A caller that wants to
+    hide its tools from users who could not call them at all does that in its
+    ``check_fn``.
 
     ``None`` means no origin could be resolved — a misconfigured
     ``TOOL_GATEWAY_SCHEME`` — so there is nothing to call.

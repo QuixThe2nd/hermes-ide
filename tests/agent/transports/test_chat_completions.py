@@ -83,7 +83,7 @@ class TestChatCompletionsBasic:
             "{}",
         ]
 
-    @pytest.mark.parametrize("provider", ["nous", "openrouter"])
+    @pytest.mark.parametrize("provider", ["openrouter"])
     def test_gpt56_ultra_uses_max_wire_effort(self, transport, provider):
         from providers import get_provider_profile
 
@@ -143,10 +143,10 @@ class TestChatCompletionsBasic:
     def test_convert_messages_strips_provider_replay_sidecars(self, transport):
         """Native-provider replay channels must not cross a provider boundary.
 
-        ``bedrock_content_blocks`` intentionally remains in durable history so
-        Bedrock can restore signed/reasoning blocks in their original order.
-        Chat Completions providers do not recognize it, though, and strict
-        endpoints reject unknown keys in ``messages`` with HTTP 400/422.
+        ``bedrock_content_blocks`` survives only in sessions recorded while the
+        Bedrock provider existed; history replay keeps it durable, but strict
+        endpoints reject unknown keys in ``messages`` with HTTP 400/422, so it
+        (like every other provider-native carrier) is stripped on the way out.
         """
         msgs = [
             {"role": "user", "content": "use a tool"},
@@ -303,14 +303,6 @@ class TestChatCompletionsBuildKwargs:
 
 
 
-    def test_nous_tags(self, transport):
-        from agent.portal_tags import nous_portal_tags
-        from providers import get_provider_profile
-        profile = get_provider_profile("nous")
-        msgs = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(model="gpt-4o", messages=msgs, provider_profile=profile)
-        assert kw["extra_body"]["tags"] == nous_portal_tags()
-
     def test_reasoning_default(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
@@ -318,22 +310,6 @@ class TestChatCompletionsBuildKwargs:
             supports_reasoning=True,
         )
         assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "medium"}
-
-    def test_nous_omits_disabled_reasoning_for_unknown_model(self, transport):
-        from providers import get_provider_profile
-        profile = get_provider_profile("nous")
-        msgs = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="gpt-4o", messages=msgs,
-            provider_profile=profile,
-            supports_reasoning=True,
-            reasoning_config={"enabled": False},
-        )
-        # Not a Portal model id, so the catalog can't rule out a
-        # reasoning-mandatory route (which 400s on a disable) — omit.
-        # tests/plugins/model_providers/test_nous_profile.py covers the
-        # catalog-known cases where the disable IS forwarded.
-        assert "reasoning" not in kw.get("extra_body", {})
 
     def test_ollama_num_ctx(self, transport):
         from providers import get_provider_profile
@@ -718,56 +694,6 @@ class TestChatCompletionsCacheStats:
         result = transport.extract_cache_stats(r)
         assert result == {"cached_tokens": 1500, "creation_tokens": 0}
 
-
-
-class TestChatCompletionsGeminiNativeExtraBodyStrip:
-    """Profile extra_body (e.g. Nous portal tags) must not reach a native
-    Gemini endpoint — Google's REST API rejects unknown fields with HTTP 400.
-    """
-
-    def _nous_profile(self):
-        from providers import get_provider_profile
-        return get_provider_profile("nous")
-
-    def test_tags_stripped_when_endpoint_is_native_gemini(self, transport):
-        kw = transport.build_kwargs(
-            "anthropic/claude-sonnet-4.6",
-            [{"role": "user", "content": "hi"}],
-            None,
-            provider_profile=self._nous_profile(),
-            base_url="https://generativelanguage.googleapis.com/v1beta",
-            session_id="s1",
-            max_tokens=None,
-        )
-        eb = kw.get("extra_body")
-        assert not eb or "tags" not in eb
-
-    def test_tags_preserved_on_nous_endpoint(self, transport):
-        kw = transport.build_kwargs(
-            "hermes-3-405b",
-            [{"role": "user", "content": "hi"}],
-            None,
-            provider_profile=self._nous_profile(),
-            base_url="https://inference.nousresearch.com/v1",
-            session_id="s1",
-            max_tokens=None,
-        )
-        eb = kw.get("extra_body")
-        assert eb and "tags" in eb
-
-    def test_tags_pass_through_on_gemini_openai_compat(self, transport):
-        # /openai compat endpoint is not "native" — unchanged behavior.
-        kw = transport.build_kwargs(
-            "anthropic/claude-sonnet-4.6",
-            [{"role": "user", "content": "hi"}],
-            None,
-            provider_profile=self._nous_profile(),
-            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
-            session_id="s1",
-            max_tokens=None,
-        )
-        eb = kw.get("extra_body")
-        assert eb and "tags" in eb
 
 
 class TestPromptCacheKeyCapability:

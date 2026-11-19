@@ -20,13 +20,6 @@ _KEYED_PROBES = {
     "Firecrawl": ("https://api.firecrawl.dev/v2/team/credit-usage", "FIRECRAWL_API_KEY", "Bearer"),
     "FAL": ("https://fal.ai/api/models?page=1", "FAL_KEY", "Key"),
 }
-# TTS/STT providers that never touch the network (nothing to probe).
-_LOCAL_AUDIO_PROVIDERS = {"", "local", "edge", "neutts", "kittentts", "piper"}
-_AUDIO_PROBES = {
-    "openai": ("https://api.openai.com/v1/models", "OPENAI_API_KEY", "Bearer"),
-    "groq": ("https://api.groq.com/openai/v1/models", "GROQ_API_KEY", "Bearer"),
-    "elevenlabs": ("https://api.elevenlabs.io/v1/voices", "ELEVENLABS_API_KEY", "xi"),
-}
 
 
 @dataclass
@@ -46,45 +39,6 @@ def _http_get(url: str, headers: Optional[dict] = None, timeout: Optional[float]
     return httpx.get(url, headers=headers or {}, timeout=timeout)
 
 
-def _browser_available() -> bool:
-    """Is the local browser automation backend (agent-browser) installed?"""
-    import shutil
-    if shutil.which("agent-browser"):
-        return True
-    try:
-        from hermes_cli.doctor import HERMES_HOME, PROJECT_ROOT
-        if (PROJECT_ROOT / "node_modules" / "agent-browser").exists():
-            return True
-        for candidate in (HERMES_HOME / "node" / "bin", HERMES_HOME / "node", HERMES_HOME / "node_modules" / ".bin"):
-            if shutil.which("agent-browser", path=str(candidate)):
-                return True
-    except Exception:
-        pass
-    # agent-browser resolves lazily via npx on the default install, invisible to the PATH/node_modules
-    # probes above. Mirror the rung hermes_cli.doctor uses so this probe can't diverge from it, including
-    # the Termux carve-out (bare npx is too fragile to advertise as ready there).
-    try:
-        from tools.browser_tool_install import _find_agent_browser, _is_npx_agent_browser_sentinel, _requires_real_termux_browser_install
-        browser_cmd = _find_agent_browser(validate=False)
-    except Exception:
-        return False
-    return _is_npx_agent_browser_sentinel(browser_cmd) and not _requires_real_termux_browser_install(browser_cmd)
-
-
-def _launch_browser_probe(timeout: float) -> tuple:
-    """Launch a browser, open about:blank, close. Returns (ok, detail). Uses Playwright directly (what
-    agent-browser drives underneath) so the probe owns the full lifecycle and always cleans up."""
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        return (False, "playwright not installed")
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, timeout=timeout * 1000)
-        try:
-            browser.new_page().goto("about:blank", timeout=timeout * 1000)
-        finally:
-            browser.close()
-    return (True, "launched + about:blank + closed")
 
 
 def _probe_mcp_server(name: str, config: dict, timeout: float):
@@ -112,27 +66,17 @@ def _keyed_probe(name: str, url: str, env_var: str, scheme: str, timeout: float)
 
 
 def _probe_browser(timeout: float) -> ProbeResult:
-    if not _browser_available():
-        return ProbeResult("Browser", "skip", "(not configured)")
-    ok, detail = _launch_browser_probe(timeout)
-    return ProbeResult("Browser", "pass" if ok else "fail", f"({detail})")
+    from agent.secret_scope import get_secret
+    from tools.browser_camofox import get_camofox_url
 
-
-def _probe_audio(kind: str, config: dict, timeout: float) -> ProbeResult:
-    """Shared TTS/STT metadata probe (voices/models list GET only)."""
-    name = kind.upper()
-    provider = (((config.get(kind) or {}).get("provider")) or "").strip().lower()
-    if provider in _LOCAL_AUDIO_PROVIDERS:
-        return ProbeResult(name, "skip", f"(provider '{provider or 'local'}' — no remote backend to probe)")
-    if provider not in _AUDIO_PROBES:
-        return ProbeResult(name, "skip", f"(provider '{provider}' — no live probe implemented)")
-    url, env_var, scheme = _AUDIO_PROBES[provider]
-    key = os.getenv(env_var, "").strip()
-    if not key:
-        return ProbeResult(name, "warn", f"(provider '{provider}' configured but {env_var} is not set)")
-    headers = {"xi-api-key": key} if scheme == "xi" else {"Authorization": f"Bearer {key}"}
-    result = _classify_http(name, _http_get(url, headers=headers, timeout=timeout), env_var)
-    result.detail = f"({provider}) {result.detail}"
+    url = get_camofox_url()
+    if not url:
+        return ProbeResult("Browser", "skip", "(CAMOFOX_URL not configured)")
+    api_key = get_secret("CAMOFOX_API_KEY", "")
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    resp = _http_get(f"{url}/health", headers=headers, timeout=timeout)
+    result = _classify_http("Browser", resp, "CAMOFOX_API_KEY")
+    result.detail = f"(Camofox) {result.detail}"
     return result
 
 
@@ -191,8 +135,6 @@ def run_live_checks(issues: List[str]) -> List[ProbeResult]:
     else:
         results.append(ProbeResult("MCP", "skip", "(no servers configured)"))
         _report(results[-1], issues)
-    for kind in ("tts", "stt"):
-        results.append(_run_one(kind.upper(), lambda k=kind: _probe_audio(k, config, timeout), issues))
     return results
 
 

@@ -7,7 +7,6 @@ Hermes injects project-level instructions into the system prompt by reading cont
 | `.hermes.md` / `HERMES.md` | Walks parents up to the git root, stops at git root | You want hierarchical project rules (root + per-package overrides) |
 | `AGENTS.md` / `agents.md` | **Cwd only** — subdirectory and parent copies are ignored | You want portable agent instructions that work the same in Hermes, Claude Code, Codex, etc. |
 | `CLAUDE.md` / `claude.md` | Cwd only | Same as AGENTS.md, Claude-flavored |
-| `.cursorrules` / `.cursor/rules/*.mdc` | Cwd only | Migrating from Cursor |
 
 `SOUL.md` (in `$HERMES_HOME`) is independent and always loaded when present — it sets the agent's identity, not project rules.
 
@@ -27,7 +26,7 @@ All context files pass through the threat-pattern scanner before reaching the sy
 
 ### Disable for one session
 
-`hermes --ignore-rules` skips auto-injection of all project context files (`.hermes.md`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`) **and** `SOUL.md` identity, plus user config, plugins, and MCP servers. Use it to isolate whether a problem is your setup or Hermes itself.
+`hermes --ignore-rules` skips auto-injection of all project context files (`.hermes.md`, `AGENTS.md`, `CLAUDE.md`) **and** `SOUL.md` identity, plus user config, plugins, and MCP servers. Use it to isolate whether a problem is your setup or Hermes itself.
 
 ### Example: a small `.hermes.md`
 

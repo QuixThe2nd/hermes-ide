@@ -9,8 +9,13 @@ The gate in ``cron.scheduler.tick`` (before lock acquisition) yields — raises
 ``CronTickYielded`` — only when ALL of:
 
 1. this process is provably stale (boot fingerprint ≠ disk revision),
-2. it does NOT own the gateway runtime lock, and
-3. some other process currently holds that lock.
+2. it does NOT own the gateway runtime lock,
+3. some other process currently holds that lock, and
+4. that holder is provably FRESHER than this process: its lock record is
+   readable with a pid + start time, the pid is not this process's overlap
+   predecessor (a draining predecessor legitimately holds the lock while its
+   pending successor must keep dispatching cron), and the holder started
+   strictly later than this process.
 
 Any probe failure or missing fingerprint means "proceed" (fail-open). Yielded
 ticks must surface as failed ticks (``record_ticker_error`` + heartbeat
@@ -43,8 +48,27 @@ def _wait_until(predicate, timeout=10.0, interval=0.005):
     return predicate()
 
 
-def _gate_mocks(monkeypatch, *, owns: bool, active: bool, skew=SKEW):
-    """Point the yield gate's three probes at fixed answers."""
+def _gate_mocks(
+    monkeypatch,
+    *,
+    owns: bool,
+    active: bool,
+    skew=SKEW,
+    holder_pid: int | None = 5555,
+    holder_start: int | None = 3000,
+    own_start: int | None = 1000,
+    predecessor_pid: int | None = None,
+):
+    """Point the yield gate's probes at fixed answers.
+
+    Holder freshness probes: ``holder_pid``/``holder_start`` describe the lock
+    record (``holder_pid=None`` → no readable record); ``own_start`` is this
+    process's start-time fingerprint (None → unresolvable); ``predecessor_pid``
+    arms the overlap-predecessor identity via the real env-marker path.
+    """
+    import os
+
+    from gateway import overlap_restart
     from gateway import status as gateway_status
 
     monkeypatch.setattr(scheduler_mod, "_detect_gateway_code_skew", lambda: skew)
@@ -52,6 +76,24 @@ def _gate_mocks(monkeypatch, *, owns: bool, active: bool, skew=SKEW):
     monkeypatch.setattr(
         gateway_status, "is_gateway_runtime_lock_active", lambda lock_path=None: active
     )
+    record = None
+    if holder_pid is not None:
+        record = {"pid": holder_pid, "start_time": holder_start}
+    monkeypatch.setattr(
+        gateway_status, "_read_gateway_lock_record", lambda lock_path=None: record
+    )
+    monkeypatch.setattr(
+        gateway_status,
+        "get_process_start_time",
+        lambda pid: own_start if pid == os.getpid() else holder_start,
+    )
+    if predecessor_pid is None:
+        monkeypatch.delenv("HERMES_OVERLAP_SUCCESSOR", raising=False)
+        monkeypatch.delenv("HERMES_OVERLAP_PREDECESSOR_PID", raising=False)
+        monkeypatch.setattr(overlap_restart, "_pending_predecessor_pid", None)
+    else:
+        monkeypatch.setenv("HERMES_OVERLAP_SUCCESSOR", "1")
+        monkeypatch.setenv("HERMES_OVERLAP_PREDECESSOR_PID", str(predecessor_pid))
 
 
 class TestTickYieldGate:
@@ -131,6 +173,112 @@ class TestTickYieldGate:
             r for r in caplog.records if "Cron tick yielded" in r.getMessage()
         ]
         assert len(yield_logs) == 2
+
+
+class TestYieldGateHolderFreshness:
+    """Holding the runtime lock is not proof of freshness.
+
+    Incident (2026-11-17, ~10h of zero cron dispatch): during a chained
+    overlap restart the draining predecessor P kept the runtime lock while
+    its pending successor S ran the ticker. After a git pull both were stale;
+    the gate saw "skew + someone else holds the lock" and yielded — to P,
+    whose own drain gate suppresses dispatch. Nobody dispatched. The holder
+    must be verified fresher before the tick yields.
+    """
+
+    def test_holder_is_overlap_predecessor_proceeds(self, monkeypatch, tmp_path):
+        """Incident shape: stale pending successor, lock held by its draining
+        predecessor (which started earlier) → the tick must proceed."""
+        _gate_mocks(
+            monkeypatch,
+            owns=False,
+            active=True,
+            holder_pid=4242,
+            holder_start=100,
+            own_start=200,
+            predecessor_pid=4242,
+        )
+        assert scheduler_mod.tick(verbose=False) == 0
+
+    def test_holder_is_predecessor_even_with_later_start_proceeds(
+        self, monkeypatch, tmp_path
+    ):
+        """Predecessor identity alone blocks the yield: a draining
+        predecessor's start time must never be trusted to discriminate."""
+        _gate_mocks(
+            monkeypatch,
+            owns=False,
+            active=True,
+            holder_pid=4242,
+            holder_start=9999,
+            own_start=200,
+            predecessor_pid=4242,
+        )
+        assert scheduler_mod.tick(verbose=False) == 0
+
+    def test_holder_started_before_us_proceeds(self, monkeypatch, tmp_path):
+        """An unrelated but OLDER holder is not fresher: yielding would hand
+        the ticks to a process at least as stale as this one."""
+        _gate_mocks(
+            monkeypatch,
+            owns=False,
+            active=True,
+            holder_pid=5555,
+            holder_start=100,
+            own_start=200,
+        )
+        assert scheduler_mod.tick(verbose=False) == 0
+
+    def test_genuinely_newer_holder_yields_before_lock(self, monkeypatch, tmp_path):
+        """Unrelated holder that started strictly later → still yields (the
+        gate's original purpose: keep stale code out of the dispatch race)."""
+        _gate_mocks(
+            monkeypatch,
+            owns=False,
+            active=True,
+            holder_pid=5555,
+            holder_start=300,
+            own_start=200,
+        )
+
+        def _no_lock_allowed(*_a, **_kw):
+            raise AssertionError("tick lock must not be acquired after a yield")
+
+        monkeypatch.setattr(scheduler_mod, "_get_lock_paths", _no_lock_allowed)
+        with pytest.raises(scheduler_mod.CronTickYielded):
+            scheduler_mod.tick(verbose=False)
+
+    def test_unreadable_holder_record_proceeds(self, monkeypatch, tmp_path):
+        """Fail-open: no readable lock record → freshness is unprovable."""
+        _gate_mocks(
+            monkeypatch, owns=False, active=True, holder_pid=None, own_start=200
+        )
+        assert scheduler_mod.tick(verbose=False) == 0
+
+    def test_holder_record_without_start_time_proceeds(self, monkeypatch, tmp_path):
+        """Fail-open: a record lacking a usable start time proves nothing."""
+        _gate_mocks(
+            monkeypatch,
+            owns=False,
+            active=True,
+            holder_pid=5555,
+            holder_start=None,
+            own_start=200,
+        )
+        assert scheduler_mod.tick(verbose=False) == 0
+
+    def test_own_start_time_unresolvable_proceeds(self, monkeypatch, tmp_path):
+        """Fail-open: without OUR start time, "holder started later" is
+        unprovable, so the tick must not yield."""
+        _gate_mocks(
+            monkeypatch,
+            owns=False,
+            active=True,
+            holder_pid=5555,
+            holder_start=300,
+            own_start=None,
+        )
+        assert scheduler_mod.tick(verbose=False) == 0
 
 
 class TestYieldedTickIsAFailedTick:

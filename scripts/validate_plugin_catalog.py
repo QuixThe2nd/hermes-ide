@@ -219,7 +219,7 @@ def validate_removed(data: object) -> tuple[list[str], list[str]]:
 def validate_file(path: Path) -> tuple[list[str], list[str]]:
     """Validate one YAML file (dispatching on filename). Returns (errors, warnings)."""
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8-sig") as fh:
             data = yaml.safe_load(fh)
     except OSError as exc:
         return [f"cannot read file: {exc}"], []

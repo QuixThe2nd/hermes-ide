@@ -12,8 +12,8 @@ from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 def make_desc(**kw) -> CapabilityDescriptor:
     base = dict(
         contract_version=CONTRACT_VERSION,
-        platform="telegram",
-        label="Telegram",
+        platform="discord",
+        label="Discord",
         max_message_length=4096,
         supports_draft_streaming=False,
         supports_edit=True,
@@ -22,7 +22,6 @@ def make_desc(**kw) -> CapabilityDescriptor:
         len_unit="utf16",
         emoji="\u2708\ufe0f",
         platform_hint="",
-        pii_safe=False,
     )
     base.update(kw)
     return CapabilityDescriptor(**base)

@@ -167,6 +167,46 @@ class TestMemoryManager:
         assert len(mgr.providers) == 1
         assert [p.name for p in mgr.providers] == ["test1"]
 
+
+    def test_incognito_sessions_skip_session_end_extraction(self):
+        mgr = MemoryManager()
+        mgr._incognito_check = lambda: True
+        provider = FakeMemoryProvider("external")
+        provider.on_session_end = MagicMock()
+        mgr.add_provider(provider)
+        messages = [{"role": "user", "content": "private"}]
+
+        mgr.on_session_end(messages)
+
+        provider.on_session_end.assert_not_called()
+
+    def test_incognito_sessions_skip_pre_compress_provider_payloads(self):
+        mgr = MemoryManager()
+        mgr._incognito_check = lambda: True
+        provider = FakeMemoryProvider("external")
+        provider.pre_compress_checkpoint_api_version = 2
+        provider.on_pre_compress = MagicMock(return_value="")
+        mgr.add_provider(provider)
+
+        result = mgr.on_pre_compress(
+            [{"role": "user", "content": "private"}],
+            evidence_messages=[{"role": "user", "content": "private"}],
+        )
+
+        assert result == ""
+        provider.on_pre_compress.assert_not_called()
+
+    def test_incognito_turns_do_not_sync_to_providers(self):
+        mgr = MemoryManager()
+        mgr._incognito_check = lambda: True
+        provider = MessagesMemoryProvider("external")
+        mgr.add_provider(provider)
+
+        mgr.sync_all("private", "private answer", messages=[{"role": "user", "content": "private"}])
+        mgr.flush_pending(timeout=5.0)
+
+        assert provider.synced_turns == []
+
     def test_get_provider_by_name(self):
         mgr = MemoryManager()
         p = FakeMemoryProvider("test1")
@@ -401,15 +441,17 @@ class TestPluginMemoryDiscovery:
         from plugins.memory import discover_memory_providers
         providers = discover_memory_providers()
         names = [name for name, _, _ in providers]
-        assert "holographic" in names  # always available (no external deps)
+        assert "hindsight" in names
+        for retired in ("byterover", "holographic", "retaindb", "supermemory"):
+            assert retired not in names
 
     def test_load_provider_by_name(self):
         """load_memory_provider returns a working provider instance."""
         from plugins.memory import load_memory_provider
-        p = load_memory_provider("holographic")
+        p = load_memory_provider("hindsight")
         assert p is not None
-        assert p.name == "holographic"
-        assert p.is_available()
+        assert p.name == "hindsight"
+        assert load_memory_provider("byterover") is None
 
     def test_load_nonexistent_returns_none(self):
         """load_memory_provider returns None for unknown names."""
@@ -462,14 +504,14 @@ class TestUserInstalledProviderDiscovery:
     def test_bundled_takes_precedence(self, tmp_path, monkeypatch):
         """Bundled provider wins when user plugin has the same name."""
         from plugins.memory import load_memory_provider, discover_memory_providers
-        # Create user plugin named "holographic" (same as bundled)
-        plugin_dir = tmp_path / "plugins" / "holographic"
+        # Create user plugin named "hindsight" (same as bundled)
+        plugin_dir = tmp_path / "plugins" / "hindsight"
         plugin_dir.mkdir(parents=True)
         (plugin_dir / "__init__.py").write_text(
             "from agent.memory_provider import MemoryProvider\n"
             "class Fake(MemoryProvider):\n"
             "    @property\n"
-            "    def name(self): return 'holographic-FAKE'\n"
+            "    def name(self): return 'hindsight-FAKE'\n"
             "    def is_available(self): return True\n"
             "    def initialize(self, **kw): pass\n"
             "    def sync_turn(self, *a, **kw): pass\n"
@@ -480,15 +522,15 @@ class TestUserInstalledProviderDiscovery:
             "plugins.memory._get_user_plugins_dir",
             lambda: tmp_path / "plugins",
         )
-        # Load should return bundled (name "holographic"), not user (name "holographic-FAKE")
-        p = load_memory_provider("holographic")
+        # Load should return bundled (name "hindsight"), not user (name "hindsight-FAKE")
+        p = load_memory_provider("hindsight")
         assert p is not None
-        assert p.name == "holographic"  # bundled wins
+        assert p.name == "hindsight"  # bundled wins
 
         # discover should not duplicate
         providers = discover_memory_providers()
-        holo_count = sum(1 for n, _, _ in providers if n == "holographic")
-        assert holo_count == 1
+        count = sum(1 for n, _, _ in providers if n == "hindsight")
+        assert count == 1
 
 
 class TestUserInstalledProviderCli:
@@ -986,7 +1028,7 @@ class TestCommitMemorySessionRouting:
     def test_on_session_end_fans_out(self):
         mgr = MemoryManager()
         builtin = _CommitRecorder("builtin")
-        external = _CommitRecorder("openviking")
+        external = _CommitRecorder("hindsight")
         mgr.add_provider(builtin)
         mgr.add_provider(external)
 
@@ -1078,81 +1120,12 @@ class TestOnMemoryWriteBridge:
         assert good.memory_writes == [("add", "user", "test")]
 
 
-class TestHonchoCadenceTracking:
-    """Verify Honcho provider cadence gating depends on on_turn_start().
-
-    Bug: _turn_count was never updated because on_turn_start() was not called
-    from run_conversation(). This meant cadence checks always passed (every
-    turn fired both context refresh and dialectic). Fixed by calling
-    on_turn_start(self._user_turn_count, msg) before prefetch_all().
-    """
-
-    def test_turn_count_updates_on_turn_start(self):
-        """on_turn_start sets _turn_count, enabling cadence math."""
-        from plugins.memory.honcho import HonchoMemoryProvider
-        p = HonchoMemoryProvider()
-        assert p._turn_count == 0
-        p.on_turn_start(1, "hello")
-        assert p._turn_count == 1
-        p.on_turn_start(5, "world")
-        assert p._turn_count == 5
-
-    def test_queue_prefetch_respects_dialectic_cadence(self):
-        """With dialecticCadence=3, dialectic should skip turns 2 and 3."""
-        from plugins.memory.honcho import HonchoMemoryProvider
-        p = HonchoMemoryProvider()
-        p._dialectic_cadence = 3
-        p._recall_mode = "context"
-        p._session_key = "test-session"
-        # Simulate a manager that records prefetch calls
-        class FakeManager:
-            def prefetch_context(self, key, query=None):
-                pass
-
-        p._manager = FakeManager()
-
-        # Simulate turn 1: last_dialectic_turn = -999, so (1 - (-999)) >= 3 -> fires
-        p.on_turn_start(1, "turn 1")
-        p._last_dialectic_turn = 1  # simulate it fired
-        p._last_context_turn = 1
-
-        # Simulate turn 2: (2 - 1) = 1 < 3 -> should NOT fire dialectic
-        p.on_turn_start(2, "turn 2")
-        assert (p._turn_count - p._last_dialectic_turn) < p._dialectic_cadence
-
-        # Simulate turn 3: (3 - 1) = 2 < 3 -> should NOT fire dialectic
-        p.on_turn_start(3, "turn 3")
-        assert (p._turn_count - p._last_dialectic_turn) < p._dialectic_cadence
-
-        # Simulate turn 4: (4 - 1) = 3 >= 3 -> should fire dialectic
-        p.on_turn_start(4, "turn 4")
-        assert (p._turn_count - p._last_dialectic_turn) >= p._dialectic_cadence
-
-    def test_injection_frequency_first_turn_with_1indexed(self):
-        """injection_frequency='first-turn' must inject on turn 1 (1-indexed)."""
-        from plugins.memory.honcho import HonchoMemoryProvider
-        p = HonchoMemoryProvider()
-        p._injection_frequency = "first-turn"
-
-        # Turn 1 should inject (not skip)
-        p.on_turn_start(1, "first message")
-        assert p._turn_count == 1
-        # The guard is `_turn_count > 1`, so turn 1 passes through
-        should_skip = p._injection_frequency == "first-turn" and p._turn_count > 1
-        assert not should_skip, "First turn (turn 1) should NOT be skipped"
-
-        # Turn 2 should skip
-        p.on_turn_start(2, "second message")
-        should_skip = p._injection_frequency == "first-turn" and p._turn_count > 1
-        assert should_skip, "Second turn (turn 2) SHOULD be skipped"
-
-
 class TestMemoryToolToolsetGate:
     """Issue #5544: memory provider tools must respect platform_toolsets.
 
     Before the fix, MemoryManager.get_all_tool_schemas() output was appended
     to AIAgent.tools unconditionally in agent_init.py — bypassing the
-    enabled_toolsets filter. Result: `platform_toolsets: telegram: []`
+    enabled_toolsets filter. Result: `platform_toolsets: discord: []`
     still leaked fact_store and other memory tools into the tool surface,
     causing 10x latency on local models (Qwen3-30B: 1.7s → 42s) and
     tool-call loops on small models.
@@ -1222,7 +1195,7 @@ class TestMemoryToolToolsetGate:
         assert names == set()
 
     def test_empty_toolsets_blocks_injection(self):
-        """`platform_toolsets: telegram: []` must suppress memory tools. (#5544)"""
+        """`platform_toolsets: discord: []` must suppress memory tools. (#5544)"""
         mgr = self._mgr_with_tools("fact_store")
         tools, names = self._run_memory_injection([], mgr)
         assert tools == []
@@ -1322,7 +1295,7 @@ class TestContextEngineToolsetGate:
         assert "lcm_grep" in engine_names
 
     def test_empty_toolsets_blocks_injection(self):
-        """`platform_toolsets: telegram: []` must suppress context-engine tools."""
+        """`platform_toolsets: discord: []` must suppress context-engine tools."""
         c = self._compressor_with("lcm_grep")
         tools, names, engine_names = self._run_context_engine_injection([], c)
         assert tools == []

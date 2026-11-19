@@ -102,30 +102,6 @@ class _AnthropicRealClient:
         self.stream.close()
 
 
-class _BedrockRuntimeClient:
-    def __init__(self, started: threading.Event, release: threading.Event) -> None:
-        self.started = started
-        self.release = release
-        self.closed = threading.Event()
-
-    def converse(self, **_kwargs: Any) -> dict[str, Any]:
-        self.started.set()
-        self.release.wait(timeout=5)
-        return {
-            "output": {
-                "message": {
-                    "role": "assistant",
-                    "content": [{"text": "cancelled response"}],
-                }
-            },
-            "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
-            "stopReason": "end_turn",
-        }
-
-    def close(self) -> None:
-        self.closed.set()
-
-
 def _cancel_silent_request(
     client: Any,
     started: threading.Event,
@@ -488,26 +464,6 @@ def test_cancelled_attempt_does_not_close_or_fail_concurrent_shared_client_call(
         b_release.set()
 
 
-def test_bedrock_silent_nonstream_request_is_isolated_without_close_wakeup() -> None:
-    from agent.bedrock_adapter import _bedrock_runtime_client_cache, reset_client_cache
-
-    started = threading.Event()
-    release = threading.Event()
-    runtime_client = _BedrockRuntimeClient(started, release)
-    reset_client_cache()
-    _bedrock_runtime_client_cache["us-test-1"] = runtime_client
-    client = aux.BedrockAuxiliaryClient("us-test-1", "bedrock-test")
-    try:
-        exc, elapsed = _cancel_silent_request(client, started, _invoke_generic)
-    finally:
-        release.set()
-        reset_client_cache()
-
-    assert isinstance(exc, aux.AuxiliaryExplicitCancellation)
-    assert not runtime_client.closed.is_set()
-    assert elapsed < 0.75
-
-
 def test_unprotected_sync_completion_stays_on_calling_thread() -> None:
     caller = threading.get_ident()
     observed: list[int] = []
@@ -554,8 +510,7 @@ def test_isolated_provider_worker_inherits_protection_and_progress_hook() -> Non
 
 
 def test_isolated_provider_worker_inherits_caller_contextvars() -> None:
-    from tools.approval import get_current_session_key
-    from tools.approval_context import reset_current_session_key, set_current_session_key
+    from tools.session_context import get_current_session_key, reset_current_session_key, set_current_session_key
 
     arbitrary = contextvars.ContextVar("isolated-provider-test", default="missing")
     arbitrary_token = arbitrary.set("caller-value")
@@ -565,10 +520,10 @@ def test_isolated_provider_worker_inherits_caller_contextvars() -> None:
         chat=SimpleNamespace(
             completions=SimpleNamespace(
                 create=lambda **_kwargs: (
-                    observed.update(
-                        arbitrary=arbitrary.get(),
-                        session_key=get_current_session_key(),
-                    ),
+                    observed.update({
+                        "arbitrary": arbitrary.get(),
+                        "session_key": get_current_session_key(),
+                    }),
                     SimpleNamespace(choices=[]),
                 )[1]
             )

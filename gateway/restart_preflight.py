@@ -1,7 +1,7 @@
 """Warning-only runtime-source preflight for chat-requested gateway restarts.
 
-Before ``gateway.restart.queue_user_restart`` persists comeback routing or
-offers wind-down, this helper inspects the INSTALLED source checkout (resolved
+Before ``gateway.restart.queue_user_restart`` persists comeback routing, this
+helper inspects the INSTALLED source checkout (resolved
 from this module's own location, never the caller's cwd) with read-only,
 lock-free Git plumbing and reports uncommitted runtime-source changes to the
 requester. It is a notice, never a gate: every failure path classifies the

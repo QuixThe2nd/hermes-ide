@@ -40,6 +40,6 @@ def test_cron_agent_gets_delivery_channel_hint_with_its_override(deliver_to):
 
 
 def test_delivery_target_only_applies_to_cron_agents(deliver_to):
-    assert platform_hint(_agent("telegram")) == PLATFORM_HINTS["telegram"]
+    assert platform_hint(_agent("discord")) == PLATFORM_HINTS["discord"]
     _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set("")
     assert platform_hint(_agent("cron")) == PLATFORM_HINTS["cron"]

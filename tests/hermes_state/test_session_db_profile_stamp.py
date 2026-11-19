@@ -109,7 +109,7 @@ def test_peer_self_heal_insert_is_stamped(hermes_root):
         # No prior row: the #82616 self-heal INSERT creates it.
         db.record_gateway_session_peer(
             "s_selfheal",
-            source="telegram",
+            source="discord",
             user_id="u1",
             session_key="k1",
             chat_id="c1",

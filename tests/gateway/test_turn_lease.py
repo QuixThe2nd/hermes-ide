@@ -101,9 +101,9 @@ def test_distinct_sessions_do_not_contend():
 
 
 def test_default_wait_cannot_head_of_line_block_platform_updates_for_minutes():
-    """A contended topic must fail/queue promptly, not pin Telegram's updater.
+    """A contended topic must fail/queue promptly, not pin the platform's updater.
 
-    Telegram dispatches updates sequentially. Awaiting a held session lease for
+    Platform adapters dispatch updates sequentially. Awaiting a held session lease for
     1,800 seconds blocks unrelated topics behind the waiter even though their
     sessions do not share a transcript.
     """
@@ -176,7 +176,7 @@ async def test_agent_path_propagates_timed_out_lease_before_loading_transcript(
     try:
         with pytest.raises(TurnLeaseTimeoutError):
             await runner._handle_message_with_agent(
-                _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+                _event(), _source(), "agent:main:discord:group:-1001:12345", 1
             )
     finally:
         assert runner._turn_leases.release(holder) is True

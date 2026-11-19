@@ -244,3 +244,38 @@ jobs:
             git fetch --no-tags --deepen=1000 origin "${{ github.base_ref }}" "$PR_HEAD"
           done
           python scripts/ci/check_public_surface.py --base "origin/${{ github.base_ref }}" --head origin/pr-head
+
+  pr-diff-gate:
+    # PR-scope gate: a PR that touches product (non-test) Python must also
+    # touch tests (labels: no-tests-needed, or docs/config/chore-only diffs),
+    # and lockfiles / CI workflow rewrites must be the PR's majority class or
+    # carry the matching label (deps / ci). See scripts/check_pr_diff.py.
+    # Separate job from windows-footguns so the known-failing footgun lane
+    # does not mask it.
+    name: PR diff gate (tests + scope)
+    if: inputs.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0 # need full history for the merge base
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: "0.9.28"
+
+      - name: Set up Python 3.11
+        uses: ./.github/actions/retry
+        with:
+          command: uv python install 3.11
+
+      - name: Gate PR on regression tests and diff scope
+        env:
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ', ') }}
+        run: |
+          BASE_SHA=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+          echo "Merge base: ${BASE_SHA}"
+          python scripts/check_pr_diff.py "$BASE_SHA" HEAD

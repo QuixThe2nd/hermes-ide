@@ -757,7 +757,7 @@ def _probe_codex_pool_entry_quota_restored(entry: Dict[str, Any]) -> Optional[bo
 def clear_codex_pool_quota_cooldowns(access_token: Optional[str] = None) -> int:
     """Clear rate-limit cooldowns on persisted openai-codex pool entries.
 
-    Called after the upstream quota is KNOWN to be restored (a ``/usage reset`` redemption or a
+    Called after the upstream quota is KNOWN to be restored (a banked-reset redemption or a
     positive live probe) so auth.json stops freezing credentials behind a stale
     ``last_error_reset_at``. With *access_token* only the matching entry clears; otherwise every
     rate-limited entry does (a redeemed banked reset restores the whole account; a still-exhausted

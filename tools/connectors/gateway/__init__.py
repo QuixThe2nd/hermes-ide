@@ -16,7 +16,7 @@ Layering rules (enforced by review, not imports — keep them true):
   codec. Parsing never raises — a malformed name is a per-entry error and
   sibling calls still run.
 - ``config.py``: the ``tools.connectors`` config gate. Availability fails
-  closed: config flag AND the managed Nous tools entitlement.
+  closed: config flag AND an explicit-token gateway route.
 - ``merge.py`` is PURE: partition / splice / render with no I/O and no
   exceptions. Position in the original ``calls[]`` array is the only
   correlation key — the wire ``index`` field is never trusted.
@@ -46,7 +46,6 @@ from tools.connectors.gateway.errors import (
     render_connection_required,
 )
 from tools.connectors.gateway.names import (
-    CONNECTOR_BATCH_SENTINEL,
     CONNECTOR_NAME_PREFIX,
     ConnectorName,
     format_connector_name,
@@ -55,7 +54,6 @@ from tools.connectors.gateway.names import (
 )
 
 __all__ = [
-    "CONNECTOR_BATCH_SENTINEL",
     "CONNECTOR_NAME_PREFIX",
     "ConnectorConfig",
     "ConnectorName",

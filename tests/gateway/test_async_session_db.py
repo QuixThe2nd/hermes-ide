@@ -109,15 +109,7 @@ _ALLOWED_SYNC_DB_ESCAPES = 4
 # test_offloaded_helpers_never_called_bare_on_loop. Adding a helper here without
 # wrapping its loop call sites makes that test fail.
 _OFFLOADED_SYNC_HELPERS = frozenset({
-    "_telegram_topic_mode_enabled",
-    "_is_telegram_topic_lane",
-    "_is_telegram_topic_root_lobby",
-    "_recover_telegram_topic_thread_id",
     "_normalize_source_for_session_key",
-    "_record_telegram_topic_binding",
-    "_sync_telegram_topic_binding",
-    "_telegram_topic_new_header",
-    "_schedule_telegram_topic_title_rename",
     "_apply_topic_recovery",
 })
 
@@ -313,7 +305,7 @@ async def test_concurrent_claim_handoff_single_winner(tmp_path):
     db = AsyncSessionDB(hermes_state.SessionDB(db_path=tmp_path / "state.db"))
     sid = "s-handoff"
     await db.create_session(sid, "test")
-    await db.request_handoff(sid, "telegram")
+    await db.request_handoff(sid, "discord")
 
     results = await asyncio.gather(*(db.claim_handoff(sid) for _ in range(20)))
 

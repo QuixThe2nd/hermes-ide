@@ -205,7 +205,7 @@ def test_resolve_does_not_pair_catalog_meta_with_foreign_same_name_bundle():
         def inspect(self, identifier):
             return SkillMeta(
                 name="skillopt",
-                description="kanban-based pipelines",
+                description="project-based pipelines",
                 source="skills.sh",
                 identifier="skills-sh/latipun7/agent-skill-collections/skills/skillopt",
                 trust_level="community",
@@ -243,7 +243,7 @@ def test_resolve_does_not_pair_catalog_meta_with_foreign_same_name_bundle():
     assert meta is not None
     assert meta.source == "clawhub"
     assert meta.identifier == "skillopt"
-    assert "kanban-based" not in (meta.description or "")
+    assert "project-based" not in (meta.description or "")
     assert matched is not None
     assert matched.__class__ is ForeignSlugSource
 
@@ -256,7 +256,7 @@ def test_resolve_keeps_catalog_meta_when_later_sources_do_not_fetch():
         def inspect(self, identifier):
             return SkillMeta(
                 name="skillopt",
-                description="kanban-based pipelines",
+                description="project-based pipelines",
                 source="skills.sh",
                 identifier="skills-sh/latipun7/agent-skill-collections/skills/skillopt",
                 trust_level="community",
@@ -565,3 +565,167 @@ def test_do_install_generic_when_no_index_hit_or_rate_limited(monkeypatch, meta_
     assert "Could not download" in out
     assert "Stale index entry" not in out
     assert ("rate limit" in out) is meta_hit
+
+# ---------------------------------------------------------------------------
+# Default catalog is fork-owned (fork policy: no automatic Nous fetch)
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultCatalogIsForkOwned:
+    """With no ``--source`` flag the hub consults only this fork's official
+    catalog. The upstream Nous docs skills-index integration is GONE: no
+    code path fetches it, an old (even poisoned) ``hermes-index.json`` cache
+    has no reader left, and explicit ``--source all`` queries the community
+    registries directly instead of any proxy catalog."""
+
+    @staticmethod
+    def _poison_entry():
+        return {
+            "name": "neuroskill-bci",
+            "description": "Upstream copy of a skill this fork deleted.",
+            "source": "github",
+            "identifier": "NousResearch/hermes-agent/optional-skills/health/neuroskill-bci",
+            "repo": "NousResearch/hermes-agent",
+            "path": "optional-skills/health/neuroskill-bci",
+            "trust_level": "community",
+            "tags": ["bci"],
+        }
+
+    @pytest.fixture()
+    def fork_router(self, monkeypatch, hub_env):
+        """Real router + poisoned leftover index cache + network recorder."""
+        import json as _json
+        from unittest.mock import MagicMock
+        import httpx
+        import tools.skills_hub as hub
+        import tools.skills_hub_github as hub_github
+
+        cache = hub.INDEX_CACHE_DIR / "hermes-index.json"
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(_json.dumps({"skills": [self._poison_entry()]}), encoding="utf-8")
+
+        # Recorder: any hub HTTP call is recorded; only the removed index URL
+        # is a contract violation (community registries may phone home when
+        # explicitly selected).
+        fetched = []
+
+        def _recording_get(url, *args, **kwargs):
+            fetched.append(str(url))
+            raise httpx.ConnectError("network disabled in test")
+
+        monkeypatch.setattr(httpx, "get", _recording_get)
+
+        # Client-based fetches (SSRF-guarded get/stream) get the same recorder.
+        class _RecordingClient:
+            def __init__(self, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def get(self, url, **kwargs):
+                return _recording_get(url, **kwargs)
+
+            def stream(self, method, url, **kwargs):
+                return _recording_get(url, **kwargs)
+
+        monkeypatch.setattr(
+            "tools.url_safety.create_ssrf_safe_client", lambda **kwargs: _RecordingClient())
+
+        tree_repos = []
+        monkeypatch.setattr(
+            hub_github.GitHubSource, "_get_repo_tree",
+            lambda self, repo: (tree_repos.append(repo), None)[1])
+        monkeypatch.setattr(hub_github, "GitHubAuth", MagicMock())
+        return {"fetched": fetched, "tree_repos": tree_repos}
+
+    def _assert_no_index_fetch(self, fork_router):
+        fetched = fork_router["fetched"]
+        assert not any(
+            "skills-index" in url or "nousresearch.com/docs/api" in url for url in fetched
+        ), f"upstream docs index fetched: {fetched}"
+
+    def _do_search_json(self, capsys, query, **kwargs):
+        from hermes_cli.skills_hub import do_search
+        import json as _json
+
+        sink = StringIO()
+        console = Console(file=sink, force_terminal=False, color_system=None, width=120)
+        do_search(query, console=console, as_json=True, **kwargs)
+        return _json.loads(capsys.readouterr().out)
+
+    def test_default_search_is_official_only_and_ignores_poisoned_index(self, fork_router, capsys):
+        rows = self._do_search_json(capsys, "neuroskill")
+
+        assert rows == [], f"default catalog must not surface upstream copies: {rows}"
+        # Default search is fork-catalog-only: no HTTP at all, poisoned cache unread.
+        assert fork_router["fetched"] == [], f"default search phoned home: {fork_router['fetched']}"
+        assert "NousResearch/hermes-agent" not in fork_router["tree_repos"]
+
+    def test_default_browse_lists_only_official_source(self, fork_router):
+        from hermes_cli.skills_hub import browse_skills
+
+        page = browse_skills(page_size=100)  # one page: every catalog entry visible
+
+        assert page["total"] > 0  # the fork catalog itself is reachable
+        assert {item["source"] for item in page["items"]} == {"official"}
+        assert all("neuroskill" not in item["identifier"] for item in page["items"])
+        self._assert_no_index_fetch(fork_router)
+
+    def test_short_name_resolution_defaults_to_official(self, fork_router):
+        from hermes_cli.skills_hub import _resolve_short_name
+        from tools.skills_hub_search import create_source_router
+
+        sink = StringIO()
+        console = Console(file=sink, force_terminal=False, color_system=None, width=120)
+        sources = create_source_router()
+
+        assert _resolve_short_name("neuroskill-bci", sources, console) == ""
+
+        from tools.skills_hub_official import OptionalSkillSource
+        local_name = OptionalSkillSource().list_local()[0].name
+        assert _resolve_short_name(local_name, sources, console).startswith("official/")
+
+    def test_explicit_all_queries_registries_directly_never_the_index(self, fork_router, capsys):
+        import tools.skills_hub_skillssh as skillssh
+
+        searched = []
+        original = skillssh.SkillsShSource.search
+
+        def _record(self, query, limit=10):
+            searched.append(query)
+            return original(self, query, limit=limit)
+
+        skillssh.SkillsShSource.search = _record
+        try:
+            # Explicit "all" queries the community registries directly — the
+            # results may be empty here (network disabled), but the registries
+            # must have been ASKED and the removed index never fetched.
+            self._do_search_json(capsys, "neuroskill", source="all")
+            self._assert_no_index_fetch(fork_router)
+            assert "neuroskill" in searched, (
+                "explicit --source all must query community registries directly")
+
+            self._do_search_json(capsys, "neuroskill", source="skills-sh")
+            assert searched.count("neuroskill") == 2, (
+                "explicit --source skills-sh must still query the registry")
+        finally:
+            skillssh.SkillsShSource.search = original
+
+    def test_default_router_retains_community_adapters_for_explicit_installs(self, fork_router):
+        from tools.skills_hub_clawhub import ClawHubSource
+        from tools.skills_hub_github import GitHubSource
+        from tools.skills_hub_official import OptionalSkillSource
+        from tools.skills_hub_search import create_source_router
+        from tools.skills_hub_skillssh import SkillsShSource
+        from tools.skills_hub_sources import BrowseShSource, LobeHubSource, UrlSource, WellKnownSkillSource
+
+        sources = create_source_router()
+
+        for adapter in (OptionalSkillSource, SkillsShSource, WellKnownSkillSource,
+                        UrlSource, GitHubSource, ClawHubSource, LobeHubSource, BrowseShSource):
+            assert any(isinstance(src, adapter) for src in sources), (
+                f"{adapter.__name__} must stay constructible for explicit installs")

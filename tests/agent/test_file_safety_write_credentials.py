@@ -82,8 +82,7 @@ class TestProfileHomeProcessHome:
             assert fs.is_write_denied(str(profile_home_env / "home" / rel)), rel
         assert fs.is_write_denied("~/.aws/credentials")
         assert fs.is_write_denied("~root/.ssh/authorized_keys")
-        # ``~/.ssh/config`` stays approval-gated (not hard-denied) on the real home too.
-        assert fs.is_write_approval_required(str(real_home / ".ssh" / "config"))
+        # ``~/.ssh/config`` is a routine write exception on the real home too.
         assert fs.is_write_denied(str(real_home / ".ssh" / "config")) is False
 
     def test_benign_paths_stay_writable(self, profile_home_env, tmp_path):
@@ -92,5 +91,4 @@ class TestProfileHomeProcessHome:
         real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
         for benign in (tmp_path / "scratch" / "notes.txt", real_home / "projects" / "notes.md"):
             assert fs.is_write_denied(str(benign)) is False, benign
-            assert fs.is_write_approval_required(str(benign)) is False, benign
         assert fs.is_write_denied("~nosuchuser-hopefully/.ssh/authorized_keys") is False

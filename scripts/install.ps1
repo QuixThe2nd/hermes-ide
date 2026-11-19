@@ -18,7 +18,7 @@ param(
     [switch]$SkipComputerUse,
     [string]$Branch = "main",
     # -Commit and -Tag are higher-precedence variants of -Branch for users
-    # who need reproducible installs (desktop installer pinning, CI, release
+    # who need reproducible installs (CI and release
     # bundles).  When set, the repository stage clones $Branch (faster than
     # cloning the full default-branch history) and then `git checkout`s the
     # exact ref.  Precedence: Commit > Tag > Branch.
@@ -35,8 +35,8 @@ param(
 
     # --- Stage protocol (additive; default invocation behaves as before) ----
     # See the "Stage protocol" section near the bottom of the file for the
-    # full contract.  Intended for programmatic drivers (the desktop GUI's
-    # onboarding wizard, CI, future install.sh parity, etc.).  CLI users
+    # full contract.  Intended for programmatic drivers (CI and install.sh
+    # parity).  CLI users
     # running the canonical `irm | iex` one-liner never touch these flags.
     [switch]$Manifest,
     [string]$Stage,
@@ -55,27 +55,24 @@ param(
 
     # --- Ensure mode (dep_ensure.py entry point) ---
     [string]$Ensure = "",
-    [switch]$PostInstall,
-
-    # --- Desktop GUI build (opt-in) ---
-    # When set, install.ps1 includes Stage-Desktop in the manifest and
-    # builds apps/desktop into a launchable Hermes.exe.
-    #
-    # Why opt-in:
-    #   * Hermes-Setup.exe (the signed Tauri bootstrap installer) passes
-    #     -IncludeDesktop so a user who installed via the GUI ends up
-    #     with a launchable desktop binary.
-    #   * The Electron desktop's own bootstrap-runner.ts runs install.ps1
-    #     from inside an already-launched Hermes.exe; if THAT recursively
-    #     built apps/desktop it would try to overwrite the live Hermes.exe
-    #     on disk and fail. The recursive path omits the flag.
-    #   * The canonical CLI one-liner (irm | iex) omits the flag too;
-    #     terminal users don't need a desktop binary built for them, and
-    #     `hermes desktop` already builds on demand.
-    [switch]$IncludeDesktop
+    [switch]$PostInstall
 )
 
 $ErrorActionPreference = "Stop"
+
+# --- Dot-source guard (part 1: detect) ---------------------------------------
+# Tests (and any embedding host) dot-source this file (`. install.ps1`) to get
+# at its FUNCTIONS. Only the definitions must enter the caller's session --
+# the install itself must never run, not even its side-effectful-looking
+# prologue (the 8.3 normalization below rewrites process env vars).
+# (Upstream eeb3da55 port) Dot-sourced files see InvocationName '.'; the flag
+# is captured HERE, at the top, because the prologue moved into
+# Initialize-ResolvedPaths below and the entry-time check alone no longer
+# precedes it.
+$script:IsDotSourced = $MyInvocation.InvocationName -eq "."
+# $PSBoundParameters inside a FUNCTION refers to the function's own binding,
+# so the script's binding is captured here, once, at script scope.
+$script:BoundParams = $PSBoundParameters
 
 # Suppress Invoke-WebRequest's per-chunk progress bar.  Windows PowerShell
 # 5.1's progress UI repaints synchronously on every received byte, which
@@ -119,9 +116,8 @@ try {
 # path reaches a provider cmdlet (`Tee-Object -FilePath`, `Out-File`,
 # `New-Item`, `Test-Path`), throwing "An object at the specified path
 # C:\Users\FIRST~1.LAS does not exist" -- localized on non-English hosts.
-# Every Node/Electron stage streams its build log to %TEMP% via Tee-Object and
-# the desktop stage probes the binary it produced under the profile-derived
-# InstallDir, so the bootstrap aborts even though the artifact built fine.
+# Node stages stream build logs to %TEMP% via Tee-Object and later stages probe
+# profile-derived InstallDir paths, so path resolution failures abort the install.
 # The Python/uv stages, which never hand a %TEMP% path to a provider cmdlet,
 # sail through -- which is why the failure looks Node-specific.
 #
@@ -306,8 +302,8 @@ public static extern int GetLongPathNameW(string lpszShortPath, System.Text.Stri
 
 function Set-LongProfileEnvVars {
     # Normalize every profile-rooted variable the install reads, not just
-    # %TEMP%: the desktop stage derives InstallDir from %LOCALAPPDATA%, and a
-    # short root there fails the post-build probe after a successful build.
+    # %TEMP%: InstallDir also derives from %LOCALAPPDATA%, so a short root
+    # there breaks path probes after otherwise successful stages.
     # Returns $true when anything was rewritten.
     $rewrote = $false
     $script:NormalizedPathRewrites = @{}
@@ -335,56 +331,68 @@ function Set-LongProfileEnvVars {
 # Set-StrictMode before any stage starts. 'none' is the resolver's own value
 # for "nothing ran".
 $script:LastResolver = 'none'
-$script:NormalizedProfilePaths = Set-LongProfileEnvVars
 
-# Re-derive the install paths now that the env vars behind their defaults are
-# long. An explicitly passed -HermesHome / -InstallDir is normalized in place
-# rather than replaced, so a caller's choice is never overwritten by a default.
-# $PSBoundParameters is only meaningful at script scope, so this stays inline.
-if ($PSBoundParameters.ContainsKey('HermesHome')) {
-    $HermesHome = ConvertTo-LongPath $HermesHome
-} else {
-    $HermesHome = ConvertTo-LongPath $(
-        if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" }
-    )
-}
-if ($PSBoundParameters.ContainsKey('InstallDir')) {
-    $InstallDir = ConvertTo-LongPath $InstallDir
-} else {
-    $InstallDir = ConvertTo-LongPath $(
-        if ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" } else { "$env:LOCALAPPDATA\hermes\hermes-agent" }
-    )
-}
-if ($script:NormalizedProfilePaths) {
-    # Which paths the install actually settled on. Absent from every report of
-    # this bug class, and the whole question once a short alias is in play.
-    Write-PathDiag "resolved install paths: HermesHome=$HermesHome InstallDir=$InstallDir"
-}
+# (Upstream eeb3da55 port) A dot-source must not rewrite the caller's process
+# env, so the normalization prologue runs only on real entry: it lives in the
+# function below, called from the entry dispatch alongside the stage ladder.
+# Upstream's Initialize-ResolvedPaths shape, fork's inline comment prose and
+# fork's $HermesHome / $InstallDir script-scope style kept -- every downstream
+# fork stage reads the bare names, not upstream's $script:-prefixed copies.
+function Initialize-ResolvedPaths {
+    $script:NormalizedProfilePaths = Set-LongProfileEnvVars
 
-# Captured here, where the values are final, and emitted from the entry-point
-# dispatch at the bottom (alongside -ProtocolVersion / -Manifest) so
-# -ShowResolvedPaths exits before any stage runs.
-#
-# The report goes to STDOUT as JSON: on Windows a child's stderr does not
-# reliably reach a parent process -- three separate capture mechanisms each came
-# back empty on a windows-latest runner while stdout arrived intact -- and the
-# first question on any "installer says a path doesn't exist" report is which
-# paths it actually resolved.
-$script:ResolvedPathReport = @{
-    long_profile_root = (Get-LongProfileRoot)
-    normalized        = $script:NormalizedPathRewrites
-    resolver          = $script:LastResolver
-    temp              = $env:TEMP
-    hermes_home       = $HermesHome
-    install_dir       = $InstallDir
+    # Re-derive the install paths now that the env vars behind their defaults
+    # are long. An explicitly passed -HermesHome / -InstallDir is normalized
+    # in place rather than replaced, so a caller's choice is never
+    # overwritten by a default. The script's own $PSBoundParameters was
+    # captured at script scope ($script:BoundParams) because a function body
+    # sees its own binding, not the script's.
+    if ($script:BoundParams.ContainsKey('HermesHome')) {
+        $HermesHome = ConvertTo-LongPath $HermesHome
+    } else {
+        $HermesHome = ConvertTo-LongPath $(
+            if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" }
+        )
+    }
+    if ($script:BoundParams.ContainsKey('InstallDir')) {
+        $InstallDir = ConvertTo-LongPath $InstallDir
+    } else {
+        $InstallDir = ConvertTo-LongPath $(
+            if ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" } else { "$env:LOCALAPPDATA\hermes\hermes-agent" }
+        )
+    }
+    if ($script:NormalizedProfilePaths) {
+        # Which paths the install actually settled on. Absent from every
+        # report of this bug class, and the whole question once a short
+        # alias is in play.
+        Write-PathDiag "resolved install paths: HermesHome=$HermesHome InstallDir=$InstallDir"
+    }
+
+    # Captured here, where the values are final, and emitted from the
+    # entry-point dispatch at the bottom (alongside -ProtocolVersion /
+    # -Manifest) so -ShowResolvedPaths exits before any stage runs.
+    #
+    # The report goes to STDOUT as JSON: on Windows a child's stderr does not
+    # reliably reach a parent process -- three separate capture mechanisms
+    # each came back empty on a windows-latest runner while stdout arrived
+    # intact -- and the first question on any "installer says a path doesn't
+    # exist" report is which paths it actually resolved.
+    $script:ResolvedPathReport = @{
+        long_profile_root = (Get-LongProfileRoot)
+        normalized        = $script:NormalizedPathRewrites
+        resolver          = $script:LastResolver
+        temp              = $env:TEMP
+        hermes_home       = $HermesHome
+        install_dir       = $InstallDir
+    }
 }
 
 # ============================================================================
 # Configuration
 # ============================================================================
 
-$RepoUrlSsh = "git@github.com:NousResearch/hermes-agent.git"
-$RepoUrlHttps = "https://github.com/NousResearch/hermes-agent.git"
+$RepoUrlSsh = "git@github.com:QuixThe2nd/hermes-ide.git"
+$RepoUrlHttps = "https://github.com/QuixThe2nd/hermes-ide.git"
 $PythonVersion = "3.11"
 # Minor versions the installer accepts when the requested $PythonVersion isn't
 # available, in preference order. Only checkout-private uv-managed interpreters
@@ -409,7 +417,7 @@ $InstallStageProtocolVersion = 1
 # Helper functions
 
 # Return the real OS processor architecture as a lowercase string suitable for
-# Node.js / electron download URL slugs: "arm64", "x64", or "x86".
+# Node.js download URL slugs: "arm64", "x64", or "x86".
 #
 # Why not just trust [Environment]::Is64BitOperatingSystem or
 # [RuntimeInformation]::OSArchitecture?  On Windows on ARM, when this script
@@ -519,9 +527,9 @@ function Discard-LockfileChurn {
 
         # The single root lockfile records every workspace's specs (root package.json
         # "workspaces" globs), so a dirty workspace manifest such as
-        # apps/desktop/package.json protects it; reverting it there desyncs spec and
+        # web/package.json protects it; reverting it there desyncs spec and
         # lock and every later npm ci fails (#112378). A manifest outside the graph
-        # (website/) has its own lockfile and does not protect the root one.
+        # (sub-manifests like scripts/whatsapp-bridge/) have their own lockfiles and do not protect the root one.
         $rootLockProtected = $dirtyPackageDirs.Contains("")
         if (-not $rootLockProtected -and $dirtyPackageDirs.Count -gt 0) {
             $workspaceGlobs = @()
@@ -561,7 +569,7 @@ function Discard-LockfileChurn {
 # remediation. npm/Node surface corporate MITM proxies and missing root CAs as
 # "unable to get local issuer certificate" / "self-signed certificate in
 # certificate chain" / UNABLE_TO_GET_ISSUER_CERT_LOCALLY -- most commonly while
-# Electron's install.js postinstall downloads the Electron binary. The reporter
+# a dependency postinstall downloads platform binaries. The reporter
 # usually misreads this as an admin-rights or generic install failure (see
 # issue #38016), so detect it once here and route every npm stage through this
 # hint. Returns $true when a cert error was detected (caller may adjust its own
@@ -588,7 +596,7 @@ function Show-NpmCertHint {
 
 function Write-NpmDebugLogTail {
     # On failure npm prints only a terse summary to stdout/stderr; the real
-    # evidence (postinstall script stderr like Electron's install.js, network
+    # evidence (postinstall script stderr, network
     # traces, EBUSY retries) lives in npm's own debug log under
     # <npm-cache>\_logs\<timestamp>-debug-0.log. The bootstrap installer's
     # streaming sink only captures what WE emit, so on any npm failure this
@@ -655,51 +663,14 @@ function Resolve-NpmCmd {
     return $npmExe
 }
 
-function Find-SystemBrowser {
-    # Honor ONLY an explicit, user-set AGENT_BROWSER_EXECUTABLE_PATH override.
-    #
-    # We no longer scan well-known install locations for a system browser.
-    # Auto-detection silently bound the install to an arbitrary binary instead
-    # of the bundled Playwright Chromium, which made the browser tool behave
-    # differently across hosts (and, on Linux, picked up a sandboxed Snap
-    # Chromium that hangs every browser_navigate). Every install now uses the
-    # bundled Chromium unless the user explicitly points elsewhere.
-    $override = $env:AGENT_BROWSER_EXECUTABLE_PATH
-    if ([string]::IsNullOrWhiteSpace($override)) { return $null }
-    if (Test-Path $override) { return $override }
-    return $null
-}
 
-function Write-BrowserEnv {
-    param([string]$BrowserPath)
-    if (-not (Test-Path $HermesHome)) {
-        New-Item -ItemType Directory -Force -Path $HermesHome | Out-Null
-    }
-    $envFile = Join-Path $HermesHome ".env"
-    if (-not (Test-Path $envFile)) {
-        Set-Content -Path $envFile -Value "AGENT_BROWSER_EXECUTABLE_PATH=$BrowserPath" -Encoding UTF8
-        return
-    }
-    $content = Get-Content $envFile -Raw -ErrorAction SilentlyContinue
-    if ($content -and $content -match "AGENT_BROWSER_EXECUTABLE_PATH=") { return }
-    Add-Content -Path $envFile -Value "AGENT_BROWSER_EXECUTABLE_PATH=$BrowserPath" -Encoding UTF8
-}
-
-function Install-AgentBrowser {
+function Install-CamofoxBrowser {
     $npm = Resolve-NpmCmd
     if (-not $npm) {
         Write-Err "npm not found -- install Node.js first"
         throw "npm not found"
     }
 
-    # agent-browser itself is intentionally NOT installed here (#43564 /
-    # PR #44772 review): it resolves lazily via `npx agent-browser` instead,
-    # which every consumer (tools/browser_tool.py, `hermes update`'s npx
-    # cache warm) already goes through. Eagerly npm-installing a second,
-    # separately version-pinned copy here -- only reachable via this
-    # explicit -Ensure browser fallback in the first place -- was redundant
-    # complexity and an extra credential/supply-chain surface for a path
-    # npx already covers.
     Write-Info "Installing camofox browser server..."
     $prefixDir = Join-Path $HermesHome "node"
     if (-not (Test-Path $prefixDir)) {
@@ -723,12 +694,7 @@ function Install-AgentBrowser {
     }
     Remove-Item $npmLog -Force -ErrorAction SilentlyContinue
 
-    $sysBrowser = Find-SystemBrowser
-    if ($sysBrowser) {
-        Write-BrowserEnv -BrowserPath $sysBrowser
-        Write-Info "Explicit browser override set -- Chromium download will be skipped when agent-browser installs on demand"
-    }
-    Write-Success "Agent-browser ready"
+    Write-Success "Camofox browser server installed"
 }
 
 # ============================================================================
@@ -971,7 +937,7 @@ function Sync-EnvPath {
 # PowerShell can resolve ``node`` via Get-Command while the child cmd process
 # still sees a PATH without node.exe's directory (nvm4w shims, App Paths
 # aliases, stale cross-process PATH).  Prepend the resolved node.exe parent
-# directory so postinstall hooks (electron-winstaller, native modules, etc.)
+# directory so postinstall hooks (native modules, etc.)
 # can find ``node``.  Regression for #48130.
 function Ensure-NodeExeOnPath {
     $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
@@ -1151,10 +1117,10 @@ function Update-ManagedNpm {
         if ($have -and (Test-NpmVersionOk $have $range)) { return $true }
     } catch { }
 
-    # In-app updates run while the desktop app's Node processes are alive.
-    # The managed npm lives inside the very tree they execute from, so an
-    # in-place upgrade would hit WinError 5 (Access denied) on npm.cmd
-    # (#80926).  Defer; the next update with the app closed retries.
+    # Updates can run while Hermes Node processes are alive. The managed npm
+    # lives inside the very tree they execute from, so an in-place upgrade
+    # would hit WinError 5 (Access denied) on npm.cmd (#80926). Defer; the next
+    # update after those processes exit retries.
     if (Test-ManagedNodeInUse $NodeDir) {
         Write-Warn "Hermes-managed Node.js is in use by a running app; skipping the bundled npm upgrade (applies on a later update with the app closed)."
         return $false
@@ -1201,7 +1167,7 @@ function Update-ManagedNpm {
 function Test-ManagedNodeInUse {
     param([string]$NodeDir)
     # Windows locks files that running processes execute from.  During an
-    # in-app update the desktop app's Node processes may hold the managed
+    # update Hermes Node processes may hold the managed
     # tree open, and rewriting it then fails with WinError 5 (Access denied)
     # on npm.cmd (#80926).  Cheap pre-check used to skip destructive steps;
     # the rename/move itself remains the authoritative guard.
@@ -1222,7 +1188,7 @@ function Test-ManagedNodeInUse {
 }
 
 # Re-discover uv without re-installing it.  Cross-process stage drivers
-# (the desktop GUI's onboarding wizard, CI step-runners) invoke each stage
+# (CI step-runners and other API clients) invoke each stage
 # in a fresh powershell process, so $script:UvCmd set by Install-Uv in a
 # prior process is not visible here.  Later stages (Test-Python,
 # Install-Venv, Install-Dependencies, Install-PlatformSdks) call this
@@ -1308,7 +1274,7 @@ function Resolve-AvailablePythonVersion {
         $process = $null
         try {
             # PowerShell 5.1 can lose a nested native command's stdout when
-            # this installer itself is redirected by the desktop bootstrapper.
+            # this installer itself is redirected by a programmatic stage driver.
             # Capture uv directly through ProcessStartInfo instead of relying
             # on the native-command pipeline for the interpreter path.
             $process = New-Object System.Diagnostics.Process
@@ -1617,7 +1583,7 @@ function Install-Git {
         $gitVerTag = "$gitVer.windows.1"
 
         if ($arch -eq "32-bit-mingit") {
-            Write-Warn "32-bit Windows detected -- PortableGit is 64-bit only.  Installing MinGit 32-bit as a last resort; bash-dependent Hermes features (terminal tool, agent-browser) will not work on this machine."
+            Write-Warn "32-bit Windows detected -- PortableGit is 64-bit only. Installing MinGit 32-bit as a last resort; bash-dependent Hermes features may not work on this machine."
             $assetName    = "MinGit-$gitVer-32-bit.zip"
             $downloadIsZip = $true
         } elseif ($arch -eq "arm64") {
@@ -2081,7 +2047,7 @@ function Install-SystemPackages {
         $needRipgrep = $true
     }
 
-    Write-Info "Checking ffmpeg (TTS voice messages)..."
+    Write-Info "Checking ffmpeg (media conversions)..."
     if (Get-Command ffmpeg -ErrorAction SilentlyContinue) {
         Write-Success "ffmpeg found"
         $script:HasFfmpeg = $true
@@ -2104,7 +2070,7 @@ function Install-SystemPackages {
         $scoopPkgs += "ripgrep"
     }
     if ($needFfmpeg) {
-        $descParts += "ffmpeg for TTS voice messages"
+        $descParts += "ffmpeg for media conversions"
         $wingetPkgs += "Gyan.FFmpeg"
         $chocoPkgs += "ffmpeg"
         $scoopPkgs += "ffmpeg"
@@ -2225,7 +2191,7 @@ function Install-SystemPackages {
         Write-Info "  winget install BurntSushi.ripgrep.MSVC"
     }
     if ($needFfmpeg) {
-        Write-Warn "ffmpeg not installed (TTS voice messages will be limited)"
+        Write-Warn "ffmpeg not installed (media conversions will be limited)"
         Write-Info "  winget install Gyan.FFmpeg"
     }
 }
@@ -2342,7 +2308,7 @@ function Install-Repository {
                     # BACKWARDS. hermes-setup.exe bakes its build-time commit
                     # into the binary (BUILD_PIN_COMMIT) and passes it as
                     # -Commit on every install-mode run -- including the retry
-                    # the desktop's "Update didn't finish" screen kicks off. An
+                    # a generic update recovery flow kicks off. An
                     # installer built months ago would otherwise rewind a
                     # current checkout to its build commit, leaving ancient
                     # code against a current venv (npm workspaces and Python
@@ -2387,7 +2353,7 @@ function Install-Repository {
                     # Default to restoring so work is never silently dropped.
                     # Only prompt when we're certain a human can answer: an
                     # interactive session AND a real, non-redirected console on
-                    # both stdin and stdout. The desktop "Update" button and
+                    # both stdin and stdout. Automated update callers and
                     # bootstrap run the installer without a usable console -- in
                     # those cases Read-Host would hang or return empty, so we
                     # skip the prompt and just restore (the safe default).
@@ -2520,13 +2486,13 @@ function Install-Repository {
                 # for.  GitHub supports archive URLs for commits, tags, and
                 # branches; we honour Commit > Tag > Branch.
                 if ($Commit) {
-                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/$Commit.zip"
+                    $zipUrl = "https://github.com/QuixThe2nd/hermes-ide/archive/$Commit.zip"
                     $zipLabel = $Commit
                 } elseif ($Tag) {
-                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/tags/$Tag.zip"
+                    $zipUrl = "https://github.com/QuixThe2nd/hermes-ide/archive/refs/tags/$Tag.zip"
                     $zipLabel = $Tag
                 } else {
-                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/heads/$Branch.zip"
+                    $zipUrl = "https://github.com/QuixThe2nd/hermes-ide/archive/refs/heads/$Branch.zip"
                     $zipLabel = $Branch
                 }
                 $zipPath = "$env:TEMP\hermes-agent-$zipLabel.zip"
@@ -2544,7 +2510,7 @@ function Install-Repository {
                     Write-Success "Downloaded and extracted"
 
                     # Initialize git repo so updates work later. A bare
-                    # `git init` leaves NO HEAD -- desktop's write-build-stamp
+                    # `git init` leaves NO HEAD -- source build-stamp writers
                     # then hard-fails with "could not determine git commit"
                     # (#50823 / #61657). Fetch the requested ref and force-check
                     # it out (-f) so untracked ZIP files cannot block checkout.
@@ -2580,13 +2546,13 @@ function Install-Repository {
                                 $fetchSha = & git -c windows.appendAtomically=false rev-parse FETCH_HEAD 2>$null
                                 if ($LASTEXITCODE -eq 0 -and $fetchSha) {
                                     if (-not $env:GITHUB_SHA) { $env:GITHUB_SHA = ("$fetchSha").Trim() }
-                                    Write-Warn "ZIP checkout failed; seeded GITHUB_SHA from FETCH_HEAD for desktop stamp"
+                                    Write-Warn "ZIP checkout failed; seeded GITHUB_SHA from FETCH_HEAD for the source stamp"
                                 } else {
-                                    Write-Warn "ZIP extract succeeded but git checkout failed -- desktop build may need `$env:GITHUB_SHA"
+                                    Write-Warn "ZIP extract succeeded but git checkout failed -- source builds may need `$env:GITHUB_SHA"
                                 }
                             }
                         } else {
-                            Write-Warn "ZIP extract succeeded but git fetch of $fetchRef failed -- desktop build may need `$env:GITHUB_SHA"
+                            Write-Warn "ZIP extract succeeded but git fetch of $fetchRef failed -- source builds may need `$env:GITHUB_SHA"
                         }
                     } finally {
                         $ErrorActionPreference = $prevZipEAP
@@ -2742,7 +2708,7 @@ function Install-Venv {
             # aborting the whole sweep.
             #
             # The sweep is a bounded LOOP, not single-shot: supervised processes
-            # (the Desktop app's backend, a watchdog-managed gateway) respawn in
+            # (the serve backend, a watchdog-managed gateway) respawn in
             # the window between one kill pass and venv parking. Each pass re-
             # enumerates; three consecutive clean passes (or the attempt cap)
             # ends the loop.
@@ -2791,7 +2757,7 @@ function Install-Venv {
     
     # Pass the already-validated private interpreter path and prohibit uv from
     # resolving or downloading a different Python during venv creation. Use
-    # ProcessStartInfo because the desktop bootstrapper redirects this script;
+    # ProcessStartInfo because programmatic drivers redirect this script;
     # Windows PowerShell 5.1 can otherwise lose nested native output/exit state.
     $venvProcess = New-Object System.Diagnostics.Process
     try {
@@ -3040,7 +3006,14 @@ function Install-Dependencies {
         Remove-Item Env:\UV_CONFIG_FILE -ErrorAction SilentlyContinue
         Push-Location $InstallDir
         try {
-            Invoke-NativeWithRelaxedErrorAction { & $UvCmd run --no-project python -m pm.cli install }
+            $lock = Get-Content (Join-Path $InstallDir "pm\lock.json") -Raw | ConvertFrom-Json
+            $pyPin = $lock.packages.python
+            $pyVersion = if ($pyPin) {
+                ($pyPin.version -split '\+')[0] -replace '^(\d+\.\d+).*', '$1'
+            } else {
+                $PythonVersion
+            }
+            Invoke-NativeWithRelaxedErrorAction { & $UvCmd run --no-project --python $pyVersion python -m pm.cli install }
         } finally {
             Pop-Location
             # Restore the caller's environment on success AND failure.
@@ -3226,45 +3199,6 @@ print(','.join(scripts))
         }
     }
 
-    # Verify the dashboard deps specifically -- they're the most common thing
-    # users hit and lazy-import errors from `hermes dashboard` are confusing.
-    # If tier 1 failed (the common case), [web] was still picked up by tiers
-    # 2-3; only tier 4 leaves you without it.
-    $pythonExe = if (-not $NoVenv) { "$InstallDir\venv\Scripts\python.exe" } else { (& $UvCmd python find $PythonVersion) }
-    if (Test-Path $pythonExe) {
-        $webOk = $false
-        $webServerSyntaxOk = $false
-        # Relax EAP=Stop while running the import probe; see the matching
-        # comment on the baseline-imports check above.  Python writes
-        # deprecation warnings to stderr and we don't want those wrapped
-        # as ErrorRecords that silently force the "not importable" path
-        # even when fastapi/uvicorn are actually installed.
-        $prevEAP = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        try {
-            & $pythonExe -c "import fastapi, uvicorn" 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) { $webOk = $true }
-        } catch { }
-        try {
-            & $pythonExe -m py_compile "$InstallDir\hermes_cli\web_server.py" 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) { $webServerSyntaxOk = $true }
-        } catch { }
-        $ErrorActionPreference = $prevEAP
-        if (-not $webOk) {
-            Write-Warn "fastapi/uvicorn not importable -- `hermes dashboard` will not work."
-            Write-Info "Attempting targeted install of [web] extra as last resort..."
-            & $UvCmd pip install -e ".[web]"
-            if ($LASTEXITCODE -eq 0) {
-                Write-Success "[web] extra installed; `hermes dashboard` should now work."
-            } else {
-                Write-Warn "Could not install [web] extra. Run manually: uv pip install --python `"$pythonExe`" `"fastapi>=0.104,<1`" `"uvicorn[standard]>=0.24,<1`""
-            }
-        }
-        if (-not $webServerSyntaxOk) {
-            throw "dashboard backend source failed syntax check: hermes_cli/web_server.py"
-        }
-    }
-    
     Pop-Location
     
     Write-Success "All dependencies installed"
@@ -3301,7 +3235,7 @@ function Install-HermesCommandLaunchers {
     if (Test-Path -LiteralPath $pyvenvCfg) {
         $venvRelocatable = [bool](Select-String -Path $pyvenvCfg -Pattern '^\s*relocatable\s*=\s*true\s*$' -Quiet)
     }
-    foreach ($launcher in @("hermes", "hermes-acp")) {
+    foreach ($launcher in @("hermes")) {
         $src = Join-Path $scriptsDir "$launcher.exe"
         if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { continue }
         if ($venvRelocatable) {
@@ -3386,83 +3320,6 @@ function Set-PathVariable {
     $env:Path = "$hermesBin;$env:Path"
     
     Write-Success "hermes command ready"
-}
-
-function Write-BootstrapMarker {
-    # Writes $InstallDir\.hermes-bootstrap-complete which tells the Hermes
-    # desktop app (apps/desktop/electron/main.ts) "install.ps1 ran
-    # successfully -- DON'T trigger the legacy first-launch bootstrap
-    # runner."
-    #
-    # Schema mirrors what main.ts's writeBootstrapMarker() / isBootstrap
-    # Complete() expect. Keep this in lockstep when either side changes:
-    #   apps/desktop/electron/main.ts lines 1199-1222
-    #   BOOTSTRAP_MARKER_SCHEMA_VERSION = 1 (line 187)
-    #
-    # Pinned commit/branch come from -Commit + -Branch flags (passed by
-    # Hermes-Setup.exe) or fall back to whatever git resolves in the
-    # checkout. The desktop validates schemaVersion + pinnedCommit
-    # length but doesn't enforce that HEAD matches the pin (users
-    # update via `hermes update` which moves HEAD legitimately).
-    if (-not (Test-Path $InstallDir)) {
-        Write-Warn "Skipping bootstrap marker: $InstallDir doesn't exist"
-        return
-    }
-
-    # Resolve the pinned commit: explicit -Commit wins, otherwise read
-    # the checkout's HEAD via git. If git can't run, leave commit empty
-    # and the marker will fail desktop validation (pinnedCommit.length
-    # >= 7) -- better to be invalid than wrong.
-    $pinnedCommit = $Commit
-    if (-not $pinnedCommit) {
-        # PS 5.1 doesn't support the ?. null-conditional operator, so
-        # check Get-Command's result explicitly before reading .Source.
-        $gitCmd = Get-Command git -ErrorAction SilentlyContinue
-        $gitExe = if ($gitCmd) { $gitCmd.Source } else { $null }
-        if ($gitExe) {
-            Push-Location $InstallDir
-            try {
-                $resolved = & $gitExe rev-parse HEAD 2>$null
-                if ($LASTEXITCODE -eq 0 -and $resolved) {
-                    $pinnedCommit = $resolved.Trim()
-                }
-            } catch {
-                # Ignore -- pinnedCommit stays empty, marker stays invalid,
-                # desktop falls through to its legacy bootstrap path.
-            } finally {
-                Pop-Location
-            }
-        }
-    }
-
-    $pinnedBranch = $Branch
-    if (-not $pinnedBranch) {
-        $pinnedBranch = "main"  # install.ps1's own default for -Branch
-    }
-
-    $markerPath = Join-Path $InstallDir ".hermes-bootstrap-complete"
-    $marker = [ordered]@{
-        schemaVersion = 1
-        pinnedCommit  = $pinnedCommit
-        pinnedBranch  = $pinnedBranch
-        completedAt   = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
-        # desktopVersion field intentionally omitted -- only the desktop
-        # app knows its own version, and the marker validator doesn't
-        # require it. The desktop fills it in if/when it writes its
-        # own marker (e.g. after a future in-app upgrade).
-    }
-    $json = $marker | ConvertTo-Json -Compress:$false
-
-    # Write WITHOUT a UTF-8 BOM. PowerShell 5.1's `Set-Content -Encoding UTF8`
-    # always emits a BOM, and Node's plain JSON.parse rejects the BOM as an
-    # unexpected character -- so a BOM'd marker would silently fail the
-    # desktop's readJson(), make isBootstrapComplete() return null, and the
-    # desktop would re-run the legacy bootstrap runner anyway. Defeats the
-    # whole point. Use the .NET API directly for BOM-less UTF-8.
-    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-    [System.IO.File]::WriteAllText($markerPath, $json, $utf8NoBom)
-
-    Write-Success "Bootstrap marker written: $markerPath"
 }
 
 function Copy-ConfigTemplates {
@@ -3613,13 +3470,9 @@ function Install-NodeDeps {
         }
     }
 
-    # Wall-clock ceiling for each npm / Playwright invocation in this stage.
-    # scripts/install.sh has time-boxed the same work with
-    # ``run_with_timeout "$NODE_DEPS_TIMEOUT"`` (600s default) since #39219;
-    # Windows never got the guard, so a stalled registry fetch or a wedged
-    # Chromium extraction (#76222, #84614) froze the installer forever -- one
-    # user left it running 12+ hours overnight.  Same env override as bash
-    # for very slow links.
+    # Wall-clock ceiling for each npm invocation in this stage. A stalled
+    # registry fetch otherwise freezes the installer indefinitely. Same env
+    # override as bash for very slow links.
     $nodeDepsTimeoutSec = 600
     if ($env:NODE_DEPS_TIMEOUT -match '^\d+$') {
         $nodeDepsTimeoutSec = [int]$env:NODE_DEPS_TIMEOUT
@@ -3734,170 +3587,17 @@ function Install-NodeDeps {
         }
     }
 
-    # Browser tools
+    # Root Node.js dependencies
     if (Test-Path "$InstallDir\package.json") {
-        Write-Info "Installing Node.js dependencies (browser tools)..."
-        $browserLog = "$env:TEMP\hermes-npm-browser-$(Get-Random).log"
-        $browserNpmOk = _Run-NpmInstall "Browser tools" $InstallDir $browserLog $npmExe
-
-        # Install Playwright Chromium (mirrors scripts/install.sh behaviour for
-        # Linux).  Without this, tools/browser_tool.py::check_browser_requirements
-        # returns False (no Chromium under %LOCALAPPDATA%\ms-playwright), and the
-        # browser_* tools are silently filtered out of the agent's tool schema.
-        # System Chrome at "C:\Program Files\Google\Chrome\..." is NOT used by
-        # agent-browser -- it expects a Playwright-managed Chromium.
-        if ($browserNpmOk) {
-            Write-Info "Installing browser engine (Playwright Chromium)..."
-            # npx lives next to npm in the same bin dir.  Prefer .cmd to dodge
-            # the same execution-policy gotcha that affects npm.ps1 (see above).
-            $npmDir = Split-Path $npmExe -Parent
-            $npxExe = $null
-            foreach ($cand in @("npx.cmd", "npx.exe", "npx")) {
-                $try = Join-Path $npmDir $cand
-                if (Test-Path $try) { $npxExe = $try; break }
-            }
-            if (-not $npxExe) {
-                $npxCmd = Get-Command npx -ErrorAction SilentlyContinue
-                if ($npxCmd) { $npxExe = $npxCmd.Source }
-            }
-            if (-not $npxExe) {
-                Write-Warn "npx not found -- cannot install Playwright Chromium."
-                Write-Info "Run manually later: cd `"$InstallDir`"; npx playwright install chromium"
-            } else {
-                $pwLog = "$env:TEMP\hermes-playwright-install-$(Get-Random).log"
-                Push-Location $InstallDir
-                # Capture EAP outside the try block so the catch's restore call
-                # always has a meaningful value (see Install-Uv for the full
-                # rationale).
-                $prevEAP = $ErrorActionPreference
-                try {
-                    # Playwright Chromium is ~170MB compressed and the
-                    # download regularly takes 3-10 minutes on a fresh
-                    # VM.  Tee the output to console + log so the user
-                    # sees download progress in real time instead of
-                    # staring at a silent prompt that looks hung.  See
-                    # _Run-NpmInstall above for the same pattern and
-                    # the rationale behind 2>&1 before the pipe.
-                    Write-Info "(this can take several minutes -- streaming progress below)"
-                    # --yes auto-accepts npx's "Need to install playwright@X.Y.Z"
-                    # confirmation prompt.  Without it, npx 7+ blocks on stdin
-                    # waiting for a y/N answer that never comes when this is
-                    # invoked through a pipeline (Tee-Object disconnects stdin
-                    # from the user's TTY), and the install hangs indefinitely
-                    # after printing "Need to install the following packages:
-                    # playwright@X.Y.Z".
-                    #
-                    # Relax EAP around the playwright invocation: playwright
-                    # emits a "Chromium downloaded to ..." success banner to
-                    # stderr after a successful install.  The launcher merges
-                    # stderr into the log natively, but keep EAP relaxed so
-                    # stray plumbing stderr can't fire the catch block with a
-                    # mangled banner even though the install succeeded.  Check
-                    # the returned exit code instead, which is the reliable
-                    # signal.
-                    #
-                    # The wall-clock ceiling is the #76222 / #84614 fix: the
-                    # Chromium download reaches 100% and the extraction wedges
-                    # (or the registry fetch stalls), and without a bound the
-                    # installer sits on this line forever.  bash has carried
-                    # the same 600s guard via run_playwright_install since
-                    # #39219.
-                    $ErrorActionPreference = "Continue"
-                    $pwCode = _Invoke-NativeWithTimeout $npxExe "--yes playwright install chromium" `
-                        $InstallDir $pwLog $nodeDepsTimeoutSec
-                    $ErrorActionPreference = $prevEAP
-                    if ($pwCode -eq 0) {
-                        Write-Success "Playwright Chromium installed (browser tools ready)"
-                        Remove-Item -Force $pwLog -ErrorAction SilentlyContinue
-                    } elseif ($pwCode -eq 124) {
-                        Write-Warn "Playwright Chromium install timed out after $([math]::Round($nodeDepsTimeoutSec / 60)) minutes."
-                        Write-Warn "This usually means a stalled download or a wedged archive extraction (a locked previous browser version can also cause it)."
-                        Write-Warn "Browser tools will not work until Chromium is installed."
-                        if (Test-Path $pwLog) { Write-Info "  Partial log: $pwLog" }
-                        Write-Info "Run manually later: cd `"$InstallDir`"; npx playwright install chromium"
-                    } else {
-                        Write-Warn "Playwright Chromium install failed -- exit code $pwCode"
-                        Write-Warn "Browser tools will not work until Chromium is installed."
-                        if (Test-Path $pwLog) {
-                            $pwErr = Get-Content $pwLog -Raw -ErrorAction SilentlyContinue
-                            if ($pwErr) {
-                                $snippet = if ($pwErr.Length -gt 1200) { $pwErr.Substring(0, 1200) + "..." } else { $pwErr }
-                                Write-Info "  playwright output:"
-                                foreach ($line in $snippet -split "`n") {
-                                    Write-Host "    $line" -ForegroundColor DarkGray
-                                }
-                                Write-Info "  Full log: $pwLog"
-                            }
-                        }
-                        Write-Info "Run manually later: cd `"$InstallDir`"; npx playwright install chromium"
-                    }
-                } catch {
-                    if ($prevEAP) { $ErrorActionPreference = $prevEAP }
-                    Write-Warn "Playwright Chromium install could not be launched: $_"
-                    Write-Info "Run manually later: cd `"$InstallDir`"; npx playwright install chromium"
-                } finally {
-                    Pop-Location
-                }
-            }
-        }
+        Write-Info "Installing Node.js dependencies..."
+        $nodeLog = "$env:TEMP\hermes-npm-node-$(Get-Random).log"
+        [void](_Run-NpmInstall "Node.js" $InstallDir $nodeLog $npmExe)
     }
 
-    # TUI
-    $tuiDir = "$InstallDir\ui-tui"
-    if (Test-Path "$tuiDir\package.json") {
-        Write-Info "Installing TUI dependencies..."
-        $tuiLog = "$env:TEMP\hermes-npm-tui-$(Get-Random).log"
-        [void](_Run-NpmInstall "TUI" $tuiDir $tuiLog $npmExe)
-    }
 
-    Install-BrowserUseCli
     Install-CuaDriver
 }
 
-# The Browser Use CLI is the default browser backend when it is runnable
-# (tools/browser_use_cli.py). Provision it at install time so fresh installs
-# don't silently fall back to the built-in browser tools. Best-effort: any
-# failure is non-fatal (browser_exec can still run via uvx, and `hermes tools`
-# can install it later).
-function Install-BrowserUseCli {
-    if (-not $script:UvCmd) { Resolve-UvCmd }
-    if (-not $script:UvCmd) {
-        Write-Info "Skipping Browser Use CLI install (uv unavailable)"
-        return
-    }
-    $managedBin = Join-Path $HermesHome "bin"
-    $managedBu = Join-Path $managedBin "browser-use.exe"
-    # MANAGED-FIRST: only Hermes' managed copy short-circuits. A browser-use
-    # on the user's PATH is a side install -- resolution prefers the managed
-    # copy, so it must be provisioned regardless.
-    if (Test-Path $managedBu) {
-        Write-Success "Browser Use CLI already installed"
-        return
-    }
-
-    Write-Info "Installing Browser Use CLI (default browser backend)..."
-    $prevEAP = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        # UV_TOOL_BIN_DIR keeps the binary inside Hermes' managed bin dir,
-        # where the browser tool resolves it -- no reliance on the user PATH.
-        $env:UV_TOOL_BIN_DIR = $managedBin
-        $env:UV_NO_CONFIG = "1"
-        & $script:UvCmd tool install browser-use 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Success "Browser Use CLI installed"
-        } else {
-            Write-Warn "Browser Use CLI install failed (exit $LASTEXITCODE) -- browser automation falls back to built-in tools."
-            Write-Info "Install later with: uv tool install browser-use  (or via 'hermes tools')"
-        }
-    } catch {
-        Write-Warn "Browser Use CLI install failed: $_"
-    } finally {
-        $ErrorActionPreference = $prevEAP
-        Remove-Item Env:\UV_TOOL_BIN_DIR -ErrorAction SilentlyContinue
-        Remove-Item Env:\UV_NO_CONFIG -ErrorAction SilentlyContinue
-    }
-}
 
 function Test-CuaDriverRuntimeContract {
     param([Parameter(Mandatory = $true)][string]$DriverPath)
@@ -3952,7 +3652,7 @@ function Test-CuaDriverRuntimeContract {
 
 # cua-driver powers the computer_use toolset (background desktop control).
 # Provision it at install time so enabling the tool later -- via `hermes
-# tools`, the dashboard, or the desktop app -- is a config flip, not a
+# tools` or the dashboard -- is a config flip, not a
 # surprise multi-minute binary fetch. Best-effort and non-fatal: the enable
 # paths still lazy-install via install_cua_driver() (hermes_cli/tools_config)
 # when this step was skipped or failed.
@@ -4005,519 +3705,6 @@ function Install-CuaDriver {
     }
 }
 
-# Clear the cached Electron download + any half-written unpacked output so the
-# next `npm run pack` re-downloads and re-stages from scratch. A corrupt zip in
-# the per-user Electron download cache - most often a partial download resumed
-# into the same file, leaving concatenated junk - makes electron-builder's
-# `app-builder unpack-electron` extract a tree MISSING the electron binary, so
-# the final `electron` -> `Hermes` rename dies with ENOENT and every re-run
-# repeats the broken extraction forever.
-#
-# We deliberately do not validate the zip ourselves: the common
-# prepended/concatenated-junk corruption slips past naive checks, so a
-# self-rolled gate would skip the real-world case. We unconditionally drop the
-# cached electron-*.zip (loose copy and any @electron/get hash-subdir copy) plus
-# the stale unpacked dir, then let the caller retry once - @electron/get
-# re-downloads with its own SHASUM verification, the real source of truth.
-#
-# Returns the removed paths. Best-effort: never throws.
-function Clear-ElectronBuildCache {
-    param([string]$DesktopDir)
-    $removed = @()
-
-    # Per-user Electron download cache dirs, honoring the overrides @electron/get
-    # respects, then the Windows default (%LOCALAPPDATA%\electron\Cache).
-    $cacheDirs = @()
-    if ($env:electron_config_cache) { $cacheDirs += $env:electron_config_cache }
-    if ($env:ELECTRON_CACHE)        { $cacheDirs += $env:ELECTRON_CACHE }
-    if ($env:LOCALAPPDATA)          { $cacheDirs += (Join-Path $env:LOCALAPPDATA 'electron\Cache') }
-    $cacheDirs += (Join-Path $HOME 'AppData\Local\electron\Cache')
-
-    foreach ($dir in $cacheDirs) {
-        if (-not (Test-Path -LiteralPath $dir)) { continue }
-        # Recurse: the bad copy may be the top-level zip OR a copy inside an
-        # @electron/get hash subdir.
-        $removed += @(Get-ChildItem -LiteralPath $dir -Recurse -Filter 'electron-*.zip' -File -ErrorAction SilentlyContinue | ForEach-Object {
-            try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop; $_.FullName } catch { }
-        })
-    }
-
-    # A half-written unpacked dir from an interrupted prior pack poisons the
-    # rename even after the zip is fixed (win-unpacked / win-arm64-unpacked).
-    $releaseDir = Join-Path $DesktopDir 'release'
-    if (Test-Path -LiteralPath $releaseDir) {
-        $removed += @(Get-ChildItem -LiteralPath $releaseDir -Directory -Filter '*-unpacked' -ErrorAction SilentlyContinue | ForEach-Object {
-            try { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop; $_.FullName } catch { }
-        })
-    }
-
-    return $removed
-}
-
-# Last-resort Electron mirror after GitHub download fails (#47266).
-$script:DesktopElectronFallbackMirror = "https://npmmirror.com/mirrors/electron/"
-
-# Electron package dir -- workspace-local nest first, then root hoist.
-function Get-ElectronDir {
-    param([string]$InstallDir)
-    $desktopLocal = Join-Path $InstallDir 'apps\desktop\node_modules\electron'
-    if (Test-Path -LiteralPath $desktopLocal) { return $desktopLocal }
-    return (Join-Path $InstallDir 'node_modules\electron')
-}
-
-# True when dist/ holds a usable Electron binary (#38673 / run-electron-builder.mjs).
-function Test-ElectronDist {
-    param([string]$InstallDir)
-    $electronDir = Get-ElectronDir -InstallDir $InstallDir
-    $distExe = Join-Path $electronDir 'dist\electron.exe'
-    return (Test-Path -LiteralPath $distExe)
-}
-
-# Best-effort: run electron/install.js to populate dist/ (optional mirror).
-function Restore-ElectronDist {
-    param([string]$InstallDir, [string]$Mirror)
-    if (Test-ElectronDist -InstallDir $InstallDir) { return $true }
-
-    $electronDir = Get-ElectronDir -InstallDir $InstallDir
-    $distExe = Join-Path $electronDir 'dist\electron.exe'
-    $installer = Join-Path $electronDir 'install.js'
-    if (-not (Test-Path -LiteralPath $installer)) { return $false }
-    $node = Get-Command node -ErrorAction SilentlyContinue
-    if (-not $node) { return $false }
-
-    $distDir = Join-Path $electronDir 'dist'
-    if (Test-Path -LiteralPath $distDir) {
-        Remove-Item -LiteralPath $distDir -Recurse -Force -ErrorAction SilentlyContinue
-    }
-    Remove-Item -LiteralPath (Join-Path $electronDir 'path.txt') -Force -ErrorAction SilentlyContinue
-
-    $prevMirror = $env:ELECTRON_MIRROR
-    if ($Mirror) { $env:ELECTRON_MIRROR = $Mirror }
-    try {
-        # Out-Host so the downloader's progress shows on the console WITHOUT
-        # leaking into this function's return value (PowerShell returns every
-        # object left on the output stream, so a bare pipe here would make the
-        # boolean below ambiguous).
-        & $node.Source $installer 2>&1 | ForEach-Object { "$_" } | Out-Host
-    } catch {
-    } finally {
-        $env:ELECTRON_MIRROR = $prevMirror
-    }
-    return (Test-Path -LiteralPath $distExe)
-}
-
-function Test-ElectronPkgStagedMissingDist {
-    param([string]$InstallDir)
-    $electronDir = Get-ElectronDir -InstallDir $InstallDir
-    return (
-        (Test-Path -LiteralPath (Join-Path $electronDir 'package.json')) -and
-        (Test-Path -LiteralPath (Join-Path $electronDir 'install.js')) -and
-        (-not (Test-ElectronDist -InstallDir $InstallDir))
-    )
-}
-
-function Try-RestoreElectronDist {
-    param([string]$InstallDir)
-    if (Restore-ElectronDist -InstallDir $InstallDir) { return $true }
-    if ($env:ELECTRON_MIRROR) { return $false }
-    return Restore-ElectronDist -InstallDir $InstallDir -Mirror $script:DesktopElectronFallbackMirror
-}
-
-function Install-DesktopVoiceDeps {
-    # Desktop ships with working voice out of the box: eagerly install the
-    # wake-word + local-STT stacks ([wake] + [voice] extras) instead of
-    # leaving them to lazy first-use install. Policy change (Teknium, July
-    # 2026, #70509 testing): the first ear-click used to trigger a
-    # multi-minute onnxruntime pip install that froze the UI and blew RPC
-    # timeouts. Best-effort -- lazy install remains the fallback for anything
-    # this step fails to fetch.
-    if (-not $script:UvCmd) { Resolve-UvCmd }
-    if (-not $script:UvCmd) {
-        Write-Warn "uv unavailable -- voice/wake deps will lazy-install at first use instead"
-        return
-    }
-    $env:VIRTUAL_ENV = "$InstallDir\venv"
-    Write-Info "Installing voice + wake-word dependencies (onnxruntime, faster-whisper -- 1-3min)..."
-    Push-Location $InstallDir
-    try {
-        Invoke-NativeWithRelaxedErrorAction { & $UvCmd pip install -e ".[wake,voice]" }
-        if ($LASTEXITCODE -eq 0) {
-            Write-Success "Voice + wake-word dependencies installed"
-        } else {
-            Write-Warn "Voice/wake dependency install failed (exit $LASTEXITCODE) -- they will lazy-install at first use"
-        }
-    } finally {
-        Pop-Location
-    }
-}
-
-function Install-Desktop {
-    # Build apps/desktop into a launchable Hermes.exe. Only called from
-    # Stage-Desktop, which is itself only included in the manifest when
-    # -IncludeDesktop was passed to install.ps1.
-    #
-    # The workspace npm install at repo root (done by Install-NodeDeps for
-    # browser tools) does NOT pull apps/desktop's dependencies, because the
-    # browser-tools workspace at $InstallDir\package.json is a separate
-    # workspace from apps/*. We do a full root-level `npm install` here
-    # so the workspace resolves apps/desktop's deps (including Electron
-    # itself, ~150MB), then run `npm run pack` in apps/desktop which
-    # produces the unpacked binary at apps/desktop/release/<os>-unpacked/.
-    #
-    # The Tauri bootstrap installer's launch_hermes_desktop command
-    # resolves apps/desktop/release/win-unpacked/Hermes.exe directly,
-    # so an "unpacked" build (electron-builder --dir) is enough -- we
-    # don't need to produce an NSIS/MSI artifact here.
-
-    # Always re-resolve Node here. Stages run in separate PowerShell processes,
-    # so $script:HasNode from Stage-Node isn't visible; more importantly Test-Node
-    # enforces the supported Node lines and prepends the Hermes-managed Node to
-    # PATH, so the build never runs on an unsupported system Node -- the cause
-    # of the opaque "Build desktop app ... exit code 1" failure (Vite crashes on
-    # old Node).
-    Test-Node | Out-Null
-    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-        Write-Warn "Skipping desktop build (Node.js / npm not on PATH)"
-        $script:_StageSkippedReason = "Node.js not available"
-        return
-    }
-
-    $desktopDir = "$InstallDir\apps\desktop"
-    if (-not (Test-Path "$desktopDir\package.json")) {
-        Write-Warn "Skipping desktop build (apps/desktop not present in checkout)"
-        $script:_StageSkippedReason = "apps/desktop not present"
-        return
-    }
-
-    $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
-    if (-not $npmCmd) {
-        Write-Warn "Skipping desktop build (npm not on PATH)"
-        $script:_StageSkippedReason = "npm not found"
-        return
-    }
-    $npmExe = $npmCmd.Source
-    if ($npmExe -like "*.ps1") {
-        $sibling = Join-Path (Split-Path $npmExe -Parent) "npm.cmd"
-        if (Test-Path $sibling) { $npmExe = $sibling }
-    }
-
-    # 1. Workspace-level install so apps/desktop's deps (Electron, Vite,
-    # node-pty prebuilds, etc.) actually land in node_modules. This is
-    # the SAME `npm install` Install-NodeDeps does for browser tools,
-    # but at the root rather than the browser-tools workspace, so all
-    # apps/* workspaces resolve.
-    Write-Info "Installing desktop workspace dependencies (this includes Electron ~150MB, takes 1-3min)..."
-    Push-Location $InstallDir
-    $prevEAP = $ErrorActionPreference
-    try {
-        $ErrorActionPreference = "Continue"
-        # Drop --silent so npm emits its full progress + error trail.
-        # When this fails on a non-dev box (e.g. native-module build
-        # without VS Build Tools, ETARGET on a transitive, etc.), the
-        # actual reason needs to reach the Tauri installer's log; with
-        # --silent it was completely suppressed and the user just saw
-        # "exit 1" with no actionable detail.
-        #
-        # The streaming sink in bootstrap.rs's run_install_script
-        # captures every stdout/stderr line as it's emitted, so we don't
-        # need a side TEMP log file -- the installer's bootstrap log
-        # IS the artifact a support engineer reads.
-        #
-        # Prefer `npm ci`: it wipes node_modules and reinstalls from the
-        # lockfile, always producing a complete tree. Bare `npm install`
-        # can report "up to date" against a stale
-        # node_modules\.package-lock.json marker while node_modules is
-        # actually empty (Windows workspace-hoisting flake), leaving
-        # tsc/typescript unresolved so `npm run pack`'s `tsc -b` dies with
-        # no obvious cause. Fall back to `npm install` only if `npm ci`
-        # fails (lockfile out of sync / very old npm without ci).
-        #
-        # Tee the merged output into $npmOut while still emitting every line
-        # live. We don't need a side log file (the bootstrap streaming sink
-        # is the artifact), but on failure we scan $npmOut for the TLS-trust
-        # signature so corporate-proxy users get the NODE_EXTRA_CA_CERTS hint
-        # instead of an opaque "exit 1" (issue #38016).
-        & $npmExe ci --include=optional 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
-        $code = $LASTEXITCODE
-        if ($code -ne 0) {
-            Write-Info "  npm ci failed (exit $code) -- retrying with npm install..."
-            & $npmExe install --include=optional 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
-            $code = $LASTEXITCODE
-        }
-        if ($code -eq 0) {
-            & node apps/desktop/scripts/ensure-rolldown-binding.mjs
-            $code = $LASTEXITCODE
-        }
-        $ErrorActionPreference = $prevEAP
-        if ($code -ne 0) {
-            if (Test-ElectronPkgStagedMissingDist -InstallDir $InstallDir) {
-                Write-Warn "Desktop dependency install failed with a missing Electron dist; attempting self-heal..."
-                Try-RestoreElectronDist -InstallDir $InstallDir | Out-Null
-            } else {
-                Show-NpmCertHint ($npmOut -join "`n") | Out-Null
-                # Replay npm's own debug log into our stream: the terse
-                # summary above rarely contains the postinstall stderr
-                # (e.g. Electron's install.js) that explains the failure.
-                Write-NpmDebugLogTail -NpmOutput ($npmOut -join "`n")
-                throw "desktop workspace npm install failed (exit $code) -- see lines above for cause"
-            }
-        } else {
-            Write-Success "Desktop workspace dependencies installed"
-        }
-    } catch {
-        if ($prevEAP) { $ErrorActionPreference = $prevEAP }
-        Pop-Location
-        throw
-    }
-    Pop-Location
-
-    # 2. Build apps/desktop. `npm run pack` runs:
-    #      assert-root-install + write-build-stamp + stage-native-deps +
-    #      tsc -b + vite build + electron-builder --dir
-    # The --dir mode produces an unpacked Hermes.exe in
-    # apps/desktop/release/win-unpacked/ without bundling NSIS/MSI;
-    # we don't need a distributable installer artifact, just a
-    # launchable binary the Tauri installer can spawn.
-    #
-    # CSC_IDENTITY_AUTO_DISCOVERY=false tells electron-builder we are
-    # NOT signing the output. Combined with signAndEditExecutable=false in
-    # apps/desktop/package.json's build.win block, electron-builder never
-    # invokes signtool and therefore never fetches/extracts winCodeSign
-    # (whose macOS symlinks crash 7-Zip on non-admin Windows -- a dead end we
-    # are NOT trying to work around). The Hermes icon + product name are
-    # stamped onto Hermes.exe by our own rcedit step (Set-DesktopExeIdentity)
-    # AFTER this build, completely decoupled from electron-builder signing.
-    #
-    # WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD explicitly cleared as
-    # belt-and-suspenders: if the user's environment has them set
-    # for some other tool, electron-builder would still try to sign.
-    Write-Info "Building desktop app (this takes 1-3 minutes)..."
-    $buildLog = "$env:TEMP\hermes-desktop-build-$(Get-Random).log"
-    # Seed GITHUB_SHA for write-build-stamp.mjs. The stamp prefers CI env vars
-    # over `git rev-parse`, so this covers: (1) node can't find git.exe on PATH
-    # even though this PowerShell session can, (2) ZIP/init trees that still
-    # lack a HEAD after a failed post-extract fetch. Without it the desktop
-    # pack dies with "could not determine git commit" (#50823).
-    if (-not $env:GITHUB_SHA) {
-        if ($Commit) {
-            $env:GITHUB_SHA = $Commit
-        } else {
-            Push-Location $InstallDir
-            try {
-                $global:LASTEXITCODE = 0
-                $resolvedSha = & git -c windows.appendAtomically=false rev-parse HEAD 2>$null
-                if ($LASTEXITCODE -ne 0 -or -not $resolvedSha) {
-                    # ZIP path may have FETCH_HEAD after a fetch even when HEAD is unset.
-                    $global:LASTEXITCODE = 0
-                    $resolvedSha = & git -c windows.appendAtomically=false rev-parse FETCH_HEAD 2>$null
-                }
-                if ($LASTEXITCODE -eq 0 -and $resolvedSha) {
-                    $env:GITHUB_SHA = ("$resolvedSha").Trim()
-                }
-            } catch { } finally {
-                Pop-Location
-            }
-        }
-    }
-    if (-not $env:GITHUB_REF_NAME) {
-        $env:GITHUB_REF_NAME = if ($Branch) { $Branch } else { "main" }
-    }
-    if ($env:GITHUB_SHA) {
-        $shaPreview = if ($env:GITHUB_SHA.Length -ge 12) { $env:GITHUB_SHA.Substring(0, 12) } else { $env:GITHUB_SHA }
-        Write-Info "Desktop build stamp: $shaPreview ($($env:GITHUB_REF_NAME))"
-    } else {
-        Write-Warn "Could not resolve a git commit for the desktop stamp -- write-build-stamp will use its non-git fallback"
-    }
-    Push-Location $desktopDir
-    $prevEAP = $ErrorActionPreference
-    $prevCSCAuto = $env:CSC_IDENTITY_AUTO_DISCOVERY
-    $prevWinCscLink = $env:WIN_CSC_LINK
-    $prevWinCscKeyPassword = $env:WIN_CSC_KEY_PASSWORD
-    try {
-        $ErrorActionPreference = "Continue"
-        $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
-        $env:WIN_CSC_LINK = ""
-        $env:WIN_CSC_KEY_PASSWORD = ""
-        & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
-        $code = $LASTEXITCODE
-        if ($code -ne 0) {
-            $purged = @()
-            $restored = $false
-            if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
-                $purged = @(Clear-ElectronBuildCache -DesktopDir $desktopDir)
-                $restored = Restore-ElectronDist -InstallDir $InstallDir
-            }
-            if ($restored) {
-                Write-Warn "Desktop build failed - refreshed the Electron download, retrying once:"
-                foreach ($p in $purged) { Write-Info "  - $p" }
-                & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
-                $code = $LASTEXITCODE
-            }
-        }
-        if ($code -ne 0 -and -not $env:ELECTRON_MIRROR -and -not (Test-ElectronDist -InstallDir $InstallDir)) {
-            $mirror = $script:DesktopElectronFallbackMirror
-            Write-Warn "Desktop build still failing - the Electron download from GitHub looks blocked."
-            Write-Warn "Re-downloading Electron via a public mirror ($mirror), then rebuilding:"
-            Write-Info "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
-            if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
-                Restore-ElectronDist -InstallDir $InstallDir -Mirror $mirror | Out-Null
-            }
-            $prevMirror = $env:ELECTRON_MIRROR
-            $env:ELECTRON_MIRROR = $mirror
-            try {
-                & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
-                $code = $LASTEXITCODE
-            } finally {
-                $env:ELECTRON_MIRROR = $prevMirror
-            }
-        }
-        $ErrorActionPreference = $prevEAP
-        if ($code -ne 0) {
-            $errText = Get-Content $buildLog -Raw -ErrorAction SilentlyContinue
-            if ($errText) {
-                $snippet = if ($errText.Length -gt 1800) { $errText.Substring(0, 1800) + "..." } else { $errText }
-                Write-Info "  desktop build output:"
-                foreach ($line in $snippet -split "`n") { Write-Host "    $line" -ForegroundColor DarkGray }
-                Write-Info "  Full log: $buildLog"
-            }
-            # `npm run pack` failures (lifecycle script exits) also land in
-            # npm's debug log; replay it so the bootstrap log carries the
-            # full evidence even when $buildLog's tail cuts off the cause.
-            Write-NpmDebugLogTail -NpmOutput $errText
-            throw "apps/desktop build failed (exit $code)"
-        }
-        Write-Success "Desktop app built"
-        Remove-Item -LiteralPath $buildLog -Force -ErrorAction SilentlyContinue
-    } catch {
-        if ($prevEAP) { $ErrorActionPreference = $prevEAP }
-        Pop-Location
-        throw
-    } finally {
-        # Restore env to whatever the caller had -- don't leak our
-        # signing-off override into anything install.ps1 invokes later
-        # (Stage-PlatformSdks, etc.).
-        $env:CSC_IDENTITY_AUTO_DISCOVERY = $prevCSCAuto
-        $env:WIN_CSC_LINK = $prevWinCscLink
-        $env:WIN_CSC_KEY_PASSWORD = $prevWinCscKeyPassword
-    }
-    Pop-Location
-
-    # 3. Sanity-check the produced binary. Probe both arches so this works
-    # on x64 and arm64 build machines.
-    $exeCandidates = @(
-        "$desktopDir\release\win-unpacked\Hermes.exe",
-        "$desktopDir\release\win-arm64-unpacked\Hermes.exe"
-    )
-    $found = $false
-    $desktopExe = $null
-    foreach ($cand in $exeCandidates) {
-        if (Test-Path $cand) {
-            Write-Success "Desktop ready: $cand"
-            $desktopExe = $cand
-            $found = $true
-            break
-        }
-    }
-    if (-not $found) {
-        throw "Desktop build completed but no Hermes.exe was found under $desktopDir\release\*-unpacked\"
-    }
-
-    # 3b. The Hermes icon + identity are stamped onto Hermes.exe by the
-    #     electron-builder `afterExtract` hook (apps/desktop/scripts/after-extract.mjs)
-    #     during `npm run pack` above -- for every build, so the installer's
-    #     --update rebuild stays branded too. No separate stamp step needed here.
-    #     It runs BEFORE the ASAR-integrity PE rewrite (rcedit cannot commit to
-    #     the rewritten exe, #105629). electron-builder's own rcedit step stays
-    #     disabled (signAndEditExecutable=false) because enabling it drags in
-    #     signtool -> winCodeSign -> the unfixable symlink crash.
-
-    # 3c. Grant ALL APPLICATION PACKAGES (S-1-15-2-2) RX on the unpacked app
-    #     directory. Chromium's GPU/renderer sandboxes CHECK-fail with
-    #     0x80000003 when this ACE is missing alongside orphan AppContainer
-    #     SIDs under %LOCALAPPDATA% (electron/electron#51761, hermes-agent#38216).
-    #     Best-effort -- never fail an otherwise-good install over ACL repair.
-    try {
-        $appDir = Split-Path -Parent $desktopExe
-        & icacls $appDir /grant "*S-1-15-2-2:(OI)(CI)(RX)" /T /C /Q | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Success "Granted AppContainer read access on $appDir"
-        } else {
-            Write-Warn "icacls AppContainer grant returned exit $LASTEXITCODE for $appDir"
-        }
-    } catch {
-        Write-Warn "Could not grant AppContainer ACL: $($_.Exception.Message)"
-    }
-
-    # 4. Create Start Menu + Desktop shortcuts pointing DIRECTLY at the packed
-    #    Hermes.exe. We deliberately do NOT point them at `hermes desktop`: that
-    #    command rebuilds (npm install + electron-builder) on every launch,
-    #    which would cost minutes each time. The packed exe is the consumer --
-    #    launching it directly is instant, and updates flow through the
-    #    installer's --update path (which rebuilds once, then relaunches).
-    New-DesktopShortcuts -TargetExe $desktopExe
-}
-
-function New-DesktopShortcuts {
-    param([Parameter(Mandatory = $true)][string]$TargetExe)
-
-    # Best-effort: a shortcut failure must never fail an otherwise-good install.
-    try {
-        $shell = New-Object -ComObject WScript.Shell
-        $workDir = Split-Path -Parent $TargetExe
-
-        # Prefer the standalone icon.ico (shipped beside the exe via
-        # electron-builder extraResources -> resources/icon.ico) over the exe's
-        # embedded resource. An explicit .ico path is more stable across update
-        # cycles: pointing at "$TargetExe,0" makes Windows cache the icon it
-        # extracted from the exe at shortcut-creation time, and that cached
-        # bitmap can persist (showing the OLD/Electron icon) even after the exe
-        # is re-stamped on update. A dedicated .ico sidesteps that extraction.
-        $iconIco = Join-Path $workDir 'resources\icon.ico'
-        if (Test-Path $iconIco) {
-            $iconLocation = "$iconIco,0"
-        } else {
-            $iconLocation = "$TargetExe,0"
-        }
-
-        $targets = @(
-            (Join-Path ([Environment]::GetFolderPath('Programs')) 'Hermes.lnk'),
-            (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Hermes.lnk')
-        )
-
-        foreach ($lnkPath in $targets) {
-            try {
-                $parent = Split-Path -Parent $lnkPath
-                if (-not (Test-Path $parent)) {
-                    New-Item -ItemType Directory -Force -Path $parent | Out-Null
-                }
-                $sc = $shell.CreateShortcut($lnkPath)
-                $sc.TargetPath = $TargetExe
-                $sc.WorkingDirectory = $workDir
-                $sc.IconLocation = $iconLocation
-                $sc.Description = 'Hermes Agent'
-                $sc.Save()
-                Write-Success "Shortcut created: $lnkPath"
-            } catch {
-                Write-Warn "Could not create shortcut $lnkPath : $($_.Exception.Message)"
-            }
-        }
-
-        # Bust the Windows shell icon cache so the desktop/Start-Menu shortcut
-        # repaints with the (possibly newly-stamped) icon instead of a stale
-        # cached bitmap. Critical on the --update path: the exe was re-stamped
-        # with the Hermes icon, but without this the shortcut can keep drawing
-        # the old Electron icon until the user manually refreshes / reboots.
-        # Best-effort and silent -- never fail the install over a cosmetic cache.
-        try {
-            & ie4uinit.exe -show 2>$null
-        } catch {
-            # ie4uinit may be absent/renamed on some SKUs -- ignore.
-        }
-    } catch {
-        Write-Warn "Skipping shortcut creation: $($_.Exception.Message)"
-    }
-}
-
 function Install-PlatformSdks {
     # Ensure messaging-platform SDKs matching tokens the user added to
     # ~/.hermes/.env are importable.  Two problems this solves:
@@ -4526,13 +3713,13 @@ function Install-PlatformSdks {
     #    lower tier when the first fails (common when RL git deps choke),
     #    which silently skips some messaging SDKs from [messaging].
     # 2. `uv` creates the venv without pip.  If a messaging SDK ends up
-    #    missing, the user can't `pip install python-telegram-bot` to
+    #    missing, the user can't `pip install discord.py` to
     #    recover -- pip simply isn't in their venv.
     #
     # Strategy: bootstrap pip via `python -m ensurepip` (idempotent), then
     # for each token set in .env, verify the matching SDK imports.  If not,
     # run one targeted `pip install` as last-chance recovery.  Keeps fresh
-    # Windows installs from hitting silent "python-telegram-bot not installed"
+    # Windows installs from hitting silent "discord.py not installed"
     # at runtime.
     if ($NoVenv) {
         Write-Info "Skipping platform-SDK verification (-NoVenv: no venv to bootstrap)"
@@ -4552,8 +3739,7 @@ function Install-PlatformSdks {
     # Map: env var set in .env -> (import name, pip spec matching [messaging] extra).
     # Specs mirror pyproject.toml to avoid version drift.
     $sdkMap = @(
-        @{ Var = "TELEGRAM_BOT_TOKEN"; Import = "telegram";  Spec = "python-telegram-bot[webhooks]>=22.6,<23" },
-        @{ Var = "DISCORD_BOT_TOKEN";  Import = "discord";   Spec = "discord.py[voice]>=2.7.1,<3" },
+        @{ Var = "DISCORD_BOT_TOKEN";  Import = "discord";   Spec = "discord.py>=2.7.1,<3" },
         @{ Var = "SLACK_BOT_TOKEN";    Import = "slack_sdk"; Spec = "slack-sdk>=3.27.0,<4" },
         @{ Var = "SLACK_APP_TOKEN";    Import = "slack_bolt";Spec = "slack-bolt>=1.18.0,<2" },
         @{ Var = "WHATSAPP_ENABLED";   Import = "qrcode";    Spec = "qrcode>=7.0,<8" }
@@ -4663,7 +3849,7 @@ function Start-GatewayIfConfigured {
 
     $hasMessaging = $false
     $content = Get-Content $envPath -ErrorAction SilentlyContinue
-    foreach ($var in @("TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "WHATSAPP_ENABLED")) {
+    foreach ($var in @("DISCORD_BOT_TOKEN", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "WHATSAPP_ENABLED")) {
         $match = $content | Where-Object { $_ -match "^${var}=.+" -and $_ -notmatch "your-token-here" }
         if ($match) { $hasMessaging = $true; break }
     }
@@ -4768,7 +3954,7 @@ function Write-Completion {
     Write-Host "   hermes config edit  " -NoNewline -ForegroundColor Green
     Write-Host "Open config in editor"
     Write-Host "   hermes gateway      " -NoNewline -ForegroundColor Green
-    Write-Host "Start messaging gateway (Telegram, Discord, etc.)"
+    Write-Host "Start messaging gateway (Discord, Slack, etc.)"
     Write-Host "   hermes update       " -NoNewline -ForegroundColor Green
     Write-Host "Update to latest version"
     Write-Host ""
@@ -4797,7 +3983,7 @@ function Write-Completion {
 # ============================================================================
 #
 # install.ps1 supports a small, stable "stage protocol" that lets programmatic
-# callers (the desktop GUI's onboarding wizard, CI, future install.sh, etc.)
+# callers (CI and other programmatic install drivers)
 # drive the install one step at a time and surface progress/errors with their
 # own UI.  CLI users running the canonical `irm | iex` one-liner never
 # encounter this -- default invocation behaves exactly as before.
@@ -4880,17 +4066,10 @@ $InstallStages = @(
     @{ Name = "dependencies";     Title = "Installing Python dependencies";       Category = "install";      NeedsUserInput = $false; Worker = "Stage-Dependencies" }
     @{ Name = "node-deps";        Title = "Installing Node.js dependencies";      Category = "install";      NeedsUserInput = $false; Worker = "Stage-NodeDeps" }
 )
-if ($IncludeDesktop) {
-    # Insert AFTER node-deps so workspace npm is already installed when
-    # the desktop build runs. Inserted only when explicitly requested
-    # (Hermes-Setup.exe), never via the irm|iex CLI one-liner.
-    $InstallStages += @{ Name = "desktop"; Title = "Building desktop app"; Category = "install"; NeedsUserInput = $false; Worker = "Stage-Desktop" }
-}
 $InstallStages += @(
     @{ Name = "path";             Title = "Adding Hermes to PATH";                Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-Path" }
     @{ Name = "config-templates"; Title = "Writing configuration templates";      Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-ConfigTemplates" }
     @{ Name = "platform-sdks";    Title = "Installing messaging platform SDKs";   Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-PlatformSdks" }
-    @{ Name = "bootstrap-marker"; Title = "Marking install complete";              Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-BootstrapMarker" }
     # Interactive stages.  In non-interactive mode these become no-ops; the
     # caller (GUI / CI) handles the equivalent UX themselves.
     @{ Name = "configure";        Title = "Configuring API keys and models";      Category = "post-install"; NeedsUserInput = $true;  Worker = "Stage-Configure" }
@@ -4932,11 +4111,9 @@ function Stage-Repository       { Install-Repository }
 function Stage-Venv             { Resolve-UvCmd; Install-Venv }
 function Stage-Dependencies     { Resolve-UvCmd; Install-Dependencies }
 function Stage-NodeDeps         { Install-NodeDeps }
-function Stage-Desktop          { Install-DesktopVoiceDeps; Install-Desktop }
 function Stage-Path             { Set-PathVariable }
 function Stage-ConfigTemplates  { Copy-ConfigTemplates }
 function Stage-PlatformSdks     { Resolve-UvCmd; Install-PlatformSdks }
-function Stage-BootstrapMarker  { Write-BootstrapMarker }
 function Stage-Configure        { Invoke-SetupWizard }
 function Stage-Gateway          { Start-GatewayIfConfigured }
 
@@ -4996,11 +4173,17 @@ function Invoke-Stage {
     }
 
     try {
-        & $StageDef.Worker
-        $result.ok = $true
-        if ($script:_StageSkippedReason) {
+        if ($NonInteractive -and $StageDef.NeedsUserInput) {
+            $result.ok = $true
             $result.skipped = $true
-            $result.reason  = $script:_StageSkippedReason
+            $result.reason = "needs user input"
+        } else {
+            & $StageDef.Worker
+            $result.ok = $true
+            if ($script:_StageSkippedReason) {
+                $result.skipped = $true
+                $result.reason  = $script:_StageSkippedReason
+            }
         }
     } catch {
         $result.ok = $false
@@ -5051,7 +4234,7 @@ function Invoke-EnsureMode {
             "browser" {
                 [void](Test-Node)
                 if ($script:HasNode) {
-                    Install-AgentBrowser
+                    Install-CamofoxBrowser
                 } else {
                     Write-Err "Node.js is required for browser tools but could not be installed"
                     exit 1
@@ -5097,12 +4280,21 @@ function Main {
 
 # Dot-sourcing loads the installer's real functions for isolated behavioral
 # tests without running an install. Normal script and `irm | iex` entry points
-# are unchanged.
-if ($MyInvocation.InvocationName -eq ".") {
+# are unchanged. (Upstream eeb3da55 port) The detection flag is captured at
+# the top of the script ($script:IsDotSourced) so a dot-source also skips the
+# 8.3 normalization prologue (Initialize-ResolvedPaths below) -- upstream's
+# part-1/part-2 guard split.
+if ($script:IsDotSourced) {
     return
 }
 
 try {
+    # The normalization prologue runs once per real entry, before any switch
+    # is honored, so every stage below sees long-form paths. Inside the try
+    # so a resolver failure surfaces through the structured JSON error frame
+    # in stage-driver mode.
+    Initialize-ResolvedPaths
+
     if ($Ensure -ne "") {
         if ($PSBoundParameters.ContainsKey("Stage")) {
             Write-Err "Cannot use -Ensure and -Stage simultaneously"
@@ -5116,7 +4308,7 @@ try {
         exit 0
     }
 
-    if ($ProtocolVersion) {
+    if (-not $script:IsDotSourced -and $ProtocolVersion) {
         Write-Output $InstallStageProtocolVersion
         exit 0
     }

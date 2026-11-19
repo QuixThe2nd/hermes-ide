@@ -146,7 +146,7 @@ def emit_stream_drop(
     except Exception:
         pass
     try:
-        agent._buffer_diagnostic_status(
+        agent._buffer_transient_reconnect_notice(
             f"⚠️ {provider} stream {kind} ({type(error).__name__}){_suffix} "
             f"— reconnecting, retry {attempt}/{max_attempts}"
         )

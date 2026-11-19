@@ -51,8 +51,12 @@ WIN_WS = r"C:\Users\rashi\ai_workspace"
     ],
 )
 def test_live_env_cwd_write_is_sanitized_for_container_backends(
-    env_type, host_cwd, override, expected_live_cwd
+    env_type, host_cwd, override, expected_live_cwd, monkeypatch
 ):
+    # Built-in container backends are gone; the fake "docker"/"singularity" names stand in
+    # for plugin-registered backends declaring ``is_container`` — pretend they do.
+    monkeypatch.setattr(
+        tt, "_is_container_backend", lambda t: t in ("docker", "singularity"))
     env = _FakeEnv(env_type, "/root", host_cwd=host_cwd)
     # CWD-only overrides collapse to "default": the env is cached under the
     # collapsed key, not the raw task id.
@@ -64,19 +68,9 @@ def test_live_env_cwd_write_is_sanitized_for_container_backends(
     assert tt.get_session_cwd("sess-abc") == override
 
 
-def test_real_builders_tag_env_type_and_record_host_cwd(tmp_path):
-    """The sanitizer reads ``env_type``/``host_cwd`` off the live instance, so the
-    producers must actually set them: ``_create_environment`` tags the backend and
-    ``DockerEnvironment._mount_args`` records the host dir bound at /workspace."""
-    import os
-
-    from tools.environments.docker import DockerEnvironment
+def test_real_builders_tag_env_type(tmp_path):
+    """The sanitizer reads ``env_type`` off the live instance, so the producer
+    must actually set it: ``_create_environment`` tags the backend."""
     from tools.terminal_tool_backends import _create_environment
 
     assert _create_environment("local", image="", cwd=str(tmp_path), timeout=5).env_type == "local"
-    docker = object.__new__(DockerEnvironment)  # _mount_args needs no docker daemon
-    docker._persistent = False
-    DockerEnvironment._mount_args(docker, [], str(tmp_path), True, "t")
-    assert docker.host_cwd == os.path.abspath(str(tmp_path))
-    DockerEnvironment._mount_args(docker, [], str(tmp_path / "gone"), True, "t")
-    assert docker.host_cwd is None

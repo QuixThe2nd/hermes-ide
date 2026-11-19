@@ -101,7 +101,7 @@ def test_schema_init_preserves_shared_state_db_wal_mode(tmp_path):
         conn.close()
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_connect_preserves_wal_and_applies_macos_durability_barriers(
     tmp_path, monkeypatch
 ):
@@ -825,7 +825,7 @@ def test_delegate_agent_background_uses_live_tui_agent_session_id(monkeypatch):
     from unittest.mock import MagicMock
     import tools.delegate_tool as dt
     from gateway.session_context import clear_session_vars, set_session_vars
-    from tools.approval_context import reset_current_session_key, set_current_session_key
+    from tools.session_context import reset_current_session_key, set_current_session_key
 
     parent = MagicMock()
     parent._delegate_depth = 0
@@ -856,7 +856,7 @@ def test_delegate_agent_background_uses_live_tui_agent_session_id(monkeypatch):
         },
     )
 
-    approval_token = set_current_session_key("pre-compress-parent")
+    tool_session_token = set_current_session_key("pre-compress-parent")
     session_tokens = set_session_vars(
         source="tui",
         session_key="pre-compress-parent",
@@ -867,7 +867,7 @@ def test_delegate_agent_background_uses_live_tui_agent_session_id(monkeypatch):
         assert json.loads(out)["status"] == "dispatched"
         evt = _drain_one()
     finally:
-        reset_current_session_key(approval_token)
+        reset_current_session_key(tool_session_token)
         clear_session_vars(session_tokens)
 
     assert evt is not None
@@ -916,7 +916,7 @@ def _make_async_evt(**over):
     evt = {
         "type": "async_delegation",
         "delegation_id": "deleg_x1",
-        "session_key": "agent:main:telegram:dm:12345:678",
+        "session_key": "agent:main:discord:dm:12345:678",
         "goal": "Investigate flaky test",
         "context": "repo /tmp/p",
         "toolsets": ["terminal"],

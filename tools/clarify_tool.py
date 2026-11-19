@@ -1,6 +1,6 @@
 """Clarify tool: structured multiple-choice / open-ended questions to the user.
 Schema, validation and a thin dispatcher; the UI lives in a platform-provided
-callback (cli.py, gateway/run.py, tui_gateway)."""
+callback (cli.py, gateway/run.py)."""
 
 import inspect
 import json
@@ -159,7 +159,7 @@ def _batch_result(normalized: List[dict], answers: dict, timed_out: bool, notice
 def _run_batch(normalized: List[dict], callback, question: str) -> str:
     """Dispatch a validated batch. Batch-capable callbacks (``questions`` kwarg) get the
     whole list once and reply ``{"answers": {qid: raw}, "timed_out"?}`` as a dict or JSON
-    string (the tui_gateway bridge only carries strings); any other falsy/unparseable reply
+    string (some bridges only carry strings); any other falsy/unparseable reply
     is a cancel-all (mirrors the single-question skip). Legacy callbacks are looped per
     question: an empty answer is a skip, a timeout (``None`` or the sentinel) means the user
     walked away so the loop aborts instead of pestering them; earlier answers are kept."""
@@ -259,8 +259,7 @@ CLARIFY_SCHEMA = {
         "can't click). Result: {responses: [...]} in question order (plus "
         "timed_out=true, and a notice saying why, if the user stopped "
         "part-way or the prompt could not be delivered). Prefer deciding "
-        "low-stakes questions yourself; don't use this for dangerous-command "
-        "confirmation (the terminal tool handles that)."
+        "low-stakes questions yourself."
     ),
     "parameters": {
         "type": "object",

@@ -1,0 +1,70 @@
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  width: 360px;
+  padding: 14px;
+  background: #141414;
+  color: #f2f2f2;
+  font: 14px/1.45 system-ui, sans-serif;
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+#status {
+  margin: 0 0 8px;
+  font-weight: 650;
+}
+
+.connected {
+  color: #8ee6a2;
+}
+
+.disconnected {
+  color: #ffb4b4;
+}
+
+#error {
+  margin: 0 0 10px;
+  color: #ffd0d0;
+}
+
+label {
+  display: block;
+  margin-bottom: 6px;
+}
+
+textarea {
+  width: 100%;
+  resize: vertical;
+  padding: 8px;
+  border: 1px solid #4a4a4a;
+  border-radius: 6px;
+  background: #1e1e1e;
+  color: #f2f2f2;
+  font: 13px/1.4 ui-monospace, monospace;
+}
+
+button {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: #3a6ea5;
+  color: #fff;
+  font: inherit;
+}
+
+.note {
+  margin: 12px 0 0;
+  color: #c8c8c8;
+}

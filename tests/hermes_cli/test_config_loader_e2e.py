@@ -5,7 +5,7 @@ Runs a real subprocess with a temp HERMES_HOME whose config.yaml contains a
 
 Asserts the two halves of the contract:
 
-  1. A migrated BEHAVIORAL site (``tui_gateway.server._load_cfg``) resolves the
+  1. A migrated BEHAVIORAL site (``hermes_cli.config.load_config``) resolves the
      env-expanded AND managed-overlaid values — the drift bug this branch fixes.
   2. A WRITE-BACK site round-trips the raw user file without leaking managed
      values, expanded literals, or merged defaults into it.
@@ -30,8 +30,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 def _run_py(code: str, env_extra: dict[str, str], tmp_path: Path) -> dict:
     """Run ``code`` in a subprocess; results come back via a JSON file.
 
-    A file (not stdout) because importing ``tui_gateway.server`` re-routes
-    the real stdout into its JSON-RPC transport.
+    A file (not stdout) so results survive regardless of stdout handling.
     """
     import os
 
@@ -78,19 +77,19 @@ def test_behavioral_read_gets_expansion_and_overlay_while_writeback_stays_raw(
     code = textwrap.dedent(
         """
         import json
-        from tui_gateway import server
-
-        cfg = server._load_cfg()
-        raw = server._load_cfg_raw()
-
-        # Write-back round-trip through the real save path.
-        rt = server._load_cfg_raw()
-        rt.setdefault("display", {})["battery"] = True
-        server._save_cfg(rt)
-
         import os
         from pathlib import Path
-        saved = Path(server._hermes_home, "config.yaml").read_text(encoding="utf-8")
+        from hermes_cli.config import load_config, read_user_config_raw, save_config
+
+        cfg = load_config()
+        raw = read_user_config_raw()
+
+        # Write-back round-trip through the real save path.
+        rt = read_user_config_raw()
+        rt.setdefault("display", {})["battery"] = True
+        save_config(rt)
+
+        saved = Path(os.environ["HERMES_HOME"], "config.yaml").read_text(encoding="utf-8")
         Path(os.environ["E2E_OUT_FILE"]).write_text(json.dumps({
             "behavioral_prompt": cfg.get("custom_prompt"),
             "behavioral_effort": (cfg.get("agent") or {}).get("reasoning_effort"),
@@ -122,8 +121,10 @@ def test_behavioral_read_gets_expansion_and_overlay_while_writeback_stays_raw(
     saved = out["saved"]
     assert "hello ${E2E_PROMPT_SUFFIX}" in saved     # template preserved
     assert "hello world" not in saved                # no expansion persisted
-    assert "reasoning_effort: low" in saved          # user value preserved
-    assert "high" not in saved                       # managed value NOT persisted
+    # ``reasoning_effort`` is managed-pinned, so the kept save path strips the
+    # key entirely (neither the user's "low" nor the managed "high" is written
+    # back — the overlay owns it).
+    assert "reasoning_effort" not in saved
     assert "battery: true" in saved                  # the actual edit landed
     assert "max_turns" not in saved                  # no DEFAULT_CONFIG pollution
 
