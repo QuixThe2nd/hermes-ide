@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Prove a user who installed OLD via the installer script can reach HEAD.
 #
-# The POSIX sibling of tests/install/windows-e2e.ps1, sharing its
-# staging trick and replacing the old bubblewrap sandbox: instead of a fake
-# Internet (MITM proxy + upload-pack shim), every git process is pointed at a
+# Instead of a fake Internet (MITM proxy + upload-pack shim), every git
+# process is pointed at a
 # local bare clone with url.<file://serve.git>.insteadOf rewrites for both
 # canonical repo URLs in a driver-owned GIT_CONFIG_GLOBAL. The installer and
 # updater run byte-for-byte against their real URLs and land on serve.git;
@@ -17,8 +16,7 @@
 # installer-script update leg runs HEAD's copy (what the website serves at
 # update time).
 #
-# Phases (mirroring the windows driver):
-#   stage      bare-clone this checkout to serve.git, park main at OLD
+# Phases:
 #   install    run OLD's scripts/install.sh under the redirect; assert the
 #              install landed on OLD with a working `hermes`
 #   update     advance served main to HEAD, apply ONE update method, assert

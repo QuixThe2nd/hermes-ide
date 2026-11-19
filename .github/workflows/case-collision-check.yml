@@ -3,7 +3,7 @@ name: Case Collision Check
 # Rejects PRs that track two files whose paths differ only by case
 # (README.md vs readme.md, src/Foo.py vs SRC/foo.py).
 #
-# Linux is case-sensitive; Windows and macOS (default) are not. A
+# macOS (default) is case-insensitive; Linux is case-sensitive. A
 # case-colliding pair lives fine in a Linux checkout and silently breaks
 # every clone on a case-insensitive host — the filesystem can hold only
 # one of them, so checkout fails or whichever wins overwrites the other.

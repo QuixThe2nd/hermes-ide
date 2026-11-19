@@ -10,13 +10,10 @@ ancient source against a current venv — npm workspaces and Python deps that no
 longer match, and every subsequent update failing against the wrong tree.
 
 The pin is skipped when its target is already an ancestor of HEAD, unless the
-caller explicitly passes ``--force-commit`` / ``-ForceCommit``. A fresh clone
+caller explicitly passes ``--force-commit``. A fresh clone
 has no such ancestry, so reproducible/CI pinning is unaffected.
 
-``install.ps1`` carries the same guard (that is the path the Windows report
-hit), but there is no PowerShell host in CI to execute it against a real repo,
-and asserting on the script's *source text* would test its shape rather than
-its behavior. These run the bash implementation of the same logic for real.
+These run the bash implementation of the same logic for real.
 """
 
 from __future__ import annotations

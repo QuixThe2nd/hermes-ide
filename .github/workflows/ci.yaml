@@ -70,10 +70,10 @@ jobs:
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/tests.yml
 
-  # macOS + Windows lanes. The main `tests` lane above is Linux-only, and
-  # the OS-marked tests it collects are skipped there by design (see the
+  # macOS lane. The main `tests` lane above is Linux-only, and the
+  # OS-marked tests it collects are skipped there by design (see the
   # `_OS_MARKS` comment in tests/conftest.py) — this is where they run.
-  # Same `python` lane gate: if no Python changed, neither runs.
+  # Same `python` lane gate: if no Python changed, it doesn't either.
   tests-os:
     name: OS-specific tests
     needs: detect
@@ -94,12 +94,6 @@ jobs:
     if: needs.detect.outputs.frontend == 'true'
     uses: ./.github/workflows/js-tests.yml
 
-  installer-tests:
-    name: Installer tests
-    needs: detect
-    # Windows-only, and only for PRs that touch install.ps1 or its tests.
-    if: needs.detect.outputs.installer == 'true'
-    uses: ./.github/workflows/installer-tests.yml
 
   history-check:
     name: Deny unrelated histories
@@ -209,7 +203,6 @@ jobs:
       - tests-os
       - lint
       - js-tests
-      - installer-tests
       - history-check
       - contributor-check
       - uv-lockfile

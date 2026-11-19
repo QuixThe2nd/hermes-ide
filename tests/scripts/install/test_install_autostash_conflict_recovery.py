@@ -2,7 +2,7 @@
 
 An interrupted/repeated managed install can leave local tracked edits in the
 checkout. If upstream then changes the same lines, ``git stash apply`` conflicts
-during the repository-update stage. Both installers must leave the stash intact,
+during the repository-update stage. The installer must leave the stash intact,
 reset the worktree clean, and complete the real repository stage.
 """
 
@@ -17,11 +17,6 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
-INSTALL_PS1 = REPO_ROOT / "scripts" / "install.ps1"
-POWERSHELL = next(
-    (candidate for candidate in ("pwsh", "powershell") if shutil.which(candidate)),
-    None,
-)
 
 
 def _git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -105,36 +100,6 @@ def test_install_sh_repository_stage_recovers_from_autostash_conflict(
     _assert_conflict_was_recovered(managed, result.stdout)
 
 
-@pytest.mark.live_system_guard_bypass
-@pytest.mark.skipif(
-    shutil.which("git") is None or POWERSHELL is None,
-    reason="needs git and PowerShell",
-)
-def test_install_ps1_repository_stage_recovers_from_autostash_conflict(
-    tmp_path: Path,
-) -> None:
-    managed = _make_conflicted_managed_checkout(tmp_path)
-    result = subprocess.run(
-        [
-            POWERSHELL,
-            "-NoProfile",
-            "-File",
-            str(INSTALL_PS1),
-            "-Stage",
-            "repository",
-            "-NonInteractive",
-            "-InstallDir",
-            str(managed),
-            "-HermesHome",
-            str(tmp_path / "hermes-home"),
-        ],
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    _assert_conflict_was_recovered(managed, result.stdout)
 
 
 @pytest.mark.live_system_guard_bypass

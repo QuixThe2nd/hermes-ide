@@ -8,8 +8,8 @@ Each leg installs an old released version, then updates it to HEAD through the r
 
 1. `scripts/sandbox/generate-e2e-matrix.mjs` declares every {os, install-method, update-method} pair and expands it against sampled release tags.
 2. `.github/workflows/install-e2e.yml` picks release tags, runs the generator, fans out one matrix job per OS, and writes plan/result charts.
-3. The reusable run workflows own capability gates. `install-e2e-run.yml` serves Linux, `install-e2e-windows-run.yml` serves Windows, and `install-e2e-macos-run.yml` selects the shared driver on macOS.
-4. `tests/install/installer-script-e2e.sh` handles POSIX installs and updates; `tests/install/windows-e2e.ps1` handles Windows.
+3. The reusable run workflows own capability gates. `install-e2e-run.yml` serves Linux, and `install-e2e-macos-run.yml` selects the shared driver on macOS.
+4. `tests/install/installer-script-e2e.sh` handles POSIX installs and updates.
 
 To declare a new method, edit the generator. To implement it, update the relevant workflow gate and driver.
 
@@ -32,7 +32,7 @@ Old releases may not have today's flags. Drivers probe the old installer or inst
 
 Install method:
 
-- `installer-script`: the platform one-liner (`curl | bash` on Linux/macOS, `irm | iex` on Windows).
+- `installer-script`: the platform one-liner (`curl | bash` on Linux/macOS).
 
 Update methods:
 
@@ -43,16 +43,16 @@ A grey leg means the declared pair has no driver arm. The result chart distingui
 
 ## Triggers and cost
 
-The matrix runs every 12 hours, on release tags, and by manual dispatch—not on pull requests. Each OS currently has two legs per sampled tag, so a full run has six legs per tag. A typical green leg takes 7–15 minutes and is capped at 60 minutes.
+The matrix runs every 12 hours, on release tags, and by manual dispatch—not on pull requests. Each OS currently has two legs per sampled tag, so a full run has four legs per tag. A typical green leg takes 7–15 minutes and is capped at 60 minutes.
 
 ```sh
 gh workflow run install-e2e.yml --ref <branch> -f route=all -f tag-count=2
 ```
 
-Route slices are `all`, `both`/`update`/`installer` for Linux, `windows`, and `macos`. `tag-count` accepts 1–10; `install-ref` can select one exact release tag instead.
+Route slices are `all`, `both`/`update`/`installer` for Linux, and `macos`. `tag-count` accepts 1–10; `install-ref` can select one exact release tag instead.
 
 Run drivers locally only in a disposable VM or runner: they install real toolchains and manage Hermes processes in their isolated workroots.
 
 ## Artifacts
 
-Each leg uploads installer/update logs and a screen recording. `.github/actions/e2e-screen-record` installs ffmpeg and fails if the recording is missing or empty. Linux uses Xvfb, Windows uses gdigrab, and macOS uses avfoundation. Download artifacts with `gh run download <run-id>`.
+Each leg uploads installer/update logs and a screen recording. `.github/actions/e2e-screen-record` installs ffmpeg and fails if the recording is missing or empty. Linux uses Xvfb and macOS uses avfoundation. Download artifacts with `gh run download <run-id>`.
