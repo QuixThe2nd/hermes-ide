@@ -435,6 +435,49 @@ class TestDescribeToolCallFileDescriptions:
         assert describe_tool_call(tool_name, args) == expected
 
 
+class TestDescribeToolCallReadSearchDescriptions:
+    """read_file/search_files describe purpose instead of exposing the path/pattern."""
+
+    @pytest.mark.parametrize(
+        ("args", "expected"),
+        [
+            ({"path": "/repo/gateway/run_turn_runner.py", "description": "check the serving note path"}, "Reading run_turn_runner.py to check the serving note path"),
+            ({"path": "/repo/gateway/run_turn_runner.py", "description": "to check the serving note path"}, "Reading run_turn_runner.py to check the serving note path"),
+            ({"description": "check the serving note path"}, "Reading to check the serving note path"),
+        ],
+    )
+    def test_read_description_wins_over_path(self, args, expected):
+        phrase = describe_tool_call("read_file", args)
+        assert phrase == expected
+        assert "/repo/gateway" not in phrase
+
+    @pytest.mark.parametrize(
+        ("args", "expected"),
+        [
+            ({"pattern": "serving_note", "path": "/repo/gateway", "description": "find where sidecar notes are appended"}, "Searching files to find where sidecar notes are appended"),
+            ({"pattern": "*.log", "target": "files", "description": "locate the debug logs"}, "Searching file names to locate the debug logs"),
+            ({"description": "finding stale imports"}, "Searching files to find stale imports"),
+        ],
+    )
+    def test_search_description_wins_over_pattern(self, args, expected):
+        phrase = describe_tool_call("search_files", args)
+        assert phrase == expected
+        assert "serving_note" not in phrase and "*.log" not in phrase and "/repo/gateway" not in phrase
+
+    @pytest.mark.parametrize(
+        ("tool_name", "args", "expected"),
+        [
+            ("read_file", {"path": "/tmp/x.py"}, "Reading /tmp/x.py"),
+            ("read_file", {"path": "/tmp/x.py", "description": "  "}, "Reading /tmp/x.py"),
+            ("search_files", {"pattern": "foo", "path": "/repo/gateway"}, "Searching files for foo in /repo/gateway"),
+            ("search_files", {"pattern": "*.log", "target": "files"}, "Searching file names for *.log"),
+            ("search_files", {"pattern": "foo", "description": ""}, "Searching files for foo"),
+        ],
+    )
+    def test_fallback_without_description_unchanged(self, tool_name, args, expected):
+        assert describe_tool_call(tool_name, args) == expected
+
+
 class TestPrepareToolPreview:
     def test_recovers_and_describes_truncated_url(self):
         url = "https://example.com/a/very/long/path/to/a/page"
