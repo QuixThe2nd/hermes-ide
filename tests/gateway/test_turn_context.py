@@ -973,7 +973,7 @@ class TestTurnRunner:
         )
 
         assert messages
-        assert messages[0].startswith("🧠 Context injected")
+        assert messages[0].startswith("🧠 Injecting context")
         assert "🧠 Context Injection" not in "\n".join(messages)
 
     def test_context_injection_mixed_timestamp_and_memory_splits_standalone_time_line(self):
