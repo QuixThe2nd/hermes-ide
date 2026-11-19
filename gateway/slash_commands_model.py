@@ -164,6 +164,11 @@ class GatewayModelCommandsMixin:
         if _sess_db is not None:
             try:
                 _sess_entry = await self.async_session_store.get_or_create_session(source)
+                # Consume the auto-reset flag BEFORE storing the override, or the next
+                # message's cleanup pops the fresh override (#48031). A picker pick
+                # re-enters through the interactive callback, not after a reset.
+                if not picker and getattr(_sess_entry, "was_auto_reset", False):
+                    _sess_entry.was_auto_reset = False
                 await _sess_db.update_session_model(
                     _sess_entry.session_id, result.new_model, provider=result.target_provider)
             except Exception as exc:
