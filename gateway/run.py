@@ -96,6 +96,12 @@ from agent.turn_context import (
 )
 from hermes_cli.config import _is_ssh_remote_tilde_cwd
 from hermes_cli.fallback_config import get_fallback_chain
+# Sentinel placed into _running_agents before any await (guards the
+# async gap between the "already running" check and agent creation).
+# Lives in gateway.sentinels: run.py is executed twice under
+# ``python -m gateway.run`` (__main__ + gateway.run) and both copies must
+# share ONE sentinel object for cross-module ``is`` checks to hold.
+from gateway.sentinels import AGENT_PENDING_SENTINEL as _AGENT_PENDING_SENTINEL
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -4092,12 +4098,6 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
         return f"{platform.value}: open policy without allow-all opt-in"
     return None
 
-
-# Sentinel placed into _running_agents immediately when a session starts
-# processing, *before* any await.  Prevents a second message for the same
-# session from bypassing the "already running" guard during the async gap
-# between the guard check and actual agent creation.
-_AGENT_PENDING_SENTINEL = object()
 
 # Conversation-scoped per-session state registry (legacy contract).
 # The state itself now lives in ``SessionState.conversation`` (see
