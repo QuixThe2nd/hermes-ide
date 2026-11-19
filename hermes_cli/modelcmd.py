@@ -1,23 +1,15 @@
-"""Python twin of ``internal/modelcmd`` (Go canonical).
-
-The Go module under ``internal/modelcmd`` owns the pure logic of the
-``/model`` slash command: argument/flag parsing, the no-argument listing
-text, the interactive picker's provider rows, and the post-switch
-confirmation block. This module is the twin the runtime imports — repo
-deployments (pip, docker) carry no Go toolchain, the same arrangement as
-``internal/servingidentity`` and ``internal/generations``.
-``tests/hermes_cli/test_modelcmd_contract.py`` pipes every shared-table
-record (``internal/modelcmd/testdata/cases.json``) through the running Go
-binary when a toolchain exists and asserts this twin answers identically,
-so the implementations cannot drift.
-
-Parsing lives in ``hermes_cli.model_switch.parse_model_switch_args`` and is
-NOT re-implemented here — the twin owns only the rendering/trimming halves.
-"""
+"""Python twin of ``internal/modelcmd`` (Go canonical): the rendering/trimming
+halves of ``/model`` — the no-arg listing text, the picker's provider rows,
+and the post-switch confirmation block. Repo deployments (pip, docker) carry
+no Go toolchain, so the runtime imports this twin (same arrangement as
+``internal/servingidentity``); ``tests/hermes_cli/test_modelcmd_contract.py``
+pipes the shared table (``testdata/cases.json``) through the running Go
+binary and asserts identical answers. Parsing is NOT re-implemented here — it
+lives in ``hermes_cli.model_switch.parse_model_switch_args``."""
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 DEFAULT_MAX_PICKER_PROVIDERS = 25  # Discord select-menu option cap
 DEFAULT_MAX_PICKER_MODELS = 50
@@ -31,30 +23,27 @@ _EN_LABELS = {
     "usage_persist": "`/model <name> --global` — persist",
 }
 
+# Confirmation wire key -> i18n key where the catalog name differs from the wire name.
+_CONFIRM_I18N_KEYS = {
+    "switched": "switched", "provider": "provider_label", "context": "context_label",
+    "warning": "warning_prefix", "saved_global": "saved_global",
+    "session_only": "session_only_hint",
+}
+
 
 def listing_record(
     current_model: str,
     current_provider_label: str,
     providers: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Assemble the wire record RenderListing consumes.
-
-    Labels are pre-localized here (the Go side renders only); providers
-    rows are ``list_authenticated_providers`` output verbatim.
-    """
+    """Assemble the wire record RenderListing consumes: labels pre-localized
+    here (the Go side renders only); provider rows pass through verbatim."""
     from agent.i18n import t
 
     return {
         "current_model": current_model or "unknown",
         "current_provider_label": current_provider_label or "unknown",
-        "labels": {
-            "current_label": t("gateway.model.current_label"),
-            "current_tag": t("gateway.model.current_tag"),
-            "more_models_suffix": t("gateway.model.more_models_suffix"),
-            "usage_switch_model": t("gateway.model.usage_switch_model"),
-            "usage_switch_provider": t("gateway.model.usage_switch_provider"),
-            "usage_persist": t("gateway.model.usage_persist"),
-        },
+        "labels": {key: t(f"gateway.model.{key}") for key in _EN_LABELS},
         "providers": providers,
     }
 
@@ -116,13 +105,11 @@ def build_picker_rows(
     max_models: int = DEFAULT_MAX_PICKER_MODELS,
 ) -> List[Dict[str, Any]]:
     """Trim raw provider rows to what the interactive picker can render.
-
     Mirrors Go PickerOptions: drop rows without models AND without an
-    ``api_url``; cap each row's model list (``total_models`` keeps the full
-    count so "+N more" stays truthful); mark ``is_current`` exactly on the
-    row matching *current_provider*; cap the row count, always keeping the
-    current provider.
-    """
+    ``api_url``; cap the model lists (``total_models`` keeps the full count
+    so "+N more" stays truthful); mark ``is_current`` exactly on the row
+    matching *current_provider*; cap the row count, always keeping the
+    current provider."""
     max_providers = max_providers or DEFAULT_MAX_PICKER_PROVIDERS
     max_models = max_models or DEFAULT_MAX_PICKER_MODELS
     current = (current_provider or "").strip().lower()
@@ -177,25 +164,15 @@ def confirmation_record(
     warning: str = "",
     scope: str = "session",
     global_error: str = "",
-    labels: Dict[str, str] = None,
+    labels: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
-    """Assemble the wire record RenderConfirmation consumes.
-
-    Labels are pre-localized here (``agent.i18n``) unless a preset is passed
-    (the CLI passes ``CLI_CONFIRM_LABELS``); "once" has no catalog entry and
-    keeps the English default.
-    """
+    """Assemble the wire record RenderConfirmation consumes: labels from
+    ``agent.i18n`` unless a preset is passed (the CLI passes
+    ``CLI_CONFIRM_LABELS``); "once" has no catalog entry."""
     from agent.i18n import t
 
     if labels is None:
-        labels = {
-            wire_key: t(f"gateway.model.{i18n_key}")
-            for wire_key, i18n_key in (
-                ("switched", "switched"), ("provider", "provider_label"),
-                ("context", "context_label"), ("warning", "warning_prefix"),
-                ("saved_global", "saved_global"), ("session_only", "session_only_hint"),
-            )
-        }
+        labels = {k: t(f"gateway.model.{v}") for k, v in _CONFIRM_I18N_KEYS.items()}
     return {
         "model": model or "unknown",
         "provider": provider or "unknown",
