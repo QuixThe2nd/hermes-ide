@@ -2,13 +2,14 @@
 
 The Go module under ``internal/modelcmd`` owns the pure logic of the
 ``/model`` slash command: argument/flag parsing, the no-argument listing
-text, and the interactive picker's provider rows. This module is the twin
-the runtime imports — repo deployments (pip, docker) carry no Go toolchain,
-the same arrangement as ``internal/servingidentity`` and
-``internal/generations``. ``tests/hermes_cli/test_modelcmd_contract.py``
-pipes every shared-table record (``internal/modelcmd/testdata/cases.json``)
-through the running Go binary when a toolchain exists and asserts this
-twin answers identically, so the implementations cannot drift.
+text, the interactive picker's provider rows, and the post-switch
+confirmation block. This module is the twin the runtime imports — repo
+deployments (pip, docker) carry no Go toolchain, the same arrangement as
+``internal/servingidentity`` and ``internal/generations``.
+``tests/hermes_cli/test_modelcmd_contract.py`` pipes every shared-table
+record (``internal/modelcmd/testdata/cases.json``) through the running Go
+binary when a toolchain exists and asserts this twin answers identically,
+so the implementations cannot drift.
 
 Parsing lives in ``hermes_cli.model_switch.parse_model_switch_args`` and is
 NOT re-implemented here — the twin owns only the rendering/trimming halves.
@@ -144,3 +145,90 @@ def build_picker_rows(
             keep[-1], rows[current_idx] = rows[current_idx], keep[-1]
         rows = keep
     return rows
+
+
+_CONFIRM_LABELS = {
+    "switched": "Model switched to `{model}`",
+    "provider": "Provider: {provider}",
+    "context": "Context: {tokens} tokens",
+    "warning": "Warning: {warning}",
+    "saved_global": "Saved to config.yaml (`--global`)",
+    "session_only": "_(session only — add `--global` to persist)_",
+    "once": "(next turn only — restores after one response)",
+}
+
+# The CLI's indented flavor of the same confirmation block.
+CLI_CONFIRM_LABELS = {
+    "switched": "  ✓ Model switched: {model}",
+    "provider": "    Provider: {provider}",
+    "context": "    Context: {tokens} tokens",
+    "warning": "    ⚠ {warning}",
+    "saved_global": "    Saved to config.yaml (--global)",
+    "session_only": "    (session only — add --global to persist)",
+    "once": "    (next turn only — restores after one response)",
+}
+
+
+def confirmation_record(
+    model: str,
+    provider: str,
+    *,
+    tokens: int = 0,
+    warning: str = "",
+    scope: str = "session",
+    global_error: str = "",
+    labels: Dict[str, str] = None,
+) -> Dict[str, Any]:
+    """Assemble the wire record RenderConfirmation consumes.
+
+    Labels are pre-localized here (``agent.i18n``) unless a preset is passed
+    (the CLI passes ``CLI_CONFIRM_LABELS``); "once" has no catalog entry and
+    keeps the English default.
+    """
+    from agent.i18n import t
+
+    if labels is None:
+        labels = {
+            wire_key: t(f"gateway.model.{i18n_key}")
+            for wire_key, i18n_key in (
+                ("switched", "switched"), ("provider", "provider_label"),
+                ("context", "context_label"), ("warning", "warning_prefix"),
+                ("saved_global", "saved_global"), ("session_only", "session_only_hint"),
+            )
+        }
+    return {
+        "model": model or "unknown",
+        "provider": provider or "unknown",
+        "tokens": int(tokens or 0),
+        "warning": warning or "",
+        "scope": scope or "session",
+        "global_error": global_error or "",
+        "labels": labels,
+    }
+
+
+def render_confirmation(record: Dict[str, Any]) -> str:
+    """Lay out the post-switch reply: switched, provider, context tokens,
+    warning, then the scope tail. Mirrors Go RenderConfirmation."""
+    src = record.get("labels") or {}
+    lab = {k: (src.get(k) or v) for k, v in _CONFIRM_LABELS.items()}
+    lines = [
+        _format(lab["switched"], model=record.get("model") or "unknown"),
+        _format(lab["provider"], provider=record.get("provider") or "unknown"),
+    ]
+    tokens = int(record.get("tokens") or 0)
+    if tokens > 0:
+        lines.append(_format(lab["context"], tokens=f"{tokens:,}"))
+    if record.get("warning"):
+        lines.append(_format(lab["warning"], warning=record["warning"]))
+    scope, global_error = record.get("scope") or "session", record.get("global_error") or ""
+    if scope == "global" and global_error:
+        lines.append(_format(lab["warning"], warning=global_error))
+        lines.append(lab["session_only"])
+    elif scope == "global":
+        lines.append(lab["saved_global"])
+    elif scope == "once":
+        lines.append(lab["once"])
+    else:
+        lines.append(lab["session_only"])
+    return "\n".join(lines)

@@ -151,9 +151,9 @@
    }
   },
   {
-   "raw": "x —provider litellm",
+   "raw": "x \u2014provider litellm",
    "want": {
-    "raw": "x —provider litellm",
+    "raw": "x \u2014provider litellm",
     "target": "x",
     "explicit_provider": "litellm",
     "reasoning_effort": "",
@@ -166,10 +166,10 @@
    }
   },
   {
-   "raw": "model‑x --provider",
+   "raw": "model\u2011x --provider",
    "want": {
-    "raw": "model‑x --provider",
-    "target": "model‑x --provider",
+    "raw": "model\u2011x --provider",
+    "target": "model\u2011x --provider",
     "explicit_provider": "",
     "reasoning_effort": "",
     "is_global": false,
@@ -251,9 +251,9 @@
      "current_label": "Current: `{model}` on {provider}",
      "current_tag": " (current)",
      "more_models_suffix": " (+{count} more)",
-     "usage_switch_model": "`/model <name>` — switch model",
-     "usage_switch_provider": "`/model <name> --provider <slug>` — switch provider",
-     "usage_persist": "`/model <name> --global` — persist"
+     "usage_switch_model": "`/model <name>` \u2014 switch model",
+     "usage_switch_provider": "`/model <name> --provider <slug>` \u2014 switch provider",
+     "usage_persist": "`/model <name> --global` \u2014 persist"
     },
     "providers": [
      {
@@ -288,7 +288,7 @@
      }
     ]
    },
-   "want": "Current: `hermes-4` on LiteLLM\n\n**LiteLLM** `--provider litellm` (current):\n  `hermes-4`, `hermes-4-mini`\n\n**Anthropic** `--provider anthropic`:\n  `claude-opus-4`, `claude-sonnet-4` (+7 more)\n\n**Custom OpenAI** `--provider custom`:\n  `https://api.example.com/v1`\n\n`/model <name>` — switch model\n`/model <name> --provider <slug>` — switch provider\n`/model <name> --global` — persist"
+   "want": "Current: `hermes-4` on LiteLLM\n\n**LiteLLM** `--provider litellm` (current):\n  `hermes-4`, `hermes-4-mini`\n\n**Anthropic** `--provider anthropic`:\n  `claude-opus-4`, `claude-sonnet-4` (+7 more)\n\n**Custom OpenAI** `--provider custom`:\n  `https://api.example.com/v1`\n\n`/model <name>` \u2014 switch model\n`/model <name> --provider <slug>` \u2014 switch provider\n`/model <name> --global` \u2014 persist"
   },
   {
    "name": "localized_labels",
@@ -299,9 +299,9 @@
      "current_label": "Actuel : `{model}` sur {provider}",
      "current_tag": " (actuel)",
      "more_models_suffix": " (+{count} autres)",
-     "usage_switch_model": "`/model <nom>` — changer de modèle",
-     "usage_switch_provider": "`/model <nom> --provider <slug>` — changer de fournisseur",
-     "usage_persist": "`/model <nom> --global` — persister"
+     "usage_switch_model": "`/model <nom>` \u2014 changer de mod\u00e8le",
+     "usage_switch_provider": "`/model <nom> --provider <slug>` \u2014 changer de fournisseur",
+     "usage_persist": "`/model <nom> --global` \u2014 persister"
     },
     "providers": [
      {
@@ -317,7 +317,7 @@
      }
     ]
    },
-   "want": "Actuel : `hermes-4` sur LiteLLM\n\n**LiteLLM** `--provider litellm` (actuel):\n  `hermes-4`, `hermes-4-mini`\n\n`/model <nom>` — changer de modèle\n`/model <nom> --provider <slug>` — changer de fournisseur\n`/model <nom> --global` — persister"
+   "want": "Actuel : `hermes-4` sur LiteLLM\n\n**LiteLLM** `--provider litellm` (actuel):\n  `hermes-4`, `hermes-4-mini`\n\n`/model <nom>` \u2014 changer de mod\u00e8le\n`/model <nom> --provider <slug>` \u2014 changer de fournisseur\n`/model <nom> --global` \u2014 persister"
   }
  ],
  "picker": [
@@ -555,6 +555,101 @@
      "total_models": 1
     }
    ]
+  }
+ ],
+ "confirmation": [
+  {
+   "name": "session_default_labels",
+   "record": {
+    "model": "hermes-4",
+    "provider": "LiteLLM"
+   },
+   "want": "Model switched to `hermes-4`\nProvider: LiteLLM\n_(session only \u2014 add `--global` to persist)_"
+  },
+  {
+   "name": "global_clean_with_tokens_and_warning",
+   "record": {
+    "model": "sonnet-4.5",
+    "provider": "Anthropic",
+    "tokens": 272000,
+    "warning": "fallback model applied",
+    "scope": "global",
+    "labels": {
+     "switched": "Model switched to `{model}`",
+     "provider": "Provider: {provider}",
+     "context": "Context: {tokens} tokens",
+     "warning": "Warning: {warning}",
+     "saved_global": "Saved to config.yaml (`--global`)",
+     "session_only": "_(session only \u2014 add `--global` to persist)_",
+     "once": "(next turn only \u2014 restores after one response)"
+    }
+   },
+   "want": "Model switched to `sonnet-4.5`\nProvider: Anthropic\nContext: 272,000 tokens\nWarning: fallback model applied\nSaved to config.yaml (`--global`)"
+  },
+  {
+   "name": "global_write_failed_never_claims_clean_global",
+   "record": {
+    "model": "gpt-5.2",
+    "provider": "OpenAI",
+    "scope": "global",
+    "global_error": "config.yaml not updated (disk full)",
+    "labels": {
+     "switched": "Model switched to `{model}`",
+     "provider": "Provider: {provider}",
+     "context": "Context: {tokens} tokens",
+     "warning": "Warning: {warning}",
+     "saved_global": "Saved to config.yaml (`--global`)",
+     "session_only": "_(session only \u2014 add `--global` to persist)_",
+     "once": "(next turn only \u2014 restores after one response)"
+    }
+   },
+   "want": "Model switched to `gpt-5.2`\nProvider: OpenAI\nWarning: config.yaml not updated (disk full)\n_(session only \u2014 add `--global` to persist)_"
+  },
+  {
+   "name": "once_scope_restores_after_one_response",
+   "record": {
+    "model": "grok-4",
+    "provider": "xAI",
+    "tokens": 1000,
+    "scope": "once",
+    "labels": {
+     "switched": "Model switched to `{model}`",
+     "provider": "Provider: {provider}",
+     "context": "Context: {tokens} tokens",
+     "warning": "Warning: {warning}",
+     "saved_global": "Saved to config.yaml (`--global`)",
+     "session_only": "_(session only \u2014 add `--global` to persist)_",
+     "once": "(next turn only \u2014 restores after one response)"
+    }
+   },
+   "want": "Model switched to `grok-4`\nProvider: xAI\nContext: 1,000 tokens\n(next turn only \u2014 restores after one response)"
+  },
+  {
+   "name": "cli_flavor_labels",
+   "record": {
+    "model": "kimi-k2",
+    "provider": "Moonshot",
+    "scope": "global",
+    "labels": {
+     "switched": "  \u2713 Model switched: {model}",
+     "provider": "    Provider: {provider}",
+     "context": "    Context: {tokens} tokens",
+     "warning": "    \u26a0 {warning}",
+     "saved_global": "    Saved to config.yaml (--global)",
+     "session_only": "    (session only \u2014 add --global to persist)",
+     "once": "    (next turn only \u2014 restores after one response)"
+    }
+   },
+   "want": "  \u2713 Model switched: kimi-k2\n    Provider: Moonshot\n    Saved to config.yaml (--global)"
+  },
+  {
+   "name": "unknown_scope_falls_back_to_session",
+   "record": {
+    "model": "m",
+    "provider": "p",
+    "scope": "bogus"
+   },
+   "want": "Model switched to `m`\nProvider: p\n_(session only \u2014 add `--global` to persist)_"
   }
  ]
 }

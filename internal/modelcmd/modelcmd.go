@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -324,4 +325,87 @@ func toAnySlice(in []string) []any {
 		out[i] = s
 	}
 	return out
+}
+
+// ConfirmationRecord is everything a post-switch confirmation needs beyond
+// the resolved route. Labels carry the pre-localized template strings
+// (agent.i18n on the Python side); format placeholders are {model},
+// {provider}, {tokens} and {warning}.
+type ConfirmationRecord struct {
+	Model       string            `json:"model"`
+	Provider    string            `json:"provider"`
+	Tokens      int64             `json:"tokens"`
+	Warning     string            `json:"warning"`
+	Scope       string            `json:"scope"` // "session" | "once" | "global"
+	GlobalError string            `json:"global_error"`
+	Labels      map[string]string `json:"labels,omitempty"`
+}
+
+// English label defaults for records built without a Labels map (mirrors
+// locales/en.yaml gateway.model.*).
+var defaultConfirmationLabels = map[string]string{
+	"switched":     "Model switched to `{model}`",
+	"provider":     "Provider: {provider}",
+	"context":      "Context: {tokens} tokens",
+	"warning":      "Warning: {warning}",
+	"saved_global": "Saved to config.yaml (`--global`)",
+	"session_only": "_(session only — add `--global` to persist)_",
+	"once":         "(next turn only — restores after one response)",
+}
+
+// RenderConfirmation lays out the post-switch reply: the switched line, the
+// provider, the context tokens when known, the switch warning, then the
+// scope tail. A --global switch whose config write failed never claims a
+// clean global commit — the error is appended and the session-only hint
+// shown instead.
+func RenderConfirmation(rec ConfirmationRecord) string {
+	labels := rec.Labels
+	if labels == nil {
+		labels = defaultConfirmationLabels
+	}
+	lines := []string{
+		format(label(labels, "switched"), map[string]string{"model": rec.Model}),
+		format(label(labels, "provider"), map[string]string{"provider": rec.Provider}),
+	}
+	if rec.Tokens > 0 {
+		lines = append(lines, format(label(labels, "context"),
+			map[string]string{"tokens": groupThousands(rec.Tokens)}))
+	}
+	if rec.Warning != "" {
+		lines = append(lines, format(label(labels, "warning"), map[string]string{"warning": rec.Warning}))
+	}
+	switch {
+	case rec.Scope == "global" && rec.GlobalError != "":
+		lines = append(lines,
+			format(label(labels, "warning"), map[string]string{"warning": rec.GlobalError}),
+			label(labels, "session_only"))
+	case rec.Scope == "global":
+		lines = append(lines, label(labels, "saved_global"))
+	case rec.Scope == "once":
+		lines = append(lines, label(labels, "once"))
+	default:
+		lines = append(lines, label(labels, "session_only"))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// groupThousands renders n with comma thousands separators ("272,000"),
+// matching Python's f"{n:,}" used by the twin.
+func groupThousands(n int64) string {
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	digits := strconv.FormatInt(n, 10)
+	var out []byte
+	for i, d := range []byte(digits) {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, d)
+	}
+	if neg {
+		return "-" + string(out)
+	}
+	return string(out)
 }

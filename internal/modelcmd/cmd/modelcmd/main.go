@@ -11,9 +11,9 @@
 //	 "labels":{…},"providers":[…]}
 //	  → the no-arg /model reply text.
 //
-//	{"op":"picker","providers":[…raw rows…],"current_provider":"litellm",
-//	 "max_providers":25,"max_models":50}
-//	  → the trimmed picker rows as a JSON array.
+//	{"op":"confirmation","model":"…","provider":"…","tokens":272000,
+//	 "warning":"","scope":"global","global_error":"","labels":{…}}
+//	  → the post-switch confirmation text.
 //
 // Production surfaces do not shell out to this binary: hermes_cli/modelcmd.py
 // is the twin the runtime calls (pip/docker deployments carry no Go
@@ -55,6 +55,14 @@ func run(stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintln(stdout, modelcmd.RenderListing(rec))
 		return 0
+	case "confirmation":
+		rec, err := decodeConfirmation(req)
+		if err != nil {
+			fmt.Fprintf(stderr, "modelcmd: bad confirmation record: %v\n", err)
+			return 2
+		}
+		fmt.Fprintln(stdout, modelcmd.RenderConfirmation(rec))
+		return 0
 	case "picker":
 		providers, _ := req["providers"].([]any)
 		rows := make([]map[string]any, 0, len(providers))
@@ -92,6 +100,19 @@ func decodeListing(req map[string]any) (modelcmd.ListingRecord, error) {
 	var rec modelcmd.ListingRecord
 	if err := json.Unmarshal(raw, &rec); err != nil {
 		return modelcmd.ListingRecord{}, err
+	}
+	return rec, nil
+}
+
+// decodeConfirmation maps the loose JSON request onto ConfirmationRecord.
+func decodeConfirmation(req map[string]any) (modelcmd.ConfirmationRecord, error) {
+	raw, err := json.Marshal(req)
+	if err != nil {
+		return modelcmd.ConfirmationRecord{}, err
+	}
+	var rec modelcmd.ConfirmationRecord
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		return modelcmd.ConfirmationRecord{}, err
 	}
 	return rec, nil
 }

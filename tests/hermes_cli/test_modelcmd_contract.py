@@ -20,7 +20,8 @@ from pathlib import Path
 import pytest
 
 from hermes_cli.model_switch import MODEL_SWITCH_ERROR_TEXT, parse_model_switch_args
-from hermes_cli.modelcmd import build_picker_rows, render_model_listing
+from hermes_cli.modelcmd import (
+    CLI_CONFIRM_LABELS, build_picker_rows, render_confirmation, render_model_listing)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CASES = _REPO_ROOT / "internal" / "modelcmd" / "testdata" / "cases.json"
@@ -57,10 +58,9 @@ def _python_parse(raw: str) -> dict:
 def test_parse_twin_matches_shared_table(case):
     assert _python_parse(case["raw"]) == case["want"]
 
-
-@pytest.mark.parametrize("case", _load_table()["listing"], ids=lambda c: c["name"])
-def test_listing_twin_matches_shared_table(case):
-    assert render_model_listing(case["record"]) == case["want"]
+@pytest.mark.parametrize("case", _load_table()["confirmation"], ids=lambda c: c["name"])
+def test_confirmation_twin_matches_shared_table(case):
+    assert render_confirmation(case["record"]) == case["want"]
 
 
 @pytest.mark.parametrize("case", _load_table()["picker"], ids=lambda c: c["name"])
@@ -117,3 +117,13 @@ def test_twin_matches_running_go_core():
             max_models=case["max_models"],
         )
         assert got == want, f"picker {case['name']}: go={got!r} python={want!r}"
+    for case in table["confirmation"]:
+        got = _go_answers({"op": "confirmation", **case["record"]})
+        assert got.rstrip("\n") == render_confirmation(case["record"]), (
+            f"confirmation {case['name']}"
+        )
+    # The CLI flavor preset must render through Go too — it feeds the same op.
+    rec = {"model": "kimi-k2", "provider": "Moonshot", "scope": "session",
+           "labels": CLI_CONFIRM_LABELS}
+    got = _go_answers({"op": "confirmation", **rec})
+    assert got.rstrip("\n") == render_confirmation(rec)
