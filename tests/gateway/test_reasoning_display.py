@@ -50,7 +50,7 @@ class TestOneLineReasoningDisplay:
         )
 
     def test_non_discord_renders_italic_summary(self):
-        for platform_key in ("telegram", "slack", "matrix"):
+        for platform_key in ("slack", "matrix", "whatsapp"):
             rendered = _render_final_response(
                 _reasoning_config(platform_key),
                 platform_key=platform_key,
@@ -81,7 +81,7 @@ class TestOneLineReasoningDisplay:
         assert "\n" not in prefix
 
         exact_limit = "y" * 80
-        assert format_reasoning_prefix(exact_limit, "telegram") == (
+        assert format_reasoning_prefix(exact_limit, "slack") == (
             f"_💭 Reasoned about {exact_limit}_"
         )
 

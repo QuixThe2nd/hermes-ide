@@ -648,7 +648,7 @@ class TestRunJobEnvVarCleanup:
             "prompt": "test",
             "schedule_display": "every 1h",
             "origin": {
-                "platform": "telegram",
+                "platform": "discord",
                 "chat_id": "12345",
                 "chat_name": "Test Chat",
             },

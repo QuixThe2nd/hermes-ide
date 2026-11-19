@@ -70,7 +70,7 @@ class TestInterruptedReplayFiltering:
             },
         ]
 
-        agent_history, observed_context, _ = _build_gateway_agent_history(history)
+        agent_history, observed_context = _build_gateway_agent_history(history)
 
         assert observed_context is None
         assert agent_history[:2] == history[:2]
@@ -107,7 +107,7 @@ class TestInterruptedReplayFiltering:
             },
         ]
 
-        agent_history, _observed_context, _ = _build_gateway_agent_history(history)
+        agent_history, _observed_context = _build_gateway_agent_history(history)
 
         assert agent_history[:2] == history
         assert agent_history[-1]["role"] == "tool"

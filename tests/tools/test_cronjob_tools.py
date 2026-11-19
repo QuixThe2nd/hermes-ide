@@ -426,12 +426,12 @@ class TestUnifiedCronjobTool:
 
 
     def test_create_normalizes_list_form_deliver(self):
-        """deliver=['telegram'] (list) is stored as the string 'telegram'.
+        """deliver=['discord'] (list) is stored as the string 'discord'.
 
         Regression for #17139: MCP clients / scripts sometimes pass ``deliver``
-        as an array.  Prior to the fix, ``['telegram']`` was written verbatim
+        as an array.  Prior to the fix, ``['discord']`` was written verbatim
         to ``jobs.json`` and the scheduler then tried to resolve the literal
-        string ``"['telegram']"`` as a platform, failing with
+        string ``"['discord']"`` as a platform, failing with
         "no delivery target resolved".
         """
         from cron.jobs import get_job
@@ -441,16 +441,16 @@ class TestUnifiedCronjobTool:
                 action="create",
                 prompt="Daily briefing",
                 schedule="every 1h",
-                deliver=["telegram"],
+                deliver=["discord"],
             )
         )
         assert created["success"] is True
         stored = get_job(created["job_id"])
-        assert stored["deliver"] == "telegram"
+        assert stored["deliver"] == "discord"
 
 
     def test_update_normalizes_list_form_deliver(self):
-        """update with deliver=['telegram'] stores the canonical string."""
+        """update with deliver=['discord'] stores the canonical string."""
         from cron.jobs import get_job
 
         created = json.loads(
@@ -460,12 +460,12 @@ class TestUnifiedCronjobTool:
             cronjob(
                 action="update",
                 job_id=created["job_id"],
-                deliver=["telegram"],
+                deliver=["discord"],
             )
         )
         assert updated["success"] is True
         stored = get_job(created["job_id"])
-        assert stored["deliver"] == "telegram"
+        assert stored["deliver"] == "discord"
 
 
 # =========================================================================
@@ -717,7 +717,7 @@ class TestLocalDeliveryNotice:
         # resolves to that chat — nothing to warn about.
         from gateway.session_context import set_session_vars
 
-        set_session_vars(platform="telegram", chat_id="999")
+        set_session_vars(platform="discord", chat_id="999")
         created = json.loads(
             cronjob(action="create", prompt="x", schedule="every 2m")
         )

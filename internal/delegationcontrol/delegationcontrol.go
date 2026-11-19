@@ -10,8 +10,8 @@
 // implementation.
 //
 // Contract (shared with the Python twin):
-//   - A live coding run (result_kind cli_agent for delegate_claude_agent,
-//     cloud_agent for delegate_cursor_agent) is registered only in the async
+//   - A live coding run (result_kind cli_agent for delegate_claude_agent)
+//     is registered only in the async
 //     delegation registry under a deleg_* id, never in the live-subagent
 //     registry.
 //   - list merges native subagent entries with owned live coding runs; the
@@ -20,8 +20,8 @@
 //     is suppressed.
 //   - steer of an owned live coding run answers not_steerable (never an
 //     error, never "No live subagent", never fires the interrupt channels):
-//     a Claude CLI run's stdin is closed and a Cursor cloud run has none. The
-//     note tells the caller to stop the same id and re-delegate.
+//     a Claude CLI run's stdin is closed. The note tells the caller to stop
+//     the same id and re-delegate.
 //   - stop of an owned live coding run signals the runner exactly once (both
 //     the worker-thread bit and interrupt_fn channels) and answers
 //     interrupt_requested. The record is snapshotted under the registry lock
@@ -47,7 +47,6 @@ import (
 const (
 	KindSubagentBatch = "subagent_batch"
 	KindCLIAgent      = "cli_agent"
-	KindCloudAgent    = "cloud_agent"
 	KindMission       = "mission"
 )
 
@@ -125,7 +124,7 @@ func (c *Caller) lineage(sid string) string {
 
 // IsCodingKind reports whether a result kind is a controllable coding run.
 func IsCodingKind(kind string) bool {
-	return kind == KindCLIAgent || kind == KindCloudAgent
+	return kind == KindCLIAgent
 }
 
 // IsLiveStatus reports whether a record status is live (running or stalling).
@@ -283,8 +282,8 @@ func interruptFailedError(id string) error {
 // to stop it (same id), and to re-delegate the course correction.
 func NotSteerableNote(id string) string {
 	return fmt.Sprintf(
-		"Live coding run '%s' cannot accept mid-run text: a Claude CLI run's stdin is closed "+
-			"and a Cursor cloud run has none. To change course, stop it first "+
+		"Live coding run '%s' cannot accept mid-run text: a Claude CLI run's stdin is closed. "+
+			"To change course, stop it first "+
 			"(action='stop', subagent_id='%s' — the same id), then re-delegate a new run "+
 			"carrying the course correction.", id, id)
 }
@@ -398,13 +397,13 @@ type ControlHandle struct {
 func ControlHandleSentence(delegationID string) string {
 	return fmt.Sprintf(
 		"Control this run via delegate_agent with its id '%s': action='stop' ends it "+
-			"(it cannot be steered mid-run — the Claude CLI runs with stdin closed and a "+
-			"Cursor cloud run has no stdin); re-delegate a new run with the course correction.",
+			"(it cannot be steered mid-run — the Claude CLI runs with stdin closed); "+
+			"re-delegate a new run with the course correction.",
 		delegationID)
 }
 
-// AttachControlHandle mirrors the envelope assembly: ONLY cli_agent and
-// cloud_agent payloads gain a control block and a handle sentence appended to
+// AttachControlHandle mirrors the envelope assembly: ONLY cli_agent payloads
+// gain a control block and a handle sentence appended to
 // any caller-supplied control_hint (caller text is preserved, never dropped).
 // Every other result kind — subagent_batch included — gains nothing and keeps
 // an explicitly passed control_hint verbatim.

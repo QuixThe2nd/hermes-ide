@@ -23,16 +23,16 @@ def _setup_sessions(tmp_path, sessions_data):
 class TestFindSessionId:
     def test_finds_matching_session(self, tmp_path):
         sessions_dir, index_file = _setup_sessions(tmp_path, {
-            "agent:main:telegram:dm": {
+            "agent:main:discord:dm": {
                 "session_id": "sess_abc",
-                "origin": {"platform": "telegram", "chat_id": "12345"},
+                "origin": {"platform": "discord", "chat_id": "12345"},
                 "updated_at": "2026-01-01T00:00:00",
             }
         })
 
         with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
              patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
-            result = _find_session_id("telegram", "12345")
+            result = _find_session_id("discord", "12345")
 
         assert result == "sess_abc"
 
@@ -40,19 +40,19 @@ class TestFindSessionId:
         sessions_dir, index_file = _setup_sessions(tmp_path, {
             "old": {
                 "session_id": "sess_old",
-                "origin": {"platform": "telegram", "chat_id": "12345"},
+                "origin": {"platform": "discord", "chat_id": "12345"},
                 "updated_at": "2026-01-01T00:00:00",
             },
             "new": {
                 "session_id": "sess_new",
-                "origin": {"platform": "telegram", "chat_id": "12345"},
+                "origin": {"platform": "discord", "chat_id": "12345"},
                 "updated_at": "2026-02-01T00:00:00",
             },
         })
 
         with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
              patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
-            result = _find_session_id("telegram", "12345")
+            result = _find_session_id("discord", "12345")
 
         assert result == "sess_new"
 
@@ -60,19 +60,19 @@ class TestFindSessionId:
         sessions_dir, index_file = _setup_sessions(tmp_path, {
             "topic_a": {
                 "session_id": "sess_topic_a",
-                "origin": {"platform": "telegram", "chat_id": "-1001", "thread_id": "10"},
+                "origin": {"platform": "discord", "chat_id": "-1001", "thread_id": "10"},
                 "updated_at": "2026-01-01T00:00:00",
             },
             "topic_b": {
                 "session_id": "sess_topic_b",
-                "origin": {"platform": "telegram", "chat_id": "-1001", "thread_id": "11"},
+                "origin": {"platform": "discord", "chat_id": "-1001", "thread_id": "11"},
                 "updated_at": "2026-02-01T00:00:00",
             },
         })
 
         with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
              patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
-            result = _find_session_id("telegram", "-1001", thread_id="10")
+            result = _find_session_id("discord", "-1001", thread_id="10")
 
         assert result == "sess_topic_a"
 
@@ -84,12 +84,12 @@ class TestMirrorToSession:
         sessions_dir, index_file = _setup_sessions(tmp_path, {
             "alice": {
                 "session_id": "sess_alice",
-                "origin": {"platform": "telegram", "chat_id": "-1001", "user_id": "alice"},
+                "origin": {"platform": "discord", "chat_id": "-1001", "user_id": "alice"},
                 "updated_at": "2026-01-01T00:00:00",
             },
             "bob": {
                 "session_id": "sess_bob",
-                "origin": {"platform": "telegram", "chat_id": "-1001", "user_id": "bob"},
+                "origin": {"platform": "discord", "chat_id": "-1001", "user_id": "bob"},
                 "updated_at": "2026-02-01T00:00:00",
             },
         })
@@ -98,7 +98,7 @@ class TestMirrorToSession:
              patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
              patch("gateway.mirror._append_to_sqlite") as mock_sqlite:
             result = mirror_to_session(
-                "telegram",
+                "discord",
                 "-1001",
                 "Hello group!",
                 source_label="cli",
@@ -114,7 +114,7 @@ class TestMirrorToSession:
 
         with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
              patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
-            result = mirror_to_session("telegram", "99999", "Hello!")
+            result = mirror_to_session("discord", "99999", "Hello!")
 
         assert result is False
 
@@ -124,7 +124,7 @@ class TestMirrorToSession:
         sessions_dir, index_file = _setup_sessions(tmp_path, {
             "dm": {
                 "session_id": "sess_dm",
-                "origin": {"platform": "telegram", "chat_id": "123"},
+                "origin": {"platform": "discord", "chat_id": "123"},
                 "updated_at": "2026-01-01T00:00:00",
             },
         })
@@ -136,7 +136,7 @@ class TestMirrorToSession:
              patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
              patch("hermes_state_registry.acquire", return_value=broken_db), \
              patch("hermes_state_registry.release_or_close"):
-            result = mirror_to_session("telegram", "123", "Hello!")
+            result = mirror_to_session("discord", "123", "Hello!")
 
         assert result is False
         broken_db.append_message.assert_called_once()
@@ -249,9 +249,9 @@ class TestSessionsIndexProfileScoping:
         d = home / "sessions"
         d.mkdir(parents=True, exist_ok=True)
         (d / "sessions.json").write_text(json.dumps({
-            "agent:main:telegram:dm": {
+            "agent:main:discord:dm": {
                 "session_id": session_id,
-                "origin": {"platform": "telegram", "chat_id": "12345"},
+                "origin": {"platform": "discord", "chat_id": "12345"},
                 "updated_at": "2026-01-01T00:00:00",
             }
         }), encoding="utf-8")
@@ -273,7 +273,7 @@ class TestSessionsIndexProfileScoping:
         try:
             # A request for a different profile is now served by the same process.
             monkeypatch.setenv("HERMES_HOME", str(active_home))
-            assert mirror_mod._find_session_id("telegram", "12345") == "sess_active"
+            assert mirror_mod._find_session_id("discord", "12345") == "sess_active"
         finally:
             monkeypatch.undo()
             importlib.reload(mirror_mod)
@@ -286,4 +286,4 @@ class TestSessionsIndexProfileScoping:
         monkeypatch.setattr(mirror_mod, "_SESSIONS_INDEX", patched / "sessions" / "sessions.json")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "elsewhere"))
 
-        assert mirror_mod._find_session_id("telegram", "12345") == "sess_patched"
+        assert mirror_mod._find_session_id("discord", "12345") == "sess_patched"

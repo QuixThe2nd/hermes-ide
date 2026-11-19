@@ -22,11 +22,6 @@ from tools import delegate_tool_omp as omp
 from tools import delegation_ownership
 from tools.registry import registry
 from tests.tools.test_claude_agent_tool import _write_fake_binary
-from tests.tools.test_cursor_agent_tool import (
-    _default_client_agent_id,
-    _install_cloud_happy_path,
-)
-from tests.tools.fixtures.fake_cursor_cloud import complete_stream_body
 from tests.tools.test_delegate_lanes import _write_fake_omp
 
 
@@ -248,7 +243,7 @@ def test_omp_real_runner_reaches_argv_and_system_file(monkeypatch, tmp_path, ski
     secrets.write_text("LITELLM_API_KEY=test-key\n", encoding="utf-8")
     _configure_lane(monkeypatch, "ui_dev", "omp", skills)
     monkeypatch.setattr(lane_tool, "_cfg", lambda: {
-        "omp": {"binary": "omp", "secrets_file": str(secrets)}
+        "omp": {"binary": sys.executable, "secrets_file": str(secrets)}
     })
     captured = {}
 
@@ -342,54 +337,6 @@ def test_claude_real_runner_reaches_command_and_append_system_file(
     _assert_conventions_once(system_text)
     _assert_skill_mode(system_text, skills)
 
-
-@pytest.mark.parametrize("skills", _SKILL_MODES)
-def test_cursor_real_runner_reaches_submitted_payload(monkeypatch, tmp_path, skills):
-    workdir = tmp_path / "workspace"
-    workdir.mkdir()
-    _configure_lane(monkeypatch, "backend_dev", "cursor", skills)
-    _install_cloud_happy_path(monkeypatch, tmp_path)
-    # f677e4c6f13 requires a hash-verified artifact before a FINISHED run
-    # counts; the happy path serves an empty (truncated) stream, so serve a
-    # complete run stream via the shared helper the other real-runner cursor
-    # tests use (tests/tools/fixtures/fake_cursor_cloud.py).
-    from tools import cursor_artifact_egress
-
-    monkeypatch.setattr(
-        cursor_artifact_egress,
-        "_http_get_stream",
-        lambda url, *, api_key, timeout: complete_stream_body(),
-    )
-    captured = {}
-
-    def _create(payload, api_key):
-        captured["payload"] = copy.deepcopy(payload)
-        client_id = _default_client_agent_id()
-        return (
-            {
-                "id": client_id,
-                "url": f"https://cursor.com/agents/{client_id}",
-                "latestRunId": "run-aaaa",
-            },
-            {"id": "run-aaaa", "agentId": client_id, "status": "CREATING"},
-        )
-
-    from tools import cursor_agent_tool
-
-    monkeypatch.setattr(cursor_agent_tool, "create_agent_with_timeout_dedupe", _create)
-
-    result = _dispatch_lane(
-        "backend_dev", workdir,
-        session_id="test-session", tool_call_id="test-tool-call",
-    )
-
-    assert result["success"] is True, result
-    prompt_text = captured["payload"]["prompt"]["text"]
-    assert prompt_text.startswith(cursor_agent_tool.NO_PUSH_PROMPT_PREFIX)
-    assert cursor_agent_tool.DEFAULT_ORCHESTRATION_PROMPT in prompt_text
-    assert prompt_text.endswith(_TASK_PROMPT)
-    _assert_conventions_once(prompt_text)
-    _assert_skill_mode(prompt_text, skills)
 
 
 def _native_parent():

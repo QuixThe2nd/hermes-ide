@@ -1,6 +1,6 @@
 """Identity is canonicalized FIRST on every ingress path (#88715 phase 3).
 
-Two Telegram bots on one multiplexed gateway see the same ``chat.id == user.id`` for a DM with the
+Two bots on one multiplexed gateway see the same ``chat.id == user.id`` for a DM with the
 same human; every adapter-side lane (batch dict, ``_active_sessions``, the busy guard, control
 commands, clarify replies) must be keyed by the receiving bot's identity before anything else
 derives a key. Real ``GatewayRunner`` resolvers, real ``BasePlatformAdapter`` ingress, temp home.
@@ -18,7 +18,7 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageTyp
 from gateway.profile_routing import parse_profile_routes
 from gateway.session_identity import identity_of
 
-UID = "72719239"  # Telegram DM: chat.id == user.id, identical for every bot
+UID = "72719239"  # DM: chat.id == user.id, identical for every bot
 
 
 class _Stub(BasePlatformAdapter):
@@ -30,7 +30,7 @@ _Stub.__abstractmethods__ = frozenset()
 
 def _adapter(runner, owner=None):
     adapter = _Stub.__new__(_Stub)
-    BasePlatformAdapter.__init__(adapter, PlatformConfig(enabled=True, extra={}), Platform.TELEGRAM)
+    BasePlatformAdapter.__init__(adapter, PlatformConfig(enabled=True, extra={}), Platform.DISCORD)
     adapter.gateway_runner = runner
     adapter._session_store = SimpleNamespace(_resolve_profile_for_key=lambda s: "default")
     if owner:
@@ -50,17 +50,17 @@ def rig(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(multiplex_profiles=True)
-    runner.config.platforms = {Platform.TELEGRAM: PlatformConfig(enabled=True, extra={})}
+    runner.config.platforms = {Platform.DISCORD: PlatformConfig(enabled=True, extra={})}
     runner.config.profile_routes = parse_profile_routes([
-        {"name": "ops-dm", "platform": "telegram", "profile": "ops", "chat_id": "5150"},
-        {"name": "ghost", "platform": "telegram", "profile": "ghost", "chat_id": "4040"},
+        {"name": "ops-dm", "platform": "discord", "profile": "ops", "chat_id": "5150"},
+        {"name": "ghost", "platform": "discord", "profile": "ghost", "chat_id": "4040"},
     ])
     runner.pairing_store = PairingStore(profile="default")
     runner.pairing_stores = {}
     runner._primary_profile_name = "default"
     bot_a, bot_b = _adapter(runner), _adapter(runner, owner="team_b")
-    runner.adapters = {Platform.TELEGRAM: bot_a}
-    runner._profile_adapters = {"team_b": {Platform.TELEGRAM: bot_b}, "ops": {}}
+    runner.adapters = {Platform.DISCORD: bot_a}
+    runner._profile_adapters = {"team_b": {Platform.DISCORD: bot_b}, "ops": {}}
     served = [("default", home), ("ops", home / "profiles" / "ops"), ("team_b", home / "profiles" / "team_b")]
     with patch("hermes_cli.profiles.profiles_to_serve", return_value=served), \
             patch("hermes_cli.profiles.get_profile_dir", side_effect=lambda n: home if n == "default" else home / "profiles" / n), \
@@ -98,7 +98,7 @@ async def test_two_bots_same_chat_have_distinct_lanes_and_stop_cannot_cross(rig)
     rig.bot_a._enqueue_text_event(ev_a)
     rig.bot_b._enqueue_text_event(ev_b)
     key_a, key_b = rig.bot_a._event_session_key(ev_a), rig.bot_b._event_session_key(ev_b)
-    assert key_a == f"agent:main:telegram:dm:{UID}" and key_b == f"agent:team_b:telegram:dm:{UID}"
+    assert key_a == f"agent:main:discord:dm:{UID}" and key_b == f"agent:team_b:discord:dm:{UID}"
     assert list(rig.bot_a._pending_text_batches) == [key_a] and list(rig.bot_b._pending_text_batches) == [key_b]
     # The identity was pinned BEFORE the key was derived, and the two lanes never share a source.
     assert identity_of(ev_a.source).transport_profile == "default"
@@ -160,7 +160,7 @@ async def test_shared_bot_routed_chat_runs_as_satellite_and_unserved_route_is_dr
     routed = _event(rig.bot_a, "5150", "hi ops")
     key = rig.bot_a._event_session_key(routed)
     identity = identity_of(routed.source)
-    assert key == "agent:ops:telegram:dm:5150"
+    assert key == "agent:ops:discord:dm:5150"
     assert (identity.transport_profile, identity.runtime_profile) == ("default", "ops")
     assert identity.adapter() is rig.bot_a and identity.runtime_home == rig.home / "profiles" / "ops"
 
@@ -169,7 +169,7 @@ async def test_shared_bot_routed_chat_runs_as_satellite_and_unserved_route_is_dr
     assert calls[-1] == ("busy", key, "ops")
 
     # Unserved route: fresh, batched, busy and control paths all drop; no lane is created or touched.
-    main_key = "agent:main:telegram:dm:4040"
+    main_key = "agent:main:discord:dm:4040"
     guard = await _hold(rig.bot_a, main_key)
     for text, kw in (("hello", {}), ("/stop", {"allow_gateway_control": True})):
         await rig.bot_a.handle_message(_event(rig.bot_a, "4040", text, **kw))

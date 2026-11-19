@@ -27,7 +27,7 @@ def store(tmp_path, monkeypatch):
     return s
 
 
-def _seed(store, sid, source="telegram", turns=3):
+def _seed(store, sid, source="discord", turns=3):
     store._db.create_session(sid, source=source)
     for i in range(1, turns + 1):
         store._db.append_message(sid, "user", f"q{i}")
@@ -167,7 +167,7 @@ async def test_undo_evicts_cached_agent_under_profile_namespaced_key():
         async def rewind_session(self, sid, n):
             return {"target_text": "q3", "turns_undone": 1, "rewound_count": 2}
 
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", chat_type="dm", user_id="u1")
+    source = SessionSource(platform=Platform.DISCORD, chat_id="123", chat_type="dm", user_id="u1")
     source.profile = "work"
     evicted = []
     runner = object.__new__(GatewayRunner)
@@ -180,4 +180,4 @@ async def test_undo_evicts_cached_agent_under_profile_namespaced_key():
 
     await runner._handle_undo_command(MessageEvent(text="/undo", message_type=MessageType.TEXT, source=source))
 
-    assert evicted == ["agent:work:telegram:dm:123"]
+    assert evicted == ["agent:work:discord:dm:123"]

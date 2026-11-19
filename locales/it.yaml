@@ -244,17 +244,6 @@ Le risincronizzazioni vengono eseguite automaticamente al massimo una volta all'
     current_with_title:    "📌 Sessione: `{session_id}`\nTitolo: **{title}**"
     current_no_title:      "📌 Sessione: `{session_id}`\nNessun titolo impostato. Uso: `/title My Session Name`"
 
-  topic:
-    not_telegram_dm:         "Il comando /topic è disponibile solo nelle chat private di Telegram."
-    no_session_db:           "Database delle sessioni non disponibile."
-    unauthorized:            "Non sei autorizzato a usare /topic su questo bot."
-    restore_needs_topic:     "Per ripristinare una sessione, crea o apri prima un topic Telegram, poi invia /topic <session-id> all'interno di quel topic. Per creare un nuovo topic, apri All Messages e invia un messaggio qualsiasi lì."
-    topics_disabled:         "I topic Telegram non sono ancora abilitati per questo bot.\n\nCome abilitarli:\n1. Apri @BotFather.\n2. Scegli il tuo bot.\n3. Apri Bot Settings → Threads Settings.\n4. Attiva la modalità Threaded e assicurati che gli utenti possano creare nuovi thread.\n\nPoi invia di nuovo /topic."
-    topics_user_disallowed:  "I topic Telegram sono abilitati, ma agli utenti non è permesso crearne.\n\nApri @BotFather → scegli il tuo bot → Bot Settings → Threads Settings, poi disattiva 'Disallow users to create new threads'.\n\nPoi invia di nuovo /topic."
-    enable_failed:           "Abilitazione della modalità topic Telegram non riuscita: {error}"
-    bound_status:            "Questo topic è collegato a:\nSessione: {label}\nID: {session_id}\n\nUsa /new per sostituire questo topic con una nuova sessione.\nPer lavorare in parallelo, apri All Messages e invia un messaggio lì per creare un altro topic."
-    thread_ready:            "I topic multi-sessione di Telegram sono abilitati.\n\nQuesto topic verrà usato come una sessione Hermes indipendente. Usa /new per sostituire la sessione corrente di questo topic. Per lavorare in parallelo, apri All Messages e invia un messaggio lì per creare un altro topic."
-    untitled_session:        "Sessione senza titolo"
 
   undo:
     nothing:               "Niente da annullare."

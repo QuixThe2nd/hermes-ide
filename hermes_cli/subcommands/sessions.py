@@ -20,7 +20,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
 
     sessions_list = sessions_subparsers.add_parser("list", help="List recent sessions")
-    sessions_list.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
+    sessions_list.add_argument("--source", help="Filter by source (cli, discord, etc.)")
     sessions_list.add_argument("--limit", type=int, default=20, help="Max sessions to show")
     sessions_list.add_argument("--workspace", metavar="NEEDLE",
         help="Only sessions in one workspace: a git repo root or project dir "
@@ -189,7 +189,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
             "files) for durable state crossed between profiles: rows whose profile_name "
             "disagrees with their session key, rows sitting in another profile's store, "
             "parent links crossing namespaces, routing rows outside the default store or for a "
-            "profile that no longer exists, and Telegram topic / voice-mode entries missing "
+            "profile that no longer exists, and voice-mode entries missing "
             "their bot's profile. Reports without touching anything unless --apply is given; "
             "--apply refuses while a gateway is running, snapshots every store first, and is "
             "safe to re-run.")
@@ -263,7 +263,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
 
     sessions_browse = sessions_subparsers.add_parser(
         "browse", help="Interactive session picker — browse, search, and resume sessions")
-    sessions_browse.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
+    sessions_browse.add_argument("--source", help="Filter by source (cli, discord, etc.)")
     sessions_browse.add_argument(
         "--limit", type=int, default=500, help="Max sessions to load (default: 500)")
 

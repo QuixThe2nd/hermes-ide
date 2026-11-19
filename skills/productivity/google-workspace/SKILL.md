@@ -34,7 +34,7 @@ Gmail, Calendar, Drive, Contacts, Sheets, and Docs — through Hermes-managed OA
 ## First-Time Setup
 
 The setup is fully non-interactive — you drive it step by step so it works
-on CLI, Telegram, Discord, or any platform.
+on CLI, Discord, Slack, or any platform.
 
 Define a shorthand first:
 

@@ -57,7 +57,7 @@ class LiveCodexAgent:
         self.api_mode = "codex_app_server"
         self.codex_app_server_auto_compaction = mode
         self.session_id = "sess-1"
-        self.platform = "telegram"
+        self.platform = "discord"
         self._cached_system_prompt = "cached prompt"
         self._codex_session = session if session is not None else FakeCodexSession()
         self.context_compressor = SimpleNamespace(

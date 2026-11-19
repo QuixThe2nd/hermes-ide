@@ -842,6 +842,11 @@ def write_runtime_status(
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status. ``drop_profile_platforms``
     removes one deleted profile's ``<profile>:<platform>`` entries (hot unroute)."""
+    if _runtime_status_authority_released:
+        # A draining predecessor has handed authority to a newer generation;
+        # every stamp from here on would resurrect this pid as the apparent
+        # running gateway. The successor owns the shared record.
+        return
     path = _get_runtime_status_path()
     payload = _read_json_file(path) or _build_runtime_status_record()
     previous_payload = copy.deepcopy(payload)
@@ -880,7 +885,7 @@ def write_runtime_status(
         platform_payload = payload["platforms"].get(platform, {})
         if platform_state == "connected":
             # Every writer that publishes ``connected`` (startup stamp, adapter ``_mark_connected``,
-            # Telegram's in-place polling recovery) ends the retry episode; only the watcher's
+            # an adapter's in-place polling recovery) ends the retry episode; only the watcher's
             # reconnect path used to say so, and a restart after a NEEDS_ATTENTION escalation
             # carried the flag into a healthy record for weeks.
             needs_attention = False if needs_attention is _UNSET else needs_attention
@@ -913,6 +918,46 @@ def write_runtime_status(
 def read_runtime_status(path: Optional[Path] = None) -> Optional[dict[str, Any]]:
     """Read ``gateway_state.json``; ``path`` lets callers inspect another profile's file."""
     return _read_json_file(path or _get_runtime_status_path())
+
+# Set when this process has handed gateway authority to a newer generation and
+# is only finishing its own in-flight work. While set, every runtime-status
+# write from this process is suppressed: the newest generation owns the shared
+# record, and a draining predecessor re-stamping its own pid would resurrect
+# itself as the apparent running gateway for get_running_pid()/status consumers.
+_runtime_status_authority_released = False
+
+
+def mark_runtime_status_released(successor_pid: Optional[int] = None) -> None:
+    """Hand the shared runtime-status record to the restart successor.
+
+    Stamps ``gateway_state="handoff"`` once (with ``authority_pid`` naming the
+    successor when known) and suppresses all further writes from this process.
+    ``get_running_pid`` treats a handoff record as no running gateway so the
+    successor's lock/PID claim is not blocked by a draining predecessor that
+    is still very much alive.
+    """
+    global _runtime_status_authority_released
+    _runtime_status_authority_released = True
+    path = _get_runtime_status_path()
+    payload = _read_json_file(path) or _build_runtime_status_record()
+    # Deliberately NOT re-stamping kind/pid/start_time: those identity fields
+    # describe the record's last authoritative writer, which is no longer us.
+    payload["gateway_state"] = "handoff"
+    payload["updated_at"] = _utc_now_iso()
+    if successor_pid and successor_pid > 0:
+        payload["authority_pid"] = int(successor_pid)
+    with contextlib.suppress(Exception):
+        _write_json_file(path, payload)
+
+
+def runtime_status_authority_released() -> bool:
+    return _runtime_status_authority_released
+
+
+def clear_runtime_status_released() -> None:
+    """Re-arm status writes: called by the generation that just claimed authority."""
+    global _runtime_status_authority_released
+    _runtime_status_authority_released = False
 
 
 # Max age of a ``gateway_state.json`` snapshot before its liveness claim is suspect: an older record
@@ -1134,7 +1179,12 @@ def get_runtime_status_running_pid(
     payload = runtime if runtime is not None else read_runtime_status()
     if not isinstance(payload, dict):
         return None
-    if payload.get("gateway_state") in {None, "stopped", "startup_failed"}:
+    if payload.get("gateway_state") in {None, "stopped", "startup_failed", "handoff"}:
+        # ``handoff``: the record's writer handed authority to a newer restart
+        # generation and is only draining its own work. It must not read as
+        # THE running gateway — the successor's claim would be blocked by a
+        # live-but-retired predecessor until its (possibly hours-long) drain
+        # finished. Claim arbitration belongs to the lock + PID file.
         return None
     pid = _live_pid_from_record(payload)
     if pid is None:
@@ -1177,6 +1227,19 @@ def remove_pid_file() -> None:
         _clear_running_pid_cache()
 
 
+def unlink_pid_file_for_claim() -> None:
+    """Unconditionally drop the PID file for a verified takeover.
+
+    Only for the claim path after the generation-array takeover rule proved
+    the current holder is dead or an ancestor of the claiming generation;
+    unlike ``remove_pid_file`` this does not require the file to name THIS
+    process (a predecessor's atexit refuses to remove a file it no longer
+    owns, so the claiming generation rewrites it itself).
+    """
+    _unlink_quietly(_get_pid_path())
+    _clear_running_pid_cache()
+
+
 def _scoped_lock_record_is_stale(existing: dict[str, Any], existing_pid: Optional[int]) -> bool:
     """True when a foreign scoped-lock record no longer names a live gateway: PID missing/dead,
     start time changed (PID reuse), or the live process is not a gateway -- a readable cmdline says
@@ -1210,7 +1273,7 @@ def _process_is_stopped(pid: int) -> bool:
 def acquire_scoped_lock(
     scope: str, identity: str, metadata: Optional[dict[str, Any]] = None
 ) -> tuple[bool, Optional[dict[str, Any]]]:
-    """Acquire a machine-local lock keyed by scope + identity (one Telegram token across homes)."""
+    """Acquire a machine-local lock keyed by scope + identity (one platform token across homes)."""
     lock_path = _get_scope_lock_path(scope, identity)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     record = {

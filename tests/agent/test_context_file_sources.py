@@ -24,7 +24,7 @@ def _by_label(sources):
 
 def test_manifest_matches_what_the_prompt_actually_loads(project, tmp_path_factory):
     """Every context type present at once; the ladder picks .hermes.md, the chain lists both AGENTS files,
-    CLAUDE.md/.cursorrules/.cursor/rules/*.mdc are shadowed, an empty file never wins, SOUL.md rides along."""
+    CLAUDE.md is shadowed, an empty file never wins, SOUL.md rides along."""
     (project / ".hermes.md").write_text("hermes rules")
     (project / "AGENTS.md").write_text("root agents rules")
     sub = project / "pkg"
@@ -32,9 +32,6 @@ def test_manifest_matches_what_the_prompt_actually_loads(project, tmp_path_facto
     (sub / "AGENTS.override.md").write_text("")  # empty: falls through to AGENTS.md in the same directory
     (sub / "AGENTS.md").write_text("pkg agents rules")
     (sub / "CLAUDE.md").write_text("claude rules")
-    (sub / ".cursorrules").write_text("cursor rules")
-    (sub / ".cursor" / "rules").mkdir(parents=True)
-    (sub / ".cursor" / "rules" / "a.mdc").write_text("mdc rule a")
     home = tmp_path_factory.mktemp("home")
     (home / "SOUL.md").write_text("identity text")
 
@@ -44,7 +41,7 @@ def test_manifest_matches_what_the_prompt_actually_loads(project, tmp_path_facto
     statuses = {s["label"]: s["status"] for s in sources}
     assert statuses == {
         ".hermes.md": "loaded", "../AGENTS.md": "shadowed", "AGENTS.override.md": "empty", "AGENTS.md": "shadowed",
-        "CLAUDE.md": "shadowed", ".cursorrules": "shadowed", ".cursor/rules/a.mdc": "shadowed", "SOUL.md": "loaded",
+        "CLAUDE.md": "shadowed", "SOUL.md": "loaded",
     }
     for src in sources:
         body = Path(src["path"]).read_text().strip() if src["chars"] else ""

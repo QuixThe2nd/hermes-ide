@@ -14,5 +14,5 @@ def build_insights_parser(subparsers, *, cmd_insights: Callable) -> None:
     insights_parser.add_argument(
         "--days", type=int, default=30, help="Number of days to analyze (default: 30)")
     insights_parser.add_argument(
-        "--source", help="Filter by platform (cli, telegram, discord, etc.)")
+        "--source", help="Filter by platform (cli, discord, etc.)")
     insights_parser.set_defaults(func=cmd_insights)

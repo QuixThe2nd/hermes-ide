@@ -1100,7 +1100,9 @@ class GatewayShutdownMixin:
         thread pool rather than ``self._running_agents`` (#60432).
 
         Best-effort by construction: every failure is swallowed so a wedged
-        adapter can never extend shutdown. Returns the number of notices sent.
+        adapter can never extend shutdown. The notice is a diagnostic: it
+        honors ``display.suppress_warning_notifications``, and a suppressed
+        notice is neither sent nor counted. Returns the number of notices sent.
         """
         if not job_ids:
             return 0
@@ -1161,12 +1163,24 @@ class GatewayShutdownMixin:
                     metadata = self._thread_metadata_for_target(
                         platform, chat_id, thread_id, adapter=adapter
                     )
-                    result = await adapter.send(chat_id, msg, metadata=metadata)
-                    if result is not None and getattr(result, "success", True) is False:
+                    from gateway.warning_notifications import present_notification
+
+                    send_result = None
+
+                    async def _present_notice() -> None:
+                        nonlocal send_result
+                        send_result = await adapter.send(chat_id, msg, metadata=metadata)
+
+                    # No turn snapshot exists at shutdown, so the active
+                    # profile's effective config decides; a suppressed notice
+                    # must not count and must not enter the dedup set.
+                    if not await present_notification(_present_notice, platform=platform, diagnostic=True):
+                        continue
+                    if send_result is not None and getattr(send_result, "success", True) is False:
                         logger.debug(
                             "Cron interrupt notice to %s:%s failed: %s",
                             platform.value, chat_id,
-                            getattr(result, "error", "send returned success=False"),
+                            getattr(send_result, "error", "send returned success=False"),
                         )
                         continue
                     notified.add(dedup_key)
@@ -2178,18 +2192,14 @@ class GatewayShutdownMixin:
 
     def request_restart(
         self, *, detached: bool = False, via_service: bool = False, overlap: bool = True,
-        restart_platforms: bool = True, from_update: bool = False,
+        from_update: bool = False,
     ) -> bool:
         from gateway.run import _RESTART_WAIT_RETRY_SLEEP_S
         if self._restart_task_started:
-            if overlap:
-                from gateway.restart_chain import record_chained_restart
-
-                record_chained_restart(
-                    self,
-                    request_kind="request_restart",
-                    via_service=via_service,
-                )
+            # A second request while one restart cycle runs never chains a
+            # marker: user-restart entry points forward superseding requests
+            # to the newest generation (generation array) before they reach
+            # this method, and the in-flight cycle already covers the intent.
             return False
         # One provisional setup transaction: every flag and partial cycle
         # mutation below is owned by THIS request until the restart task
@@ -2205,7 +2215,6 @@ class GatewayShutdownMixin:
         self._restart_detached = detached
         self._restart_via_service = via_service
         self._restart_from_update = bool(from_update)
-        self._restart_platforms = bool(restart_platforms)
         self._restart_task_started = True
         # Refuse new turns immediately while in-flight work finishes.
         # Keep ``_running`` True so adapters stay connected and the active
@@ -2225,12 +2234,16 @@ class GatewayShutdownMixin:
                     from gateway.overlap_restart import spawn_successor
                     await spawn_successor(
                         self, via_service=via_service,
-                        restart_platforms=bool(getattr(self, "_restart_platforms", True)),
                     )
             except Exception:
                 logger.exception("Overlapping restart successor could not start; using the legacy drain path")
             if overlap and getattr(self, "_overlap_restart_successor_started", False):
-                from gateway.overlap_restart import watch_successor
+                from gateway.overlap_restart import release_authority, watch_successor
+                # Authority handover at drain START: the successor owns the
+                # lock, PID file, runtime-status record, control socket and
+                # singleton listeners from this moment; we keep only the
+                # in-flight sessions below.
+                release_authority(self)
                 # Strong reference: a bare create_task may be garbage-collected.
                 # Not in _background_tasks — it exits on its own once stop() begins.
                 self._overlap_successor_watch_task = asyncio.create_task(
@@ -2341,7 +2354,6 @@ class GatewayShutdownMixin:
             self._restart_detached = False
             self._restart_via_service = False
             self._restart_from_update = False
-            self._restart_platforms = True
             if not cycle_was_open:
                 # This request opened (or was opening) the restart cycle;
                 # a half-minted generation with no drain task behind it must

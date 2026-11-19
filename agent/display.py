@@ -881,10 +881,6 @@ def _describe_delegate_agent_phrase(tool_name: str, args: dict) -> str | None:
         if reason:
             return f"Delegated to Claude agent: {reason}"
         return _describe_delegate_child_phrase("Delegating to a Claude agent")(tool_name, args)
-    if backend == "cursor":
-        if reason:
-            return f"Delegated to Cursor agent: {reason}"
-        return _describe_delegate_child_phrase("Delegating to a Cursor agent")(tool_name, args)
     return _describe_delegate_phrase(tool_name, args)
 
 
@@ -1129,7 +1125,14 @@ def _describe_browser_scroll_phrase(_tool_name: str, args: dict) -> str | None:
 
 def _describe_terminal_phrase(_tool_name: str, args: dict) -> str | None:
     session_id = _describe_arg(args, "session_id")
-    return f"Running a terminal command {session_id}" if session_id else "Running a terminal command"
+    command = args.get("command")
+    summary = (
+        redact_sensitive_text(summarize_shell_command(command), force=True)
+        if isinstance(command, str) and command.strip()
+        else ""
+    )
+    phrase = f"Running {summary}" if summary else "Running a terminal command"
+    return f"{phrase} {session_id}" if session_id else phrase
 
 
 def _describe_x_search_phrase(_tool_name: str, args: dict) -> str | None:
@@ -1171,9 +1174,8 @@ _DESCRIBE_SUBJECT_BUILDERS.update({
     "memory": _describe_memory_phrase,
     "send_message": _describe_send_message_phrase,
     "delegate_task": _describe_delegate_phrase,  # legacy alias: subagent phrasing
-    "delegate_agent": _describe_delegate_agent_phrase,  # backend-aware (subagent/claude/cursor)
+    "delegate_agent": _describe_delegate_agent_phrase,  # backend-aware (subagent/claude)
     "delegate_claude_agent": _describe_delegate_child_phrase("Delegating to a Claude agent"),
-    "delegate_cursor_agent": _describe_delegate_child_phrase("Delegating to a Cursor agent"),
     "delegate_assistant": _describe_delegate_assistant_phrase,
     "delegate_research": _describe_delegate_research_phrase,
     "dispatch_agent": _describe_dispatch_agent_phrase,
@@ -1313,8 +1315,9 @@ def describe_tool_call(tool_name: str, args: dict | None, max_len: int = DESCRIB
     string, else a curated safe subject built from a small set of argument
     fields (file path, search pattern/query, task names) — both whitespace-
     normalised; uncapped by default, capped only when a positive *max_len* is
-    given. Never the command/code/content payload;
-    unknown tools fall back to a short verb or the bare tool name.
+    given. Command/code/content payloads stay hidden, except for the terminal
+    fallback's redacted command summary; unknown tools fall back to a short
+    verb or the bare tool name.
     """
     if isinstance(args, dict):
         derived = _describe_subject_phrase(tool_name, args)

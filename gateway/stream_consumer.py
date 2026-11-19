@@ -106,7 +106,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     _MAX_FLOOD_STRIKES = 3  # consecutive flood failures before edits are disabled
     _adapter_provider = None  # instances built via __new__ without __init__ keep snapshot-only behavior
 
-    # Class-wide monotonic draft-id counter (Telegram animates a draft only when the
+    # Class-wide monotonic draft-id counter (some adapters animate a draft only when the
     # same non-zero draft_id is reused).  RANDOM seed: draft_id keys the relay
     # connector's sealed-stream tombstones, which outlive this process — a replayed id
     # is answered out of the OLD tombstone and dropped.  49 bits stays inside JS 2^53.
@@ -180,7 +180,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Only platforms needing an explicit finalize call (DingTalk AI Cards) force a
         # redundant final edit; ``is True`` keeps MagicMock adapters out.
         self._adapter_requires_finalize = getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
-        # Telegram bounds edit retries at 5s; a fallback must not wait longer.
+        # Platforms bound edit retries (e.g. 5s); a fallback must not wait longer.
         self._max_fallback_flood_retry_seconds = 5.0
 
         self._queue: queue.Queue = queue.Queue()
@@ -321,7 +321,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     def _metadata_for_send(self, *, final: bool = False, expect_edits: bool = False) -> dict | None:
         """Per-send metadata.  ``final`` → notify=True (Mattermost treats notify-worthy sends
         as final when a broken thread root may fall back flat); ``expect_edits`` keeps
-        editable previews on Telegram's legacy send path."""
+        editable previews on legacy send paths."""
         meta = dict(self.metadata) if self.metadata else {}
         if self._initial_reply_to_id:
             meta["reply_to_message_id"] = self._initial_reply_to_id
@@ -383,7 +383,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # The final clean-up edit failed, but the complete answer is already visible from the last streaming
         # frame (usually with only the cursor still stuck on screen). Mark the content delivered so the
         # gateway suppresses its normal full final send; otherwise users see the same long answer twice when
-        # Telegram/Discord rate-limit this cosmetic final edit (#36965, #25349).
+        # platforms rate-limit this cosmetic final edit (#36965, #25349).
         self._final_content_delivered = True
         if record is not None:
             self._record_turn_final_payload(record)
@@ -629,7 +629,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Also clears the final flags: what we delivered was an interim preamble.  Safe:
         # got_done returns before any reset; run.py reads flags after the task exits.
         self._reset_message_state()
-        # Telegram-shaped drafts: bump draft_id so the next segment animates as a fresh
+        # Draft-then-send drafts: bump draft_id so the next segment animates as a fresh
         # preview below the tool-progress bubbles.  Stream-is-the-message adapters keep
         # ONE stream per turn — a bump there left one frozen message per segment.
         if self._use_draft_streaming and not self._stream_is_message():
@@ -1081,7 +1081,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         elif tick.update_visible and (not self._adapter_requires_finalize
                                       or self._last_edit_overflowed or tick.draft_final_fresh_send):
             # The update already delivered the final.  A second finalize would re-edit
-            # it (Telegram: editMessageText after sendRichMessage falls back to the
+            # it (editMessageText after sendRichMessage can fall back to the
             # legacy formatter) or overflow-split again, duplicating chunks.
             self._mark_skip_redundant_finalize()
         elif self._message_id:
@@ -1264,7 +1264,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         ):
             return True
         # Fresh-final: replace a long-lived preview with a fresh message, or whenever
-        # the adapter prefers it (Telegram's send path renders richer markdown).  An
+        # the adapter prefers it (a platform's send path may render richer markdown).  An
         # explicit hook returning False must NOT be overridden by the time threshold
         # (delete is best-effort; both messages would stay on screen).  Check the
         # CLASS (MagicMock auto-creates attrs) plus instance __dict__ (test doubles).

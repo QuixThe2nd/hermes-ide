@@ -72,7 +72,7 @@ def test_legacy_alias_preserved(monkeypatch):
         "tools.registry.registry.dispatch",
         lambda name, args, **kw: captured.update(name=name, kwargs=kw) or "ok",
     )
-    ref = _make_ref("delegate_task", {"backend": "cursor", "goal": "x", "workdir": "/repo"})
+    ref = _make_ref("delegate_task", {"backend": "claude", "goal": "x", "workdir": "/repo"})
     dispatch = te._resolve_sequential_dispatch(agent, ref, [])
     dispatch.execute(ref.args)
     assert captured["name"] == "delegate_task"

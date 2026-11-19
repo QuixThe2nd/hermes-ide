@@ -61,7 +61,7 @@ class ConversationState:
     service_tier_override: Any = _UNSET_TIER  # /fast: "priority" or None; _UNSET_TIER = absent
     last_resolved_model: str = ""  # last successfully-resolved non-empty model
     queued_events: List[Any] = field(default_factory=list)  # /queue overflow FIFO (head in adapter)
-    sidecar_notes: List[str] = field(default_factory=list)  # one-shot must-deliver notes
+    sidecar_notes: List[Any] = field(default_factory=list)  # one-shot must-deliver notes (str or (kind, text))
     ephemeral_pin: Optional[Tuple[Any, ...]] = None  # pinned session-context (change_key, text)
 
     def clear(self) -> None:

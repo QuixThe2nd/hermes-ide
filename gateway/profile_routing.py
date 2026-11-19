@@ -6,9 +6,9 @@ For Discord threads/forum posts ``parent_chat_id`` carries the direct parent, so
 channel route also matches any thread/post under it.
 
 A route applies only to messages received by the bot of its ``bot_profile`` (default: the
-default profile's shared bot). Telegram DM ``chat_id == user_id`` for EVERY bot, so without
-this a ``chat_id`` route meant for the shared bot would re-home the same user's DM with a
-dedicated secondary bot into another profile (#104933).
+default profile's shared bot). Platforms where DM ``chat_id == user_id`` for EVERY bot
+need this: a ``chat_id`` route meant for the shared bot would re-home the
+same user's DM with a dedicated secondary bot into another profile (#104933).
 """
 
 from __future__ import annotations

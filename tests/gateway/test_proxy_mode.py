@@ -116,9 +116,9 @@ class TestResolveProxyUrl:
                     "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
-        monkeypatch.setenv("NO_PROXY", "api.telegram.org")
+        monkeypatch.setenv("NO_PROXY", "discord.com")
 
-        assert resolve_proxy_url(target_hosts="api.telegram.org") is None
+        assert resolve_proxy_url(target_hosts="discord.com") is None
 
     def test_no_proxy_bypasses_cidr_target(self, monkeypatch):
         for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",

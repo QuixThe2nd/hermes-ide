@@ -21,7 +21,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
 
@@ -264,11 +264,32 @@ def _parse_jev_intent(response: Dict[str, Any]) -> Tuple[str, float]:
     return choice.strip().lower(), confidence
 
 
-def classify(message_text: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _notify_attempt(on_attempt, attempt: int, label, confidence, error) -> None:
+    """Deliver one per-attempt fact to the caller's callback; never raises."""
+    if on_attempt is None:
+        return
+    try:
+        on_attempt(attempt, _JEV_ATTEMPTS, label, confidence, error)
+    except Exception as exc:
+        logger.debug("goal intent attempt callback failed: %s", exc)
+
+
+def classify(
+    message_text: str,
+    context: Optional[Dict[str, Any]] = None,
+    on_attempt: Optional[Callable[[int, int, Optional[str], Optional[float], Optional[str]], None]] = None,
+) -> Dict[str, Any]:
     """Classify one inbound message via one Jev Decisions POST; never raises.
 
     Fail-safe result label is ``unknown`` (no LLM fallback): transport, HTTP
     and schema failures are retried once, then the decision fails closed.
+
+    ``on_attempt`` (optional, never raises into the classifier) is called after
+    EVERY real HTTP attempt — success or failure, retry included — as
+    ``(attempt, attempts, label, confidence, error)``: exactly one of
+    label/confidence (success) or error (the sanitized failure class) is set.
+    The no-call bypasses (empty message, missing credential) never invoke it,
+    so a consumer can surface one notice per actual request without inferring.
     """
     from hermes_cli.goals import draft_contract
 
@@ -302,10 +323,12 @@ def classify(message_text: str, context: Optional[Dict[str, Any]] = None) -> Dic
     for _attempt in range(_JEV_ATTEMPTS):
         try:
             decision = _parse_jev_intent(_jev_request(payload, credential))
+            _notify_attempt(on_attempt, _attempt + 1, decision[0], decision[1], None)
             break
         except _JevError as exc:
             last_error = exc
             logger.debug("goal intent jev decision failed (%s), attempt %d", exc.reason, _attempt + 1)
+            _notify_attempt(on_attempt, _attempt + 1, None, None, exc.reason)
     if decision is None:
         return _unknown(f"classification unavailable: {last_error.reason if last_error else 'jev decision failed'}")
     label, confidence = decision
@@ -362,28 +385,31 @@ def _row_text(content: Any) -> str:
 
 
 def _assistant_snippet(rows: List[Dict[str, Any]]) -> Tuple[str, Optional[float]]:
-    """Newest assistant ``(text, row timestamp)`` from newest-first rows, bounded and
-    non-fatal on odd shapes. The timestamp is ``None`` when the row carries none."""
+    """Newest non-empty assistant ``(text, row timestamp)`` from chronological rows,
+    bounded and non-fatal on odd shapes. Textless tool-call rows are not replies."""
     for row in reversed(rows):
         if row.get("role") != "assistant":
             continue
+        text = _row_text(row.get("content"))
+        if not text:
+            continue
         ts = row.get("timestamp")
         age_ts = float(ts) if isinstance(ts, (int, float)) and not isinstance(ts, bool) else None
-        return _row_text(row.get("content"))[:_LAST_ASSISTANT_LIMIT], age_ts
+        return text[:_LAST_ASSISTANT_LIMIT], age_ts
     return "", None
 
 
 def _previous_user_message(rows: List[Dict[str, Any]]) -> str:
-    """The user message that preceded the last assistant reply (newest-first rows).
+    """The user message that preceded the last assistant turn in chronological rows.
 
-    Rows newer than the last assistant reply — the inbound message being
+    Rows newer than the last assistant turn — the inbound message being
     classified, usually already persisted — are skipped. Empty when the thread
-    has no assistant reply yet: the inbound message starts it.
+    has no assistant turn yet: the inbound message starts it.
     """
-    for idx, row in enumerate(rows):
-        if row.get("role") != "assistant":
+    for idx in range(len(rows) - 1, -1, -1):
+        if rows[idx].get("role") != "assistant":
             continue
-        for older in rows[idx + 1:]:
+        for older in reversed(rows[:idx]):
             if older.get("role") == "user":
                 text = _row_text(older.get("content"))
                 if text:
@@ -472,6 +498,25 @@ def _chase_live_work(session_id: str) -> bool:
         return False
 
 
+def _chase_is_dormant(context: Dict[str, Any]) -> bool:
+    """Whether a chase matches the dormant-session papercut noise class.
+
+    The caller checks live work separately so chases on running work still log.
+    """
+    if any(
+        context.get(key)
+        for key in ("goal_active", "goal_paused", "goal_recently_completed")
+    ):
+        return False
+    age_minutes = context.get("last_assistant_age_minutes")
+    if age_minutes is None:
+        return True
+    return (
+        isinstance(age_minutes, (int, float))
+        and age_minutes > CHASE_DEDUPE_WINDOW.total_seconds() / 60
+    )
+
+
 def _log_chase_papercut(
     session_id: str, record: Dict[str, Any], context: Dict[str, Any]
 ) -> bool:
@@ -484,6 +529,8 @@ def _log_chase_papercut(
     live-work flag — present even when false.
     """
     live_work = _chase_live_work(session_id)
+    if not live_work and _chase_is_dormant(context):
+        return False
     cause = (
         "background or delegated work was live" if live_work
         else "no background or delegated work was live"
@@ -539,14 +586,15 @@ def _log_chase_papercut(
 
 
 def evaluate_goal_intent(
-    message_text: str, session_id: str, platform: str
+    message_text: str, session_id: str, platform: str, on_attempt=None
 ) -> Dict[str, Any]:
     """Classify, audit-log and papercut one message; never raises or touches the reply path.
 
     Returns the auto-goal decision payload: the audit ``record`` plus the FULL
     message and the exchange context (``last_assistant`` /
     ``user_previous_message``) so the turn-end applier can create or steer a
-    goal without re-reading the session.
+    goal without re-reading the session. ``on_attempt`` (see :func:`classify`)
+    is invoked after every real Jev HTTP attempt.
     """
     try:
         try:
@@ -555,7 +603,7 @@ def evaluate_goal_intent(
             logger.debug("goal intent context unavailable: %s", exc)
             context = dict(_EMPTY_CONTEXT)
         try:
-            result = classify(message_text, context)
+            result = classify(message_text, context, on_attempt=on_attempt)
         except Exception as exc:
             logger.debug("goal intent classifier raised: %s", exc)
             result = _unknown(f"classifier failed: {type(exc).__name__}")

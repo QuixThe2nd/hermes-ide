@@ -32,14 +32,14 @@ def test_routed_profile_prompt_resolves_from_its_own_config(tmp_path, monkeypatc
     runner.config = None
 
     with _profile_runtime_scope(routed_home):
-        assert runner._get_system_prompt_for_channel(Platform.TELEGRAM, "c") == "BETA-PERSONA"
-    assert runner._get_system_prompt_for_channel(Platform.TELEGRAM, "c") == "DEFAULT-PERSONA"
+        assert runner._get_system_prompt_for_channel(Platform.DISCORD, "c") == "BETA-PERSONA"
+    assert runner._get_system_prompt_for_channel(Platform.DISCORD, "c") == "DEFAULT-PERSONA"
 
     # /personality from the routed chat writes the routed profile and only it.
     from hermes_cli.personality import persist_personality
 
     with _profile_runtime_scope(routed_home):
         assert persist_personality("pirate")
-        assert runner._get_system_prompt_for_channel(Platform.TELEGRAM, "c") == "ARR"
+        assert runner._get_system_prompt_for_channel(Platform.DISCORD, "c") == "ARR"
     assert "pirate" not in (default_home / "config.yaml").read_text()
-    assert runner._get_system_prompt_for_channel(Platform.TELEGRAM, "c") == "DEFAULT-PERSONA"
+    assert runner._get_system_prompt_for_channel(Platform.DISCORD, "c") == "DEFAULT-PERSONA"

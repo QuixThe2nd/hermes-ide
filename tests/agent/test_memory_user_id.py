@@ -129,10 +129,10 @@ class TestMemoryManagerUserIdThreading:
                 base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
                 skip_context_files=True,
-                platform="telegram",
+                platform="discord",
                 session_id="session-with-title",
                 session_db=session_db,
-                gateway_session_key="agent:main:telegram:dm:42",
+                gateway_session_key="agent:main:discord:dm:42",
                 cwd=str(tmp_path),
             )
 
@@ -140,7 +140,7 @@ class TestMemoryManagerUserIdThreading:
         assert provider._init_kwargs["session_title_source"] == "llm"
         assert (
             provider._init_kwargs["gateway_session_key"]
-            == "agent:main:telegram:dm:42"
+            == "agent:main:discord:dm:42"
         )
         assert provider._init_kwargs["cwd"] == str(tmp_path)
         agent.close()

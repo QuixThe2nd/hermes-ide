@@ -42,7 +42,7 @@ class ApiServerLikeAdapter:
 
 def _source():
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="chat-1",
         chat_type="group",
     )

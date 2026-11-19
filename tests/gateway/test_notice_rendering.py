@@ -57,7 +57,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 
-def _make_source(platform_value="telegram", chat_id="555", user_id="u1"):
+def _make_source(platform_value="discord", chat_id="555", user_id="u1"):
     src = MagicMock()
     plat = MagicMock()
     plat.value = platform_value

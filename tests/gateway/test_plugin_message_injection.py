@@ -24,7 +24,7 @@ def _entry(*, origin=True) -> SessionEntry:
     source = None
     if origin:
         source = SessionSource(
-            platform=Platform.TELEGRAM,
+            platform=Platform.DISCORD,
             chat_id="42",
             chat_type="dm",
             user_id="42",
@@ -32,12 +32,12 @@ def _entry(*, origin=True) -> SessionEntry:
         )
     now = datetime.now()
     return SessionEntry(
-        session_key="agent:main:telegram:dm:42",
+        session_key="agent:main:discord:dm:42",
         session_id="session-42",
         created_at=now,
         updated_at=now,
         origin=source,
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
     )
 
 
@@ -47,7 +47,7 @@ def _runner(entry: SessionEntry | None, adapter=None) -> GatewayRunner:
     runner._async_session_store = SimpleNamespace(
         _store=runner.session_store, lookup_by_session_key=AsyncMock(return_value=entry)
     )
-    runner.adapters = {Platform.TELEGRAM: adapter} if adapter else {}
+    runner.adapters = {Platform.DISCORD: adapter} if adapter else {}
     runner._profile_adapters = {}
     runner._running = True
     runner._draining = False
@@ -58,7 +58,7 @@ def _runner(entry: SessionEntry | None, adapter=None) -> GatewayRunner:
 
 class _RoutingAdapter(BasePlatformAdapter):
     def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.DISCORD)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
@@ -104,7 +104,7 @@ async def test_plugin_context_routes_through_live_gateway_to_existing_session(
 
     runner = object.__new__(GatewayRunner)
     runner.session_store = store
-    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.adapters = {Platform.DISCORD: adapter}
     runner._profile_adapters = {}
     runner._gateway_loop = asyncio.get_running_loop()
     runner._running = True
@@ -195,7 +195,7 @@ async def test_dispatch_rejects_unroutable_session(entry, with_adapter):
     runner = _runner(entry, adapter if with_adapter else None)
 
     accepted = await runner._dispatch_plugin_message_injection(
-        session_key="agent:main:telegram:dm:42",
+        session_key="agent:main:discord:dm:42",
         content="wake up",
         plugin_id="notify-plugin",
     )
@@ -215,7 +215,7 @@ async def test_dispatch_rechecks_current_authorization(raises):
         runner._is_user_authorized.return_value = False
 
     accepted = await runner._dispatch_plugin_message_injection(
-        session_key="agent:main:telegram:dm:42",
+        session_key="agent:main:discord:dm:42",
         content="wake up",
         plugin_id="notify-plugin",
     )
@@ -277,7 +277,7 @@ async def test_dispatch_stops_when_gateway_drains_during_lookup():
     runner._async_session_store.lookup_by_session_key = _lookup
     dispatch = asyncio.create_task(
         runner._dispatch_plugin_message_injection(
-            session_key="agent:main:telegram:dm:42",
+            session_key="agent:main:discord:dm:42",
             content="wake up",
             plugin_id="notify-plugin",
         )
@@ -323,7 +323,7 @@ async def test_base_adapter_rejects_derived_session_mismatch():
         source=_entry().origin,
         internal=True,
         allow_gateway_control=False,
-        metadata={"gateway_session_key": "agent:main:telegram:dm:other"},
+        metadata={"gateway_session_key": "agent:main:discord:dm:other"},
     )
 
     await adapter.handle_message(event)
@@ -340,7 +340,7 @@ async def test_scheduler_submits_dispatch_on_live_gateway_loop():
 
     assert (
         runner._schedule_plugin_message_injection(
-            session_key="agent:main:telegram:dm:42",
+            session_key="agent:main:discord:dm:42",
             content="wake up",
             plugin_id="notify-plugin",
         )
@@ -349,7 +349,7 @@ async def test_scheduler_submits_dispatch_on_live_gateway_loop():
 
     await asyncio.sleep(0)
     runner._dispatch_plugin_message_injection.assert_awaited_once_with(
-        session_key="agent:main:telegram:dm:42",
+        session_key="agent:main:discord:dm:42",
         content="wake up",
         plugin_id="notify-plugin",
     )

@@ -30,7 +30,7 @@ def _wire(user_config):
         _status_adapter=None,
         session_key="",
         user_config=user_config,
-        source=types.SimpleNamespace(platform="telegram"),
+        source=types.SimpleNamespace(platform="discord"),
         mute_notification_reply=False,
         _thinking_enabled=False,
         agent_holder=[None],

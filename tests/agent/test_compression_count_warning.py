@@ -3,7 +3,7 @@ TUI / gateway, not just CLI stdout.
 
 When a session is compressed >= 2 times, ``compress_context`` warns that
 accuracy may degrade. That warning used to go through ``_vprint`` (stdout
-only), so the Ink TUI / Telegram / Discord never saw it — unlike the two
+only), so the Ink TUI / Discord / Slack never saw it — unlike the two
 other compression warnings in the same module, which route through
 ``_emit_status`` (and store ``_compression_warning`` for late-bound
 gateway replay). This pins the warning onto the gateway-aware channel.

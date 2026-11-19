@@ -131,7 +131,7 @@ _GROUP = "whatsapp:120363000000000000@g.us"
 
 
 @pytest.mark.parametrize("argv", [
-    ["--to", "telegram", "--mention", "15550000001", "hello"],
+    ["--to", "discord", "--mention", "15550000001", "hello"],
     ["--to", _GROUP, "--mention", "not-a-phone", "hello"],
     ["--to", _GROUP, "--mention", "\u0661\u0665\u0665\u0665\u0660\u0660\u0660\u0660\u0660\u0660\u0661", "hello"],
     ["--to", _GROUP, "--mention", "\u0661\u0665\u0665\u0665\u0660\u0660\u0660\u0660\u0660\u0660\u0661@s.whatsapp.net", "hello"],
@@ -187,7 +187,7 @@ def test_file_decode_error_suggests_media_directive(fake_tool, capsys, monkeypat
     bad = tmp_path / "bad-bytes.bin"
     bad.write_bytes(b"\xff\xfe\x00")
 
-    args = _parse(["--to", "telegram", "--file", str(bad)])
+    args = _parse(["--to", "discord", "--file", str(bad)])
     with pytest.raises(SystemExit) as exc:
         send_cmd.cmd_send(args)
     assert exc.value.code == 2
@@ -266,7 +266,7 @@ def test_list_json_includes_configured_platform(monkeypatch, capsys):
     fake_dir = types.ModuleType("gateway.channel_directory")
     fake_dir.load_directory = lambda: {
         "updated_at": None,
-        "platforms": {"telegram": [{"id": "1", "name": "home"}]},
+        "platforms": {"discord": [{"id": "1", "name": "home"}]},
     }
     fake_dir.format_directory_for_display = lambda platforms=None: ""
     monkeypatch.setitem(sys.modules, "gateway.channel_directory", fake_dir)
@@ -276,7 +276,7 @@ def test_list_json_includes_configured_platform(monkeypatch, capsys):
     assert rc == 0
     assert payload["platforms"]["simplex"] == []
     assert "local" not in payload["platforms"]  # infra pseudo-platform skipped
-    assert payload["platforms"]["telegram"]  # discovered entries preserved
+    assert payload["platforms"]["discord"]  # discovered entries preserved
 
 
 # ---------------------------------------------------------------------------
@@ -292,9 +292,9 @@ def test_register_send_subparser_is_reusable():
     subparsers = parser.add_subparsers(dest="command")
     send_parser = send_cmd.register_send_subparser(subparsers)
     assert send_parser is not None
-    args = parser.parse_args(["send", "--to", "telegram", "hi"])
+    args = parser.parse_args(["send", "--to", "discord", "hi"])
     assert args.func is send_cmd.cmd_send
-    assert args.to == "telegram"
+    assert args.to == "discord"
     assert args.message == "hi"
 
 
@@ -308,7 +308,7 @@ def test_load_hermes_env_bridges_config_yaml_scalars(tmp_path, monkeypatch):
 
     This mirrors the gateway/run.py bootstrap behavior: without this, running
     ``hermes send`` from a fresh shell cannot resolve platform settings
-    saved by ``hermes config set`` (e.g. ``TELEGRAM_BOT_TOKEN``) because they
+    saved by ``hermes config set`` (e.g. ``DISCORD_BOT_TOKEN``) because they
     live in config.yaml, not in .env — and the gateway's config loader reads
     via ``os.getenv(...)``.
     """
@@ -318,11 +318,11 @@ def test_load_hermes_env_bridges_config_yaml_scalars(tmp_path, monkeypatch):
     hermes_home.mkdir()
     (hermes_home / ".env").write_text("SOME_TOKEN=abc123\n", encoding="utf-8")
     (hermes_home / "config.yaml").write_text(
-        "TELEGRAM_BOT_TOKEN: '555:0001111'\nnested:\n  ignored: true\n"
+        "DISCORD_BOT_TOKEN: '555:0001111'\nnested:\n  ignored: true\n"
     )
 
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
     monkeypatch.delenv("SOME_TOKEN", raising=False)
 
     # Force get_hermes_home() to re-resolve under the patched env.
@@ -334,7 +334,7 @@ def test_load_hermes_env_bridges_config_yaml_scalars(tmp_path, monkeypatch):
     send_cmd._load_hermes_env()
 
     assert os.environ.get("SOME_TOKEN") == "abc123"
-    assert os.environ.get("TELEGRAM_BOT_TOKEN") == "555:0001111"
+    assert os.environ.get("DISCORD_BOT_TOKEN") == "555:0001111"
 
 
 def test_load_hermes_env_utf8_bom_preserves_first_key(tmp_path, monkeypatch):

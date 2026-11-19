@@ -244,17 +244,6 @@ Az újraszinkronizálás legfeljebb óránként egyszer fut automatikusan."
     current_with_title:    "📌 Munkamenet: `{session_id}`\nCím: **{title}**"
     current_no_title:      "📌 Munkamenet: `{session_id}`\nNincs cím beállítva. Használat: `/title Saját munkamenet neve`"
 
-  topic:
-    not_telegram_dm:         "A /topic parancs csak Telegram privát csevegésekben érhető el."
-    no_session_db:           "A munkamenet-adatbázis nem érhető el."
-    unauthorized:            "Nincs jogosultságod a /topic használatához ezen a boton."
-    restore_needs_topic:     "Egy munkamenet visszaállításához először hozz létre vagy nyiss meg egy Telegram topicot, majd küldd a /topic <session-id> parancsot abban a topicban. Új topic létrehozásához nyisd meg az All Messagest, és küldj oda bármilyen üzenetet."
-    topics_disabled:         "A Telegram topicok még nincsenek engedélyezve ehhez a bothoz.\n\nHogyan engedélyezd:\n1. Nyisd meg a @BotFathert.\n2. Válaszd ki a botod.\n3. Nyisd meg a Bot Settings → Threads Settings menüt.\n4. Kapcsold be a Threaded Mode-ot, és győződj meg róla, hogy a felhasználók új threadeket hozhatnak létre.\n\nEzután küldd újra a /topic parancsot."
-    topics_user_disallowed:  "A Telegram topicok engedélyezve vannak, de a felhasználók nem hozhatnak létre topicokat.\n\nNyisd meg a @BotFather → válaszd ki a botod → Bot Settings → Threads Settings menüt, majd kapcsold ki a 'Disallow users to create new threads' opciót.\n\nEzután küldd újra a /topic parancsot."
-    enable_failed:           "Nem sikerült engedélyezni a Telegram topic módot: {error}"
-    bound_status:            "Ez a topic ehhez van kapcsolva:\nMunkamenet: {label}\nID: {session_id}\n\nHasználd a /new parancsot, hogy lecseréld ezt a topicot új munkamenetre.\nPárhuzamos munkához nyisd meg az All Messagest, és küldj oda egy üzenetet egy másik topic létrehozásához."
-    thread_ready:            "A többmunkamenetes Telegram topicok engedélyezve vannak.\n\nEz a topic független Hermes-munkamenetként szolgál. Használd a /new parancsot, hogy lecseréld a topic jelenlegi munkamenetét. Párhuzamos munkához nyisd meg az All Messagest, és küldj oda egy üzenetet egy másik topic létrehozásához."
-    untitled_session:        "Cím nélküli munkamenet"
 
   undo:
     nothing:               "Nincs mit visszavonni."

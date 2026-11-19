@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from plugins.deep_research import jobs, notify
+from plugins.deep_research import jobs, notify, provision
 from plugins.deep_research.config import (
     MAX_BRIEF_CHARS,
     MAX_MAX_PARALLEL,
@@ -110,23 +110,13 @@ def availability_error() -> Optional[str]:
     """Why the tool cannot run here, or ``None`` when it can.
 
     ``check_fn`` hides the tool on any failure; ``start`` reports the same
-    reason so a caller that raced a config change learns why nothing happened.
+    reason so a caller that raced an environment change learns why nothing
+    happened. A missing worker profile is NOT an availability failure: it is
+    provisioned on demand at ``start`` (see plugins.deep_research.provision),
+    so a fresh install always sees the tool.
     """
     if os.environ.get("HERMES_RESEARCH_JOB"):
         return "not available inside a research worker session"
-    config = load_deep_research_config()
-    if not config.enabled:
-        return "deep_research is disabled in config (deep_research.enabled: false)"
-    try:
-        from hermes_cli.profiles import profile_exists
-
-        if not profile_exists(config.worker_profile):
-            return (
-                f"worker profile {config.worker_profile!r} does not exist "
-                "(configure deep_research.worker_profile)"
-            )
-    except Exception:  # noqa: BLE001 — a broken profiles module must hide, not crash
-        return "worker profile check unavailable"
     override = os.environ.get("HERMES_BIN")
     if override and not Path(override).exists():
         return f"HERMES_BIN points at a missing file: {override}"
@@ -301,6 +291,11 @@ def _action_start(args: Dict[str, Any], session_id: Optional[str], task_id: Opti
     )
     if isinstance(max_parallel, str):
         return max_parallel
+
+    try:
+        provision.ensure_worker_profile(config.worker_profile)
+    except provision.ProvisionError as exc:
+        return _error(exc.code, str(exc))
 
     hermes_home = _hermes_home()
     try:

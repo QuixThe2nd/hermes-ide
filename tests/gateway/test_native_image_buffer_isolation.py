@@ -9,7 +9,7 @@ from gateway.session import SessionSource, build_session_key
 def _make_runner() -> GatewayRunner:
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")},
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="fake")},
     )
     runner.adapters = {}
     runner._model = "openai/gpt-4.1-mini"
@@ -20,7 +20,7 @@ def _make_runner() -> GatewayRunner:
 
 def _source(chat_id: str) -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id=chat_id,
         chat_type="private",
         user_name=f"user-{chat_id}",

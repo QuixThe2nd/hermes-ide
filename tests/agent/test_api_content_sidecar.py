@@ -273,6 +273,7 @@ class TestPrologueStamping:
             "content": "\n\nPLUGIN-CTX",
             "injected_chars": len("\n\nPLUGIN-CTX"),
             "sources": ["plugin"],
+            "kinds": ["plugin"],
         }
 
     def test_emits_combined_memory_and_plugin_suffix_exactly_once(self):
@@ -368,14 +369,14 @@ class TestPrologueStamping:
         )
 
     @pytest.mark.parametrize(
-        ("hook_result", "suffix", "sources"),
+        ("hook_result", "suffix", "sources", "kinds"),
         [
-            ([], "", ["gateway"]),
-            ([{"context": "PLUGIN-CTX"}], "\n\nPLUGIN-CTX", ["gateway", "plugin"]),
+            ([], "", ["gateway"], None),
+            ([{"context": "PLUGIN-CTX"}], "\n\nPLUGIN-CTX", ["gateway", "plugin"], ["plugin"]),
         ],
     )
     def test_prefix_starting_with_clean_uses_live_content_boundary(
-        self, hook_result, suffix, sources
+        self, hook_result, suffix, sources, kinds
     ):
         clean = "abc"
         prefix = "abc-INJECTED-"
@@ -389,11 +390,14 @@ class TestPrologueStamping:
 
         assert len(agent.tool_progress_events) == 1
         args, _kwargs = agent.tool_progress_events[0]
-        assert args[3] == {
+        expected = {
             "content": prefix + suffix,
             "injected_chars": len(prefix + suffix),
             "sources": sources,
         }
+        if kinds is not None:
+            expected["kinds"] = kinds
+        assert args[3] == expected
 
     def test_emits_plugin_suffix_when_clean_text_is_empty(self):
         agent = _FakeAgent()
@@ -411,6 +415,7 @@ class TestPrologueStamping:
             "content": "\n\nPLUGIN-CTX",
             "injected_chars": len("\n\nPLUGIN-CTX"),
             "sources": ["plugin"],
+            "kinds": ["plugin"],
         }
 
     def test_labels_gateway_turn_note_without_plugin_source(self):
@@ -427,6 +432,7 @@ class TestPrologueStamping:
             "content": "\n\nGATEWAY-NOTE",
             "injected_chars": len("\n\nGATEWAY-NOTE"),
             "sources": ["gateway"],
+            "kinds": [None],
         }
 
     def test_labels_plugin_and_gateway_turn_note_as_distinct_sources(self):
@@ -447,6 +453,7 @@ class TestPrologueStamping:
             "content": expected,
             "injected_chars": len(expected),
             "sources": ["plugin", "gateway"],
+            "kinds": ["plugin", None],
         }
 
     def test_no_stamp_without_injections(self):

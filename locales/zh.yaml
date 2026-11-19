@@ -244,17 +244,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     current_with_title:    "📌 会话：`{session_id}`\n标题：**{title}**"
     current_no_title:      "📌 会话：`{session_id}`\n尚未设置标题。用法：`/title 我的会话名称`"
 
-  topic:
-    not_telegram_dm:         "/topic 命令仅在 Telegram 私聊中可用。"
-    no_session_db:           "会话数据库不可用。"
-    unauthorized:            "您无权在此 bot 上使用 /topic。"
-    restore_needs_topic:     "若要恢复会话，请先创建或打开一个 Telegram topic，然后在该 topic 中发送 /topic <session-id>。要创建新 topic，请打开 All Messages 并在其中发送任意消息。"
-    topics_disabled:         "此 bot 尚未启用 Telegram topics。\n\n启用方法：\n1. 打开 @BotFather。\n2. 选择您的 bot。\n3. 打开 Bot Settings → Threads Settings。\n4. 开启 Threaded Mode，并确保允许用户创建新线程。\n\n然后再次发送 /topic。"
-    topics_user_disallowed:  "Telegram topics 已启用，但不允许用户创建 topics。\n\n打开 @BotFather → 选择您的 bot → Bot Settings → Threads Settings，然后关闭 'Disallow users to create new threads'。\n\n然后再次发送 /topic。"
-    enable_failed:           "启用 Telegram topic 模式失败：{error}"
-    bound_status:            "此 topic 已关联到：\n会话：{label}\nID：{session_id}\n\n使用 /new 将此 topic 替换为新会话。\n如需并行工作，请打开 All Messages 并在其中发送消息以创建另一个 topic。"
-    thread_ready:            "Telegram 多会话 topics 已启用。\n\n此 topic 将作为独立的 Hermes 会话使用。使用 /new 替换此 topic 的当前会话。如需并行工作，请打开 All Messages 并在其中发送消息以创建另一个 topic。"
-    untitled_session:        "未命名会话"
 
   undo:
     nothing:               "没有可撤销的内容。"

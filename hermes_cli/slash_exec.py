@@ -93,7 +93,7 @@ def _exec_help(ctx: CommandContext) -> CommandReply:
 def _exec_commands(ctx: CommandContext) -> CommandReply:
     """Core gateway /commands body — paginated command + skill listing.
 
-    ``ctx.options["page_size"]`` is a surface parameter (Telegram uses 15, everything else 20).
+    ``ctx.options["page_size"]`` is a surface parameter (per-platform overrides; default 20).
     """
     from agent.i18n import t
     from hermes_cli.commands import gateway_help_lines

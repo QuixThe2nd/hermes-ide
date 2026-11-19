@@ -3,7 +3,7 @@
 WhatsApp delivers rapid multi-message bursts (forwarded batches, paste-splits)
 individually.  Without debounce each fragment triggers a separate agent
 invocation, wasting tokens and flooding the user with reply fragments.  This
-mirrors the Telegram/WeCom/Feishu pattern.
+mirrors the WeCom/Feishu pattern.
 
 Batch delays are read from ``config.extra`` (config.yaml), not env vars.
 """

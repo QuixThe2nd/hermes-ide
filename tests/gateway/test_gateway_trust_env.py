@@ -37,10 +37,10 @@ def test_gateway_trust_env_reads_config(tmp_path, monkeypatch, yaml_body, expect
 
 
 class TestResolveProxyUrlMultiplexScope:
-    """A secondary multiplex profile's own TELEGRAM_PROXY/DISCORD_PROXY/etc. must gate its
+    """A secondary multiplex profile's own DISCORD_PROXY/SLACK_PROXY/etc. must gate its
     adapter, not the default profile's YAML-to-env bridge output sitting in the shared
     process's os.environ (the #72348 class, applied to this shared chokepoint used by
-    Telegram, Discord, Mattermost, Matrix, SMS, and Slack)."""
+    Discord, Mattermost, Matrix, SMS, and Slack)."""
 
     def test_scoped_profile_uses_its_own_value(self, monkeypatch):
         from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope

@@ -420,7 +420,7 @@ def _cron_delivery_hint(agent: Any) -> str:
     """The destination channel's hint (default + its ``platform_hints`` override) for a cron agent.
 
     A cron agent runs as platform ``cron`` but its final response lands on the job's ``deliver``
-    channel, so without this the model never learns that MEDIA: tags become Slack/Telegram
+    channel, so without this the model never learns that MEDIA: tags become Slack/messaging
     attachments or that tables do not render there — and a user's ``platform_hints.<platform>.append``
     never reached scheduled jobs at all. The scheduler publishes the primary auto-deliver target
     into the session ContextVar before the agent runs (same seam ``send_message`` routes by).

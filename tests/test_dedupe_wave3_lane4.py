@@ -38,14 +38,13 @@ _GROUPS = (
     ("_read_discord_token", "plugins.hermes_starts:_read_discord_token", ("plugins.discord_guests:_read_discord_token",)),
     ("linger_warning", "plugins.auto_update.systemd:linger_warning", ("plugins.drift_watch.systemd:linger_warning",)),
     ("_set_cached_sudo_password", "tools.terminal_tool_sudo:_set_cached_sudo_password", ("tools.terminal_tool:_set_cached_sudo_password",)),
-    ("_clamp_timeout_seconds", "tools.agent_cli_runner:_clamp_timeout_seconds", ("tools.claude_agent_tool:_clamp_timeout_seconds", "tools.cursor_agent_tool:_clamp_timeout_seconds",)),
+    ("_clamp_timeout_seconds", "tools.agent_cli_runner:_clamp_timeout_seconds", ("tools.claude_agent_tool:_clamp_timeout_seconds",)),
     ("_coerce_bool", "plugins.auto_update.config:_coerce_bool", ("plugins.fallback_watch.core:_coerce_bool", "plugins.claude_viewer.config:_coerce_bool", "plugins.drift_watch.config:_coerce_bool")),
     ("register", "plugins.fallback_watch:register", ("plugins.home_server:register",)),
     ("probe_timer_is_active", "plugins.auto_update.systemd:probe_timer_is_active", ("plugins.drift_watch.systemd:probe_timer_is_active",)),
     ("probe_timer_is_enabled", "plugins.auto_update.systemd:probe_timer_is_enabled", ("plugins.drift_watch.systemd:probe_timer_is_enabled",)),
     ("_venv_python", "hermes_cli.runtime_repair:_venv_python", ("hermes_cli.managed_uv:_venv_python",)),
     ("_remove_tree", "hermes_cli.runtime_repair:_remove_tree", ("hermes_cli.managed_uv:_remove_tree",)),
-    ("_check_interrupted", "tools.agent_cli_runner:_check_interrupted", ("tools.cursor_agent_tool:_check_interrupted",)),
     ("_load_config_mapping", "plugins.speed_channels.tool:_load_config_mapping", ("plugins.quota_channels.tool:_load_config_mapping",)),
     ("_looks_like_env_assignment", "tools.terminal_tool_sudo:_looks_like_env_assignment", ("tools.terminal_tool:_looks_like_env_assignment",)),
     ("_coerce_int", "plugins.auto_update.config:_coerce_int", ("plugins.fallback_watch.core:_coerce_int", "plugins.drift_watch.config:_coerce_int")),
@@ -145,13 +144,10 @@ def test_gateway_auth_preserves_connector_trust_and_exact_origins() -> None:
 
 def test_agent_timeout_bounds_remain_tool_specific() -> None:
     from tools import claude_agent_tool as claude
-    from tools import cursor_agent_tool as cursor
 
     assert claude._clamp_timeout_seconds(9999) == 3600
-    assert cursor._clamp_timeout_seconds(9999) == 1800
     assert claude._clamp_timeout_seconds(1) == 60
-    assert cursor._clamp_timeout_seconds(1) == 60
-    for clamp in (claude._clamp_timeout_seconds, cursor._clamp_timeout_seconds):
+    for clamp in (claude._clamp_timeout_seconds,):
         assert clamp(0) == 0
         assert clamp(-1) == 0
         assert clamp("invalid") == 0

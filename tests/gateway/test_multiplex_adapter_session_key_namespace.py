@@ -1,14 +1,14 @@
 """Regression tests: adapter-level session keys must carry the profile (#88391).
 
-Incident shape (Aug 2026, local install, two Telegram bots on one multiplexed
-gateway): a Telegram private chat reports the user's own id as ``chat.id``, so
+Incident shape (Aug 2026, local install, two bots on one multiplexed
+gateway): a private DM chat reports the user's own id as ``chat.id``, so
 every bot in the multiplexer sees an identical ``chat_id`` for the same human.
 
 ``BasePlatformAdapter.handle_message`` and each adapter's ``_text_batch_key`` /
 ``_photo_batch_key`` derive a session key at INGRESS — before
 ``GatewayRunner._make_profile_message_handler`` stamps ``source.profile``. The
 key therefore fell back to the *active* profile's namespace, so both bots
-produced ``agent:main:telegram:dm:<uid>`` and shared one lane: the text-batching
+produced ``agent:main:discord:dm:<uid>`` and shared one lane: the text-batching
 dict, ``_active_sessions`` and the busy-session guard are all keyed on that
 string. Observed in production logs: 60 flushes, zero carrying ``agent:medicina:``.
 
@@ -29,9 +29,9 @@ UID = "8693894969"
 
 
 def _source(profile=None):
-    """Telegram DM shape: chat_id == user_id, thread_id None — same for every bot."""
+    """DM shape: chat_id == user_id, thread_id None — same for every bot."""
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id=UID,
         chat_type="dm",
         user_id=UID,

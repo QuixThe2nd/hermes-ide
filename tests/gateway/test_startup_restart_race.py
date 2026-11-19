@@ -56,7 +56,7 @@ def make_startup_runner(tmp_path):
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.config = GatewayConfig(
         platforms={
-            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***"),
+            Platform.DISCORD: PlatformConfig(enabled=True, token="***"),
             Platform.SLACK: PlatformConfig(enabled=True, token="***"),
         },
         sessions_dir=tmp_path / "sessions",
@@ -132,24 +132,24 @@ async def test_startup_aborts_when_restart_begins_during_platform_connect(tmp_pa
 
     runner = make_startup_runner(tmp_path)
     first_disconnected = asyncio.Event()
-    telegram = StartupRaceAdapter(
-        Platform.TELEGRAM,
+    discord = StartupRaceAdapter(
+        Platform.DISCORD,
         on_connect=lambda: runner.request_restart(detached=False, via_service=True),
     )
     slack = StartupRaceAdapter(Platform.SLACK, wait_for_disconnect=first_disconnected)
 
     async def disconnect_and_release():
-        telegram.disconnected = True
+        discord.disconnected = True
         first_disconnected.set()
 
-    telegram.disconnect = disconnect_and_release
-    runner._create_adapter = MagicMock(side_effect=[telegram, slack])
+    discord.disconnect = disconnect_and_release
+    runner._create_adapter = MagicMock(side_effect=[discord, slack])
 
     result = await asyncio.wait_for(runner.start(), timeout=30)
 
     assert result is True
-    assert telegram.disconnected is True
-    assert telegram.background_cancelled is True
+    assert discord.disconnected is True
+    assert discord.background_cancelled is True
     assert slack.connected is False
     assert runner._running is False
     assert runner.adapters == {}

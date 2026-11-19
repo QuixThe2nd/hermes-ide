@@ -12,12 +12,12 @@ from gateway.session import SessionSource
 
 class WakeAdapter(BasePlatformAdapter):
     def __init__(self):
-        super().__init__(PlatformConfig(enabled=True), Platform.TELEGRAM)
+        super().__init__(PlatformConfig(enabled=True), Platform.DISCORD)
         self.sent = []
 
     @property
     def name(self):
-        return "telegram"
+        return "discord"
 
     async def connect(self, *, is_reconnect=False):
         return True
@@ -41,9 +41,9 @@ def busy_gateway():
     adapter = WakeAdapter()
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig()
-    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.adapters = {Platform.DISCORD: adapter}
     runner._draining = False
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", chat_type="dm")
+    source = SessionSource(platform=Platform.DISCORD, chat_id="123", chat_type="dm")
     key = adapter._event_session_key(MessageEvent(text="", message_type=MessageType.TEXT, source=source))
     adapter.set_message_handler(unused_handler)
     adapter.set_busy_session_handler(runner._handle_active_session_busy_message)

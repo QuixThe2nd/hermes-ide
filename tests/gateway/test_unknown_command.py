@@ -18,7 +18,7 @@ from gateway.session import SessionEntry, SessionSource, build_session_key
 
 def _make_source() -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         user_id="u1",
         chat_id="c1",
         user_name="tester",
@@ -47,11 +47,11 @@ def _make_runner():
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="***")}
     )
     adapter = MagicMock()
     adapter.send = AsyncMock()
-    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.adapters = {Platform.DISCORD: adapter}
     runner.hooks = SimpleNamespace(
         emit=AsyncMock(),
         emit_collect=AsyncMock(return_value=[]),
@@ -63,7 +63,7 @@ def _make_runner():
         session_id="sess-1",
         created_at=datetime.now(),
         updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="dm",
     )
     runner.session_store = MagicMock()
@@ -132,7 +132,7 @@ async def test_known_slash_command_not_flagged_as_unknown(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch):
-    """Telegram autocomplete sends /reload_mcp for the /reload-mcp built-in.
+    """Platform autocomplete can send /reload_mcp for the /reload-mcp built-in.
     That must NOT be flagged as unknown."""
     import gateway.run as gateway_run
 

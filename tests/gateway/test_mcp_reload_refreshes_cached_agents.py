@@ -26,7 +26,7 @@ from gateway.session import SessionEntry, SessionSource, build_session_key
 
 def _make_source() -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         user_id="u1",
         chat_id="c1",
         user_name="tester",
@@ -46,7 +46,7 @@ def _make_runner_with_cached_agents(num_agents: int = 2):
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="***")}
     )
 
     # Session store stub — _execute_mcp_reload writes a transcript message
@@ -56,7 +56,7 @@ def _make_runner_with_cached_agents(num_agents: int = 2):
         session_id="sess-1",
         created_at=datetime.now(),
         updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="dm",
     )
     runner.session_store = MagicMock()

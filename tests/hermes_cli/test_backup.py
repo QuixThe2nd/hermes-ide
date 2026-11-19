@@ -1500,7 +1500,7 @@ class TestQuickSnapshot:
 
         # Generic pairing store (new location)
         (hermes_home / "platforms" / "pairing").mkdir(parents=True)
-        (hermes_home / "platforms" / "pairing" / "telegram-approved.json").write_text(
+        (hermes_home / "platforms" / "pairing" / "slack-approved.json").write_text(
             '{"12345": {"user_name": "alice"}}'
         )
         (hermes_home / "platforms" / "pairing" / "discord-approved.json").write_text(
@@ -1520,7 +1520,7 @@ class TestQuickSnapshot:
         assert snap_id is not None
 
         snap_dir = hermes_home / "state-snapshots" / snap_id
-        assert (snap_dir / "platforms" / "pairing" / "telegram-approved.json").exists()
+        assert (snap_dir / "platforms" / "pairing" / "slack-approved.json").exists()
         assert (snap_dir / "platforms" / "pairing" / "discord-approved.json").exists()
         assert (snap_dir / "pairing" / "matrix-approved.json").exists()
         assert (snap_dir / "feishu_comment_pairing.json").exists()
@@ -1528,7 +1528,7 @@ class TestQuickSnapshot:
         with open(snap_dir / "manifest.json") as f:
             meta = json.load(f)
         files = meta["files"]
-        assert "platforms/pairing/telegram-approved.json" in files
+        assert "platforms/pairing/slack-approved.json" in files
         assert "platforms/pairing/discord-approved.json" in files
         assert "pairing/matrix-approved.json" in files
         assert "feishu_comment_pairing.json" in files

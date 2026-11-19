@@ -58,12 +58,12 @@ def _render_cli() -> str:
 def _render_gateway() -> str:
     from gateway.run import GatewayRunner
 
-    source = SessionSource(platform=Platform.TELEGRAM, user_id="u1", chat_id="c1", user_name="t", chat_type="dm")
-    entry = SessionEntry(session_key="telegram:c1", session_id=SESSION_ID, created_at=CREATED, updated_at=UPDATED,
-                         platform=Platform.TELEGRAM, chat_type="dm", total_tokens=0)
+    source = SessionSource(platform=Platform.DISCORD, user_id="u1", chat_id="c1", user_name="t", chat_type="dm")
+    entry = SessionEntry(session_key="discord:c1", session_id=SESSION_ID, created_at=CREATED, updated_at=UPDATED,
+                         platform=Platform.DISCORD, chat_type="dm", total_tokens=0)
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
-    runner._running_agents = {"telegram:c1": _agent()}
+    runner._running_agents = {"discord:c1": _agent()}
     runner._queue_depth = lambda *_a, **_k: 0
     runner._run_in_executor_with_context = AsyncMock(return_value=False)
     runner.session_store = MagicMock()

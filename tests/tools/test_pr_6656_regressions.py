@@ -263,7 +263,7 @@ class TestListPendingLock:
         from gateway.pairing import PairingStore
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
-            store.generate_code("telegram", "user1", "Alice")
-            pending = store.list_pending("telegram")
+            store.generate_code("discord", "user1", "Alice")
+            pending = store.list_pending("discord")
         assert len(pending) == 1
         assert pending[0]["user_id"] == "user1"

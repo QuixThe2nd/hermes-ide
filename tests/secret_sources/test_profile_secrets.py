@@ -95,12 +95,12 @@ def test_preserve_existing_only_guards_set_vars():
 
 def test_profile_suffixed_var_hydrates_canonical():
     report, env = _apply(
-        {"TELEGRAM_BOT_TOKEN_MILLA": "123:tok"},
+        {"DISCORD_BOT_TOKEN_MILLA": "123:tok"},
         home=PROFILE_HOME,
     )
-    assert env["TELEGRAM_BOT_TOKEN_MILLA"] == "123:tok"
-    assert env["TELEGRAM_BOT_TOKEN"] == "123:tok"
-    assert "TELEGRAM_BOT_TOKEN" in report.provenance
+    assert env["DISCORD_BOT_TOKEN_MILLA"] == "123:tok"
+    assert env["DISCORD_BOT_TOKEN"] == "123:tok"
+    assert "DISCORD_BOT_TOKEN" in report.provenance
     assert any("applied profile-scoped" in w
                for w in report.sources[0].result.warnings)
 

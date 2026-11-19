@@ -86,12 +86,12 @@ class TestIsWriteDenied:
         monkeypatch.setenv("HERMES_HOME", str(profile))
 
         # Active profile pairing entries
-        assert _is_write_denied(str(profile / "pairing" / "telegram-approved.json")) is True
+        assert _is_write_denied(str(profile / "pairing" / "discord-approved.json")) is True
         assert _is_write_denied(str(profile / "pairing" / "discord-pending.json")) is True
         # The directory itself
         assert _is_write_denied(str(profile / "pairing")) is True
         # Root pairing entries (profile mode — same shape as mcp-tokens gap)
-        assert _is_write_denied(str(root / "pairing" / "telegram-approved.json")) is True
+        assert _is_write_denied(str(root / "pairing" / "discord-approved.json")) is True
         assert _is_write_denied(str(root / "pairing")) is True
 
 

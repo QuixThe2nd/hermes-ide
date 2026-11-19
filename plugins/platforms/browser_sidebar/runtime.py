@@ -40,7 +40,7 @@ REGISTRY SEMANTICS
 
 from __future__ import annotations
 
-import asyncio
+import os
 import threading
 import weakref
 from dataclasses import dataclass
@@ -62,6 +62,17 @@ class _Lease:
     home_key: str
     adapter: "weakref.ref[BrowserSidebarAdapter]"
     loop: asyncio.AbstractEventLoop
+    generation_id: str = ""
+    gateway_pid: int = 0
+    hub_pid: int = 0
+
+
+def _pid_of(adapter: Any) -> int:
+    """The gateway process that owns *adapter* (0 when unknown)."""
+    try:
+        return int(getattr(adapter, "_gateway_pid", 0) or 0) or os.getpid()
+    except (TypeError, ValueError):
+        return 0
 
 
 def _prune_locked() -> None:
@@ -81,7 +92,11 @@ def register_connected_adapter(
     key = home_key or hermes_home_key()
     with _REGISTRY_LOCK:
         _prune_locked()
-        _REGISTRY[key] = _Lease(home_key=key, adapter=weakref.ref(adapter), loop=loop)
+        _REGISTRY[key] = _Lease(
+            home_key=key, adapter=weakref.ref(adapter), loop=loop,
+            generation_id=str(getattr(adapter, "_generation_id", "") or ""),
+            gateway_pid=_pid_of(adapter), hub_pid=int(getattr(adapter, "hub_pid", 0) or 0),
+        )
     return key
 
 
@@ -140,6 +155,9 @@ def diagnostics(home_key: Optional[str] = None) -> Dict[str, Any]:
             "browser_connected": bool(getattr(adapter, "_browser_connected", False)),
             "adapter_module": type(adapter).__module__ if adapter is not None else None,
             "loop_alive": not lease.loop.is_closed(),
+            "generation_id": lease.generation_id,
+            "gateway_pid": lease.gateway_pid,
+            "hub_pid": lease.hub_pid,
         })
     return {
         "requested_profile": key,

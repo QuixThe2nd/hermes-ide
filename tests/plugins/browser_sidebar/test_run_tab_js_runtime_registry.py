@@ -402,7 +402,10 @@ _DIAGNOSTICS_KEYS = {
     "requested_profile", "registered_profiles", "registered_count",
     "entries", "runtime_module", "handler_module",
 }
-_ENTRY_KEYS = {"profile", "browser_connected", "adapter_module", "loop_alive"}
+_ENTRY_KEYS = {
+    "profile", "browser_connected", "adapter_module", "loop_alive",
+    "generation_id", "gateway_pid", "hub_pid",
+}
 
 
 def test_no_adapter_diagnostics_are_actionable_and_secret_free(home):

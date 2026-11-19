@@ -41,11 +41,9 @@ def _attach_matrix():
     source = types.SimpleNamespace(platform=Platform.MATRIX, chat_id="!room:example.org")
 
     runner = types.SimpleNamespace(
-        _is_telegram_topic_lane=lambda src: False,
         _is_matrix_inbox_room_lane=lambda src: True,
         _is_discord_auto_thread_lane=lambda src: False,
         _is_relay_discord_channel_lane=lambda src: False,
-        _schedule_telegram_topic_title_rename=lambda src, sid, title: None,
         _schedule_discord_semantic_thread_rename=lambda src, sid, title: None,
         _schedule_matrix_room_title_rename=lambda src, sid, title: renames.append(title),
     )

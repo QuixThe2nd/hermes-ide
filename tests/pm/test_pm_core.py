@@ -629,10 +629,10 @@ def test_sync_venv_unions_extras(venv_env):
     from pm.ensure import sync_venv
 
     _, fake = venv_env
-    sync_venv(["telegram"])
+    sync_venv(["matrix"])
     sync_venv(["anthropic"])
-    sync_venv(["telegram"])
-    assert fake.applied == [["telegram"], ["anthropic", "telegram"]]
+    sync_venv(["matrix"])
+    assert fake.applied == [["matrix"], ["anthropic", "matrix"]]
 
 
 def test_sync_venv_drops_retired_persisted_extras(venv_env):
@@ -642,15 +642,15 @@ def test_sync_venv_drops_retired_persisted_extras(venv_env):
 
     _, fake = venv_env
     Facts(runtime_facts_path()).record_state(
-        "venv", "stale-stamp", ["acp", "telegram"],
+        "venv", "stale-stamp", ["acp", "matrix"],
     )
     sync_venv()
     applied = fake.applied[-1]
     assert "acp" not in applied
-    assert "telegram" in applied
+    assert "matrix" in applied
     recorded = Facts(runtime_facts_path()).get("venv") or {}
     assert "acp" not in recorded.get("extras", [])
-    assert "telegram" in recorded.get("extras", [])
+    assert "matrix" in recorded.get("extras", [])
 
 
 def test_check_reports_venv_drift_and_missing_tools(venv_env):

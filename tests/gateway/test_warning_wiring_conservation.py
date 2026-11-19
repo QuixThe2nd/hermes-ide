@@ -11,7 +11,7 @@ from gateway.session import SessionSource
 
 
 def test_actual_wiring_retains_observers_and_controls_across_muted_turn():
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="offline", chat_type="dm")
+    source = SessionSource(platform=Platform.DISCORD, chat_id="offline", chat_type="dm")
     for muted in (False, True, False):
         observed = []
         ctx = TurnContext(source=source, user_config={"display": {"suppress_warning_notifications": True}},
@@ -37,7 +37,7 @@ def test_actual_wiring_retains_observers_and_controls_across_muted_turn():
 def test_concrete_gateway_sinks_hide_all_freeform_muted_turn_output():
     for muted in (False, True, False):
         scheduled = []
-        ctx = TurnContext(source=SessionSource(platform=Platform.TELEGRAM, chat_id="offline"),
+        ctx = TurnContext(source=SessionSource(platform=Platform.DISCORD, chat_id="offline"),
             user_config={}, mute_notification_reply=muted)
         holder = NS(_ctx=ctx, _status_live=lambda: True,
             _schedule=lambda coro, *args: scheduled.append(coro),

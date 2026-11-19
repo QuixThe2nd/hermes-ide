@@ -95,8 +95,14 @@ def _detect_supervisor() -> str:
     return "external" if "--external-supervisor" in sys.argv else "manual"
 
 
-def build_identify_payload() -> dict[str, Any]:
-    """Default ``identify`` answer, built from gateway.status primitives."""
+def build_identify_payload(runner: Any = None) -> dict[str, Any]:
+    """Default ``identify`` answer, built from gateway.status primitives.
+
+    ``runner`` (the live GatewayRunner) enriches the answer with the
+    serving-identity overlap role: a draining predecessor reports its
+    spawned successor so out-of-process consumers can tell it apart from
+    the process actually serving new turns.
+    """
     from gateway.status import _build_pid_record, _get_code_identity_fields, _profile_label_for_home, read_runtime_status
     record = _build_pid_record()
     payload: dict[str, Any] = {
@@ -109,6 +115,12 @@ def build_identify_payload() -> dict[str, Any]:
         served = (read_runtime_status() or {}).get("served_profiles")
         if isinstance(served, list) and served:
             payload["served_profiles"] = served
+    if runner is not None:
+        with contextlib.suppress(Exception):
+            from gateway.serving_identity import overlap_fields, serving_identity_snapshot
+            overlap = overlap_fields(serving_identity_snapshot(runner))
+            if overlap:
+                payload["overlap"] = overlap
     return payload
 
 
@@ -352,23 +364,20 @@ def pause_gateway_for_update(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIM
     return query_gateway_control(home, "pause-for-update", timeout=timeout)
 
 
-def request_gateway_restart(home: Path, *, restart_platforms: bool = True,
-                             restart_hub: bool = False,
-                             requester: Optional[dict] = None,
-                             timeout: float = 15.0) -> Optional[dict[str, Any]]:
+def request_gateway_restart(home: Path, *, restart_hub: bool = False,
+                            requester: Optional[dict] = None,
+                            timeout: float = 15.0) -> Optional[dict[str, Any]]:
     """Ask the gateway serving ``home`` to run the ONE restart core in-process.
 
     This is the ``hermes gateway restart`` CLI's primary transport: the same
     overlap pipeline ``/restart`` and the agent ``restart`` tool use, triggered
-    out-of-process. ``restart_platforms`` carries the ``--no-platforms``
-    per-call override; ``restart_hub`` is the opt-in hub-unit bounce the
+    out-of-process. ``restart_hub`` is the opt-in hub-unit bounce the
     SUCCESSOR performs (missing/false never bounces — old clients are safe).
     Returns the ACK ``{"queued", "status", ...}`` or None when no gateway
     answers / the gateway predates the verb — the caller then falls back to
     the SIGUSR1 / service-manager transports.
     """
     params: dict[str, Any] = {
-        "restart_platforms": bool(restart_platforms),
         "restart_hub": bool(restart_hub),
     }
     if isinstance(requester, dict) and requester:

@@ -199,7 +199,7 @@ class TestGeneralizedSupervisorMarkers:
     profile identity via the unit's HERMES_HOME (root home for the default
     profile). It must NEVER follow the sticky ``active_profile`` file —
     otherwise the default-profile gateway silently assumes another profile's
-    identity (logs + Telegram bot token) and double-polls that profile's
+    identity (logs + Discord bot token) and double-polls that profile's
     token. Markers: HERMES_SUPERVISED_CHILD (generalized, exported by
     generated units), INVOCATION_ID (systemd, gateway commands only), and
     HERMES_GATEWAY_EXTERNAL_SUPERVISOR (explicit opt-in).
@@ -221,7 +221,7 @@ class TestGeneralizedSupervisorMarkers:
             tmp_path,
             monkeypatch,
             hermes_home=str(hermes_root),
-            active_profile="telegram_nick",
+            active_profile="discord_nick",
             argv=["hermes", "gateway", "run"],
             extra_env={"HERMES_SUPERVISED_CHILD": "1"},
         )
@@ -240,7 +240,7 @@ class TestGeneralizedSupervisorMarkers:
             tmp_path,
             monkeypatch,
             hermes_home=str(hermes_root),
-            active_profile="telegram_nick",
+            active_profile="discord_nick",
             argv=["hermes", "gateway", "run"],
             extra_env={"INVOCATION_ID": "deadbeef" * 4},
         )
@@ -272,7 +272,7 @@ class TestGeneralizedSupervisorMarkers:
             tmp_path,
             monkeypatch,
             hermes_home=str(hermes_root),
-            active_profile="telegram_nick",
+            active_profile="discord_nick",
             argv=["hermes", "gateway", "run"],
             extra_env={"HERMES_GATEWAY_EXTERNAL_SUPERVISOR": "1"},
         )
@@ -287,7 +287,7 @@ class TestGeneralizedSupervisorMarkers:
             tmp_path,
             monkeypatch,
             hermes_home=str(hermes_root),
-            active_profile="telegram_nick",
+            active_profile="discord_nick",
             argv=["hermes", "serve", "--isolated", "--host", "127.0.0.1", "--port", "0",
                   "--ssh-session-token-file", "/tmp/x/y.token"],
         )

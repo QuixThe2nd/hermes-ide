@@ -206,7 +206,7 @@ _CREDENTIAL_NAMES = frozenset({
     "HINDSIGHT_LLM_API_KEY",
     "DAYTONA_API_KEY",
     "TWILIO_AUTH_TOKEN",
-    "TELEGRAM_BOT_TOKEN",
+    "DISCORD_BOT_TOKEN",
     "DISCORD_BOT_TOKEN",
     "SLACK_BOT_TOKEN",
     "SLACK_APP_TOKEN",
@@ -235,7 +235,6 @@ _CREDENTIAL_NAMES = frozenset({
     "GATEWAY_PROXY_KEY",
     "API_SERVER_KEY",
     "TOOL_GATEWAY_USER_TOKEN",
-    "TELEGRAM_WEBHOOK_SECRET",
     "WEBHOOK_SECRET",
     "AI_GATEWAY_API_KEY",
     "VOICE_TOOLS_OPENAI_KEY",
@@ -325,9 +324,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     # Platform allowlists — not credentials, but if set from any source
     # (user shell, earlier leaky test, CI env), they change gateway auth
     # behavior and flake button-authorization tests.
-    "TELEGRAM_ALLOWED_USERS",
-    "TELEGRAM_GROUP_ALLOWED_USERS",
-    "TELEGRAM_GROUP_ALLOWED_CHATS",
+    "DISCORD_ALLOWED_USERS",
     "QQ_ALLOWED_USERS",
     "QQ_GROUP_ALLOWED_USERS",
     "DISCORD_ALLOWED_USERS",
@@ -345,7 +342,6 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "PHOTON_ALLOWED_USERS",
     "GATEWAY_ALLOWED_USERS",
     "GATEWAY_ALLOW_ALL_USERS",
-    "TELEGRAM_ALLOW_ALL_USERS",
     "DISCORD_ALLOW_ALL_USERS",
     "WHATSAPP_ALLOW_ALL_USERS",
     "SLACK_ALLOW_ALL_USERS",
@@ -353,7 +349,6 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "EMAIL_ALLOW_ALL_USERS",
     "SMS_ALLOW_ALL_USERS",
     "PHOTON_ALLOW_ALL_USERS",
-    "TELEGRAM_CRON_THREAD_ID",
     # API server bind/auth settings are common in local gateway profiles and
     # change adapter defaults plus load_gateway_config() enablement. Tests that
     # need them set opt in explicitly with monkeypatch.
@@ -380,7 +375,6 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "SLACK_REACTIONS",
     "DISCORD_REQUIRE_MENTION",
     "DISCORD_FREE_RESPONSE_CHANNELS",
-    "TELEGRAM_REQUIRE_MENTION",
     "WHATSAPP_REQUIRE_MENTION",
     "DINGTALK_REQUIRE_MENTION",
     "MATRIX_REQUIRE_MENTION",
@@ -942,7 +936,13 @@ def short_af_unix_path():
     test cannot own. A unique owned directory keeps the path short and cleanup
     automatic.
     """
-    with tempfile.TemporaryDirectory(prefix="hermes-afunix-", dir="/tmp") as raw:
+    base = tempfile.gettempdir()  # respects TMPDIR; the literal /tmp root may
+    # be unwritable (hosts running /tmp mode 700) or absent (Termux).
+    if len(str(Path(base) / "hermes-afunix-xxxxxxxx" / "hub.sock").encode()) > 103:
+        # 103 bytes: macOS's 104-byte sun_path minus the NUL terminator, the
+        # tightest AF_UNIX bind limit on supported platforms (Linux allows 108).
+        pytest.skip(f"temp dir too long for an AF_UNIX socket path: {base}")
+    with tempfile.TemporaryDirectory(prefix="hermes-afunix-", dir=base) as raw:
         yield Path(raw) / "hub.sock"
 
 @pytest.fixture

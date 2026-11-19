@@ -246,8 +246,8 @@ def test_release_under_profile_home_override_targets_acquisition_registry(
     monkeypatch.setenv("HERMES_HOME", str(root))
 
     lease, error = active_sessions.try_acquire_active_session(
-        session_id="agent:worker:telegram:dm:synthetic",
-        surface="gateway:telegram",
+        session_id="agent:worker:discord:dm:synthetic",
+        surface="gateway:discord",
         config={"max_concurrent_sessions": 2},
     )
     assert lease is not None and error is None
@@ -285,7 +285,7 @@ def test_transfer_under_profile_home_override_targets_acquisition_registry(
 
     lease, error = active_sessions.try_acquire_active_session(
         session_id="before",
-        surface="gateway:telegram",
+        surface="gateway:discord",
         config={"max_concurrent_sessions": 2},
     )
     assert lease is not None and error is None

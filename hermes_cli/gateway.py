@@ -2620,7 +2620,7 @@ def refuses_container_user_scope_install(system: bool) -> bool:
         "The unit file and its enable symlink would be written to the home directory, which is",
         "commonly the host's own home bind-mounted in — the host's user manager then enables and",
         "starts the same unit, so a second gateway polls the same bot token outside the container",
-        "(Telegram: 'Conflict: terminated by other getUpdates request').",
+        "(platform error: 'Conflict: terminated by other poll request').",
         "",
         "  hermes gateway run                                # run as the container's main process",
         "  docker run --restart unless-stopped ...           # container restart policy",
@@ -5701,21 +5701,8 @@ def _clean_discord_ids(cleaned: str) -> str:
     return ",".join(parts)
 
 
-def _prompt_allowlist_var(var: dict, platform_key: str, auto_owner_user_id) -> str | None:
+def _prompt_allowlist_var(var: dict, platform_key: str) -> str | None:
     """Allowlist prompt for one var; returns the saved value or None (open-access prompt shown)."""
-    if "TELEGRAM" in var["name"] and auto_owner_user_id:
-        detected_id = str(auto_owner_user_id)
-        print_success(f"  Detected your Telegram user ID: {detected_id}")
-        if prompt_yes_no("  Allow this Telegram account to use the bot?", True):
-            extra = prompt("  Additional allowed user IDs (comma-separated, optional)", password=False)
-            ids = [detected_id]
-            for uid in extra.replace(" ", "").split(","):
-                if uid and uid not in ids:
-                    ids.append(uid)
-            cleaned = ",".join(ids)
-            save_env_value(var["name"], cleaned)
-            print_success("  Saved — only these users can interact with the bot.")
-            return cleaned
 
     _print_info_lines(
         "  The gateway DENIES all users by default for security.",
@@ -5735,7 +5722,7 @@ def _prompt_allowlist_var(var: dict, platform_key: str, auto_owner_user_id) -> s
 
 
 def _setup_standard_platform(platform: dict):
-    """Interactive setup for Telegram, Discord, or Slack."""
+    """Interactive setup for Discord, Slack, or other token platforms."""
     from hermes_cli.setup_hidden_env import is_setup_hidden_env as _is_setup_hidden_env
     emoji, label, token_var = platform["emoji"], platform["label"], platform["token_var"]
     _print_setup_header(f"{emoji} {label}")
@@ -5748,7 +5735,6 @@ def _setup_standard_platform(platform: dict):
     if not _confirm_reconfigure(label, token_var):
         return
 
-    auto_owner_user_id = None
     # Skip knobs the setup forms hide (reply mode, proxy...): they're self-configuring.
     setup_vars = [
         v for v in platform["vars"]
@@ -5763,7 +5749,7 @@ def _setup_standard_platform(platform: dict):
             print_info(f"  Current: {existing}")
 
         if var.get("is_allowlist"):
-            _prompt_allowlist_var(var, platform.get("key"), auto_owner_user_id)
+            _prompt_allowlist_var(var, platform.get("key"))
             continue
 
         value = prompt(f"  {var['prompt']}", password=var.get("password", False))
@@ -6278,6 +6264,58 @@ def _print_runtime_health() -> None:
             print(f"  {line}")
 
 
+def _print_serving_identity() -> None:
+    """Authoritative serving-gateway identity, separate from supervisor evidence.
+
+    During an overlap restart the pid file, gateway_state.json and systemd
+    MainPID all name the draining predecessor; this block resolves the
+    process actually serving turns (control socket first, then the state
+    file) and says "unknown" when no source is provable — never a serving
+    claim inferred from the supervisor.
+    """
+    try:
+        from gateway.control_socket import identify_gateway
+        from gateway.serving_identity import serving_status_lines
+        from gateway.status import (
+            _pid_exists, get_process_start_time, read_runtime_status,
+            runtime_status_is_stale, runtime_status_pid_is_live)
+        from hermes_constants import get_hermes_home
+
+        def _successor_identity(pid: int, expected_start) -> str:
+            """Fingerprint-checked liveness: a reused PID is dead, not our successor."""
+            if not _pid_exists(pid):
+                return "dead"
+            if not isinstance(expected_start, int) or expected_start <= 0:
+                return "unknown"
+            current = get_process_start_time(pid)
+            return "unknown" if current is None else (
+                "live" if current == expected_start else "dead")
+
+        # The live gateway.run process scan is evidence for the unproven
+        # rungs only (legacy identify / state-file fallback): systemd
+        # MainPID is never consulted here — during overlap it names the
+        # draining predecessor, and a supervisor's idea of "the" pid must
+        # not become a serving claim.
+        state = read_runtime_status()
+        lines = serving_status_lines(
+            identify=identify_gateway(get_hermes_home()),
+            state_pid=(state or {}).get("pid"),
+            state_gateway_state=(state or {}).get("gateway_state"),
+            state_pid_is_live=runtime_status_pid_is_live(state),
+            state_is_stale=runtime_status_is_stale(state),
+            state_restart_requested=(state or {}).get("restart_requested"),
+            successor_identity=_successor_identity,
+            gateway_pids=find_gateway_pids(),
+        )
+    except Exception:
+        return
+    if lines:
+        print()
+        print("Serving gateway identity:")
+        for line in lines:
+            print(line)
+
+
 def _cmd_run(args):
     if getattr(args, "service", False):
         # The Windows SCM frontend (MSIX HermesGateway service):
@@ -6536,7 +6574,7 @@ def _restart_all(system: bool) -> None:
         _service_call(kind, "start", system)
 
 
-def _restart_via_control_socket(restart_platforms: bool, *, old_pid: int | None = None) -> bool:
+def _restart_via_control_socket(*, old_pid: int | None = None) -> bool:
     """Ask the running gateway (control socket) to run the ONE restart core.
 
     With a live PID, attach to the non-destructive progress observer so the CLI
@@ -6551,32 +6589,28 @@ def _restart_via_control_socket(restart_platforms: bool, *, old_pid: int | None 
     if old_pid is not None:
         from hermes_cli.gateway_restart_progress import restart_gateway_with_progress
 
-        outcome = restart_gateway_with_progress(
-            old_pid, via_service=False, restart_platforms=restart_platforms,
-        )
+        outcome = restart_gateway_with_progress(old_pid, via_service=False)
         return outcome.accepted
     try:
         from hermes_constants import get_hermes_home
         from gateway.control_socket import request_gateway_restart
 
-        ack = request_gateway_restart(get_hermes_home(), restart_platforms=restart_platforms)
+        ack = request_gateway_restart(get_hermes_home())
     except Exception as exc:
         logger.debug("Control-socket restart transport unavailable: %s", exc)
         return False
     if not isinstance(ack, dict):
         return False
     status = str(ack.get("status") or "")
-    if not ack.get("queued") and status not in {"already_in_progress", "chained"}:
+    if not ack.get("queued") and status not in {"already_in_progress", "forwarded"}:
         logger.debug("Control-socket restart verb refused: %s", ack)
         return False
     if status == "already_in_progress":
         print("✓ Gateway restart already in progress — draining active work")
-    elif status == "chained":
-        print("✓ Gateway restart chained — queued on the incoming generation")
+    elif status == "forwarded":
+        print(f"✓ Gateway restart forwarded to the newest generation (PID {ack.get('forwarded_to') or '?'})")
     else:
         print("✓ Gateway restart queued — in-flight sessions drain undisturbed, then the gateway bounces")
-        if not restart_platforms:
-            print("  (--no-platforms: platform gateway connections are not bounced)")
     return True
 
 
@@ -6584,18 +6618,16 @@ def _cmd_restart(args):
     """`hermes gateway restart` — the CLI door onto the ONE restart pipeline.
 
     Transports, in order: (1) the running gateway's control socket runs the
-    same core ``queue_user_restart`` sequence /restart uses (carrying the
-    ``--no-platforms`` override); (2) SIGUSR1, which the gateway maps to the
-    same ``request_restart`` core; (3) the service manager (systemd/launchd/
-    Windows) as a TRANSPORT of the same semantics, not a second one — its
-    graceful path SIGUSR1s first too; (4) stop + fresh start when no gateway
-    is running.
+    same core ``queue_user_restart`` sequence /restart uses; (2) SIGUSR1, which
+    the gateway maps to the same ``request_restart`` core; (3) the service
+    manager (systemd/launchd/Windows) as a TRANSPORT of the same semantics,
+    not a second one — its graceful path SIGUSR1s first too; (4) stop + fresh
+    start when no gateway is running.
     """
     _refuse_from_inside_gateway("restart", "restart loops")
     system = getattr(args, "system", False)
     restart_all = getattr(args, "all", False)
     force = getattr(args, "force", False)
-    restart_platforms = not getattr(args, "no_platforms", False)
     _guard_named_profile_under_multiplexer(force=force)
     if restart_all and _dispatch_all_via_service_manager_if_s6("restart"):
         return
@@ -6609,7 +6641,7 @@ def _cmd_restart(args):
     # keeps the CLI attached for successor and drain progress; Ctrl-C detaches.
     from gateway.status import get_running_pid
 
-    if _restart_via_control_socket(restart_platforms, old_pid=get_running_pid()):
+    if _restart_via_control_socket(old_pid=get_running_pid()):
         return
 
     # The Windows restart path handles both registered installs and detached restarts.
@@ -6734,6 +6766,7 @@ def _cmd_status(args):
         else:
             _gw_windows().status(deep=deep)
         _print_gateway_process_mismatch(snapshot)
+        _print_serving_identity()
         _print_multiplex_standalone_reason()
         _print_served_ingress_urls()
     else:
@@ -6742,6 +6775,7 @@ def _cmd_status(args):
             print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
             print("  (Running manually, not as a system service)")
             _print_runtime_health()
+            _print_serving_identity()
             _print_multiplex_standalone_reason()
             _print_served_ingress_urls()
             print()
@@ -6749,6 +6783,7 @@ def _cmd_status(args):
         else:
             print("✗ Gateway is not running")
             _print_runtime_health()
+            _print_serving_identity()
             print()
             print("To start:")
             print("  hermes gateway run      # Run in foreground")

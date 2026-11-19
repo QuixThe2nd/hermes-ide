@@ -229,10 +229,10 @@ def _owns_subagent_record(record: Dict[str, Any], parent_agent: Any) -> bool:
     # Compression rotation on either side: compare lineage tips.
     return _resolve_session_lineage(owner_sid, parent_agent) in {parent_sid, _resolve_session_lineage(parent_sid, parent_agent)}
 
-# Live CLI/cloud coding runs (delegate_claude_agent / delegate_cursor_agent)
-# register ONLY in tools.async_delegation._records under a deleg_* id — there
+# Live CLI coding runs (delegate_claude_agent) register ONLY in
+# tools.async_delegation._records under a deleg_* id — there
 # is no _active_subagents entry, which is why steer/stop used to miss them.
-_CODING_RUN_KINDS = frozenset({"cli_agent", "cloud_agent"})
+_CODING_RUN_KINDS = frozenset({"cli_agent"})
 # "finalizing" is already delivering its terminal result — not controllable.
 _CODING_RUN_LIVE_STATES = frozenset({"running", "stalling"})
 _STEER_MESSAGE_REQUIRED = (
@@ -329,10 +329,10 @@ def _coding_run_list_entries(parent_agent: Any) -> List[Dict[str, Any]]:
 def _coding_run_steer_reply(sid: str) -> str:
     """Honest steer answer for a live owned coding run: no error — the run IS
     live and owned — but no text can be injected (Claude runs with stdin
-    closed, Cursor is a cloud run), so the reply says how to act instead."""
+    closed), so the reply says how to act instead."""
     note = (
         f"Live coding run '{sid}' cannot accept mid-run text: a Claude CLI "
-        "run's stdin is closed and a Cursor cloud run has none. To change "
+        "run's stdin is closed. To change "
         f"course, stop it first (action='stop', subagent_id='{sid}' — the "
         "same id), then re-delegate a new run carrying the course correction."
     )
@@ -427,7 +427,7 @@ def _handle_control_action(action: str, subagent_id: Optional[str], message: Opt
     with _active_subagents_lock:
         record = _active_subagents.get(sid)
     if record is None or not _owns_subagent_record(record, parent_agent):
-        # deleg_* CLI/cloud coding runs live only in the async-delegation
+        # deleg_* CLI coding runs live only in the async-delegation
         # registry: steer must answer honestly (never "No live subagent"),
         # stop must reach the runner's interrupt channel.
         coding_run = _owned_live_coding_run(sid, parent_agent)

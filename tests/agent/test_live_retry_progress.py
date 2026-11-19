@@ -205,7 +205,7 @@ def _boom(event, msg):
 # ── Display-config resolution ──────────────────────────────────────────────
 
 @pytest.mark.parametrize(
-    "platform", ["telegram", "discord", "slack", "whatsapp", "unknown_platform"]
+    "platform", ["matrix", "discord", "slack", "whatsapp", "unknown_platform"]
 )
 def test_retry_progress_defaults_falsy(platform):
     from gateway.display_config import resolve_display_setting
@@ -232,7 +232,7 @@ def test_retry_progress_per_platform_override_wins():
     }
     assert resolve_display_setting(cfg, "discord", "retry_progress") is False
     # Sibling platform keeps the global setting.
-    assert resolve_display_setting(cfg, "telegram", "retry_progress") is True
+    assert resolve_display_setting(cfg, "slack", "retry_progress") is True
 
 
 def test_retry_progress_per_platform_opt_in_only():
@@ -240,7 +240,7 @@ def test_retry_progress_per_platform_opt_in_only():
 
     cfg = {"display": {"platforms": {"discord": {"retry_progress": True}}}}
     assert resolve_display_setting(cfg, "discord", "retry_progress") is True
-    assert not resolve_display_setting(cfg, "telegram", "retry_progress")
+    assert not resolve_display_setting(cfg, "slack", "retry_progress")
 
 
 def test_retry_progress_string_values_normalise_to_bool():
@@ -258,7 +258,7 @@ def test_retry_progress_string_values_normalise_to_bool():
 RETRY_LINE = "⏳ Retrying in 8s (attempt 1/10)..."
 
 
-@pytest.mark.parametrize("platform", ["telegram", "slack", "feishu", "discord"])
+@pytest.mark.parametrize("platform", ["matrix", "slack", "feishu", "discord"])
 def test_gateway_retry_progress_event_bypasses_noise_filter(platform):
     """event_type="retry_progress" is an explicit user opt-in: the noisy-status
     regex that hides replayed retry chatter must NOT suppress it."""
@@ -269,7 +269,7 @@ def test_gateway_retry_progress_event_bypasses_noise_filter(platform):
     assert "Retrying in 8s" in out
 
 
-@pytest.mark.parametrize("platform", ["telegram", "slack", "feishu", "discord"])
+@pytest.mark.parametrize("platform", ["matrix", "slack", "feishu", "discord"])
 def test_gateway_lifecycle_retry_chatter_stays_suppressed(platform):
     """Unchanged default: the same line on the "lifecycle" rail is dropped."""
     from gateway.run import _prepare_gateway_status_message
@@ -292,8 +292,8 @@ def test_gateway_retry_progress_bypass_applies_to_all_chatter(line):
     retry_progress rail — not just the "Retrying in Ns" form."""
     from gateway.run import _prepare_gateway_status_message
 
-    assert _prepare_gateway_status_message("telegram", "lifecycle", line) is None
-    assert _prepare_gateway_status_message("telegram", "retry_progress", line) is not None
+    assert _prepare_gateway_status_message("discord", "lifecycle", line) is None
+    assert _prepare_gateway_status_message("discord", "retry_progress", line) is not None
 
 
 def test_gateway_retry_progress_still_redacts_secrets():
@@ -302,7 +302,7 @@ def test_gateway_retry_progress_still_redacts_secrets():
 
     secret = "sk-ABCDEF0123456789abcdef0123"
     out = _prepare_gateway_status_message(
-        "telegram",
+        "discord",
         "retry_progress",
         f"⏳ Retrying in 8s (attempt 1/10)... ({secret})",
     )
@@ -313,4 +313,4 @@ def test_gateway_retry_progress_still_redacts_secrets():
 def test_gateway_retry_progress_empty_message_returns_none():
     from gateway.run import _prepare_gateway_status_message
 
-    assert _prepare_gateway_status_message("telegram", "retry_progress", "   ") is None
+    assert _prepare_gateway_status_message("discord", "retry_progress", "   ") is None

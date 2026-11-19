@@ -1,4 +1,4 @@
-"""Behavior contracts for opt-in delegation lanes and the OMP backend."""
+"""Behavior contracts for always-on delegation lanes and the OMP backend."""
 
 import copy
 import json
@@ -28,7 +28,9 @@ def workdir(tmp_path):
 
 
 def _configure(monkeypatch, lanes, omp_config=None, **delegation):
-    config = {"lanes": lanes, "omp": omp_config or {}, **delegation}
+    # Pin the omp binary so the harness probe is host-independent; dispatch
+    # tests stub the runner itself.
+    config = {"lanes": lanes, "omp": omp_config or {"binary": sys.executable}, **delegation}
     monkeypatch.setattr(specs, "_cfg", lambda: config)
     monkeypatch.setattr(lane_tool, "_cfg", lambda: config)
 
@@ -36,7 +38,7 @@ def _configure(monkeypatch, lanes, omp_config=None, **delegation):
 @pytest.mark.parametrize("lane_name,harness", [
     ("ui_dev", "omp"),
     ("client_dev", "claude"),
-    ("backend_dev", "cursor"),
+    ("backend_dev", "omp"),
     ("reverse_engineer", "subagent"),
 ])
 def test_each_lane_resolves_harness_and_ordered_models(lane_name, harness):
@@ -427,31 +429,116 @@ def test_operator_overlay_omitting_goal_keeps_goal_default():
     assert resolve_lane_spec("backend_dev", {})["goal"] is False
 
 
-def test_conditional_registration_uses_real_profile_config():
-    names = set(LANE_TOOL_NAMES)
-    assert registry.get_definitions(names, quiet=True) == []
-    blocked = json.loads(registry.dispatch("delegate_ui_dev", {}))
-    assert "delegation.lanes is empty" in blocked["error"]
+# --- Lanes are always on: no opt-in config exists ------------------------------
+
+
+def _write_profile_config(body):
     config = get_hermes_home() / "config.yaml"
-    config.write_text("delegation:\n  lanes:\n    ui_dev: {}\n", encoding="utf-8")
-    definitions = registry.get_definitions(names, quiet=True)
-    assert {item["function"]["name"] for item in definitions} == names
-    assert all(item["function"]["parameters"]["required"] == ["task", "workdir"] for item in definitions)
+    if body is None:
+        config.unlink(missing_ok=True)
+    else:
+        config.write_text(body, encoding="utf-8")
+
+
+@pytest.mark.parametrize("config_body", [
+    None,
+    "delegation:\n  max_concurrent_children: 3\n",
+    "delegation:\n  lanes: {}\n",
+    "delegation:\n  lanes: false\n",
+], ids=["absent", "delegation-without-lanes", "empty-mapping", "false"])
+def test_lane_tools_visible_without_lanes_config(config_body):
+    _write_profile_config(config_body)
+    definitions = registry.get_definitions(set(LANE_TOOL_NAMES), quiet=True)
+    assert {item["function"]["name"] for item in definitions} == set(LANE_TOOL_NAMES)
+
+
+def test_lane_tools_reach_the_model_surface_with_no_lanes_config():
+    _write_profile_config(None)
     from model_tools import get_tool_definitions
-    exposed = get_tool_definitions(
-        enabled_toolsets=["delegation"], quiet_mode=True,
+
+    exposed = get_tool_definitions(enabled_toolsets=["delegation"], quiet_mode=True)
+    assert set(LANE_TOOL_NAMES) <= {item["function"]["name"] for item in exposed}
+
+
+# --- Harness reachability: a missing omp falls back, never hides ---------------
+
+
+def _reachability(monkeypatch, *reachable):
+    """One seam for both the fallback probe and the visibility check."""
+    monkeypatch.setattr(
+        specs, "harness_reachable",
+        lambda harness, omp_config=None: harness in reachable,
     )
-    assert names <= {item["function"]["name"] for item in exposed}
 
 
-@pytest.mark.parametrize("lane_name,harness", [("client_dev", "claude"), ("backend_dev", "cursor")])
+def test_missing_omp_runs_the_lane_on_claude(monkeypatch, workdir):
+    _reachability(monkeypatch, "claude")
+    _configure(monkeypatch, {})
+    captured = {}
+
+    def _dispatch(args, **kwargs):
+        captured.update(args)
+        return json.dumps({"success": True, "final_report": "done"})
+
+    monkeypatch.setattr(generic_delegate, "_delegate_agent_handler", _dispatch)
+    result = json.loads(registry.dispatch(
+        "delegate_client_dev", {"task": "Implement", "workdir": str(workdir)}
+    ))
+    assert result["success"] is True
+    assert result["harness"] == "claude"
+    assert captured["backend"] == "claude"
+
+
+def test_missing_omp_and_claude_runs_the_lane_on_the_subagent(monkeypatch, workdir):
+    _reachability(monkeypatch, "subagent")
+    _configure(monkeypatch, {})
+    captured = {}
+
+    def _subagent(**kwargs):
+        captured.update(kwargs)
+        return json.dumps({"results": [{"status": "completed", "summary": "done"}]})
+
+    monkeypatch.setattr(generic_delegate, "delegate_agent", _subagent)
+    result = json.loads(registry.dispatch(
+        "delegate_ui_dev", {"task": "Align the panel", "workdir": str(workdir)},
+        parent_agent=object(),
+    ))
+    assert result["success"] is True
+    assert result["harness"] == "subagent"
+    assert captured["goal"].startswith("# Task")
+
+
+def test_reachable_omp_stays_omp(monkeypatch, workdir):
+    _reachability(monkeypatch, "omp")
+    _configure(monkeypatch, {})
+
+    def _runner(*args):
+        return {"success": True, "final_report": "done"}
+
+    monkeypatch.setitem(lane_tool._RUNNERS, "omp", _runner)
+    result = json.loads(registry.dispatch(
+        "delegate_backend_dev", {"task": "Change the API", "workdir": str(workdir)}
+    ))
+    assert result["success"] is True
+    assert result["harness"] == "omp"
+
+
+def test_unreachable_pinned_harness_hides_only_that_lane(monkeypatch):
+    _reachability(monkeypatch, "omp", "subagent")
+    _configure(monkeypatch, {"client_dev": {"harness": "claude", "models": ["p/m"]}})
+    definitions = registry.get_definitions(set(LANE_TOOL_NAMES), quiet=True)
+    visible = {item["function"]["name"] for item in definitions}
+    assert visible == set(LANE_TOOL_NAMES) - {"delegate_client_dev"}
+
+
+@pytest.mark.parametrize("lane_name,harness", [("client_dev", "claude"), ("backend_dev", "claude")])
 def test_existing_harnesses_use_shared_dispatch_and_inject_prompt_material(
     monkeypatch, tmp_path, workdir, lane_name, harness
 ):
     skill = tmp_path / "skill"
     skill.mkdir()
     (skill / "SKILL.md").write_text("Complete skill instructions", encoding="utf-8")
-    tools = ["Read", "Bash"] if harness == "claude" else []
+    tools = ["Read", "Bash"]
     _configure(monkeypatch, {lane_name: {
         "harness": harness, "models": ["provider/model"], "soul": "Lane instructions",
         "skills": [str(skill)], "tools_allowlist": tools,
@@ -475,20 +562,15 @@ def test_existing_harnesses_use_shared_dispatch_and_inject_prompt_material(
     assert captured["model"] == "provider/model"
     assert captured["background"] is False
     assert captured.get("allowed_tools") == (",".join(tools) if tools else None)
-    if harness == "claude":
-        # Soul material is pinned at the harness level via a system prompt
-        # file (deleted after the run), not concatenated into the goal.
-        soul_path = captured.get("system_prompt_file")
-        assert soul_path
-        assert "Lane instructions" in captured["_soul_text"]
-        assert "Complete skill instructions" in captured["_soul_text"]
-        assert "# Task" in captured["goal"]
-        assert "Lane instructions" not in captured["goal"]
-        assert not Path(soul_path).exists()
-    else:
-        # Cursor cannot take an appended system prompt; soul stays in the goal.
-        assert "Lane instructions" in captured["goal"]
-        assert "Complete skill instructions" in captured["goal"]
+    # Soul material is pinned at the harness level via a system prompt
+    # file (deleted after the run), not concatenated into the goal.
+    soul_path = captured.get("system_prompt_file")
+    assert soul_path
+    assert "Lane instructions" in captured["_soul_text"]
+    assert "Complete skill instructions" in captured["_soul_text"]
+    assert "# Task" in captured["goal"]
+    assert "Lane instructions" not in captured["goal"]
+    assert not Path(soul_path).exists()
 
 
 def test_subagent_lane_uses_native_dispatch_and_routing_config(monkeypatch, workdir):
@@ -841,8 +923,6 @@ def test_lane_tool_descriptions_carry_routing_clause():
 def test_tool_definitions_route_delegation_to_lanes():
     from model_tools import get_tool_definitions
 
-    config = get_hermes_home() / "config.yaml"
-    config.write_text("delegation:\n  lanes:\n    ui_dev: {}\n", encoding="utf-8")
     exposed = get_tool_definitions(
         enabled_toolsets=["delegation"], quiet_mode=True,
     )
@@ -925,7 +1005,7 @@ def _lane_secrets(tmp_path):
     spec = resolve_lane_spec("ui_dev", {"ui_dev": {
         "soul": str(soul), "mcp": None, "tools_allowlist": ["read", "grep"],
     }})
-    return spec, {"binary": "omp", "secrets_file": str(secrets)}
+    return spec, {"binary": sys.executable, "secrets_file": str(secrets)}
 
 
 def _plant_omp_log(pid, body, *, date):

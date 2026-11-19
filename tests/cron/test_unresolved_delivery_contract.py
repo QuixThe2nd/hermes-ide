@@ -66,12 +66,12 @@ def test_local_deliver_stays_silent():
 def test_mixed_deliver_reports_unresolved_token(monkeypatch, caplog):
     """A mixed list (one bare, one explicit token) must not report success just because
     the explicit token resolved — the bare token lands in the delivery error (Codex 3995778719)."""
-    job = dict(id="digest", name="Digest", deliver="discord,telegram:123")
+    job = dict(id="digest", name="Digest", deliver="discord,slack:123")
 
     real_resolve = delivery._resolve_single_delivery_target
 
     def fake_resolve(job_, token, *, for_failure=False):
-        if token == "telegram:123":
+        if token == "slack:123":
             return {"platform": delivery.BOT_CHAT_PLATFORM, "chat_id": "", "thread_id": None}
         return real_resolve(job_, token, for_failure=for_failure)  # bare "discord" → None
 
@@ -94,5 +94,5 @@ def test_mixed_deliver_reports_unresolved_token(monkeypatch, caplog):
     # The run path files this as a delivery failure, not a delivered-with-a-warning.
     assert _classify_delivery_outcome(
         delivery_error=error, should_deliver=True, unresolved_origin=False,
-        normalized_deliver="discord,telegram:123", incident_acked=False, success=True,
+        normalized_deliver="discord,slack:123", incident_acked=False, success=True,
     ) == "failed"

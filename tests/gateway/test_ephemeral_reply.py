@@ -77,13 +77,13 @@ class _DeleteCapableAdapter(BasePlatformAdapter):
 
 def _no_delete_adapter():
     return _NoDeleteAdapter(
-        PlatformConfig(enabled=True, token="t"), Platform.TELEGRAM
+        PlatformConfig(enabled=True, token="t"), Platform.DISCORD
     )
 
 
 def _delete_adapter():
     return _DeleteCapableAdapter(
-        PlatformConfig(enabled=True, token="t"), Platform.TELEGRAM
+        PlatformConfig(enabled=True, token="t"), Platform.DISCORD
     )
 
 
@@ -92,7 +92,7 @@ def _make_event(text="/stop", chat_id="42"):
         text=text,
         message_id="msg-1",
         source=SessionSource(
-            platform=Platform.TELEGRAM,
+            platform=Platform.DISCORD,
             chat_id=chat_id,
             user_id="u-1",
         ),
@@ -186,7 +186,7 @@ async def test_process_message_unwraps_ephemeral_before_send():
         sleeps.append(duration)
 
     event = _make_event()
-    session_key = "agent:main:telegram:private:42"
+    session_key = "agent:main:discord:private:42"
     with patch("gateway.platforms.base.asyncio.sleep", _fake_sleep), patch.object(
         adapter, "_keep_typing", new=AsyncMock()
     ):
@@ -225,7 +225,7 @@ async def test_process_message_incapable_platform_does_not_schedule_delete():
     adapter.delete_message = _spy_delete  # type: ignore[assignment]
 
     event = _make_event()
-    session_key = "agent:main:telegram:private:42"
+    session_key = "agent:main:discord:private:42"
     with patch("gateway.platforms.base.asyncio.sleep", AsyncMock()), patch.object(
         adapter, "_keep_typing", new=AsyncMock()
     ):

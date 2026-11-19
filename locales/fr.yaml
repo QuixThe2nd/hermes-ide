@@ -244,17 +244,6 @@ Les resynchronisations s'exécutent automatiquement au maximum une fois par heur
     current_with_title:    "📌 Session : `{session_id}`\nTitre : **{title}**"
     current_no_title:      "📌 Session : `{session_id}`\nAucun titre défini. Usage : `/title Mon nom de session`"
 
-  topic:
-    not_telegram_dm:         "La commande /topic n'est disponible que dans les chats privés Telegram."
-    no_session_db:           "Base de données de sessions non disponible."
-    unauthorized:            "Vous n'êtes pas autorisé à utiliser /topic sur ce bot."
-    restore_needs_topic:     "Pour restaurer une session, créez ou ouvrez d'abord un topic Telegram, puis envoyez /topic <session-id> dans ce topic. Pour créer un nouveau topic, ouvrez All Messages et envoyez-y n'importe quel message."
-    topics_disabled:         "Les topics Telegram ne sont pas encore activés pour ce bot.\n\nComment les activer :\n1. Ouvrez @BotFather.\n2. Choisissez votre bot.\n3. Ouvrez Bot Settings → Threads Settings.\n4. Activez Threaded Mode et assurez-vous que les utilisateurs sont autorisés à créer de nouveaux threads.\n\nPuis envoyez /topic à nouveau."
-    topics_user_disallowed:  "Les topics Telegram sont activés, mais les utilisateurs ne peuvent pas en créer.\n\nOuvrez @BotFather → choisissez votre bot → Bot Settings → Threads Settings, puis désactivez 'Disallow users to create new threads'.\n\nPuis envoyez /topic à nouveau."
-    enable_failed:           "Échec de l'activation du mode topic Telegram : {error}"
-    bound_status:            "Ce topic est lié à :\nSession : {label}\nID : {session_id}\n\nUtilisez /new pour remplacer ce topic par une nouvelle session.\nPour un travail parallèle, ouvrez All Messages et envoyez-y un message pour créer un autre topic."
-    thread_ready:            "Les topics multi-sessions Telegram sont activés.\n\nCe topic sera utilisé comme session Hermes indépendante. Utilisez /new pour remplacer la session actuelle de ce topic. Pour un travail parallèle, ouvrez All Messages et envoyez-y un message pour créer un autre topic."
-    untitled_session:        "Session sans titre"
 
   undo:
     nothing:               "Rien à annuler."

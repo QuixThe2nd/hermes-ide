@@ -32,10 +32,10 @@ INTERACTIVE_CODING_PLATFORMS = {"cli", "tui", "acp", "desktop", ""}
 _PROJECT_MARKERS = (
     "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "package.json", "tsconfig.json", "deno.json",
     "Cargo.toml", "go.mod", "pom.xml", "build.gradle", "build.gradle.kts", "Gemfile", "composer.json", "mix.exs",
-    "pubspec.yaml", "CMakeLists.txt", "Makefile", "Dockerfile", "AGENTS.md", "CLAUDE.md", ".cursorrules",
+    "pubspec.yaml", "CMakeLists.txt", "Makefile", "Dockerfile", "AGENTS.md", "CLAUDE.md",
 )
 # Agent-instruction files surfaced separately from manifests in the snapshot.
-_CONTEXT_FILES = ("AGENTS.md", "CLAUDE.md", ".cursorrules")
+_CONTEXT_FILES = ("AGENTS.md", "CLAUDE.md")
 
 # Extensions that make a manifest-less git repo a *code* workspace (a `git init` notes folder is not).
 _CODE_EXTENSIONS = frozenset({
@@ -101,7 +101,7 @@ CODING_AGENT_GUIDANCE = (
     "a substitute for editing — apply the change, then summarise it. Only show "
     "code when the user explicitly asks to see it.\n"
     "- Match the project's existing style and conventions; AGENTS.md / "
-    "CLAUDE.md / .cursorrules already in context win over your defaults. Touch "
+    "CLAUDE.md already in context win over your defaults. Touch "
     "only what the task needs — no drive-by refactors, renames, or reformatting "
     "— and add any imports/dependencies your code requires.\n"
     "- If an edit fails to apply, re-read the file to get the current exact "

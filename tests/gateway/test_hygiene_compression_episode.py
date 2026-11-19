@@ -78,7 +78,7 @@ class DiscordEpisodeAdapter(BasePlatformAdapter):
     """Discord-shaped fake: edits bubbles, no send_or_update_status.
 
     This is the surface `_adapter_uses_compression_episode_rail` selects —
-    platform discord, editable, without the Telegram/Slack per-status-key
+    platform discord, editable, without the Slack-style per-status-key
     editing method.
     """
 
@@ -111,12 +111,12 @@ class DiscordEpisodeAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
-class TelegramNoticeAdapter(BasePlatformAdapter):
-    """Non-rail fake: every status is a fresh plain send, as on Telegram."""
+class PlainNoticeAdapter(BasePlatformAdapter):
+    """Non-rail fake: every status is a fresh plain send."""
 
     def __init__(self):
         super().__init__(
-            PlatformConfig(enabled=True, token="fake-token"), Platform.TELEGRAM
+            PlatformConfig(enabled=True, token="fake-token"), Platform.DISCORD
         )
         self.sent = []
 
@@ -546,7 +546,7 @@ async def test_timeout_closes_card_as_failure_never_success(monkeypatch, tmp_pat
 
 @pytest.mark.asyncio
 async def test_non_episode_rail_adapter_gets_no_card(monkeypatch, tmp_path):
-    """Telegram (no episode rail): no card, no lifecycle lines at all — the
+    """Non-rail adapter (no episode rail): no card, no lifecycle lines at all — the
     legacy plain notices stay byte-identical."""
     gateway_run = importlib.import_module("gateway.run")
     gateway_run._reset_compression_episodes()
@@ -555,11 +555,11 @@ async def test_non_episode_rail_adapter_gets_no_card(monkeypatch, tmp_path):
     _write_episode_config(tmp_path)
     _install_fakes(monkeypatch, gateway_run, tmp_path, FencedStreamingAgent)
 
-    adapter = TelegramNoticeAdapter()
-    runner = _build_runner(gateway_run, adapter, fake_db, Platform.TELEGRAM)
+    adapter = PlainNoticeAdapter()
+    runner = _build_runner(gateway_run, adapter, fake_db, Platform.DISCORD)
 
     result = await asyncio.wait_for(
-        runner._handle_message(_make_event(Platform.TELEGRAM)), timeout=15
+        runner._handle_message(_make_event(Platform.DISCORD)), timeout=15
     )
     assert result == "ok"
 
@@ -579,7 +579,7 @@ async def test_non_episode_rail_adapter_gets_no_card(monkeypatch, tmp_path):
     assert any(
         "deferred" in c.lower() or "still streaming" in c.lower()
         for c in _sent_contents(adapter)
-    ), f"turn-hold deferral notice missing on Telegram: {_sent_contents(adapter)}"
+    ), f"turn-hold deferral notice missing on non-rail adapter: {_sent_contents(adapter)}"
 
     agent = FencedStreamingAgent.last_instance
     agent.release_worker.set()

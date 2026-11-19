@@ -2,13 +2,13 @@
 
 Delegation lanes are configured specializations of Hermes' existing delegation backends. They are not standalone skills: the Markdown files under `souls/` are short system-prompt fragments consumed by the lane runner.
 
-`SOUL.md` is the canonical fork coding conventions source. Direct Claude, Cursor, and native delegation plus every configured lane harness receive it automatically exactly once, including when no skills are configured. `fork-coding-conventions/SKILL.md` is only a compatibility pointer; loading it is not required.
+`SOUL.md` is the canonical fork coding conventions source. Direct Claude and native delegation plus every configured lane harness receive it automatically exactly once, including when no skills are configured. `fork-coding-conventions/SKILL.md` is only a compatibility pointer; loading it is not required.
 
 ## Parent-only compatibility migration
 
 The legacy external skill at `~/.hermes/lanes/skills/shared/fork-coding-conventions/SKILL.md` belongs to the parent lane and is not modified by this checkout. After this runtime and canonical `SOUL.md` are present in every target lane, preserve that external file's path and frontmatter and replace only its duplicated body with a pointer to the lane checkout's `skills/dev-lanes/SOUL.md`. Use `fork-coding-conventions/SKILL.md` as the pointer template; its repository-relative source reference does not depend on an adjacent copied SOUL. Do not copy the convention body into the external skill.
 
-Deploy in that order so the pointer never precedes automatic injection. Verify one real startup for each of OMP, Claude, Cursor, and lane-native delegation with `skills: []` and with the compatibility skill loaded, plus direct-native delegation without a skill (its API has no `skills` argument). Each initial payload must contain the complete SOUL exactly once and retain its existing task, context, and lane soul. The parameterized startup regression suite covers these checks with subprocess, network, and model boundaries mocked.
+Deploy in that order so the pointer never precedes automatic injection. Verify one real startup for each of OMP, Claude, and lane-native delegation with `skills: []` and with the compatibility skill loaded, plus direct-native delegation without a skill (its API has no `skills` argument). Each initial payload must contain the complete SOUL exactly once and retain its existing task, context, and lane soul. The parameterized startup regression suite covers these checks with subprocess, network, and model boundaries mocked.
 
 Rollback is limited to restoring the original external `SKILL.md` body from the parent's snapshot. Keep the canonical SOUL and automatic injection installed during rollback so no coding agent loses the conventions. No persistent data or database migration is involved.
 
@@ -21,11 +21,13 @@ Rollback is limited to restoring the original external `SKILL.md` body from the 
 
 Each lane tool takes an optional `description` argument — a short phrase shown to the user as progress ("Delegated to backend dev lane: migrating the schema") instead of the bare tool name. It never enters the task prompt.
 
-The bundled defaults use OMP. Every lane can instead select `claude`, `cursor`, or `subagent` in config. Models form an ordered fallback chain; only quota and rate-limit failures advance the chain, with OMP `errorStatus` 403 and 429 classified as quota. Other errors stop immediately so an invalid task or missing credential does not fan out across providers.
+The bundled defaults use OMP. Every lane can instead select `claude` or `subagent` in config. Models form an ordered fallback chain; only quota and rate-limit failures advance the chain, with OMP `errorStatus` 403 and 429 classified as quota. Other errors stop immediately so an invalid task or missing credential does not fan out across providers.
 
-## Opt in
+## Configuration
 
-Lane schemas are hidden until `delegation.lanes` is non-empty. Any non-empty mapping opts into all four tools; entries override the bundled defaults field by field. Config keys accept either `ui_dev` or `delegate_ui_dev` naming.
+The lane tools are always registered; there is no opt-in switch. Each lane is visible whenever its harness can actually run: when the `omp` binary is missing from the host, the bundled OMP default falls back to the Claude wrapper, then to the in-process subagent, so the tools work out of the box. A lane explicitly pinned to `claude` or `cursor` in config hides only while that binary is unavailable.
+
+`delegation.lanes` is a per-lane override overlay: entries override the bundled defaults field by field without discarding the rest of a lane's configuration. Config keys accept either `ui_dev` or `delegate_ui_dev` naming.
 
 ```yaml
 delegation:
@@ -47,7 +49,7 @@ Each lane supports `harness`, `models`, `soul`, `skills`, `mcp`, `tools_allowlis
 
 `reverse_engineer` defaults to `goal: true`, which drives OMP RPC goal continuation — the lane keeps working (multi-turn, OMP decides when to continue) until the goal completes, is budget-limited, or is paused. Print-mode one-shot (`goal: false`) sends a single prompt and does not continue; set it explicitly to keep that behavior.
 
-For OMP, `tools_allowlist` becomes `--tools` and a declared `mcp` source is copied to `<workdir>/.omp/mcp.json`. No MCP file is staged for lanes without `mcp`. MCP staging is OMP-specific. Claude receives its allowlist through its existing backend option; Cursor and native subagents retain their own tool policy.
+For OMP, `tools_allowlist` becomes `--tools` and a declared `mcp` source is copied to `<workdir>/.omp/mcp.json`. No MCP file is staged for lanes without `mcp`. MCP staging is OMP-specific. Claude receives its allowlist through its existing backend option; native subagents retain their own tool policy.
 
 Every result's `final_report` ends with:
 

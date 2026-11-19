@@ -37,7 +37,7 @@ def build_gateway_parser(
 ) -> None:
     """Attach the ``gateway`` and ``proxy`` subcommands to ``subparsers``."""
     gateway_parser = subparsers.add_parser("gateway", help="Messaging gateway management",
-        description="Manage the messaging gateway (Telegram, Discord, WhatsApp, Weixin, and more)")
+        description="Manage the messaging gateway (Discord, WhatsApp, Weixin, and more)")
     gateway_subparsers = gateway_parser.add_subparsers(dest="gateway_command")
 
     gateway_run = gateway_subparsers.add_parser(
@@ -90,11 +90,6 @@ def build_gateway_parser(
         help="Bypass the graceful successor-first drain and force a supervisor restart; "
             "this interrupts active chats. Also starts a separate gateway for a profile "
             "already served by the default multiplexer (not recommended).")
-    gateway_restart.add_argument(
-        "--no-platforms", dest="no_platforms", action="store_true",
-        help="Restart agent-core sessions without bouncing platform gateway "
-             "connections (overrides gateway.restart_platforms=false for this "
-             "call; slash /restart and the restart tool follow the config flag)")
     _add_compat_platform_flag(gateway_restart)
 
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")

@@ -140,7 +140,7 @@ class TestGatewayHistoryBuildForwardsSidecar:
             {"role": "user", "content": "hi", "api_content": "hi\n\nCTX", "timestamp": 123.0},
             {"role": "assistant", "content": "hello"},
         ]
-        agent_history, _obs, _ = _build_gateway_agent_history(history)
+        agent_history, _obs = _build_gateway_agent_history(history)
         assert agent_history[0]["api_content"] == "hi\n\nCTX"
 
 
@@ -154,7 +154,7 @@ def test_gateway_history_keeps_sidecar_only_assistant_row():
         {"role": "assistant", "content": "", "reasoning": "The answer is 4.", "api_content": "The answer is 4."},
         {"role": "user", "content": "thanks"},
     ]
-    agent_history, _obs, _ = _build_gateway_agent_history(history)
+    agent_history, _obs = _build_gateway_agent_history(history)
     assert [m["role"] for m in agent_history] == ["user", "assistant", "user"]
     assert agent_history[1]["api_content"] == "The answer is 4."
     assert agent_history[1]["reasoning"] == "The answer is 4."

@@ -46,7 +46,7 @@ class _StubAdapter(BasePlatformAdapter):
 def _make_adapter():
     """Create a minimal adapter for testing the active-session guard."""
     config = PlatformConfig(enabled=True, token="test-token")
-    adapter = _StubAdapter(config, Platform.TELEGRAM)
+    adapter = _StubAdapter(config, Platform.DISCORD)
     adapter.sent_responses = []
 
     async def _mock_handler(event):
@@ -64,14 +64,14 @@ def _make_adapter():
 
 def _make_event(text="/stop", chat_id="12345"):
     source = SessionSource(
-        platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"
+        platform=Platform.DISCORD, chat_id=chat_id, chat_type="dm"
     )
     return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)
 
 
 def _session_key(chat_id="12345"):
     source = SessionSource(
-        platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"
+        platform=Platform.DISCORD, chat_id=chat_id, chat_type="dm"
     )
     return build_session_key(source)
 
@@ -372,12 +372,12 @@ class TestPendingCommandSafetyNet:
 
 
 # ---------------------------------------------------------------------------
-# Tests: bypass with @botname suffix (Telegram-style)
+# Tests: bypass with @botname suffix
 # ---------------------------------------------------------------------------
 
 
 class TestBypassWithBotnameSuffix:
-    """Telegram appends @botname to commands. The bypass must still work."""
+    """Some platforms append @botname to commands. The bypass must still work."""
 
     @pytest.mark.asyncio
     async def test_stop_with_botname(self):

@@ -30,7 +30,7 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
-# Telegram bot uploads cap at 50 MB; the other platforms are in the same range. Mirrors
+# Platform bot uploads cap around 50 MB; the platforms are in the same range. Mirrors
 # tools.image_source._MAX_INGEST_BYTES.
 _FETCH_MAX_BYTES = 50 * 1024 * 1024
 

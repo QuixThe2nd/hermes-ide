@@ -1009,7 +1009,7 @@ class AIAgent(
                     msg["content"] = override
                 if timestamp is not None:
                     msg["timestamp"] = timestamp
-                # Platform-side message id (e.g. the Discord/Telegram message
+                # Platform-side message id (e.g. the Discord message
                 # id) — metadata, load-bearing for restart drain-window
                 # recovery dedup: it lets a recovery pass ask
                 # ``has_platform_message_id`` whether an interrupted turn
@@ -1397,7 +1397,7 @@ class AIAgent(
                         else msg.get("display_kind")
                     ),
                     "display_metadata": msg.get("display_metadata"),
-                    # Platform-side message id (e.g. the Discord/Telegram
+                    # Platform-side message id (e.g. the Discord
                     # message id). _insert_message_rows reads it off the row
                     # dict; load-bearing for restart drain-window recovery
                     # dedup via has_platform_message_id.

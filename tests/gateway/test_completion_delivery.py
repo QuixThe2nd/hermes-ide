@@ -45,7 +45,7 @@ def isolated_registry(tmp_path, monkeypatch):
 def _runner(adapter, *, origins=None):
     runner = object.__new__(GatewayRunner)
     runner._running = True
-    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.adapters = {Platform.DISCORD: adapter}
     runner.session_store = SimpleNamespace(
         _ensure_loaded=lambda: None,
         _entries=origins or {},
@@ -63,7 +63,7 @@ def _async_event(delegation_id="deleg_duplicate"):
     return {
         "type": "async_delegation",
         "delegation_id": delegation_id,
-        "session_key": "agent:main:telegram:dm:12345:678",
+        "session_key": "agent:main:discord:dm:12345:678",
         "goal": "Investigate flaky test",
         "status": "completed",
         "summary": "Found it",
@@ -82,8 +82,8 @@ def _completion_event(*, started_at, session_id="proc_reused"):
     return {
         "type": "completion",
         "session_id": session_id,
-        "session_key": "agent:main:telegram:dm:123",
-        "platform": "telegram",
+        "session_key": "agent:main:discord:dm:123",
+        "platform": "discord",
         "chat_type": "dm",
         "chat_id": "123",
         "started_at": started_at,
@@ -246,8 +246,8 @@ def test_explicit_kill_returns_output_before_consuming_notification(monkeypatch)
     asyncio.run(runner._run_process_watcher({
         "session_id": session.id,
         "check_interval": 0,
-        "session_key": "agent:main:telegram:dm:123",
-        "platform": "telegram",
+        "session_key": "agent:main:discord:dm:123",
+        "platform": "discord",
         "chat_type": "dm",
         "chat_id": "123",
         "notify_on_complete": True,
@@ -316,8 +316,8 @@ def test_autonomous_completion_redacts_real_command_and_output_secrets(monkeypat
     asyncio.run(runner._run_process_watcher({
         "session_id": session.id,
         "check_interval": 0,
-        "session_key": "agent:main:telegram:dm:123",
-        "platform": "telegram",
+        "session_key": "agent:main:discord:dm:123",
+        "platform": "discord",
         "chat_type": "dm",
         "chat_id": "123",
         "notify_on_complete": True,
@@ -349,8 +349,8 @@ def test_concurrent_process_watchers_coalesce_one_session_completion_turn(monkey
         watchers.append({
             "session_id": session.id,
             "check_interval": 0,
-            "session_key": "agent:main:telegram:dm:123",
-            "platform": "telegram",
+            "session_key": "agent:main:discord:dm:123",
+            "platform": "discord",
             "chat_type": "dm",
             "chat_id": "123",
             "notify_on_complete": True,
@@ -416,7 +416,7 @@ def test_completion_batches_do_not_cross_conversation_routes():
 
     first = _completion_event(started_at=1.0, session_id="proc_route_a")
     second = _completion_event(started_at=2.0, session_id="proc_route_b")
-    second["session_key"] = "agent:main:telegram:dm:456"
+    second["session_key"] = "agent:main:discord:dm:456"
     second["chat_id"] = "456"
 
     async def _exercise():
@@ -749,7 +749,7 @@ def test_shutdown_cancels_overlapping_flushes_for_same_route():
 # ---------------------------------------------------------------------------
 
 
-def _distinct_async_event(delegation_id, session_key="agent:main:telegram:dm:12345:678"):
+def _distinct_async_event(delegation_id, session_key="agent:main:discord:dm:12345:678"):
     event = _async_event(delegation_id)
     event["session_key"] = session_key
     event["summary"] = f"Result for {delegation_id}"
@@ -798,7 +798,7 @@ def test_same_tick_async_events_for_different_sessions_do_not_coalesce(
     monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
     isolated.put(_distinct_async_event("deleg_route_a"))
     isolated.put(_distinct_async_event(
-        "deleg_route_b", session_key="agent:main:telegram:dm:99999:678",
+        "deleg_route_b", session_key="agent:main:discord:dm:99999:678",
     ))
 
     adapter = SimpleNamespace(handle_message=AdmittingHandler())
@@ -917,7 +917,7 @@ def test_unavailable_delivery_preserves_budget_across_restarts(tmp_path, unavail
         runner = _runner(adapter)
         runner.adapters = {Platform.API_SERVER: api} if unavailable == "api_db" else {}
         if unavailable == "owner_db":
-            runner.adapters = {Platform.TELEGRAM: adapter}
+            runner.adapters = {Platform.DISCORD: adapter}
         assert asyncio.run(runner._deliver_async_delegation_group(events)) is False
         for event in events:
             row = async_delegation.get_durable_delegation(event["delegation_id"])
@@ -952,11 +952,11 @@ def test_completion_profile_transport_never_falls_back(monkeypatch, isolated_reg
     primary = SimpleNamespace(handle_message=AdmittingHandler(), send=AsyncMock())
     secondary = SimpleNamespace(handle_message=AdmittingHandler(), send=AsyncMock())
     runner = _runner(primary)
-    runner._profile_adapters = {"research": {Platform.TELEGRAM: secondary}} if available else {}
-    evt = dict(_completion_event(started_at=1), session_key="agent:research:telegram:dm:12345")
+    runner._profile_adapters = {"research": {Platform.DISCORD: secondary}} if available else {}
+    evt = dict(_completion_event(started_at=1), session_key="agent:research:discord:dm:12345")
     result = asyncio.run(runner._inject_watch_notification("private result", evt))
     assert result is available
-    asyncio.run(runner._send_watcher_message("telegram", "12345", None, "raw result", evt))
+    asyncio.run(runner._send_watcher_message("discord", "12345", None, "raw result", evt))
     primary.send.assert_not_awaited()
     assert secondary.send.await_count == int(available)
     primary.handle_message.assert_not_awaited()

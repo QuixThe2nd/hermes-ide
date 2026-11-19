@@ -1,4 +1,4 @@
-"""E2E tests for gateway slash commands (Telegram, Discord).
+"""E2E tests for gateway slash commands (Discord, Slack).
 
 Each test drives a message through the full async pipeline:
     adapter.handle_message(event)
@@ -95,9 +95,17 @@ class TestSlashCommands:
 
     @pytest.mark.asyncio
     async def test_plaintext_restart_gateway_routes_to_safe_restart_command(self, adapter, runner, platform, monkeypatch):
-        if platform != Platform.TELEGRAM:
-            pytest.skip("Plaintext restart shortcut is intentionally DM/Telegram-focused")
+        if platform != Platform.DISCORD:
+            pytest.skip("Plaintext restart shortcut is intentionally DM-focused")
 
+        # Hermetic: the real preflight scans the checkout's git tree and
+        # sends an interim "Applying N changes" notice when the tree is
+        # dirty (e.g. inside a migration worktree). Bypass it so exactly
+        # one send — the restart reply — reaches the adapter.
+        monkeypatch.setattr(
+            "gateway.restart_preflight.warn_before_user_restart",
+            AsyncMock(return_value=None),
+        )
         monkeypatch.setenv("INVOCATION_ID", "e2e-systemd")
         runner.request_restart = MagicMock(return_value=True)
 
@@ -110,8 +118,8 @@ class TestSlashCommands:
 
     @pytest.mark.asyncio
     async def test_plaintext_restart_gateway_in_group_stays_plain_text(self, adapter, runner, platform, monkeypatch):
-        if platform != Platform.TELEGRAM:
-            pytest.skip("Shortcut scope is only verified for Telegram here")
+        if platform != Platform.DISCORD:
+            pytest.skip("Shortcut scope is only verified for one platform here")
 
         monkeypatch.setenv("INVOCATION_ID", "e2e-systemd")
         runner.request_restart = MagicMock(return_value=True)

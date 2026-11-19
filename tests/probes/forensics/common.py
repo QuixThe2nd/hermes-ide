@@ -105,7 +105,7 @@ class Run:
     @staticmethod
     def _rollover_ids(conn: sqlite3.Connection, sessions: Dict[str, Dict[str, Any]]) -> set:
         """Children created by in-place compression rollover, not by delegation: a child whose ``source``
-        is a top-level surface (cli/tui/telegram/...), not ``subagent``, whose parent shares that source,
+        is a top-level surface (cli/tui/discord/...), not ``subagent``, whose parent shares that source,
         and which started within a few seconds of the parent ending. Their whole later lifetime belongs to
         the continuing conversation, not to the fan-out, so they are kept out of the run population."""
         out = set()

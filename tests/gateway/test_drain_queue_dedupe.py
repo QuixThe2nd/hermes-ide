@@ -49,7 +49,7 @@ def _event(
 
 class _StubAdapter(BasePlatformAdapter):
     def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.DISCORD)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
@@ -70,7 +70,7 @@ def _text_event(text: str, msg_id: str) -> MessageEvent:
     return MessageEvent(
         text=text,
         message_type=MessageType.TEXT,
-        source=MagicMock(chat_id="123", platform=Platform.TELEGRAM, profile=None),
+        source=MagicMock(chat_id="123", platform=Platform.DISCORD, profile=None),
         message_id=msg_id,
     )
 
@@ -88,7 +88,7 @@ def test_fifo_overflow_copies_of_one_id_promote_one_turn_and_drop_the_rest():
     second turn for the same id."""
     runner = _bare_runner()
     adapter = _StubAdapter()
-    session_key = "telegram:user:dup-promote"
+    session_key = "discord:user:dup-promote"
     runner._session_state(session_key).conversation.queued_events.extend(
         _text_event("tell me a joke", "m-dup") for _ in range(4)
     )
@@ -105,7 +105,7 @@ def test_fifo_overflow_copies_of_one_id_promote_one_turn_and_drop_the_rest():
 def test_enqueue_fifo_drops_redelivered_copy_and_marks_the_queued_one():
     runner = _bare_runner()
     adapter = _StubAdapter()
-    session_key = "telegram:user:dup-enqueue"
+    session_key = "discord:user:dup-enqueue"
     first = _text_event("original copy", "m-dup")
     runner._enqueue_fifo(session_key, first, adapter)
 
@@ -126,7 +126,7 @@ def test_rescue_of_duplicate_chain_stages_no_second_copy():
     another copy of the same id (each would run as its own turn)."""
     runner = _bare_runner()
     adapter = _StubAdapter()
-    session_key = "telegram:user:dup-rescue"
+    session_key = "discord:user:dup-rescue"
     runner._session_state(session_key).conversation.queued_events.extend(
         _text_event("orphan copy", "m-dup") for _ in range(3)
     )
@@ -147,7 +147,7 @@ def test_rescue_park_incoming_redelivery_of_rescued_id_appends_nothing():
     it must be dropped and the running (rescued) copy marked instead."""
     runner = _bare_runner()
     adapter = _StubAdapter()
-    session_key = "telegram:user:dup-park"
+    session_key = "discord:user:dup-park"
     runner._session_state(session_key).conversation.queued_events.append(
         _text_event("orphan copy", "m-dup")
     )
@@ -202,7 +202,7 @@ def _internal_text_event(text: str, msg_id: str) -> MessageEvent:
     return MessageEvent(
         text=text,
         message_type=MessageType.TEXT,
-        source=MagicMock(chat_id="123", platform=Platform.TELEGRAM, profile=None),
+        source=MagicMock(chat_id="123", platform=Platform.DISCORD, profile=None),
         message_id=msg_id,
         internal=True,
     )
@@ -213,7 +213,7 @@ def test_enqueue_fifo_keeps_distinct_internal_events_sharing_reply_anchor_id():
     reply-anchor message id; both must queue as distinct turns."""
     runner = _bare_runner()
     adapter = _StubAdapter()
-    session_key = "telegram:user:internal-fifo"
+    session_key = "discord:user:internal-fifo"
     runner._enqueue_fifo(session_key, _text_event("holding the slot", "m-holder"), adapter)
 
     runner._enqueue_fifo(
@@ -231,7 +231,7 @@ def test_enqueue_fifo_keeps_distinct_internal_events_sharing_reply_anchor_id():
 def test_enqueue_fifo_still_dedupes_platform_events_with_same_message_id():
     runner = _bare_runner()
     adapter = _StubAdapter()
-    session_key = "telegram:user:platform-dedupe"
+    session_key = "discord:user:platform-dedupe"
     first = _text_event("original copy", "m-dup")
     first.internal = False
     runner._enqueue_fifo(session_key, first, adapter)

@@ -15,7 +15,7 @@ from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command
 
 def _source(chat_id: str = "chat-a") -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id=chat_id,
         chat_type="dm",
         user_id=f"user-{chat_id}",

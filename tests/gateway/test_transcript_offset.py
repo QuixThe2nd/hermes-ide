@@ -67,7 +67,7 @@ class TestTranscriptHistoryOffset:
         """
         history = [
             {"role": "session_meta", "tools": [], "model": "gpt-4",
-             "platform": "telegram", "timestamp": "t0"},
+             "platform": "discord", "timestamp": "t0"},
             {"role": "user", "content": "Hello", "timestamp": "t1"},
             {"role": "assistant", "content": "Hi there!", "timestamp": "t1"},
         ]

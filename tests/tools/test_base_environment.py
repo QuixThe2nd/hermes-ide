@@ -453,7 +453,7 @@ class TestCwdMarker:
 class TestSanitizeTaskIdForPath:
     """sanitize_task_id_for_path must yield mountable, collision-free segments.
 
-    A raw task id like ``session:agent:main:telegram:dm:12345`` used as a
+    A raw task id like ``session:agent:main:discord:dm:12345`` used as a
     sandbox directory name made docker -v split the bind-mount on the embedded
     colons and the daemon rejected it with "invalid mode" / exit 125 (#92414).
     The helper is shared by every backend that builds host paths from task_id
@@ -463,7 +463,7 @@ class TestSanitizeTaskIdForPath:
     def test_docker_unsafe_characters_are_replaced(self):
         from tools.environments.path_utils import sanitize_task_id_for_path
 
-        out = sanitize_task_id_for_path("session:agent:main:telegram:dm:12345")
+        out = sanitize_task_id_for_path("session:agent:main:discord:dm:12345")
         assert ":" not in out
         assert "/" not in out and "\\" not in out
 
@@ -509,7 +509,7 @@ class TestSanitizeTaskIdForPath:
         from tools.environments.path_utils import sanitize_task_id_for_path
 
         target = tmp_path / "docker" / sanitize_task_id_for_path(
-            "session:agent:main:telegram:dm:12345"
+            "session:agent:main:discord:dm:12345"
         )
         target.mkdir(parents=True)
         assert target.is_dir()

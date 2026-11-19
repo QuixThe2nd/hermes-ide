@@ -161,7 +161,7 @@ class StreamFallbackMixin:
         continuation to send (the whole final when the prefix is from a *previous* segment)
         or None when the turn is settled here."""
         visible = self._visible_prefix()
-        # Telegram clients can lose (part of) a streamed preview after a failed
+        # Chat clients can lose (part of) a streamed preview after a failed
         # final edit, so opt-in adapters commit a fresh final send.
         if (final_text.strip() and final_text == visible
                 and getattr(self.adapter, "RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK", False) is True):
@@ -171,7 +171,7 @@ class StreamFallbackMixin:
             self._already_sent = True
             self._fallback_prefix = ""
             self._fallback_preserve_partial_messages = False
-            # "ambiguous" (timeout: Telegram may have accepted) and "preview" (flood:
+            # "ambiguous" (timeout: the platform may have accepted) and "preview" (flood:
             # the complete ACKed preview is authoritative) keep dup suppression;
             # "failed" lets the gateway perform its normal final send.
             self._final_content_delivered = delivery in {"ambiguous", "preview"}
@@ -254,7 +254,7 @@ class StreamFallbackMixin:
         return result
 
     async def _send_empty_fallback_final(self, final_text: str) -> str:
-        """Commit a completed answer after Telegram finalization fails: "delivered", "failed"
+        """Commit a completed answer after finalization fails: "delivered", "failed"
         (gateway may retry), "ambiguous" (a timeout may have landed) or "preview" (flood
         control; the complete preview is authoritative)."""
         # Segment-scoped only: never delete an earlier finalized preamble.
@@ -272,7 +272,7 @@ class StreamFallbackMixin:
             return "ambiguous" if self._send_failure_may_have_delivered(result) else "failed"
 
         new_message_id = getattr(result, "message_id", None)
-        # Telegram reports delete failure by returning False; the flood window that
+        # Some platforms report delete failure by returning False; the flood window that
         # broke the finalize can reject this too — one bounded retry.
         await self._delete_previews(stale_ids, skip=new_message_id, label="Empty fallback",
                                     retry_on_false=True)
@@ -384,7 +384,7 @@ class StreamFallbackMixin:
             # with interim text and orphan the true final.
             _md = self._metadata_for_send(final=False) or {}
             _md["_interim_send"] = True
-            # reply_to only for reply-anchored threading; Discord/Telegram use
+            # reply_to only for reply-anchored threading; threaded platforms use
             # thread_id metadata and reply_to on every commentary is spam.
             _plat = getattr(getattr(self.adapter, "platform", None), "value", None)
             _platform_name = str(_plat or getattr(self.adapter, "name", "")).lower()

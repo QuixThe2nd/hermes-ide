@@ -2,7 +2,7 @@
 
 One model tool, `delegate_research`, hands a substantial research brief to durable worker sessions and returns a single cited report. The parent agent clarifies scope with the user, shows them the brief, starts the job, and then **waits** — the tool description forbids running its own searches in parallel, and the job re-enters the originating session when it finishes.
 
-Workers run as the `researcher` profile (configurable via `deep_research.worker_profile`). The plugin never mutates that profile; it only invokes it one-shot.
+Workers run as the `researcher` profile (configurable via `deep_research.worker_profile`). A fresh install does not ship it: the profile is provisioned on demand — cloned from the active profile via the same code path as `hermes profile create --clone` — the first time a job starts (and best-effort at gateway start). Once it exists it is never recreated; the plugin only invokes it one-shot.
 
 ## The tool
 
@@ -16,7 +16,7 @@ Workers run as the `researcher` profile (configurable via `deep_research.worker_
 | `result` | `job_id` | Completed → the final report plus report/evidence paths. Otherwise → current status, never a plausible partial report. |
 | `list` | — | Recent jobs, one bounded line each. |
 
-The tool is hidden (`check_fn`) when the plugin is disabled, the configured worker profile does not exist, `HERMES_BIN` points at a missing file, or the process is itself a research worker (`HERMES_RESEARCH_JOB` is set — research cannot nest).
+The tool is always available out of the box — no config can hide it. `check_fn` hides it only when `HERMES_BIN` points at a missing file or the process is itself a research worker (`HERMES_RESEARCH_JOB` is set — research cannot nest). There is no `deep_research.enabled` switch; a stale `enabled: false` in an old config is ignored. A missing worker profile is not an availability failure: it is provisioned at `start` (a provisioning failure returns a `worker_profile_provision_failed` error while the tool stays visible).
 
 ## Architecture
 
@@ -97,8 +97,7 @@ Top-level `HERMES_HOME/config.yaml` section (defaults shown; malformed values de
 
 ```yaml
 deep_research:
-  enabled: true                # false hides the tool entirely
-  worker_profile: researcher   # the profile that runs lanes and synthesis
+  worker_profile: researcher   # the profile that runs lanes and synthesis (provisioned on demand if missing)
   default_timeout_minutes: 30  # per job, 5–60
   max_parallel: 2              # concurrent lanes, 1–4
   memory_max: 2G               # systemd MemoryMax per runner unit
@@ -108,7 +107,11 @@ deep_research:
   worker_file_tools: true      # false: lanes run -t web,browser and the writer runs -t research_writer (no files at all)
 ```
 
-The plugin can also be disabled through the standard deny-list (`plugins.disabled: [deep_research]`), which always wins.
+There is no `enabled` key (a stale `enabled: false` from an older install is ignored — the tool is always on). The plugin can still be disabled through the standard deny-list (`plugins.disabled: [deep_research]`), which always wins; in-tree plugin management has no non-disableable mechanism.
+
+## Worker-profile provisioning
+
+The decision table for provisioning lives in `internal/profileprovision` (Go, table-driven; `cmd/profileprovision` is its executable form): an existing live profile is always skipped (never recreated), a missing one is created with `hermes_cli.profiles.create_profile` — `clone_config=True`, cloning from the active profile (explicitly by name on a multiplexed gateway, otherwise the active home) — and names that `create_profile` could never accept (`default`, reserved ids, invalid characters) are refused before any filesystem action. A lost creation race (another process created the same profile first) counts as provisioned. `plugins/deep_research/provision.py` gathers the runtime facts, pipes each decision record through the Go binary (resolved or built exactly like the gateway's jevnotices bridge), and executes the plan with the real profile code; without a Go toolchain it degrades to the minimal decision (skip an existing profile, otherwise clone from the active one) with identical observable behavior.
 
 ## Security notes
 

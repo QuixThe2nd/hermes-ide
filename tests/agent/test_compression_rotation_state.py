@@ -34,7 +34,7 @@ from agent.conversation_compression import (
 from hermes_state import SessionDB
 
 
-def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "telegram"):
+def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "discord"):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
 
@@ -182,16 +182,16 @@ class TestWorkspaceMetadataFollowsRotation:
         parent = "PARENT_CWD_ROT"
         db.create_session(
             parent,
-            source="telegram",
+            source="discord",
             user_id="u1",
-            session_key="telegram:u1:c1",
+            session_key="discord:u1:c1",
             chat_id="c1",
             chat_type="private",
         )
         db.update_session_cwd(
             parent, "/work/repo", git_branch="main", git_repo_root="/work/repo"
         )
-        agent = _build_agent_with_db(db, parent, platform="telegram")
+        agent = _build_agent_with_db(db, parent, platform="discord")
 
         agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
         child = agent.session_id
@@ -206,7 +206,7 @@ class TestWorkspaceMetadataFollowsRotation:
         assert row["git_branch"] == "main"
         # Gateway origin metadata (#59527): routing keys must survive even if
         # the gateway never gets to re-record the peer (crash window).
-        assert row["session_key"] == "telegram:u1:c1"
+        assert row["session_key"] == "discord:u1:c1"
         assert row["chat_id"] == "c1"
         assert row["chat_type"] == "private"
         assert row["user_id"] == "u1"
@@ -1120,8 +1120,8 @@ class TestPlatformForwardedAtBoundary:
     def test_on_session_start_receives_platform(self, tmp_path: Path):
         db = SessionDB(db_path=tmp_path / "state.db")
         parent = "PARENT_PLATFORM_ROT"
-        db.create_session(parent, source="telegram")
-        agent = _build_agent_with_db(db, parent, platform="telegram")
+        db.create_session(parent, source="discord")
+        agent = _build_agent_with_db(db, parent, platform="discord")
 
         agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
 
@@ -1130,7 +1130,7 @@ class TestPlatformForwardedAtBoundary:
         calls = [c for c in agent.context_compressor.on_session_start.call_args_list]
         assert calls, "on_session_start was not called at the boundary"
         kwargs = calls[-1].kwargs
-        assert kwargs.get("platform") == "telegram"
+        assert kwargs.get("platform") == "discord"
         assert kwargs.get("boundary_reason") == "compression"
 
 
@@ -1138,7 +1138,7 @@ class TestFallbackStreakFollowsRotation:
     def test_fallback_boundary_persists_on_child_session(self, tmp_path: Path):
         db = SessionDB(db_path=tmp_path / "state.db")
         parent = "PARENT_FALLBACK_ROT"
-        db.create_session(parent, source="telegram")
+        db.create_session(parent, source="discord")
         with patch(
             "agent.context_compressor.get_model_context_length",
             return_value=100_000,
@@ -1158,7 +1158,7 @@ class TestFallbackStreakFollowsRotation:
         assert db.get_compression_fallback_streak(parent) == 1
         db.create_session(
             "CHILD_FALLBACK_ROT",
-            source="telegram",
+            source="discord",
             parent_session_id=parent,
         )
         compressor.on_session_start(
@@ -1186,8 +1186,8 @@ class TestFallbackStreakFollowsRotation:
     def test_real_rotation_records_fallback_after_lifecycle_rebind(self, tmp_path: Path):
         db = SessionDB(db_path=tmp_path / "state.db")
         parent = "PARENT_REAL_FALLBACK_ROT"
-        db.create_session(parent, source="telegram")
-        agent = _build_agent_with_db(db, parent, platform="telegram")
+        db.create_session(parent, source="discord")
+        agent = _build_agent_with_db(db, parent, platform="discord")
 
         with patch(
             "agent.context_compressor.get_model_context_length",
@@ -1235,8 +1235,8 @@ class TestAutomaticCompressionStateRefreshAfterLock:
         db = refresh_state_db
         parent_id = "STALE_ROTATED_PARENT"
         child_id = "CANONICAL_COMPRESSION_CHILD"
-        db.create_session(parent_id, source="telegram")
-        agent = _build_agent_with_db(db, parent_id, platform="telegram")
+        db.create_session(parent_id, source="discord")
+        agent = _build_agent_with_db(db, parent_id, platform="discord")
         compressor = _bound_context_compressor(db, parent_id)
 
         # A competing path completes rotation after this call's initial checks
@@ -1247,7 +1247,7 @@ class TestAutomaticCompressionStateRefreshAfterLock:
             db.end_session(parent_id, "compression")
             db.create_session(
                 child_id,
-                source="telegram",
+                source="discord",
                 parent_session_id=parent_id,
             )
             return real_acquire(*args, **kwargs)
@@ -1289,13 +1289,13 @@ class TestAutomaticCompressionStateRefreshAfterLock:
     ):
         db = refresh_state_db
         session_id = "CLEARED_COMPRESSION_COOLDOWN"
-        db.create_session(session_id, source="telegram")
+        db.create_session(session_id, source="discord")
         db.record_compression_failure_cooldown(
             session_id,
             time.time() + 60,
             "rate limited",
         )
-        agent = _build_agent_with_db(db, session_id, platform="telegram")
+        agent = _build_agent_with_db(db, session_id, platform="discord")
         compressor = _bound_context_compressor(db, session_id)
         assert compressor.get_active_compression_failure_cooldown() is not None
 
@@ -1337,7 +1337,7 @@ class TestGateLevelGuardRefresh:
     ):
         db = refresh_state_db
         session_id = "GATE_LEVEL_STREAK_CLEAR"
-        db.create_session(session_id, source="telegram")
+        db.create_session(session_id, source="discord")
         db.set_compression_fallback_streak(session_id, 2)
         compressor = _bound_context_compressor(db, session_id)
         assert compressor._fallback_compression_streak == 2
@@ -1354,7 +1354,7 @@ class TestGateLevelGuardRefresh:
     ):
         db = refresh_state_db
         session_id = "GATE_LEVEL_HOT_PATH"
-        db.create_session(session_id, source="telegram")
+        db.create_session(session_id, source="discord")
         compressor = _bound_context_compressor(db, session_id)
 
         with patch.object(
@@ -1380,7 +1380,7 @@ class TestCooldownPersistFailureIsNotAClearedRow:
         """
         db = refresh_state_db
         session_id = "PERSIST_FAILED_COOLDOWN"
-        db.create_session(session_id, source="telegram")
+        db.create_session(session_id, source="discord")
         compressor = _bound_context_compressor(db, session_id)
 
         with patch.object(
@@ -1412,7 +1412,7 @@ class TestCooldownPersistFailureIsNotAClearedRow:
         that dipped below the threshold) unblocks this compressor too."""
         db = refresh_state_db
         session_id = "INEFFECTIVE_DURABLE_BLOCK"
-        db.create_session(session_id, source="telegram")
+        db.create_session(session_id, source="discord")
         db.set_compression_ineffective_count(session_id, 2)
         compressor = _bound_context_compressor(db, session_id)
         assert compressor._ineffective_compression_count == 2
@@ -1848,8 +1848,8 @@ class TestTodoSnapshotScaffoldingTails:
 
         db = SessionDB(db_path=tmp_path / "state.db")
         session_id = f"PARENT_TODO_COMPAT_{authority_mode.upper()}"
-        db.create_session(session_id, source="telegram")
-        agent = _build_agent_with_db(db, session_id, platform="telegram")
+        db.create_session(session_id, source="discord")
+        agent = _build_agent_with_db(db, session_id, platform="discord")
         pending_task = "- [ ] pending-task. Preserve conservatively"
         agent.context_compressor.compress.return_value = [
             {"role": "user", "content": "Keep the request"},
@@ -1886,8 +1886,8 @@ class TestTodoSnapshotScaffoldingTails:
 
         db = SessionDB(db_path=tmp_path / "state.db")
         session_id = "PARENT_TODO_UNHYDRATED"
-        db.create_session(session_id, source="telegram")
-        agent = _build_agent_with_db(db, session_id, platform="telegram")
+        db.create_session(session_id, source="discord")
+        agent = _build_agent_with_db(db, session_id, platform="discord")
         pending_task = "- [ ] pending-task. Continue after the next compaction"
         getattr(agent, "context_compressor").compress.return_value = [
             {"role": "user", "content": "[CONTEXT COMPACTION] summary"},

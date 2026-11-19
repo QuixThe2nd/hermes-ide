@@ -2134,12 +2134,6 @@
   },
   {
    "facade": "gateway.run",
-   "name": "looks_like_telegram_private_chat_id",
-   "kind": "moved-lazy",
-   "target": "gateway.delivery"
-  },
-  {
-   "facade": "gateway.run",
    "name": "loop_heartbeat_forever",
    "kind": "moved-lazy",
    "target": "gateway.shutdown_watchdog"
@@ -2731,24 +2725,6 @@
    "name": "subprocess",
    "kind": "import",
    "target": "subprocess"
-  },
-  {
-   "facade": "hermes_cli.commands",
-   "name": "telegram_bot_commands",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.commands_platforms"
-  },
-  {
-   "facade": "hermes_cli.commands",
-   "name": "telegram_menu_commands",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.commands_platforms"
-  },
-  {
-   "facade": "hermes_cli.commands",
-   "name": "telegram_menu_max_commands",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.commands_platforms"
   },
   {
    "facade": "hermes_cli.commands",
@@ -3753,90 +3729,6 @@
    "target": "subprocess"
   },
   {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "DEFAULT_MANAGER_BOT",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "auto_setup_telegram_bot",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "secrets",
-   "kind": "restored-import",
-   "target": "secrets"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "_USERNAME_SLUG_ALPHABET",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of generate_bot_username)"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "generate_username_slug",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of generate_bot_username)"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "generate_bot_username",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "urllib",
-   "kind": "restored-import",
-   "target": "urllib.parse"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "generate_deep_link",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "generate_pairing_nonce",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "generate_username_slug",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "poll_for_token",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "poll_pairing_once",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "secrets",
-   "kind": "import",
-   "target": "secrets"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "urllib",
-   "kind": "import",
-   "target": "urllib.parse"
-  },
-  {
    "facade": "hermes_cli.tools_config",
    "name": "base_url_hostname",
    "kind": "moved-lazy",
@@ -4645,30 +4537,6 @@
    "name": "asyncio",
    "kind": "import",
    "target": "asyncio"
-  },
-  {
-   "facade": "plugins.platforms.telegram.adapter",
-   "name": "atomic_replace",
-   "kind": "moved-lazy",
-   "target": "utils"
-  },
-  {
-   "facade": "plugins.platforms.telegram.adapter",
-   "name": "cache_document_from_bytes",
-   "kind": "moved-lazy",
-   "target": "gateway.platforms.base"
-  },
-  {
-   "facade": "plugins.platforms.telegram.adapter",
-   "name": "threading",
-   "kind": "import",
-   "target": "threading"
-  },
-  {
-   "facade": "plugins.platforms.telegram.telegram_ids",
-   "name": "telegram_chat_id_key",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
   },
   {
    "facade": "plugins.teams_pipeline.cli",

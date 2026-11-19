@@ -4,7 +4,7 @@ Ported from openclaw/openclaw#72038.  When a streamed preview has been
 visible long enough that the platform's edit timestamp would be
 noticeably stale by completion time, the stream consumer delivers the
 final reply as a brand-new message and best-effort deletes the old
-preview.  This makes Telegram's visible timestamp reflect completion
+preview.  This makes the platform's visible timestamp reflect completion
 time instead of first-token time.
 """
 
@@ -176,7 +176,7 @@ class TestCancelledBestEffortDeliveryFinalizes:
     The gateway cancels the consumer shortly after finish(). The
     CancelledError handler re-delivers the accumulated text; previously it
     did so with finalize=False, so REQUIRES_EDIT_FINALIZE platforms
-    (Telegram) kept the plain streaming preview — the whole final reply
+    kept the plain streaming preview — the whole final reply
     rendered with raw markdown markers — while the success flags still
     suppressed the gateway's formatted re-send.
     """

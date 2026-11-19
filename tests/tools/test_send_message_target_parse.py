@@ -1,7 +1,7 @@
 """Parser-only and lightweight routing tests for send_message targets.
 
 These stay separate from ``test_send_message_tool.py`` because that module
-skips wholesale when optional Telegram dependencies are not installed.
+skips wholesale when optional platform dependencies are not installed.
 """
 
 import asyncio
@@ -213,9 +213,9 @@ def test_unresolved_plugin_target_requires_explicit_parser() -> None:
 
 
 def test_unresolved_builtin_target_keeps_directory_error() -> None:
-    telegram_cfg = SimpleNamespace(enabled=True, token="***", extra={})
+    discord_cfg = SimpleNamespace(enabled=True, token="***", extra={})
     config = SimpleNamespace(
-        platforms={Platform.TELEGRAM: telegram_cfg},
+        platforms={Platform.DISCORD: discord_cfg},
     )
 
     with patch("gateway.config.load_gateway_config", return_value=config), \
@@ -228,14 +228,14 @@ def test_unresolved_builtin_target_keeps_directory_error() -> None:
             send_message_tool(
                 {
                     "action": "send",
-                    "target": "telegram:missing-room",
+                    "target": "discord:missing-room",
                     "message": "hello",
                 }
             )
         )
 
     assert result == {
-        "error": "Could not resolve 'missing-room' on telegram. "
+        "error": "Could not resolve 'missing-room' on discord. "
         "Use send_message(action='list') to see available targets."
     }
     send_mock.assert_not_awaited()
@@ -251,7 +251,7 @@ def test_unresolved_builtin_target_passes_through_when_requested() -> None:
 
     with patch("gateway.channel_directory.resolve_channel_name", return_value=None):
         chat_id, thread_id, error = resolve_send_target(
-            "telegram", "ops-room", pass_unresolved_references=True
+            "discord", "ops-room", pass_unresolved_references=True
         )
 
     assert error is None
@@ -264,7 +264,7 @@ def test_unresolved_builtin_target_still_errors_for_the_model_tool() -> None:
     from tools.send_message_tool import resolve_send_target
 
     with patch("gateway.channel_directory.resolve_channel_name", return_value=None):
-        chat_id, _thread_id, error = resolve_send_target("telegram", "ops-room")
+        chat_id, _thread_id, error = resolve_send_target("discord", "ops-room")
 
     assert chat_id is None
     assert error is not None

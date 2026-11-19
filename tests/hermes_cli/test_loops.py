@@ -225,7 +225,7 @@ class TestLoopStateSerde:
             times=5,
             until="ci is green",
             ticks_fired=2,
-            route={"platform": "telegram", "chat_id": "123"},
+            route={"platform": "discord", "chat_id": "123"},
         )
         s2 = LoopState.from_json(s.to_json())
         assert s2.prompt == "check CI"
@@ -233,7 +233,7 @@ class TestLoopStateSerde:
         assert s2.times == 5
         assert s2.until == "ci is green"
         assert s2.ticks_fired == 2
-        assert s2.route == {"platform": "telegram", "chat_id": "123"}
+        assert s2.route == {"platform": "discord", "chat_id": "123"}
 
     def test_old_row_missing_fields(self):
         from hermes_cli.loops import LoopState
@@ -658,7 +658,7 @@ class TestDispatchLoopCommand:
         from hermes_cli.loops import LoopManager, dispatch_loop_command, load_loop
 
         mgr = LoopManager(session_id="d5")
-        route = {"platform": "telegram", "chat_id": "42", "chat_type": "private"}
+        route = {"platform": "discord", "chat_id": "42", "chat_type": "private"}
         dispatch_loop_command(mgr, "5m ping", route=route)
         assert load_loop("d5").route == route
 

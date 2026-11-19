@@ -20,7 +20,7 @@ def _fake_agent():
 
 @pytest.mark.parametrize(
     ("platform", "expected"),
-    [("cron", "cron"), ("subagent", "subagent"), ("telegram", "primary"), (None, "primary")],
+    [("cron", "cron"), ("subagent", "subagent"), ("discord", "primary"), (None, "primary")],
 )
 def test_agent_context_follows_the_platform(platform, expected):
     assert _memory_provider_init_kwargs(_fake_agent(), platform)["agent_context"] == expected

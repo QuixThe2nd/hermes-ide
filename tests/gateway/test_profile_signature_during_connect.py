@@ -51,7 +51,7 @@ async def test_config_saved_during_connect_is_rescanned(tmp_path, monkeypatch, s
             # Configuration was already read; a second setup operation finishes while
             # the first adapter is awaiting its transport handshake.
             secrets.write_text(
-                "DISCORD_BOT_TOKEN=discord-test\nTELEGRAM_BOT_TOKEN=telegram-test\n",
+                "DISCORD_BOT_TOKEN=discord-test\nWHATSAPP_ENABLED=true\n",
                 encoding="utf-8",
             )
         return True
@@ -67,6 +67,6 @@ async def test_config_saved_during_connect_is_rescanned(tmp_path, monkeypatch, s
         await runner.reconcile_served_profiles()
     assert connected == [Platform.DISCORD]
     await runner.reconcile_served_profiles()
-    assert connected == [Platform.DISCORD, Platform.TELEGRAM]
+    assert connected == [Platform.DISCORD, Platform.WHATSAPP]
     await runner.reconcile_served_profiles()
-    assert connected == [Platform.DISCORD, Platform.TELEGRAM]
+    assert connected == [Platform.DISCORD, Platform.WHATSAPP]

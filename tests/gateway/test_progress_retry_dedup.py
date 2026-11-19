@@ -97,7 +97,6 @@ def _make(runner_cls):
         _run_still_current=lambda: True,
         progress_mode="describe",
         progress_grouping="accumulate",
-        progress_codebox=True,
         tool_progress_enabled=True,
         progress_queue=queue_mod.Queue(),
     )

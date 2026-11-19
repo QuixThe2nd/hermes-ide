@@ -16,8 +16,6 @@ _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".m2a", ".wav", ".m4a", ".flac"}
 # Captionable on the media bubble; voice/audio notes excluded (a caption there reads as a separate label).
 _CAPTIONABLE_EXTS = _IMAGE_EXTS | _VIDEO_EXTS | {".pdf", ".doc", ".docx", ".txt", ".md", ".csv", ".xlsx", ".zip"}
-_CAPTION_LIMIT_NATIVE = 1024
-_TELEGRAM_CAPTION_LIMIT = _CAPTION_LIMIT_NATIVE
 _DEFAULT_CAPTION_LIMIT = 4096
 
 
