@@ -2,10 +2,8 @@
 
 Split out of ``gateway/slash_commands.py``; bound onto ``GatewayRunner`` through
 ``GatewayModelCommandsMixin``. Origin internals are imported lazily inside the bodies to avoid
-the import cycle.
-
-The pure logic (flag parsing, no-arg listing text, picker-row trimming) is canonical in
-``internal/modelcmd`` (Go); ``hermes_cli/modelcmd.py`` is the twin this module calls.
+the import cycle. The pure logic (flag parsing, listing/confirmation text, picker-row trimming)
+is canonical in ``internal/modelcmd`` (Go); ``hermes_cli/modelcmd.py`` is the twin this module calls.
 """
 
 from __future__ import annotations
@@ -18,35 +16,8 @@ from typing import Any, Dict, Optional
 
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent
-from utils import base_url_host_matches
 
 logger = logging.getLogger("gateway.run")  # log-record parity with gateway/run.py
-
-
-def _model_switch_skew_guard() -> Optional[str]:
-    """Refuse a model switch when the gateway is running stale code: a first-time lazy import on
-    a new code path can crash on a stale cached dependency. Scoped to the highest-risk trigger."""
-    from gateway.code_skew import detect_code_skew
-
-    skew = detect_code_skew()
-    if not skew:
-        return None
-    boot_rev, disk_rev = skew
-    return t(
-        "gateway.model.error_prefix",
-        error=(
-            f"This gateway is running code from {boot_rev} but the checkout on "
-            f"disk is now {disk_rev}. Switching models would risk a stale-module "
-            f"crash — restart the gateway to load the new code: hermes gateway restart"
-        ),
-    )
-
-
-async def _persist_model_switch_to_config(result, config_path) -> None:
-    """Write-through a resolved /model switch to the profile config at ``config_path``, off the
-    event loop (the route comparison can do cold-start disk I/O)."""
-    from hermes_cli.model_switch import persist_model_selection
-    await asyncio.to_thread(persist_model_selection, result, config_path)
 
 
 @dataclasses.dataclass
@@ -58,7 +29,6 @@ class _ModelSwitchContext:
     config_path: Any
     persist_global: bool
     one_turn: bool = False
-    reasoning_effort: str = ""  # `--reasoning <level>` riding with the pick (typed path only)
     restore_snapshot: Optional[dict] = None
     current_model: str = ""
     current_provider: str = "openrouter"
@@ -107,8 +77,8 @@ class GatewayModelCommandsMixin:
     # ----------------------------------------------------------------- /model
 
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
-        """Handle /model command — switch model. Taken under the switch lock BEFORE the first await so
-        concurrent commands commit in issue order (see ``_model_switch_lock``)."""
+        """Handle /model. Taken under the switch lock BEFORE the first await so concurrent
+        commands commit in issue order (see ``_model_switch_lock``)."""
         async with self._model_switch_lock():
             return await self._handle_model_command_locked(event)
 
@@ -122,7 +92,9 @@ class GatewayModelCommandsMixin:
         request = parse_model_switch_args(event.get_command_args().strip())  # single-owner parser
         if request.errors:
             return f"❌ {request.error_messages()[0]}"  # gateway decoration over canonical copy
-        if request.force_refresh:  # bust the disk cache so the picker shows live data
+        if request.reasoning_effort:
+            return "❌ /model --reasoning is not available here; switch first, then set the effort."
+        if request.force_refresh:  # bust the disk cache so the listing shows live data
             with contextlib.suppress(Exception):
                 from hermes_cli.models import clear_provider_models_cache
                 clear_provider_models_cache()
@@ -137,31 +109,21 @@ class GatewayModelCommandsMixin:
                 explicit_provider=request.explicit_provider,
             ),
             one_turn=request.is_once,
-            reasoning_effort=request.reasoning_effort,
             restore_snapshot=self._snapshot_session_model_override(session_key) if request.is_once else None,
         )
         ctx.read_config()
         ctx.apply_override(self._session_model_overrides.get(session_key, {}))
         if not request.target and not request.explicit_provider:
             return await self._model_listing_reply(event, ctx, profile_home)
-        result, error = await self._perform_model_switch(ctx, request.target, request.explicit_provider, source)
+        result, error = await self._perform_model_switch(ctx, request.target, request.explicit_provider)
         if error is not None:
             return error
-        guard_fired, guard_reply = await self._model_selection_guard_reply(event, ctx, result)
-        if guard_fired:
-            return guard_reply
         return await self._commit_model_switch_locked(result, ctx, source=source, picker=False)
 
-    async def _perform_model_switch(
-        self, ctx: _ModelSwitchContext, raw_input: str, explicit_provider, source
-    ):
+    async def _perform_model_switch(self, ctx: _ModelSwitchContext, raw_input: str, explicit_provider):
         """Resolve a /model switch off-loop. Returns ``(result, None)`` or ``(None, error_text)``."""
-        from gateway.run import _load_gateway_config
         from hermes_cli.model_switch import switch_model
 
-        skew_error = _model_switch_skew_guard()
-        if skew_error:
-            return None, skew_error
         # Off-loop: switch_model() can hit a synchronous models.dev fetch (15s) on a cold cache.
         result = await asyncio.to_thread(
             switch_model, raw_input=raw_input, current_provider=ctx.current_provider,
@@ -172,19 +134,9 @@ class GatewayModelCommandsMixin:
         )
         if not result.success:
             return None, t("gateway.model.error_prefix", error=result.error_message)
-        try:
-            from hermes_cli.context_switch_guard import enrich_model_switch_warnings_for_gateway
-            # Off-loop: merge_preflight_compression_warning() runs the sync provider probe ladder.
-            await asyncio.to_thread(
-                enrich_model_switch_warnings_for_gateway, result, self, session_key=ctx.session_key,
-                source=source, custom_providers=ctx.custom_provs,
-                load_gateway_config=_load_gateway_config,
-            )
-        except Exception as exc:
-            logger.debug("preflight-compression switch warning failed: %s", exc)
         return result, None
 
-    def _switch_cached_agent_model(self, result, ctx: _ModelSwitchContext, picker: bool) -> Optional[str]:
+    def _switch_cached_agent_model(self, result, ctx: _ModelSwitchContext) -> Optional[str]:
         """In-place swap on the cached agent; returns the error reply when it failed.
 
         The agent rolls back to the OLD model/client and re-raises; the commit (DB, override,
@@ -200,9 +152,7 @@ class GatewayModelCommandsMixin:
                 capabilities=getattr(result, "runtime_capabilities", None),
             )
         except Exception as exc:
-            logger.warning(
-                "%s model switch failed for cached agent: %s", "Picker" if picker else "In-place", exc
-            )
+            logger.warning("In-place model switch failed for cached agent: %s", exc)
             return t(
                 "gateway.model.error_prefix",
                 error=f"Model switch to {result.new_model} failed ({exc}); staying on {ctx.current_model}.",
@@ -212,29 +162,25 @@ class GatewayModelCommandsMixin:
     async def _record_model_switch(
         self, result, ctx: _ModelSwitchContext, *, source, one_turn: bool, picker: bool
     ) -> Optional[str]:
-        """Persist a committed switch: session DB, next-turn note, config write-through, override map.
+        """Persist a committed switch: session DB row, next-turn note, override map, config write-through.
 
         Returns the warning for a ``--global`` switch whose ``config.yaml`` write or stale-override
         cleanup failed (the switch then stays a session override), else ``None``.
         """
-        from hermes_cli.model_switch import format_model_for_display
+        from hermes_cli.model_switch import format_model_for_display, persist_model_selection
 
-        # Persist the new model to the session DB so the dashboard shows the updated model (#34850).
+        # Session DB row so the dashboard shows the updated model (#34850).
         _sess_db = getattr(self, "_session_db", None)
         if _sess_db is not None:
             try:
                 _sess_entry = await self.async_session_store.get_or_create_session(source)
-                # Typed path: consume the auto-reset flag so the next message's cleanup does not
-                # wipe the override stored below. See #48031.
-                if not picker and getattr(_sess_entry, "was_auto_reset", False):
-                    _sess_entry.was_auto_reset = False
                 await _sess_db.update_session_model(
                     _sess_entry.session_id, result.new_model, provider=result.target_provider,
                 )
             except Exception as exc:
                 logger.debug("Failed to persist model switch to DB: %s", exc)
-        # Prepended to the next user message (no system messages mid-history). Display form strips
-        # opaque Palantir RID prefixes; the override map keeps the full ID for the wire.
+        # Prepended to the next user message (a mid-history system message would break providers
+        # and prompt caching); display form strips opaque vendor prefixes.
         if not hasattr(self, "_pending_model_notes"):
             self._pending_model_notes: Dict[str, str] = {}
         self._pending_model_notes[ctx.session_key] = (
@@ -257,31 +203,24 @@ class GatewayModelCommandsMixin:
         elif not picker and hasattr(self, "_pending_one_turn_model_restores"):
             self._pending_one_turn_model_restores.pop(ctx.session_key, None)
         # A --global switch has ONE durable authority: config.yaml. Write it first; on success drop
-        # the session override (memory + store) — a redundant copy would shadow every later global
-        # change after a restart (#100314: a stale override resumed `gpt-5.6-sol-900k` as the base
-        # 272K model). On failure keep the override so the switch truthfully survives as session-only.
+        # the session override — a redundant copy would shadow every later global change after a
+        # restart (#100314). On failure keep the override (the switch survives as session-only).
         global_error: Optional[str] = None
         if ctx.persist_global:
             try:
-                await _persist_model_switch_to_config(result, ctx.config_path)
+                await asyncio.to_thread(persist_model_selection, result, ctx.config_path)
             except Exception as e:
                 logger.warning("Failed to persist model switch: %s", e)
                 global_error = f"config.yaml not updated ({str(e) or type(e).__name__})"
-        # Precedence is session > channel_overrides > config.yaml: in a chat with a channel_overrides
-        # model/provider the session override must stay, or the next turn runs the channel model.
-        if ctx.persist_global and global_error is None and self._channel_override_for(source) is None:
-            try:
-                await self.async_session_store.set_model_override(ctx.session_key, None)
-            except Exception as e:
-                # Store still holds the stale copy: keep memory in agreement and report it (#100314).
-                logger.warning("Failed to clear persisted session model override: %s", e)
-                global_error = f"saved to config.yaml, but the stale session override was not cleared ({e})"
             else:
-                self._session_model_overrides.pop(ctx.session_key, None)
-        # Non-secret write-through so the override survives a restart (api_key/api_mode are
-        # re-resolved on rehydration); a --once override must NOT outlive a restart
-        # (#29923 review defect: writing it through made a crash rehydrate the once-model forever).
+                try:
+                    await self.async_session_store.set_model_override(ctx.session_key, None)
+                except Exception as e:
+                    global_error = f"saved to config.yaml, but the stale session override was not cleared ({e})"
+                else:
+                    self._session_model_overrides.pop(ctx.session_key, None)
         elif not one_turn:
+            # Write-through so a session override survives a restart; --once must NOT (#29923).
             try:
                 await self.async_session_store.set_model_override(
                     ctx.session_key, self._session_model_overrides[ctx.session_key]
@@ -292,147 +231,51 @@ class GatewayModelCommandsMixin:
         return global_error
 
     async def _model_switch_confirmation(
-        self, result, ctx: _ModelSwitchContext, *, one_turn: bool, picker: bool,
-        global_error: Optional[str] = None,
+        self, result, ctx: _ModelSwitchContext, *, one_turn: bool, global_error: Optional[str] = None,
     ) -> str:
-        """Confirmation text with full metadata (display form shortens opaque Palantir IDs)."""
-        from gateway.run import _load_gateway_config
+        """Confirmation text via the Go-canonical twin (display form shortens vendor IDs)."""
         from hermes_cli.model_switch import format_model_for_display, resolve_display_context_length_async
+        from hermes_cli.modelcmd import confirmation_record, render_confirmation
 
-        lines = [
-            t("gateway.model.switched", model=format_model_for_display(result.new_model)),
-            t("gateway.model.provider_label", provider=result.provider_label or result.target_provider),
-        ]
-        # Provider-aware chain: Codex OAuth, Copilot and Nous caps win over the raw models.dev entry.
-        mi = result.model_info
-        model_cfg: dict = {}
-        config_ctx = None
-        with contextlib.suppress(Exception):  # fail-open on config read errors
-            model_cfg = _load_gateway_config().get("model", {})
-            if isinstance(model_cfg, dict) and model_cfg.get("context_length") is not None:
-                config_ctx = int(model_cfg["context_length"])
-        if not isinstance(model_cfg, dict):
-            model_cfg = {}
-        ctx_len = await resolve_display_context_length_async(
-            result.new_model, result.target_provider,
-            base_url=result.base_url or ctx.current_base_url or "",
-            api_key=result.api_key or ctx.current_api_key or "", model_info=mi,
-            custom_providers=ctx.custom_provs, config_context_length=config_ctx,
-            configured_model=model_cfg.get("default") or model_cfg.get("model"),
-            configured_provider=model_cfg.get("provider"),
-            configured_base_url=model_cfg.get("base_url"),
-        )
-        if ctx_len:
-            lines.append(t("gateway.model.context_label", tokens=f"{ctx_len:,}"))
-        if mi and mi.max_output:
-            lines.append(t("gateway.model.max_output_label", tokens=f"{mi.max_output:,}"))
-        if mi:
-            lines.append(t("gateway.model.capabilities_label", capabilities=mi.format_capabilities()))
-        openrouter_claude = (
-            base_url_host_matches(result.base_url or "", "openrouter.ai") and "claude" in result.new_model.lower()
-        )
-        if not picker and (openrouter_claude or result.api_mode == "anthropic_messages"):
-            lines.append(t("gateway.model.prompt_caching_enabled"))
-        if result.warning_message:
-            lines.append(t("gateway.model.warning_prefix", warning=result.warning_message))
-        if ctx.persist_global and global_error is not None:
-            # Never claim a clean global commit the disk did not take (#100314).
-            lines.append(t("gateway.model.warning_prefix", warning=global_error))
-            lines.append(t("gateway.model.session_only_hint"))
-        elif ctx.persist_global:
-            lines.append(t("gateway.model.saved_global"))
-        elif one_turn:
-            lines.append("    (next turn only — restores after one response)")
-        else:
-            lines.append(t("gateway.model.session_only_hint"))
-        return "\n".join(lines)
+        ctx_len = 0
+        with contextlib.suppress(Exception):
+            ctx_len = await resolve_display_context_length_async(
+                result.new_model, result.target_provider, model_info=result.model_info) or 0
+        return render_confirmation(confirmation_record(
+            format_model_for_display(result.new_model),
+            result.provider_label or result.target_provider,
+            tokens=ctx_len,
+            warning=result.warning_message or "",
+            scope="once" if one_turn else ("global" if ctx.persist_global else "session"),
+            global_error=global_error or "",
+        ))
 
     async def _commit_model_switch(
         self, result, ctx: _ModelSwitchContext, *, source, picker: bool = False
     ) -> str:
-        """Apply a resolved switch (cached agent, session, config) and build the confirmation; shared
-        by the typed path and the picker callback (``picker=True`` never carries --once).
-
-        Entry for the picker / cost-confirm callbacks, which fire outside ``_handle_model_command``
-        and take the switch lock themselves; the typed path already holds it."""
+        """Entry for the picker callback, which fires outside ``_handle_model_command`` and takes
+        the switch lock itself; the typed path already holds it."""
         async with self._model_switch_lock():
             return await self._commit_model_switch_locked(result, ctx, source=source, picker=picker)
 
-    def _channel_override_for(self, source):
-        """This chat's ``channel_overrides`` entry (model/provider), or None."""
-        from gateway.run import _get_channel_override
-        cfg = getattr(self, "config", None)
-        if not cfg or source is None:
-            return None
-        return _get_channel_override(
-            cfg, source.platform, str(source.chat_id) if source.chat_id else "",
-            thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
-            parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
-        )
+    async def _commit_model_switch_locked(
+        self, result, ctx: _ModelSwitchContext, *, source, picker: bool
+    ) -> str:
+        one_turn = False if picker else ctx.one_turn  # a picker pick never carries --once
+        error = self._switch_cached_agent_model(result, ctx)
+        if error is not None:
+            return error
+        global_error = await self._record_model_switch(result, ctx, source=source, one_turn=one_turn, picker=picker)
+        return await self._model_switch_confirmation(result, ctx, one_turn=one_turn, global_error=global_error)
 
     def _model_switch_lock(self) -> asyncio.Lock:
-        """Runner-wide lock over a /model command's read-resolve-commit. Slash commands bypass the busy
-        guard while no agent runs, so a second /model on the same (or another) session otherwise
-        interleaves with the first's store/config awaits: two ``--global`` picks left config.yaml on
-        whichever thread wrote last and a ``--global`` cleanup wiped a session pick issued after it
-        (#100314). Lazy: the runner is built without __init__ in tests."""
+        """Runner-wide lock over a /model command's read-resolve-commit: slash commands bypass
+        the busy guard while no agent runs, so a second /model otherwise interleaves with the
+        first's store/config awaits (#100314). Lazy: the runner is built without __init__."""
         lock = self.__dict__.get("_model_switch_lock_obj")
         if lock is None:
             lock = self.__dict__["_model_switch_lock_obj"] = asyncio.Lock()
         return lock
-
-    async def _commit_model_switch_locked(self, result, ctx: _ModelSwitchContext, *, source, picker: bool) -> str:
-        one_turn = False if picker else ctx.one_turn
-        error = self._switch_cached_agent_model(result, ctx, picker)
-        if error is not None:
-            return error
-        global_error = await self._record_model_switch(result, ctx, source=source, one_turn=one_turn, picker=picker)
-        reply = await self._model_switch_confirmation(
-            result, ctx, one_turn=one_turn, picker=picker, global_error=global_error,
-        )
-        if ctx.reasoning_effort and not one_turn:
-            # `/model X --reasoning <level>`: same scope as the pick. The record step already
-            # evicted the cached agent, so the pin lands on the rebuild.
-            from gateway.run import _platform_config_key
-            reply += "\n" + self._apply_model_reasoning_effort(
-                ctx.session_key, _platform_config_key(source.platform), ctx.reasoning_effort,
-                persist_global=ctx.persist_global and global_error is None)
-        return reply
-
-    def _save_gateway_config_key(self, key_path: str, value) -> bool:
-        """Save a dot-separated key to config.yaml."""
-        from gateway.slash_commands import _nested_dict
-        from gateway.run import _gateway_config_home
-        from hermes_cli.config import read_user_config_raw, atomic_config_write
-        config_path = _gateway_config_home() / "config.yaml"
-        try:
-            user_config = read_user_config_raw(config_path)  # raw: never persist merged defaults
-            *parents, leaf = key_path.split(".")
-            _nested_dict(user_config, *parents)[leaf] = value
-            atomic_config_write(config_path, user_config)
-            return True
-        except Exception as e:
-            logger.error("Failed to save config key %s: %s", key_path, e)
-            return False
-
-    def _apply_model_reasoning_effort(
-        self, session_key: str, platform_key: str, value: str, persist_global: bool = False,
-    ) -> str:
-        """Apply a ``--reasoning <level>`` riding with ``/model <name>`` (the /reasoning command
-        surface is not restored; this is the model-command slice of the old applier)."""
-        from hermes_constants import parse_reasoning_effort
-
-        parsed = parse_reasoning_effort((value or "").strip())
-        if parsed is None:
-            return t("gateway.reasoning.unknown_arg", arg=value)
-        if persist_global:
-            if self._save_gateway_config_key("agent.reasoning_effort", value):
-                self._set_session_reasoning_override(session_key, None)
-                return t("gateway.reasoning.set_global", effort=value)
-            self._set_session_reasoning_override(session_key, parsed)
-            return t("gateway.reasoning.set_global_save_failed", effort=value)
-        self._set_session_reasoning_override(session_key, parsed)
-        return t("gateway.reasoning.set_session", effort=value)
 
     async def _send_model_picker(self, event: MessageEvent, source, adapter, session_key: str, listing_kwargs: dict, on_model_selected) -> bool:
         """Send the interactive /model picker; False when nothing was sent (text fallback). *source*
@@ -479,7 +322,7 @@ class GatewayModelCommandsMixin:
         if adapter is not None and getattr(type(adapter), "send_model_picker", None) is not None:
             async def _picker_switch(model_id: str, provider_slug: str) -> str:
                 # The picker callback binds the raw event source (pre-normalization).
-                result, error = await self._perform_model_switch(ctx, model_id, provider_slug, event.source)
+                result, error = await self._perform_model_switch(ctx, model_id, provider_slug)
                 if error is not None:
                     return error
                 return await self._commit_model_switch(result, ctx, source=event.source, picker=True)
@@ -502,44 +345,6 @@ class GatewayModelCommandsMixin:
             ctx.current_model or "unknown",
             get_label(ctx.current_provider) or ctx.current_provider or "unknown",
             providers))
-
-    async def _model_selection_guard_reply(
-        self, event: MessageEvent, ctx: _ModelSwitchContext, result
-    ) -> tuple[bool, Optional[str]]:
-        """Selection-guard confirmation for the typed path (pickers confirm via their own UI).
-
-        The unified registry (cost + data-policy guards) runs off-loop — pricing lookups may hit
-        models.dev on a cache miss. Returns ``(fired, reply)``; the reply is None when the platform
-        rendered confirm buttons itself.
-        """
-        try:
-            from hermes_cli.model_selection_guards import (
-                combined_selection_warning, selection_context_for_agent)
-            warning = await asyncio.to_thread(
-                combined_selection_warning, result.new_model, provider=result.target_provider,
-                base_url=result.base_url or ctx.current_base_url or "",
-                api_key=result.api_key or ctx.current_api_key or "", model_info=result.model_info,
-                selection_context=selection_context_for_agent(self._cached_agent_for(ctx.session_key)),
-            )
-        except Exception:
-            warning = None
-        if warning is None:
-            return False, None
-
-        async def _on_cost_confirm(choice: str) -> str:
-            if choice == "cancel":
-                return f"🟡 Model switch cancelled. Current model unchanged ({ctx.current_model or 'unknown'})."
-            # "once" and "always" both proceed — selection guards have no persistent opt-out.
-            return await self._commit_model_switch(result, ctx, source=ctx.source)
-
-        _p = self._typed_command_prefix_for(event.source.platform)
-        message = (
-            f"⚠️ **{warning.title}**\n\n{warning.message}\n\n"
-            f"_Text fallback: reply `{_p}approve` to switch or `{_p}cancel` to keep the current model._"
-        )
-        return True, await self._request_slash_confirm(
-            event=event, command="model", title=warning.title, message=message, handler=_on_cost_confirm,
-        )
 
     # -------------------------------------------------------------- /codex-runtime
 
