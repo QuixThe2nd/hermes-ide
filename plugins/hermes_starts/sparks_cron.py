@@ -162,6 +162,40 @@ def _sparks_cron_enabled() -> bool:
     return True if value is None else bool(value)
 
 
+# The two plugins the seeded wake depends on, in the loader's canonical
+# spelling (this seeder's own plugin, and the end-of-turn nudge its wakes
+# feed). Operator-written deny lists are not guaranteed to match it
+# (``inbox-sparks`` / ``Hermes_Starts`` both appear in the wild), so
+# membership is compared hyphen/underscore- and case-normalized.
+_WAKE_PLUGIN_NAMES = frozenset({"hermes_starts", "inbox_sparks"})
+
+
+def _plugin_disabled() -> bool:
+    """``plugins.disabled`` names a wake plugin for the home currently
+    scoped by the caller.
+
+    Mirrors the plugin loader's gate (``gate_manifest``): the deny-list is
+    the opt-out that wins, and both wake plugins are bundled
+    ``default_enabled`` plugins that load without a ``plugins.enabled``
+    entry — so the allowlist does not gate seeding either. Fail-open, like
+    ``_sparks_cron_enabled``: an unreadable config never blocks the default.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+    except Exception:
+        return False
+    disabled = (cfg.get("plugins") or {}).get("disabled")
+    if not isinstance(disabled, list):
+        return False
+    return any(
+        isinstance(name, str)
+        and name.strip().lower().replace("-", "_") in _WAKE_PLUGIN_NAMES
+        for name in disabled
+    )
+
+
 def _seed_homes() -> List[Path]:
     """Homes to seed: the launch home, plus every served profile under
     ``gateway.multiplex_profiles`` (mirroring the cron ticker's set)."""
@@ -202,6 +236,7 @@ def _ensure_for_home(home: Path, prereq: Callable[[], bool]) -> str:
                 "job_names": [str(job.get("name") or "") for job in list_jobs(include_disabled=True)],
                 "seeded": _marker_path(home).exists(),
                 "sparks_cron": _sparks_cron_enabled(),
+                "plugin_disabled": _plugin_disabled(),
                 "prereq_ok": bool(prereq()),
             }
             verdict = _decide(request)

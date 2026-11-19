@@ -93,6 +93,23 @@ func TestDecide(t *testing.T) {
 			},
 			wantAction: ActionCreate,
 		},
+		{
+			name: "plugins.disabled opt-out: no job even on a fresh store",
+			in: Inputs{
+				PluginDisabled: true, CronEnabled: true, PrereqOK: true,
+			},
+			wantAction: ActionSkip,
+			wantReason: ReasonPluginDisabled,
+		},
+		{
+			name: "plugins.disabled opt-out wins over an existing job",
+			in: Inputs{
+				JobNames: []string{"inbox-sparks"}, Seeded: true,
+				PluginDisabled: true, CronEnabled: true, PrereqOK: true,
+			},
+			wantAction: ActionSkip,
+			wantReason: ReasonPluginDisabled,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -148,5 +165,60 @@ func TestVerdictJSONShape(t *testing.T) {
 	v := Decide(Inputs{CronEnabled: true, PrereqOK: true, JobNames: []string{"inbox-sparks"}})
 	if v.Job != nil || v.Action != ActionSkip || v.Reason == "" {
 		t.Fatalf("skip verdict shape violated: %+v", v)
+	}
+}
+
+// TestPluginDisabledGate: “plugins.disabled“ is the home's strongest
+// statement about the wake subsystem — when it names hermes_starts or
+// inbox_sparks, no other fact (missing token, sparks_cron flag, store
+// state, deletion marker) may produce a job record, and the verdict must
+// say which gate fired.
+func TestPluginDisabledGate(t *testing.T) {
+	tests := []struct {
+		name string
+		in   Inputs
+	}{
+		{
+			name: "dominates a missing prerequisite",
+			in:   Inputs{PluginDisabled: true, PrereqOK: false},
+		},
+		{
+			name: "dominates the sparks_cron opt-out",
+			in:   Inputs{PluginDisabled: true, CronEnabled: false, PrereqOK: true},
+		},
+		{
+			name: "dominates an ambiguous store",
+			in: Inputs{
+				JobNames:       []string{"inbox-sparks", "inbox-sparks"},
+				PluginDisabled: true, CronEnabled: true, PrereqOK: true,
+			},
+		},
+		{
+			name: "dominates an existing job",
+			in: Inputs{
+				JobNames:       []string{"inbox-sparks"},
+				PluginDisabled: true, CronEnabled: true, PrereqOK: true,
+			},
+		},
+		{
+			name: "dominates the deletion marker on an empty store",
+			in: Inputs{
+				Seeded: true, PluginDisabled: true, CronEnabled: true, PrereqOK: true,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Decide(tt.in)
+			if got.Action != ActionSkip || got.Reason != ReasonPluginDisabled || got.Job != nil {
+				t.Fatalf("Decide() = %+v, want skip/%s", got, ReasonPluginDisabled)
+			}
+		})
+	}
+
+	// The field is additive on the wire: an old bridge payload (no
+	// plugin_disabled key) decodes to false and decides exactly as before.
+	if got := Decide(Inputs{CronEnabled: true, PrereqOK: true}); got.Action != ActionCreate {
+		t.Fatalf("zero-value plugin_disabled must not change the verdict, got %+v", got)
 	}
 }

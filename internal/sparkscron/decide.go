@@ -27,6 +27,13 @@ type Inputs struct {
 	// profile (a configured Discord bot token — without it the woken agent
 	// has no start_conversation tool and every wake is wasted model spend).
 	PrereqOK bool `json:"prereq_ok"`
+	// PluginDisabled is true when this profile's ``plugins.disabled``
+	// names hermes_starts or inbox_sparks — the two plugins the wake
+	// depends on (the seeder's own plugin and the end-of-turn nudge the
+	// wakes feed). Both are bundled default_enabled plugins, so the
+	// loader's deny-list is their only opt-out; the plugins.enabled
+	// allowlist does not gate them and must not gate seeding either.
+	PluginDisabled bool `json:"plugin_disabled"`
 }
 
 // Verdict actions.
@@ -38,6 +45,7 @@ const (
 // Verdict reasons (ActionSkip only).
 const (
 	ReasonPrereqMissing    = "prerequisite-missing" // no usable token for this profile
+	ReasonPluginDisabled   = "plugin-disabled"      // plugins.disabled names hermes_starts/inbox_sparks
 	ReasonDisabledByConfig = "disabled-by-config"   // sparks_cron=false for this profile
 	ReasonJobAmbiguous     = "job-ambiguous"        // 2+ jobs already carry the name
 	ReasonJobExists        = "job-exists"           // exactly one job carries the name
@@ -57,17 +65,23 @@ type Verdict struct {
 //
 // The gate order is load-bearing:
 //
-//  1. prerequisite, 2. config opt-out — both dominate everything: a profile
-//     that cannot or must not run the wake must not gain a job record even
-//     once;
-//  3. ambiguity — two jobs with the name means operator state we do not
+//  1. plugin-disabled, 2. prerequisite, 3. config opt-out — all three
+//     dominate everything: a profile that turned the subsystem off, cannot
+//     run it, or must not run it must not gain a job record even once
+//     (plugin-disabled first: it is the home's explicit statement about the
+//     whole subsystem, so it is the reason the log should carry when
+//     several gates are down);
+//  4. ambiguity — two jobs with the name means operator state we do not
 //     understand; touching either is guessing;
-//  4. existence — an existing job (any schedule, any prompt, paused or
+//  5. existence — an existing job (any schedule, any prompt, paused or
 //     disabled) is authoritative and byte-identical afterwards;
-//  5. the deletion marker — respected after existence so a hand-created job
+//  6. the deletion marker — respected after existence so a hand-created job
 //     that is later deleted can be reseeded as the default (the marker only
 //     records what THIS seeder created).
 func Decide(in Inputs) Verdict {
+	if in.PluginDisabled {
+		return skip(ReasonPluginDisabled)
+	}
 	if !in.PrereqOK {
 		return skip(ReasonPrereqMissing)
 	}
