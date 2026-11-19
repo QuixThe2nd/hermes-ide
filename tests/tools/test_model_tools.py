@@ -182,47 +182,6 @@ class TestHandleFunctionCall:
         assert post_call[1]["error_type"] == "RuntimeError"
         assert post_call[1]["duration_ms"] >= 0
 
-    def test_acp_edit_denial_emits_blocked_terminal_tool_hook(self, monkeypatch):
-        from hermes_cli import lifecycle
-
-        hook_calls = []
-        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_args, **_kwargs: [])
-        monkeypatch.setattr(lifecycle, "has_hook", lambda name: name == "post_tool_call")
-        monkeypatch.setattr(
-            lifecycle,
-            "invoke_hook",
-            lambda name, **kwargs: hook_calls.append((name, kwargs)) or [],
-        )
-        monkeypatch.setattr(
-            "acp_adapter.edit_approval.maybe_require_edit_approval",
-            lambda *_args, **_kwargs: json.dumps({"error": "Edit approval denied"}),
-        )
-        monkeypatch.setattr(
-            "model_tools.registry.dispatch",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                AssertionError("denied edit must not dispatch")
-            ),
-        )
-
-        result = json.loads(
-            handle_function_call(
-                "write_file",
-                {"path": "private.txt", "content": "private"},
-                task_id="task-1",
-                session_id="session-1",
-                tool_call_id="tool-1",
-            )
-        )
-
-        assert result == {"error": "Edit approval denied"}
-        [post_call] = [call for call in hook_calls if call[0] == "post_tool_call"]
-        assert post_call[1]["status"] == "blocked"
-        assert post_call[1]["error_type"] == "edit_approval_denied"
-
-
-# =========================================================================
-# Agent loop tools
-# =========================================================================
 
 class TestAgentLoopTools:
     def test_expected_tools_in_set(self):
@@ -355,7 +314,7 @@ class TestLegacyToolsetMap:
         expected = [
             "web_tools", "terminal_tools", "vision_tools",
             "image_tools", "skills_tools", "browser_tools", "cronjob_tools",
-            "file_tools", "tts_tools",
+            "file_tools",
         ]
         for name in expected:
             assert name in _LEGACY_TOOLSET_MAP, f"Missing legacy toolset: {name}"
@@ -416,25 +375,25 @@ class TestDisabledToolsetsPlatformBundle:
     must not remove core tools from other enabled toolsets."""
 
     def test_disabling_platform_bundle_preserves_core_tools(self):
-        """Disabling hermes-yuanbao should not strip core tools from hermes-telegram."""
+        """Disabling hermes-yuanbao should not strip core tools from hermes-discord."""
         from model_tools import get_tool_definitions
 
-        tools_telegram = get_tool_definitions(
-            enabled_toolsets=["hermes-telegram"],
+        tools_discord = get_tool_definitions(
+            enabled_toolsets=["hermes-discord"],
             quiet_mode=True,
         )
-        tools_telegram_no_yuanbao = get_tool_definitions(
-            enabled_toolsets=["hermes-telegram"],
+        tools_discord_no_yuanbao = get_tool_definitions(
+            enabled_toolsets=["hermes-discord"],
             disabled_toolsets=["hermes-yuanbao"],
             quiet_mode=True,
         )
-        names_telegram = {t["function"]["name"] for t in tools_telegram}
-        names_no_yuanbao = {t["function"]["name"] for t in tools_telegram_no_yuanbao}
+        names_discord = {t["function"]["name"] for t in tools_discord}
+        names_no_yuanbao = {t["function"]["name"] for t in tools_discord_no_yuanbao}
 
         # Disabling a *different* platform bundle must not remove any tools
-        assert names_telegram == names_no_yuanbao, (
+        assert names_discord == names_no_yuanbao, (
             f"Tools lost after disabling hermes-yuanbao: "
-            f"{names_telegram - names_no_yuanbao}"
+            f"{names_discord - names_no_yuanbao}"
         )
 
     def test_disabling_platform_bundle_removes_own_tools(self):
@@ -533,41 +492,31 @@ class TestDisabledToolsetsPostureToolset:
 
 
 # =========================================================================
-# Tool Search bridge dispatch
+# Direct schema visibility
 # =========================================================================
 
-class TestBridgeDispatch:
-    """handle_function_call routes tool_search/tool_describe inline, unwraps tool_call,
-    and refuses tool_call targets outside the session-scoped deferrable catalog."""
+def test_enabled_tools_are_direct_and_byte_stable_with_legacy_config(tmp_path, monkeypatch):
+    """Obsolete tools.tool_search config loads but cannot alter the direct, stable schema array."""
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "tools:\n  tool_search:\n    enabled: on\n    always_visible: [read_file]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
 
-    def test_tool_search_and_describe_return_json_strings(self):
-        with patch("model_tools.get_tool_definitions", return_value=[]):
-            out = handle_function_call("tool_search", {"queries": ["anything"]})
-            assert isinstance(out, str) and json.loads(out) is not None
-            out = handle_function_call("tool_describe", {"names": ["nope"]})
-            assert isinstance(out, str) and json.loads(out) is not None
+    from hermes_cli.config import load_config
+    from model_tools import get_tool_definitions
 
-    def test_tool_call_bad_args_error(self):
-        with patch("model_tools.get_tool_definitions", return_value=[]):
-            result = json.loads(handle_function_call("tool_call", {}))
-        assert "requires 'calls'" in result["error"]
-
-    def test_tool_call_rejects_out_of_scope_and_unwraps_in_scope(self):
-        import tools.tool_search as ts
-        with patch("model_tools.get_tool_definitions", return_value=[]), \
-             patch.object(ts, "resolve_underlying_call", return_value=("mcp_x", {"a": 1}, None)), \
-             patch.object(ts, "scoped_deferrable_names", return_value=frozenset()):
-            result = json.loads(handle_function_call("tool_call", {"name": "mcp_x"}))
-        assert "not available in this session" in result["error"]
-
-        with patch("model_tools.get_tool_definitions", return_value=[]), \
-             patch.object(ts, "resolve_underlying_call", return_value=("mcp_x", {"a": 1}, None)), \
-             patch.object(ts, "scoped_deferrable_names", return_value=frozenset({"mcp_x"})), \
-             patch.object(ts, "validate_deferred_call_args", return_value=None), \
-             patch("model_tools.registry.dispatch", return_value='{"ok": true}') as disp:
-            out = handle_function_call("tool_call", {"name": "mcp_x"}, task_id="t")
-        assert json.loads(out) == {"ok": True}
-        assert disp.call_args.args[0] == "mcp_x" and disp.call_args.args[1] == {"a": 1}
+    legacy = load_config()
+    assert legacy["tools"]["tool_search"]["enabled"] is True
+    assert legacy["tools"]["connectors"]["enabled"] is True
+    first = get_tool_definitions(enabled_toolsets=["file"], quiet_mode=True)
+    second = get_tool_definitions(enabled_toolsets=["file"], quiet_mode=True)
+    names = {tool["function"]["name"] for tool in first}
+    assert {"read_file", "write_file", "search_files"} <= names
+    assert not {"tool_search", "tool_describe", "tool_call"} & names
+    assert json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True)
 
 
 # ==================================================================
@@ -587,18 +536,16 @@ class TestBrowserRetrievalHints:
         from model_tools import _apply_dynamic_schemas
 
         out = {d["function"]["name"]: d["function"]["description"]
-               for d in _apply_dynamic_schemas(self._defs("browser_navigate", "browser_cdp", "web_search", "web_extract"))}
+               for d in _apply_dynamic_schemas(self._defs("browser_navigate", "web_search", "web_extract"))}
         assert "web_search and web_extract" in out["browser_navigate"]
-        assert "web_extract" in out["browser_cdp"]
 
     def test_silent_without_web_tools(self):
         # Real static schemas + rewriters: the rewritten browser descriptions must not mention absent web tools.
         from model_tools import _apply_dynamic_schemas
-        from tools.browser_cdp_tool import BROWSER_CDP_SCHEMA
         from tools.browser_tool import BROWSER_TOOL_SCHEMAS
 
         navigate = next(s for s in BROWSER_TOOL_SCHEMAS if s["name"] == "browser_navigate")
-        defs = [{"type": "function", "function": navigate}, {"type": "function", "function": BROWSER_CDP_SCHEMA}]
+        defs = [{"type": "function", "function": navigate}]
         rendered = " ".join(d["function"]["description"] for d in _apply_dynamic_schemas(defs + self._defs("terminal")))
         assert "web_search" not in rendered
         assert "web_extract" not in rendered
@@ -614,10 +561,10 @@ def test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime(tmp_path)
     cfg = tmp_path / "config.yaml"
     cfg.write_text("mcp_servers:\n  aa: {command: a}\n", encoding="utf-8")
     with patch("hermes_cli.config.get_config_path", return_value=cfg):
-        before = _tool_defs_cache_key(None, None, False)
+        before = _tool_defs_cache_key(None, None)
         st = cfg.stat()
         other = tmp_path / "other.yaml"
         other.write_text("mcp_servers:\n  bb: {command: b}\n", encoding="utf-8")
         shutil.copy2(other, cfg)
         os.utime(cfg, ns=(st.st_atime_ns, st.st_mtime_ns))
-        assert _tool_defs_cache_key(None, None, False) != before
+        assert _tool_defs_cache_key(None, None) != before

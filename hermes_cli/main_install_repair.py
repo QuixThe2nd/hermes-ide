@@ -262,10 +262,10 @@ def _recover_core_update_marker_locked() -> None:
     try:
         from hermes_cli import _install_repair as _ir
 
-        # ensure_uv bootstraps uv itself when missing (the early pass's stdlib-only lookup
-        # cannot), so a venv whose uv vanished mid-update still heals.
-        from hermes_cli.managed_uv import ensure_uv
-        ensure_uv()
+        # The early stdlib-only pass cannot restore a missing uv; PM can.
+        from pm.ensure import uv as pm_uv
+
+        pm_uv(realize=True)
         # Shared stdlib executor: late path and pre-import early pass run exactly the same
         # reinstall. Its own stdout→stderr redirect nests harmlessly inside ours.
         _ir.run_core_install(PROJECT_ROOT)
@@ -441,8 +441,9 @@ def _default_venv_install_target() -> tuple[list[str], dict[str, str] | None]:
     """Return ``(install_cmd_prefix, env)`` for the project venv when possible."""
     from hermes_cli.main import PROJECT_ROOT
     try:
-        from hermes_cli.managed_uv import ensure_uv
-        uv_bin = ensure_uv()
+        from pm.ensure import uv as pm_uv
+
+        uv_bin, _ = pm_uv(realize=True)
     except Exception:
         uv_bin = None
     if uv_bin:
@@ -534,7 +535,7 @@ def _hermes_exe_shims(scripts_dir: Path) -> list[Path]:
     only; POSIX shims are plain scripts replaced atomically."""
     if not _is_windows():
         return []
-    names = set(_load_console_script_names()) or {"hermes", "hermes-agent", "hermes-acp"}
+    names = set(_load_console_script_names()) or {"hermes", "hermes-agent"}
     # Not a [project.scripts] entry point, but older update/install paths still
     # rewrite and quarantine it.
     names.add("hermes-gateway")

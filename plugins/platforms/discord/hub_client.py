@@ -1,0 +1,893 @@
+"""Hermes-side adapter for the out-of-process Discord transport hub."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import inspect
+import json
+import logging
+import os
+import socket
+import subprocess
+import sys
+import time
+import uuid
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, ProcessingOutcome
+from hermes_constants import get_default_hermes_root, get_hermes_home
+from plugins.platforms.discord.hub import default_socket_path
+
+logger = logging.getLogger(__name__)
+
+_OVERLAP_SUCCESSOR_ATTACH_TIMEOUT_SECONDS = 300.0
+_OVERLAP_SUCCESSOR_ATTACH_POLL_SECONDS = 0.5
+# StreamReader limit for the hub connection: asyncio's 64 KiB default makes
+# readline() raise LimitOverrunError and drop frames on large Discord
+# payloads (embeds, long messages, attachment batches), so frames up to
+# 16 MiB must pass through whole. Go twin: internal/hubframe (shared
+# testdata contract test).
+_HUB_STREAM_LIMIT = 16 * 1024 * 1024
+
+
+class HubOverlapClientMixin:
+    """Client half of the instant-overlap hub protocol, shared by hub-attached
+    adapters (Discord, browser sidebar).
+
+    Owns the session-ownership release fence, hub-parked event handoff, hub
+    event admission, and the overlap-successor lifecycle (spawn, readiness
+    ping, drain admission). Hosts parametrize wire field names and log labels
+    via the ``_hub_*`` class attributes and must provide ``_call``,
+    ``_generation_id``, ``_session_versions``, ``_release_tasks`` and the
+    ``BasePlatformAdapter`` session-state maps. Compose BEFORE
+    ``BasePlatformAdapter`` so the release hooks wrap the base lifecycle.
+    """
+
+    supports_overlap_restart = True
+    # Read by gateway.overlap_restart.handoff_overlap_event: how long a
+    # draining predecessor keeps retrying a hub-parked handoff before the
+    # durable drain queue may claim the event.
+    overlap_successor_attach_timeout = _OVERLAP_SUCCESSOR_ATTACH_TIMEOUT_SECONDS
+    _hub_label = "Discord hub"
+    _hub_version_field = "_discord_hub_version"
+    _hub_version_handoff_field = "_discord_hub_version_handoffs"
+
+    async def _receive_event(self, message: Dict[str, Any]) -> None:
+        from gateway.run_drain_queue import deserialize_drain_event
+
+        try:
+            record = message["record"]
+            session_key = str(message.get("session_key") or record.get("session_key") or "")
+            version = record.get(self._hub_version_field)
+            if session_key and version is not None:
+                self._session_versions[session_key] = int(version)
+            session_key, event = deserialize_drain_event(record)
+            event._hub_delivered = True
+            event._hub_handoffs = list(record.get(self._hub_version_handoff_field) or [])
+            # Restart-resume (router-set, owner-change turn only): the gateway
+            # turns this into an ephemeral per-turn system note.
+            if record.get("_hub_generation_changed"):
+                event._hub_generation_restart = {
+                    "previous_generation": str(record.get("_hub_previous_generation") or ""),
+                    "previous_pid": record.get("_hub_previous_pid"),
+                    "generation": self._generation_id,
+                    "pid": os.getpid(),
+                }
+            self._decorate_hub_event(event, record)
+            await self.handle_message(event)
+        except Exception:
+            logger.exception("[%s] Could not admit %s event", self.name, self._hub_label)
+
+    def _decorate_hub_event(self, event: MessageEvent, record: Dict[str, Any]) -> None:
+        """Stamp platform-specific metadata onto a hub-delivered event."""
+
+    def _schedule_ownership_release(self, session_key: str) -> None:
+        version = self._session_versions.get(session_key, 0)
+        task = asyncio.create_task(self._release_ownership(session_key, version))
+        self._release_tasks.add(task)
+        task.add_done_callback(self._release_tasks.discard)
+
+    def _cleanup_finished_session_task(self, session_key: str, interrupt_event) -> None:
+        super()._cleanup_finished_session_task(session_key, interrupt_event)
+        if (
+            session_key not in self._active_sessions
+            and session_key not in self._pending_messages
+            and session_key not in self._session_tasks
+        ):
+            self._schedule_ownership_release(session_key)
+
+    async def cancel_session_processing(self, session_key: str, *, release_guard: bool = True,
+                                        discard_pending: bool = True) -> None:
+        await super().cancel_session_processing(
+            session_key, release_guard=release_guard, discard_pending=discard_pending,
+        )
+        if (
+            session_key not in self._active_sessions
+            and session_key not in self._pending_messages
+            and session_key not in self._session_tasks
+        ):
+            self._schedule_ownership_release(session_key)
+
+    def _heal_stale_session_lock(self, session_key: str) -> bool:
+        healed = super()._heal_stale_session_lock(session_key)
+        if healed:
+            self._schedule_ownership_release(session_key)
+        return healed
+
+    async def _drain_pending_after_session_command(self, session_key: str, command_guard) -> None:
+        await super()._drain_pending_after_session_command(session_key, command_guard)
+        if (
+            session_key not in self._active_sessions
+            and session_key not in self._pending_messages
+            and session_key not in self._session_tasks
+        ):
+            self._schedule_ownership_release(session_key)
+
+    async def _release_ownership(self, session_key: str, version: int) -> None:
+        try:
+            released = await self._call("unregister", {
+                "session_key": session_key,
+                "version": version,
+            })
+            if released and self._session_versions.get(session_key) == version:
+                self._session_versions.pop(session_key, None)
+        except (ConnectionError, RuntimeError) as exc:
+            logger.debug("[%s] %s ownership release failed: %s",
+                         self.name, self._hub_label, exc)
+
+    async def handoff_event(self, event: MessageEvent, session_key: str, *,
+                            target_pid: Optional[int] = None) -> bool:
+        """Return an event to the hub; only an accepted RPC transfers its outcome."""
+        from gateway.run_drain_queue import serialize_drain_event
+
+        try:
+            record = serialize_drain_event(session_key, event)
+            handoffs = list(getattr(event, "_hub_handoffs", None) or [])
+            if handoffs:
+                record[self._hub_version_handoff_field] = handoffs
+            accepted = await self._call("handoff", {
+                "session_key": session_key,
+                "version": self._session_versions.get(session_key, 0),
+                "record": record,
+                "target_pid": target_pid,
+            })
+            if accepted is not True:
+                event._gateway_accepted = False
+                return False
+            event._gateway_accepted = True
+            return True
+        except (ConnectionError, OSError, RuntimeError, ValueError) as exc:
+            event._gateway_accepted = False
+            logger.error("[%s] %s handoff failed for %s: %s",
+                         self.name, self._hub_label, session_key, exc)
+            return False
+
+    async def _handle_message_while_active(self, event: MessageEvent, session_key: str) -> None:
+        runner = self.gateway_runner
+        if runner is not None and getattr(runner, "_draining", False):
+            from gateway.overlap_restart import admits_owned_work, handoff_overlap_event
+
+            if not admits_owned_work(runner, event.source) and await handoff_overlap_event(
+                runner, event, session_key, require_successor_ready=True,
+            ):
+                return
+        await super()._handle_message_while_active(event, session_key)
+
+    def mark_overlap_successor_ready(self) -> None:
+        self._overlap_successor_ready = True
+
+    def mark_overlap_successor_lost(self) -> None:
+        self._overlap_successor_ready = False
+
+    def admits_owned_work_while_draining(self, source: Any = None) -> bool:
+        # The hub has already selected this generation for the event. Once the
+        # successor is attached, new keys go there and only owned follow-ups
+        # arrive here. Before that attach, the ordinary drain gate stays shut.
+        return self._running and self._overlap_successor_ready
+
+    async def wait_for_overlap_successor(self) -> None:
+        timeout = float(self.overlap_successor_attach_timeout)
+        deadline = time.monotonic() + timeout
+        while True:
+            status = await self._call("ping")
+            current = status.get("current_generation")
+            if current and current != self._generation_id:
+                self.mark_overlap_successor_ready()
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"{self._hub_label} successor did not attach within {timeout:g} seconds")
+            await asyncio.sleep(min(_OVERLAP_SUCCESSOR_ATTACH_POLL_SECONDS, remaining))
+
+    def set_restart_request_handler(self, handler) -> None:
+        """Wire the runner's forwarded-restart entry (gateway/run.py)."""
+        self._restart_request_handler = handler
+
+    async def forward_restart_to_newest(self, *, restart_hub: bool = False,
+                                        requester: Optional[dict] = None,
+                                        timeout: float = 30.0) -> Optional[dict]:
+        """Ask the hub to deliver a restart request to the newest generation.
+
+        The hub routes the control to the router's current (newest attached)
+        generation; that generation runs its own restart queue and spawns its
+        own successor. ``requester`` is the ``/restart`` notify payload so the
+        target persists the comeback routing for its own successor. None when
+        the hub cannot forward (no newer generation attached, control timed
+        out) — the caller then falls back to its own restart decision.
+        """
+        params: Dict[str, Any] = {"restart_hub": bool(restart_hub)}
+        if requester:
+            params["requester"] = requester
+        try:
+            result = await self._call("generation_control", {
+                "method": "restart_request",
+                "params": params,
+                "timeout": timeout,
+            })
+        except Exception as exc:
+            logger.debug("[%s] %s restart forward unavailable: %s",
+                         self.name, self._hub_label, exc)
+            return None
+        return result if isinstance(result, dict) else None
+
+    async def _restart_request_control(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Hub-control entry: a newer-generation restart was forwarded here."""
+        handler = getattr(self, "_restart_request_handler", None)
+        if not callable(handler):
+            raise RuntimeError("gateway restart handler is not wired")
+        requester = params.get("requester")
+        result = await handler(
+            restart_hub=bool(params.get("restart_hub")),
+            requester=requester if isinstance(requester, dict) else None,
+        )
+        return result if isinstance(result, dict) else {"status": "restarting"}
+
+    async def spawn_overlap_successor(
+        self, *, via_service: bool = False, predecessor_pid: Optional[int] = None
+    ) -> Optional[int]:
+        self._last_overlap_successor_pid = None
+        self._last_overlap_successor_start_time = None
+        self._last_overlap_successor_service_managed = False
+        predecessor = predecessor_pid or os.getpid()
+        home = str(get_hermes_home())
+        systemd_managed = bool(os.environ.get("INVOCATION_ID"))
+        if systemd_managed:
+            # The predecessor must spawn inside the gateway unit so MAINPID can
+            # move to this exact child, regardless of the caller's request flag.
+            from plugins.platforms.discord.overlap_spawn import spawn_gateway_successor
+
+            process = await asyncio.to_thread(
+                spawn_gateway_successor,
+                home=home, predecessor_pid=predecessor, preserve_supervisor=True,
+            )
+            pid = int(process.pid)
+        elif via_service:
+            # Other supervisors retain drain-then-relaunch; a hub child would
+            # belong to the hub's cgroup rather than the gateway supervisor.
+            return None
+        else:
+            result = await self._call("spawn_gateway", {
+                "hermes_home": home,
+                "predecessor_pid": predecessor,
+            })
+            pid = int(result["pid"])
+
+        # Latch the child before any fallible hub registration or readiness
+        # wait. The runner reads these fields even if a later step raises.
+        from gateway.status import get_process_start_time
+
+        self._last_overlap_successor_pid = pid
+        self._last_overlap_successor_start_time = get_process_start_time(pid)
+        self._last_overlap_successor_service_managed = systemd_managed
+        if systemd_managed:
+            await self._call("register_spawned_gateway", {
+                "pid": pid, "hermes_home": home, "predecessor_pid": predecessor,
+            })
+        await self.wait_for_overlap_successor()
+        return pid
+
+
+class DiscordHubClientAdapter(HubOverlapClientMixin, BasePlatformAdapter):
+    """Attach to Discord's shared hub; never open a token websocket locally."""
+
+    MAX_MESSAGE_LENGTH = 2000
+    _SPLIT_THRESHOLD = 1900
+    MAX_SPLIT_MESSAGES = 8
+    supports_code_blocks = True
+    splits_long_messages = True
+    _delegation_typing_enabled = True
+
+    def __init__(self, config: PlatformConfig):
+        super().__init__(config, Platform.DISCORD)
+        self._reader: Optional[asyncio.StreamReader] = None
+        self._writer: Optional[asyncio.StreamWriter] = None
+        self._read_task: Optional[asyncio.Task] = None
+        self._requests: Dict[str, asyncio.Future] = {}
+        self._write_lock = asyncio.Lock()
+        self._generation_id = f"{os.getpid()}-{uuid.uuid4().hex}"
+        self._socket_path = default_socket_path()
+        self._token_key = ""
+        self.hub_pid: Optional[int] = None
+        self._release_tasks: set[asyncio.Task] = set()
+        self._inbound_tasks: set[asyncio.Task] = set()
+        self._overlap_successor_ready = False
+        self._session_versions: Dict[str, int] = {}
+        self._picker_callbacks: Dict[str, Any] = {}
+
+    def format_message(self, content: str) -> str:
+        from gateway.platforms.helpers import convert_table_to_bullets
+        return convert_table_to_bullets(content) if content else content
+
+    async def _open_socket(self) -> None:
+        try:
+            self._reader, self._writer = await asyncio.open_unix_connection(
+                str(self._socket_path), limit=_HUB_STREAM_LIMIT
+            )
+        except (FileNotFoundError, ConnectionRefusedError, OSError):
+            if not await self._start_hub():
+                raise
+            self._reader, self._writer = await asyncio.open_unix_connection(
+                str(self._socket_path), limit=_HUB_STREAM_LIMIT
+            )
+
+    async def _start_hub(self) -> bool:
+        """Start the installation hub when no service manager has done so.
+
+        Test isolation forbids detached processes just as it does for gateway
+        restart helpers.  Startup failure is returned to the gateway; there is
+        deliberately no in-process Discord fallback.
+        """
+        from gateway.restart import detached_restart_spawn_blocked
+
+        if detached_restart_spawn_blocked():
+            logger.error("Discord hub is unavailable and test isolation forbids detached startup")
+            return False
+        if os.environ.get("INVOCATION_ID"):
+            logger.error("Discord hub is unavailable; start hermes-discord-hub.service")
+            return False
+        project_root = Path(__file__).resolve().parents[3]
+        from tools.environments.local import served_profile_child_env
+
+        env = served_profile_child_env(target_home=get_default_hermes_root())
+        env["PYTHONPATH"] = str(project_root) + (
+            os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        for marker in ("_HERMES_GATEWAY", "HERMES_GATEWAY", "HERMES_GATEWAY_MODE"):
+            env.pop(marker, None)
+        kwargs: Dict[str, Any] = {
+            "cwd": str(project_root), "env": env,
+            "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if os.name == "nt":
+            return False
+        kwargs["start_new_session"] = True
+        try:
+            await asyncio.to_thread(
+                subprocess.Popen,
+                [sys.executable, "-m", "plugins.platforms.discord.hub"], **kwargs)
+        except OSError:
+            logger.exception("Could not start Discord hub")
+            return False
+        for _ in range(50):
+            if self._socket_path.exists():
+                try:
+                    reader, writer = await asyncio.open_unix_connection(str(self._socket_path))
+                except OSError:
+                    pass
+                else:
+                    writer.close()
+                    await writer.wait_closed()
+                    return True
+            await asyncio.sleep(0.1)
+        logger.error("Discord hub did not create %s", self._socket_path)
+        return False
+
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        self._overlap_successor_ready = False
+        try:
+            await self._open_socket()
+            self._read_task = asyncio.create_task(self._read_loop())
+            from hermes_cli.config_effective import load_user_config_effective
+            from gateway.platforms._shared import platform_gate_env
+            from gateway.overlap_restart import overlap_attachment
+            profile_routes = (load_user_config_effective().get("gateway") or {}).get("profile_routes") or []
+            # connect() runs inside the owning profile's runtime scope, so this is
+            # the one place THIS profile's judge key can be resolved. The hub-side
+            # adapter has no profile scope (and must not trust the hub process's
+            # env), so the resolved value travels in the attach payload — over the
+            # same-user socket only, never logged or persisted.
+            gate_credential = platform_gate_env("LITELLM_API_KEY") or None
+            result = await self._call("attach", {
+                "generation_id": self._generation_id,
+                "profile": self._owner_profile or "default",
+                "profile_routes": profile_routes,
+                "config": self.config.to_dict(),
+                "gate_credential": gate_credential,
+                **overlap_attachment(),
+            })
+            self.hub_pid = int(result["pid"])
+            self._token_key = str(result.get("token_key") or "")
+            # A buffered ACK can be followed by EOF before this task resumes. In
+            # that case the read loop saw _running=False and deliberately sent no
+            # runtime-fatal notification; never mark its dead socket connected.
+            if self._read_task is None or self._read_task.done():
+                raise ConnectionError("Discord hub connection closed during attach")
+            self._mark_connected()
+            logger.info(
+                "[%s] Attached generation %s to Discord hub pid %s",
+                self.name, self._generation_id, self.hub_pid,
+            )
+            return True
+        except Exception as exc:
+            self._set_fatal_error(
+                "discord_hub_unavailable",
+                f"Discord hub unavailable at {self._socket_path}: {exc}",
+                retryable=True,
+            )
+            logger.error("[%s] Discord hub attach failed: %s", self.name, exc)
+            await self._close_socket()
+            return False
+
+    async def disconnect(self) -> None:
+        self._running = False
+        self._overlap_successor_ready = False
+        if self._release_tasks:
+            await asyncio.gather(*list(self._release_tasks), return_exceptions=True)
+        await self._close_socket()
+        logger.info("[%s] Detached from Discord hub", self.name)
+
+    async def _close_socket(self) -> None:
+        task, self._read_task = self._read_task, None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        writer, self._writer = self._writer, None
+        self._reader = None
+        if writer is not None:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+        for future in self._requests.values():
+            if not future.done():
+                future.set_exception(ConnectionError("Discord hub connection closed"))
+        self._requests.clear()
+
+    async def _call(self, method: str, params: Optional[Dict[str, Any]] = None) -> Any:
+        if self._writer is None:
+            raise ConnectionError("Discord hub is not attached")
+        request_id = uuid.uuid4().hex
+        future = asyncio.get_running_loop().create_future()
+        self._requests[request_id] = future
+        payload = {"id": request_id, "method": method, "params": params or {}}
+        try:
+            async with self._write_lock:
+                self._writer.write((json.dumps(payload, separators=(",", ":")) + "\n").encode())
+                await self._writer.drain()
+            return await future
+        finally:
+            self._requests.pop(request_id, None)
+
+    async def _read_loop(self) -> None:
+        try:
+            while self._reader is not None:
+                line = await self._reader.readline()
+                if not line:
+                    break
+                message = json.loads(line)
+                request_id = message.get("id")
+                if request_id in self._requests:
+                    future = self._requests[request_id]
+                    if not future.done():
+                        if message.get("error"):
+                            future.set_exception(RuntimeError(message["error"]))
+                        else:
+                            future.set_result(message.get("result"))
+                elif message.get("type") == "event":
+                    task = asyncio.create_task(self._receive_event(message))
+                    self._inbound_tasks.add(task)
+                    task.add_done_callback(self._inbound_tasks.discard)
+                elif message.get("type") == "control":
+                    task = asyncio.create_task(self._receive_control(message))
+                    self._inbound_tasks.add(task)
+                    task.add_done_callback(self._inbound_tasks.discard)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if self._running:
+                logger.error("[%s] Discord hub receive loop failed: %s", self.name, exc)
+        finally:
+            unexpected = self._running
+            self._running = False
+            self._overlap_successor_ready = False
+            self._picker_callbacks.clear()
+            if unexpected:
+                self._set_fatal_error(
+                    "discord_hub_disconnected", "Discord hub connection closed", retryable=True)
+                try:
+                    await self._notify_fatal_error()
+                except Exception:
+                    logger.exception("[%s] Could not report Discord hub disconnect", self.name)
+
+    async def handle_message(self, event: MessageEvent) -> None:
+        """Claim locally-started turns through the same hub routing path as inbound events."""
+        if getattr(event, "_hub_delivered", False) is True:
+            await super().handle_message(event)
+            return
+        from gateway.run_drain_queue import serialize_drain_event
+
+        event._gateway_accepted = False
+        try:
+            session_key = self._event_session_key(event)
+            registration = await self._call("register", {"session_key": session_key})
+            if not isinstance(registration, dict):
+                return
+            owner = registration.get("owner")
+            if owner != self._generation_id:
+                # A replay's completion callback is process-local. Decline it so
+                # its durable owner retains the claim instead of acknowledging a
+                # deserialized remote copy that could never settle the original.
+                if owner and not callable(getattr(event, "_gateway_replay_completion", None)):
+                    record = serialize_drain_event(session_key, event)
+                    generation = await self._call("route", {
+                        "session_key": session_key,
+                        "record": record,
+                    })
+                    event._gateway_accepted = generation is not None
+                return
+            version = registration.get("version")
+            if version is None:
+                return
+            self._session_versions[session_key] = int(version)
+            await super().handle_message(event)
+            if (
+                not event._gateway_accepted
+                and session_key not in self._active_sessions
+                and session_key not in self._pending_messages
+                and session_key not in self._session_tasks
+            ):
+                await self._release_ownership(session_key, int(version))
+        except (ConnectionError, OSError, RuntimeError, ValueError) as exc:
+            logger.error(
+                "[%s] Could not route locally-started Discord turn: %s",
+                self.name, exc,
+            )
+
+    def _decorate_hub_event(self, event: MessageEvent, record: Dict[str, Any]) -> None:
+        event.raw_message = {
+            "discord_hub_message_id": event.message_id,
+            "discord_hub_token": self._token_key,
+        }
+
+    async def _receive_control(self, message: Dict[str, Any]) -> None:
+        try:
+            method = message.get("method")
+            params = message.get("params") or {}
+            if method == "restart_request":
+                result = await self._restart_request_control(params)
+            elif method == "invoke_picker_callback":
+                picker_id = str(params.get("picker_id") or "")
+                callback = self._picker_callbacks.pop(picker_id, None)
+                if not callable(callback):
+                    raise RuntimeError("Discord picker is no longer available")
+                result = callback(*(params.get("args") or []))
+                if inspect.isawaitable(result):
+                    result = await result
+            else:
+                raise ValueError("unknown Discord hub control method")
+            response = {"type": "control_result", "id": message.get("id"), "result": result}
+        except Exception as exc:
+            response = {"type": "control_result", "id": message.get("id"), "error": str(exc)}
+        if self._writer is not None:
+            async with self._write_lock:
+                self._writer.write((json.dumps(response, separators=(",", ":")) + "\n").encode())
+                await self._writer.drain()
+
+
+    async def _rpc(self, method: str, *args: Any, **kwargs: Any) -> Any:
+        return await self._call("rpc", {
+            "token_key": self._token_key,
+            "method": method, "args": list(args), "kwargs": kwargs,
+        })
+
+    @staticmethod
+    def _value(data: Any) -> Any:
+        return data.get("value") if isinstance(data, dict) and set(data) == {"value"} else data
+
+    def _sync_rpc(self, method: str, *args: Any, platform: str = "discord", **kwargs: Any) -> Any:
+        """Answer a synchronous adapter query without driving the attached event loop reentrantly."""
+        payload = {
+            "id": uuid.uuid4().hex,
+            "method": "sync_rpc",
+            "params": {
+                "token_key": self._token_key,
+                "method": method,
+                "platform": platform,
+                "args": list(args),
+                "kwargs": kwargs,
+            },
+        }
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(5.0)
+            connection.connect(str(self._socket_path))
+            connection.sendall((json.dumps(payload, separators=(",", ":")) + "\n").encode())
+            with connection.makefile("rb") as reader:
+                line = reader.readline()
+        if not line:
+            raise ConnectionError("Discord hub closed the synchronous RPC connection")
+        response = json.loads(line)
+        if response.get("error"):
+            raise RuntimeError(response["error"])
+        return response.get("result")
+
+    def get_bot_display_name(self, *, chat_id: Optional[str] = None,
+                             guild_id: Optional[str] = None) -> Optional[str]:
+        try:
+            return self._value(self._sync_rpc(
+                "get_bot_display_name", chat_id=chat_id, guild_id=guild_id))
+        except Exception:
+            # BasePlatformAdapter's identity contract is deliberately non-raising.
+            return None
+
+    def resolved_allowlist_user_ids(self) -> set:
+        return set(self._value(self._sync_rpc("resolved_allowlist_user_ids")) or ())
+
+    def prefers_fresh_final_streaming(self, content: str,
+                                      metadata: Optional[Dict[str, Any]] = None) -> bool:
+        return bool(self._value(self._sync_rpc(
+            "prefers_fresh_final_streaming", content, metadata=metadata)))
+
+    def format_tool_preview(self, preview) -> str:
+        value = self._value(self._sync_rpc("format_tool_preview", {
+            "text": preview.text, "truncated": preview.truncated, "url": preview.url,
+        }))
+        return str(value) if value is not None else ""
+
+    def claim_startup_resume_inbound(self, message_id: str, source) -> None:
+        source_data = source.to_dict() if hasattr(source, "to_dict") else source
+        self._sync_rpc("claim_startup_resume_inbound", str(message_id), source_data)
+
+    @staticmethod
+    def _send_result(data: Dict[str, Any]) -> SendResult:
+        values = dict(data)
+        if "continuation_message_ids" in values:
+            values["continuation_message_ids"] = tuple(values["continuation_message_ids"] or ())
+        return SendResult(**values)
+
+    async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
+                   metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        try:
+            return self._send_result(await self._rpc(
+                "send", chat_id, content, reply_to=reply_to, metadata=metadata))
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc), retryable=True)
+
+    async def edit_message(self, chat_id: str, message_id: str, content: str, *,
+                           finalize: bool = False, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        try:
+            return self._send_result(await self._rpc(
+                "edit_message", chat_id, message_id, content, finalize=finalize, metadata=metadata))
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc), retryable=True)
+
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        return bool(self._value(await self._rpc("delete_message", chat_id, message_id)))
+
+    async def send_typing(self, chat_id: str, metadata: Optional[dict] = None) -> None:
+        await self._rpc("send_typing", chat_id, metadata=metadata)
+
+    async def stop_typing(self, chat_id: str) -> None:
+        await self._rpc("stop_typing", chat_id)
+
+    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+        return dict(await self._rpc("get_chat_info", chat_id))
+
+    async def rename_thread(self, thread_id: str, name: str, *,
+                            only_if_current_name: Optional[str] = None) -> bool:
+        return bool(self._value(await self._rpc(
+            "rename_thread", thread_id, name, only_if_current_name=only_if_current_name)))
+
+    async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
+        return self._value(await self._rpc("create_handoff_thread", parent_chat_id, name))
+
+    async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
+                           session_key: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        return self._send_result(await self._rpc(
+            "send_clarify", chat_id, question, choices, clarify_id, session_key, metadata=metadata))
+
+    async def send_tool_stage_embed(self, chat_id: str, stage: Dict[str, Any],
+                                    metadata: Optional[Dict[str, Any]] = None,
+                                    reply_to: Optional[str] = None) -> SendResult:
+        return self._send_result(await self._rpc(
+            "send_tool_stage_embed", chat_id, stage, metadata=metadata, reply_to=reply_to))
+
+    async def edit_tool_stage_embed(self, chat_id: str, message_id: str, stage: Dict[str, Any],
+                                    metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        return self._send_result(await self._rpc(
+            "edit_tool_stage_embed", chat_id, message_id, stage, metadata=metadata))
+
+    async def send_slash_confirm(self, chat_id: str, title: str, message: str, session_key: str,
+                                 confirm_id: str, metadata: Optional[dict] = None,
+                                 include_always: bool = True) -> SendResult:
+        return self._send_result(await self._rpc(
+            "send_slash_confirm", chat_id, title, message, session_key, confirm_id,
+            metadata=metadata, include_always=include_always))
+
+    async def send_update_prompt(self, chat_id: str, prompt: str, default: str = "", session_key: str = "",
+                                 metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        return self._send_result(await self._rpc(
+            "send_update_prompt", chat_id, prompt, default=default,
+            session_key=session_key, metadata=metadata))
+
+    async def refresh_skill_group(self) -> tuple[int, int]:
+        return tuple(self._value(await self._rpc("refresh_skill_group")) or (0, 0))
+
+    async def cancel_background_tasks(self) -> None:
+        await self._rpc("cancel_background_tasks")
+
+    async def _send_picker(self, method: str, callback_keyword: str, callback,
+                           *args: Any, **kwargs: Any) -> SendResult:
+        picker_id = uuid.uuid4().hex
+        self._picker_callbacks[picker_id] = callback
+        kwargs[callback_keyword] = {"picker_id": picker_id}
+        try:
+            result = self._send_result(await self._rpc(method, *args, **kwargs))
+        except Exception:
+            self._picker_callbacks.pop(picker_id, None)
+            raise
+        if not result.success:
+            self._picker_callbacks.pop(picker_id, None)
+        return result
+
+    async def send_model_picker(self, chat_id: str, providers: list, current_model: str,
+                                current_provider: str, session_key: str, on_model_selected,
+                                metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        return await self._send_picker(
+            "send_model_picker", "on_model_selected", on_model_selected,
+            chat_id, providers, current_model, current_provider, session_key, metadata=metadata)
+
+    async def send_choice_picker(self, chat_id: str, title: str, choices: list, session_key: str,
+                                 on_choice_selected, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        return await self._send_picker(
+            "send_choice_picker", "on_choice_selected", on_choice_selected,
+            chat_id, title, choices, session_key, metadata=metadata)
+
+    def create_vault_save_login_binding(
+        self,
+        *,
+        source,
+        identity,
+        session_key: str,
+        loop,
+        chat_id=None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        """Create the save-login binding that relays the modal over the hub RPC lane.
+
+        Same owner contract as ``DiscordAdapter.create_vault_save_login_binding``
+        (the live turn's source/session), but the button/modal transport runs in
+        the hub process — see ``hub_vault_prompts``.
+        """
+        if (
+            loop is None
+            or not source.user_id
+            or not source.chat_id
+            or not session_key
+            or self._source_session_key(source) != session_key
+        ):
+            return None
+        from plugins.platforms.discord.hub_vault_prompts import DiscordHubVaultPromptBinding
+
+        return DiscordHubVaultPromptBinding(
+            self,
+            source=source,
+            identity=identity,
+            session_key=session_key,
+            loop=loop,
+            chat_id=chat_id,
+            metadata=metadata,
+        )
+
+    async def send_multiple_images(self, chat_id: str, images: list, metadata: Optional[dict] = None,
+                                   reply_to: Optional[str] = None) -> SendResult:
+        return self._send_result(await self._rpc(
+            "send_multiple_images", chat_id, images,
+            metadata=metadata, reply_to=reply_to))
+
+    async def send_image_file(self, chat_id: str, image_path: str, caption: Optional[str] = None,
+                              reply_to: Optional[str] = None, metadata: Optional[dict] = None) -> SendResult:
+        return self._send_result(await self._rpc(
+            "send_image_file", chat_id, image_path, caption=caption, reply_to=reply_to, metadata=metadata))
+
+    async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None,
+                         reply_to: Optional[str] = None, metadata: Optional[dict] = None) -> SendResult:
+        return self._send_result(await self._rpc(
+            "send_image", chat_id, image_url, caption=caption, reply_to=reply_to, metadata=metadata))
+
+    async def send_animation(self, chat_id: str, animation_url: str, caption: Optional[str] = None,
+                             reply_to: Optional[str] = None, metadata: Optional[dict] = None) -> SendResult:
+        return self._send_result(await self._rpc(
+            "send_animation", chat_id, animation_url, caption=caption, reply_to=reply_to, metadata=metadata))
+
+    async def send_video(self, chat_id: str, video_path: str, caption: Optional[str] = None,
+                         reply_to: Optional[str] = None, metadata: Optional[dict] = None) -> SendResult:
+        return self._send_result(await self._rpc(
+            "send_video", chat_id, video_path, caption=caption, reply_to=reply_to, metadata=metadata))
+
+    async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None,
+                            file_name: Optional[str] = None, reply_to: Optional[str] = None,
+                            metadata: Optional[dict] = None) -> SendResult:
+        return self._send_result(await self._rpc(
+            "send_document", chat_id, file_path, caption=caption, file_name=file_name,
+            reply_to=reply_to, metadata=metadata))
+
+    def _reactions_enabled(self) -> bool:
+        value = self.config.extra.get("reactions", True)
+        return value is not False and str(value).strip().lower() not in {"0", "false", "off", "no"}
+
+    def _hub_reaction_message_id(self, message: Any) -> Optional[str]:
+        # raw_message is the hub dict set in _receive_drain_event; bare ids are
+        # accepted for callers that only carry event.message_id.
+        if isinstance(message, dict):
+            return str(message.get("discord_hub_message_id") or "") or None
+        return str(message) if message else None
+
+    async def _add_reaction(self, message: Any, emoji: str) -> bool:
+        # Receipt lane for busy-steer ⏩ (gateway/run_busy.py). A failed reaction
+        # must never unwind a delivered steer — the caller runs inside receipt
+        # paths that must not raise.
+        message_id = self._hub_reaction_message_id(message)
+        if not message_id:
+            return False
+        # The hub resolves the raw discord.py message from its _raw_messages LRU
+        # (capped at 4096, oldest evicted). A steer reacts to a message that
+        # arrived seconds earlier, so the id is present in practice.
+        try:
+            await self._call("rpc", {
+                "token_key": self._token_key, "method": "add_reaction",
+                "message_id": message_id, "emoji": emoji,
+            })
+            return True
+        except Exception:
+            logger.debug("[%s] add_reaction rpc failed for %s", self.name, message_id, exc_info=True)
+            return False
+
+    async def _remove_reaction(self, message: Any, emoji: str) -> bool:
+        message_id = self._hub_reaction_message_id(message)
+        if not message_id:
+            return False
+        try:
+            await self._call("rpc", {
+                "token_key": self._token_key, "method": "remove_reaction",
+                "message_id": message_id, "emoji": emoji,
+            })
+            return True
+        except Exception:
+            logger.debug("[%s] remove_reaction rpc failed for %s", self.name, message_id, exc_info=True)
+            return False
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        if self._reactions_enabled() and event.message_id:
+            with contextlib.suppress(Exception):
+                await self._call("rpc", {
+                    "token_key": self._token_key, "method": "add_reaction",
+                    "message_id": event.message_id, "emoji": "👀",
+                })
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        from gateway.run_drain_queue import serialize_drain_event
+
+        with contextlib.suppress(Exception):
+            record = serialize_drain_event(self._event_session_key(event), event)
+            record["_gateway_replay_message_ids"] = list(
+                getattr(event, "_gateway_replay_message_ids", ())
+            )
+            record["_drain_snapshot_owned"] = getattr(event, "_drain_snapshot_owned", False); record["_gateway_processing_deferred"] = bool(
+                getattr(event, "_gateway_processing_deferred", False)
+            )
+            await self._rpc("on_processing_complete", record, outcome.value)

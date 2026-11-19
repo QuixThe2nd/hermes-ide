@@ -166,6 +166,7 @@ class TestMemoryCardEmission:
             "content": "MEMORY-BLOCK\n\nPROFILE-BLOCK",
             "injected_chars": len("MEMORY-BLOCK\n\nPROFILE-BLOCK"),
             "sources": ["memory"],
+            "recalled_count": None,
         }
 
     def test_second_turn_with_unchanged_blocks_emits_nothing(self):
@@ -197,6 +198,7 @@ class TestMemoryCardEmission:
             "content": "MEMORY-BLOCK\n\nEDITED-BLOCK",
             "injected_chars": len("MEMORY-BLOCK\n\nEDITED-BLOCK"),
             "sources": ["memory"],
+            "recalled_count": None,
         }
 
     # ── Cross-instance gating (api_server builds a fresh agent per turn) ──
@@ -372,6 +374,7 @@ class TestMemoryCardEmission:
             "content": "MEMORY-BLOCK",
             "injected_chars": len("MEMORY-BLOCK"),
             "sources": ["memory"],
+            "recalled_count": None,
         }
         diff_args, _kwargs = agent.tool_progress_events[1]
         assert diff_args[:3] == ("context.injected", "context", None)
@@ -379,6 +382,7 @@ class TestMemoryCardEmission:
             "content": "\n\nPLUGIN-CTX",
             "injected_chars": len("\n\nPLUGIN-CTX"),
             "sources": ["plugin"],
+            "kinds": ["plugin"],
         }
 
         # Second turn: memory unchanged (silent), the per-turn diff card fires
@@ -394,6 +398,7 @@ class TestMemoryCardEmission:
             "content": "\n\nPLUGIN-CTX",
             "injected_chars": len("\n\nPLUGIN-CTX"),
             "sources": ["plugin"],
+            "kinds": ["plugin"],
         }
 
 
@@ -431,7 +436,6 @@ def _make_prompt_agent(**overrides):
         _task_completion_guidance=False,
         _tool_use_enforcement=False,
         _environment_probe=False,
-        _kanban_worker_guidance="",
         _memory_store=None,
         _memory_manager=None,
         model="",

@@ -1,5 +1,6 @@
 import asyncio
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -55,48 +56,19 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
     expected = t("gateway.draining", count=1)
     assert result == expected
     # Guard against the silent-degradation regression in #22266: if the i18n
-    # catalog cannot be resolved (e.g. xdist workers losing the locales path)
+    # catalog cannot be resolved (e.g. workers losing the locales path)
     # then ``t("gateway.draining", count=1)`` returns the bare key
     # ``"gateway.draining"`` instead of the formatted English string, and both
     # sides of the equality above would still match. Assert on the catalog
     # output explicitly so a broken locale resolution fails loudly here.
     assert expected != "gateway.draining"
-    assert "Asking" in expected and "1" in expected
+    # The reply is terse — the old "Asking N active agent(s) to park" wording
+    # is gone (overlap restart keeps sessions alive across the bounce).
+    assert expected == "♻ Restarting gateway..."
     running_agent.interrupt.assert_not_called()
-    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
-
-
-def test_load_busy_text_mode_follows_input_mode_and_honors_legacy(tmp_path, monkeypatch):
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.delenv("HERMES_GATEWAY_BUSY_TEXT_MODE", raising=False)
-    monkeypatch.delenv("HERMES_GATEWAY_BUSY_INPUT_MODE", raising=False)
-
-    # No knobs set → follows busy_input_mode, which defaults to interrupt.
-    assert gateway_run.GatewayRunner._load_busy_text_mode() == "interrupt"
-
-    # busy_input_mode=queue propagates to text handling (single source of truth).
-    (tmp_path / "config.yaml").write_text(
-        "display:\n  busy_input_mode: queue\n", encoding="utf-8"
+    runner.request_restart.assert_called_once_with(
+        detached=True, via_service=False
     )
-    assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
-
-    # Legacy explicit busy_text_mode still wins for backward compat.
-    (tmp_path / "config.yaml").write_text(
-        "display:\n  busy_input_mode: interrupt\n  busy_text_mode: queue\n",
-        encoding="utf-8",
-    )
-    assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
-
-    # Legacy env override wins too.
-    (tmp_path / "config.yaml").write_text(
-        "display:\n  busy_input_mode: interrupt\n", encoding="utf-8"
-    )
-    monkeypatch.setenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "queue")
-    assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
-
-    # Bogus legacy value is ignored → falls through to busy_input_mode (interrupt).
-    monkeypatch.setenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "bogus")
-    assert gateway_run.GatewayRunner._load_busy_text_mode() == "interrupt"
 
 
 def test_load_signal_interrupt_grace_timeout_from_typed_config(
@@ -170,13 +142,54 @@ async def test_request_restart_is_idempotent():
 
 
 @pytest.mark.asyncio
+async def test_sigterm_during_pending_restart_drain_does_not_start_competing_stop(
+    monkeypatch,
+):
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+    runner._restart_task_started = True
+    runner._restart_requested = True
+    runner._draining = True
+    runner._restart_drain_timeout = 0.0
+    restart_task = asyncio.create_task(asyncio.Event().wait())
+    runner._restart_task = restart_task
+    monkeypatch.setattr(gateway_run, "_best_effort", lambda *a, **k: None)
+    handler = gateway_run._start_gateway_make_shutdown_signal_handler(runner, [False])
+
+    try:
+        handler(signal.SIGTERM)
+        await asyncio.sleep(0)
+
+        runner.stop.assert_not_called()
+        assert not restart_task.done()
+    finally:
+        restart_task.cancel()
+        await asyncio.gather(restart_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_sigterm_without_pending_restart_still_starts_stop(monkeypatch):
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+    runner._restart_task_started = False
+    runner._restart_task = None
+    monkeypatch.setattr(gateway_run, "_best_effort", lambda *a, **k: None)
+    handler = gateway_run._start_gateway_make_shutdown_signal_handler(runner, [False])
+
+    handler(signal.SIGTERM)
+    await asyncio.sleep(0)
+
+    runner.stop.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
 async def test_request_restart_defers_stop_until_active_turn_finishes():
     """Regression for #77184: requesting turn must not enter the drain set."""
     runner, _adapter = make_restart_runner()
     runner.stop = AsyncMock()
     runner._launch_detached_restart_watcher = AsyncMock()
     runner._restart_after_turn_timeout = 5.0
-    session_key = "agent:main:telegram:dm:123"
+    session_key = "agent:main:discord:dm:123"
     runner._running_agents[session_key] = MagicMock()
 
     assert runner.request_restart(detached=False, via_service=True) is True
@@ -207,7 +220,7 @@ async def test_request_restart_after_turn_timeout_zero_still_waits_for_active_wo
     runner, _adapter = make_restart_runner()
     runner.stop = AsyncMock()
     runner._restart_after_turn_timeout = 0.0
-    key = "agent:main:telegram:dm:1"
+    key = "agent:main:discord:dm:1"
     runner._running_agents[key] = MagicMock()
 
     assert runner.request_restart(detached=False, via_service=True) is True
@@ -230,7 +243,7 @@ async def test_request_restart_cap_elapsed_never_calls_stop_with_active_work():
     runner, _adapter = make_restart_runner()
     runner.stop = AsyncMock()
     runner._restart_after_turn_timeout = 0.2
-    key = "agent:main:telegram:dm:1"
+    key = "agent:main:discord:dm:1"
     runner._running_agents[key] = MagicMock()
 
     assert runner.request_restart(detached=False, via_service=True) is True
@@ -253,7 +266,7 @@ async def test_request_restart_wait_cancelled_never_calls_stop():
     """Cancellation of the restart wait must not fall through into stop()."""
     runner, _adapter = make_restart_runner()
     runner.stop = AsyncMock()
-    runner._running_agents["agent:main:telegram:dm:1"] = MagicMock()
+    runner._running_agents["agent:main:discord:dm:1"] = MagicMock()
 
     assert runner.request_restart(detached=False, via_service=True) is True
     await asyncio.sleep(0.15)  # the wait is now inside its poll loop
@@ -269,7 +282,7 @@ async def test_request_restart_wait_exception_never_calls_stop(monkeypatch):
     monkeypatch.setattr(gateway_run, "_RESTART_WAIT_RETRY_SLEEP_S", 0.01)
     runner, _adapter = make_restart_runner()
     runner.stop = AsyncMock()
-    runner._running_agents["agent:main:telegram:dm:1"] = MagicMock()
+    runner._running_agents["agent:main:discord:dm:1"] = MagicMock()
 
     real_wait = runner._await_active_work_before_restart
 
@@ -309,7 +322,7 @@ async def test_restart_boundary_guard_holds_stop_over_work_returning_mid_wait():
         return True
 
     runner._await_active_work_before_restart = wait_that_claims_drain_over_live_work
-    runner._running_agents["agent:main:telegram:dm:1"] = MagicMock()
+    runner._running_agents["agent:main:discord:dm:1"] = MagicMock()
 
     assert runner.request_restart(detached=False, via_service=True) is True
     await asyncio.sleep(0.2)
@@ -566,7 +579,7 @@ async def test_run_restart_excluded_from_stop_cancel_loop():
     )
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 @pytest.mark.asyncio
 async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_path):
     """Faking sys.platform="win32" on Linux could not reach the real Windows
@@ -619,7 +632,7 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
     assert kwargs["stderr"] is subprocess.DEVNULL
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 @pytest.mark.asyncio
 async def test_windows_detached_restart_watcher_keeps_console_python(monkeypatch, tmp_path):
     """The restart watcher must run sys.executable (console python) under the
@@ -973,15 +986,15 @@ async def test_drain_suppress_skips_notification_channel_keeps_session_ping(tmp_
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    runner, adapter = make_restart_runner()
+    runner, adapter = make_restart_runner(platform=Platform.DISCORD)
     # A notification channel distinct from the active session's chat.
-    runner.config.platforms[Platform.TELEGRAM].notification_channel = DeliveryTarget(
-        platform=Platform.TELEGRAM,
+    runner.config.platforms[Platform.DISCORD].notification_channel = DeliveryTarget(
+        platform=Platform.DISCORD,
         chat_id="restarts-42",
         name="Ops Restarts",
     )
     # One active session in a different chat.
-    runner._running_agents["agent:main:telegram:dm:999"] = MagicMock()
+    runner._running_agents["agent:main:discord:dm:999"] = MagicMock()
 
     # NAS auto-update drain: marker present with suppress_notification=True.
     dc.write_drain_request(principal="nas", suppress_notification=True)
@@ -1056,7 +1069,7 @@ async def test_request_restart_waits_for_live_and_wedged_together(monkeypatch):
     runner, _adapter = make_restart_runner()
     runner.stop = AsyncMock()
     runner._launch_detached_restart_watcher = AsyncMock()
-    live_key = "agent:main:telegram:dm:2"
+    live_key = "agent:main:discord:dm:2"
     wedged_key = "agent:main:whatsapp:dm:1"
     runner._running_agents[wedged_key] = _wedged_agent()
     runner._running_agents[live_key] = _live_agent()
@@ -1082,7 +1095,7 @@ def test_wedged_agent_count_disabled_timeout_counts_nothing(monkeypatch):
     """gateway_timeout=0 (unbounded turns) disables wedge detection."""
     monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "0")
     runner, _adapter = make_restart_runner()
-    runner._running_agents["agent:main:telegram:dm:1"] = _wedged_agent(10**6)
+    runner._running_agents["agent:main:discord:dm:1"] = _wedged_agent(10**6)
     assert runner._wedged_agent_count() == 0
 
 

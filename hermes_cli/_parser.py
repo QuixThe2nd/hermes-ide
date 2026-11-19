@@ -76,13 +76,10 @@ _EPILOGUE = """
 Examples:
     hermes                        Start interactive chat
     hermes chat -q "Hello"        Single query mode
-    hermes --tui                  Launch the modern TUI (or set display.interface: tui)
-    hermes --cli                  Force the classic REPL (overrides display.interface: tui)
     hermes -c                     Resume the most recent session
     hermes -c "my project"        Resume a session by name (latest in lineage)
     hermes --resume <session_id>  Resume a specific session by ID
     hermes --resume latest        Resume the most recent session (same as -c)
-    hermes --tui --resume latest --in ./dir   Resume ./dir's latest session in the TUI
     hermes setup                  Run setup wizard
     hermes logout                 Clear stored authentication
     hermes auth add <provider>    Add a pooled credential
@@ -117,9 +114,6 @@ Examples:
     hermes debug share             Upload debug report for support
     hermes console                Open the safe Hermes command console
     hermes update                 Update to latest version
-    hermes dashboard              Start web UI dashboard (port 9119)
-    hermes dashboard --stop       Stop running dashboard processes
-    hermes dashboard --status     List running dashboard processes
 
 For more help on a command:
     hermes <command> --help
@@ -134,8 +128,7 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
         "One-shot mode: send a single prompt and print ONLY the final "
         "response text to stdout. No banner, no spinner, no tool "
         "previews, no session_id line. Tools, memory, rules, and "
-        "AGENTS.md in the CWD are loaded as normal; approvals are "
-        "auto-bypassed. Intended for scripts / pipes."))
+        "AGENTS.md in the CWD are loaded as normal. Intended for scripts / pipes."))
     add("--usage-file", metavar="PATH", default=None, help=(
         "One-shot mode only: after the run, write a JSON usage report "
         "(estimated cost, token counts, model, api_calls) to PATH. "
@@ -178,22 +171,14 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
         "runs that can't prompt."))
     inherited(parser, "--skills", "-s", action="append", default=None,
               help="Preload one or more skills for the session (repeat flag or comma-separate)")
-    inherited(parser, "--yolo", action="store_true", default=False,
-              help="Bypass all dangerous command approval prompts (use at your own risk)")
     inherited(parser, "--pass-session-id", action="store_true", default=False,
               help="Include the session ID in the agent's system prompt")
     inherited(parser, "--ignore-user-config", action="store_true", default=False,
               help=f"Ignore {_cfg_path()} and fall back to built-in defaults (credentials in .env are still loaded)")
     inherited(parser, "--ignore-rules", action="store_true", default=False,
-              help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills")
+              help="Skip auto-injection of AGENTS.md, SOUL.md, memory, and preloaded skills")
     inherited(parser, "--safe-mode", action="store_true", default=False,
               help="Troubleshooting mode: disable ALL customizations — user config, AGENTS.md/memory injection, plugins, and MCP servers (implies --ignore-user-config and --ignore-rules)")
-    inherited(parser, "--tui", action="store_true", default=False,
-              help="Launch the modern TUI instead of the classic REPL")
-    inherited(parser, "--cli", action="store_true", default=False,
-              help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)")
-    inherited(parser, "--dev", dest="tui_dev", action="store_true", default=False,
-              help="With --tui: run TypeScript sources via tsx (skip dist build)")
 
 
 def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
@@ -276,24 +261,16 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         "budget so one hung call can't consume the run. Unset = off. "
         "Also configurable as agent.run_budget_seconds in config.yaml. "
         "Intended for one-shot/eval invocations with a hard ceiling."))
-    inherited(chat_parser, "--yolo", action="store_true", default=SUPPRESS,
-              help="Bypass all dangerous command approval prompts (use at your own risk)")
     inherited(chat_parser, "--pass-session-id", action="store_true", default=SUPPRESS,
               help="Include the session ID in the agent's system prompt")
     inherited(chat_parser, "--ignore-user-config", action="store_true", default=SUPPRESS,
               help=f"Ignore {_cfg_path()} and fall back to built-in defaults (credentials in .env are still loaded). Useful for isolated CI runs, reproduction, and third-party integrations.")
     inherited(chat_parser, "--ignore-rules", action="store_true", default=SUPPRESS,
-              help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills. Combine with --ignore-user-config for a fully isolated run.")
+              help="Skip auto-injection of AGENTS.md, SOUL.md, memory, and preloaded skills. Combine with --ignore-user-config for a fully isolated run.")
     inherited(chat_parser, "--safe-mode", action="store_true", default=SUPPRESS,
               help="Troubleshooting mode: disable ALL customizations — user config, AGENTS.md/memory injection, plugins, and MCP servers (implies --ignore-user-config and --ignore-rules). Use to isolate whether a problem comes from your setup or from Hermes itself.")
     add("--source", default=None,
         help="Session source tag for filtering (default: cli). Use 'tool' for third-party integrations that should not appear in user session lists.")
-    inherited(chat_parser, "--tui", action="store_true", default=SUPPRESS,
-              help="Launch the modern TUI instead of the classic REPL")
-    inherited(chat_parser, "--cli", action="store_true", default=SUPPRESS,
-              help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)")
-    inherited(chat_parser, "--dev", dest="tui_dev", action="store_true", default=SUPPRESS,
-              help="With --tui: run TypeScript sources via tsx (skip dist build)")
     return chat_parser
 
 

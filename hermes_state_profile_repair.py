@@ -104,24 +104,6 @@ class SessionProfileRepairMixin:
             "SELECT scope, session_key, entry_json, updated_at FROM gateway_routing "
             "ORDER BY scope, session_key")]
 
-    def find_profile_less_telegram_topic_rows(self) -> List[Dict[str, Any]]:
-        """``telegram_dm_topic_bindings`` rows labelled ``default`` whose ``session_key`` names a named
-        profile: written by a multiplexer that had not yet learned to stamp the routed profile
-        (#76423). Stores whose topic tables predate ``profile_name`` have nothing to relabel."""
-        def _read(conn):
-            existing = {row[0] for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name = 'telegram_dm_topic_bindings'")}
-            if not existing or "profile_name" not in _table_columns(conn, "telegram_dm_topic_bindings"):
-                return []
-            return [dict(row) for row in conn.execute(
-                "SELECT chat_id, thread_id, session_key FROM telegram_dm_topic_bindings "
-                "WHERE profile_name = 'default' ORDER BY chat_id, thread_id")]
-        out = []
-        for row in self._read_retrying_ioerr(_read):
-            key_profile = session_key_profile(row["session_key"])
-            if key_profile not in (None, "default"):
-                out.append({**row, "key_profile": key_profile})
-        return out
 
     def count_messages_all(self, session_id: str) -> int:
         row = self._read_one("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,))
@@ -289,49 +271,12 @@ class SessionProfileRepairMixin:
                 "VALUES (?, ?, ?, ?)", row).rowcount for row in wanted)
         return self._execute_write(_do)
 
-    # ── telegram topic tables ─────────────────────────────────────────────────
-
-    def relabel_telegram_topic_rows(self, rows: Iterable[Dict[str, Any]]) -> Dict[str, int]:
-        """Stamp the key's profile onto ``default``-labelled bindings (and the chat's mode row when
-        only the default one exists). A binding that would collide with one the named profile already
-        wrote is the stale duplicate and is removed."""
-        wanted = list(rows)
-        counts = {"bindings_relabelled": 0, "bindings_duplicates_removed": 0, "mode_rows_relabelled": 0}
-        if not wanted:
-            return counts
-
-        def _do(conn) -> Dict[str, int]:
-            mode_has_profile = "profile_name" in _table_columns(conn, "telegram_dm_topic_mode")
-            for row in wanted:
-                target = session_key_profile(row["session_key"])
-                if target in (None, "default"):
-                    continue
-                chat_id, thread_id = row["chat_id"], row["thread_id"]
-                collides = conn.execute(
-                    "SELECT 1 FROM telegram_dm_topic_bindings WHERE profile_name = ? AND chat_id = ? "
-                    "AND thread_id = ?", (target, chat_id, thread_id)).fetchone()
-                if collides:
-                    counts["bindings_duplicates_removed"] += conn.execute(
-                        "DELETE FROM telegram_dm_topic_bindings WHERE profile_name = 'default' "
-                        "AND chat_id = ? AND thread_id = ?", (chat_id, thread_id)).rowcount
-                else:
-                    counts["bindings_relabelled"] += conn.execute(
-                        "UPDATE telegram_dm_topic_bindings SET profile_name = ? WHERE profile_name = 'default' "
-                        "AND chat_id = ? AND thread_id = ?", (target, chat_id, thread_id)).rowcount
-                if mode_has_profile and conn.execute(
-                        "SELECT 1 FROM telegram_dm_topic_mode WHERE profile_name = ? AND chat_id = ?",
-                        (target, chat_id)).fetchone() is None:
-                    counts["mode_rows_relabelled"] += conn.execute(
-                        "UPDATE telegram_dm_topic_mode SET profile_name = ? WHERE profile_name = 'default' "
-                        "AND chat_id = ?", (target, chat_id)).rowcount
-            return counts
-        return self._execute_write(_do)
 
     # ── evidence for JSON-file repairs ────────────────────────────────────────
 
     def key_profiles_for_chat(self, platform: str, chat_id: str) -> Set[str]:
         """Profiles whose keyed sessions hold *(platform, chat_id)* in this store — the evidence for
-        who owns a profile-less ``gateway_voice_mode.json`` entry."""
+        who owns a profile-less JSON-state entry."""
         rows = self._read_all(
             "SELECT DISTINCT session_key FROM sessions WHERE source = ? AND chat_id = ? "
             "AND session_key LIKE 'agent:%'", (platform, str(chat_id)))

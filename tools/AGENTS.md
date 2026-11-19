@@ -1,7 +1,7 @@
 # tools/ + toolsets.py + model_tools.py — model tools
 
 Applies on top of the root `AGENTS.md`: settle the **Footprint Ladder** before adding anything here.
-Most capabilities should NOT be core tools. Long-form: `website/docs/developer-guide/adding-tools.md`,
+Most capabilities should NOT be core tools. Long-form: the adding-tools developer guide,
 `tools-runtime.md`.
 
 ## Registry and discovery
@@ -68,24 +68,24 @@ Rules for tool code:
 
 Single `TOOLSETS` dict. Keys today: `browser, clarify, code_execution, cronjob, debugging,
 delegation, discord, discord_admin, feishu_doc, feishu_drive, file, homeassistant, image_gen,
-kanban, memory, messaging, moa, rl, safe, search, session_search, skills, spotify, terminal, todo,
-tts, video, vision, web, yuanbao` (don't assert the list in tests). Per-platform enable/disable via
-`hermes tools` (curses) or `tools.<platform>.enabled/disabled` in config.yaml. `browser_exec`
-replaces the other browser tools when `browser.backend` is `browser-use`.
+memory, messaging, moa, rl, safe, search, session_search, skills, spotify, terminal, todo,
+video, vision, web, yuanbao` (don't assert the list in tests). Per-platform enable/disable via
+`hermes tools` (curses) or `tools.<platform>.enabled/disabled` in config.yaml. Browser tools always use
+Camofox; set `CAMOFOX_URL` and optionally `CAMOFOX_API_KEY` to connect.
 
 ## Backends and providers inside tools/
 
 Several tools front pluggable backends: terminal environments in `tools/environments/` (local,
-docker, ssh, modal, daytona, singularity; `terminal_tool_backends.py`, `tool_backend_helpers.py`),
-browser (`browser_tool_*.py`: cdp, cloud, install, lifecycle, session, real_profile, vision), MCP
-client (`mcp_tool_*.py`: config, discovery, transport, registration, content, errors), TTS
-(`tts_tool_providers.py`, `tts_command_provider.py`), skills hub sources (`skills_hub_official.py`
+ssh; `terminal_tool_backends.py`, plugin providers via `agent/terminal_env_registry.py`),
+Camofox browser support (`browser_tool.py`, `browser_camofox.py`, lifecycle/snapshot/policy siblings),
+MCP client (`mcp_tool_*.py`: config, discovery, transport, registration, content, errors),
+skills hub sources (`skills_hub_official.py`
 `OptionalSkillSource`). Adding a backend = a new sibling or provider entry in the existing table,
 never an `elif` on a backend name (root shape rules). Remote-backend file visibility problems are
 fixed at the mount, not by adding a tool.
 
 **Native vision embeds are history, not one-shot payloads.** `vision_tools.py::_vision_analyze_native`
-(and the browser screenshot twins in `browser_tool_vision.py` / `browser_use_cli.py`) bake the image
+(and the Camofox screenshot path in `browser_tool.py`) bake the image
 into a tool result that is re-sent on every later API call. Size and repeat policy live in
 `vision_tools_history_budget.py` (config section `vision`: `embed_target_bytes`, `max_calls_per_image`);
 the repeat counter is keyed on (session id, resolved source) so region crops share their file's count,
@@ -103,10 +103,9 @@ target's own secrets overlaid. `os.environ.copy()` / `dict(os.environ)` pins the
 contextvars do not cross process boundaries, so resolve before `Popen`. A child's
 `UnscopedSecretError` is a spawn-site bug, never a reason to add environ fallthrough. New threads
 from scoped code use `agent.memory_provider.spawn_context_thread` (a bare `threading.Thread`
-drops the scope). **MCP trust is a per-profile record:** `mcp_tool_registration.py::
-_record_scope_trust` keys trust on the home; a secondary never adopts the launch profile's trust
-for a same-named server, and `mcp_tool_handlers.py::_trust_gate_check` consults the calling
-session's profile.
+drops the scope). **MCP read-only annotations are connection-scoped:**
+`mcp_tool_registration.py::_record_tool_annotations` records discovery metadata on the shared
+connection, and `mcp_tool_handlers.py::_tool_is_read_only` uses it only for transport retry safety.
 
 **Background-process teardown signals the parent first.** `process_registry.py::ProcessRegistry.
 _terminate_host_pid` snapshots the descendants, SIGTERMs only the recorded parent, waits
@@ -134,7 +133,7 @@ no `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`; keeps `execu
 `orchestrator` (keeps `delegate_task`; gated by `delegation.orchestrator_enabled`, bounded by
 `delegation.max_spawn_depth`, default 2). Config knobs under `delegation:`:
 `max_concurrent_children, independent_completions, max_spawn_depth, child_timeout_seconds, orchestrator_enabled,
-subagent_auto_approve, inherit_mcp_toolsets, max_iterations`. **Child processes:** a child's background
+inherit_mcp_toolsets, max_iterations`. **Child processes:** a child's background
 processes are killed at its teardown and their notices are suppressed in the parent; `process_manage(action="handoff")`
 (children only) flips `ProcessSession.owner_task_id` to the parent under the registry lock
 (`process_registry.transfer_ownership`) so the completion routes and reaps by the new owner; un-handed leftovers land on
@@ -145,7 +144,7 @@ delegation is process-local; work that must survive restart uses `cronjob` or
 idle paths, TUI `session.interrupt`, ACP `cancel`, CLI `/stop` via `interrupt_all`) calls
 `async_delegation.interrupt_for_session` too. Depth>0 delegations are always synchronous
 (`_model_background_value`), so the stop recurses through the child's own `_active_children` fan-out; an
-interrupted entry's `summary` is the child's last real assistant text (`_build_result_entry`). API: `website/docs/developer-guide/subagent-lifecycle-api.md`.
+interrupted entry's `summary` is the child's last real assistant text (`_build_result_entry`). API: see the subagent-lifecycle developer guide.
 
 ## Tests
 

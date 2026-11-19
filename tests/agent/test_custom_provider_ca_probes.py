@@ -102,20 +102,21 @@ class TestResolveRequestsVerifyProviderScoped:
             assert _resolve_requests_verify(_BASE) is False
 
     def test_no_base_url_does_not_consult_config(self, clean_env, bundle_file):
-        """Existing callers pass no base_url — env-only behavior, no config read."""
+        """Existing callers pass no base_url — no config read, and env never steers trust."""
         clean_env.setenv("HERMES_CA_BUNDLE", bundle_file)
         probe = MagicMock(return_value=[])
         with patch("hermes_cli.config.get_compatible_custom_providers", probe):
-            assert _resolve_requests_verify() == bundle_file
+            assert _resolve_requests_verify() is True
         probe.assert_not_called()
 
-    def test_unmatched_base_url_falls_through_to_env(self, clean_env, bundle_file):
+    def test_unmatched_base_url_env_ignored_returns_true(self, clean_env, bundle_file):
+        """An unmatched base_url and an ambient CA env var both leave trust at the OS store."""
         clean_env.setenv("REQUESTS_CA_BUNDLE", bundle_file)
         with patch(
             "hermes_cli.config.get_compatible_custom_providers",
             return_value=_providers("https://other.example.invalid/v1", ssl_ca_cert="/nope.pem"),
         ):
-            assert _resolve_requests_verify(_BASE) == bundle_file
+            assert _resolve_requests_verify(_BASE) is True
 
     def test_unmatched_base_url_no_env_returns_true(self, clean_env):
         with patch(
@@ -124,21 +125,24 @@ class TestResolveRequestsVerifyProviderScoped:
         ):
             assert _resolve_requests_verify(_BASE) is True
 
-    def test_provider_ca_missing_file_falls_through_to_env(self, clean_env, bundle_file):
-        clean_env.setenv("SSL_CERT_FILE", bundle_file)
+    def test_provider_ca_missing_file_env_ignored_returns_true(self, clean_env):
+        """A configured bundle that does not exist warns and verifies against the OS store —
+        an ambient ``SSL_CERT_FILE`` does not become the fallback authority."""
+        clean_env.setenv("SSL_CERT_FILE", "/does/not/matter.pem")
         with patch(
             "hermes_cli.config.get_compatible_custom_providers",
             return_value=_providers(_BASE, ssl_ca_cert="/does/not/exist.pem"),
         ):
-            assert _resolve_requests_verify(_BASE) == bundle_file
+            assert _resolve_requests_verify(_BASE) is True
 
-    def test_config_lookup_failure_falls_through_to_env(self, clean_env, bundle_file):
-        clean_env.setenv("SSL_CERT_FILE", bundle_file)
+    def test_config_lookup_failure_env_ignored_returns_true(self, clean_env):
+        """A config crash must not silently swap in an ambient env var as trust authority."""
+        clean_env.setenv("SSL_CERT_FILE", "/does/not/matter.pem")
         with patch(
             "hermes_cli.config.get_compatible_custom_providers",
             side_effect=RuntimeError("config boom"),
         ):
-            assert _resolve_requests_verify(_BASE) == bundle_file
+            assert _resolve_requests_verify(_BASE) is True
 
 
 class TestCustomProviderSSLContext:

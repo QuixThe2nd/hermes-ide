@@ -20,7 +20,6 @@ from .shared_metrics_contract import (
     model_call_dimensions,
     skill_counter,
     task_counter,
-    tool_approval_counter,
     tool_call_dimensions,
 )
 
@@ -32,7 +31,6 @@ _COUNTERS = (
     lambda event: _named(MODEL_ROUTE_METRIC, model_call_dimensions(event)),
     lambda event: _named(TOOL_CALL_METRIC, tool_call_dimensions(event)),
     task_counter,
-    tool_approval_counter,
     skill_counter,
 )
 

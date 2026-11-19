@@ -26,7 +26,6 @@ _CANONICAL_TABLES = (
     "system_prompts", "sessions", "messages", "session_model_usage", "compression_locks", "gateway_routing",
     "async_delegations",
 )
-_TOPIC_TABLES = ("telegram_dm_topic_mode", "telegram_dm_topic_bindings")
 
 
 def _init_delivery_ledger_schema(conn: sqlite3.Connection) -> None:
@@ -42,12 +41,12 @@ _AUXILIARY_TABLE_SCHEMAS: dict[str, Callable[[sqlite3.Connection], None]] = {
     "delivery_obligations": _init_delivery_ledger_schema,
 }
 _AUXILIARY_TABLES = tuple(_AUXILIARY_TABLE_SCHEMAS)
-_INVENTORY_TABLES = (*_CANONICAL_TABLES, "state_meta", *_TOPIC_TABLES, *_AUXILIARY_TABLES)
+_INVENTORY_TABLES = (*_CANONICAL_TABLES, "state_meta", *_AUXILIARY_TABLES)
 
 # Derived-index / optional-schema markers: a fresh destination regenerates these, never copies them.
 _GENERATED_META_KEYS = frozenset({
     "fts_storage_version", "fts_optimize_available", "fts_rebuild_high_water", "fts_rebuild_progress",
-    "fts_cjk_stale", "fts_cjk_rebuild_high_water", "fts_cjk_rebuild_progress", "telegram_dm_topic_schema_version",
+    "fts_cjk_stale", "fts_cjk_rebuild_high_water", "fts_cjk_rebuild_progress",
     "fts_tool_full_content_high_water",  # retired marker; never copied into a recovered store
 })
 _SIDECAR_SUFFIXES = ("", "-wal", "-shm", "-journal")
@@ -360,11 +359,10 @@ def inspect_session_database(source_path: Path, *, work_dir: Optional[Path] = No
         temp_dir.cleanup()
 
 
-def _fresh_destination(output: Path, *, topic_tables: bool = False) -> sqlite3.Connection:
+def _fresh_destination(output: Path) -> sqlite3.Connection:
     """Initialize a current-schema database at ``output`` and open it with foreign keys off."""
-    with SessionDB(db_path=output) as destination_db:
-        if topic_tables:
-            destination_db.apply_telegram_topic_migration()
+    with SessionDB(db_path=output):
+        pass  # SessionDB.__init__/close applies the current schema
     conn = _connect(output)
     conn.execute("PRAGMA foreign_keys=OFF")
     return conn
@@ -662,7 +660,7 @@ def _copy_state_meta(
     source: sqlite3.Connection, destination: sqlite3.Connection, *, salvage: bool, chunk_size: int,
     progress_cb: Optional[ProgressCallback], source_rows: Optional[int],
 ) -> dict[str, Any]:
-    """Copy user metadata rows; derived FTS/topic keys (``_GENERATED_META_KEYS``) are regenerated, not copied."""
+    """Copy user metadata rows; derived FTS keys (``_GENERATED_META_KEYS``) are regenerated, not copied."""
     problem = _state_meta_precheck(source, destination, source_rows, salvage=salvage)
     if problem is not None:
         return problem
@@ -741,7 +739,7 @@ def _reconcile(destination: sqlite3.Connection, table: str, where: str, mutation
     return count
 
 
-_DEPENDENT_TABLES = ("messages", "session_model_usage", "compression_locks", "telegram_dm_topic_bindings")
+_DEPENDENT_TABLES = ("messages", "session_model_usage", "compression_locks")
 _RELINK_COUNTERS = ("session_prompt_refs_cleared", "sessions_parent_cleared")
 
 
@@ -1140,11 +1138,9 @@ def recover_session_database(
         source_conn.execute("PRAGMA writable_schema=ON")
         destination_conn: Optional[sqlite3.Connection] = None
         try:
-            destination_conn = _fresh_destination(
-                output, topic_tables=any(inspection["tables"][table].get("available") for table in _TOPIC_TABLES),
-            )
+            destination_conn = _fresh_destination(output)
             copy_report: dict[str, dict[str, Any]] = {}
-            for table in (*_CANONICAL_TABLES, "state_meta", *_TOPIC_TABLES, *_AUXILIARY_TABLES):
+            for table in (*_CANONICAL_TABLES, "state_meta", *_AUXILIARY_TABLES):
                 if table not in _CANONICAL_TABLES and not inspection["tables"][table].get("available"):
                     copy_report[table] = {"status": "missing", "copied_rows": 0}
                     continue

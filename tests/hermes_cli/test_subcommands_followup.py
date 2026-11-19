@@ -12,7 +12,6 @@ import argparse
 
 import pytest
 
-from hermes_cli.subcommands.acp import build_acp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
 from hermes_cli.subcommands.insights import build_insights_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
@@ -33,7 +32,6 @@ def _h(name):
 # (subcommand, builder, handler_kwarg, sample argv that should dispatch to func)
 CASES = [
     ("memory", build_memory_parser, "cmd_memory", ["memory"]),
-    ("acp", build_acp_parser, "cmd_acp", ["acp"]),
     ("tools", build_tools_parser, "cmd_tools", ["tools"]),
     ("insights", build_insights_parser, "cmd_insights", ["insights"]),
     ("skills", build_skills_parser, "cmd_skills", ["skills"]),
@@ -55,12 +53,9 @@ def test_followup_builders_dispatch(name, builder, kw, argv):
     assert ns.func is handler
 
 
-def test_mcp_and_acp_accept_hooks_flag():
-    # mcp/acp parser blocks use the shared add_accept_hooks_flag helper.
+def test_mcp_accept_hooks_flag():
     parser = argparse.ArgumentParser(prog="hermes")
     sub = parser.add_subparsers(dest="command")
     build_mcp_parser(sub, cmd_mcp=_h("mcp"))
-    build_acp_parser(sub, cmd_acp=_h("acp"))
-    # acp takes --accept-hooks at top level
-    ns = parser.parse_args(["acp", "--accept-hooks"])
+    ns = parser.parse_args(["mcp", "--accept-hooks"])
     assert ns.accept_hooks is True

@@ -306,7 +306,7 @@ def _translate_tool_call_to_gemini(tool_call: Dict[str, Any], include_ids: bool 
 def _looks_like_json_schema(node: Any) -> bool:
     """True if a parsed value contains a JSON-Schema ``$ref`` pointer (``#/...``): Gemini 3 resolves
     ``$ref``/``$defs`` inside functionResponse.response and rejects unknown pointers with HTTP 400, so a
-    tool result that is itself a JSON Schema (e.g. ``tool_describe`` output) is forwarded as opaque text.
+    tool result that is itself a JSON Schema is forwarded as opaque text.
     False positives only lose the structured shape, never the content."""
     if isinstance(node, dict):
         return any((k == "$ref" and isinstance(v, str) and v.startswith("#/")) or _looks_like_json_schema(v) for k, v in node.items())
@@ -318,7 +318,7 @@ def _translate_tool_result_to_gemini(
 ) -> Dict[str, Any]:
     tool_call_id = str(message.get("tool_call_id") or "")
     # functionResponse.name must echo the matching functionCall.name, so the call-id
-    # mapping beats the result's own name (may be an unwrapped MCP name via `tool_call`).
+    # mapping beats the result's own name when a transport repaired the transcript.
     name = str((tool_name_by_call_id or {}).get(tool_call_id) or message.get("name") or tool_call_id or "tool")
     raw_content = message.get("content")
     content = _coerce_content_to_text(raw_content)
@@ -328,8 +328,8 @@ def _translate_tool_result_to_gemini(
         parsed = None
     # Gemini 3 resolves JSON-Schema ``$ref`` pointers inside a functionResponse.response payload and rejects
     # unknown references with HTTP 400 INVALID_ARGUMENT ("referenced name '#/$defs/...' does not match a
-    # display_name"; see vercel/ai#14369). A tool result that is itself a JSON Schema (e.g. tool_describe
-    # output for an MCP tool) must therefore be forwarded as opaque text, not as a structured response.
+    # display_name"; see vercel/ai#14369). A tool result that is itself a JSON Schema must therefore be
+    # forwarded as opaque text, not as a structured response.
     structured = isinstance(parsed, dict) and not _looks_like_json_schema(parsed)
     function_response: Dict[str, Any] = {"name": name, "response": parsed if structured else {"output": content}}
     if include_ids and tool_call_id:

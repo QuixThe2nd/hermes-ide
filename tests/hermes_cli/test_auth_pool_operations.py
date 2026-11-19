@@ -88,15 +88,18 @@ def test_refresh_uses_target_grant_and_preserves_sibling(monkeypatch, status):
 def test_add_priority_places_reauthenticated_row_in_multi_entry_pool(monkeypatch):
     rows = _rows()
     rows[1]["source"] = "device_code"
-    write_credential_pool("nous", rows)
-    monkeypatch.setattr(auth_commands.auth_mod, "_read_shared_nous_state", lambda: None)
-    monkeypatch.setattr(auth_commands.auth_mod, "_nous_device_code_login", lambda **_kwargs: {
-        "access_token": "fixture-renewed", "refresh_token": "fixture-renewed-refresh",
-        "agent_key": "fixture-agent-key", "expires_at": time.time() + 3600,
+    write_credential_pool("xai-oauth", rows)
+    monkeypatch.setattr(auth_commands.auth_mod, "_xai_oauth_device_code_login", lambda **_kwargs: {
+        "tokens": {
+            "access_token": "fixture-renewed",
+            "refresh_token": "fixture-renewed-refresh",
+        },
+        "base_url": auth_commands.auth_mod.DEFAULT_XAI_OAUTH_BASE_URL,
+        "last_refresh": "2026-01-01T00:00:00Z",
     })
     auth_commands.auth_add_command(SimpleNamespace(
-        provider="nous", auth_type="oauth", priority=0, label="reauthenticated"))
-    entries = read_credential_pool("nous")
+        provider="xai-oauth", auth_type="oauth", priority=0, label="reauthenticated"))
+    entries = read_credential_pool("xai-oauth")
     assert [e["id"] for e in entries] == ["row1", "row0"]
     assert entries[0]["priority"] == 0
 

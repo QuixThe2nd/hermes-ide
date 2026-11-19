@@ -127,6 +127,7 @@ class TestCreateProfile:
     """Tests for create_profile()."""
 
 
+    @pytest.mark.platforms("linux")
     def test_seeds_placeholder_env_file(self, profile_env):
         """Fresh profiles get their own .env (owner-only) so channel/env
         writes are profile-scoped from day one instead of falling through
@@ -338,18 +339,18 @@ class TestCreateProfile:
     @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="special files need a POSIX filesystem")
     def test_clone_all_skips_special_files(self, profile_env):
         # A live source profile holds special files copytree cannot copy (e.g. a suffixless
-        # agent-browser control socket); one of them must not abort the whole clone.
+        # runtime control socket); one of them must not abort the whole clone.
         default_home = profile_env / ".hermes"
         (default_home / "config.yaml").write_text("model: test")
-        browser_dir = default_home / "home" / ".agent-browser"
-        browser_dir.mkdir(parents=True)
-        (browser_dir / "state.json").write_text("{}")
-        os.mkfifo(browser_dir / "control")
+        runtime_dir = default_home / "home" / ".cache" / "example-tool"
+        runtime_dir.mkdir(parents=True)
+        (runtime_dir / "state.json").write_text("{}")
+        os.mkfifo(runtime_dir / "control")
 
         profile_dir = create_profile("coder", clone_all=True, no_alias=True)
 
-        assert (profile_dir / "home" / ".agent-browser" / "state.json").is_file()
-        assert not (profile_dir / "home" / ".agent-browser" / "control").exists()
+        assert (profile_dir / "home" / ".cache" / "example-tool" / "state.json").is_file()
+        assert not (profile_dir / "home" / ".cache" / "example-tool" / "control").exists()
 
 
 
@@ -526,7 +527,7 @@ class TestReadOnlyProfile:
 
     def test_read_only_fresh_writes_every_file_platform(self, profile_env):
         """A fresh --read-only profile has no platform_toolsets to rewrite;
-        every registry platform that resolves `file` (discord, telegram,
+        every registry platform that resolves `file` (discord, matrix,
         cron, …) must still get an explicit read-only list — an absent key
         keeps inheriting its composite, which carries the writable `file`."""
         from toolsets import resolve_multiple_toolsets
@@ -535,7 +536,7 @@ class TestReadOnlyProfile:
         profile_dir = create_profile("wide", no_alias=True, read_only=True)
 
         pts = self._saved_toolsets(profile_dir)
-        assert {"cli", "discord", "telegram", "cron"} <= set(pts)
+        assert {"cli", "discord", "matrix", "cron"} <= set(pts)
         for platform, entries in pts.items():
             assert "file_readonly" in entries, platform
             assert "file" not in entries, platform
@@ -581,6 +582,7 @@ class TestBackfillProfileEnvs:
     gives pre-#44792 profiles (created before .env seeding) their own
     .env, copied from the default install so credentials don't break."""
 
+    @pytest.mark.platforms("linux")
     def test_copies_default_env_into_envless_profiles(self, profile_env):
         import stat
         tmp_path = profile_env
@@ -828,7 +830,7 @@ class TestDeleteProfile:
         hermes-notes.py, hermes-unrelated-tool) must NOT be misidentified as
         the console-script shim just because argv[0] is a python interpreter
         and argv[1]'s basename starts with "hermes" -- only the actual known
-        console-script entry points (hermes, hermes-agent, hermes-acp) count.
+        console-script entry points (hermes, hermes-agent) count.
         """
         create_profile("coder", no_alias=True)
         profile_dir = get_profile_dir("coder")
@@ -870,10 +872,9 @@ class TestDeleteProfile:
         assert pids == []
 
     def test_backend_scan_matches_all_known_console_script_shims(self, profile_env, monkeypatch):
-        """The other two real console-script entry points (hermes-agent,
-        hermes-acp -- see pyproject.toml [project.scripts]) must also be
-        recognized via the shebang-exec path, not just the primary "hermes"
-        shim.
+        """The hermes-agent console-script entry point (see pyproject.toml
+        [project.scripts]) must also be recognized via the shebang-exec path,
+        not just the primary "hermes" shim.
         """
         create_profile("coder", no_alias=True)
         profile_dir = get_profile_dir("coder")
@@ -896,8 +897,6 @@ class TestDeleteProfile:
         procs = [
             FakeProc(401, ["/usr/bin/python3", "/Users/x/.local/bin/hermes-agent",
                             "--profile", "coder", "serve"]),
-            FakeProc(402, ["/usr/bin/python3", "/Users/x/.local/bin/hermes-acp",
-                            "--profile", "coder", "serve"]),
         ]
 
         fake_psutil = types.SimpleNamespace(
@@ -910,7 +909,7 @@ class TestDeleteProfile:
         monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
 
         pids = profiles._profile_bound_backend_pids("coder", profile_dir)
-        assert set(pids) == {401, 402}
+        assert set(pids) == {401}
 
 
 # ===================================================================
@@ -932,66 +931,6 @@ class TestListProfiles:
         names = [p.name for p in profiles]
         assert "alpha" in names
         assert "beta" in names
-
-    def test_lazy_skill_count_never_walks_in_the_polled_request(self, profile_env, monkeypatch):
-        """Polled surfaces (``profiles.list`` RPC, ``GET /api/profiles``) must render
-        ``skill_count`` without any skill-tree walk on the request thread; the count arrives
-        from one background refresh per profile per recheck window (#114041). Control: the
-        synchronous ``list_profiles()`` still walks and reports the fresh number."""
-        import threading
-        import tui_gateway.server as srv
-
-        skills = profile_env / ".hermes" / "skills" / "cat"
-        for i in range(3):
-            (skills / f"s{i}").mkdir(parents=True)
-            (skills / f"s{i}" / "SKILL.md").write_text("# s\n", encoding="utf-8")
-        profiles._SKILL_COUNT_CACHE.clear()
-        profiles._SKILL_COUNT_NEXT_CHECK.clear()
-
-        walks: list[str] = []
-        real_walk = profiles._walk_skill_count
-
-        def spy(skills_dir):
-            walks.append(threading.current_thread().name)
-            return real_walk(skills_dir)
-
-        monkeypatch.setattr(profiles, "_walk_skill_count", spy)
-
-        def _rpc():
-            return srv._methods["profiles.list"](1, {"include_sessions": False})["result"]["profiles"]
-
-        first = _rpc()
-        assert walks == [] or set(walks) == {"hermes-skill-count"}
-        assert first[0]["skill_count"] in (0, 3)  # 0 until the refresh lands, never a stall
-        for t in threading.enumerate():
-            if t.name == "hermes-skill-count":
-                t.join(timeout=10)
-        assert walks == ["hermes-skill-count"]
-        assert _rpc()[0]["skill_count"] == 3
-        assert list_profiles(lazy_skill_count=True)[0].skill_count == 3
-        assert walks == ["hermes-skill-count"]  # a second poll inside the window schedules nothing
-
-        # GET /api/profiles (the router's own ``lazy_skill_count=True`` call) and the per-keystroke
-        # ``@<profile>`` completion must be just as walk-free: same spy, still one background walk.
-        from fastapi import FastAPI
-        from fastapi.testclient import TestClient
-        from hermes_cli.web_routers import profiles as profiles_router
-        from tui_gateway import methods_complete
-        app = FastAPI()
-        app.include_router(profiles_router.router)
-        # Cold cache: a synchronous list_profiles() in either caller would walk on the request thread.
-        profiles._SKILL_COUNT_CACHE.clear()
-        resp = TestClient(app).get("/api/profiles")
-        assert resp.status_code == 200
-        assert resp.json()["profiles"][0]["name"] == "default"
-        assert walks == ["hermes-skill-count"]
-        assert any(i["text"] == "@default" for i in methods_complete._profile_mention_items("def"))
-        assert walks == ["hermes-skill-count"]
-
-        # Control: the detail/CLI path counts synchronously on the caller's thread.
-        profiles._SKILL_COUNT_CACHE.clear()
-        assert list_profiles()[0].skill_count == 3
-        assert walks[-1] == threading.current_thread().name
 
     def test_skill_count_survives_subtree_vanishing_mid_walk(self, profile_env, monkeypatch):
         """A skill removed while the tree is being counted (concurrent install/update) must
@@ -1099,7 +1038,7 @@ class TestAliasCollision:
 
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_checks_bat_extension(self, profile_env):
         wrapper_dir = profile_env / ".local" / "bin"
         wrapper_dir.mkdir(parents=True, exist_ok=True)
@@ -1128,6 +1067,7 @@ class TestAliasCollision:
 class TestWrapperScript:
     """Tests for create_wrapper_script() and remove_wrapper_script()."""
 
+    @pytest.mark.platforms("linux")
     def test_creates_sh_on_posix(self, profile_env, monkeypatch):
         monkeypatch.setattr("hermes_cli.profiles.shutil.which", lambda name: "/opt/hermes/bin/hermes")
         from hermes_cli.profiles import create_wrapper_script
@@ -1139,7 +1079,7 @@ class TestWrapperScript:
         assert "exec /opt/hermes/bin/hermes -p mybot" in content
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_remove_finds_bat_on_windows(self, profile_env):
         from hermes_cli.profiles import create_wrapper_script, remove_wrapper_script
         wrapper = create_wrapper_script("mybot")
@@ -1202,6 +1142,7 @@ class TestFindAliasForProfile:
         assert find_alias_for_profile("steve") is None
 
 
+    @pytest.mark.platforms("linux")
     def test_list_profiles_surfaces_custom_alias(self, profile_env):
         from hermes_cli.profiles import (
             create_profile,
@@ -1236,33 +1177,6 @@ class TestRenameProfile:
         assert not old_dir.is_dir()
         assert new_dir.is_dir()
         assert new_dir == tmp_path / ".hermes" / "profiles" / "newname"
-
-    def test_renames_root_honcho_host_without_changing_ai_peer(self, profile_env):
-        tmp_path = profile_env
-        create_profile("ssi_health", no_alias=True)
-        honcho_path = tmp_path / ".hermes" / "honcho.json"
-        honcho_path.write_text(json.dumps({
-            "hosts": {
-                "hermes.ssi_health": {
-                    "recallMode": "hybrid",
-                    "writeFrequency": "async",
-                    "sessionStrategy": "per-session",
-                    "saveMessages": True,
-                    "peerName": "user-peer",
-                    "aiPeer": "ssi_health",
-                    "workspace": "hermes",
-                    "enabled": True,
-                }
-            }
-        }))
-
-        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
-            rename_profile("ssi_health", "heimdall")
-
-        cfg = json.loads(honcho_path.read_text())
-        assert "hermes.ssi_health" not in cfg["hosts"]
-        assert cfg["hosts"]["hermes_heimdall"]["aiPeer"] == "ssi_health"
-        assert cfg["hosts"]["hermes_heimdall"]["peerName"] == "user-peer"
 
     def test_multiplexed_rename_unroutes_old_then_hot_serves_new(self, profile_env):
         """Under a live multiplexer the old name is tombstoned + unrouted BEFORE the directory
@@ -1477,6 +1391,7 @@ class TestExportImport:
         assert "default/memories/MEMORY.md" in names
 
 
+    @pytest.mark.require_symlinks
     def test_export_default_handles_broken_symlinks(self, profile_env, tmp_path):
         """Broken symlinks inside allowed artifacts are preserved, not crashed (#58394).
 
@@ -1655,6 +1570,7 @@ class TestWriteProfileMetaDurability:
         assert "🧙" in raw
         assert profiles.read_profile_meta(profile_dir)["description"] == "Code wizard 🧙 ✨"
 
+    @pytest.mark.require_symlinks
     def test_symlinked_profile_yaml_survives_the_write(self, tmp_path):
         """Guard on the conversion, not a behavior change.
 

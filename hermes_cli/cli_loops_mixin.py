@@ -1,4 +1,4 @@
-"""Simple slash-command wrappers plus goal/heartbeat/loop manager hooks for the interactive CLI.
+"""Simple slash-command wrappers plus goal/loop manager hooks for the interactive CLI.
 Mixin on ``HermesCLI``; cli.py symbols are imported lazily inside methods (import cycle)."""
 
 from __future__ import annotations
@@ -6,7 +6,6 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import threading
 import time
 
 from rich.markup import escape as _escape
@@ -42,7 +41,7 @@ def _print_decision_message(decision: dict) -> bool:
 
 
 class CLILoopsMixin:
-    """Simple slash-command wrappers plus goal/heartbeat/loop manager hooks for the interactive CLI"""
+    """Simple slash-command wrappers plus goal/loop manager hooks for the interactive CLI"""
 
     def _cmd_exit(self, cmd_original: str):
         # /exit --delete also removes the session's transcripts + SQLite history.
@@ -70,13 +69,6 @@ class CLILoopsMixin:
     def _cmd_clear(self, cmd_original: str):
         from cli import ChatConsole, _build_compact_banner, _clear_output_history, _cprint, get_tool_definitions
         from hermes_cli.banner import build_welcome_banner
-        if self._confirm_destructive_slash(
-            "clear",
-            "This clears the screen and starts a new session.\n"
-            "The current conversation history will be discarded.",
-            cmd_original=cmd_original,
-        ) is None:
-            return True  # confirmation cancelled — command handled, keep REPL alive
         self.new_session(silent=True)
         _clear_output_history()
         if not self._app:
@@ -166,17 +158,8 @@ class CLILoopsMixin:
                 _cprint(f"  Session title queued: {new_title} (will be saved on first message)")
 
     def _cmd_new(self, cmd_original: str):
-        # Strip inline-skip tokens (now/--yes/-y) before deriving the title so
-        # "/new now My Session" yields title="My Session". See _split_destructive_skip.
-        _new_args, _ = self._split_destructive_skip(cmd_original)
-        title = _new_args.strip() or None
-        if self._confirm_destructive_slash(
-            "new",
-            "This starts a fresh session.\n"
-            "The current conversation history will be discarded.",
-            cmd_original=cmd_original,
-        ) is None:
-            return True  # confirmation cancelled — command handled, keep REPL alive
+        from cli import _slash_args
+        title = _slash_args(cmd_original).strip() or None
         self.new_session(title=title)
 
     def _cmd_retry(self, cmd_original: str):
@@ -198,22 +181,11 @@ class CLILoopsMixin:
         if not self.conversation_history:
             print("(._.) No messages to undo.")
             return True
-        _undo_desc = (
-            "This removes the last user/assistant exchange from history."
-            if _undo_n == 1
-            else f"This removes the last {_undo_n} user turns from history.")
-        if self._confirm_destructive_slash("undo", _undo_desc, cmd_original=cmd_original) is None:
-            return True  # confirmation cancelled — command handled, keep REPL alive
         self.undo_last(_undo_n)
 
     def _cmd_skills(self, cmd_original: str):
         with self._busy_command(self._slow_command_status(cmd_original)):
             self._handle_skills_command(cmd_original)
-
-    def _cmd_egress(self, cmd_original: str):
-        from hermes_cli.slash_exec import CommandContext, execute_command
-        text = execute_command("egress", CommandContext(surface="cli")).text
-        self._console_print(text, highlight=False, markup=False)
 
     def _cmd_statusbar(self, cmd_original: str):
         self._status_bar_visible = not self._status_bar_visible
@@ -285,13 +257,13 @@ class CLILoopsMixin:
     # A queued next-turn prompt can be inspected and changed before it is sent.
 
     def _pending_input_items(self) -> list:
-        """Snapshot of queued next-turn prompts (raw items; may include ``_VoiceInputMessage``)."""
+        """Snapshot of queued next-turn prompts (raw items)."""
         with self._pending_input.mutex:
             return list(self._pending_input.queue)
 
     def _mutate_pending_input(self, mutate) -> tuple[list, list]:
         """Apply ``mutate(items) -> items`` to the queued prompts under the queue's own mutex,
-        so a voice/interrupt ``put`` from another thread can't slip between snapshot and
+        so an interrupt ``put`` from another thread can't slip between snapshot and
         write-back. Returns ``(before, after)``."""
         q = self._pending_input
         with q.mutex:
@@ -312,15 +284,14 @@ class CLILoopsMixin:
         _cprint(f"  Queued{when}: {_preview(payload)}")
 
     def _queue_list(self, rest: str) -> None:
-        from cli import _VoiceInputMessage, _cprint
+        from cli import _cprint
         items = self._pending_input_items()
         if not items:
             _cprint("  Queue is empty." + ("" if rest else "  " + _QUEUE_USAGE))
             return
         _cprint(f"  Queue ({len(items)} pending):")
         for idx, item in enumerate(items, 1):
-            tag = " [voice]" if isinstance(item, _VoiceInputMessage) else ""
-            _cprint(f"    {idx}. {_preview(str(item).replace(chr(10), ' '))}{tag}")
+            _cprint(f"    {idx}. {_preview(str(item).replace(chr(10), ' '))}")
 
     def _queue_clear(self, rest: str) -> None:
         from cli import _cprint
@@ -339,7 +310,7 @@ class CLILoopsMixin:
             _cprint(f"  Queue item {idx} not found. Current size: {len(before)}")
 
     def _queue_edit(self, rest: str) -> None:
-        from cli import _VoiceInputMessage, _cprint
+        from cli import _cprint
         idx_text, _, new_prompt = rest.partition(" ")
         if not new_prompt.strip():
             _cprint("  Usage: /queue edit <number> <new prompt>")
@@ -349,10 +320,7 @@ class CLILoopsMixin:
 
         def _edit(items: list) -> list:
             if 1 <= idx <= len(items):
-                # A voice-queued item keeps its sentinel so the concise voice-response
-                # prefix still applies (#65827).
-                voice = isinstance(items[idx - 1], _VoiceInputMessage)
-                items[idx - 1] = _VoiceInputMessage(new_text) if voice else new_text
+                items[idx - 1] = new_text
             return items
 
         before, after = self._mutate_pending_input(_edit)
@@ -407,30 +375,8 @@ class CLILoopsMixin:
         else:
             self._queue_enqueue(payload)
 
-    def _cmd_steer(self, cmd_original: str):
-        # Inject a message after the next tool call without interrupting: while the
-        # agent runs, push into its pending_steer slot (drained by _execute_tool_calls_*
-        # into the next tool result); otherwise fall back to /queue semantics.
-        from cli import _cprint, _slash_args
-        payload = _slash_args(cmd_original)
-        if not payload:
-            _cprint("  Usage: /steer <prompt>")
-        elif self._agent_running and self.agent is not None and hasattr(self.agent, "steer"):
-            try:
-                accepted = self.agent.steer(payload)
-            except Exception as exc:
-                _cprint(f"  Steer failed: {exc}")
-            else:
-                if accepted:
-                    _cprint(f"  ⏩ Steer queued — arrives after the next tool call: {_preview(payload)}")
-                else:
-                    _cprint("  Steer rejected (empty payload).")
-        else:
-            self._pending_input.put(payload)
-            _cprint(f"  No agent running; queued as next turn: {_preview(payload)}")
-
     # ────────────────────────────────────────────────────────────────
-    # Session-bound managers: /goal (Ralph-style loop), /heartbeat, /loop
+    # Session-bound managers: /goal (Ralph-style loop), /loop
     # ────────────────────────────────────────────────────────────────
     def _session_bound_manager(self, attr: str, label: str, load):
         """Return the manager cached on ``self.<attr>``, rebuilt when ``session_id`` changed
@@ -470,53 +416,12 @@ class CLILoopsMixin:
             return make
         return self._session_bound_manager("_goal_manager", "goal manager", load)
 
-    def _get_heartbeat_manager(self):
-        """HeartbeatManager bound to the current session_id (see ``_session_bound_manager``)."""
-        def load():
-            from hermes_cli.heartbeat import HeartbeatManager
-            return lambda sid: HeartbeatManager(session_id=sid)
-        return self._session_bound_manager("_heartbeat_manager", "heartbeat manager", load)
-
     def _get_loop_manager(self):
         """LoopManager bound to the current session_id (see ``_session_bound_manager``)."""
         def load():
             from hermes_cli.loops import LoopManager
             return lambda sid: LoopManager(session_id=sid)
         return self._session_bound_manager("_loop_manager", "loop manager", load)
-
-    def _start_heartbeat_watchdog(self):
-        """Start the idle-poll daemon that injects a due heartbeat prompt into
-        ``_pending_input`` as a normal user turn when the session is idle. Missed ticks
-        coalesce (the anchor resets on fire, so a busy hour yields ONE heartbeat turn).
-        Idempotent; safe to call on every /heartbeat set."""
-        if getattr(self, "_heartbeat_watchdog_started", False):
-            return
-        self._heartbeat_watchdog_started = True
-        from hermes_cli.heartbeat import POLL_SECONDS
-
-        def _loop():
-            try:
-                while not getattr(self, "_should_exit", False):
-                    time.sleep(POLL_SECONDS)
-                    try:
-                        mgr = self._get_heartbeat_manager()
-                        if mgr is None or not mgr.is_active():
-                            continue
-                        busy = (
-                            self._agent_running
-                            or getattr(self, "_voice_recording", False)
-                            or getattr(self, "_voice_processing", False)
-                            or not self._pending_input.empty())
-                        if busy:
-                            continue
-                        prompt = mgr.due_prompt()
-                        if prompt:
-                            self._pending_input.put(prompt)
-                    except Exception as exc:
-                        logging.debug("heartbeat watchdog tick failed: %s", exc)
-            finally:
-                self._heartbeat_watchdog_started = False
-        threading.Thread(target=_loop, daemon=True, name="heartbeat-watchdog").start()
 
     def _maybe_resume_parked_goal(self) -> None:
         """Idle hook run from process_loop: when a parked /goal's barrier has lifted (the process

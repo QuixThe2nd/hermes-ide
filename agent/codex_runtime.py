@@ -471,25 +471,12 @@ def _ensure_codex_session(agent) -> None:
             return
         _close_codex_session(agent)
     from agent.runtime_cwd import resolve_agent_cwd
-    from agent.transports.codex_app_server_session import CodexAppServerSession, _ServerRequestRouting
+    from agent.transports.codex_app_server_session import CodexAppServerSession
     from hermes_cli.codex_runtime_switch import get_configured_codex_binary
     from hermes_cli.config import load_config
-    # Approval callback: Hermes' standard prompt flow when a CLI thread installed one.
-    approval_callback = None
-    with suppress(Exception):
-        from tools.terminal_tool import _get_approval_callback
-        approval_callback = _get_approval_callback()
-    # Gateway/cron have no UI for codex approval requests, so exec/apply_patch fail closed by default. Only an
-    # explicit approval bypass (approvals.mode: off, /yolo, --yolo, HERMES_YOLO_MODE) hands policy to codex's sandbox.
-    auto_approve_requests = False
-    try:
-        from tools.approval import is_approval_bypass_active
-        auto_approve_requests = is_approval_bypass_active()
-    except Exception:
-        logger.debug("codex app-server: approval-bypass lookup failed; keeping fail-closed default", exc_info=True)
     # Bridge codex JSON-RPC notifications (item/started, item/completed, item/agentMessage/delta, ...) into
     # Hermes' gateway UI callbacks (tool_progress_callback, _fire_stream_delta,
-    # _emit_interim_assistant_message). Without this, Discord/Telegram users see no live tool-progress or
+    # _emit_interim_assistant_message). Without this, gateway users see no live tool-progress or
     # interim commentary while codex_app_server is running — only the final answer (#33200). Supersedes the
     # narrower item/started-only bridge from #38835.
     # Hermes owns the prompt: the same composition the standard loop sends as its system message
@@ -498,9 +485,8 @@ def _ensure_codex_session(agent) -> None:
     # conversation history is still not projected into the codex thread (#74712, #26035).
     agent._codex_session_prompt = developer_instructions
     agent._codex_session = CodexAppServerSession(
-        cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()), approval_callback=approval_callback,
+        cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()),
         codex_bin=get_configured_codex_binary(load_config()),
-        request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
         on_event=make_codex_app_server_event_bridge(agent),
         developer_instructions=developer_instructions or None,
     )
@@ -971,6 +957,14 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
 
     def _on_event(event: Any) -> None:  # TTFB/activity touch — once per SSE event.
         now = time.time()
+        try:
+            from agent.served_model import store_served_model
+            served_model = _event_field(event, "model")
+            if not isinstance(served_model, str):
+                served_model = _event_field(_event_field(event, "response"), "model")
+            store_served_model(agent, served_model)
+        except Exception:
+            logger.debug("Codex stream served-model capture skipped", exc_info=True)
         # Lifecycle frames can precede text, so the first accepted parsed event is the Responses
         # equivalent of Chat Completions' first chunk. Preserve the per-attempt reset; the ``_fenced``
         # wrapper around this callback already keeps a retired worker from overwriting a newer request.
@@ -1018,6 +1012,11 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         # Claim the delta sink for THIS attempt; a newer attempt supersedes this token.
         writer_token["value"] = claim_stream_writer(agent)
         writer_token["raw_stream"] = _raw_stream
+        try:
+            from agent.served_model import capture_served_model_from_stream
+            capture_served_model_from_stream(agent, _raw_stream)
+        except Exception:
+            logger.debug("Codex stream served-model header capture skipped", exc_info=True)
 
     def _accept_codex_chunk(_chunk: Any) -> bool:
         token = writer_token["value"]

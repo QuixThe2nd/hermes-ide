@@ -35,7 +35,7 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     """_set_session_env should populate contextvars, not os.environ."""
     runner = object.__new__(GatewayRunner)
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="-1001",
         chat_name="Group",
         chat_type="group",
@@ -57,7 +57,7 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     tokens = runner._set_session_env(context)
 
     # Values should be readable via get_session_env (contextvar path)
-    assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
+    assert get_session_env("HERMES_SESSION_PLATFORM") == "discord"
     assert get_session_env("HERMES_SESSION_SOURCE") == ""
     assert get_session_env("HERMES_SESSION_CHAT_ID") == "-1001"
     assert get_session_env("HERMES_SESSION_CHAT_NAME") == "Group"
@@ -89,7 +89,7 @@ def test_clear_session_env_restores_previous_state(monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
 
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="-1001",
         chat_name="Group",
         chat_type="group",
@@ -100,7 +100,7 @@ def test_clear_session_env_restores_previous_state(monkeypatch):
     context = SessionContext(source=source, connected_platforms=[], notification_channels={})
 
     tokens = runner._set_session_env(context)
-    assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
+    assert get_session_env("HERMES_SESSION_PLATFORM") == "discord"
     assert get_session_env("HERMES_SESSION_USER_ID") == "123456"
     assert get_session_env("HERMES_SESSION_CHAT_TYPE") == "group"
 
@@ -124,8 +124,8 @@ def test_get_session_env_falls_back_to_os_environ(monkeypatch):
     assert get_session_env("HERMES_SESSION_PLATFORM") == "discord"
 
     # Now set a contextvar — should prefer it
-    tokens = set_session_vars(platform="telegram")
-    assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
+    tokens = set_session_vars(platform="slack")
+    assert get_session_env("HERMES_SESSION_PLATFORM") == "slack"
 
     # After clear — should return "" (explicitly cleared), NOT fall back
     # to os.environ.  This is the fix for #10304: stale os.environ values
@@ -202,7 +202,7 @@ async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
 
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="2144471399",
         chat_type="dm",
         user_id="123456",
@@ -213,7 +213,7 @@ async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
         source=source,
         connected_platforms=[],
         notification_channels={},
-        session_key="agent:main:telegram:dm:2144471399",
+        session_key="agent:main:discord:dm:2144471399",
     )
 
     tokens = runner._set_session_env(context)
@@ -231,10 +231,10 @@ async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
         runner._shutdown_executor()
 
     assert result == {
-        "platform": "telegram",
+        "platform": "discord",
         "chat_id": "2144471399",
         "user_id": "123456",
-        "session_key": "agent:main:telegram:dm:2144471399",
+        "session_key": "agent:main:discord:dm:2144471399",
     }
 
 

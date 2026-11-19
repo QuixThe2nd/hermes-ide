@@ -5,27 +5,11 @@ from __future__ import annotations
 import os
 from typing import Any, Mapping
 
+from plugins.auto_update.config import _coerce_bool, _coerce_int
+
 DEFAULT_SCHEDULE_CALENDAR = "*-*-* *:07,37:00"
 DEFAULT_RETAIN_DAYS = 90
 DEFAULT_MAX_CAPTURES = 50
-
-
-def _coerce_bool(value: Any, default: bool) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
-
-
-def _coerce_int(value: Any, default: int, *, minimum: int = 0) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return max(minimum, parsed)
 
 
 def default_tree() -> str:

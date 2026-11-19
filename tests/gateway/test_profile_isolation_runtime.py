@@ -14,6 +14,7 @@ profile's path is used.  They are the productionized form of the manual smoke
 probes used to confirm the bug class.
 """
 
+import os
 import threading
 from pathlib import Path
 
@@ -108,7 +109,7 @@ class TestRichSentStorePathResolution:
 
         b_seen = _under_override(prof_b, lambda: rss._store_path())
         assert b_seen.startswith(str(prof_b))
-        assert b_seen.endswith("state/rich_sent_index.json")
+        assert b_seen.endswith(os.path.join("state", "rich_sent_index.json"))
 
 
 class TestGatewayHooksDirResolution:
@@ -180,22 +181,6 @@ class TestCheckpointManagerPathResolution:
         b_seen = _under_override(prof_b, lambda: cm._store_path())
         assert b_seen == prof_b / "checkpoints" / "store"
 
-
-class TestStickerCachePathResolution:
-    """gateway/sticker_cache.py's cache file must honor the active profile —
-    otherwise one profile's Telegram sticker-description cache leaks into a
-    different profile's under the multiplexed gateway."""
-
-    def test_cache_path_follows_override(self, two_profiles):
-        prof_a, prof_b = two_profiles
-        import gateway.sticker_cache as sc
-
-        a_seen = _under_override(prof_a, lambda: sc._resolve_cache_path())
-        b_seen = _under_override(prof_b, lambda: sc._resolve_cache_path())
-
-        assert a_seen == prof_a / "sticker_cache.json"
-        assert b_seen == prof_b / "sticker_cache.json"
-        assert a_seen != b_seen
 
 
 # ---------------------------------------------------------------------------

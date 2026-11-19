@@ -27,6 +27,7 @@ import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from urllib.parse import unquote
 
 import pytest
 
@@ -69,7 +70,7 @@ class _DummyAdapter(BasePlatformAdapter):
         self.documents.append(str(file_path))
         return SendResult(success=True, message_id="doc-1")
 
-    async def send_multiple_images(self, chat_id, images, metadata=None, human_delay=0.0):
+    async def send_multiple_images(self, chat_id, images, metadata=None):
         self.images_sent.extend(str(p) for p, _cap in images)
 
     async def send_image_file(self, chat_id, image_path, caption=None, reply_to=None, metadata=None, **kwargs) -> SendResult:
@@ -466,7 +467,6 @@ def _stream_adapter():
         name="test",
         extract_media=BasePlatformAdapter.extract_media,
         extract_images=BasePlatformAdapter.extract_images,
-        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="v")),
         send_document=AsyncMock(return_value=SendResult(success=True, message_id="d")),
         send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="i")),
         send_video=AsyncMock(return_value=SendResult(success=True, message_id="vid")),
@@ -496,7 +496,7 @@ async def test_streamed_explicit_media_resend_is_delivered(tmp_path, monkeypatch
 
     adapter.send_multiple_images.assert_awaited_once()
     sent_paths = [p for p, _cap in adapter.send_multiple_images.await_args.kwargs["images"]]
-    assert str(img) in sent_paths[0]
+    assert str(img) in unquote(sent_paths[0])
 
 
 def test_stream_rescan_accepts_no_history_dedup_input():
@@ -532,7 +532,7 @@ def test_auto_append_lane_still_dedups_stale_media():
     paths = _collect_history_media_paths(history)
     assert "/tmp/gen/dog.png" in paths
 
-    tags, _voice = _collect_auto_append_media_tags(
+    tags = _collect_auto_append_media_tags(
         history, history_offset=0, history_media_paths=paths
     )
     assert tags == [], f"stale auto-append tags re-emitted: {tags}"

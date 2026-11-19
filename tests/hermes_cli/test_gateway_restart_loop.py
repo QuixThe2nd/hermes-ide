@@ -55,8 +55,8 @@ class TestGatewayLifecyclePattern:
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
 
     @pytest.mark.parametrize("text", [
-        # Other images stay killable (evals/browser_use/orchestrate.py uses the first one).
-        "taskkill /F /IM agent-browser.exe /T",
+        # Other images stay killable.
+        "taskkill /F /IM node.exe /T",
         "taskkill /F /IM notepad.exe",
         "Stop-Process -Name chrome",
         "killall node",
@@ -314,6 +314,38 @@ class TestGatewayLifecyclePattern:
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
 
 
+class TestWrappedAbsoluteGatewayLifecycle:
+    """Wrapper peeling must reach the real Hermes executable, including its path."""
+
+    @pytest.mark.parametrize("command", [
+        "systemd-run --unit=x --collect /opt/venv/bin/hermes gateway restart",
+        "nohup /opt/venv/bin/hermes gateway stop",
+        "setsid /opt/venv/bin/hermes gateway restart",
+        "sudo -n /opt/venv/bin/hermes gateway stop",
+        "env HERMES_PROFILE=default /opt/venv/bin/hermes gateway restart",
+        "timeout 30s /opt/venv/bin/hermes gateway stop",
+        "sh -c '/opt/venv/bin/hermes gateway restart'",
+        "bash -c '/opt/venv/bin/hermes gateway stop'",
+        "/opt/venv/bin/hermes gateway restart &",
+        "at now <<< '/opt/venv/bin/hermes gateway restart'",
+        "printf '%s\\n' '/opt/venv/bin/hermes gateway stop' | at now",
+    ])
+    def test_wrapped_absolute_executable_is_blocked(self, command):
+        from cron.lifecycle_guard import scan_gateway_lifecycle
+
+        assert scan_gateway_lifecycle(command)[0] is True, command
+
+    @pytest.mark.parametrize("command", [
+        "cat /opt/runbooks/hermes-gateway-restart.md",
+        "printf '%s\\n' 'See /opt/venv/bin/hermes gateway restart-notes.md'",
+        "/opt/venv/bin/hermes gateway status",
+    ])
+    def test_read_only_mentions_and_status_stay_allowed(self, command):
+        from cron.lifecycle_guard import scan_gateway_lifecycle
+
+        assert scan_gateway_lifecycle(command)[0] is False, command
+
+
 class TestProfileFlagGatewayLifecycle:
     """#78028: `hermes -p <profile> gateway restart|stop` bypasses Branch A's
     literal adjacency, so it needs its own pattern. It is only the same
@@ -369,6 +401,14 @@ class TestProfileFlagGatewayLifecycle:
         # additional layer, not a replacement.
         assert _contains_gateway_lifecycle_command("hermes gateway restart")
         assert _contains_gateway_lifecycle_command("hermes gateway stop")
+
+    @pytest.mark.parametrize("text", [
+        "systemd-run --collect /opt/venv/bin/hermes -p zeus gateway restart",
+        "nohup /opt/venv/bin/hermes --profile=zeus gateway stop",
+        "sh -c '/opt/venv/bin/hermes --profile zeus gateway restart'",
+    ])
+    def test_wrapped_absolute_self_target_blocked(self, text):
+        assert _contains_gateway_lifecycle_command(text), f"Should block: {text!r}"
 
     def test_hermes_home_derived_profile(self, monkeypatch):
         # Without HERMES_PROFILE the guard falls back to the HERMES_HOME-
@@ -600,6 +640,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 1
         assert "Blocked" in result["error"]
 
+    @pytest.mark.platforms("linux")
     def test_blocks_lifecycle_command_hidden_in_referenced_script(
         self, monkeypatch, tmp_path
     ):
@@ -736,6 +777,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 0
         assert calls == ["hermes gateway restart"]
 
+    @pytest.mark.platforms("linux")
     def test_blocks_launchctl_submit_hidden_in_referenced_script(
         self, monkeypatch, tmp_path
     ):
@@ -771,6 +813,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 1
         assert "referenced script" in result["error"]
 
+    @pytest.mark.platforms("linux")
     def test_blocks_executable_shebang_script(self, monkeypatch, tmp_path):
         import tools.terminal_tool as tt
 
@@ -794,6 +837,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 1
         assert "KeepAlive" in result["error"]
 
+    @pytest.mark.platforms("linux")
     def test_shell_option_with_value_still_scans_script(self, monkeypatch, tmp_path):
         import tools.terminal_tool as tt
 
@@ -827,6 +871,7 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         assert result["exit_code"] == 1
 
+    @pytest.mark.platforms("linux")
     def test_nested_wrapper_script_is_scanned(self, monkeypatch, tmp_path):
         import tools.terminal_tool as tt
 
@@ -847,6 +892,7 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         assert result["exit_code"] == 1
 
+    @pytest.mark.platforms("linux")
     def test_non_regular_referenced_script_fails_closed(self, monkeypatch, tmp_path):
         import tools.terminal_tool as tt
 
@@ -880,6 +926,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 0
         assert calls == [command]
 
+    @pytest.mark.platforms("linux")
     def test_safe_referenced_script_passes_through(self, monkeypatch, tmp_path):
         import tools.terminal_tool as tt
 
@@ -932,6 +979,7 @@ class TestTerminalToolGatewayLifecycleGuard:
 class TestLifecycleGuardModule:
     """Direct tests for cron.lifecycle_guard.check_gateway_lifecycle."""
 
+    @pytest.mark.platforms("linux")
     def test_dot_operator_sourced_script_is_scanned(self, tmp_path):
         """`. ./script.sh` must reach the referenced-script scan.
 
@@ -950,6 +998,7 @@ class TestLifecycleGuardModule:
             is True
         )
 
+    @pytest.mark.platforms("linux")
     def test_nul_padded_script_is_still_scanned(self, tmp_path):
         """A NUL byte in a *text* script must not disable the scan.
 
@@ -968,6 +1017,7 @@ class TestLifecycleGuardModule:
             is True
         )
 
+    @pytest.mark.platforms("linux")
     def test_source_builtin_sourced_script_is_scanned(self, tmp_path):
         """The `source` spelling must stay blocked (it already was)."""
         from cron.lifecycle_guard import (
@@ -993,6 +1043,7 @@ class TestLifecycleGuardModule:
             is False
         )
 
+    @pytest.mark.platforms("linux")
     def test_nul_padded_script_without_shebang_is_scanned(self, tmp_path):
         """Same bypass without a shebang — bash still runs it, so still scan.
 
@@ -1043,6 +1094,7 @@ class TestLifecycleGuardModule:
                 is False
             )
 
+    @pytest.mark.platforms("linux")
     def test_oversized_nul_bearing_text_still_fails_closed(self, tmp_path):
         """An oversized *text* script must keep failing closed.
 
@@ -1386,6 +1438,7 @@ class TestLifecycleGuardModule:
             command, cwd="/tmp"
         ) is True
 
+    @pytest.mark.require_symlinks
     def test_cloud_backed_symlink_fails_closed_without_opening_target(
         self, tmp_path, monkeypatch
     ):
@@ -1428,6 +1481,7 @@ class TestLifecycleGuardModule:
             str(launcher)
         ) is True
 
+    @pytest.mark.platforms("linux")
     def test_third_party_cloudstorage_path_fails_closed_without_opening(
         self, tmp_path, monkeypatch
     ):
@@ -1657,6 +1711,7 @@ class TestLifecycleGuardModule:
 # Defense 2 (chokepoint): cron.jobs.create_job blocks the AGENT model-tool path
 # ---------------------------------------------------------------------------
 
+@pytest.mark.platforms("linux")
 class TestDotSourceIsScannedLikeSource:
     """`.` and `source` are the same POSIX builtin and must scan alike.
 
@@ -1715,6 +1770,7 @@ class TestDotSourceIsScannedLikeSource:
         assert self._scan(f". {clean}", cwd=str(tmp_path)) is False
 
 
+@pytest.mark.platforms("linux")
 class TestTransparentWrapperPrefixes:
     """`sudo`/`env`/`nohup`/... exec their argument tail, so the command that
     actually runs sits further right. Reading only the first token made the
@@ -2021,6 +2077,7 @@ class TestTerminalToolGatewayLifecycleGuardRemote:
             lambda: inside_gateway,
         )
 
+    @pytest.mark.platforms("linux")
     def test_remote_backend_script_read_uses_env_execute(self, monkeypatch, tmp_path):
         import tools.terminal_tool as tt
 

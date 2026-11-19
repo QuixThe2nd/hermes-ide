@@ -251,12 +251,12 @@ class TestResolutionGrammar:
         supports work identically for failure_deliver."""
         job = {
             "deliver": "local",
-            "failure_deliver": "slack:D0ALERTS,telegram:-1001:17",
+            "failure_deliver": "slack:D0ALERTS,discord:-1001:17",
         }
         targets = _resolve_delivery_targets(job, for_failure=True)
         assert [(t["platform"], t["chat_id"], t.get("thread_id")) for t in targets] == [
             ("slack", "D0ALERTS", None),
-            ("telegram", "-1001", "17"),
+            ("discord", "-1001", "17"),
         ]
 
     def test_legacy_list_value_is_flattened_like_deliver(self):
@@ -305,10 +305,10 @@ class TestToolSurface:
             action="create",
             prompt="scan",
             schedule="every 1h",
-            failure_deliver=["slack", "telegram"],
+            failure_deliver=["slack", "discord"],
         ))
         assert result["success"] is True
-        assert get_job(result["job_id"])["failure_deliver"] == "slack,telegram"
+        assert get_job(result["job_id"])["failure_deliver"] == "slack,discord"
 
     def test_create_rejects_bad_bot_chat_profile_same_as_deliver(self, cron_env):
         from tools.cronjob_tools import cronjob
@@ -446,19 +446,3 @@ class TestPreflightAndDashboardLanes:
             "id": "p3", "deliver": "ghost:C1", "failure_deliver": "ghost:C1",
         })
         assert seen == ["ghost"]
-
-    def test_dashboard_update_normalizes_failure_deliver(self, tmp_path):
-        """The dashboard update lane normalizes failure_deliver like
-        deliver: text stripped, empty clears (None) instead of
-        coalescing to a target."""
-        from hermes_cli.web_routers.cron import _normalize_dashboard_cron_updates
-
-        out = _normalize_dashboard_cron_updates(
-            {"failure_deliver": "  slack:D0ALERTS  "}, tmp_path
-        )
-        assert out["failure_deliver"] == "slack:D0ALERTS"
-
-        cleared = _normalize_dashboard_cron_updates(
-            {"failure_deliver": ""}, tmp_path
-        )
-        assert cleared["failure_deliver"] is None

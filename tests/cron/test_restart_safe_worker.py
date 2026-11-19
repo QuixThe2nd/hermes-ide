@@ -77,7 +77,7 @@ def test_genuine_external_worker_crash_is_recovered_unknown(
     assert "whether side effects ran is unknown" in recovered["error"]
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_restart_safe_gateway_child_fails_closed_when_required(monkeypatch):
     import tools.process_registry as process_registry
 
@@ -93,7 +93,7 @@ def test_restart_safe_gateway_child_fails_closed_when_required(monkeypatch):
         )
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_restart_safe_gateway_child_degrades_without_scope(monkeypatch, caplog):
     """Managed gateway + no user bus degrades to a mode distinct from the
     in-process passthrough, and warns once per process, not per dispatch."""
@@ -569,7 +569,7 @@ def test_launch_external_worker_stays_in_process_outside_managed_gateway(
     popen.assert_not_called()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_launch_external_worker_degrades_by_default_with_real_helper(
     tmp_path, monkeypatch,
 ):
@@ -709,12 +709,12 @@ def test_worker_delivery_queue_is_keyed_by_the_delivering_jobs_own_execution(
     monkeypatch.setattr(
         scheduler,
         "_resolve_delivery_targets",
-        lambda job, for_failure=False: [{"platform": "telegram", "chat_id": "123"}],
+        lambda job, for_failure=False: [{"platform": "discord", "chat_id": "123"}],
     )
     monkeypatch.setattr(
         scheduler_delivery,
         "_resolve_delivery_targets",
-        lambda job, for_failure=False: [{"platform": "telegram", "chat_id": "123"}],
+        lambda job, for_failure=False: [{"platform": "discord", "chat_id": "123"}],
     )
 
     def _standalone(*_args, **_kwargs):
@@ -727,7 +727,7 @@ def test_worker_delivery_queue_is_keyed_by_the_delivering_jobs_own_execution(
 
     # Own attempt: routed through the durable queue.
     assert scheduler._deliver_result(
-        {"id": "job-1", "execution_id": "exec-outer", "deliver": "telegram:123"},
+        {"id": "job-1", "execution_id": "exec-outer", "deliver": "discord:123"},
         "done",
         adapters=None,
         loop=None,
@@ -737,7 +737,7 @@ def test_worker_delivery_queue_is_keyed_by_the_delivering_jobs_own_execution(
     # A different job's attempt: must NOT be queued under exec-outer; it falls
     # through to the standalone path.
     error = scheduler._deliver_result(
-        {"id": "job-2", "execution_id": "exec-inner", "deliver": "telegram:123"},
+        {"id": "job-2", "execution_id": "exec-inner", "deliver": "discord:123"},
         "done",
         adapters=None,
         loop=None,
@@ -795,7 +795,7 @@ def test_lost_execution_start_cas_prevents_side_effects(monkeypatch):
     run.assert_not_called()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.live_system_guard_bypass
 def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
     tmp_path, monkeypatch
@@ -842,7 +842,7 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
             name="restart probe",
             script=probe.name,
             no_agent=True,
-            deliver="telegram:123",
+            deliver="discord:123",
         )
     payload = tmp_path / "job.json"
     launched = tmp_path / "launched.json"
@@ -858,7 +858,7 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
     adapter.send = send
     gateway_config = Mock()
     gateway_config.platforms = {
-        Platform.TELEGRAM: PlatformConfig(enabled=True),
+        Platform.DISCORD: PlatformConfig(enabled=True),
     }
     monkeypatch.setattr(
         "gateway.config.load_gateway_config", lambda: gateway_config
@@ -919,7 +919,7 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
             row = delivery_queue.get_status(execution["id"])
             if row and row["status"] == "pending":
                 scheduler.drain_delivery_queue(
-                    {Platform.TELEGRAM: adapter}, replacement_loop
+                    {Platform.DISCORD: adapter}, replacement_loop
                 )
             current = executions.latest_execution(job["id"])
             if current and current["status"] == "completed":

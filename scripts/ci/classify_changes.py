@@ -10,14 +10,14 @@ Lanes:
 
 * ``python``      — pytest / ruff / ty / footguns.
 * ``python_prod`` — Python changes OUTSIDE tests/ — gates jobs that ship or
-  run the product (Desktop E2E backend, Docker image) but never import the
-  test suite. A tests-only PR keeps ``python`` (pytest must run) while
-  skipping those product jobs.
+  run the product (the Docker image) but never import the test suite. A
+  tests-only PR keeps ``python`` (pytest must run) while skipping those product
+  jobs.
 * ``docker_meta`` — Dockerfiles etc.
 * ``docker`` — any product change + docker meta
 * ``nix``         — ``nix flake check``: the flake inputs and any product change.
-* ``frontend``    — TS typecheck matrix + desktop build.
-* ``site``        — Docusaurus + generated skill docs.
+* ``frontend``    — JS/TS checks for the remaining tests-js workspace.
+* ``site``        — generated skill documentation inputs.
 * ``scan``        — supply-chain scan (Python files, .pth, setup hooks).
 * ``deps``        — pyproject.toml dependency bounds check.
 * ``uv_lock``     — ``uv lock --check``. Re-resolves the whole graph against
@@ -25,17 +25,6 @@ Lanes:
   must not run it.
 * ``npm_lock``    — semantic package-lock.json diff PR comment.
 * ``installer``   — PowerShell installer tests (Windows runner).
-* ``desktop_updater`` — the Windows desktop-update hand-off script and the
-  tests that drive the REAL ``windows.ps1`` (``-SelfTestUi`` / pipe drain /
-  retry policy). These are integration tests of a PowerShell process on a
-  shared runner; running them on every Python PR made their timing noise
-  everyone's problem. They still run on push (fail-open) and whenever the
-  script, its siblings, or their tests change.
-* ``bootstrap``   — the bootstrap installer lane: install.sh sandbox install,
-  pin-fragment drift check, and shipped version-stamp verification.
-* ``rust``        — ``cargo test`` for the Tauri bootstrap installer. ``.rs``
-  lives under ``apps/``, so without this lane a Rust change matched ``frontend``
-  and only the TypeScript matrix ran.
 * ``mcp_catalog`` — bundled MCP catalog / installer review.
 
 Docker is not a lane — it builds on push-to-main and release only,
@@ -53,12 +42,6 @@ must never skip one a change could break:
   only the flake reads them, so they skip the Python lanes and run ``nix``
   alone. ``pyproject.toml`` and ``uv.lock`` are flake inputs too, but the
   packaging tests read them, so they keep every Python lane.
-* ``website/static/oauth/`` is python-relevant too: it publishes the OAuth
-  Client ID Metadata Document that ``tests/tools/test_mcp_cimd.py`` checks
-  against the pinned callback ports in ``tools/mcp_oauth.py``.
-* ``website/docs/`` and ``website/scripts/`` are python-relevant for the same
-  reason: the docs tree generates ``llms.txt``, and
-  ``tests/website/test_generate_llms_txt.py`` asserts every page reaches it.
 """
 
 from __future__ import annotations
@@ -68,42 +51,25 @@ import os
 import subprocess
 import sys
 
-_FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
-# Shipped page outside those packages, exercised by the desktop Electron suite.
-_FRONTEND_FILES = {"scripts/desktop-update/ui.html"}
+_FRONTEND = ("tests-js/",)  # Root JS/TS test workspace.
 _ROOT_NPM = {"package.json", "package-lock.json"}  # shifts every package's tree
 _DOCKER_META = ("docker/", ".hadolint.yml", "Dockerfile") # docker setup
 _NIX_PATHS = ("nix/",) # nix files
 _NIX_FILES = {"flake.nix", "flake.lock"} # base nix files
-_SITE = ("website/", "skills/", "optional-skills/")  # docs site + skill pages
+_SITE = ("skills/", "optional-skills/")  # skill pages
 # Prose/frontend trees that can't touch Python. skills/ is excluded on purpose.
-_PY_SKIP = ("docs/", "website/") + _FRONTEND
-# Published artifacts that live under website/ but that Python asserts about.
-# The OAuth Client ID Metadata Document is cross-checked against the pinned
-# callback ports in tools/mcp_oauth.py, so editing it alone must still run the
-# Python lane — otherwise dropping a redirect URI goes green here and breaks
-# every CIMD login on main.
-# website/docs/ and website/scripts/ are asserted about the same way. The docs
-# tree generates llms.txt — the index every LLM (Hermes included, via the
-# hermes-agent skill) reads to learn what Hermes can do — and
-# tests/website/test_generate_llms_txt.py holds every page to appearing in it.
-# Skipping Python on a docs-only PR is how the index drifted to 53% coverage.
+_PY_SKIP = ("docs/",) + _FRONTEND
+# Published artifacts that Python asserts about. The OAuth Client ID Metadata
+# Document is cross-checked against the pinned callback ports in
+# tools/mcp_oauth.py, so editing it alone must still run the Python lane —
+# otherwise dropping a redirect URI goes green here and breaks every CIMD
+# login on main.
 _PY_RELEVANT_SITE = (
-    "website/static/oauth/",
-    "website/docs/",
-    "website/scripts/",
+    "assets/oauth/",
 )
 # Cross-language contract files: data committed under a frontend tree that a
 # pytest pins against the Python side (emitter inventory, command registry).
-# Editing only the JSON in an apps/-only PR would otherwise skip the one test
-# that can catch the drift, so these force the Python lane too.
-_PY_RELEVANT_CONTRACT_FILES = {
-    # tests/tui_gateway/contracts/test_generated.py (rendered from tui_gateway/contracts)
-    "apps/shared/src/gateway-contract.generated.ts",
-    "apps/shared/src/gateway-contract.openrpc.json",
-    # tests/hermes_cli/test_desktop_slash_registry.py
-    "apps/desktop/src/lib/desktop-slash-registry.json",
-}
+_PY_RELEVANT_CONTRACT_FILES: set = set()
 
 # CI-sensitive files: eslint config, workflow files, composite actions.
 # Changes here can influence what code the autofix job executes and pushes to
@@ -131,30 +97,6 @@ _MCP_CATALOG_FILES = {"hermes_cli/mcp_catalog.py"}
 _INSTALLER_PATHS = ("scripts/tests/",)
 _INSTALLER_FILES = {"scripts/install.ps1", "scripts/install.cmd"}
 
-# Windows desktop-update hand-off (scripts/desktop-update/windows.ps1 + the
-# Electron side that launches it) and the pytest files that spawn it.
-_DESKTOP_UPDATER_PATHS = ("scripts/desktop-update/",)
-_DESKTOP_UPDATER_TEST_PREFIX = "tests/scripts/desktop_update/"
-_DESKTOP_UPDATER_FILES = {
-    "apps/desktop/electron/updater-process.ts",
-    "apps/desktop/electron/managed-ssh-update.ts",
-    "tests/conftest.py",
-    "pyproject.toml",
-}
-
-# Bootstrap installer: the POSIX shell installer, the dev-checkout wrapper
-# that carries the same pin fragment, and the Tauri app's non-Rust sources
-# (the .rs/Cargo files are the ``rust`` lane's job). Changes here get the
-# bootstrap-installer.yml lane — a real sandboxed install + stamp check.
-_BOOTSTRAP_PATHS = ("apps/bootstrap-installer/",)
-_BOOTSTRAP_FILES = {"scripts/install.sh", "setup-hermes.sh"}
-
-# Rust crates — currently just the Tauri bootstrap installer (Hermes-Setup).
-# These live under ``apps/``, so before this lane existed a ``.rs`` edit matched
-# ``frontend`` and nothing more: the TypeScript matrix built, cargo never ran,
-# and the crate's unit tests had never executed in CI at all.
-_RUST_PATHS = ("apps/bootstrap-installer/src-tauri/",)
-_RUST_FILENAMES = {"Cargo.toml", "Cargo.lock"}
 
 def _is_docs(p: str) -> bool:
     if p.startswith(("skills/", "optional-skills/")):
@@ -181,11 +123,10 @@ def _py_irrelevant(p: str) -> bool:
 def _py_test_only(p: str) -> bool:
     """Is ``p`` inside the test suite (never shipped / imported by the product)?
 
-    Product jobs (Desktop E2E's ``hermes serve`` backend, the Docker image)
-    run installed code — nothing under ``tests/`` is packaged or importable
-    there. scripts/run_tests.sh and run_tests_parallel.py are deliberately
-    NOT test-only: they are runner infrastructure, and a bad edit there can
-    mask real failures, so they stay conservative (python_prod=true).
+    Product jobs (the Docker image) run installed code — nothing under
+    ``tests/`` is packaged or importable there. scripts/run_tests.sh and
+    scripts/run_tests_parallel.py are deliberately NOT test-only: they are
+    runner infrastructure, and a bad edit there can mask real failures, so they stay conservative (python_prod=true).
     """
     return p.startswith("tests/")
 
@@ -200,22 +141,6 @@ def _is_mcp_catalog(p: str) -> bool:
 
 def _is_installer(p: str) -> bool:
     return p.startswith(_INSTALLER_PATHS) or p in _INSTALLER_FILES
-
-
-def _is_desktop_updater(p: str) -> bool:
-    return (
-        p.startswith(_DESKTOP_UPDATER_PATHS)
-        or p.startswith(_DESKTOP_UPDATER_TEST_PREFIX)
-        or p in _DESKTOP_UPDATER_FILES
-    )
-
-
-def _is_rust(p: str) -> bool:
-    return (
-        p.endswith(".rs")
-        or p.startswith(_RUST_PATHS)
-        or os.path.basename(p) in _RUST_FILENAMES
-    )
 
 
 def _is_ci_review(p: str) -> bool:
@@ -236,10 +161,7 @@ def classify(files: list[str]) -> dict[str, bool]:
     files = [f.strip() for f in files if f.strip()]
     python = any(not _py_irrelevant(f) for f in files)
     python_prod = any(not _py_irrelevant(f) and not _py_test_only(f) for f in files)
-    frontend = any(
-        f.startswith(_FRONTEND) or f in _ROOT_NPM or f in _FRONTEND_FILES
-        for f in files
-    )
+    frontend = any(f.startswith(_FRONTEND) or f in _ROOT_NPM for f in files)
     deps = any(f == "pyproject.toml" for f in files)
     npm_lock = any(f.split("/")[-1] == "package-lock.json" for f in files)
     docker_meta = any(f.startswith(_DOCKER_META) for f in files)
@@ -256,11 +178,6 @@ def classify(files: list[str]) -> dict[str, bool]:
         "uv_lock": any(f in ("pyproject.toml", "uv.lock") for f in files),
         "npm_lock": npm_lock,
         "installer": any(_is_installer(f) for f in files),
-        "desktop_updater": any(_is_desktop_updater(f) for f in files),
-        "bootstrap": any(
-            f.startswith(_BOOTSTRAP_PATHS) or f in _BOOTSTRAP_FILES for f in files
-        ),
-        "rust": any(_is_rust(f) for f in files),
         "mcp_catalog": any(_is_mcp_catalog(f) for f in files),
         "ci_review": any(_is_ci_review(f) for f in files),
         "nix": python_prod or frontend or any(_is_nix(f) for f in files)
@@ -277,9 +194,6 @@ def classify(files: list[str]) -> dict[str, bool]:
         ret["uv_lock"] = True
         ret["npm_lock"] = True
         ret["installer"] = True
-        ret["desktop_updater"] = True
-        ret["bootstrap"] = True
-        ret["rust"] = True
         ret["nix"] = True
         ret["ci_review"] = True
 
@@ -293,7 +207,7 @@ def _pull_request_number() -> str | None:
     if not event_path:
         return None
     try:
-        with open(event_path, encoding="utf-8") as fh:
+        with open(event_path, encoding="utf-8-sig") as fh:
             payload = json.load(fh)
     except (OSError, json.JSONDecodeError):
         return None

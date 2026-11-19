@@ -4,7 +4,6 @@ import json
 import os
 import sys
 import time
-import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,9 +14,8 @@ from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
 from hermes_cli.models import provider_label
 from hermes_cli.runtime_provider import resolve_requested_provider
-from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_cli.status_auth import (  # renderers wired into _SECTIONS below
-    _render_api_keys, _render_apikey_providers, _render_auth_providers, _render_nous_gateway)
+    _render_api_keys, _render_apikey_providers, _render_auth_providers)
 from hermes_constants import OPENROUTER_MODELS_URL
 from hermes_constants import is_termux as _is_termux
 
@@ -108,18 +106,13 @@ def _estop_status_line():
 # Simple env-driven terminal backends: (label, env var, default, empty-counts-as-unset).
 _TERMINAL_ENV_ROWS = {
     "ssh": (("SSH Host:", "TERMINAL_SSH_HOST", "(not set)", True), ("SSH User:", "TERMINAL_SSH_USER", "(not set)", True)),
-    "docker": (("Docker Image:", "TERMINAL_DOCKER_IMAGE", "python:3.11-slim", False),),
-    "daytona": (("Daytona Image:", "TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20", False),),
 }
 
 _PLATFORMS = {  # name -> token env var
-    "Telegram": "TELEGRAM_BOT_TOKEN",
     "Discord": "DISCORD_BOT_TOKEN", "WhatsApp": "WHATSAPP_ENABLED",
     "Signal": "SIGNAL_HTTP_URL",
     "Slack": "SLACK_BOT_TOKEN", "Email": "EMAIL_ADDRESS",
-    "SMS": "TWILIO_ACCOUNT_SID", "DingTalk": "DINGTALK_CLIENT_ID",
-    "Feishu": "FEISHU_APP_ID", "WeCom": "WECOM_BOT_ID",
-    "WeCom Callback": "WECOM_CALLBACK_CORP_ID", "Weixin": "WEIXIN_ACCOUNT_ID",
+    "SMS": "TWILIO_ACCOUNT_SID",    "Feishu": "FEISHU_APP_ID", "Weixin": "WEIXIN_ACCOUNT_ID",
     "BlueBubbles": "BLUEBUBBLES_SERVER_URL", "QQBot": "QQ_APP_ID",
     "Yuanbao": "YUANBAO_APP_ID"}
 
@@ -166,19 +159,6 @@ def _render_terminal(ctx):
         for label, var, default, empty_is_unset in _TERMINAL_ENV_ROWS[terminal_env]:
             value = (os.getenv(var, "") or default) if empty_is_unset else os.getenv(var, default)
             print(f"  {label:<13} {value}")
-    elif terminal_env == "vercel_sandbox":
-        persist = os.getenv("TERMINAL_CONTAINER_PERSISTENT")
-        persist_enabled = (bool(terminal_cfg.get("container_persistent", True)) if persist is None
-                           else persist.lower() in {"1", "true", "yes", "on"})
-        auth_status = describe_vercel_auth()
-        _kv("Runtime:", os.getenv('TERMINAL_VERCEL_RUNTIME') or terminal_cfg.get('vercel_runtime') or 'node24')
-        _kv_flag("SDK:", importlib.util.find_spec("vercel") is not None, "installed",
-                 "missing (install: pip install 'hermes-agent[vercel]')")
-        _kv("Auth:", f"{check_mark(auth_status.ok)} {auth_status.label}")
-        for line in auth_status.detail_lines:
-            _kv("Auth detail:", line)
-        _kv("Persistence:", 'snapshot filesystem' if persist_enabled else 'ephemeral filesystem')
-        _kv("Processes:", "live processes do not survive cleanup, snapshots, or sandbox recreation")
     else:
         # Plugin-registered terminal backends: show availability via the provider's doctor rows
         # (fail-soft — never break `hermes status`).
@@ -354,17 +334,14 @@ def _render_footer(ctx):
 
 # Print order of `hermes status`; each renderer takes the shared _StatusContext.
 _SECTIONS = (
-    _render_header, _render_environment, _render_api_keys, _render_auth_providers, _render_nous_gateway,
+    _render_header, _render_environment, _render_api_keys, _render_auth_providers,
     _render_apikey_providers, _render_terminal, _render_platforms, _render_gateway, _render_cron,
     _render_sessions, _render_deep, _render_footer)
 
 
 def show_status(args):
     """Show status of all Hermes Agent components."""
-    # Shared by section renderers: config, --deep, and the Nous login facts Auth Providers derives
-    # for the later Nous Tool Gateway section.
-    ctx = SimpleNamespace(deep=getattr(args, 'deep', False), config={}, nous_logged_in=False,
-                          nous_inference_present=False, nous_account_info=None)
+    ctx = SimpleNamespace(deep=getattr(args, 'deep', False), config={})
     for render in _SECTIONS:
         render(ctx)
 
@@ -377,10 +354,6 @@ import subprocess  # noqa: F401,E402
 
 
 _PLUGIN_COMPAT_LAZY = {
-    'format_nous_portal_entitlement_message': ('hermes_cli.nous_account', 'format_nous_portal_entitlement_message'),
-    'get_nous_portal_account_info': ('hermes_cli.nous_account', 'get_nous_portal_account_info'),
-    'get_nous_subscription_features': ('hermes_cli.nous_subscription', 'get_nous_subscription_features'),
-    'managed_nous_tools_enabled': ('tools.tool_backend_helpers', 'managed_nous_tools_enabled'),
     'redact_key': ('hermes_cli.config', 'redact_key'),
 }
 

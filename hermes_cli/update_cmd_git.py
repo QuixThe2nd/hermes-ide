@@ -1,4 +1,4 @@
-"""Git plumbing for ``hermes update``: fork/upstream sync, trampoline-git detection, lockfile/EOL churn cleanup, orphan rescue refs, parked-branch assessment, fetch-failure classification.
+"""Git plumbing for ``hermes update``: origin detection, trampoline-git detection, lockfile/EOL churn cleanup, orphan rescue refs, parked-branch assessment, fetch-failure classification.
 
 Split out of ``update_cmd.py``, which re-imports every name so ``hermes_cli.update_cmd.<name>``
 still resolves/monkeypatches. Origin helpers are imported lazily per function (no cycle;
@@ -20,17 +20,26 @@ _ORPHAN_RESCUE_REF_MAX_AGE_DAYS = 30
 
 _GIT_TEXT_KW = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
 _BAR = "=" * 68
-_UPSTREAM_ADD_CMD = "git remote add upstream https://github.com/NousResearch/hermes-agent.git"
 
 
-def _git_ok(git_cmd, args, cwd, **kw) -> bool:
-    """True when ``_git_run`` exits 0; any exception counts as failure."""
-    return _git_stdout(git_cmd, args, cwd, **kw) is not None
+def _git_run(git_cmd, args, cwd=None, *, check=False):
+    """Run ``git_cmd + args`` and return the CompletedProcess.
+
+    The updater's git runner: capture all output and decode as UTF-8 regardless of the
+    Windows ANSI code page (#52649). ``check=True`` raises on non-zero exit.
+    """
+    return subprocess.run(
+        git_cmd + list(args),
+        cwd=cwd,
+        capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+        check=check,
+    )
 
 
 def _git_stdout(git_cmd, args, cwd, **kw) -> Optional[str]:
     """Stripped stdout of a successful ``_git_run``; ``None`` on non-zero exit or any exception."""
-    from hermes_cli.update_cmd import _git_run
+    from hermes_cli.update_cmd_git import _git_run
     with suppress(Exception):
         result = _git_run(git_cmd, args, cwd, **kw)
         if result.returncode == 0:
@@ -52,7 +61,7 @@ def _prune_orphan_rescue_refs(
     those objects include a full working-tree snapshot (the autostash orphan commit), which can be multi-GB
     when the tree holds large stray files. See #87694.
     """
-    from hermes_cli.update_cmd import _git_run
+    from hermes_cli.update_cmd_git import _git_run
     with suppress(OSError):
         prefix = f"refs/hermes-update-backups/orphan-{branch}-"
         list_result = _git_run(git_cmd, ["for-each-ref", "--format=%(refname)", "--sort=refname", f"{prefix}*"], cwd)
@@ -107,7 +116,7 @@ def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: 
     - (False, "disabled"|"dirty"|"unverifiable") — caller must NOT touch the branch. Dirty is the
       genuinely unsafe case: uncommitted work riding an autostash across branches.
     A config read failure must not disable the safety checks: fall through with the default."""
-    from hermes_cli.update_cmd import _git_run
+    from hermes_cli.update_cmd_git import _git_run
     try:
         from hermes_cli.config import load_config
         _update_cfg = (load_config() or {}).get("updates", {})
@@ -169,13 +178,12 @@ def _print_parked_branch_kept_notice(current_branch: str, target_branch: str, un
 
 
 OFFICIAL_REPO_URLS = {
-    "https://github.com/NousResearch/hermes-agent.git",
-    "git@github.com:NousResearch/hermes-agent.git",
-    "https://github.com/NousResearch/hermes-agent",
-    "git@github.com:NousResearch/hermes-agent",
+    "https://github.com/QuixThe2nd/hermes-ide.git",
+    "git@github.com:QuixThe2nd/hermes-ide.git",
+    "https://github.com/QuixThe2nd/hermes-ide",
+    "git@github.com:QuixThe2nd/hermes-ide",
 }
-OFFICIAL_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
-SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
+OFFICIAL_REPO_URL = "https://github.com/QuixThe2nd/hermes-ide.git"
 
 
 def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
@@ -184,7 +192,7 @@ def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
 
 
 def _is_fork(origin_url: Optional[str]) -> bool:
-    """Check if the origin remote points to a fork (not the official repo)."""
+    """Check if the origin remote points to a fork (not the Hermes IDE repo)."""
     if not origin_url:
         return False
 
@@ -193,127 +201,6 @@ def _is_fork(origin_url: Optional[str]) -> bool:
         return url[:-4] if url.endswith(".git") else url
 
     return _norm(origin_url) not in {_norm(official) for official in OFFICIAL_REPO_URLS}
-
-
-def _has_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
-    """Check if an 'upstream' remote already exists."""
-    return _git_ok(git_cmd, ["remote", "get-url", "upstream"], cwd)
-
-
-def _add_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
-    """Add the official repo as the 'upstream' remote. Returns True on success."""
-    return _git_ok(git_cmd, ["remote", "add", "upstream", OFFICIAL_REPO_URL], cwd)
-
-
-def _count_commits_between(git_cmd: list[str], cwd: Path, base: str, head: str) -> int:
-    """Count commits on `head` that are not on `base`. Returns -1 on error."""
-    with suppress(Exception):
-        count = _git_stdout(git_cmd, ["rev-list", "--count", f"{base}..{head}"], cwd)
-        if count is not None:
-            return int(count)
-    return -1
-
-
-def _should_skip_upstream_prompt() -> bool:
-    """Check if user previously declined to add upstream."""
-    from hermes_constants import get_hermes_home
-    return (get_hermes_home() / SKIP_UPSTREAM_PROMPT_FILE).exists()
-
-
-def _mark_skip_upstream_prompt():
-    """Create marker file to skip future upstream prompts."""
-    with suppress(Exception):
-        from hermes_constants import get_hermes_home
-        (get_hermes_home() / SKIP_UPSTREAM_PROMPT_FILE).touch()
-
-
-def _sync_fork_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
-    """Push updated main to origin (sync fork); True on success."""
-    return _git_ok(git_cmd, ["push", "origin", "main", "--force-with-lease"], cwd, network=True)
-
-
-def _offer_upstream_remote(git_cmd: list[str], cwd: Path, *, assume_yes: bool, input_fn) -> bool:
-    """Prompt to add ``upstream`` and add it; False when the user declined, the run is non-interactive, or add failed.
-
-    ``--yes`` means "don't block", not "mutate my remotes", so a non-interactive skip is NOT persisted."""
-    from hermes_cli.update_cmd import _add_upstream_remote, _mark_skip_upstream_prompt
-    print(
-        "\nℹ Your fork is not tracking the official Hermes repository.\n"
-        "  This means you may miss updates from NousResearch/hermes-agent.\n"
-    )
-    if assume_yes or (input_fn is None and not (sys.stdin.isatty() and sys.stdout.isatty())):
-        print(f"  Skipping upstream setup (non-interactive run).\n  Add it later with: {_UPSTREAM_ADD_CMD}")
-        return False
-    if input_fn is not None:
-        response = input_fn("Add official repo as 'upstream' remote? [y/N]", "n").strip().lower()
-    else:
-        try:
-            response = input("Add official repo as 'upstream' remote? [Y/n]: ").strip().lower()
-        except (EOFError, KeyboardInterrupt, UnicodeDecodeError):
-            print()
-            response = "n"
-    if response not in {"", "y", "yes"}:
-        print(f"  Skipped. Run '{_UPSTREAM_ADD_CMD}' to add later.")
-        _mark_skip_upstream_prompt()
-        return False
-    print("→ Adding upstream remote...")
-    if not _add_upstream_remote(git_cmd, cwd):
-        print("  ✗ Failed to add upstream remote. Skipping upstream sync.")
-        return False
-    print("  ✓ Added upstream: https://github.com/NousResearch/hermes-agent.git")
-    return True
-
-
-def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: bool = False, input_fn=None) -> bool:
-    """Offer to add ``upstream``, compare origin/main vs upstream/main, ff-pull when strictly behind, then push origin.
-
-    Returns True only when origin/main was actually verified against upstream/main; False when the check never
-    happened, so the caller never reports "up to date" on an origin-only compare. Fetches only upstream/main:
-    a bare fetch drags in thousands of auto-generated branches.
-
-    See #97052.
-    """
-    from hermes_cli.update_cmd import _count_commits_between, _has_upstream_remote, _no_prompt_git_kwargs, _should_skip_upstream_prompt
-    if not _has_upstream_remote(git_cmd, cwd) and (
-        _should_skip_upstream_prompt() or not _offer_upstream_remote(git_cmd, cwd, assume_yes=assume_yes, input_fn=input_fn)
-    ):
-        return False
-    print("\n→ Fetching upstream...")
-    try:
-        subprocess.run(git_cmd + ["fetch", "upstream", "main", "--quiet"], cwd=cwd, capture_output=True, check=True, **_no_prompt_git_kwargs())
-    except subprocess.CalledProcessError:
-        print("  ✗ Failed to fetch upstream. Skipping upstream sync.")
-        return False
-    origin_ahead = _count_commits_between(git_cmd, cwd, "upstream/main", "origin/main")
-    upstream_ahead = _count_commits_between(git_cmd, cwd, "origin/main", "upstream/main")
-    if origin_ahead < 0 or upstream_ahead < 0:
-        print("  ✗ Could not compare branches. Skipping upstream sync.")
-        return False
-    if origin_ahead > 0:
-        print(
-            f"\nℹ Your fork has {origin_ahead} commit(s) not on upstream.\n"
-            "  Skipping upstream sync to preserve your changes.\n"
-            "  If you want to merge upstream changes, run:\n    git pull upstream main"
-        )
-        return True
-    if upstream_ahead == 0:
-        print("  ✓ Fork is up to date with upstream")
-        return True
-    print(f"\n→ Fork is {upstream_ahead} commit(s) behind upstream\n→ Pulling from upstream...")
-    try:
-        subprocess.run(git_cmd + ["pull", "--ff-only", "upstream", "main"], cwd=cwd, check=True, **_no_prompt_git_kwargs())
-    except subprocess.CalledProcessError:
-        print("  ✗ Failed to pull from upstream. You may need to resolve conflicts manually.")
-        return False
-    print("  ✓ Updated from upstream\n→ Syncing fork...")
-    if _sync_fork_with_upstream(git_cmd, cwd):
-        print("  ✓ Fork synced with upstream")
-    else:
-        print(
-            "  ℹ Got updates from upstream but couldn't push to fork (no write access?)\n"
-            "    Your local repo is updated, but your fork on GitHub may be behind."
-        )
-    return True
 
 
 def _has_http_code(stderr: str, *codes: str) -> bool:
@@ -400,8 +287,9 @@ def _locate_real_git() -> Optional[Path]:
     invoked directly (#87876).
     """
     candidates = [
-        Path(r"C:\Program Files\Git\mingw64\libexec\git-core\git.exe"),
-        Path(r"C:\Program Files (x86)\Git\mingw64\libexec\git-core\git.exe"),
+        Path(base) / "Git" / arch / "libexec" / "git-core" / "git.exe"
+        for base in (r"C:\Program Files", r"C:\Program Files (x86)")
+        for arch in ("clangarm64", "mingw64", "mingw32")
     ] + _portable_git_candidates()
     return next((c for c in candidates if c.exists() and _probe_fork_bomb([str(c)]) is False), None)
 
@@ -424,11 +312,11 @@ def _ensure_non_trampoline_git(git_cmd: list) -> list:
 def _npm_lockfile_owners(repo_root: Path) -> set[Path]:
     """Manifest directories whose specs the single root ``package-lock.json`` records: the root plus every
     workspace from the root ``workspaces`` globs (same model as ``update_cmd_deps._npm_manifest_paths``).
-    A manifest outside that graph (``website/``, ``scripts/whatsapp-bridge/``) has its own lockfile."""
+    A manifest outside that graph (``scripts/whatsapp-bridge/``) has its own lockfile."""
     owners = {Path(".")}
     try:
         import json
-        package = json.loads((repo_root / "package.json").read_text(encoding="utf-8"))
+        package = json.loads((repo_root / "package.json").read_text(encoding="utf-8-sig"))
         workspaces = package.get("workspaces", [])
         if isinstance(workspaces, dict):
             workspaces = workspaces.get("packages", [])
@@ -449,10 +337,10 @@ def _npm_lockfile_owners(repo_root: Path) -> set[Path]:
 def _discard_lockfile_churn(git_cmd, repo_root):
     """Restore ``package-lock.json`` files npm rewrote non-deterministically, so the update sees a clean tree
     instead of autostashing every run. A lockfile is kept when a manifest it records is dirty: for the root
-    lock that is the root or ANY workspace ``package.json`` (reverting it under a dirty ``apps/desktop``
+    lock that is the root or ANY workspace ``package.json`` (reverting it under a dirty workspace
     manifest desyncs spec and lock and every later ``npm ci`` fails, #112378); a nested lock is kept only
     with its sibling manifest. Best-effort."""
-    from hermes_cli.update_cmd import _git_run
+    from hermes_cli.update_cmd_git import _git_run
     with suppress(Exception):
         diff = _git_run(git_cmd, ["diff", "--name-only"], repo_root)
         if diff.returncode != 0:
@@ -490,7 +378,7 @@ def _normalize_managed_eol(git_cmd, repo_root):
     reuses its build-pinned ``install.ps1`` forever — so ``hermes update``, which ships with the checkout
     itself, is the only path left that can fix them. See #67730.
     """
-    from hermes_cli.update_cmd import _git_run
+    from hermes_cli.update_cmd_git import _git_run
     # -c, not config: evaluate the tree as it WOULD look pinned, persisting nothing.
     probe = git_cmd + ["-c", "core.autocrlf=false"]
 

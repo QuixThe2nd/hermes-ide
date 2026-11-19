@@ -29,7 +29,7 @@ async def test_detached_dispatch_requires_a_declared_consumer(monkeypatch):
             assert target == ("api-parent" if capability == "1" else None)
         finally:
             clear_session_vars(tokens)
-    from evals.api_delegation_http_probe import probe
+    from tests.probes.api_delegation_http_probe import probe
     result = await probe()
     for request in result["requests"]:
         assert request["status"] == 200

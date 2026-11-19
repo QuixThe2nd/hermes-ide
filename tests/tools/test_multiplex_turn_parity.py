@@ -30,9 +30,8 @@ def two_homes(tmp_path, monkeypatch):
         (home / "config.yaml").write_text(yaml.safe_dump({
             "terminal": {"backend": "local" if name == "a" else "docker",
                          "credential_files": [f"cred_{name}.txt"]},
-            "command_allowlist": [f"{name}-only-cmd *"],
             "security": {"redact_secrets": name == "b"},
-            "browser": {"engine": "chrome" if name == "a" else "lightpanda", "headed": name == "b"},
+            "browser": {"command_timeout": 11 if name == "a" else 17},
             "lsp": {"enabled": name == "b"},
         }), encoding="utf-8")
     return a, b
@@ -88,27 +87,12 @@ def test_terminal_backend_consumers_read_the_routed_scope(two_homes):
     assert mounts == ["cred_b.txt"]
 
 
-def test_permanent_allowlist_is_per_profile(two_homes):
-    """Profile A's ``command_allowlist`` must not pre-approve commands for routed profile B, and
-    B's own 'always' approvals must not be folded into A's set."""
-    from tools import approval
-
-    a, b = two_homes
-    approval.load_permanent_allowlist()  # launch-profile startup load (A)
-    assert approval.is_approved("s", "a-only-cmd *")
-    assert _under(b, lambda: approval.is_approved("s", "a-only-cmd *")) is False
-    assert _under(b, lambda: approval.is_approved("s", "b-only-cmd *")) is True
-    _under(b, lambda: approval.approve_permanent("b-always *"))
-    assert not approval.is_approved("s", "b-always *")
-    assert _under(a, lambda: approval.is_approved("s", "a-only-cmd *"))
-
 
 def test_profile_scoped_process_caches_follow_routed_home(two_homes, monkeypatch):
-    """Config-derived singletons (redaction switch, aux unhealthy marks, LSP service, browser
-    engine/headed flags, MCP stderr log path) are keyed by the routed profile home."""
+    """Config-derived singletons (redaction switch, aux unhealthy marks, LSP service,
+    Camofox command timeout, MCP stderr log path) are keyed by routed profile home."""
     from agent import auxiliary_client, lsp, redact
-    from tools import browser_tool_cloud, mcp_tool_config
-    from tools.browser_tool_lifecycle import cleanup_all_browsers
+    from tools import browser_camofox, mcp_tool_config
 
     a, b = two_homes
     monkeypatch.setattr(redact, "_REDACT_ENABLED", False)  # launch profile opted out
@@ -129,11 +113,11 @@ def test_profile_scoped_process_caches_follow_routed_home(two_homes, monkeypatch
     finally:
         lsp.shutdown_service()
 
-    cleanup_all_browsers()
-    assert _under(a, browser_tool_cloud._get_browser_engine) == "chrome"
-    assert _under(b, browser_tool_cloud._get_browser_engine) == "lightpanda"
-    assert _under(a, browser_tool_cloud._is_headed_mode) is False
-    assert _under(b, browser_tool_cloud._is_headed_mode) is True
+    browser_camofox._cached_cmd_timeout = None
+    browser_camofox._cmd_timeout_resolved = False
+    assert _under(a, browser_camofox._get_command_timeout) == 11
+    assert _under(b, browser_camofox._get_command_timeout) == 17
+    assert _under(a, browser_camofox._get_command_timeout) == 11
 
     mcp_tool_config._mcp_stderr_log_fh.clear()
     try:

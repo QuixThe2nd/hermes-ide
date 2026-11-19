@@ -42,58 +42,6 @@ class TestHandleFastCommand(unittest.TestCase):
             agent=MagicMock(),
         )
 
-    def test_no_args_shows_status(self):
-        cli_mod = _import_cli()
-        stub = self._make_cli(service_tier=None)
-        with (
-            patch.object(cli_mod, "_cprint") as mock_cprint,
-            patch.object(cli_mod, "save_config_value") as mock_save,
-        ):
-            cli_mod.HermesCLI._handle_fast_command(stub, "/fast")
-
-        # Bare /fast shows status, does not change config
-        mock_save.assert_not_called()
-        # Should have printed the status line
-        printed = " ".join(str(c) for c in mock_cprint.call_args_list)
-        self.assertIn("normal", printed)
-
-
-    def test_normal_argument_clears_service_tier(self):
-        cli_mod = _import_cli()
-        stub = self._make_cli(service_tier="priority")
-        with (
-            patch.object(cli_mod, "_cprint"),
-            patch.object(cli_mod, "save_config_value", return_value=True) as mock_save,
-        ):
-            cli_mod.HermesCLI._handle_fast_command(stub, "/fast normal")
-
-        # Session-scoped by default: no config write.
-        mock_save.assert_not_called()
-        self.assertIsNone(stub.service_tier)
-        self.assertIsNone(stub.agent)
-
-
-    def test_unsupported_model_does_not_expose_fast(self):
-        cli_mod = _import_cli()
-        stub = SimpleNamespace(
-            service_tier=None,
-            provider="openai-codex",
-            requested_provider="openai-codex",
-            model="gpt-5.3-codex",
-            _fast_command_available=lambda: False,
-            agent=MagicMock(),
-        )
-
-        with (
-            patch.object(cli_mod, "_cprint") as mock_cprint,
-            patch.object(cli_mod, "save_config_value") as mock_save,
-        ):
-            cli_mod.HermesCLI._handle_fast_command(stub, "/fast")
-
-        mock_save.assert_not_called()
-        self.assertTrue(mock_cprint.called)
-
-
 class TestPriorityProcessingModels(unittest.TestCase):
     """Verify the expanded Priority Processing model registry."""
 
@@ -146,13 +94,6 @@ class TestPriorityProcessingModels(unittest.TestCase):
 
 
 class TestFastModeRouting(unittest.TestCase):
-    def test_fast_command_exposed_for_model_even_when_provider_is_auto(self):
-        cli_mod = _import_cli()
-        stub = SimpleNamespace(provider="auto", requested_provider="auto", model="gpt-5.4", agent=None)
-
-        assert cli_mod.HermesCLI._fast_command_available(stub) is True
-
-
     def test_turn_route_injects_overrides_without_provider_switch(self):
         """Fast mode should add request_overrides but NOT change the provider/runtime."""
         cli_mod = _import_cli()
@@ -252,17 +193,6 @@ class TestAnthropicFastMode(unittest.TestCase):
         assert result == {"speed": "fast"}
 
 
-
-
-
-    def test_fast_command_hidden_for_anthropic_sonnet(self):
-        """Sonnet doesn't support fast mode (Opus 4.8/5 only) — /fast must be hidden."""
-        cli_mod = _import_cli()
-        stub = SimpleNamespace(
-            provider="anthropic", requested_provider="anthropic",
-            model="claude-sonnet-4-6", agent=None,
-        )
-        assert cli_mod.HermesCLI._fast_command_available(stub) is False
 
 
 

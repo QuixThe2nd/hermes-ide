@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from prompts.load import load
+
 from hermes_cli._subprocess_compat import noninteractive_git_env
 
 logger = logging.getLogger(__name__)
@@ -39,10 +41,12 @@ _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 # Consecutive judge *parse* failures (empty / non-JSON) before the loop auto-pauses and points at
 # the goal_judge config. API/transport errors do NOT count — those are tracked separately below.
 # Guards against small models that cannot follow the strict JSON contract burning the whole budget.
-DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
+# Two in a row: with auto-goal driving the loop, a judge that misfires twice must surface to the
+# user instead of quietly burning model budget.
+DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 2
 # Consecutive transport failures (401, timeout, DNS) before auto-pause: a broken API key returns
 # 401 every call and must not spend every turn on an unreachable judge.
-DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 5
+DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 2
 
 # Quality gates: deterministic shell commands that must pass before the judge may declare DONE. A
 # failed gate short-circuits the judge — its output IS the continuation prompt, so the agent works
@@ -109,66 +113,7 @@ CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE = (
     "gate itself is wrong or cannot pass, say so clearly and stop."
 )
 
-JUDGE_SYSTEM_PROMPT = (
-    "You are a strict judge evaluating whether an autonomous agent has "
-    "achieved a user's stated goal. You receive the goal text, the agent's "
-    "most recent response, and — when present — a list of background "
-    "processes the agent has running. Decide one of four verdicts.\n\n"
-    "DONE — the goal is fully satisfied:\n"
-    "- The response explicitly confirms the goal was completed, OR\n"
-    "- The response clearly shows the final deliverable was produced.\n"
-    "DONE requires the deliverable to actually exist. If the response only "
-    "explains why the goal cannot be reached, the verdict is BLOCKED, not "
-    "DONE.\n\n"
-    "BLOCKED — the goal cannot be satisfied as stated:\n"
-    "- The response explains the goal is genuinely unachievable (impossible, "
-    "out of scope, no valid path to the deliverable), or refuses to "
-    "fabricate a deliverable that cannot exist, OR\n"
-    "- The response explains progress is blocked and the next step needs "
-    "user input to proceed.\n"
-    "Return BLOCKED with the reason describing what is blocking. BLOCKED is "
-    "a refusal, not a completion — never return BLOCKED for a goal that "
-    "was achieved.\n"
-    "When the block is an error the agent hit (an HTTP status, an API, "
-    "sign-in or token failure), quote the error text verbatim in the reason "
-    "and attribute it only to a provider, service or credential the response "
-    "itself names. Never infer one the response does not name — an unnamed "
-    "401 belongs to the model provider the agent was calling, not to some "
-    "other service's token.\n\n"
-    "WAIT — the goal is NOT done, but the next step is to wait for async "
-    "work to finish rather than act again. Choose this ONLY when the agent's "
-    "progress is genuinely gated on something running on its own:\n"
-    "- A background process listed below is still running AND the response "
-    "shows the agent is waiting on its result (e.g. a CI poller, build, "
-    "test run, deploy). If the process has a session id, return it in "
-    "``wait_on_session`` — that releases when the process exits OR its "
-    "watch_patterns trigger fires (use this for a long-lived watcher that "
-    "signals mid-run and may never exit). Otherwise return its pid in "
-    "``wait_on_pid`` (releases on exit only).\n"
-    "- The agent says it is rate-limited / backing off / must wait a fixed "
-    "period — return seconds in ``wait_for_seconds``.\n"
-    "- The agent has delegated subagents still running (stated below as "
-    "active delegations) and the response says it is waiting on them with "
-    "nothing else dispatchable — return ``wait_for_seconds`` between 600 and "
-    "1800. Their results wake the agent on their own; re-poking it now only "
-    "produces a status recap.\n"
-    "Picking WAIT parks the loop without burning a turn; it resumes "
-    "automatically when the pid exits or the time elapses. Do NOT pick WAIT "
-    "just because work remains — only when re-poking now would be pure "
-    "busy-work because the agent can't progress until the async thing "
-    "finishes.\n\n"
-    "CONTINUE — not done, and there is a concrete next step the agent can "
-    "take right now. This is the default when in doubt.\n\n"
-    "Reply ONLY with a single JSON object on one line. Shapes:\n"
-    '{"verdict": "done", "reason": "<one sentence>"}\n'
-    '{"verdict": "blocked", "reason": "<one sentence>"}\n'
-    '{"verdict": "continue", "reason": "<one sentence>"}\n'
-    '{"verdict": "wait", "wait_on_session": "<id>", "reason": "<one sentence>"}\n'
-    '{"verdict": "wait", "wait_on_pid": <int>, "reason": "<one sentence>"}\n'
-    '{"verdict": "wait", "wait_for_seconds": <int>, "reason": "<one sentence>"}\n'
-    "The legacy shape {\"done\": <true|false>, \"reason\": \"...\"} is still "
-    "accepted (true=done, false=continue)."
-)
+JUDGE_SYSTEM_PROMPT = load("goal_judge_system")
 
 # Judge prompt line for live delegated subagents (WAIT-for-seconds vs CONTINUE).
 JUDGE_DELEGATIONS_BLOCK_TEMPLATE = (
@@ -235,25 +180,7 @@ JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE = (
 )
 
 # /goal draft: turn a plain objective into a reviewable contract (after Codex's "draft the goal").
-DRAFT_CONTRACT_SYSTEM_PROMPT = (
-    "You turn a user's plain-language objective into a structured completion "
-    "contract for an autonomous coding agent. The contract has five fields:\n"
-    "- outcome: the single end state that must be true when done\n"
-    "- verification: the specific test / command / artifact that PROVES the "
-    "outcome (must be concrete and checkable)\n"
-    "- constraints: what must NOT change or regress\n"
-    "- boundaries: which files, dirs, tools, or systems are in scope\n"
-    "- stop_when: the condition under which the agent should stop and ask "
-    "for human input instead of pushing on\n\n"
-    "Infer sensible, specific values from the objective and any project "
-    "context implied by it. Prefer concrete verification (a named test "
-    "command, a build, a benchmark) over vague phrases. Keep each field to "
-    "one or two sentences. If a field genuinely cannot be inferred, use an "
-    "empty string for it.\n\n"
-    "Reply ONLY with a single JSON object on one line:\n"
-    '{"outcome": "...", "verification": "...", "constraints": "...", '
-    '"boundaries": "...", "stop_when": "..."}'
-)
+DRAFT_CONTRACT_SYSTEM_PROMPT = load("goal_draft_contract_system")
 
 
 # ── Completion contract ───────────────────────────────────────────────
@@ -331,6 +258,18 @@ def parse_contract(text: str) -> Tuple[str, GoalContract]:
         headline_parts.append(line)
     contract = GoalContract(**{f: " ".join(v).strip() for f, v in fields.items()})
     return " ".join(headline_parts).strip(), contract
+
+def extract_done_when(text: str) -> str:
+    """The first ``done when: <value>`` line's value, verbatim (whitespace-stripped).
+
+    Case-insensitive prefix match on the line. An explicit done-when line in a
+    user message overrides the drafted contract's outcome verbatim.
+    """
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if line.lower().startswith("done when:"):
+            return line.partition(":")[2].strip()
+    return ""
 
 
 def _render_extra_criteria(subgoals: List[str]) -> str:
@@ -921,7 +860,7 @@ def judge_goal(
     try:
         raw = _call_goal_judge_llm(call_llm, JUDGE_SYSTEM_PROMPT, prompt, timeout)
     except AuxiliaryClientUnavailable as exc:
-        # No client at all (e.g. a dead Nous refresh token): name the cause so the user is sent to
+        # No client at all (e.g. an expired OAuth token): name the cause so the user is sent to
         # re-authenticate, not to context-length / model debugging (#42177). Still fails open.
         logger.info("goal judge: auxiliary client unavailable (%s) — falling through to continue", exc)
         return "continue", f"goal_judge auxiliary client unavailable: {exc}", False, None, True
@@ -1055,11 +994,6 @@ def _decision(status, should_continue: bool, prompt: Optional[str], verdict: str
     return {"status": status, "should_continue": should_continue, "continuation_prompt": prompt,
             "verdict": verdict, "reason": reason, "message": message}
 
-
-_JUDGE_CONFIG_HINT = (
-    "~/.hermes/config.yaml:\n  auxiliary:\n    goal_judge:\n      provider: {provider}\n      model: {model}\n"
-    "Then /goal resume to continue."
-)
 
 
 class GoalManager:
@@ -1443,7 +1377,7 @@ class GoalManager:
         return self._pause_decision(
             f"turn budget exhausted ({state.turns_used}/{state.max_turns})", verdict, reason,
             f"⏸ Goal paused — {state.turns_used}/{state.max_turns} turns used{note}. "
-            "Use /goal resume to keep going, or /goal clear to stop.",
+            "Send \"go ahead\" to keep going, or \"stop\" to end the goal.",
         )
 
     def evaluate_after_turn(
@@ -1497,8 +1431,13 @@ class GoalManager:
         if verdict == "blocked":
             return self._pause_decision(
                 f"judged unachievable: {reason}", "blocked", reason,
-                f"🚫 Goal judged unachievable — paused: {reason} Re-scope with /goal set, or override with /goal resume.",
+                f"🚫 Goal judged unachievable — paused: {reason} Re-state the goal to re-scope it, or say \"go ahead\" to override.",
             )
+
+        # The budget is an absolute completion barrier: a DONE claim on the final
+        # allowed turn still pauses instead of certifying an unreviewed result.
+        if verdict == "done" and state.turns_used >= state.max_turns:
+            return self._budget_pause(state, "continue", reason)
 
         if verdict == "done":
             state.status = "done"
@@ -1512,15 +1451,15 @@ class GoalManager:
             return self._pause_decision(
                 f"judge API unreachable {n_tx} turns in a row (check auxiliary.goal_judge provider/key in config.yaml)",
                 "continue", reason,
-                f"⏸ Goal paused — judge API returned errors ({n_tx} turns). Check the goal_judge provider/key in "
-                + _JUDGE_CONFIG_HINT.format(provider="deepseek", model="deepseek-flash"),
+                f"⏸ Goal paused — the goal judge API failed {n_tx} turns in a row "
+                "(see errors.log for the underlying provider error). /goal resume to continue.",
             )
         if n_parse >= DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES:
             return self._pause_decision(
                 f"judge model returned unparseable output {n_parse} turns in a row", "continue", reason,
-                f"⏸ Goal paused — the judge model ({n_parse} turns) isn't returning the required JSON verdict. "
-                "Route the judge to a stricter model in "
-                + _JUDGE_CONFIG_HINT.format(provider="openrouter", model="google/gemini-3-flash-preview"),
+                f"⏸ Goal paused — the judge model returned unparseable output {n_parse} turns in a row "
+                "(route the judge to a stricter model via auxiliary.goal_judge in config.yaml). "
+                "/goal resume to continue.",
             )
 
         if state.turns_used >= state.max_turns:
@@ -1554,163 +1493,12 @@ class GoalManager:
             "(no completion contract — set one with /goal draft <objective> or inline field: value lines)")
 
 
-# ── Kanban worker goal loop ───────────────────────────────────────────
-
-# Fed to a kanban goal-mode worker that hasn't completed/blocked its task yet: short, and points it
-# back at the lifecycle contract (it already has the full task body).
-KANBAN_GOAL_CONTINUATION_TEMPLATE = (
-    "[Continuing toward this kanban task — judge says it is not done yet]\n"
-    "Reason: {reason}\n\n"
-    "Take the next concrete step toward completing the task. When the work "
-    "is genuinely finished, call kanban_complete with a summary. If it is a "
-    "code change that needs same-card review before counting as done, call "
-    "kanban_request_review with a summary instead. If you are blocked and "
-    "need human input, call kanban_block with a reason. Do not stop without "
-    "calling one of them."
-)
-
-# Judge says done but the worker never made a terminal board call
-# (kanban_complete/kanban_request_review/kanban_block): one explicit nudge.
-KANBAN_GOAL_FINALIZE_TEMPLATE = (
-    "[The work looks complete, but the task is still open]\n"
-    "Reason: {reason}\n\n"
-    "If the task is genuinely done, call kanban_complete now with a short "
-    "summary of what you did. If it is a code change awaiting same-card review, "
-    "call kanban_request_review with that summary instead. If something still "
-    "blocks completion, call kanban_block with the reason instead."
-)
-
-
-# Worker-driven terminal task statuses → loop outcome. The card's own acceptance criteria are the
-# goal; the worker already has the full task body, so these outcomes stop the loop cleanly.
-_KANBAN_TERMINAL_STATUSES = {
-    "done": ("completed_by_worker", "worker completed the task", "task {task_id} completed by worker after {turns} turn(s)"),
-    "blocked": ("blocked_by_worker", "worker blocked the task", "task {task_id} blocked by worker after {turns} turn(s)"),
-    # kanban_request_review is a legitimate terminator: implementation done, awaiting a reviewer.
-    "review": ("review_requested_by_worker", "worker requested review", "task {task_id} handed off for review by worker after {turns} turn(s)"),
-    "changes_requested": ("changes_requested_by_reviewer", "reviewer requested changes", "reviewer returned task {task_id} for changes after {turns} turn(s)"),
-}
-
-
-def run_kanban_goal_loop(
-    *,
-    task_id: str,
-    goal_text: str,
-    run_turn,
-    task_status_fn,
-    block_fn,
-    max_turns: int = DEFAULT_MAX_TURNS,
-    first_response: str = "",
-    log=None,
-) -> Dict[str, Any]:
-    """Drive a kanban worker through a Ralph-style goal loop.
-
-    Each iteration: stop if the worker already terminated the task (``kanban_complete`` /
-    ``kanban_block`` / review hand-off); otherwise judge the latest response against ``goal_text``
-    (the card's title + body) and feed a continuation or finalize nudge. A WAIT verdict is treated
-    as CONTINUE (workers finish via kanban tools, not by parking).
-    """
-
-    def _log(msg: str) -> None:
-        if log is not None:
-            try:
-                log(msg)
-            except Exception:
-                pass
-
-    def _block(message: str) -> None:
-        try:
-            block_fn(message)
-        except Exception as exc:
-            _log(f"kanban goal loop: block_fn failed ({exc})")
-
-    def _result(outcome: str, reason: str) -> Dict[str, Any]:
-        return {"outcome": outcome, "turns_used": turns_used, "reason": reason}
-
-    max_turns = int(max_turns or DEFAULT_MAX_TURNS)
-    if max_turns < 1:
-        max_turns = DEFAULT_MAX_TURNS
-
-    last_response = first_response or ""
-    turns_used = 1   # the first turn already consumed one unit of budget
-    nudged_to_finalize = False
-
-    while True:
-        try:
-            status = task_status_fn()
-        except Exception as exc:
-            _log(f"kanban goal loop: status check failed ({exc}); stopping")
-            return _result("stopped", "status check failed")
-
-        terminal = _KANBAN_TERMINAL_STATUSES.get(status)
-        if terminal is not None:
-            outcome, reason, log_fmt = terminal
-            _log("kanban goal loop: " + log_fmt.format(task_id=task_id, turns=turns_used))
-            return _result(outcome, reason)
-        if status not in ("running", "ready"):
-            # Reclaimed / archived / unexpected — let the dispatcher own it.
-            _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")
-            return _result("stopped", f"status={status}")
-
-        # The between-turns judge runs outside any agent turn: bind the per-task relay-affinity
-        # scope (same shape as the handoff gates) so the relay does not reject the call (#113669).
-        from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
-        affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id}")
-        try:
-            verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
-        finally:
-            if affinity_token is not None:
-                reset_affinity_scope(affinity_token)
-        if verdict == "wait":
-            verdict = "continue"
-        _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
-
-        if verdict == "blocked":
-            # Unachievable is NOT done: block the card with the judge's reason now instead of
-            # re-poking an impossible goal, and never let it land in done.
-            # The judge ruled the goal cannot be satisfied at all — this is NOT done (#100954).
-            _log(f"kanban goal loop: task {task_id} judged unachievable; blocking")
-            _block(f"Goal-mode judge ruled the goal unachievable: {reason}")
-            return _result("blocked_unachievable", f"judge verdict blocked: {reason}")
-
-        if verdict == "done":
-            if nudged_to_finalize:
-                # Already asked once to call kanban_complete — block for review rather than spin.
-                _log(f"kanban goal loop: task {task_id} judged done but worker won't finalize; blocking")
-                _block(
-                    f"Goal-mode worker's output looked complete but it never "
-                    f"called kanban_complete after a finalize nudge ({reason})."
-                )
-                return _result("blocked_budget", "judged done, never finalized")
-            prompt = KANBAN_GOAL_FINALIZE_TEMPLATE.format(reason=_truncate(reason, 400))
-            nudged_to_finalize = True
-        else:
-            prompt = KANBAN_GOAL_CONTINUATION_TEMPLATE.format(reason=_truncate(reason, 400))
-
-        # Budget check BEFORE spending another turn.
-        if turns_used >= max_turns:
-            _log(f"kanban goal loop: task {task_id} exhausted {turns_used}/{max_turns} turns; blocking")
-            _block(
-                f"Goal-mode worker exhausted its turn budget "
-                f"({turns_used}/{max_turns}) without completing the task. "
-                f"Last judge verdict: {_truncate(reason, 300)}"
-            )
-            return _result("blocked_budget", "turn budget exhausted")
-
-        try:
-            last_response = run_turn(prompt) or ""
-        except Exception as exc:
-            _log(f"kanban goal loop: run_turn failed ({exc}); stopping")
-            return _result("stopped", f"run_turn error: {type(exc).__name__}")
-        turns_used += 1
-
-
 __all__ = [
-    "GoalState", "GoalContract", "GoalGate", "GoalManager", "parse_contract", "draft_contract", "run_gate",
+    "GoalState", "GoalContract", "GoalGate", "GoalManager", "parse_contract", "extract_done_when",
+    "draft_contract", "run_gate",
     "CONTINUATION_PROMPT_TEMPLATE", "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
     "CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE", "JUDGE_USER_PROMPT_TEMPLATE",
     "JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE", "JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE",
-    "DRAFT_CONTRACT_SYSTEM_PROMPT", "KANBAN_GOAL_CONTINUATION_TEMPLATE", "KANBAN_GOAL_FINALIZE_TEMPLATE",
+    "DRAFT_CONTRACT_SYSTEM_PROMPT",
     "DEFAULT_MAX_TURNS", "load_goal", "save_goal", "clear_goal", "migrate_goal_to_session", "judge_goal",
-    "run_kanban_goal_loop",
 ]

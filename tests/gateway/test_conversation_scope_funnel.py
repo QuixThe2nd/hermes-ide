@@ -11,7 +11,7 @@ the boundary security state, in one call.
 
 from gateway.run import _CONVERSATION_SCOPED_STATE, GatewayRunner
 
-KEY = "agent:main:telegram:dm:777"
+KEY = "agent:main:discord:dm:777"
 OTHER = "agent:main:discord:dm:888"
 
 
@@ -45,11 +45,8 @@ def test_funnel_is_bare_runner_safe_and_empty_key_noop():
 
 def test_funnel_also_clears_boundary_security_state():
     runner = _bare_runner()
-    runner._pending_approvals = {KEY: {"cmd": "rm -rf"}, OTHER: {}}
     runner._update_prompt_pending = {KEY: True}
     runner._pending_skills_reload_notes = {KEY: "note"}
     runner._clear_conversation_scope(KEY, reason="test")
-    assert KEY not in runner._pending_approvals
-    assert OTHER in runner._pending_approvals
     assert KEY not in runner._update_prompt_pending
     assert KEY not in runner._pending_skills_reload_notes

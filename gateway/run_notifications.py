@@ -15,7 +15,7 @@ import logging
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Dict, Optional, cast
+from typing import Any, Callable, Dict, Optional, cast
 
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
@@ -303,7 +303,7 @@ class GatewayNotificationsMixin:
         with _log_suppressed(logging.WARNING, "Post-stream media extraction failed: %s"):
             # Capture [[as_document]] before extract_media strips it: images then go via send_document.
             force_document_attachments = "[[as_document]]" in response
-            from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
+            from gateway.platforms.base import BasePlatformAdapter
             media_files, cleaned = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
             # Strip image URLs (parity with the non-streaming chain); no extract_local_files here.
@@ -322,26 +322,22 @@ class GatewayNotificationsMixin:
             )
             chat_id = event.source.chat_id
             # Images go out as one batch (e.g. Signal's multi-attachment RPC) unless [[as_document]].
-            def _is_photo(media_path: str, is_voice: bool) -> bool:
+            def _is_photo(media_path: str) -> bool:
                 ext = Path(media_path).suffix.lower()
-                return ext in _IMAGE_EXTS and not is_voice and not force_document_attachments
+                return ext in _IMAGE_EXTS and not force_document_attachments
 
-            image_paths = [p for p, v in media_files if _is_photo(p, v)]
-            non_image_media = [(p, v) for p, v in media_files if not _is_photo(p, v)]
+            image_paths = [p for p in media_files if _is_photo(p)]
+            non_image_media = [p for p in media_files if not _is_photo(p)]
             if image_paths:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
                     await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
-            for media_path, is_voice in non_image_media:
+            for media_path in non_image_media:
                 try:
                     ext = Path(media_path).suffix.lower()
-                    if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
-                            chat_id=chat_id, audio_path=media_path, metadata=_thread_meta, is_voice=is_voice,
-                        )
-                    elif ext in _VIDEO_EXTS:
+                    if ext in _VIDEO_EXTS:
                         await adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=_thread_meta)
                     else:
                         await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
@@ -422,7 +418,7 @@ class GatewayNotificationsMixin:
         result, so a final refused here (flood control, a transport that had just died) left no
         ledger row and was gone for good. The ledger identity is the raw inbound message id;
         ``event_message_id`` is only the reply anchor, which is None wherever replies are not used
-        (Telegram forum topics, Slack reaction handoffs) and so cannot identify the turn; with no
+        (forum topics, Slack reaction handoffs) and so cannot identify the turn; with no
         inbound id the ledger falls back to the event's own (empty) message id. Adapters without
         the base contract and sends without a session key keep the plain send."""
         if session_key and isinstance(adapter, BasePlatformAdapter):
@@ -477,7 +473,7 @@ class GatewayNotificationsMixin:
             if not path.exists():
                 continue
             with suppress(Exception):
-                pending = json.loads(path.read_text(encoding="utf-8"))
+                pending = json.loads(path.read_text(encoding="utf-8-sig"))
                 platform_str = pending.get("platform")
                 chat_id = pending.get("chat_id")
                 session_key = pending.get("session_key")
@@ -518,7 +514,7 @@ class GatewayNotificationsMixin:
 
     @staticmethod
     def _update_exit_code(paths: "_UpdatePaths") -> int:
-        return int(paths.exit_code.read_text(encoding="utf-8").strip() or "1")
+        return int(paths.exit_code.read_text(encoding="utf-8-sig").strip() or "1")
 
     @staticmethod
     def _read_update_output_since(path: Path, offset: int) -> tuple[str, int]:
@@ -532,7 +528,7 @@ class GatewayNotificationsMixin:
         return data[offset:].decode("utf-8", errors="replace"), len(data)
 
     async def _send_update_output(self, target: "_UpdateTarget", text: str) -> None:
-        """Send buffered update output as fenced chunks that fit message limits (Telegram: 4096)."""
+        """Send buffered update output as fenced chunks that fit message limits (e.g. 4096)."""
         from tools.ansi_strip import strip_ansi
         clean = strip_ansi(text).strip()
         if not clean:
@@ -543,7 +539,7 @@ class GatewayNotificationsMixin:
                 await target.send(f"```\n{clean[i:i + max_chunk]}\n```")
 
     async def _forward_update_prompt(self, target: "_UpdateTarget", prompt_text: str, default: str) -> None:
-        """Forward an update prompt: platform-native buttons first (Discord, Telegram), else text."""
+        """Forward an update prompt: platform-native buttons first (Discord), else text."""
         sent_buttons = False
         adapter = target.adapter
         if getattr(type(adapter), "send_update_prompt", None) is not None:
@@ -625,7 +621,7 @@ class GatewayNotificationsMixin:
                 getattr(_pending_state, "persistent", None), "update_prompt_pending", False
             ):
                 try:
-                    prompt_data = json.loads(paths.prompt.read_text(encoding="utf-8"))
+                    prompt_data = json.loads(paths.prompt.read_text(encoding="utf-8-sig"))
                     prompt_text = prompt_data.get("prompt", "")
                     if prompt_text:
                         await _flush_buffer()  # user sees context before the prompt
@@ -670,7 +666,7 @@ class GatewayNotificationsMixin:
                         return True
             elif not paths.claimed.exists():
                 return True
-            pending = json.loads(paths.claimed.read_text(encoding="utf-8"))
+            pending = json.loads(paths.claimed.read_text(encoding="utf-8-sig"))
             platform_str = pending.get("platform")
             chat_id = pending.get("chat_id")
             if not paths.exit_code.exists():
@@ -709,55 +705,105 @@ class GatewayNotificationsMixin:
         """Notify the chat that initiated /restart that the gateway is back."""
         from gateway.delivery import resolve_delivery_transport
         from gateway.run import _hermes_home, _non_conversational_metadata
+
         notify_path = _hermes_home / ".restart_notify.json"
+        if getattr(self, "_overlap_successor_pending", False):
+            logger.info(
+                "Restart requester continuation is deferred until this process "
+                "holds the gateway lock"
+            )
+            return None
         if not notify_path.exists():
             return None
+        clear_notify = True
+
         try:
-            data = json.loads(notify_path.read_text(encoding="utf-8"))
+            data = json.loads(notify_path.read_text(encoding="utf-8-sig"))
             platform_str = data.get("platform")
             chat_id = data.get("chat_id")
+            chat_type = data.get("chat_type")
             thread_id = data.get("thread_id")
+            message_id = data.get("message_id")
+
             if not platform_str or not chat_id:
                 return None
+
             platform = Platform(platform_str)
-            # Relay-aware transport over the REQUESTER'S profile adapter map; ``self.adapters`` is the
-            # default profile's, so a secondary's "restarted" notice would leave through the wrong bot.
-            transport = resolve_delivery_transport(
-                platform, self.config, self._adapters_for_profile(self._marker_profile(data)))
+            # Continuation is durable work; the courtesy notice is best-effort.
+            # Mark and, when possible, schedule before transport resolution so
+            # a missing transport or failed send cannot strand the requester.
+            clear_notify = False
+            clear_notify = self._mark_and_schedule_restart_requester_resume(data)
+            transport = resolve_delivery_transport(platform, self.config, self.adapters)
             if transport is None:
-                logger.debug("Restart notification skipped: no live transport for %s", platform_str)
+                logger.debug(
+                    "Restart notification skipped: no live transport for %s",
+                    platform_str,
+                )
                 return None
+
             platform_cfg = self.config.platforms.get(platform)
             if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
                 logger.info(
-                    "Restart notification suppressed: %s has gateway_restart_notification=false", platform_str
+                    "Restart notification suppressed: %s has gateway_restart_notification=false",
+                    platform_str,
                 )
                 return None
-            metadata = self._pending_marker_metadata(platform, chat_id, data, transport.adapter)
+
+            metadata = self._thread_metadata_for_target(
+                platform,
+                chat_id,
+                thread_id,
+                chat_type=chat_type,
+                reply_to_message_id=message_id,
+                adapter=transport.adapter,
+            )
             if data.get("delivered_via_upstream_relay") is True:
                 metadata = dict(metadata or {})
-                for field in ("user_id", "scope_id"):
-                    if data.get(field):
-                        metadata[field] = str(data[field])
+                if data.get("user_id"):
+                    metadata["user_id"] = str(data["user_id"])
+                if data.get("scope_id"):
+                    metadata["scope_id"] = str(data["scope_id"])
+            notice = "♻ Gateway restarted successfully. Your session continues."
+            try:
+                from gateway.restart_hub import load_hub_report_line
+
+                hub_line = load_hub_report_line(_hermes_home)
+                if hub_line:
+                    notice = f"{notice}\nHub: {hub_line}"
+            except Exception:
+                pass
             result = await transport.send(
-                platform, str(chat_id), "♻ Gateway restarted successfully. Your session continues.",
+                platform,
+                str(chat_id),
+                notice,
                 metadata=_non_conversational_metadata(metadata, platform=platform),
             )
-            # adapter.send() catches provider errors (e.g. "Chat not found") and returns
-            # SendResult(success=False) rather than raising, so inspect the result before claiming success.
-            if _send_failed(result):
+            # adapter.send() catches provider errors (e.g. "Chat not found")
+            # and returns SendResult(success=False) rather than raising, so
+            # we must inspect the result before claiming success — otherwise
+            # the log line is misleading and hides real delivery failures.
+            if result is not None and getattr(result, "success", True) is False:
                 logger.warning(
-                    "Restart notification to %s:%s was not delivered: %s", platform_str, chat_id, _send_error(result),
+                    "Restart notification to %s:%s was not delivered: %s",
+                    platform_str,
+                    chat_id,
+                    getattr(result, "error", "send returned success=False"),
                 )
                 return None
-            logger.info("Sent restart notification to %s:%s", platform_str, chat_id)
+
+            logger.info(
+                "Sent restart notification to %s:%s",
+                platform_str,
+                chat_id,
+            )
             return str(platform_str), str(chat_id), str(thread_id) if thread_id else None
         except Exception as e:
             logger.warning("Restart notification failed: %s", e)
             return None
         finally:
-            notify_path.unlink(missing_ok=True)
-
+            if clear_notify and not getattr(self, "_launched_as_overlap_successor", False):
+                notify_path.unlink(missing_ok=True)
     def _notification_channel_transports(self):
         """Yield ``(platform, platform_cfg, channel, transport)`` for every notification channel with a live transport."""
         from gateway.delivery import resolve_delivery_transport
@@ -794,26 +840,6 @@ class GatewayNotificationsMixin:
             logger.warning(failure_fmt, platform.value, channel.chat_id, exc)
             return False
 
-    def _free_tier_startup_line(self) -> Optional[str]:
-        """Extra startup line when the gateway's inference is carried by the Nous free tier; None otherwise.
-
-        Best-effort: a resolution failure (no provider, auth error) must not block the online notice."""
-        try:
-            # Persisted state only. The free-tier check reads auth.json; it runs FIRST so the resolver
-            # is only consulted when a free-tier identity already exists and its own free-tier rung
-            # (which may mint on a fresh install, NS-829) answers from that identity without a network
-            # call. No token refresh at boot either way.
-            from hermes_cli.auth import resolve_provider
-            from hermes_cli.anon_auth import guest_carries_inference
-            if not guest_carries_inference():
-                return None
-            if resolve_provider("auto") != "nous":
-                return None
-        except Exception as exc:
-            logger.debug("Free tier startup line skipped: %s", exc)
-            return None
-        return "Inference: Nous free tier (nous/welcome). Sign in for more: /login"
-
     _planned_restart_notice_lock: Optional[asyncio.Lock] = None
 
     async def _replay_pending_planned_restart_notification(self) -> set[tuple[str, str, Optional[str]]]:
@@ -838,7 +864,7 @@ class GatewayNotificationsMixin:
             if not path.exists():
                 return
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
                 delivered = {tuple(target) for target in data.get("delivered_targets", [])}
                 # Resolve obligations from configuration, never from the currently live transports.
                 # Removed homes and explicit notification opt-outs no longer owe a notice.
@@ -884,9 +910,6 @@ class GatewayNotificationsMixin:
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
         message = "♻️ Gateway online — Hermes is back and ready."
-        free_tier_line = self._free_tier_startup_line()
-        if free_tier_line:
-            message = f"{message}\n{free_tier_line}"
         any_channel = any(
             (cfg.notification_channel and cfg.notification_channel.chat_id)
             for cfg in self.config.platforms.values()
@@ -1129,9 +1152,9 @@ class GatewayNotificationsMixin:
 
         A served profile's ``api_server`` turn binds the RAW session id as its session key, so its
         completion event names no profile: the only ownership proof is the served profile's own
-        store, exactly the rung the Kanban notifier applies. An event whose source DOES name a
-        served profile (structured key / persisted origin) must be owned by that profile or it
-        raises ``LookupError`` — never a wake in the default profile's store.
+        store. An event whose source DOES name a served profile (structured key / persisted origin)
+        must be owned by that profile or it raises ``LookupError`` — never a wake in the default
+        profile's store.
         """
         if not getattr(self.config, "multiplex_profiles", False):
             return None
@@ -1157,7 +1180,7 @@ class GatewayNotificationsMixin:
                 return owner[0]
             if getattr(source, "delivered_via_upstream_relay", False) is True:
                 return self.adapters.get(Platform.RELAY)
-        # One resolver with authz/kanban/cron: a secondary's own map, or the primary's for a
+        # One resolver with authz/cron: a secondary's own map, or the primary's for a
         # shared-bot satellite; a disconnected secondary fails closed to ``{}``.
         adapters = self._adapters_for_profile(getattr(source, "profile", None))
         try:
@@ -1220,9 +1243,15 @@ class GatewayNotificationsMixin:
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
+            identity = self._completion_delivery_identity(evt)
+            ledger_message_id = (
+                "watch:" + ":".join(str(part) for part in identity)
+                if identity is not None else None
+            )
             synth_event = MessageEvent(
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
                 message_id=str(evt.get("message_id") or "").strip() or None, metadata=metadata,
+                ledger_message_id=ledger_message_id,
             )
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",

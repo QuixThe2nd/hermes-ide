@@ -38,11 +38,11 @@ on:
   workflow_call:
     inputs:
       install-method:
-        description: 'How the starting version gets installed. Supported: installer-script (the real curl | install.sh one-liner) and installer-script+desktop (the same one-liner with --include-desktop).'
+        description: 'How the starting version gets installed. Supported: installer-script (the real curl | install.sh one-liner).'
         required: true
         type: string
       update-method:
-        description: 'How the install updates to HEAD. Supported: hermes-update (the updater), installer-script (re-run the one-liner), installer-script+desktop (re-run with --include-desktop), hermes-desktop-app-update (launch via hermes desktop under Playwright, click Update now). open-app-update runs only where an OS entry point exists (see the per-OS run workflows); pairs without one skip.'
+        description: 'How the install updates to HEAD. Supported: hermes-update (the updater) and installer-script (re-run the one-liner).'
         required: true
         type: string
       install-ref:
@@ -54,18 +54,13 @@ on:
         description: 'Artifact-safe matrix leg id (from generate-e2e-matrix.mjs legId). Names this leg''s logs + player artifacts so the report job can link a row to its zip.'
         required: true
         type: string
-      tag-has-desktop:
-        description: "Whether install-ref ships the desktop app (apps/desktop). The caller annotates this from the tag's own tree; desktop-method legs from pre-desktop releases natively skip."
-        required: false
-        type: boolean
-        default: true
       runner:
         description: 'Runner label.'
         required: false
         type: string
         default: ubuntu-latest
       timeout-minutes:
-        description: 'Job timeout. A cold run installs real toolchains twice, and app-update legs add a full Electron build + launch.'
+        description: 'Job timeout. A cold run installs real toolchains twice.'
         required: false
         type: number
         default: 60
@@ -77,14 +72,9 @@ jobs:
   e2e:
     name: install & update
     # The pairs the driver can run today; anything else natively skips.
-    # Desktop-surface methods (+desktop installs,
-    # hermes-desktop-app-update) also need the starting tag to ship
-    # apps/desktop (their flags shipped with it).
     if: >-
-      (inputs.install-method == 'installer-script'
-        || (inputs.install-method == 'installer-script+desktop' && inputs.tag-has-desktop))
-      && (contains(fromJSON('["hermes-update", "installer-script"]'), inputs.update-method)
-        || (contains(fromJSON('["installer-script+desktop", "hermes-desktop-app-update"]'), inputs.update-method) && inputs.tag-has-desktop))
+      inputs.install-method == 'installer-script'
+      && contains(fromJSON('["hermes-update", "installer-script"]'), inputs.update-method)
     runs-on: ${{ inputs.runner }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
 

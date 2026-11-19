@@ -71,7 +71,7 @@ def collector_state_path() -> Path:
 def _load_collector_state_raw() -> Tuple[Dict[str, Any], Optional[str]]:
     path = collector_state_path()
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return {}, None
     except (OSError, json.JSONDecodeError) as exc:
@@ -118,10 +118,6 @@ def _provider_secrets(key: str) -> Tuple[Any, ...]:
             from plugins.quota_channels.core import zai_api_key
 
             return (zai_api_key(),)
-        if key == "cursor":
-            from plugins.quota_channels.core import cursor_access_token
-
-            return (cursor_access_token(),)
         if key == "grok":
             from plugins.quota_channels.core import load_store
 
@@ -140,19 +136,10 @@ def _normalize_metrics(
     """(data, resets, reset_error) from a QUOTA_METRICS result tuple.
 
     Mirrors run_provider_quota's unpacking: codex/zai may carry trailing
-    ResetCredits and a reset-fetch error; cursor carries auto/api remaining.
+    ResetCredits and a reset-fetch error.
     """
     resets = None
     reset_error: Optional[str] = None
-    if key == "cursor":
-        auto_remaining, api_remaining, reset_secs = raw
-        data: Dict[str, Any] = {
-            "pct": min(int(auto_remaining), int(api_remaining)),
-            "reset_seconds": float(reset_secs),
-            "cursor_auto_pct": int(auto_remaining),
-            "cursor_api_pct": int(api_remaining),
-        }
-        return data, resets, reset_error
     if key in ("codex", "zai"):
         if len(raw) == 4:
             remaining, reset_secs, resets, reset_error = raw
@@ -330,7 +317,7 @@ def _bind_zai_alias(
     *,
     authoritative_empty: bool,
 ) -> None:
-    from plugins.fallback_quota_reorder.reliability import rates_for_providers
+    from plugins.quota_channels.reliability import rates_for_providers
 
     active_ids = {wallet.entry_id for wallet in wallets}
     wallet_readings = {

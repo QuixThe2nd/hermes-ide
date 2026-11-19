@@ -20,8 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Optional
 from urllib.parse import parse_qs, urlparse
 from hermes_cli.auth_constants import (
-    AuthError, DEFAULT_NOUS_PORTAL_URL, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS,
-    DEVICE_CODE_GRANT_TYPE, OAUTH_OVER_SSH_DOCS_URL, httpx)
+    AuthError, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS, OAUTH_OVER_SSH_DOCS_URL, httpx)
 from utils import is_truthy_value
 
 # Log-record parity with the origin module (caplog tests pin "hermes_cli.auth").
@@ -212,78 +211,31 @@ def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) 
 
 
 def _default_verify() -> bool | ssl.SSLContext:
-    """Platform-aware default SSL verify for httpx clients.
+    """TLS trust for auth-portal clients: the OS certificate store (see agent/ssl_verify.py)."""
+    from agent.ssl_verify import install_truststore
 
-    On macOS with Homebrew Python the system OpenSSL cannot find the system trust store, so pin
-    certifi's bundle when importable; elsewhere defer to httpx's built-in default.
-    """
-    if sys.platform == "darwin":
-        try:
-            import certifi
-            return ssl.create_default_context(cafile=certifi.where())
-        except ImportError:
-            pass
+    install_truststore()
     return True
 
 
 def _resolve_verify(
     *, insecure: Optional[bool] = None, ca_bundle: Optional[str] = None,
     auth_state: Optional[Dict[str, Any]] = None) -> bool | ssl.SSLContext:
-    from hermes_cli.auth import _default_verify
+    """TLS verify for auth-portal clients — the one resolver, given this call's explicit inputs
+    (per-connection ``tls`` state or an argument)."""
+    from agent.ssl_verify import resolve_httpx_verify
+
     tls_state = auth_state.get("tls") if isinstance(auth_state, dict) else {}
     tls_state = tls_state if isinstance(tls_state, dict) else {}
+
     effective_insecure = (
         is_truthy_value(insecure, default=False) if insecure is not None
         else is_truthy_value(tls_state.get("insecure", False), default=False))
-    effective_ca = (
-        ca_bundle or tls_state.get("ca_bundle") or os.getenv("HERMES_CA_BUNDLE")
-        or os.getenv("SSL_CERT_FILE") or os.getenv("REQUESTS_CA_BUNDLE"))
-    if effective_insecure:
-        return False
-    if effective_ca:
-        ca_path = str(effective_ca)
-        if not os.path.isfile(ca_path):
-            logger.warning(
-                "CA bundle path does not exist: %s — falling back to default certificates",
-                ca_path)
-            return _default_verify()
-        return ssl.create_default_context(cafile=ca_path)
-    return _default_verify()
 
-
-def _request_device_code(
-    client: httpx.Client, portal_base_url: str, client_id: str, scope: Optional[str],
-) -> Dict[str, Any]:
-    """POST to the device code endpoint. Returns device_code, user_code, etc."""
-    response = client.post(
-        f"{portal_base_url}/api/oauth/device/code",
-        data={"client_id": client_id, **({"scope": scope} if scope else {})})
-    response.raise_for_status()
-    data = response.json()
-    required_fields = [
-        "device_code", "user_code", "verification_uri", "verification_uri_complete", "expires_in",
-        "interval"]
-    missing = [f for f in required_fields if f not in data]
-    if missing:
-        raise ValueError(f"Device code response missing fields: {', '.join(missing)}")
-    return data
-
-
-def _nous_device_auth_timeout_message(portal_base_url: str) -> str:
-    """Actionable timeout text: the usual cause is Portal sign-in failing in the browser tab.
-
-    A bare "Timed out waiting for device authorization" gives the user nothing to act on. The most common
-    cause is Portal sign-in failing in the opened browser tab (including the server-side CAPTCHA loop from
-    20605), so point at the Portal login page and the retry command. See #20605.
-    """
-    portal = (portal_base_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
-    return (
-        "Timed out waiting for device authorization.\n"
-        "  Portal sign-in is required before the device code can be approved.\n"
-        "  If the browser showed a CAPTCHA / 'You did not pass CAPTCHA' error,\n"
-        "  finish signing in at the Portal in a normal browser tab, then retry:\n"
-        "    hermes portal\n"
-        f"  Portal login: {portal}/login")
+    return resolve_httpx_verify(
+        ca_bundle=ca_bundle or tls_state.get("ca_bundle"),
+        ssl_verify=False if effective_insecure else None,
+    )
 
 
 def _print_device_code_instructions(
@@ -318,7 +270,7 @@ def _poll_device_token_generic(
     on_non_json_error: Callable[["httpx.Response"], Exception],
     on_error: Callable[["httpx.Response", Dict[str, Any]], Exception],
     on_timeout: Callable[[], Exception]) -> Dict[str, Any]:
-    """RFC 8628 device-code polling loop shared by the Nous and xAI flows.
+    """RFC 8628 device-code polling loop shared by the OAuth device-code flows.
 
     ``authorization_pending`` sleeps and retries; ``slow_down`` grows the interval by 1s (cap 30s).
     Every other error, a non-JSON error body, and the deadline become provider-specific exceptions
@@ -347,37 +299,6 @@ def _poll_device_token_generic(
             continue
         raise on_error(response, error_payload)
     raise on_timeout()
-
-
-def _poll_for_token(
-    client: httpx.Client, portal_base_url: str, client_id: str, device_code: str,
-    expires_in: int, poll_interval: int) -> Dict[str, Any]:
-    """Poll the Nous token endpoint until the user approves or the code expires."""
-    def _validate(payload: Dict[str, Any]) -> None:
-        if "access_token" not in payload:
-            raise ValueError("Token response did not include access_token")
-
-    def _error(_response, error_payload) -> Exception:
-        # Plain copy per OAuth error code; the raw ``code: description`` stays on a Details line.
-        from hermes_cli.auth_error_copy import device_flow_error
-        return device_flow_error(
-            str(error_payload.get("error", "") or ""),
-            str(error_payload.get("error_description") or "Unknown authentication error"))
-
-    return _poll_device_token_generic(
-        lambda: client.post(
-            f"{portal_base_url}/api/oauth/token",
-            data={
-                "grant_type": DEVICE_CODE_GRANT_TYPE, "client_id": client_id,
-                "device_code": device_code}),
-        expires_in=expires_in,
-        poll_interval=max(1, min(poll_interval, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS)),
-        validate_success=_validate, on_error=_error,
-        on_non_json_error=lambda _r: RuntimeError(
-            "Token endpoint returned a non-JSON error response"),
-        # Enriched at the SOURCE so the CLI login and the dashboard/desktop poller
-        # (web_server_oauth._nous_promotion_poller surfaces it to the UI) both inherit the guidance.
-        on_timeout=lambda: TimeoutError(_nous_device_auth_timeout_message(portal_base_url)))
 
 
 def _prompt_yes_no(prompt: str, *, default: str) -> bool:

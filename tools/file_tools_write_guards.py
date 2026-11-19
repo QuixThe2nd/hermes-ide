@@ -3,14 +3,12 @@
 Every guard returns ``None`` when the write may proceed, else an error string
 the tool returns verbatim.
 Guards, in the order the tools apply them: ``_check_sensitive_path`` (hard
-deny), ``_check_binary_document_write``, ``_check_protected_instruction_write``
-(ALWAYS ask), ``_check_approval_required_write`` (normal gate),
-``_check_cross_profile_path`` (sandbox-mirror lost-work), ``_is_internal_file_tool_content``.
+deny), ``_check_binary_document_write``, ``_check_cross_profile_path``
+(sandbox-mirror lost-work), and ``_is_internal_file_tool_content``.
 ``_stale_overwrite_blocker`` (write_file only, under the per-path lock) refuses a
 whole-file overwrite of content this task never saw or that changed since.
 """
 
-import fnmatch
 import os
 from pathlib import Path
 
@@ -182,7 +180,7 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         return nt_err
     candidates = (_resolved_or_raw(filepath, task_id), os.path.normpath(_expand_tilde(filepath)))
     # Prevent agents from modifying the Hermes config file directly.
-    # approvals.mode and other security settings live here; a malicious or
+    # approval deny rules and other security settings live here; a malicious or
     # prompt-injected agent could silently disable exec approval by writing to
     # this file.
     hermes_config = _get_hermes_config_resolved()
@@ -196,256 +194,16 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     return None
 
 
-# ── Protected agent-instruction files (always-ask approval gate) ─────────
-# Files that steer FUTURE agent behavior are a prompt-injection persistence
-# vector (AGENTS.md / CLAUDE.md / SOUL.md / .cursorrules / project .hermes tree).
-# Writes ALWAYS require human approval — even under --yolo — and fail closed
-# without a human channel. Basenames match in ANY directory, case-insensitively.
-# Ported from: RooCodeInc/Roo-Code RooProtectedController (Apache-2.0). Companion: the terminal-tool vector
-# is covered separately (#58631); this gate covers the write_file/patch vector. Symlink lesson from #41351:
-# always realpath before matching. Scope decision (documented): basenames match in ANY directory, because
-# project-context instruction files are loaded from cwd trees — an AGENTS.md anywhere the agent might later
-# run from is a live target. Basenames match case-insensitively so case-variant spellings on
-# case-insensitive filesystems (macOS/Windows) cannot slip past; on case-sensitive filesystems most loaders
-# probe common case variants too, so the stricter behavior is kept uniform.
-_PROTECTED_INSTRUCTION_BASENAMES = frozenset({
-    "agents.md", "claude.md", "soul.md", ".cursorrules"})
-
-
-def _protected_instruction_config() -> tuple[bool, list[str]]:
-    """Return ``(enabled, extra_patterns)`` from ``security.protected_instruction_files`` /
-    ``security.protected_instruction_extra_patterns`` (fnmatch on basename). Config read
-    failures keep the gate ON — fail-safe for a security boundary."""
-    try:
-        from hermes_cli.config import load_config, cfg_get
-        cfg = load_config()
-        enabled = cfg_get(cfg, "security", "protected_instruction_files", default=True)
-        extra = cfg_get(cfg, "security", "protected_instruction_extra_patterns", default=[])
-    except Exception:
-        return True, []
-    if not isinstance(enabled, bool):
-        enabled = True
-    if not isinstance(extra, list):
-        extra = []
-    return enabled, [str(p) for p in extra if p]
-
-
-def _protected_instruction_reason(filepath: str, task_id: str = "default",
-                                  *, enabled: bool | None = None,
-                                  extra_patterns: list[str] | None = None) -> str | None:
-    """Return a short label when ``filepath`` targets a protected instruction file, else ``None``.
-    Matches BOTH the normalized input and its realpath so no symlink direction escapes.
-
-    Matching runs on BOTH the normalized input path and its realpath so neither a symlink pointing AT a
-    protected file (#41351) nor a protected name that is itself a symlink escapes the gate. ``..`` traversal
-    is neutralized by normpath/realpath before the basename compare.
-    """
-    if enabled is None or extra_patterns is None:
-        enabled, extra_patterns = _protected_instruction_config()
-    if not enabled:
-        return None
-
-    normalized = os.path.normpath(_expand_tilde(filepath))
-    try:
-        resolved = os.path.realpath(str(_resolve_path_for_task(filepath, task_id)))
-    except (OSError, ValueError, RuntimeError):
-        resolved = os.path.realpath(normalized)
-
-    # ~/.hermes itself is governed by its own guards (config.yaml hard-block,
-    # mirror guard, write_approval); this gate targets PROJECT-LOCAL files only.
-    # Must run before the ``.hermes`` component rule, which would match the home.
-    # ``_hermes_exempt_homes`` also covers the ROOT when the active home is a named
-    # profile, so ~/.hermes/<file> cannot read as project-local ``.hermes`` config.
-    for real_home in _hermes_exempt_homes():
-        if resolved == real_home or resolved.startswith(real_home + os.sep):
-            return None
-
-    for candidate in (normalized, resolved):
-        base = os.path.basename(candidate)
-        base_lower = base.lower()
-        if base_lower in _PROTECTED_INSTRUCTION_BASENAMES or any(
-                fnmatch.fnmatch(base_lower, pattern.lower()) for pattern in extra_patterns):
-            return base
-        # Project-local .hermes config dirs (<repo>/.hermes/config.yaml) steer
-        # behavior too. Only the IMMEDIATE parent counts — matching any ancestor
-        # would gate every write inside a checkout living under ~/.hermes.
-        parts = candidate.replace("\\", "/").rstrip("/").split("/")
-        if len(parts) >= 2 and parts[-2] == ".hermes":
-            return candidate
-    return None
-
-
-_APPROVAL_UNAVAILABLE = "requires approval but the approval subsystem is unavailable."
-_NO_HUMAN = "requires approval but no interactive user or gateway is present to approve it."
-
-
-def _request_protected_instruction_approval(reasons: list[str], task_id: str = "default") -> str | None:
-    """Ask the human to approve a write to protected instruction file(s); ``None`` when approved.
-
-    Deliberately NOT routed through ``_run_approval_gate`` (honors --yolo and
-    allowlists): this gate is one-operation approval EVERY time, no persisted
-    scope, fail-closed without a human channel.
-    """
-    targets = ", ".join(dict.fromkeys(reasons))
-    description = (
-        f"Write to protected agent-instruction file(s): {targets}. "
-        "These files steer future agent behavior; approval is always "
-        "required (not bypassed by auto-approve).")
-    display = f"<write to {targets}>"
-    blocked = (
-        f"BLOCKED: write to protected agent-instruction file(s) ({targets}) "
-        "{why} The user has NOT consented to this write. Do NOT retry it or "
-        "attempt the same edit via another path (terminal, execute_code, "
-        "etc.).")
-    timed_out = blocked.format(why="approval prompt timed out without a user response. Silence is not consent.")
-    denied = blocked.format(why="was denied by the user.")
-
-    try:
-        import tools.approval as _approval
-        from tools.approval_context import get_current_session_key
-        from tools.approval_gateway_wait import _await_gateway_decision
-        from tools.approval_prompt import prompt_dangerous_approval
-    except Exception:
-        return blocked.format(why=_APPROVAL_UNAVAILABLE)
-
-    # Gateway surface: block on the button round-trip when a notify callback
-    # is registered for this session. One-operation only — no scope buttons.
-    session_key = get_current_session_key()
-    try:
-        with _approval._lock:
-            notify_cb = _approval._gateway_notify_cbs.get(session_key)
-    except Exception:
-        notify_cb = None
-
-    if notify_cb is not None:
-        approval_data = {
-            "command": display,
-            "pattern_key": "protected_instruction_file",
-            "pattern_keys": ["protected_instruction_file"],
-            "description": description,
-            "allow_permanent": False,
-            "allow_session": False}
-        decision = _await_gateway_decision(session_key, notify_cb, approval_data, surface="gateway")
-        if decision.get("notify_failed"):
-            return blocked.format(why="requires approval but the approval request could not be delivered.")
-        if decision.get("cancelled"):
-            return blocked.format(why=f"approval was withdrawn before the user answered ({decision['cancelled']}).")
-        choice, timed = decision.get("choice"), not decision.get("resolved")
-    else:
-        # CLI surface: per-thread approval callback (prompt_toolkit panel).
-        try:
-            from tools.terminal_tool import _get_approval_callback
-            callback = _get_approval_callback()
-        except Exception:
-            callback = None
-        if callback is None:
-            # No human channel (script, cron, background thread): fail closed —
-            # auto-approving here would recreate the persistence vector.
-            return blocked.format(why=_NO_HUMAN)
-        choice = prompt_dangerous_approval(
-            display, description, allow_permanent=False, allow_session=False, approval_callback=callback)
-        if choice == "cancelled":
-            return blocked.format(why="approval prompt could not be delivered or was not answered "
-                                      f"({getattr(choice, 'cause', 'no answer')}).")
-        timed = choice == "timeout"
-    # Any tapped scope is a one-operation grant; nothing is persisted.
-    if not timed and choice in {"once", "session", "always"}:
-        return None
-    return timed_out if timed else denied
-
-
-def _check_protected_instruction_write(paths: list[str], task_id: str = "default") -> str | None:
-    """Gate a write/patch touching protected instruction files. ONE protected file gates
-    the ENTIRE multi-file patch (one prompt, all-or-nothing)."""
-    enabled, extra = _protected_instruction_config()
-    if not enabled:
-        return None
-    reasons = [r for r in (_protected_instruction_reason(p, task_id, enabled=enabled, extra_patterns=extra)
-                           for p in paths) if r]
-    if not reasons:
-        return None
-    return _request_protected_instruction_approval(reasons, task_id)
-
-
-def _check_approval_required_write(paths: list[str], task_id: str = "default") -> str | None:
-    """Gate a write/patch touching an approval-required path (``~/.ssh/config`` can steer
-    execution via ``ProxyCommand``). Routine gate: once/session/always, honors --yolo,
-    fail-closed without an interactive/gateway channel."""
-    try:
-        from agent.file_safety import is_write_approval_required
-    except Exception:
-        return None
-
-    targets = [p for p in paths if is_write_approval_required(p)]
-    if not targets:
-        return None
-
-    display_targets = ", ".join(dict.fromkeys(targets))
-    description = (
-        f"Write to SSH client config file(s): {display_targets}. "
-        "The SSH config can carry ProxyCommand / Match exec directives that "
-        "run commands, so writes require your approval.")
-    blocked = (
-        f"BLOCKED: write to SSH config file(s) ({display_targets}) "
-        "{why} Do NOT retry it via another path (terminal, execute_code) "
-        "without the user's explicit consent.")
-
-    try:
-        import tools.approval as _approval
-    except Exception:
-        return blocked.format(why=_APPROVAL_UNAVAILABLE)
-
-    result = _approval._run_approval_gate(
-        pattern_key="ssh_config_write",
-        description=description,
-        display_target=f"<write to {display_targets}>",
-        cron_deny_message=blocked.format(why="requires approval but this cron session denies it."),
-        single_query_deny_message=blocked.format(
-            why="requires approval but single-query (-q) sessions run "
-                "without a user present to approve it. To allow flagged "
-                "actions in single-query mode, set approvals.single_query_mode: "
-                "approve in config.yaml."),
-        autoapprove_log_prefix="ssh_config_write",
-        fail_closed_when_no_human=True,
-        no_human_block_message=blocked.format(why=_NO_HUMAN))
-    if result.get("approved"):
-        return None
-    return result.get("message") or blocked.format(why="was denied.")
-
-
-def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | None:
-    """Return the container-side Hermes mirror prefix for persistent Docker file tools."""
-    try:
-        from tools.terminal_tool import (
-            _active_environments, _env_lock, _get_env_config, _resolve_container_task_id)
-        container_key = _resolve_container_task_id(task_id)
-        with _env_lock:
-            env = _active_environments.get(container_key) or _active_environments.get(task_id)
-        if env is not None:
-            persistent_docker = (env.__class__.__name__ == "DockerEnvironment"
-                                 and bool(getattr(env, "_persistent", False)))
-            return "/root/.hermes" if persistent_docker else None
-        config = _get_env_config()
-    except Exception:
-        return None
-    if config.get("env_type") == "docker" and config.get("container_persistent", True):
-        return "/root/.hermes"
-    return None
-
-
 def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | None:
-    """Soft-guard: warn when ``filepath`` lands on a host-side or Docker sandbox MIRROR of
+    """Soft-guard: warn when ``filepath`` lands on a host-side sandbox MIRROR of
     Hermes state (a write the host never reads). Not profile isolation — that guard was
     removed; ``cross_profile=True`` keeps bypassing this one for replay compat. Fails open."""
     try:
-        from agent.file_safety import get_container_mirror_warning, get_sandbox_mirror_warning
+        from agent.file_safety import get_sandbox_mirror_warning
     except Exception:
         return None
     resolved = _resolved_or_raw(filepath, task_id)
-    warning = get_sandbox_mirror_warning(resolved)
-    if warning is not None:
-        return warning
-    return get_container_mirror_warning(resolved, mirror_prefix=_get_container_mirror_prefix_for_task(task_id))
+    return get_sandbox_mirror_warning(resolved)
 
 
 def _check_binary_document_write(filepath: str, task_id: str = "default") -> str | None:

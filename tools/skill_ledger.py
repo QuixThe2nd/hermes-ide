@@ -337,7 +337,7 @@ def gc_blobs() -> Tuple[int, int]:
         return 0, 0
     referenced: set = set()
     try:
-        lines = ledger_path().read_text(encoding="utf-8").splitlines()
+        lines = ledger_path().read_text(encoding="utf-8-sig").splitlines()
     except OSError:
         lines = []
     for line in lines:

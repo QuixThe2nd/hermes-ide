@@ -11,15 +11,19 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.interrupt_control import InterruptControlMixin
 from agent.turn_context import _bind_interrupt_scope
+from run_agent import AIAgent
 from tools import async_delegation
 from tools.delegate_tool_dispatch import _Batch, _dispatch_background
 from tools.interrupt import is_interrupted, set_interrupt
 from tools.process_registry import process_registry
 
 
-class _Parent(InterruptControlMixin):
+class _Parent:
+    interrupt = AIAgent.interrupt
+    hard_interrupt = AIAgent.hard_interrupt
+    clear_interrupt = AIAgent.clear_interrupt
+
     def __init__(self):
         self.session_id = "capacity-interrupt-parent"
         self._active_children = []

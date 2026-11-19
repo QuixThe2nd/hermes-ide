@@ -33,7 +33,6 @@ CREATE TABLE IF NOT EXISTS projects (
     description   TEXT,
     icon          TEXT,
     color         TEXT,
-    board_slug    TEXT,
     primary_path  TEXT,
     created_at    INTEGER NOT NULL,
     archived      INTEGER NOT NULL DEFAULT 0
@@ -69,14 +68,12 @@ CREATE TABLE IF NOT EXISTS discovered_repos (
 # Lowercase alphanumerics, hyphens, underscores; 1-64 chars; no leading separator. Strict enough to
 # stop traversal/path separators, loose enough for kebab-case. Display formatting lives in ``name``.
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9\-_]{0,63}$")
-# Deterministic branch slug: lowercase, separators collapsed, capped.
-_BRANCH_SAFE_RE = re.compile(r"[^a-z0-9._-]+")
 _INITIALIZED_PATHS: set[str] = set()
 # TEXT columns added to `projects` after v1; re-applied idempotently on every open so a legacy DB
 # upgrades in place.
-_OPTIONAL_PROJECT_COLUMNS = ("board_slug", "primary_path", "icon", "color")
+_OPTIONAL_PROJECT_COLUMNS = ("primary_path", "icon", "color")
 # Nullable TEXT columns that may be absent from a legacy row.
-_OPTIONAL_ROW_FIELDS = ("description", "icon", "color", "board_slug", "primary_path")
+_OPTIONAL_ROW_FIELDS = ("description", "icon", "color", "primary_path")
 _ACTIVE_META_KEY = "active_id"
 _DISCOVERY_POLICY_META_KEY = "repo_discovery_policy"
 
@@ -165,7 +162,6 @@ class Project:
     description: Optional[str] = None
     icon: Optional[str] = None
     color: Optional[str] = None
-    board_slug: Optional[str] = None
     primary_path: Optional[str] = None
     archived: bool = False
     folders: List[ProjectFolder] = field(default_factory=list)
@@ -220,7 +216,7 @@ def find_by_primary_path(conn: sqlite3.Connection, path: str, *, include_archive
 def create_project(
     conn: sqlite3.Connection, *, name: str, slug: Optional[str] = None, folders: Optional[Iterable[str]] = None,
     primary_path: Optional[str] = None, description: Optional[str] = None, icon: Optional[str] = None,
-    color: Optional[str] = None, board_slug: Optional[str] = None, allow_duplicate_path: bool = False,
+    color: Optional[str] = None, allow_duplicate_path: bool = False,
 ) -> str:
     """Create a project and return its id. ``folders`` are normalized to absolute paths; ``primary_path``
     is added to the folder set (if absent) and marked primary, else the first folder becomes primary."""
@@ -244,10 +240,9 @@ def create_project(
         )
     with write_txn(conn):
         conn.execute(
-            "INSERT INTO projects (id, slug, name, description, icon, color, board_slug,  primary_path, created_at, archived) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
-            (pid, _unique_slug(conn, slug_candidate), name, description, icon, color,
-             normalize_slug(board_slug) if board_slug else None, primary, now),
+            "INSERT INTO projects (id, slug, name, description, icon, color, primary_path, created_at, archived) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            (pid, _unique_slug(conn, slug_candidate), name, description, icon, color, primary, now),
         )
         conn.executemany(
             "INSERT INTO project_folders (project_id, path, label, is_primary, added_at) VALUES (?, ?, ?, ?, ?)",
@@ -272,21 +267,19 @@ def get_project(conn: sqlite3.Connection, id_or_slug: str) -> Optional[Project]:
 
 def update_project(
     conn: sqlite3.Connection, project_id: str, *, name: Optional[str] = None, description: Optional[str] = None,
-    icon: Optional[str] = None, color: Optional[str] = None, board_slug: Optional[str] = None,
+    icon: Optional[str] = None, color: Optional[str] = None,
 ) -> bool:
-    """Patch top-level project fields; only provided (non-None) fields change. ``icon``, ``color`` and
-    ``board_slug`` take ``""`` to clear (store NULL) — ``None`` leaves the field untouched."""
+    """Patch top-level project fields; only provided (non-None) fields change. ``icon`` and
+    ``color`` take ``""`` to clear (store NULL) — ``None`` leaves the field untouched."""
     if name is not None:
         name = str(name).strip()
         if not name:
             raise ValueError("project name must not be empty")
-    if board_slug is not None:
-        board_slug = normalize_slug(board_slug) if board_slug.strip() else ""
-    # (column, provided value, stored value) — "" clears icon/color/board_slug to NULL.
+    # (column, provided value, stored value) — "" clears icon/color to NULL.
     fields = [
         (col, given, stored) for col, given, stored in (
             ("name", name, name), ("description", description, description), ("icon", icon, icon or None),
-            ("color", color, color or None), ("board_slug", board_slug, board_slug or None),
+            ("color", color, color or None),
         ) if given is not None
     ]
     if not fields:
@@ -475,11 +468,3 @@ def project_for_path(conn: sqlite3.Connection, path: str, *, include_archived: b
 
     owners = [row for row in conn.execute(sql).fetchall() if owns(row["folder"])]
     return get_project(conn, max(owners, key=lambda r: len(r["folder"]))["pid"]) if owners else None
-
-
-def branch_name_for(project: Project, task_id: str, *, title: str = "") -> str:
-    """Deterministic ``<project-slug>/<task-id>[-<title-slug>]`` branch name for a project-linked kanban
-    task (stable and human-meaningful, replacing the random ``wt/<task-id>`` fallback)."""
-    base = f"{project.slug or _slugify(project.name)}/{task_id}"
-    tslug = _BRANCH_SAFE_RE.sub("-", str(title).strip().lower()).strip("-")[:40].strip("-") if title else ""
-    return f"{base}-{tslug}" if tslug else base

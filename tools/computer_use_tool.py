@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from tools.computer_use.schema import COMPUTER_USE_SCHEMA
 from tools.computer_use.tool import (
-    check_computer_use_requirements, handle_computer_use, release_computer_use_session, set_approval_callback,
+    check_computer_use_requirements, handle_computer_use, release_computer_use_session,
 )
 from tools.registry import registry
 
@@ -26,4 +26,4 @@ registry.register(
 )
 
 
-__all__ = ["handle_computer_use", "release_computer_use_session", "set_approval_callback", "check_computer_use_requirements"]
+__all__ = ["handle_computer_use", "release_computer_use_session", "check_computer_use_requirements"]

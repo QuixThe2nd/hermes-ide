@@ -39,7 +39,7 @@ def test_desktop_local_serve_shape_spares_fixed_port_and_non_serve():
     assert not _is_desktop_local_serve_cmdline("hermes gateway run --replace")
     # "serve" inside another token is not the serve subcommand (token matcher, not substring).
     assert not _is_desktop_local_serve_cmdline(
-        "hermes kanban --preserve-cache --host 127.0.0.1 --port 0"
+        "hermes chat --preserve-cache --host 127.0.0.1 --port 0"
     )
 
 

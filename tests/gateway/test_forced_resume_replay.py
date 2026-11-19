@@ -5,9 +5,9 @@ restart/shutdown, crash) resumed with an LLM-visible "[System note: The
 previous turn was interrupted by a gateway restart ...]" wrapper, so the
 model narrated the outage instead of finishing the turn.  The contract:
 
-* Only sessions that accepted ``COOPERATIVE_RESTART_STEER`` see restart
-  guidance; every forced reason recovers below the LLM boundary with ZERO
-  synthetic rows — no note, no synthetic user message, no blank user row.
+* Every forced reason recovers below the LLM boundary with ZERO synthetic
+  rows — no note, no synthetic user message, no blank user row; only the
+  idle `/restart` requester's comeback marker takes the restore-note path.
 * The unresolved / explicitly interrupted calls of the FINAL assistant
   tool batch re-run through the normal dispatcher with their original
   name, call id, and arguments — LITERALLY, with no tool-name whitelist:
@@ -54,6 +54,7 @@ from gateway.run import (
     _prepare_resume_pending_message,
     _strip_auto_continue_noise,
 )
+from gateway.run_resume_reasons import RESTART_REQUESTER_RESUME_REASON
 
 
 @pytest.fixture(autouse=True)
@@ -216,7 +217,7 @@ def test_forced_victim_replays_unresolved_read_only_call_exactly_once():
     # The repaired history feeds the real gateway history pipeline; the
     # model sees the fresh result at the tail and NO restart prose.
     assert outcome.repaired_history is not None
-    agent_history, _, _ = _build_gateway_agent_history(outcome.repaired_history)
+    agent_history, _ = _build_gateway_agent_history(outcome.repaired_history)
     assert agent_history[-1]["role"] == "tool"
     assert agent_history[-1]["tool_call_id"] == "call_read"
     assert "CONFIG-DATA" in agent_history[-1]["content"]
@@ -271,7 +272,7 @@ def test_mixed_batch_preserves_completed_and_replays_only_unresolved():
     assert contents["call_done"] == "ALREADY DONE RESULT"
     assert "FRESH SEARCH" in contents["call_open"]
 
-    agent_history, _, _ = _build_gateway_agent_history(repaired)
+    agent_history, _ = _build_gateway_agent_history(repaired)
     _assert_strict_pairing(agent_history)
     _assert_no_restart_prose(agent_history)
 
@@ -321,7 +322,7 @@ def test_interrupted_replayable_call_retried_once_and_marker_not_final():
     # fresh one.  The real replay-tail stripper must keep the LAST row so
     # the interrupted marker can never win the model-visible final result.
     on_disk = list(history) + [dict(store.appended[0][1])]
-    agent_history, _, _ = _build_gateway_agent_history(on_disk)
+    agent_history, _ = _build_gateway_agent_history(on_disk)
     moa_rows = [
         row
         for row in agent_history
@@ -429,7 +430,7 @@ def test_side_effecting_non_lifecycle_victim_executes_once():
     ]
     assert outcome.repaired_history is not None
 
-    agent_history, _, _ = _build_gateway_agent_history(outcome.repaired_history)
+    agent_history, _ = _build_gateway_agent_history(outcome.repaired_history)
     deploy_rows = [
         row for row in agent_history if row.get("tool_call_id") == "call_deploy"
     ]
@@ -455,7 +456,7 @@ def test_unknown_mcp_side_effecting_victim_replays_literally():
         agent, plan, raw_history=history, session_store=RecordingStore(), session_id="s"
     )
     assert agent.executions == [("mcp__ci__deploy", "call_mcp", '{"env": "prod"}')]
-    agent_history, _, _ = _build_gateway_agent_history(outcome.repaired_history)
+    agent_history, _ = _build_gateway_agent_history(outcome.repaired_history)
     assert agent_history[-1]["tool_call_id"] == "call_mcp"
     _assert_strict_pairing(agent_history)
 
@@ -495,15 +496,9 @@ def test_replay_carries_original_argument_bytes_and_call_ids():
 
 
 def test_lifecycle_classifier_is_narrow_by_name_and_command():
-    # The agent-callable restart tool, by name and via a bridge wrapper.
+    # The agent-callable restart tool, by name.
     assert is_lifecycle_replay_request("restart", "{}") is True
     assert GATEWAY_LIFECYCLE_TOOL_NAMES == {"restart"}
-    assert (
-        is_lifecycle_replay_request(
-            "tool_call", '{"name": "restart", "arguments": {}}'
-        )
-        is True
-    )
     # Shell commands targeting the gateway's own lifecycle.
     assert (
         is_lifecycle_replay_request(
@@ -524,14 +519,6 @@ def test_lifecycle_classifier_is_narrow_by_name_and_command():
     assert is_lifecycle_replay_request("terminal", '{"command": "ls -la"}') is False
     assert is_lifecycle_replay_request("write_file", '{"path": "/tmp/a"}') is False
     assert is_lifecycle_replay_request("mcp__ci__deploy", '{"env": "prod"}') is False
-    # Bridge wrapping an ordinary tool stays replayable; junk stays honest.
-    assert (
-        is_lifecycle_replay_request(
-            "tool_call", '{"name": "terminal", "arguments": {"command": "ls"}}'
-        )
-        is False
-    )
-    assert is_lifecycle_replay_request("tool_call", "not-json") is False
 
 
 def test_lifecycle_restart_requester_is_never_a_victim():
@@ -565,7 +552,7 @@ def test_lifecycle_restart_requester_is_never_a_victim():
     assert orphan["effect_disposition"] == "unknown"
     assert "UNKNOWN" in orphan["content"]
     assert outcome.repaired_history is not None
-    agent_history, _, _ = _build_gateway_agent_history(outcome.repaired_history)
+    agent_history, _ = _build_gateway_agent_history(outcome.repaired_history)
     _assert_strict_pairing(agent_history)
     _assert_no_restart_prose(agent_history)
 
@@ -632,7 +619,7 @@ def test_mixed_batch_with_lifecycle_call_pairs_and_closes_it():
     # The marker key itself never reaches the transcript.
     assert "_orphan_recovery" not in orphan_row
 
-    agent_history, _, _ = _build_gateway_agent_history(outcome.repaired_history)
+    agent_history, _ = _build_gateway_agent_history(outcome.repaired_history)
     _assert_strict_pairing(agent_history)
     _assert_no_restart_prose(agent_history)
 
@@ -764,21 +751,21 @@ def test_dispatcher_failure_fails_closed_without_fabrication():
 
 
 # ---------------------------------------------------------------------------
-# Proof 7: cooperative parked sessions keep the safe-pause guidance
+# Proof 7: the requester's idle comeback turn keeps the restore note
 # ---------------------------------------------------------------------------
 
 
 def _route_resume_turn(reason, message):
     """Mirror of the run.py ``_is_resume_pending`` branch routing: forced
-    reasons take the transparent path, cooperative ones keep the existing
-    guidance builder."""
+    reasons take the transparent path, the requester's idle-comeback marker
+    keeps the guidance builder."""
     if is_forced_interruption_reason(reason):
         return plan_forced_resume_turn(message)
     return _prepare_resume_pending_message(reason, message)
 
 
-def test_recovery_classification_splits_cooperative_from_forced():
-    assert is_forced_interruption_reason("cooperative_restart") is False
+def test_recovery_classification_splits_requester_comeback_from_forced():
+    assert is_forced_interruption_reason(RESTART_REQUESTER_RESUME_REASON) is False
     for reason in (
         "restart_timeout",
         "shutdown_timeout",
@@ -790,19 +777,18 @@ def test_recovery_classification_splits_cooperative_from_forced():
         assert is_forced_interruption_reason(reason) is True, reason
 
 
-def test_cooperative_restart_keeps_safe_pause_guidance():
-    recovery, persist = _route_resume_turn("cooperative_restart", "")
-    # The parked-task safe-pause guidance survives verbatim.
-    assert "parked itself" in recovery
-    assert "CONTINUE the parked task" in recovery
+def test_requester_comeback_keeps_restore_note():
+    recovery, persist = _route_resume_turn(RESTART_REQUESTER_RESUME_REASON, "")
+    # The synthesized comeback turn reports the restore and asks what next.
+    assert "restored successfully" in recovery
     assert recovery == persist  # synthesized turn persists the guidance row
 
 
-def test_cooperative_route_does_not_run_victim_replay():
-    """A cooperative parked session with a dangling batch must not have its
-    calls re-executed: is_forced_interruption_reason gates execute_victim_replay
-    in run.py, and the gate is False exactly for cooperative_restart."""
-    assert is_forced_interruption_reason("cooperative_restart") is False
+def test_requester_route_does_not_run_victim_replay():
+    """The requester's idle comeback must not have calls re-executed:
+    is_forced_interruption_reason gates execute_victim_replay in run.py,
+    and the gate is False exactly for the requester marker."""
+    assert is_forced_interruption_reason(RESTART_REQUESTER_RESUME_REASON) is False
     # The gate is the ONLY thing standing between the plan and execution —
     # verify the plan itself WOULD have found work, so the gate is load-bearing.
     history = [
@@ -812,9 +798,9 @@ def test_cooperative_route_does_not_run_victim_replay():
     assert build_victim_replay_plan(history).has_replay_work is True
 
 
-def test_forced_reasons_never_produce_the_cooperative_pause_note():
-    """No forced reason may leak the cooperative safe-pause guidance —
-    system guidance is exclusive to sessions that accepted the steer."""
+def test_forced_reasons_never_produce_a_restore_note():
+    """No forced reason may leak the restore note — system guidance is
+    exclusive to the requester's idle comeback turn."""
     for reason in ("restart_timeout", "shutdown_timeout", "restart_interrupted"):
         turn = _route_resume_turn(reason, "")
         assert turn.message is None, reason
@@ -863,7 +849,7 @@ def test_user_message_queues_after_completed_batch_at_legal_boundary():
         agent, plan, raw_history=history, session_store=store, session_id="sid"
     )
     assert outcome.repaired_history is not None
-    agent_history, _, _ = _build_gateway_agent_history(outcome.repaired_history)
+    agent_history, _ = _build_gateway_agent_history(outcome.repaired_history)
 
     # The batch is complete before any user/model continuation…
     batch_index = next(
@@ -968,7 +954,7 @@ def test_replay_keeps_pairing_valid_for_strict_providers():
             agent, plan, raw_history=history, session_store=store, session_id="sid"
         )
         assert outcome.repaired_history is not None, _label
-        agent_history, _, _ = _build_gateway_agent_history(outcome.repaired_history)
+        agent_history, _ = _build_gateway_agent_history(outcome.repaired_history)
         _assert_strict_pairing(agent_history)
 
         issued = {
@@ -1091,7 +1077,7 @@ def test_composite_call_id_survives_byte_for_byte():
     # Persisted with the exact id…
     assert [row["tool_call_id"] for _sid, row in store.appended] == [cid]
     # …and the model-facing history pairs strictly on the exact id.
-    agent_history, _, _ = _build_gateway_agent_history(outcome.repaired_history)
+    agent_history, _ = _build_gateway_agent_history(outcome.repaired_history)
     _assert_strict_pairing(agent_history)
     assert agent_history[-1]["tool_call_id"] == cid
     assert "PIPE-DATA" in agent_history[-1]["content"]
@@ -1131,7 +1117,7 @@ def test_normalized_dispatcher_output_restamped_to_exact_id():
     assert agent.executions == [("read_file", cid, '{"path": "/etc/hosts"}')]
     assert outcome.repaired_history is not None
     assert [row["tool_call_id"] for _sid, row in store.appended] == [cid]
-    agent_history, _, _ = _build_gateway_agent_history(outcome.repaired_history)
+    agent_history, _ = _build_gateway_agent_history(outcome.repaired_history)
     _assert_strict_pairing(agent_history)
     assert agent_history[-1]["tool_call_id"] == cid
 
@@ -1208,7 +1194,7 @@ def test_duplicate_stale_markers_all_superseded_by_single_fresh_row():
     # one — the replay-tail cleanup must still surface exactly one row and
     # it must be the fresh result, never UNKNOWN.
     on_disk = list(history) + [dict(row) for _sid, row in store.appended]
-    agent_history, _, _ = _build_gateway_agent_history(on_disk)
+    agent_history, _ = _build_gateway_agent_history(on_disk)
     disk_rows = [
         row
         for row in agent_history
@@ -1243,7 +1229,7 @@ def test_completed_result_beats_later_stale_marker():
     assert outcome.repaired_history is None
 
     # Model-side cleanup: exactly one row, the real result — not UNKNOWN.
-    agent_history, _, _ = _build_gateway_agent_history(history)
+    agent_history, _ = _build_gateway_agent_history(history)
     rows = [
         row for row in agent_history
         if row.get("role") == "tool" and row.get("tool_call_id") == "call_d"
@@ -1663,14 +1649,6 @@ def test_lifecycle_classifier_failure_fails_closed(monkeypatch):
         )
         is True
     )
-    # Bridge-wrapped command-bearing call.
-    assert (
-        is_lifecycle_replay_request(
-            "tool_call",
-            '{"name": "terminal", "arguments": {"command": "systemctl restart hermes-gateway"}}',
-        )
-        is True
-    )
     # Calls without a command have nothing to classify and stay replayable.
     assert is_lifecycle_replay_request("write_file", '{"path": "/tmp/a"}') is False
     assert is_lifecycle_replay_request("mcp__ci__deploy", '{"env": "prod"}') is False
@@ -1782,7 +1760,7 @@ def test_padded_call_id_preserved_byte_for_byte():
     # Persisted with the exact padded bytes…
     assert [row["tool_call_id"] for _sid, row in store.appended] == [cid]
     # …and the model-facing history pairs on them.
-    agent_history, _, _ = _build_gateway_agent_history(outcome.repaired_history)
+    agent_history, _ = _build_gateway_agent_history(outcome.repaired_history)
     _assert_strict_pairing(agent_history)
     assert agent_history[-1]["tool_call_id"] == cid
     assert "PADDED-DATA" in agent_history[-1]["content"]
@@ -1811,7 +1789,7 @@ def test_padded_composite_id_restamped_verbatim_from_canonical_echo():
     )
     assert agent.executions == [("read_file", cid, '{"path": "/etc/hosts"}')]
     assert [row["tool_call_id"] for _sid, row in store.appended] == [cid]
-    agent_history, _, _ = _build_gateway_agent_history(outcome.repaired_history)
+    agent_history, _ = _build_gateway_agent_history(outcome.repaired_history)
     _assert_strict_pairing(agent_history)
     assert agent_history[-1]["tool_call_id"] == cid
 
@@ -1884,7 +1862,7 @@ def test_variant_answered_completed_call_never_replays():
 
     # And the completed (aliased) row is the model-visible answer — not an
     # interrupted marker, not UNKNOWN.
-    agent_history, _, _ = _build_gateway_agent_history(history)
+    agent_history, _ = _build_gateway_agent_history(history)
     rows = [
         row
         for row in agent_history

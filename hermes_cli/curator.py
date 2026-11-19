@@ -95,10 +95,6 @@ def _print_curator_config(curator) -> None:
     print(f"  interval:       every {f'{ih // 24}d' if ih % 24 == 0 and ih >= 24 else f'{ih}h'}")
     print(f"  stale after:    {curator.get_stale_after_days()}d unused")
     print(f"  archive after:  {curator.get_archive_after_days()}d unused")
-    consolidate = curator.get_consolidate()
-    print(
-        f"  consolidate:    {'on' if consolidate else 'off'}"
-        f"{'' if consolidate else ' (prune-only; LLM merge pass opt-in)'}")
 
 
 def _cmd_status(args) -> int:
@@ -150,19 +146,8 @@ def _cmd_run(args) -> int:
     dry = bool(getattr(args, "dry_run", False))
     background = bool(getattr(args, "background", False))
     synchronous = bool(getattr(args, "synchronous", False)) or not background
-    # --consolidate forces the LLM umbrella pass on; absent => None so run_curator_review reads
-    # curator.consolidate from config.
-    consolidate = True if getattr(args, "consolidate", False) else None
-    print(
-        "curator: running DRY-RUN (report only, no mutations)..." if dry
-        else "curator: running review pass...")
-    if consolidate is None and not curator.get_consolidate():
-        print(
-            "curator: consolidation is off — running prune-only "
-            "(deterministic stale/archive). Pass --consolidate or set "
-            "`curator.consolidate: true` to enable the LLM merge pass.")
     result = curator.run_curator_review(
-        on_summary=print, synchronous=synchronous, dry_run=dry, consolidate=consolidate)
+        on_summary=print, synchronous=synchronous, dry_run=dry)
     auto = result.get("auto_transitions", {})
     if auto and dry:
         print(
@@ -618,18 +603,14 @@ _SUBCOMMANDS = (
              help="Only show skills of this origin"),
         _arg("--json", **_STORE_TRUE, help="Emit the full report as JSON instead of a table")),
     (
-        "run", "Trigger a curator review now", _cmd_run,
+        "run", "Trigger automatic transitions and the LLM consolidation pass now", _cmd_run,
         _arg("--sync", "--synchronous", dest="synchronous", **_STORE_TRUE,
              help="Wait for the LLM review pass to finish (default for manual runs)"),
         _arg("--background", dest="background", **_STORE_TRUE,
              help="Start the LLM review pass in a background thread and return immediately"),
         _arg("--dry-run", dest="dry_run", **_STORE_TRUE,
-             help="Report only — no state changes, no archives, no consolidation "
-                  "(use this to preview what curator would do)"),
-        _arg("--consolidate", dest="consolidate", **_STORE_TRUE,
-             help="Force the LLM umbrella-building consolidation pass on for this "
-                  "run, overriding the config default (off). Without this flag the "
-                  "run is prune-only unless `curator.consolidate: true` is set.")),
+             help="Report only — run the LLM review without state changes, archives, or skill mutations "
+                  "(use this to preview what curator would do)")),
     ("pause", "Pause the curator until resumed", _cmd_pause),
     ("resume", "Resume a paused curator", _cmd_resume),
     ("pin", "Pin a skill so the curator never auto-transitions it", _cmd_pin, _SKILL),

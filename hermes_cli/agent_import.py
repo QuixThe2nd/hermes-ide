@@ -178,17 +178,6 @@ def merge_entries(existing: Sequence[str], incoming: Sequence[str],
     return merged, stats
 
 
-_BASH_RULE_RE = re.compile(r"^Bash\((?P<inner>.*)\)$")
-
-
-def claude_rule_to_command_pattern(rule: str) -> Optional[str]:
-    """``Bash(npm run test:*)`` -> ``npm run test*`` (Claude ':*' is a prefix match). Bare ``Bash``
-    (too broad) and non-Bash rules (Claude-only tools, no allowlist equivalent) return None."""
-    m = _BASH_RULE_RE.match((rule or "").strip())
-    inner = m.group("inner").strip() if m else ""
-    if not inner:
-        return None
-    return inner[:-2] + "*" if inner.endswith(":*") else inner
 
 
 def detect_agents() -> List[str]:
@@ -302,8 +291,6 @@ class AgentImporter:
             "settings", self.source_root / "settings.json", json.loads, self._JSON_ERRORS,
             record_missing=True, non_mapping_error="settings.json is not a JSON object")
         self.import_context_file(self.source_root / "CLAUDE.md", "claude-md")
-        self._import_permission_rules(settings, "allow")
-        self._import_permission_rules(settings, "deny")
         # mcpServers: ~/.claude.json (preferred; lives NEXT TO ~/.claude/) then settings.json
         claude_json = self._load_source_mapping(
             "mcp-servers", self.source_root.parent / ".claude.json", json.loads, self._JSON_ERRORS)
@@ -407,53 +394,6 @@ class AgentImporter:
 
         self.apply(kind, source, destination, "Would merge entries", write, details)
 
-    # (settings key, item kind, config path, dry-run tracks unmapped rules)
-    _PERMISSION_RULES = {
-        "allow": ("command-allowlist", ("command_allowlist",), True),
-        "deny": ("command-denylist", ("approvals", "deny"), False)}
-
-    def _import_permission_rules(self, settings: Dict[str, Any], key: str) -> None:
-        """settings.json permissions.allow/deny → config.yaml command_allowlist / approvals.deny."""
-        kind, config_path, track_unmapped = self._PERMISSION_RULES[key]
-        label = f"settings.json permissions.{key}"
-        destination = self.target_root / "config.yaml"
-        permissions = settings.get("permissions")
-        rules = permissions.get(key) if isinstance(permissions, dict) else None
-        if not isinstance(rules, list) or not rules:
-            self.record(kind, None, destination, "skipped", f"No permissions.{key} rules found")
-            return
-        mapped = [(r, claude_rule_to_command_pattern(r)) for r in rules if isinstance(r, str)]
-        patterns = sorted(dict.fromkeys(p for _, p in mapped if p))
-        skipped_rules = [r for r, p in mapped if not p]
-        unmapped: Dict[str, Any] = {"unmapped_rules": skipped_rules} if track_unmapped else {}
-        if not patterns:
-            self.record(kind, None, destination, "skipped",
-                        f"No Bash(...) {key} rules to import", **unmapped)
-            return
-        if not skipped_rules:
-            unmapped = {}
-        config = self.load_target_config(kind, label, destination)
-        if config is None:
-            return
-        # Walk to the list's parent mapping, materializing missing/invalid levels.
-        parent: Dict[str, Any] = config
-        for part in config_path[:-1]:
-            child = parent.get(part)
-            parent[part] = parent = child if isinstance(child, dict) else {}
-        current = parent.get(config_path[-1], [])
-        current = current if isinstance(current, list) else []
-        merged = sorted(dict.fromkeys(list(current) + patterns))
-        added = [p for p in merged if p not in current]
-        if not added:
-            self.record(kind, label, destination, "skipped", "All patterns already present")
-            return
-
-        def write() -> None:
-            parent[config_path[-1]] = merged
-            dump_yaml_file(destination, config)
-
-        self.apply(kind, label, destination, "Would merge patterns", write,
-                   {"added_patterns": added, **unmapped})
 
     def import_mcp_servers(self, servers: Dict[str, Any], kind: str) -> None:
         """mcpServers / [mcp_servers.*] → config.yaml mcp_servers."""

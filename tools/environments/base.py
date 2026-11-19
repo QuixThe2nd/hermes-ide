@@ -10,13 +10,14 @@ or a temp file (local). Cohesive pieces live in sibling modules (``base_output``
 import json
 import logging
 import os
+import re
 import shlex
 import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable, IO, Iterable, Protocol
 
 from hermes_constants import get_hermes_home
 from tools.interrupt import consume_yield, is_interrupted, is_thread_interrupted
@@ -308,6 +309,52 @@ class BaseEnvironment(ABC):
         except Exception as probe_exc:
             return False, f"{detail}; non-login probe: {probe_exc}"
 
+    # --- Shell identity (delegate children share this environment) ---
+
+    _IDENTITY_OP_TIMEOUT_S = 30
+
+    def capture_shell_identity(self, names: Iterable[str]) -> dict[str, str | None]:
+        """Probe the live shell for each name in *names*: its exact value when
+        the name is exported there, ``None`` when it is absent (a set-but-empty
+        value stays ``""``, distinct from unset). Each answer is fenced by NUL
+        delimiters — env values cannot contain NUL — so values with spaces,
+        single quotes or newlines round-trip exactly, with no marker-line
+        parsing for shell noise to corrupt. Raises when the probe fails so the
+        caller can fall back to the process environment."""
+        safe_names = [str(name) for name in names if _SHELL_ENV_NAME_RE.fullmatch(str(name))]
+        if not safe_names:
+            return {}
+        probes = "; ".join(
+            f'printf \'%s\\0%s\\0\' "${{{name}+s}}" "${{{name}-}}"' for name in safe_names)
+        result = self.execute(probes, timeout=self._IDENTITY_OP_TIMEOUT_S, rewrite_compound_background=False)
+        if int(result.get("returncode") or 0) != 0:
+            raise RuntimeError(f"shell identity probe failed with exit code {result.get('returncode')}")
+        chunks = (result.get("output") or "").split("\0")
+        if len(chunks) < 2 * len(safe_names):
+            raise RuntimeError(f"shell identity probe output was truncated: {result.get('output')!r}")
+        return {
+            name: (chunks[2 * i + 1] if chunks[2 * i] == "s" else None)
+            for i, name in enumerate(safe_names)}
+
+    def restore_shell_identity(self, captured: dict[str, str | None]) -> None:
+        """Run ONE shell command that exports every present name in *captured*
+        with POSIX-safe quoting and unsets every absent name, then return —
+        ``execute``'s per-command env re-dump persists the values into the
+        shared snapshot, so the file is never written by hand. Names outside
+        *captured* are never touched."""
+        statements: list[str] = []
+        for name in sorted(captured):
+            if not _SHELL_ENV_NAME_RE.fullmatch(str(name)):
+                raise ValueError(f"refusing to restore malformed shell variable name {name!r}")
+            value = captured[name]
+            statements.append(f"unset {name}" if value is None else f"export {name}={shlex.quote(value)}")
+        if not statements:
+            return
+        result = self.execute(
+            "; ".join(statements), timeout=self._IDENTITY_OP_TIMEOUT_S, rewrite_compound_background=False)
+        if int(result.get("returncode") or 0) != 0:
+            raise RuntimeError(f"shell identity restore failed with exit code {result.get('returncode')}")
+
     # --- Command wrapping ---
     @staticmethod
     def _quote_cwd_for_cd(cwd: str) -> str:
@@ -344,7 +391,8 @@ class BaseEnvironment(ABC):
     def _wait_for_process(
         self, proc: ProcessHandle, timeout: int = 120, *,
         bounded_capture: bool = False, watch_interrupt_tid: int | None = None,
-        yield_handler: Callable[[ProcessHandle, str], dict] | None = None) -> dict:
+        yield_handler: Callable[[ProcessHandle, str], dict] | None = None,
+        output=None) -> dict:
         """Poll-based wait with interrupt checking and stdout draining (shared, not overridden).
         ``yield_handler(proc, output_so_far)``: when the tool thread is asked to yield
         (``tools.interrupt.request_yield`` — a user message arrived mid-command), the drain
@@ -364,7 +412,8 @@ class BaseEnvironment(ABC):
         reads feeding the patch engine, code-execution RPC reads, log reads — where truncation would corrupt
         data. See #64435.
         """
-        output = _new_output_collector(proc, bounded_capture)
+        if output is None:
+            output = _new_output_collector(proc, bounded_capture)
         drain_stop = threading.Event() if yield_handler is not None else None
         drain_thread = _start_drain_thread(proc, output, drain_stop)
         _now = time.monotonic()
@@ -537,15 +586,18 @@ class BaseEnvironment(ABC):
         # deadline worker, so copy it across or long commands look idle.
         parent_activity_cb = get_activity_callback()
         proc_holder: list = []
+        output_holder: list = []
 
         def _spawn_and_wait() -> dict:
             if parent_activity_cb is not None:
                 set_activity_callback(parent_activity_cb)
             spawned = self._run_bash(wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin)
             proc_holder.append(spawned)
+            output = _new_output_collector(spawned, bounded_capture)
+            output_holder.append(output)
             return self._wait_for_process(
                 spawned, timeout=effective_timeout, bounded_capture=bounded_capture,
-                watch_interrupt_tid=parent_tid,
+                watch_interrupt_tid=parent_tid, output=output,
                 **({"yield_handler": yield_handler} if yield_handler is not None else {}))
 
         def _on_timeout() -> None:
@@ -573,9 +625,15 @@ class BaseEnvironment(ABC):
             _on_timeout()
             raise
 
-        result = (
-            {"output": f"[Command timed out after {effective_timeout}s]", "returncode": 124}
-            if bounded.timed_out else bounded.value)
+        if bounded.timed_out:
+            suffix = f"\n[Command timed out after {effective_timeout}s]"
+            if output_holder:
+                collector = output_holder[0]
+                result = self._finalize_wait_result(collector, collector.render(suffix=suffix).lstrip("\n"), 124)
+            else:
+                result = {"output": suffix.lstrip(), "returncode": 124}
+        else:
+            result = bounded.value
         self._update_cwd(result)
         if getattr(self, "_recreated_notice_pending", False):
             self._recreated_notice_pending = False

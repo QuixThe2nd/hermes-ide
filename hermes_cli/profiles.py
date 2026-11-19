@@ -162,7 +162,7 @@ _RESERVED_NAMES = frozenset({"hermes", "default", "test", "tmp", "root", "sudo"}
 _HERMES_SUBCOMMANDS = frozenset({
     "chat", "model", "gateway", "setup", "whatsapp", "login", "logout",
     "status", "cron", "doctor", "dump", "config", "pairing", "skills", "tools",
-    "mcp", "sessions", "insights", "version", "update", "uninstall", "profile", "plugins", "honcho", "acp",
+    "mcp", "sessions", "insights", "version", "update", "uninstall", "profile", "plugins",
 })
 
 
@@ -551,7 +551,6 @@ class ProfileInfo:
     distribution_version: Optional[str] = None
     distribution_source: Optional[str] = None
     # 1-2 sentence role description from ``profile.yaml``; empty when never described.
-    # Surfaced to the kanban decomposer so it routes work by role rather than name.
     description: str = ""
     # True when ``description`` was LLM-generated and not yet user-confirmed (dashboard
     # shows a "review" badge).
@@ -742,7 +741,7 @@ def _cached_skill_count(profile_dir: Path) -> int:
 # profile.yaml — per-profile metadata (description, role, etc.)
 # Deliberately tiny and separate from ``config.yaml`` (user-facing Hermes config, ~5000
 # lines of defaults): this is metadata ABOUT the profile. Missing file -> empty defaults,
-# never an error; the kanban decomposer falls back to the profile name.
+# never an error; callers fall back to the profile name.
 
 
 def read_profile_meta(profile_dir: Path) -> dict:
@@ -1193,7 +1192,7 @@ def apply_read_only_file_toolsets(profile_dir: Path) -> List[str]:
     * no platform lists at all (fresh create, or a clone whose source never
       touched ``hermes tools``): every platform the registry knows that
       resolves ``file`` gets a list matching its default-on toolsets except
-      for the swap. Writing only ``cli`` would leave discord/telegram/cron
+      for the swap. Writing only ``cli`` would leave discord/cron
       and the rest inheriting composites that carry the writable ``file``,
       so a "read-only" profile kept its write surface on every non-CLI
       platform.
@@ -1384,7 +1383,7 @@ def backfill_profile_envs(quiet: bool = False) -> List[str]:
 
 
 _BACKEND_TOKENS = frozenset({"serve", "dashboard", "gateway"})
-_HERMES_ARGV_MARKERS = ("hermes_cli.main", "hermes-gateway", "tui_gateway")
+_HERMES_ARGV_MARKERS = ("hermes_cli.main", "hermes-gateway")
 # python / python3 / python3.12 / pythonw(.exe): the interpreter basenames a
 # `#!/…/python3` console-script shim is exec'd through when something (e.g. Electron's
 # `findOnPath('hermes')`) spawns the shim by handing the interpreter its path — then the
@@ -1393,7 +1392,7 @@ _PYTHON_INTERPRETER_RE = re.compile(r"^python[\d.]*w?(\.exe)?$")
 # Console-script entry points this project ships (pyproject.toml [project.scripts]).
 # argv[1] is matched against exact names, not ``startswith("hermes")``: with a bare
 # interpreter argv[0], argv[1] can be ANY user script ("hermes-notes.py").
-_HERMES_CONSOLE_SCRIPT_NAMES = frozenset({"hermes", "hermes-agent", "hermes-acp"})
+_HERMES_CONSOLE_SCRIPT_NAMES = frozenset({"hermes", "hermes-agent"})
 
 
 def _is_hermes_argv(argv: list) -> bool:
@@ -1656,16 +1655,6 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     from tools.mcp_tool_lifecycle import shutdown_mcp_servers
     shutdown_mcp_servers(scope=hermes_home_key(profile_dir))
 
-    # Release this process's holographic memory-store connections into the profile. The
-    # Desktop's main serve process opens memory_store.db for every profile and is
-    # deliberately not stopped above; on Windows its handles fail rmtree with WinError 32.
-    # Inside serve (DELETE /api/profiles/<name>) the handles live here; from the CLI no-op.
-    with contextlib.suppress(Exception):  # best-effort: never block the delete on the release path
-        # 2c. See #88347.
-        from plugins.memory.holographic.store import MemoryStore as _MemoryStore
-        _released = _MemoryStore.release_all_under(profile_dir)
-        if _released:
-            print(f"✓ Released {_released} memory-store connection(s) held by this process")
     with contextlib.suppress(Exception):
         from hermes_state_registry import close_all_under as _close_session_dbs_under
         _closed = _close_session_dbs_under(profile_dir)
@@ -2086,54 +2075,6 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 
 # Rename
 
-def _atomic_write_json(path: Path, data: dict) -> bool:
-    """Atomic rewrite of a third-party JSON config; False on OSError (nothing partially written)."""
-    from utils import atomic_json_write
-    try:
-        atomic_json_write(path, data)
-        return True
-    except OSError:
-        return False
-
-
-def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) -> None:
-    """Rename Honcho host blocks for a renamed profile without changing peers."""
-    old_host = f"hermes_{old_name}"
-    legacy_old_host = f"hermes.{old_name}"
-    new_host = f"hermes_{new_name}"
-    candidates = [
-        new_dir / "honcho.json", _get_default_hermes_home() / "honcho.json", Path.home() / ".honcho" / "config.json"
-    ]
-    seen: set[Path] = set()
-    for path in candidates:
-        try:
-            resolved = path.resolve()
-        except OSError:
-            resolved = path
-        if resolved in seen or not path.is_file():
-            continue
-        seen.add(resolved)
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8-sig"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        hosts = raw.get("hosts")
-        if not isinstance(hosts, dict):
-            continue
-        source_host = old_host if old_host in hosts else legacy_old_host
-        if source_host not in hosts:
-            continue
-        if new_host in hosts:
-            print(f"⚠ Honcho host block not migrated: {new_host} already exists in {path}")
-            continue
-        block = hosts[source_host]
-        if isinstance(block, dict) and "aiPeer" not in block:
-            block["aiPeer"] = old_name  # source_host is ``hermes_<old>`` or legacy ``hermes.<old>``
-        hosts[new_host] = hosts.pop(source_host)
-        if _atomic_write_json(path, raw):
-            print(f"✓ Honcho host updated: {source_host} → {new_host}")
-
-
 def rename_profile(old_name: str, new_name: str) -> Path:
     """Rename a profile: directory, wrapper script, service, active_profile. The default
     profile's home IS the installation root, so "renaming" it sets a presentation-only
@@ -2194,10 +2135,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     if live_mux:
         clear_named_profile_deleted(old_dir)
 
-    # 3. Update profile-scoped Honcho host blocks, preserving aiPeer identity
-    _migrate_honcho_profile_host(old_canon, new_canon, new_dir)
-
-    # 4. Update wrapper script
+    # 3. Update wrapper script
     remove_wrapper_script(old_canon)
     collision = check_alias_collision(new_canon)
     if not collision:

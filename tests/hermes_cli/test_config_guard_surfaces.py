@@ -1,4 +1,4 @@
-"""Fail-closed corrupt-config guards on gateway, serve, and cron surfaces.
+"""Fail-closed corrupt-config guards on gateway and cron surfaces.
 
 Companion to test_noninteractive_config_guard.py (PR #81988): issue #81952
 extended to every non-interactive startup surface.
@@ -99,57 +99,3 @@ class TestCronRunJobGuard:
             self._job(no_agent=True, script="true", deliver="none")
         )
         assert "Hermes stopped because your settings file" not in (error or "")
-
-
-class TestServeGuard:
-    def test_serve_headless_refuses_corrupt_config(self, tmp_path, capsys):
-        """The `hermes serve` headless path fails closed before startup."""
-        from argparse import Namespace
-
-        from hermes_cli import main as main_mod
-
-        _write_corrupt_config(tmp_path)
-        args = Namespace(
-            headless_backend=True,
-            ignore_user_config=False,
-            ssh_session_token_file=None,
-            ssh_owner_nonce=None,
-            status=False,
-            stop=False,
-        )
-
-        with pytest.raises(SystemExit) as exc_info:
-            main_mod.cmd_dashboard(args)
-
-        assert exc_info.value.code == 2
-        assert "Hermes stopped because your settings file" in capsys.readouterr().err
-
-    def test_serve_escape_hatch_passes_guard(self, tmp_path, monkeypatch):
-        """--ignore-user-config lets serve get past the corrupt-config guard."""
-        from argparse import Namespace
-
-        from hermes_cli import main as main_mod
-
-        _write_corrupt_config(tmp_path)
-        args = Namespace(
-            headless_backend=True,
-            ignore_user_config=True,
-            ssh_session_token_file=None,
-            ssh_owner_nonce=None,
-            status=False,
-            stop=False,
-        )
-
-        # Stop execution right after the guard: the next thing cmd_dashboard
-        # touches on the headless path is the nonce regex via `re`.
-        sentinel = RuntimeError("passed-guard")
-
-        class _ReStop:
-            def fullmatch(self, *a, **k):
-                raise sentinel
-
-        monkeypatch.setattr(main_mod, "re", _ReStop())
-        args.ssh_owner_nonce = "0123456789abcdef"
-
-        with pytest.raises(RuntimeError, match="passed-guard"):
-            main_mod.cmd_dashboard(args)

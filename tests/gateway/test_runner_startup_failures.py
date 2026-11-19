@@ -13,13 +13,13 @@ from gateway.status import read_runtime_status
 @pytest.mark.parametrize(
     "code, expected",
     [
-        ("telegram-bot-token_lock", True),   # BasePlatformAdapter._acquire_platform_lock
+        ("slack-app-token_lock", True),   # BasePlatformAdapter._acquire_platform_lock
         ("discord-bot-token_lock", True),
         ("whatsapp-session_lock", True),
         ("feishu_app_lock", True),
-        ("lock_conflict", True),             # buzz / irc / line identity conflicts
-        ("telegram_connect_error", False),
-        ("telegram_auth_error", False),
+        ("lock_conflict", True),             # generic identity-conflict shape
+        ("discord_connect_error", False),
+        ("discord_auth_error", False),
         ("relay_membership_required", False),
         ("duplicate_credential", False),
         ("", False),
@@ -32,12 +32,12 @@ def test_is_global_startup_conflict_matches_lock_code_families(code, expected):
 
 class _RetryableFailureAdapter(BasePlatformAdapter):
     def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
+        super().__init__(PlatformConfig(enabled=True, token="***"), Platform.DISCORD)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._set_fatal_error(
-            "telegram_connect_error",
-            "Telegram startup failed: temporary DNS resolution failure.",
+            "discord_connect_error",
+            "Discord startup failed: temporary DNS resolution failure.",
             retryable=True,
         )
         return False
@@ -54,7 +54,7 @@ class _RetryableFailureAdapter(BasePlatformAdapter):
 
 class _DisabledAdapter(BasePlatformAdapter):
     def __init__(self):
-        super().__init__(PlatformConfig(enabled=False, token="***"), Platform.TELEGRAM)
+        super().__init__(PlatformConfig(enabled=False, token="***"), Platform.DISCORD)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         raise AssertionError("connect should not be called for disabled platforms")
@@ -388,8 +388,8 @@ async def test_runner_degrades_gracefully_when_all_adapters_missing(monkeypatch,
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     config = GatewayConfig(
         platforms={
-            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***"),
             Platform.DISCORD: PlatformConfig(enabled=True, token="***"),
+            Platform.MATRIX: PlatformConfig(enabled=True, token="***"),
         },
         sessions_dir=tmp_path / "sessions",
     )
@@ -506,16 +506,18 @@ async def test_start_gateway_propagates_fatal_config_exit_code(monkeypatch, tmp_
 
 
 class _ForeignTokenLockAdapter(BasePlatformAdapter):
-    """Connects exactly like telegram/discord do: production
+    """Connects exactly like matrix/discord do: production
     ``_acquire_platform_lock`` first, which emits ``{scope}_lock`` with
     ``retryable=True`` (so a mid-run reconnect can recover, #54167)."""
 
-    def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
+    def __init__(self, platform=Platform.MATRIX, scope="matrix-access-token",
+                 label="Matrix access token"):
+        self._lock_scope, self._lock_label = scope, label
+        super().__init__(PlatformConfig(enabled=True, token="***"), platform)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         return self._acquire_platform_lock(
-            "telegram-bot-token", self.config.token, "Telegram bot token"
+            self._lock_scope, self.config.token, self._lock_label
         )
 
     async def disconnect(self) -> None:
@@ -549,12 +551,14 @@ async def test_live_foreign_token_lock_at_startup_exits_ex_config(monkeypatch, t
         ),
     )
     config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")},
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="***")},
         sessions_dir=tmp_path / "sessions",
     )
     runner = GatewayRunner(config)
     monkeypatch.setattr(
-        runner, "_create_adapter", lambda platform, platform_config: _ForeignTokenLockAdapter()
+        runner, "_create_adapter",
+        lambda platform, platform_config: _ForeignTokenLockAdapter(
+            Platform.DISCORD, "discord-bot-token", "Discord bot token")
     )
 
     ok = await runner.start()
@@ -565,8 +569,8 @@ async def test_live_foreign_token_lock_at_startup_exits_ex_config(monkeypatch, t
     assert runner._failed_platforms == {}
     state = read_runtime_status()
     assert state["gateway_state"] == "startup_failed"
-    assert state["platforms"]["telegram"]["state"] == "fatal"
-    assert state["platforms"]["telegram"]["error_code"] == "telegram-bot-token_lock"
+    assert state["platforms"]["discord"]["state"] == "fatal"
+    assert state["platforms"]["discord"]["error_code"] == "discord-bot-token_lock"
 
 
 @pytest.mark.asyncio
@@ -582,24 +586,22 @@ async def test_token_lock_plus_retryable_peer_stays_alive(monkeypatch, tmp_path)
     )
     config = GatewayConfig(
         platforms={
-            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***"),
             Platform.DISCORD: PlatformConfig(enabled=True, token="***"),
+            Platform.MATRIX: PlatformConfig(enabled=True, token="***"),
         },
         sessions_dir=tmp_path / "sessions",
     )
     runner = GatewayRunner(config)
 
     class _DiscordBlip(_RetryableFailureAdapter):
-        def __init__(self):
-            BasePlatformAdapter.__init__(
-                self, PlatformConfig(enabled=True, token="***"), Platform.DISCORD
-            )
+        """Retryable transient peer; distinct class so the two failure lanes stay separable."""
+
 
     monkeypatch.setattr(
         runner,
         "_create_adapter",
         lambda platform, cfg: (
-            _ForeignTokenLockAdapter() if platform is Platform.TELEGRAM else _DiscordBlip()
+            _ForeignTokenLockAdapter() if platform is Platform.MATRIX else _DiscordBlip()
         ),
     )
 
@@ -610,9 +612,9 @@ async def test_token_lock_plus_retryable_peer_stays_alive(monkeypatch, tmp_path)
         assert runner.exit_code is None
         assert set(runner._failed_platforms) == {Platform.DISCORD}
         state = read_runtime_status()
-        # Alive, but Telegram is parked fatal: a serving-with-a-parked-platform boot is degraded.
+        # Alive, but Matrix is parked fatal: a serving-with-a-parked-platform boot is degraded.
         assert state["gateway_state"] == "degraded"
-        assert state["platforms"]["telegram"]["state"] == "fatal"
+        assert state["platforms"]["matrix"]["state"] == "fatal"
         assert state["platforms"]["discord"]["state"] == "retrying"
     finally:
         await runner.stop()

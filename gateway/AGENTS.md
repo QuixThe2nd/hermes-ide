@@ -1,6 +1,6 @@
 # gateway/ — messaging gateway, adapters, delivery
 
-Applies on top of the root `AGENTS.md`. Long-form: `website/docs/developer-guide/gateway-internals.md`.
+Applies on top of the root `AGENTS.md`.
 New platform adapter: follow `gateway/platforms/ADDING_A_PLATFORM.md` step by step.
 
 ## Shape
@@ -11,21 +11,30 @@ goals, notifications, shutdown, ...), sessions in `session*.py`, slash handlers 
 over `platforms/base.py`. `builtin_hooks/` is the extension point for always-registered gateway
 hooks (none shipped). The gateway reads user YAML **raw** (`run.py` + `config.py`), not through
 `DEFAULT_CONFIG` — a key the CLI sees but the gateway doesn't means you're on the wrong loader
-(`hermes_cli/AGENTS.md`). Each adapter picks a base toolset (Telegram → `"messaging"`).
+(`hermes_cli/AGENTS.md`). Each adapter picks a base toolset (WhatsApp → `"hermes-whatsapp"`).
 
 Slash commands: handlers are looked up by name through `_command_handler_table`; a command is
 listed in `_IDLE_COMMANDS` or `_PLAIN_COMMANDS` (works mid-run) in `run_busy.py`. No
 `if canonical == ...` chains. Registry + adding a command: `hermes_cli/AGENTS.md`.
 
-## The gateway has TWO message guards — both must bypass approval/control commands
+## Tool-progress defaults
+
+Resolved by `display_config.py` (`_GLOBAL_DEFAULTS` + tiers): `tool_progress` defaults to `describe`
+and `tool_progress: all` (or a bare `true`) is the explicit verbose opt-in. Tool-progress rows ALWAYS
+render in fenced code boxes (enforced in code, not configurable). Boxing covers every lane —
+accumulated bubbles, `separate` per-row messages and non-editable sends (`format_progress_group` /
+`format_progress_row`); a row carrying its own 3+ fence ships unboxed. Pass rows RAW to these
+helpers — never pre-boxed — so nothing double-boxes.
+
+## The gateway has TWO message guards — both must bypass interactive/control replies
 
 While an agent is running, an inbound message passes two sequential guards: (1) the **base
 adapter** (`platforms/base.py`) queues it in `_pending_messages` when `session_key in
 self._active_sessions`; (2) the **runner** (`run.py`/`run_busy.py`) intercepts `/stop`, `/new`,
-`/queue`, `/status`, `/approve`, `/deny` before they reach `running_agent.interrupt()`. Any new
-command that must reach the runner while the agent is blocked (approval prompts) MUST bypass BOTH
-guards and be dispatched inline — never via `_process_message_background()`, which races session
-lifecycle.
+`/queue`, `/status` and replies to pending clarify/slash/MCP prompts before they reach
+`running_agent.interrupt()`. Any new command or prompt reply that must reach the runner while the
+agent is blocked MUST bypass BOTH guards and be dispatched inline — never via
+`_process_message_background()`, which races session lifecycle.
 
 ## Streaming delivery contract (stream-is-the-message adapters)
 
@@ -88,48 +97,12 @@ or opted-in explicit targets. `all` expansions do not gain home mirror eligibili
 briefs are labelled user turns appended at a turn boundary, preserving role alternation
 (`cron/AGENTS.md`).
 
-## `/login` (off-turn, paired DM only)
+## Fleet version verification
 
-`/login` is registered in `hermes_cli/commands.py` with `busy_policy="dispatch"` and
-`desktop="settings"`, listed in `run_busy.py::_PLAIN_COMMANDS`, and handled by
-`GatewayLoginCommandsMixin` (`gateway/slash_commands_login.py`). It refuses outside a paired DM:
-`chat_type in {"dm","private"}`, a truthy `chat_id`, and a platform whose `"dm"` really is a paired
-conversation — ntfy, raft and a2a all report `chat_type="dm"` for a broadcast topic, a channel and
-an agent peer, so posting a consent link there would publish it.
-
-**It binds the whole install.** The sign-in writes the singleton `providers.nous`, so whoever
-approves the code owns this gateway's inference and connectors for every chat it serves. Slash
-gating is opt-in (`gateway/slash_access.py`): with no `allow_admin_from` set, every user allowed to
-DM the bot can run it. Operators of shared gateways must set it.
-
-The handler returns its ack at once and drains `anon_auth.run_sign_in` on a **private single-worker
-executor** (`_login_executor`), never the shared 10-thread gateway pool — a promotion wait can last
-the code's full expiry, and a live worker in the shared pool makes shutdown skip the SessionDB
-close/checkpoint. One attempt per process, stamped with the identity that started it: the same
-identity's second `/login` supersedes (the loser ends with the superseded copy pushed into its own
-chat); a different identity is refused. `task.cancel()` cannot interrupt a blocking poll inside a
-worker thread, so shutdown and supersede both work through `attempt.cancelled`, which
-`wait_for_promotion` now polls on a ≤1 s tick. A shutdown-cancelled attempt pushes nothing — the
-task is dying and its adapters may already be gone — but if the server had already completed the
-transfer it still persists, because that transfer is irreversible.
-
-On completion the handler **evicts** every cached agent still on `nous/welcome` and clears any
-session model override pinned to it. It does not switch agents in place and does not write a model
-override: `settle_after_upgrade` already moved `model.default`/`model.base_url` in the config, every
-turn re-resolves the config and the credentials, and `_agent_config_signature` already forces a
-rebuild when the route changes — so an in-place swap buys no cache warmth and an override would pin
-an expiring access token that nothing refreshes.
-
-## Gateway lifecycle vs. the Desktop app
-
-`hermes serve` (control plane, desktop-spawned child) dies with the app — by design. The messaging
-gateway (`gateway run`) SURVIVES the app: the serve backend's `/api/gateway/*` endpoints spawn it
-detached (`_spawn_hermes_action` — `start_new_session` / `DETACHED_PROCESS`), so `before-quit`'s
-SIGTERM never reaches it and bots keep running. The known breach is the Windows shim-unlock
-teardown (`taskkill /T /F` on venv-shim holders, #85265), which exists to let updates proceed and is
-replaced by #92091's `pause-for-update`. Do NOT "fix" gateway-dies-with-app by re-parenting the
-gateway under the backend, and do NOT "fix" update locks by widening the tree-kill. Gateways stamp
-`code_sha`/`code_version` into `gateway_state.json` (`status.py`) so the updater can verify a fleet.
+Gateways stamp `code_sha`/`code_version` into `gateway_state.json` (`status.py`) so the updater can
+verify a fleet. The Windows shim-unlock teardown (`taskkill /T /F` on venv-shim holders, #85265)
+exists to let updates proceed and is replaced by #92091's `pause-for-update`; do NOT "fix" update
+locks by widening the tree-kill.
 
 ## Profile scope (adapters, turns, and everything between turns)
 
@@ -137,7 +110,7 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   answers "which bot received it / who may admit it / where does it run" ONCE per event and pins a
   frozen `RoutingIdentity` on the source (wire-invisible, like `_transport_adapter_ref`). Every
   ingress path calls the canonicalize seam before it derives a key: the adapter side
-  (`platforms/base.py::_canonicalize` — `handle_message`, `_enqueue_text_event`, Telegram photo /
+  (`platforms/base.py::_canonicalize` — `handle_message`, `_enqueue_text_event`, photo /
   album routing, `_handle_message_while_active`, every `_source_session_key`) and the runner side
   (`run_adapters.py::_canonicalize` — the per-profile / default message, busy and platform-event
   handlers, the adapter auth-check callback, `run_inbound.py::_hm_admit_event`). No key derivation
@@ -173,7 +146,7 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   `session_identity.restore_identity`; `_delivery_adapter_for` then delivers through that bot's
   adapter or nothing (never the default bot by heuristic). Rows without the column (pre-PR-5)
   keep the `_is_shared_bot_satellite` fallback. Deferred callbacks capture the identity/home at
-  command time (`/model` picker); `_run_in_executor_with_context` carries the scope over thread
+  command time (deferred picker callbacks); `_run_in_executor_with_context` carries the scope over thread
   hops. Relay: `_with_scope` echoes the routed `profile` on every outbound frame and `follow_up`
   derives it from the key namespace so the connector stamps it on the next `passthrough_forward`.
   Ambient `get_active_profile_name()` reads in `gateway/` are boot-only and marked

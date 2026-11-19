@@ -79,7 +79,6 @@ def _make_runner(adapter: CaptureSlackAdapter) -> gateway_run.GatewayRunner:
         platforms={Platform.SLACK: PlatformConfig(enabled=True, token="fake-token")}
     )
     runner.adapters = {Platform.SLACK: adapter}
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = SessionEntry(
@@ -102,7 +101,6 @@ def _make_runner(adapter: CaptureSlackAdapter) -> gateway_run.GatewayRunner:
     runner.session_store.transcript_tail_role = MagicMock(return_value="user")
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_db = None
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None

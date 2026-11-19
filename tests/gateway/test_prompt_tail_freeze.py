@@ -82,7 +82,7 @@ def _make_context(
         scope_id=guild_id,
         message_id=message_id,
     )
-    connected = connected if connected is not None else [Platform.DISCORD, Platform.TELEGRAM]
+    connected = connected if connected is not None else [Platform.DISCORD, Platform.WHATSAPP]
     if notification_channels is None:
         notification_channels = {
             Platform.DISCORD: DeliveryTarget(
@@ -105,12 +105,12 @@ def _stable_discord_tools(monkeypatch):
     monkeypatch.setattr("gateway.session._slack_tools_loaded", lambda: False)
 
 
-def _key(runner, context, redact_pii=False):
-    return runner._ephemeral_change_key(context, redact_pii)  # noqa: SLF001
+def _key(runner, context):
+    return runner._ephemeral_change_key(context)  # noqa: SLF001
 
 
-def _render(context, redact_pii=False):
-    return build_session_context_prompt(context, redact_pii=redact_pii)
+def _render(context):
+    return build_session_context_prompt(context)
 
 
 # ---------------------------------------------------------------------------
@@ -134,23 +134,10 @@ class TestEphemeralChangeKeyParity:
         ("guild_id", dict(guild_id="123123123")),
         ("parent_chat_id", dict(parent_chat_id="999000111")),
         ("chat_id", dict(chat_id="999999999", parent_chat_id="999999999")),
-        ("platform", dict(platform=Platform.TELEGRAM)),
+        ("platform", dict(platform=Platform.DISCORD)),
         ("connected_platforms", dict(connected=[Platform.DISCORD])),
         ("message_id_cleared", dict(message_id=None)),
     ]
-
-
-    def test_redact_pii_flip_changes_key(self):
-        # PII redaction only rewrites bytes on pii-safe platforms; the key
-        # must react wherever the render does. user_name=None so the User ID
-        # line renders (and gets hashed) — with notification channels gone
-        # from the prompt, IDs here are the redaction-sensitive bytes.
-        runner = _make_runner()
-        ctx = _make_context(
-            platform=Platform.TELEGRAM, thread_id=None, parent_chat_id=None, user_name=None
-        )
-        assert _render(ctx, False) != _render(ctx, True)
-        assert _key(runner, ctx, False) != _key(runner, ctx, True)
 
 
     def test_slack_note_byte_stable_across_turns_in_one_session(self):
@@ -168,9 +155,9 @@ class TestEphemeralChangeKeyParity:
                 guild_id=None,
             )
 
-        t1 = runner._pinned_session_context_prompt(_slack_ctx(), False, "sk-slack")  # noqa: SLF001
-        t2 = runner._pinned_session_context_prompt(_slack_ctx(), False, "sk-slack")  # noqa: SLF001
-        t3 = runner._pinned_session_context_prompt(_slack_ctx(), False, "sk-slack")  # noqa: SLF001
+        t1 = runner._pinned_session_context_prompt(_slack_ctx(), "sk-slack")  # noqa: SLF001
+        t2 = runner._pinned_session_context_prompt(_slack_ctx(), "sk-slack")  # noqa: SLF001
+        t3 = runner._pinned_session_context_prompt(_slack_ctx(), "sk-slack")  # noqa: SLF001
         assert t2 is t1 and t3 is t1
         assert hashlib.sha256(t1.encode()).hexdigest() == hashlib.sha256(t3.encode()).hexdigest()
 
@@ -183,8 +170,8 @@ class TestSessionContextPin:
     def test_pin_hit_returns_identical_object(self):
         runner = _make_runner()
         ctx = _make_context()
-        first = runner._pinned_session_context_prompt(ctx, False, "sk")  # noqa: SLF001
-        second = runner._pinned_session_context_prompt(_make_context(), False, "sk")  # noqa: SLF001
+        first = runner._pinned_session_context_prompt(ctx, "sk")  # noqa: SLF001
+        second = runner._pinned_session_context_prompt(_make_context(), "sk")  # noqa: SLF001
         # Identity, not just equality: the pinned bytes are reused verbatim,
         # immunizing against renderer nondeterminism.
         assert second is first
@@ -206,12 +193,12 @@ class TestComposedPromptByteStability:
         name = "Fixing the flaky deploy"
         t2 = _compose(
             runner._pinned_session_context_prompt(  # noqa: SLF001
-                _make_context(chat_name=name), False, "sk"
+                _make_context(chat_name=name), "sk"
             )
         )
         t3 = _compose(
             runner._pinned_session_context_prompt(  # noqa: SLF001
-                _make_context(chat_name=name), False, "sk"
+                _make_context(chat_name=name), "sk"
             )
         )
         assert hashlib.sha256(t2.encode()).hexdigest() == hashlib.sha256(t3.encode()).hexdigest()
@@ -225,54 +212,6 @@ def _source():
     return SessionSource(
         platform=Platform.DISCORD, chat_id="c1", chat_type="channel", user_id="u1"
     )
-
-
-class _VcAdapter:
-    def __init__(self, value):
-        self.value = value
-
-    def get_voice_channel_context(self, guild_id):
-        return self.value
-
-
-def _vc_runner(vc_value):
-    adapter = _VcAdapter(vc_value)
-    runner = _make_runner(adapters={Platform.DISCORD: adapter})
-    return runner, adapter
-
-
-def _vc_event():
-    return SimpleNamespace(raw_message=SimpleNamespace(guild_id="777"))
-
-
-class TestVoiceChannelSidecarNote:
-    def test_first_sighting_injects(self):
-        runner, _ = _vc_runner("**Voice:** dev-vc (2 members)")
-        note = runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
-        assert note == "[Voice channel now: **Voice:** dev-vc (2 members)]"
-
-    def test_unchanged_state_injects_nothing(self):
-        runner, _ = _vc_runner("**Voice:** dev-vc (2 members)")
-        assert runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
-        assert runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk") is None  # noqa: SLF001
-
-    def test_member_change_injects_again(self):
-        runner, adapter = _vc_runner("**Voice:** dev-vc (2 members)")
-        runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
-        adapter.value = "**Voice:** dev-vc (3 members)"
-        note = runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
-        assert note == "[Voice channel now: **Voice:** dev-vc (3 members)]"
-
-    def test_leaving_channel_injects_disconnect_note(self):
-        runner, adapter = _vc_runner("**Voice:** dev-vc (2 members)")
-        runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
-        adapter.value = ""
-        note = runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
-        assert note == "[Voice channel now: not connected to a voice channel]"
-
-    def test_never_in_channel_injects_nothing(self):
-        runner, _ = _vc_runner("")
-        assert runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk") is None  # noqa: SLF001
 
 
 # ---------------------------------------------------------------------------
@@ -295,14 +234,14 @@ class TestConnectedPlatformsOrder:
     def test_sorted_regardless_of_insertion_order(self):
         cfg_a = GatewayConfig(
             platforms={
-                Platform.TELEGRAM: PlatformConfig(enabled=True, token="t"),
-                Platform.DISCORD: PlatformConfig(enabled=True, token="d"),
+                Platform.DISCORD: PlatformConfig(enabled=True, token="t"),
+                Platform.MATRIX: PlatformConfig(enabled=True, token="d"),
             }
         )
         cfg_b = GatewayConfig(
             platforms={
-                Platform.DISCORD: PlatformConfig(enabled=True, token="d"),
-                Platform.TELEGRAM: PlatformConfig(enabled=True, token="t"),
+                Platform.MATRIX: PlatformConfig(enabled=True, token="d"),
+                Platform.DISCORD: PlatformConfig(enabled=True, token="t"),
             }
         )
         assert cfg_a.get_connected_platforms() == cfg_b.get_connected_platforms()

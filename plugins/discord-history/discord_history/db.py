@@ -61,7 +61,7 @@ def apply_migrations(conn: Any, migration_dir: Path = MIGRATIONS) -> list[str]:
                 ).fetchone()
                 if existing:
                     continue
-                conn.execute(path.read_text(encoding="utf-8"))
+                conn.execute(path.read_text(encoding="utf-8-sig"))
                 conn.execute(
                     "INSERT INTO discord_archive.schema_migrations(version,name) "
                     "VALUES(%s,%s) ON CONFLICT(version) DO NOTHING",

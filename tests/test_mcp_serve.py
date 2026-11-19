@@ -46,10 +46,10 @@ def sessions_dir(tmp_path):
 @pytest.fixture
 def sample_sessions():
     return {
-        "agent:main:telegram:dm:123456": {
-            "session_key": "agent:main:telegram:dm:123456",
+        "agent:main:matrix:dm:123456": {
+            "session_key": "agent:main:matrix:dm:123456",
             "session_id": "20260329_120000_abc123",
-            "platform": "telegram",
+            "platform": "matrix",
             "chat_type": "dm",
             "display_name": "Alice",
             "created_at": "2026-03-29T12:00:00",
@@ -58,7 +58,7 @@ def sample_sessions():
             "output_tokens": 2000,
             "total_tokens": 52000,
             "origin": {
-                "platform": "telegram",
+                "platform": "matrix",
                 "chat_id": "123456",
                 "chat_name": "Alice",
                 "chat_type": "dm",
@@ -498,23 +498,6 @@ class TestEventBridge:
         assert len(b._queue) == 500
         assert b._cursor == 500
 
-    def test_approvals_lifecycle(self):
-        from mcp_serve import EventBridge
-        b = EventBridge()
-        b._pending_approvals["a1"] = {
-            "id": "a1", "kind": "exec",
-            "description": "rm -rf /tmp",
-            "session_key": "test", "created_at": "2026-03-29T12:00:00",
-        }
-        assert len(b.list_pending_approvals()) == 1
-        result = b.respond_to_approval("a1", "deny")
-        assert result["resolved"] is True
-        assert len(b.list_pending_approvals()) == 0
-
-    def test_respond_nonexistent(self):
-        from mcp_serve import EventBridge
-        r = EventBridge().respond_to_approval("nope", "deny")
-        assert "error" in r
 
 
 # ---------------------------------------------------------------------------
@@ -570,14 +553,14 @@ class TestE2EConversationsList:
         result = _run_tool(server, "conversations_list")
         assert result["count"] == 3
         platforms = {c["platform"] for c in result["conversations"]}
-        assert platforms == {"telegram", "discord", "slack"}
+        assert platforms == {"matrix", "discord", "slack"}
 
     def test_list_sorted_by_updated(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
         result = _run_tool(server, "conversations_list")
         keys = [c["session_key"] for c in result["conversations"]]
-        # Telegram (14:30) > Discord (13:00) > Slack (11:00)
-        assert keys[0] == "agent:main:telegram:dm:123456"
+        # Matrix (14:30) > Discord (13:00) > Slack (11:00)
+        assert keys[0] == "agent:main:matrix:dm:123456"
         assert keys[1] == "agent:main:discord:group:789:456"
         assert keys[2] == "agent:main:slack:group:C1234:U5678"
 
@@ -589,7 +572,7 @@ class TestE2EConversationsList:
 
     def test_filter_by_platform_case_insensitive(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
-        result = _run_tool(server, "conversations_list", {"platform": "TELEGRAM"})
+        result = _run_tool(server, "conversations_list", {"platform": "MATRIX"})
         assert result["count"] == 1
 
     def test_search_by_name(self, mcp_server_e2e, _event_loop):
@@ -613,8 +596,8 @@ class TestE2EConversationGet:
     def test_get_existing(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
         result = _run_tool(server, "conversation_get",
-                          {"session_key": "agent:main:telegram:dm:123456"})
-        assert result["platform"] == "telegram"
+                          {"session_key": "agent:main:matrix:dm:123456"})
+        assert result["platform"] == "matrix"
         assert result["display_name"] == "Alice"
         assert result["chat_id"] == "123456"
         assert result["input_tokens"] == 50000
@@ -630,7 +613,7 @@ class TestE2EMessagesRead:
     def test_read_messages(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
         result = _run_tool(server, "messages_read",
-                          {"session_key": "agent:main:telegram:dm:123456"})
+                          {"session_key": "agent:main:matrix:dm:123456"})
         assert result["count"] > 0
         # Should filter out tool messages — only user/assistant
         roles = {m["role"] for m in result["messages"]}
@@ -641,7 +624,7 @@ class TestE2EMessagesRead:
     def test_read_messages_content(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
         result = _run_tool(server, "messages_read",
-                          {"session_key": "agent:main:telegram:dm:123456"})
+                          {"session_key": "agent:main:matrix:dm:123456"})
         contents = [m["content"] for m in result["messages"]]
         assert "Hello Alice!" in contents
         assert "Hi! How can I help?" in contents
@@ -649,7 +632,7 @@ class TestE2EMessagesRead:
     def test_read_messages_have_ids(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
         result = _run_tool(server, "messages_read",
-                          {"session_key": "agent:main:telegram:dm:123456"})
+                          {"session_key": "agent:main:matrix:dm:123456"})
         for msg in result["messages"]:
             assert "id" in msg
             assert msg["id"]  # non-empty
@@ -657,7 +640,7 @@ class TestE2EMessagesRead:
     def test_read_with_limit(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
         result = _run_tool(server, "messages_read",
-                          {"session_key": "agent:main:telegram:dm:123456",
+                          {"session_key": "agent:main:matrix:dm:123456",
                            "limit": 2})
         assert result["count"] == 2
 
@@ -673,7 +656,7 @@ class TestE2EAttachmentsFetch:
         server, _ = mcp_server_e2e
         # First get message IDs
         msgs = _run_tool(server, "messages_read",
-                        {"session_key": "agent:main:telegram:dm:123456"})
+                        {"session_key": "agent:main:matrix:dm:123456"})
         # Find the message with MEDIA: tag
         media_msg = None
         for m in msgs["messages"]:
@@ -683,7 +666,7 @@ class TestE2EAttachmentsFetch:
         assert media_msg is not None, "Should have a message with MEDIA: tag"
 
         result = _run_tool(server, "attachments_fetch", {
-            "session_key": "agent:main:telegram:dm:123456",
+            "session_key": "agent:main:matrix:dm:123456",
             "message_id": media_msg["id"],
         })
         assert result["count"] >= 1
@@ -693,7 +676,7 @@ class TestE2EAttachmentsFetch:
     def test_fetch_from_nonexistent_message(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
         result = _run_tool(server, "attachments_fetch", {
-            "session_key": "agent:main:telegram:dm:123456",
+            "session_key": "agent:main:matrix:dm:123456",
             "message_id": "99999",
         })
         assert "error" in result
@@ -718,10 +701,10 @@ class TestE2EEventsPoll:
         from mcp_serve import QueueEvent
         server, bridge = mcp_server_e2e
         bridge._enqueue(QueueEvent(cursor=0, type="message",
-                                   session_key="agent:main:telegram:dm:123456",
+                                   session_key="agent:main:matrix:dm:123456",
                                    data={"role": "user", "content": "Hello"}))
         bridge._enqueue(QueueEvent(cursor=0, type="message",
-                                   session_key="agent:main:telegram:dm:123456",
+                                   session_key="agent:main:matrix:dm:123456",
                                    data={"role": "assistant", "content": "Hi"}))
 
         result = _run_tool(server, "events_poll")
@@ -795,7 +778,7 @@ class TestMCPToolParameterCoercion:
         result = _run_tool(
             server,
             "messages_read",
-            {"session_key": "agent:main:telegram:dm:123456", "limit": "2"},
+            {"session_key": "agent:main:matrix:dm:123456", "limit": "2"},
         )
         assert result["count"] == 2
 
@@ -836,16 +819,16 @@ class TestE2EMessagesSend:
 
     def test_send_delegates_to_tool(self, mcp_server_e2e, _event_loop, monkeypatch):
         server, _ = mcp_server_e2e
-        mock = MagicMock(return_value=json.dumps({"success": True, "platform": "telegram"}))
+        mock = MagicMock(return_value=json.dumps({"success": True, "platform": "discord"}))
         monkeypatch.setattr("tools.send_message_tool.send_message_tool", mock)
 
         result = _run_tool(server, "messages_send",
-                          {"target": "telegram:123456", "message": "Hello!"})
+                          {"target": "matrix:123456", "message": "Hello!"})
         assert result["success"] is True
         mock.assert_called_once()
         call_args = mock.call_args[0][0]
         assert call_args["action"] == "send"
-        assert call_args["target"] == "telegram:123456"
+        assert call_args["target"] == "matrix:123456"
 
 
 class TestE2EChannelsList:
@@ -854,7 +837,7 @@ class TestE2EChannelsList:
         result = _run_tool(server, "channels_list")
         assert result["count"] == 3
         targets = {c["target"] for c in result["channels"]}
-        assert "telegram:123456" in targets
+        assert "matrix:123456" in targets
         assert "discord:789" in targets
         assert "slack:C1234" in targets
 
@@ -875,7 +858,7 @@ class TestE2EChannelsList:
         monkeypatch.setattr(mcp_serve, "_load_channel_directory", lambda: {
             "updated_at": "2026-05-07T12:00:00",
             "platforms": {
-                "telegram": [
+                "matrix": [
                     {"id": "123456", "name": "Alice", "type": "dm"},
                     {"id": "-100999", "name": "Dev Group", "type": "group"},
                 ],
@@ -888,7 +871,7 @@ class TestE2EChannelsList:
         result = _run_tool(server, "channels_list")
         assert result["count"] == 3
         targets = {c["target"] for c in result["channels"]}
-        assert targets == {"telegram:123456", "telegram:-100999", "discord:789"}
+        assert targets == {"matrix:123456", "matrix:-100999", "discord:789"}
 
     def test_channels_with_directory_platform_filter(self, mcp_server_e2e, _event_loop, monkeypatch):
         """Platform filter should work against the wrapped 'platforms' payload."""
@@ -896,7 +879,7 @@ class TestE2EChannelsList:
         monkeypatch.setattr(mcp_serve, "_load_channel_directory", lambda: {
             "updated_at": "2026-05-07T12:00:00",
             "platforms": {
-                "telegram": [{"id": "123456", "name": "Alice", "type": "dm"}],
+                "matrix": [{"id": "123456", "name": "Alice", "type": "dm"}],
                 "discord": [{"id": "789", "name": "general", "type": "text"}],
             },
         })
@@ -906,59 +889,10 @@ class TestE2EChannelsList:
         assert result["channels"][0]["target"] == "discord:789"
 
 
-class TestE2EPermissions:
-    def test_list_empty(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "permissions_list_open")
-        assert result["count"] == 0
-        assert result["approvals"] == []
-
-    def test_list_with_approvals(self, mcp_server_e2e, _event_loop):
-        server, bridge = mcp_server_e2e
-        bridge._pending_approvals["a1"] = {
-            "id": "a1", "kind": "exec",
-            "description": "sudo rm -rf /",
-            "session_key": "test",
-            "created_at": "2026-03-29T12:00:00",
-        }
-        result = _run_tool(server, "permissions_list_open")
-        assert result["count"] == 1
-        assert result["approvals"][0]["id"] == "a1"
-
-    def test_respond_allow(self, mcp_server_e2e, _event_loop):
-        server, bridge = mcp_server_e2e
-        bridge._pending_approvals["a1"] = {"id": "a1", "kind": "exec"}
-        result = _run_tool(server, "permissions_respond",
-                          {"id": "a1", "decision": "allow-once"})
-        assert result["resolved"] is True
-        assert result["decision"] == "allow-once"
-        # Should be gone now
-        check = _run_tool(server, "permissions_list_open")
-        assert check["count"] == 0
-
-    def test_respond_deny(self, mcp_server_e2e, _event_loop):
-        server, bridge = mcp_server_e2e
-        bridge._pending_approvals["a2"] = {"id": "a2", "kind": "plugin"}
-        result = _run_tool(server, "permissions_respond",
-                          {"id": "a2", "decision": "deny"})
-        assert result["resolved"] is True
-
-    def test_respond_invalid_decision(self, mcp_server_e2e, _event_loop):
-        server, bridge = mcp_server_e2e
-        bridge._pending_approvals["a3"] = {"id": "a3", "kind": "exec"}
-        result = _run_tool(server, "permissions_respond",
-                          {"id": "a3", "decision": "maybe"})
-        assert "error" in result
-
-    def test_respond_nonexistent(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "permissions_respond",
-                          {"id": "nope", "decision": "deny"})
-        assert "error" in result
 
 
 # ---------------------------------------------------------------------------
-# 4. TOOL LISTING — verify all 10 tools are registered
+# 4. TOOL LISTING — verify the messaging tools are registered
 # ---------------------------------------------------------------------------
 
 class TestToolRegistration:
@@ -971,7 +905,6 @@ class TestToolRegistration:
             "conversations_list", "conversation_get", "messages_read",
             "attachments_fetch", "events_poll", "events_wait",
             "messages_send", "channels_list",
-            "permissions_list_open", "permissions_respond",
         }
         assert expected == tool_names, f"Missing: {expected - tool_names}, Extra: {tool_names - expected}"
 
@@ -1065,17 +998,17 @@ class TestEdgeCases:
         assert mcp_serve._load_sessions_index() == {}
 
     def test_sessions_without_origin(self, sessions_dir, monkeypatch):
-        data = {"agent:main:telegram:dm:111": {
-            "session_key": "agent:main:telegram:dm:111",
+        data = {"agent:main:discord:dm:111": {
+            "session_key": "agent:main:discord:dm:111",
             "session_id": "20260329_120000_xyz",
-            "platform": "telegram",
+            "platform": "discord",
             "updated_at": "2026-03-29T12:00:00",
         }}
         (sessions_dir / "sessions.json").write_text(json.dumps(data))
         import mcp_serve
         monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
         entries = mcp_serve._load_sessions_index()
-        assert entries["agent:main:telegram:dm:111"]["platform"] == "telegram"
+        assert entries["agent:main:discord:dm:111"]["platform"] == "discord"
 
     def test_bridge_start_stop(self):
         from mcp_serve import EventBridge
@@ -1108,14 +1041,14 @@ class TestEventBridgePollE2E:
 
         # Write sessions.json
         sessions_data = {
-            "agent:main:telegram:dm:poll_test": {
-                "session_key": "agent:main:telegram:dm:poll_test",
+            "agent:main:discord:dm:poll_test": {
+                "session_key": "agent:main:discord:dm:poll_test",
                 "session_id": session_id,
-                "platform": "telegram",
+                "platform": "discord",
                 "chat_type": "dm",
                 "display_name": "PollTest",
                 "updated_at": "2026-03-29T15:00:05",
-                "origin": {"platform": "telegram", "chat_id": "poll_test"},
+                "origin": {"platform": "discord", "chat_id": "poll_test"},
             }
         }
         (sessions_dir / "sessions.json").write_text(json.dumps(sessions_data))
@@ -1165,12 +1098,12 @@ class TestEventBridgePollE2E:
         db_path = tmp_path / "state.db"
 
         sessions_data = {
-            "agent:main:telegram:dm:skip": {
-                "session_key": "agent:main:telegram:dm:skip",
+            "agent:main:discord:dm:skip": {
+                "session_key": "agent:main:discord:dm:skip",
                 "session_id": session_id,
-                "platform": "telegram",
+                "platform": "discord",
                 "updated_at": "2026-03-29T15:00:05",
-                "origin": {"platform": "telegram", "chat_id": "skip"},
+                "origin": {"platform": "discord", "chat_id": "skip"},
             }
         }
         (sessions_dir / "sessions.json").write_text(json.dumps(sessions_data))
@@ -1217,12 +1150,12 @@ class TestEventBridgePollE2E:
         db_path = tmp_path / "state.db"
 
         sessions_data = {
-            "agent:main:telegram:dm:new": {
-                "session_key": "agent:main:telegram:dm:new",
+            "agent:main:discord:dm:new": {
+                "session_key": "agent:main:discord:dm:new",
                 "session_id": session_id,
-                "platform": "telegram",
+                "platform": "discord",
                 "updated_at": "2026-03-29T15:00:05",
-                "origin": {"platform": "telegram", "chat_id": "new"},
+                "origin": {"platform": "discord", "chat_id": "new"},
             }
         }
         (sessions_dir / "sessions.json").write_text(json.dumps(sessions_data))
@@ -1258,10 +1191,11 @@ class TestEventBridgePollE2E:
         conn.commit()
         conn.close()
         # Touch the DB file to update mtime (WAL mode may not update mtime on small writes)
-        os.utime(db_path, None)
+        before = db_path.stat()
+        os.utime(db_path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
 
         # Update sessions.json updated_at to trigger re-check
-        sessions_data["agent:main:telegram:dm:new"]["updated_at"] = "2026-03-29T15:00:10"
+        sessions_data["agent:main:discord:dm:new"]["updated_at"] = "2026-03-29T15:00:10"
         (sessions_dir / "sessions.json").write_text(json.dumps(sessions_data))
 
         # Second poll — should detect the new message
@@ -1303,10 +1237,10 @@ class TestEventBridgePollE2E:
         monkeypatch.setattr(
             mcp_serve, "_load_sessions_index",
             lambda: {
-                "agent:main:telegram:dm:late": {
+                "agent:main:discord:dm:late": {
                     "session_id": session_id,
-                    "platform": "telegram",
-                    "origin": {"platform": "telegram", "chat_id": "late"},
+                    "platform": "discord",
+                    "origin": {"platform": "discord", "chat_id": "late"},
                 }
             },
         )
@@ -1330,7 +1264,7 @@ class TestEventBridgePollE2E:
 
         result = bridge.poll_events(after_cursor=0)
         assert len(result["events"]) == 1
-        assert result["events"][0]["session_key"] == "agent:main:telegram:dm:late"
+        assert result["events"][0]["session_key"] == "agent:main:discord:dm:late"
         assert result["events"][0]["content"].startswith("Hello from a freshly")
 
     def test_startup_baseline_suppresses_historical_replay(self, tmp_path, monkeypatch):
@@ -1345,10 +1279,10 @@ class TestEventBridgePollE2E:
         monkeypatch.setattr(
             mcp_serve, "_load_sessions_index",
             lambda: {
-                "agent:main:telegram:dm:hist": {
+                "agent:main:discord:dm:hist": {
                     "session_id": session_id,
-                    "platform": "telegram",
-                    "origin": {"platform": "telegram", "chat_id": "hist"},
+                    "platform": "discord",
+                    "origin": {"platform": "discord", "chat_id": "hist"},
                 }
             },
         )
@@ -1373,7 +1307,8 @@ class TestEventBridgePollE2E:
             "id": 2, "role": "assistant", "content": "arrived after start",
             "timestamp": "2026-03-29T15:05:00",
         })
-        os.utime(db_path, None)  # bump mtime so the poll gate opens
+        before = db_path.stat()
+        os.utime(db_path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))  # bump mtime so the poll gate opens
         bridge._poll_once(DB())
         events = bridge.poll_events(after_cursor=0)["events"]
         assert len(events) == 1
@@ -1402,21 +1337,22 @@ class TestEventBridgePollE2E:
 
         # The gateway registers a brand-new conversation + its first message.
         sid = "20260329_150000_fresh"
-        index["agent:main:telegram:dm:fresh"] = {
+        index["agent:main:discord:dm:fresh"] = {
             "session_id": sid,
-            "platform": "telegram",
-            "origin": {"platform": "telegram", "chat_id": "fresh"},
+            "platform": "discord",
+            "origin": {"platform": "discord", "chat_id": "fresh"},
         }
         messages[sid] = [{
             "id": 1, "role": "user", "content": "hello after baseline",
             "timestamp": "2026-03-29T15:10:00",
         }]
-        os.utime(db_path, None)
+        before = db_path.stat()
+        os.utime(db_path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
         bridge._poll_once(DB())
 
         events = bridge.poll_events(after_cursor=0)["events"]
         assert len(events) == 1
-        assert events[0]["session_key"] == "agent:main:telegram:dm:fresh"
+        assert events[0]["session_key"] == "agent:main:discord:dm:fresh"
         assert events[0]["content"] == "hello after baseline"
 
     def test_poll_interval_is_200ms(self):

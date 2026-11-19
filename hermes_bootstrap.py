@@ -4,7 +4,7 @@ hardening, durable lazy-install target, and dual-stack (Happy Eyeballs) connects
 Windows binds stdio to the console code page (cp1252), so ``print("café")`` raises
 ``UnicodeEncodeError``, and Python children inherit the same default unless
 ``PYTHONUTF8``/``PYTHONIOENCODING`` are set. Import this module first in every entry
-point (``hermes``, ``hermes-agent``, ``hermes-acp``, ``gateway.run``, ``batch_runner``,
+point (``hermes``, ``hermes-agent``, ``gateway.run``, ``batch_runner``,
 ``cron/scheduler``). It does NOT re-exec with ``-X utf8``: ``open()`` in the current
 process still needs an explicit ``encoding="utf-8"`` (ruff ``PLW1514``). POSIX is left
 alone deliberately — users' ``LANG``/``LC_*`` choices are respected.
@@ -258,7 +258,7 @@ def suppress_platform_ver_console() -> None:
 
     ``platform.win32_ver()`` (reached via ``platform.platform()``, which the OpenAI SDK
     calls) shells out ``cmd /c ver`` with ``shell=True`` and no ``CREATE_NO_WINDOW``: a
-    windowless parent (pythonw gateway, slash/kanban workers) flashes a console per call,
+    windowless parent (pythonw gateway, slash/automation workers) flashes a console per call,
     and Python 3.11.0/3.11.1 (no ``encoding="locale"`` fix) strict-utf-8-decodes the OEM
     code page output under PEP 540 mode and raises (#69413). Returning the inputs makes
     ``win32_ver()`` fall back to ``sys.getwindowsversion()`` — same data, no subprocess.
@@ -308,13 +308,16 @@ def activate_durable_lazy_target() -> None:
     Immutable Docker images seal the venv and redirect lazy installs to the data volume;
     packages installed there on a previous run must be importable before any backend
     imports its SDK. Appends to the END of ``sys.path`` so the core venv always wins name
-    collisions (see ``tools.lazy_deps``). Never raises; unset target is a no-op.
+    collisions (see ``pm.python_requirements``). Never raises; unset target is a no-op.
     """
-    if not os.environ.get("HERMES_LAZY_INSTALL_TARGET", "").strip():
+    target = os.environ.get("HERMES_LAZY_INSTALL_TARGET", "").strip()
+    if not target:
         return
     try:
-        from tools import lazy_deps
-        lazy_deps.activate_durable_lazy_target()
+        from pathlib import Path
+
+        from pm.python_requirements import _activate_target_on_syspath
+        _activate_target_on_syspath(Path(target))
     except Exception:
         pass  # a failed activation just leaves the backend reporting itself unavailable
 
@@ -340,3 +343,16 @@ suppress_platform_ver_console()
 activate_durable_lazy_target()
 install_happy_eyeballs_socket_connect()
 export_scratch_tmp_env()
+
+# Every entry point imports this module before its dependency graph.
+from pathlib import Path
+from hermes_cli.runtime_paths import activate_dependencies
+
+try:
+    activate_dependencies(Path(__file__).resolve().parent)
+except RuntimeError as exc:
+    # The repair command must remain usable even when the committed tree
+    # disappeared. Other commands must not silently run the wrong libraries.
+    if sys.argv[1:3] not in (["pm", "install"], ["pm", "doctor"]):
+        print(f"hermes: {exc}; run `hermes pm install` to repair", file=sys.stderr)
+        raise SystemExit(1) from None

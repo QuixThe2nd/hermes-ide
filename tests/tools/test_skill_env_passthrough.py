@@ -10,10 +10,10 @@ import pytest
 import tools.env_passthrough as _ep_mod
 from tools.env_passthrough import clear_env_passthrough, is_env_passthrough
 
-# Real optional AgentMail skill — its CLI-first workflow runs `agentmail` through
+# Preserved AgentMail skill fixture — its CLI-first workflow runs `agentmail` through
 # the sandboxed terminal, which strips secrets unless the skill declares them.
 _AGENTMAIL_SKILL_SRC = (
-    Path(__file__).resolve().parents[2] / "optional-skills" / "email" / "agentmail"
+    Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "skills" / "agentmail"
 )
 
 
@@ -88,6 +88,11 @@ class TestSkillViewRegistersPassthrough:
         assert len(get_all_passthrough()) == 0
 
 
+# The fixture is read straight from the repo tree, which in some checkouts lives
+# under ~/.hermes (e.g. worktrees in ~/.hermes/cache) — the real-home tripwire
+# would otherwise flag reads of the repo's own files. The test only reads this
+# fixture and writes to tmp_path.
+@pytest.mark.allow_real_home_io
 class TestAgentMailKeyPassthrough:
     """The real AgentMail skill must declare AGENTMAIL_API_KEY so a profile-stored
     key reaches the sandboxed terminal, while staying usable (self-signup) without

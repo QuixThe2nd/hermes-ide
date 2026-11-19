@@ -166,9 +166,9 @@ _ENV_VAR_NAME_DENYLIST: frozenset[str] = frozenset({
     "HERMES_OPTIONAL_MCPS",
     # Local ACP subprocess selection (executable/argv authority).
     "HERMES_COPILOT_ACP_COMMAND", "HERMES_COPILOT_ACP_ARGS",
-    # Security policy / approval-routing context — set via their dedicated controls only.
-    "HERMES_YOLO_MODE", "HERMES_ACCEPT_HOOKS", "HERMES_REDACT_SECRETS",
-    "HERMES_INTERACTIVE", "HERMES_EXEC_ASK", "HERMES_GATEWAY_SESSION",
+    # Security policy and execution context — set via dedicated controls only.
+    "HERMES_ACCEPT_HOOKS", "HERMES_REDACT_SECRETS", "HERMES_INTERACTIVE",
+    "HERMES_GATEWAY_SESSION",
     "HERMES_CRON_SESSION", "HERMES_SINGLE_QUERY_SESSION",
     "HERMES_SESSION_KEY", "HERMES_SESSION_PLATFORM"})
 
@@ -188,9 +188,8 @@ def validate_env_var_name_for_write(key: str) -> None:
         raise ValueError(
             f"Environment variable {key!r} is on the writer denylist. "
             "Names that influence subprocess execution (LD_PRELOAD, PYTHONPATH, PATH, EDITOR, ...) "
-            "or Hermes runtime location and security policy (HERMES_HOME, HERMES_YOLO_MODE, ...) "
-            "cannot be persisted via the env writer. If you really need this, edit ~/.hermes/.env "
-            "directly.")
+            "or Hermes runtime location and security policy (HERMES_HOME, ...) cannot be persisted "
+            "via the env writer. If you really need this, edit ~/.hermes/.env directly.")
 
 
 # Serializes all config read/write paths and guards the module-level caches below. libyaml's
@@ -202,7 +201,7 @@ def validate_env_var_name_for_write(key: str) -> None:
 # read_raw_config; it takes its raw mapping from require_readable_config_before_write.
 _CONFIG_LOCK = threading.RLock()
 # path -> last successfully loaded (expanded) config; served after a parse failure so a
-# mid-edit broken YAML never silently drops user overrides (e.g. approvals.deny rules).
+# mid-edit broken YAML never silently drops user overrides.
 _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 # path -> (user_mtime_ns, user_size, managed_mtime_ns, managed_size, merged, env_ref_snapshot).
 # load_config() returns a deepcopy of the cached value while the signature matches (skips
@@ -224,23 +223,18 @@ _RAW_CONFIG_CACHE: Dict[str, Tuple[int, ...]] = {}
 _EXTRA_ENV_KEYS = frozenset({
     "OPENAI_API_KEY", "OPENAI_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
     "SIGNAL_ACCOUNT", "SIGNAL_HTTP_URL", "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
-    "DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET", "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_ENCRYPT_KEY", "FEISHU_VERIFICATION_TOKEN",
-    "WECOM_BOT_ID", "WECOM_SECRET", "WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET",
-    "WECOM_CALLBACK_AGENT_ID", "WECOM_CALLBACK_TOKEN", "WECOM_CALLBACK_ENCODING_AES_KEY",
-    "WECOM_CALLBACK_HOST", "WECOM_CALLBACK_PORT", "WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN", "WEIXIN_BASE_URL", "WEIXIN_CDN_BASE_URL",
+    "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_ENCRYPT_KEY", "FEISHU_VERIFICATION_TOKEN",
+    "WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN", "WEIXIN_BASE_URL", "WEIXIN_CDN_BASE_URL",
     "WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY",
     "WEIXIN_ALLOWED_USERS", "WEIXIN_GROUP_ALLOWED_USERS", "WEIXIN_ALLOW_ALL_USERS",
     "BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD", "QQ_APP_ID", "QQ_CLIENT_SECRET",
     "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS", "QQ_ALLOW_ALL_USERS", "QQ_MARKDOWN_SUPPORT",
-    "QQ_STT_API_KEY", "QQ_STT_BASE_URL", "QQ_STT_MODEL",
-    "IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS", "IRC_SERVER_PASSWORD",
-    "IRC_NICKSERV_PASSWORD", "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
+    "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
     # Deprecated (replaced by display.tool_progress) but STILL READ by the gateway as a
     # back-compat fallback. The boolean HERMES_TOOL_PROGRESS variant is unsupported (its only
     # consumer, the v3->4 migration, is below the v12 support floor); doctor flags it as ignored.
     "HERMES_TOOL_PROGRESS_MODE",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
-    "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
     "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD", "MATRIX_DM_AUTO_THREAD",
     "MATRIX_RECOVERY_KEY",
@@ -249,12 +243,10 @@ _EXTRA_ENV_KEYS = frozenset({
     "HERMES_LANGFUSE_ENV", "HERMES_LANGFUSE_RELEASE", "HERMES_LANGFUSE_SAMPLE_RATE",
     "HERMES_LANGFUSE_MAX_CHARS", "HERMES_LANGFUSE_CAPTURE", "HERMES_LANGFUSE_DEBUG",
     "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL",
-    # ACP (Agent Client Protocol) keys — profile-isolable so profiles can use different backends.
-    "HERMES_ACP_AUTH_METHOD", "HERMES_ACP_AUTO_APPROVE", "HERMES_COPILOT_ACP_COMMAND",
+    # Copilot ACP client keys — profile-isolable so profiles can use different backends.
+    "HERMES_COPILOT_ACP_COMMAND",
     "HERMES_COPILOT_ACP_ARGS", "COPILOT_CLI_PATH", "COPILOT_ACP_BASE_URL",
-    # Shared-owner llm_usage_proxy mode: this profile's caller token for the central
-    # proxy (minted on the owner with `hermes llm_usage_proxy callers create`).
-    "HERMES_USAGE_PROXY_CALLER_TOKEN"})
+})
 
 
 # ---- Managed mode (NixOS declarative config) ----
@@ -505,7 +497,7 @@ def require_parseable_user_config(*, ignore_user_config: bool = False) -> None:
 
     config_path = get_config_path()
     try:
-        with open(config_path, encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8-sig") as f:
             data = fast_safe_load(f)
     except FileNotFoundError:
         return
@@ -583,7 +575,7 @@ def _secure_dir(path):
     directory listings.
 
     Also applies ``HERMES_UID``/``HERMES_GID``-based ownership when those env vars are set (#34107 — Docker
-    deployments need this so profile subdirs created at runtime by kanban workers don't land as root:root
+    deployments need this so profile subdirs created at runtime by automation workers don't land as root:root
     and block subsequent uid-mapped workers).
     """
     if is_managed():
@@ -717,8 +709,7 @@ from hermes_cli.personality import (  # noqa: E402,F401
 
 from hermes_cli.config_defaults import DEFAULT_MAX_TURNS  # noqa: F401
 ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
-    3: ["FIRECRAWL_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAL_KEY"],
-    4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
+    3: ["FIRECRAWL_API_KEY", "FAL_KEY"],
     5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
@@ -957,16 +948,15 @@ def _unset_nested(config, dotted_key: str) -> bool:
 
 
 _ENV_CONFIG_KEYS = frozenset({
-    'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
+    'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
     'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL',
     'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_URL', 'CONNECTOR_GATEWAY_URL',
     'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
     'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY', 'PERPLEXITY_API_KEY', 'API_SERVER_KEY',
-    'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
-    'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
+    'FAL_KEY', 'DISCORD_BOT_TOKEN',
     'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
     'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
-    'GITHUB_TOKEN', 'HONCHO_API_KEY'})
+    'GITHUB_TOKEN'})
 
 
 def _is_env_config_key(key: str) -> bool:
@@ -1103,7 +1093,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "tool_gateway_declined_tools",  # per-tool Tool Gateway offer declines
     # Top-level forms read/bridged by gateway/config.py:
     "group_sessions_per_user", "thread_sessions_per_user",
-    "stt_echo_transcripts", "reset_triggers", "always_log_local", "filter_silence_narration",
+    "reset_triggers", "always_log_local", "filter_silence_narration",
     "multiplex_profiles", "profile_routes", "platforms", "require_mention",
     "unauthorized_dm_behavior", "signal", "allow_all_users",
     "timeouts",          # unified timeout resolution section (agent/deadline.py)
@@ -1151,17 +1141,6 @@ _FB_REQUIRED_FIELDS = (
 _FB_SINGLE_REQUIRED_FIELDS = (
     ("provider", "Add: provider: openrouter (or another provider)"),
     ("model", "Add: model: anthropic/claude-sonnet-4 (or another model)"))
-
-
-def _validate_voice(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
-    voice_cfg = config.get("voice")
-    if not (isinstance(voice_cfg, dict) and "submit_mode" in voice_cfg):
-        return
-    submit_mode = voice_cfg.get("submit_mode")
-    normalized = submit_mode.strip().lower() if isinstance(submit_mode, str) else None
-    if normalized not in {"direct", "draft"}:
-        _issue(issues, "error", f"voice.submit_mode must be 'direct' or 'draft', got {submit_mode!r}",
-               "Set voice.submit_mode to direct (submit immediately) or draft (edit before sending)")
 
 
 def _validate_timezone(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
@@ -1285,7 +1264,6 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             return [config_load_issue(exc)]
 
     issues: List[ConfigIssue] = []
-    _validate_voice(config, issues)
     _validate_timezone(config, issues)
     cp = config.get("custom_providers")
     fb = config.get("fallback_model")
@@ -2165,14 +2143,9 @@ TERMINAL_CONFIG_ENV_MAP = {
     **{
         key: f"TERMINAL_{key.upper()}"
         for key in (
-            "modal_mode", "degraded_mode", "cwd", "temp_dir", "timeout", "lifetime_seconds",
-            "docker_image", "docker_forward_env", "singularity_image", "modal_image",
-            "daytona_image", "vercel_runtime", "ssh_host", "ssh_user", "ssh_port", "ssh_key",
-            "container_cpu", "container_memory", "container_disk", "container_persistent",
-            "docker_volumes", "docker_env", "docker_mount_cwd_to_workspace", "docker_network",
-            "docker_extra_args", "docker_shm_size", "docker_run_as_host_user", "docker_snap_compat",
-            "docker_persist_across_processes", "docker_shared_container_key",
-            "docker_orphan_reaper", "sandbox_dir", "persistent_shell")}}
+            "degraded_mode", "cwd", "temp_dir", "timeout", "lifetime_seconds",
+            "ssh_host", "ssh_user", "ssh_port", "ssh_key",
+            "sandbox_dir", "persistent_shell")}}
 
 
 def _terminal_env_value(value: Any) -> str:
@@ -2272,12 +2245,10 @@ def _load_config_cache_sig(config_path: Path) -> Tuple[Optional[Tuple[int, int, 
 def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: Exception) -> Optional[Dict[str, Any]]:
     """Warn about a parse failure and return the last-known-good config, or None (-> defaults).
     A parse failure must not silently replace the effective config with defaults — that drops
-    EVERY user override, including security-critical ``approvals.deny`` rules, when a gateway
-    user mid-edits config.yaml into broken YAML. Keep serving the last good config until fixed."""
-    # Falling through to DEFAULT_CONFIG here drops EVERY user override — including security-critical
-    # ``approvals.deny`` rules, which are supposed to block commands even under yolo. Within a running
-    # process we still have the last successfully loaded config — keep serving it until the file is fixed.
-    # See #31188.
+    every user override when a gateway user mid-edits config.yaml into broken YAML. Keep serving
+    the last good config until fixed."""
+    # Within a running process we still have the last successfully loaded config — keep serving
+    # it until the file is fixed. See #31188.
     lkg = _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key)
     fallback = "last-known-good"
     if lkg is None:
@@ -2416,13 +2387,11 @@ _FALLBACK_COMMENT = """
 # Supported providers:
 #   openrouter   (OPENROUTER_API_KEY)  — routes to any model
 #   openai-codex (OAuth — hermes auth) — OpenAI Codex
-#   nous         (OAuth — hermes auth) — Nous Portal
 #   zai          (ZAI_API_KEY)         — Z.AI / GLM
 #   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
 #   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
-#   bedrock      (AWS IAM / boto3)     — AWS Bedrock (Converse API)
 #
 # For custom OpenAI-compatible endpoints, add base_url and key_env.
 #
@@ -2857,7 +2826,7 @@ _SECRET_CONFIG_KEYS = frozenset({
 # the suffixes ``_is_env_config_key`` routes to .env. Suffix-only so ``token_count`` stays visible.
 _SECRET_CONFIG_KEY_SUFFIXES = ("_api_key", "_token", "_secret", "_password", "_key", "_access_key")
 # .env-routed keys are credentials by default; these suffixes name the non-secret exceptions
-# (``TERMINAL_SSH_HOST``, ``TOOL_GATEWAY_URL``, ``BROWSERBASE_PROJECT_ID``).
+# (``TERMINAL_SSH_HOST``, ``TOOL_GATEWAY_URL``).
 _NON_SECRET_KEY_SUFFIXES = ("_url", "_host", "_user", "_id", "_domain", "_scheme")
 _ENV_PLACEHOLDER_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
 
@@ -2913,14 +2882,11 @@ def _show_managed_banner() -> None:
 
 _SHOW_CONFIG_API_KEYS = (
     ("OPENROUTER_API_KEY", "OpenRouter"),
-    ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
     ("EXA_API_KEY", "Exa"),
     ("PARALLEL_API_KEY", "Parallel"),
     ("FIRECRAWL_API_KEY", "Firecrawl"),
     ("TAVILY_API_KEY", "Tavily"),
     ("PERPLEXITY_API_KEY", "Perplexity"),
-    ("BROWSERBASE_API_KEY", "Browserbase"),
-    ("BROWSER_USE_API_KEY", "Browser Use"),
     ("FAL_KEY", "FAL"))
 
 
@@ -2967,20 +2933,7 @@ def _show_terminal_section(config: Dict[str, Any]) -> None:
     print(f"  Timeout:      {terminal.get('timeout', 60)}s")
 
     configured = lambda *names: 'configured' if all(get_env_value(n) for n in names) else '(not set)'  # noqa: E731
-    default_img = 'nikolaik/python-nodejs:python3.11-nodejs20'
     backend_lines = {
-        'docker': lambda: [f"  Docker image: {terminal.get('docker_image', default_img)}"],
-        'singularity': lambda: [f"  Image:        {terminal.get('singularity_image', 'docker://' + default_img)}"],
-        'modal': lambda: [
-            f"  Modal image:  {terminal.get('modal_image', default_img)}",
-            f"  Modal token:  {configured('MODAL_TOKEN_ID')}"],
-        'daytona': lambda: [
-            f"  Daytona image: {terminal.get('daytona_image', default_img)}",
-            f"  API key:      {configured('DAYTONA_API_KEY')}"],
-        'vercel_sandbox': lambda: [
-            f"  Vercel runtime: {terminal.get('vercel_runtime', 'node24')}",
-            f"  Vercel auth:    {'configured' if get_env_value('VERCEL_OIDC_TOKEN') or (get_env_value('VERCEL_TOKEN') and get_env_value('VERCEL_PROJECT_ID') and get_env_value('VERCEL_TEAM_ID')) else '(not set)'}",
-        ],
         'ssh': lambda: [
             f"  SSH host:     {get_env_value('TERMINAL_SSH_HOST') or '(not set)'}",
             f"  SSH user:     {get_env_value('TERMINAL_SSH_USER') or '(not set)'}"]}
@@ -3076,7 +3029,7 @@ def show_config():
     _show_aux_overrides(config)
 
     _section("Messaging Platforms")
-    for label, env_key in (("Telegram", "TELEGRAM_BOT_TOKEN"), ("Discord", "DISCORD_BOT_TOKEN")):
+    for label, env_key in (("Discord", "DISCORD_BOT_TOKEN"),):
         state = 'configured' if get_env_value(env_key) else color('not configured', Colors.DIM)
         print(f"  {label + ':':<13} {state}")
 
@@ -3291,16 +3244,15 @@ def _default_value_for_key(dotted_key: str):
 # user populates it): any path below is accepted without deep checking.
 _OPEN_DICT_TOP_LEVEL_KEYS = frozenset({
     "providers", "credential_pool_strategies", "mcp_servers", "hooks", "quick_commands",
-    "personalities", "command_allowlist", "model_catalog", "channel_prompts", "server_actions",
+    "personalities", "model_catalog", "channel_prompts", "server_actions",
     "secrets", "goals", "loops"})
 
 # Top-level keys whose sub-keys are partially schema-defined (e.g. a PlatformConfig dataclass) but
 # where users may add fields DEFAULT_CONFIG doesn't enumerate: validate the FIRST segment only.
 _SCHEMA_DEFINED_DICT_KEYS = frozenset({
     # Platform configs — PlatformConfig dataclass + dynamic extras
-    "discord", "telegram", "slack", "whatsapp", "signal", "mattermost",
-    "matrix", "feishu", "wecom", "weixin", "bluebubbles", "qqbot", "yuanbao",
-    "email", "sms", "dingtalk",
+    "discord", "whatsapp",
+    "matrix",
     # MCP server template / dynamic auth dicts
     "sessions", "checkpoints",
     # Plugin enable/disable lists + per-plugin entries; absent from DEFAULT_CONFIG.
@@ -3472,7 +3424,7 @@ _SCALAR_WORDS = {
 def _coerce_config_set_value(key: str, value: str) -> Any:
     """Auto-coerce a ``hermes config set`` string to bool/None/int/float/list/dict.
     String-typed settings (per ``DEFAULT_CONFIG``) are preserved verbatim so enum members such as
-    ``approvals.mode="off"`` never become booleans. List/mapping literals are parsed so
+    ``mode="off"`` never become booleans. List/mapping literals are parsed so
     isinstance-gated readers see real structures; the trigger is conservative."""
     if isinstance(_default_value_for_key(key), str):
         return value
@@ -3571,7 +3523,7 @@ def _redirect_platform_display_key(key: str) -> tuple[str, Optional[str]]:
     Only known display settings (``OVERRIDEABLE_KEYS``) are redirected. Returns ``(key, note)``;
     the gateway import is guarded so the CLI works where the gateway package is unavailable.
 
-    Before #71047 a write such as ``hermes config set platforms.telegram.streaming false`` landed on a key
+    Before #71047 a write such as ``hermes config set platforms.discord.streaming false`` landed on a key
     the gateway never reads: ``config get`` echoed the new value back while the runtime kept the old
     ``display.platforms`` one — a silent no-op that looks like a duplicated key to the user.
     """
@@ -3664,7 +3616,7 @@ def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:
         "but Hermes may not read it.", Colors.YELLOW))
     if suggestion:
         print(color(f"  Did you mean: {suggestion}", Colors.YELLOW))
-    # The env bridge covers custom TOP-LEVEL keys only; an unseeded nested path (``stt.provider``)
+    # The env bridge covers custom TOP-LEVEL keys only; an unseeded nested path
     # is written but not bridged, so the footer would be a false promise there.
     if len(_split_key_path(key)) == 1:
         print(color(
@@ -3715,8 +3667,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     if is_env_setting_key(key):
         # Every UPPER_SNAKE name is an environment setting: same file the platform setup flows and
         # /sethome write, and the only one os.getenv readers see. config.yaml never gets one from
-        # here, --force included (#111848). The env writer's denylist (HERMES_YOLO_MODE, PATH, ...)
-        # therefore also refuses the config.yaml detour that used to bridge those into os.environ.
+        # here, --force included (#111848); the env writer's denylist also refuses this detour.
         try:
             save_env_setting(key, value)
         except ValueError as exc:
@@ -3806,6 +3757,30 @@ def set_config_value(key: str, value: str, force: bool = False):
         _print_unknown_key_notice(key, suggestion)
 
 
+def peek_config_value(key: str, default=None):
+    """Programmatic read: the user's value when set, else ``default``.
+    Never prints, never masks, never exits. Complements the CLI-facing
+    get_config_value(), which prints and may exit (#84106)."""
+    from hermes_cli.config_env_routing import is_env_setting_key, read_env_setting
+
+    if _is_env_config_key(key):
+        env_value = get_env_value(key.upper())
+        if env_value is not None:
+            return env_value
+    elif is_env_setting_key(key):
+        env_value = read_env_setting(key)
+        if env_value is not None:
+            return env_value
+    else:
+        # Mirror set_config_value: read the canonical display.platforms path.
+        # See #71047.
+        key, _ = _redirect_platform_display_key(key)
+        value = _get_nested(load_config(), key)
+        if value is not _MISSING:
+            return value
+    return default
+
+
 def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
     """Print a resolved configuration value. Credentials are masked unless ``--raw`` or
     ``security.redact_secrets: false``: ``print`` bypasses the log redactor, and the agent runs
@@ -3840,8 +3815,8 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
     # Phantom-key notice (#112348): a nested path under a KNOWN section that the schema does not
     # define (``compression.compressor.enabled``) is echoed straight from the user's file and is
     # usually read by nothing, so it must not look like a live setting. The check is a
-    # DEFAULT_CONFIG walk and some live keys are deliberately unseeded (``browser.cloud_provider``,
-    # ``stt.provider``, ``gateway.proxy_url``: a stored value counts as an explicit user pick), so
+    # DEFAULT_CONFIG walk and some live keys are deliberately unseeded
+    # (``gateway.proxy_url``: a stored value counts as an explicit user pick), so
     # the wording hedges exactly like the set-path notice. Custom top-level keys stay exempt (they
     # are bridged into os.environ for skills) and ``_validate_config_key`` already accepts
     # open-subkey sections. stderr keeps stdout/--json parseable; the exit code stays 0.

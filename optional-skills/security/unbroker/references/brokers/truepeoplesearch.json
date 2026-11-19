@@ -18,7 +18,7 @@
     "url_format_quirks": [
       "Search results URL is QUERY-PARAM, not path: /results?name=Jane%20Public&citystatezip=Anytown,%20NY (space-encoded; comma between city and state). Confirmed as the canonical form the site's own search box generates.",
       "On-site search tabs: Name / Phone / Address / Email / Neighbors (so name-, phone-, address-, and email-searchable).",
-      "HARD-BLOCKED for automated reads (2026-06-30): Cloudflare 'Just a moment...' interstitial -> DataDome device-check CAPTCHA (geo.captcha-delivery.com) on every results navigation. Page chrome (header/footer) may render while the result body stays blocked; submitting any search bounces to DataDome. web_extract/Firecrawl 504-timed out. Needs a residential-proxy/stealth browser (e.g. Browserbase) to scan; otherwise record 'blocked'."
+      "HARD-BLOCKED for automated reads (2026-06-30): Cloudflare 'Just a moment...' interstitial -> DataDome device-check CAPTCHA (geo.captcha-delivery.com) on every results navigation. Page chrome (header/footer) may render while the result body stays blocked; submitting any search bounces to DataDome. web_extract/Firecrawl 504-timed out. Record 'blocked' and use the operator-in-the-loop path; do not attempt to bypass Cloudflare/DataDome."
     ]
   },
   "optout": {

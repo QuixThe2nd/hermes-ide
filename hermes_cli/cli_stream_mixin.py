@@ -63,9 +63,9 @@ class CLIStreamMixin:
     def _on_notice(self, notice) -> None:
         """Queue an out-of-band AgentNotice for rendering at the next clean boundary.
 
-        Notices fire mid-turn (cold-start seed, per-turn _capture_credits); printing immediately
-        races the stream and buries the line behind the prompt. Flushed by _flush_credit_notices()
-        after run_conversation returns. Fail-soft.
+        Notices fire mid-turn (cold-start seed, runtime diagnostics); printing immediately
+        races the stream and buries the line behind the prompt. Flushed after run_conversation
+        returns. Fail-soft.
         """
         try:
             text = getattr(notice, "text", "") or ""
@@ -212,7 +212,7 @@ class CLIStreamMixin:
             # check and read (TOCTOU), silently dropping the input.
             try:
                 # See #17666.
-                return path.read_text(encoding="utf-8")
+                return path.read_text(encoding="utf-8-sig")
             except (OSError, IOError):
                 logger.warning("Paste file gone or unreadable, returning placeholder: %s", path)
                 return match.group(0)
@@ -691,14 +691,8 @@ class CLIStreamMixin:
             self._invalidate()
             return
 
-        # Feed the pet: tools mean "running"; a failed tool latches the turn to end on a sulk.
         if event_type == "tool.started":
-            self._pet_reasoning = False
             self.__dict__.pop("_tool_gen_announced", None)
-        elif event_type == "tool.completed" and kwargs.get("is_error"):
-            self._pet_turn_error = True
-        elif event_type and event_type.startswith("reasoning"):
-            self._pet_reasoning = True
 
         if event_type == "tool.completed":
             self._tool_start_time = 0.0

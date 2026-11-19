@@ -18,8 +18,8 @@ from typing import Any, Dict, List, Optional, Union
 from hermes_state_common import _BOUNDARY_END_REASONS
 
 # Hidden from browsing/searching — integrations (HERMES_SESSION_SOURCE=tool), delegate
-# subagent runs, kanban workers are not the user's history.
-_HIDDEN_SESSION_SOURCES = ("kanban", "subagent", "tool")
+# subagent runs and historical kanban workers are not the user's history.
+_HIDDEN_SESSION_SOURCES = ("subagent", "tool")
 # Searchable but DEMOTED below interactive sessions: cron vocabulary dominates bare
 # BM25 and starves out the user's own sessions ("recall blindness").
 # Automation sources that are kept searchable but DEMOTED below interactive sessions in discover ranking.
@@ -667,6 +667,14 @@ SESSION_SEARCH_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
+            "description": {
+                "type": "string",
+                "description": (
+                    "One short phrase (max ~80 chars) saying WHY you are calling this, "
+                    "e.g. 'find where we left the deploy'. Shown to the user as progress. "
+                    "Never put secrets here."
+                ),
+            },
             "query": {
                 "type": "string",
                 "description": (

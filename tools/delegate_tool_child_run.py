@@ -24,6 +24,12 @@ from tools.delegate_tool_results import (
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
+# A blocking wait that times out while its worker is still healthy adopts the worker onto
+# the async-delegation rail instead of stopping it. The adoption is bounded: a worker still
+# silent after 30 minutes is stopped and reported as stalled, so the parent always gets a
+# terminal event.
+_ADOPTED_WORKER_MAX_WAIT_S = 30 * 60.0
+
 def _num(value: Any, default: int = 0) -> int:
     """int() for counters that may be mocks/None on test doubles."""
     return int(value) if isinstance(value, (int, float)) else default
@@ -92,7 +98,7 @@ def _detach_child(parent_agent: Any, child: Any) -> None:
 
 def _signal_child_stop(child: Any, *reason: str, tool_reason: str = "parent delegation ended") -> None:
     """Cooperative interrupt so the child's worker thread can exit cleanly. ``tool_reason`` is the
-    fixed cause the child's tools see (a pending approval wait reports it instead of a user deny)."""
+    fixed cause the child's tools see (a pending interactive wait reports it instead of a user cancel)."""
     with _quiet(None):
         if (child is not None and not request_hard_interrupt(child, *reason, tool_reason=tool_reason)
                 and hasattr(child, "_interrupt_requested")):
@@ -437,8 +443,7 @@ def _validate_child_output_schema(
     # schema re-paste — the child already holds the contract in its context).
     _retry_result = None
     try:
-        # Same identity as the main child turn: this runs on the parent worker's thread, and an
-        # unmarked turn is misread as the dispatcher-owned worker by every HERMES_KANBAN_* gate.
+        # Same delegated-child identity as the main child turn, including subprocess lineage.
         from agent.delegation_context import delegated_child_context
         with delegated_child_context(str(getattr(child, "session_id", "") or "")):
             _retry_result = child.run_conversation(
@@ -678,6 +683,7 @@ class _ChildRun:
     parent_task_id: Optional[str] = None
     wall_start: float = 0.0
     parent_reads_snapshot: list = field(default_factory=list)
+    shell_identity_guard: Any = None
 
     def elapsed(self) -> float:
         return round(time.monotonic() - self.child_start, 2)
@@ -745,36 +751,106 @@ class _ChildRun:
         """Close steer acceptance (see ``_merge_late_steer``); returns late steer text, if any."""
         return _close_subagent_steering(self.subagent_id, self.child) if self.subagent_id else None
 
+    def _adopt_running_worker(self, future) -> Optional[str]:
+        """Adopt a timed-out but STILL-RUNNING worker onto the async-delegation rail.
+
+        A blocking wait that hits its configured cap while the worker is healthy used to
+        stop the worker and go silent — the parent only learned the outcome by chasing
+        ("status?"). Instead the live future is handed to a background unit on the
+        existing rail (:mod:`tools.async_delegation`): when the worker completes, fails,
+        or stalls past ``_ADOPTED_WORKER_MAX_WAIT_S``, exactly ONE terminal event reaches
+        the parent through ``process_registry.completion_queue`` via the rail's single
+        publish chokepoint, with the durable row providing cross-restart dedup.
+
+        Returns the delegation id, or ``None`` when adoption is impossible (the future
+        already settled — no phantom unit — or the rail refused the dispatch): the caller
+        then keeps today's stop-and-abandon behavior. The worker is NEVER stopped here.
+        """
+        if future.done():
+            return None
+        from tools import async_delegation
+        from tools.delegate_tool_dispatch import _resolve_async_session_key
+
+        child, task_index = self.child, self.task_index
+        session_key, origin_ui_session_id = _resolve_async_session_key(self.parent_agent, "")
+
+        def _runner() -> Dict[str, Any]:
+            try:
+                result = future.result(timeout=_ADOPTED_WORKER_MAX_WAIT_S)
+                schema = _validate_child_output_schema(child, result, task_index, self.child_task_id, self.relay_text)
+                entry = _build_result_entry(child, result, task_index, self.elapsed(), schema)
+                self.account_background_processes(entry)
+                return entry
+            except FuturesTimeoutError:
+                # 30 minutes of silence: the adoption window is over. Stop the worker
+                # now — nothing else will — and report a stall, not a completion.
+                _signal_child_stop(child)
+                return _fabricated_entry(
+                    task_index, "error",
+                    f"The adopted subagent was still silent after {_ADOPTED_WORKER_MAX_WAIT_S / 60:.0f} minutes "
+                    "and was stopped; its outcome is unknown — re-dispatch if you still need the work.",
+                    child, self.elapsed())
+            except Exception as exc:  # noqa: BLE001 — the rail must always deliver a verdict
+                return _fabricated_entry(task_index, "error", f"{type(exc).__name__}: {exc}", child, self.elapsed())
+            finally:
+                # The adopting runner owns teardown: the blocking path skipped both the
+                # deferred close and the stop, so close the child once its worker settled.
+                # Release the identity guard before the close — by runner-settle time the
+                # worker's with-block has exited, so this is the idempotent second call.
+                self.shell_identity_guard.release()
+                _close_child(child, "Failed to close adopted child after worker exit")
+
+        handle = async_delegation.dispatch_background_delegation(
+            tool="delegate_agent",
+            result_kind=async_delegation.RESULT_KIND_SUBAGENT,
+            goal=self.goal,
+            runner=_runner,
+            session_key=session_key,
+            parent_session_id=str(getattr(self.parent_agent, "session_id", "") or "") or None,
+            origin_ui_session_id=origin_ui_session_id,
+        )
+        if handle.get("status") != "dispatched":
+            return None
+        delegation_id = str(handle["delegation_id"])
+        logger.warning(
+            "Subagent %d timed out but its worker is still running — adopted as background delegation %s; "
+            "its result will report back when it settles.", task_index, delegation_id)
+        return delegation_id
+
     def await_child(self) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
         """Run the child's conversation on a daemon worker: ``(result, None, False)`` or ``(None, error_entry,
         close_deferred)`` on timeout/exception.
 
         Hard timeout is off by default (``result(timeout=None)``; stuck children are the heartbeat's job). Daemon
-        worker: an abandoned timed-out child on a non-daemon thread would block interpreter exit at atexit join. The
-        worker installs a non-interactive approval callback (deny/approve per delegation.subagent_auto_approve) so
-        dangerous-command prompts never fall back to ``input()`` and deadlock the parent TUI. On failure: steer
-        acceptance closes BEFORE the stop signal (a concurrent steer is drained into the entry or rejected, never
+        worker: an abandoned timed-out child on a non-daemon thread would block interpreter exit at atexit join.
+        On failure: steer acceptance closes BEFORE the stop signal (a concurrent steer is drained into the entry or rejected, never
         lost); a 0-API-call timeout gets a diagnostic dump; a worker that still owns the child gets ``child.close()``
         via a Future done-callback (``close_deferred=True``) — closing here would race its still-unwinding finally
         path.
         """
-        from tools.delegate_tool import (_get_child_timeout, _get_subagent_approval_callback, _set_subagent_approval_cb)
+        from tools.delegate_tool import _get_child_timeout
         from tools.daemon_pool import DaemonThreadPoolExecutor
         child, task_index = self.child, self.task_index
         child_timeout = _get_child_timeout()
-        executor = DaemonThreadPoolExecutor(
-            max_workers=1, initializer=_set_subagent_approval_cb, initargs=(_get_subagent_approval_callback(),),
-        )
+        executor = DaemonThreadPoolExecutor(max_workers=1)
         # Worker thread handle so the timeout diagnostic can dump its stack.
         worker_thread_holder: Dict[str, Optional[threading.Thread]] = {"t": None}
         # Resolved after seed_workspace so a multimodal goal's text part carries the worktree note too.
         _images = list(getattr(child, "_delegate_images", None) or [])
         user_message: Any = _build_child_goal_message(self.goal, _images, child) if _images else self.goal
 
+        # The child shares the parent's shell (container alias), so its exports land in
+        # the shared bash snapshot; the refcounted guard restores the parent identity
+        # when the LAST child exits. Created before submit: both release paths (the
+        # worker's with-block finally and the adopted-runner finally) share this one
+        # instance, whose release is idempotent.
+        from tools.shell_identity_guard import ShellIdentityGuard
+        self.shell_identity_guard = ShellIdentityGuard(self.child_task_id)
+
         def _run_with_thread_capture():
             worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
-            with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+            with delegated_child_context(str(getattr(child, "session_id", "") or "")), self.shell_identity_guard:
                 return child.run_conversation(
                     user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
                 )
@@ -801,8 +877,15 @@ class _ChildRun:
             executor.shutdown(wait=False)
 
         _late_pending_steer = self.close_steering()
-        _signal_child_stop(child)
         is_timeout = isinstance(exc, (FuturesTimeoutError, TimeoutError))
+        # A healthy worker that merely outlived the configured cap is ADOPTED onto the
+        # async-delegation rail (still running, will report back) rather than stopped;
+        # the stale-heartbeat verdict keeps the stop — that worker is making no progress.
+        adopted_delegation_id: Optional[str] = None
+        if is_timeout and stale_after is None and not future.done():
+            adopted_delegation_id = self._adopt_running_worker(future)
+        if adopted_delegation_id is None:
+            _signal_child_stop(child)
         # What actually ended the wait: the stale threshold pre-empts a longer configured cap.
         timeout_cause = stale_after if stale_after is not None else child_timeout
         duration = self.elapsed()
@@ -824,6 +907,16 @@ class _ChildRun:
                 logger.warning("Subagent %d 0-API-call timeout — diagnostic written to %s", task_index, diagnostic_path)
         if not is_timeout:
             _err = str(exc)
+        elif adopted_delegation_id is not None:
+            calls_note = (
+                "without making any API call" if before_first_call
+                else f"with {child_api_calls} API call(s) completed"
+            )
+            _err = (
+                f"Subagent timed out after {child_timeout}s {calls_note} — the worker is still running and was "
+                f"NOT stopped; it will report back as background delegation {adopted_delegation_id} when it "
+                "finishes, fails, or stalls."
+            )
         elif stale_after is not None:
             _err = (
                 f"Subagent stopped making progress after {child_api_calls} API call(s) — no activity for "
@@ -850,10 +943,13 @@ class _ChildRun:
             "timeout_phase": "before_first_llm_call" if before_first_call else "after_llm_calls" if is_timeout else None,
             "_child_role": getattr(child, "_delegate_role", None),
             "diagnostic_path": diagnostic_path,
+            **({"delegation_id": adopted_delegation_id} if adopted_delegation_id else {}),
         }
         self.finish_failed(_error_entry, _late_pending_steer, preview=f"Timed out after {duration}s" if is_timeout else str(exc))
         close_deferred = is_timeout and not future.done()
-        if close_deferred:
+        if close_deferred and adopted_delegation_id is None:
+            # The adopted worker's runner owns its close; only an unadopted abandoned
+            # worker needs the deferred-close done-callback.
             _defer_close_after_timeout(child, future)
         return None, _error_entry, close_deferred
 

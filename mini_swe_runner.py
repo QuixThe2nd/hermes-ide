@@ -25,6 +25,8 @@ from dotenv import load_dotenv
 from agent.tool_dispatch_helpers import make_tool_result_message
 from trajectory_compressor import _effective_temperature_for_model
 
+from prompts.load import load
+
 # Load environment variables
 load_dotenv()
 
@@ -67,17 +69,7 @@ TERMINAL_TOOL_DEFINITION = {
     },
 }
 
-SYSTEM_PROMPT = """You are an AI agent that can execute bash commands to complete tasks.
-
-When you need to run commands, use the 'terminal' tool with your bash command.
-
-**Important:**
-- When you have completed the task successfully, run: echo "MINI_SWE_AGENT_FINAL_OUTPUT" followed by a summary
-- Be concise and efficient in your approach
-- Install any needed tools with apt-get or pip
-- Avoid interactive commands (no vim, nano, less, etc.)
-
-Complete the user's task step by step."""
+SYSTEM_PROMPT = load("mini_swe_bash_agent_system")
 
 HERMES_SYSTEM_PREFIX = (
     "You are a function calling AI model. You are provided with function signatures within <tools> </tools> XML tags. "

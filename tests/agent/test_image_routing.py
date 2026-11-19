@@ -367,8 +367,7 @@ class TestLargeImageHandling:
 
 
 class TestExtractImageRefs:
-    """Scan task body / inbound text for image paths and URLs (kanban worker
-    enrichment, issue raised May 2026)."""
+    """Scan task body / inbound text for image paths and URLs."""
 
     def test_empty_or_none_returns_empty(self):
         assert extract_image_refs("") == ([], [])
@@ -383,8 +382,13 @@ class TestExtractImageRefs:
         assert urls == []
 
     def test_finds_home_relative_path(self, tmp_path: Path, monkeypatch):
-        # Simulate ~/foo.png by pointing HOME at tmp_path and creating the file
+        # Simulate ~/foo.png by pointing the home env vars at tmp_path and
+        # creating the file. Windows resolves ~ via USERPROFILE (before HOME),
+        # so set both and clear the HOMEDRIVE/HOMEPATH fallback.
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        monkeypatch.delenv("HOMEDRIVE", raising=False)
+        monkeypatch.delenv("HOMEPATH", raising=False)
         img = tmp_path / "foo.png"
         img.write_bytes(_png_bytes())
         paths, urls = extract_image_refs("see ~/foo.png please")
@@ -412,8 +416,8 @@ class TestExtractImageRefs:
 
 
 class TestBuildNativeContentPartsURLs:
-    """URL pass-through support added so kanban task bodies (and other
-    inbound surfaces) can route remote image URLs straight to the model."""
+    """URL pass-through support lets task bodies and other inbound surfaces
+    route remote image URLs straight to the model."""
 
     def test_url_only_no_local_paths(self):
         parts, skipped = build_native_content_parts(

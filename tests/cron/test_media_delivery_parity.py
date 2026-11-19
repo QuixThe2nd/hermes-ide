@@ -25,6 +25,7 @@ Three defects, each pinned here:
    MEDIA paths under different policy than the gateway's scheduled tick.
 """
 
+import json
 import os
 from pathlib import Path
 
@@ -183,7 +184,7 @@ class TestLiveAdapterMediaFailuresSurfaced:
             t = threading.Thread(target=loop.run_forever, daemon=True)
             t.start()
             errors = _send_media_via_adapter(
-                FailingAdapter(), "D01", [(media_file, False)], None, loop, slack_job
+                FailingAdapter(), "D01", [media_file], None, loop, slack_job
             )
             assert errors, (
                 "a failed media send must be returned to the caller, not only logged"
@@ -211,7 +212,7 @@ class TestLiveAdapterMediaFailuresSurfaced:
             t.start()
             errors = _send_media_via_adapter(
                 NeverCalledAdapter(), "D01",
-                [("/nonexistent/definitely-missing.pdf", False)],
+                ["/nonexistent/definitely-missing.pdf"],
                 None, loop, slack_job,
             )
             assert errors, "a filtered-out MEDIA path must be reported, not silent"
@@ -267,7 +268,7 @@ class TestMediaPolicyEnvBridge:
         (home / "config.yaml").write_text(
             "gateway:\n"
             "  strict: true\n"
-            f"  media_delivery_allow_dirs: [{str(allow_dir)!r}]\n"
+            f"  media_delivery_allow_dirs: [{json.dumps(str(allow_dir))}]\n"
         )
         monkeypatch.setenv("HERMES_HOME", str(home))
         for var in ("HERMES_MEDIA_DELIVERY_STRICT", "HERMES_MEDIA_ALLOW_DIRS"):
@@ -279,7 +280,7 @@ class TestMediaPolicyEnvBridge:
 
         from gateway.platforms.base import BasePlatformAdapter
 
-        kept = BasePlatformAdapter.filter_media_delivery_paths([(str(media), False)])
+        kept = BasePlatformAdapter.filter_media_delivery_paths([str(media)])
         assert kept, (
             "with the policy bridged, an allowlisted file must survive strict "
             "filtering in a non-gateway process"

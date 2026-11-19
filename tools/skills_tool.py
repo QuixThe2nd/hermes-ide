@@ -112,7 +112,7 @@ def _skill_utils_delegate(attr: str):
 
 
 skill_matches_platform = _skill_utils_delegate("skill_matches_platform")
-# Offer-time relevance gate (kanban/docker/s6), NOT hard compatibility; explicit loads bypass it.
+# Offer-time relevance gate (docker/s6), NOT hard compatibility; explicit loads bypass it.
 skill_matches_environment = _skill_utils_delegate("skill_matches_environment")
 _parse_frontmatter = _skill_utils_delegate("parse_frontmatter")
 _get_disabled_skill_names = _skill_utils_delegate("get_disabled_skill_names")
@@ -191,7 +191,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     now = time.monotonic()
     cached = _SKILLS_CACHE.get(cache_key)
     if cached is not None and cached[0] == signature and (now - cached[1]) < _SKILLS_CACHE_TTL_SECONDS:
-        # Shallow copies: callers mutate the returned dicts (web_server annotates
+        # Shallow copies: callers mutate the returned dicts (callers annotate
         # s["enabled"]/s["usage"]); handing out cached objects would poison the cache.
         return [dict(s) for s in cached[2]]
     skills = []
@@ -381,7 +381,7 @@ def _skill_linked_files(skill_dir: Optional[Path]) -> dict:
     for sub, globs, recursive, files_only in _LINKED_FILE_SPECS if skill_dir else ():
         base = skill_dir / sub
         found = [
-            str(f.relative_to(skill_dir)) for g in globs if base.exists()
+            f.relative_to(skill_dir).as_posix() for g in globs if base.exists()
             for f in (base.rglob(g) if recursive else base.glob(g))
             if not files_only or f.is_file()]
         if found:
@@ -678,6 +678,10 @@ SKILL_VIEW_SCHEMA = {
             "file_path": {
                 "type": "string",
                 "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
+            },
+            "description": {
+                "type": "string",
+                "description": "One short phrase (max ~80 chars) saying WHY this skill is being loaded, e.g. 'check fork ship rules'. Shown to the user as progress: '<emoji> Reading skill to <description>'. Optional.",
             },
         },
         "required": ["name"],

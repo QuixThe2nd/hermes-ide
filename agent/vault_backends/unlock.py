@@ -9,15 +9,17 @@ dropped; nothing is written to disk or env.
 The surface owns the prompt: ``set_unlock_prompt_callback`` is installed by
 the CLI panel / TUI gateway bridge for the current thread, exactly like the
 sudo-password callback. Headless contexts (cron, webhook, api_server,
-single-query) install none and the vault stays locked — the same posture
-approvals take where nobody can answer.
+single-query) install none and the vault stays locked.
 """
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import Callable, Dict, Optional
+
+from utils import is_truthy_value
 
 _IDLE_TTL_S = 30 * 60
 
@@ -27,7 +29,7 @@ _callback_tls = threading.local()
 
 UnlockPrompt = Callable[[str, str], str]  # (backend_name, display_name) -> master password ("" = cancelled)
 # (origin, site label) -> {"identifier": str, "password": str} or None when the user declines. The
-# surface owns the masked fields; the tool stores the answer in the local vault and fills at once.
+# surface owns field presentation and transport disclosure; the tool stores and fills at once.
 SaveLoginPrompt = Callable[[str, str], Optional[Dict[str, str]]]
 
 
@@ -54,7 +56,7 @@ def get_code_prompt_callback() -> Optional[CodePrompt]:
 
 
 def set_save_login_prompt_callback(cb: Optional[SaveLoginPrompt]) -> None:
-    """Register the surface's "save this login" prompt (identifier + masked password), per thread."""
+    """Register the surface-owned save-login prompt in the current thread slot."""
     _callback_tls.save_login = cb
 
 
@@ -159,13 +161,26 @@ def is_unlocked(backend: str) -> bool:
     return _live(backend, touch=False) is not None
 
 
-def can_prompt_here() -> bool:
-    """False in contexts where no human can answer (cron, webhook, api_server, -q)."""
-    from tools.approval_context import (
-        _is_cron_approval_context,
-        _is_single_query_approval_context,
-        _is_unattended_platform_approval_context,
-    )
-    if _is_cron_approval_context() or _is_unattended_platform_approval_context() or _is_single_query_approval_context():
+def _session_env(name: str) -> str:
+    """Read a session marker without leaking another profile's environment."""
+    try:
+        from gateway.session_context import get_session_env
+
+        return get_session_env(name, "") or ""
+    except Exception:
+        return os.getenv(name, "") or ""
+
+
+def can_prompt_here(callback: Optional[Callable] = None) -> bool:
+    """Whether this operation has a callback and the session permits human input.
+
+    ``callback`` defaults to the unlock prompt for compatibility with unlock callers.
+    """
+    unattended = _session_env("HERMES_SESSION_PLATFORM") in {
+        "webhook", "msgraph_webhook", "api_server",
+    }
+    if unattended or is_truthy_value(_session_env("HERMES_CRON_SESSION")):
         return False
-    return get_unlock_prompt_callback() is not None
+    if is_truthy_value(_session_env("HERMES_SINGLE_QUERY_SESSION")):
+        return False
+    return (callback if callback is not None else get_unlock_prompt_callback()) is not None

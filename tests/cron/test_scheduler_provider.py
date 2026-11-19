@@ -7,12 +7,9 @@ refactor — they are the regression harness that proves the built-in firing
 behavior is byte-for-byte preserved when the ticker is moved behind the
 CronScheduler provider interface.
 
-No production code is exercised beyond the two ticker entry points:
-  - gateway/run.py::_start_cron_ticker        (production gateway ticker)
-  - hermes_cli/web_server.py::_start_desktop_cron_ticker  (desktop fallback)
-
-Both call `cron.scheduler.tick(...)` on a loop and exit when their stop_event
-is set. We patch `cron.scheduler.tick` (both tickers import it locally as
+Production code exercised: the gateway ticker entry point
+(gateway/run.py::_start_cron_ticker). It calls `cron.scheduler.tick(...)`
+on a loop and exits when its stop_event is set. We patch `cron.scheduler.tick` (both tickers import it locally as
 `cron_tick`, so the module-attribute patch is observed) and assert the loop
 drives it and stops promptly.
 """
@@ -68,36 +65,6 @@ def test_ticker_calls_tick_at_least_once_then_stops():
     assert len(calls) >= 1, "ticker never called tick()"
     # Contract: the ticker invokes tick with sync=False (fire-and-forget from
     # the background thread, never the synchronous CLI path).
-    assert calls[0].get("sync") is False
-
-
-def test_desktop_ticker_calls_tick_then_stops():
-    """The desktop dashboard ticker loop calls cron.scheduler.tick and exits
-    once the stop_event is set. Desktop has no live adapters, so it ticks with
-    no adapters/loop."""
-    from hermes_cli.web_server import _start_desktop_cron_ticker
-
-    calls = []
-    stop = threading.Event()
-
-    def fake_tick(*args, **kwargs):
-        calls.append(kwargs)
-        return 0
-
-    with patch("cron.scheduler.tick", side_effect=fake_tick):
-        t = threading.Thread(
-            target=_start_desktop_cron_ticker,
-            args=(stop,),
-            kwargs={"interval": 0},
-            daemon=True,
-        )
-        t.start()
-        assert _wait_until(lambda: len(calls) >= 1), "desktop ticker never called tick()"
-        stop.set()
-        t.join(timeout=5)
-
-    assert not t.is_alive(), "desktop ticker did not exit after stop_event was set"
-    assert len(calls) >= 1, "desktop ticker never called tick()"
     assert calls[0].get("sync") is False
 
 
@@ -198,18 +165,6 @@ def test_default_config_cron_provider_is_empty():
     from hermes_cli.config import DEFAULT_CONFIG
 
     assert DEFAULT_CONFIG["cron"]["provider"] == ""
-
-
-def test_discover_cron_schedulers_returns_list():
-    """Discovery returns bundled non-default providers.
-
-    The built-in is core, not discovered here.
-    """
-    from plugins.cron_providers import discover_cron_schedulers
-
-    result = discover_cron_schedulers()
-    assert isinstance(result, list)
-    assert any(name == "chronos" for name, _desc, _available in result)
 
 
 def test_load_unknown_cron_scheduler_returns_none():
@@ -511,6 +466,78 @@ def test_failing_tick_records_liveness_but_not_success():
     assert all(b is False for b in beats), "a failing tick wrongly bumped the success marker"
 
 
+def test_suppressed_dispatch_records_liveness_but_not_success():
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    beats = []
+    loop_beat = threading.Event()
+    stop = threading.Event()
+
+    def heartbeat(success=False):
+        beats.append(success)
+        if len(beats) >= 2:
+            loop_beat.set()
+
+    provider = InProcessCronScheduler()
+    with patch.object(provider, "recover_interrupted", return_value=0), \
+         patch("cron.scheduler.tick") as tick, \
+         patch("cron.jobs.record_ticker_heartbeat", side_effect=heartbeat):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={"interval": 60, "can_dispatch": lambda: False},
+            daemon=True,
+        )
+        thread.start()
+        assert loop_beat.wait(10), "ticker did not record a suppressed-tick heartbeat"
+        stop.set()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    tick.assert_not_called()
+    assert beats[:2] == [False, False]
+
+
+def test_dispatch_withdrawn_during_locked_tick_is_not_success():
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    beats = []
+    inner_admission = []
+    loop_beat = threading.Event()
+    stop = threading.Event()
+    gate_values = iter([True, False])
+
+    def heartbeat(success=False):
+        beats.append(success)
+        if len(beats) >= 2:
+            loop_beat.set()
+
+    def tick(*args, **kwargs):
+        inner_admission.append(kwargs["can_dispatch"]())
+        return 0
+
+    provider = InProcessCronScheduler()
+    with patch.object(provider, "recover_interrupted", return_value=0), \
+         patch("cron.scheduler.tick", side_effect=tick), \
+         patch("cron.jobs.record_ticker_heartbeat", side_effect=heartbeat):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={"interval": 60, "can_dispatch": lambda: next(gate_values)},
+            daemon=True,
+        )
+        thread.start()
+        try:
+            assert loop_beat.wait(10), "ticker did not record a suppressed-tick heartbeat"
+        finally:
+            stop.set()
+            thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert inner_admission == [False]
+    assert beats[:2] == [False, False]
+
+
 def test_heartbeat_roundtrip_and_age(tmp_path, monkeypatch):
     """record_ticker_heartbeat writes fresh timestamps atomically; the age
     getters read them back as small positive ages."""
@@ -643,6 +670,44 @@ def test_multiplex_ticker_ticks_each_profile_once(tmp_path, monkeypatch):
     # With 2 profiles and multiple iterations, we should have seen at least 2 calls.
     assert len(tick_count) >= len(profile_homes), \
         f"Expected >= {len(profile_homes)} tick calls, got {len(tick_count)}"
+
+
+def test_multiplex_suppressed_dispatch_does_not_mark_any_profile_clean(tmp_path):
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    home = tmp_path / "default"
+    (home / "cron").mkdir(parents=True)
+    beats = []
+    loop_beat = threading.Event()
+    stop = threading.Event()
+
+    def heartbeat(success=False):
+        beats.append(success)
+        if len(beats) >= 2:
+            loop_beat.set()
+
+    provider = InProcessCronScheduler()
+    with patch.object(provider, "recover_interrupted", return_value=0), \
+         patch("cron.scheduler.tick") as tick, \
+         patch("cron.jobs.record_ticker_heartbeat", side_effect=heartbeat):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={
+                "interval": 60,
+                "can_dispatch": lambda: False,
+                "profile_homes": [("default", home)],
+            },
+            daemon=True,
+        )
+        thread.start()
+        assert loop_beat.wait(10), "multiplex ticker did not record a suppressed-tick heartbeat"
+        stop.set()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    tick.assert_not_called()
+    assert beats[:2] == [False, False]
 
 
 def test_multiplex_ticker_skips_deleted_profile_from_startup_snapshot(tmp_path):

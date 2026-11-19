@@ -7,10 +7,18 @@ activation subcommand re-checks it immediately before any restart.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
+
+# The real-home SQLite guard resolves ":memory:" against the process cwd.
+# Keep scratch checkouts below ~/.hermes from turning that in-memory DSN into
+# a false real-home path for every test collected in this invocation.
+if Path.cwd().is_relative_to(Path.home() / ".hermes"):
+    os.chdir(Path.home())
 
 from hermes_cli.update_lock import UpdateHolder
 from hermes_state import SessionDB
@@ -148,8 +156,14 @@ def test_behind_substring_without_marker_is_not_available():
 
 
 def test_update_available_marker_is_detected():
-    text = "⚕ Update available: 2 commits behind origin/main."
-    assert _check_output_indicates_update_available(text) is True
+    live_banner = "☤ Update available: 97 commits behind origin/main."
+    plain_banner = "Update available: 97 commits behind origin/main."
+    assert _check_output_indicates_update_available(live_banner) is True
+    assert _check_output_indicates_update_available(plain_banner) is True
+
+
+def test_up_to_date_marker_suppresses_update_detection():
+    assert _check_output_indicates_update_available(UP_TO_DATE_STDOUT) is False
 
 
 # ---------------------------------------------------------------------------

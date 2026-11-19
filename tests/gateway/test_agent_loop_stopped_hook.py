@@ -18,7 +18,7 @@ from hermes_cli.plugins import VALID_HOOKS
 
 def _make_source() -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         user_id="u1",
         chat_id="c1",
         user_name="tester",
@@ -31,14 +31,14 @@ def _make_runner():
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="***")}
     )
     # SimpleNamespace, not MagicMock — _interrupt_and_clear_session calls
     # adapter.interrupt_session_activity() only when hasattr(...) is true,
     # and MagicMock fakes every attribute, which would push us into an
     # await on a non-awaitable.
     adapter = SimpleNamespace(send=AsyncMock())
-    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.adapters = {Platform.DISCORD: adapter}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner._running_agents = {}
     runner._pending_messages = {}
@@ -79,7 +79,7 @@ async def test_interrupt_fires_agent_loop_stopped_hook(mock_invoke_hook):
     mock_invoke_hook.assert_any_call(
         "agent_loop_stopped",
         session_key=session_key,
-        platform="telegram",
+        platform="discord",
         reason="user_stop",
         invalidation_reason="stop_command",
     )

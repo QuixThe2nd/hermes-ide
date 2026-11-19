@@ -55,19 +55,19 @@ _TRANSIENT_REASONS = frozenset({"timeout", "rate_limit", "upstream_rate_limit", 
 # (it knows whether a fallback chain is configured) instead of a fixed sentence.
 _PROVIDER_FAILURE_ACTION: dict[str, str] = {
     "billing": (
-        "Top up or wait for the limit to reset, or pin another provider with "
-        "`hermes cron edit {job_id} --provider <name>`."
+        "Top up or wait for the limit to reset, or switch the fleet provider with "
+        "`cron.model_provider` in config.yaml."
     ),
     "auth": (
-        "Sign in again with /login (or `{relogin}` in a terminal), or pin a "
-        "working provider with `hermes cron edit {job_id} --provider <name>`, then "
+        "Sign in again with /login (or `{relogin}` in a terminal), or switch the fleet provider "
+        "with `cron.model_provider` in config.yaml, then "
         "`hermes cron run {job_id}` to retry."
     ),
-    "model_not_found": "Pick another model with `hermes cron edit {job_id} --model <name>`.",
+    "model_not_found": "Pick another model with `hermes model <name>` or `cron.model` in config.yaml.",
     "upstream_blocked": (
         "A firewall in front of the provider blocked the request (not your key): set a User-Agent "
-        "via `extra_headers` on the provider's custom_providers entry, or pin another provider with "
-        "`hermes cron edit {job_id} --provider <name>`."
+        "via `extra_headers` on the provider's custom_providers entry, or switch the fleet "
+        "provider with `cron.model_provider` in config.yaml."
     ),
     "context_overflow": "Shorten the job's prompt with `hermes cron edit {job_id} --prompt <text>`.",
 }
@@ -76,7 +76,7 @@ _PROVIDER_FAILURE_ACTION["billing_unverified"] = _PROVIDER_FAILURE_ACTION["billi
 _PROVIDER_FAILURE_ACTION["payload_too_large"] = _PROVIDER_FAILURE_ACTION["context_overflow"]
 _PROVIDER_FAILURE_ACTION["content_policy_blocked"] = (
     "Reword the job's prompt with `hermes cron edit {job_id} --prompt <text>`, or pick another "
-    "model with `hermes cron edit {job_id} --model <name>`."
+    "model with `hermes model <name>` or `cron.model` in config.yaml."
 )
 _DEFAULT_FAILURE_ACTION = "Run it again with `hermes cron run {job_id}`, or edit it with `hermes cron edit {job_id}`."
 
@@ -85,7 +85,8 @@ def provider_failure_notice(
     job_name: str, job_id: str, reason: str, *, backup_provider_phrase: str, provider: Any = None,
 ) -> Optional[str]:
     """The notice for a provider-shaped ``reason``, or None when the reason is not one.
-    ``provider`` is the job's pinned slug (if any) so the auth action names its exact sign-in."""
+    ``provider`` is the provider slug the run actually used (if known) so the auth action names its
+    exact sign-in; per-job provider pins no longer exist, so callers pass the fleet-resolved one."""
     cause = _provider_failure_cause(reason)
     if cause is None:
         return None

@@ -53,47 +53,43 @@ def _git_output(project_root: Path, *args: str) -> str:
 def _get_git_commit(project_root: Path) -> str:
     """Short git commit hash, or '(unknown)'.
 
-    Prefers ``version_info.get_version_info()`` which reads the install stamp first
-    (Docker/Nix), then falls back to live ``git rev-parse`` for source installs.
-    Docker images exclude ``.git``, so the final fallback is the build SHA the
-    Dockerfile bakes into ``<project_root>/.hermes_build_sha``.
+    The requested *project_root* is authoritative: when it has no git,
+    the install-stamp fallback is only valid for the RUNNING install
+    (``hermes_cli.version_info`` has no per-root API — it reads
+    HERMES_INSTALL_ROOT / the running code root, never an arbitrary
+    directory). For any other root the provenance is unknown.
     """
-    try:
-        from hermes_cli.version_info import get_version_info
-
-        info = get_version_info()
-        if info.commit:
-            return info.commit[:8]
-    except Exception:
-        pass
     value = _git_output(project_root, "rev-parse", "--short=8", "HEAD")
     if value:
         return value
+    if project_root.resolve() != get_project_root():
+        return "(unknown)"
     try:
-        from hermes_cli.build_info import get_build_sha  # deferred: keeps dump cheap on non-dump paths
-        return get_build_sha(short=8) or "(unknown)"
+        from hermes_cli.version_info import get_code_identity  # deferred: keeps dump cheap on non-dump paths
+        return get_code_identity().get("short_sha") or "(unknown)"
     except Exception:
         return "(unknown)"
 
 
 def _get_git_commit_date(project_root: Path) -> str:
-    """Return the date the HEAD commit was authored (YYYY-MM-DD), or '' (Docker images have no .git).
+    """Return the date the HEAD commit was authored (YYYY-MM-DD), or ''.
 
-    Uses ``version_info.get_version_info()`` which carries the commit date as a Unix
-    timestamp from the install stamp (Docker/Nix) or live git (source installs);
-    falls back to live ``git log`` for source checkouts without an install stamp.
+    Same authority rule as :func:`_get_git_commit`: the stamp fallback
+    describes the running install only.
     """
+    value = _git_output(project_root, "log", "-1", "--format=%cd", "--date=short", "HEAD")
+    if value:
+        return value
+    if project_root.resolve() != get_project_root():
+        return ""
     try:
-        from hermes_cli.version_info import get_version_info
+        from datetime import datetime, timezone
 
-        info = get_version_info()
-        if info.commit_date:
-            from datetime import datetime, timezone
-
-            return datetime.fromtimestamp(info.commit_date, tz=timezone.utc).strftime("%Y-%m-%d")
+        from hermes_cli.version_info import get_version_info  # deferred: keeps dump cheap on non-dump paths
+        commit_date = get_version_info().commit_date
+        return datetime.fromtimestamp(commit_date, tz=timezone.utc).strftime("%Y-%m-%d") if commit_date else ""
     except Exception:
-        pass
-    return _git_output(project_root, "log", "-1", "--format=%cd", "--date=short", "HEAD")
+        return ""
 
 
 def _redact(value: str) -> str:
@@ -137,11 +133,9 @@ def _cron_summary(hermes_home: Path) -> str:
 
 
 _PLATFORM_ENV_VARS = {
-    "telegram": "TELEGRAM_BOT_TOKEN", "discord": "DISCORD_BOT_TOKEN", "slack": "SLACK_BOT_TOKEN",
+    "discord": "DISCORD_BOT_TOKEN", "slack": "SLACK_BOT_TOKEN",
     "whatsapp": "WHATSAPP_ENABLED", "signal": "SIGNAL_HTTP_URL", "email": "EMAIL_ADDRESS",
-    "sms": "TWILIO_ACCOUNT_SID", "matrix": "MATRIX_HOMESERVER_URL", "mattermost": "MATTERMOST_URL",
-    "homeassistant": "HASS_TOKEN", "dingtalk": "DINGTALK_CLIENT_ID", "feishu": "FEISHU_APP_ID",
-    "wecom": "WECOM_BOT_ID", "wecom_callback": "WECOM_CALLBACK_CORP_ID", "weixin": "WEIXIN_ACCOUNT_ID",
+    "sms": "TWILIO_ACCOUNT_SID", "weixin": "WEIXIN_ACCOUNT_ID",
     "qqbot": "QQ_APP_ID",
 }
 
@@ -158,10 +152,10 @@ def _get_model_and_provider(config: dict) -> tuple[str, str]:
 _INTERESTING_PATHS = (
     ("agent", "max_turns"), ("agent", "gateway_timeout"), ("agent", "session_stall_timeout"),
     ("agent", "sanitizer_heal_escalation_threshold"), ("agent", "tool_use_enforcement"),
-    ("agent", "execution_guidance"), ("terminal", "backend"), ("terminal", "docker_image"),
-    ("terminal", "persistent_shell"), ("browser", "allow_private_urls"), ("compression", "enabled"),
+    ("agent", "execution_guidance"), ("terminal", "backend"), ("terminal", "persistent_shell"),
+    ("browser", "allow_private_urls"), ("compression", "enabled"),
     ("compression", "threshold"), ("compression", "in_place"), ("display", "streaming"),
-    ("display", "skin"), ("display", "show_reasoning"), ("privacy", "redact_pii"), ("tts", "provider"),
+    ("display", "skin"), ("display", "show_reasoning"),
 )
 
 
@@ -190,14 +184,14 @@ def _config_overrides(config: dict) -> dict[str, str]:
 _API_KEYS = [
     ("OPENROUTER_API_KEY", "openrouter"), ("OPENAI_API_KEY", "openai"),
     ("ANTHROPIC_API_KEY", "anthropic"), ("ANTHROPIC_TOKEN", "anthropic_token"),
-    ("NOUS_API_KEY", "nous"), ("GOOGLE_API_KEY", "google/gemini"), ("GEMINI_API_KEY", "gemini"),
+    ("GOOGLE_API_KEY", "google/gemini"), ("GEMINI_API_KEY", "gemini"),
     ("GLM_API_KEY", "glm/zai"), ("ZAI_API_KEY", "zai"), ("KIMI_API_KEY", "kimi"),
     ("MINIMAX_API_KEY", "minimax"), ("DEEPSEEK_API_KEY", "deepseek"),
     ("DASHSCOPE_API_KEY", "dashscope"), ("HF_TOKEN", "huggingface"), ("NVIDIA_API_KEY", "nvidia"),
     ("AI_GATEWAY_API_KEY", "ai_gateway"), ("OPENCODE_ZEN_API_KEY", "opencode_zen"),
     ("OPENCODE_GO_API_KEY", "opencode_go"), ("COMMANDCODE_API_KEY", "commandcode"),
     ("KILOCODE_API_KEY", "kilocode"), ("FIRECRAWL_API_KEY", "firecrawl"), ("TAVILY_API_KEY", "tavily"), ("PERPLEXITY_API_KEY", "perplexity"),
-    ("KEENABLE_API_KEY", "keenable"), ("BROWSERBASE_API_KEY", "browserbase"), ("FAL_KEY", "fal"),
+    ("KEENABLE_API_KEY", "keenable"), ("CAMOFOX_API_KEY", "camofox"), ("FAL_KEY", "fal"),
     ("ELEVENLABS_API_KEY", "elevenlabs"), ("GITHUB_TOKEN", "github"),
 ]
 

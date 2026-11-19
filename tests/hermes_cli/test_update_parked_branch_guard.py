@@ -319,9 +319,11 @@ def test_update_switches_unmerged_parked_branch_with_kept_notice(
     class _StopFlow(Exception):
         pass
 
+    # Retired self-lock guard replaced by the first post-pull dependency phase as the
+    # flow-stop sentinel (pm-clean-audit-49945b1402 item 9).
     monkeypatch.setattr(
-        hermes_main,
-        "_abort_dependency_sync_if_self_locked",
+        update_cmd,
+        "_sync_python_dependencies_after_pull",
         lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
     )
     args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
@@ -373,9 +375,11 @@ def test_update_updates_unmerged_branch_in_place_when_configured(
     class _StopFlow(Exception):
         pass
 
+    # Retired self-lock guard replaced by the first post-pull dependency phase as the
+    # flow-stop sentinel (pm-clean-audit-49945b1402 item 9).
     monkeypatch.setattr(
-        hermes_main,
-        "_abort_dependency_sync_if_self_locked",
+        update_cmd,
+        "_sync_python_dependencies_after_pull",
         lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
     )
     args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
@@ -428,9 +432,11 @@ def test_switch_branch_flag_overrides_in_place_strategy(
     class _StopFlow(Exception):
         pass
 
+    # Retired self-lock guard replaced by the first post-pull dependency phase as the
+    # flow-stop sentinel (pm-clean-audit-49945b1402 item 9).
     monkeypatch.setattr(
-        hermes_main,
-        "_abort_dependency_sync_if_self_locked",
+        update_cmd,
+        "_sync_python_dependencies_after_pull",
         lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
     )
     args = SimpleNamespace(
@@ -478,9 +484,11 @@ def test_unmerged_branch_still_updates_in_place_without_the_flag(
     class _StopFlow(Exception):
         pass
 
+    # Retired self-lock guard replaced by the first post-pull dependency phase as the
+    # flow-stop sentinel (pm-clean-audit-49945b1402 item 9).
     monkeypatch.setattr(
-        hermes_main,
-        "_abort_dependency_sync_if_self_locked",
+        update_cmd,
+        "_sync_python_dependencies_after_pull",
         lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
     )
     args = SimpleNamespace(
@@ -508,13 +516,15 @@ def test_update_auto_switches_clean_merged_parked_branch(
     guard re-parks the checkout and this test fails on the branch assert)."""
     _patch_update_flow(monkeypatch, repo_pair)
     # Stop the flow right after the pull/branch logic: the dependency
-    # install phase begins with _abort_dependency_sync_if_self_locked.
+    # install phase begins with _sync_python_dependencies_after_pull.
     class _StopFlow(Exception):
         pass
 
+    # Retired self-lock guard replaced by the first post-pull dependency phase as the
+    # flow-stop sentinel (pm-clean-audit-49945b1402 item 9).
     monkeypatch.setattr(
-        hermes_main,
-        "_abort_dependency_sync_if_self_locked",
+        update_cmd,
+        "_sync_python_dependencies_after_pull",
         lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
     )
     args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
@@ -595,9 +605,11 @@ def test_update_on_main_fast_path_unchanged(repo_pair, monkeypatch, capsys):
     class _StopFlow(Exception):
         pass
 
+    # Retired self-lock guard replaced by the first post-pull dependency phase as the
+    # flow-stop sentinel (pm-clean-audit-49945b1402 item 9).
     monkeypatch.setattr(
-        hermes_main,
-        "_abort_dependency_sync_if_self_locked",
+        update_cmd,
+        "_sync_python_dependencies_after_pull",
         lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
     )
     args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)

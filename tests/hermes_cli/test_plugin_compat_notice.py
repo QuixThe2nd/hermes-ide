@@ -17,15 +17,14 @@ from hermes_cli import plugin_compat as pc
 ROOT = Path(__file__).resolve().parent.parent.parent
 pytestmark = pytest.mark.skipif(not (ROOT / "compat_manifest.json").exists(), reason="compat layer removed")
 
-MANIFEST = {"tools.web_tools": {"prefers_gateway": "tools.tool_backend_helpers.prefers_gateway"},
-            "hermes_cli.kanban_db": {"connect": "hermes_cli.kanban_db_connect.connect"}}
+MANIFEST = {"tools.web_tools": {"prefers_gateway": "tools.tool_backend_helpers.prefers_gateway"}}
 
 
 @pytest.mark.parametrize("src, expect", [
     ("from tools.web_tools import prefers_gateway\n", ["tools.web_tools.prefers_gateway"]),
     ("import tools.web_tools\nx = tools.web_tools.prefers_gateway()\n", ["tools.web_tools.prefers_gateway"]),
     ("import tools.web_tools as wt\nwt.prefers_gateway()\n", ["tools.web_tools.prefers_gateway"]),
-    ("from unittest.mock import patch\npatch('hermes_cli.kanban_db.connect')\n", ["hermes_cli.kanban_db.connect"]),
+    ("from unittest.mock import patch\npatch('tools.web_tools.prefers_gateway')\n", ["tools.web_tools.prefers_gateway"]),
     ("from tools.web_tools import web_search\n", []),                       # live name: not a hit
     ("from tools.tool_backend_helpers import prefers_gateway\n", []),      # already migrated
 ])
@@ -38,7 +37,7 @@ def test_scan_source_finds_every_import_form(src, expect):
 
 def test_scan_plugin_walks_dir_and_skips_tests(tmp_path):
     (tmp_path / "__init__.py").write_text("from tools.web_tools import prefers_gateway\n")
-    (tmp_path / "sub").mkdir(); (tmp_path / "sub" / "m.py").write_text("import hermes_cli.kanban_db as k\nk.connect()\n")
+    (tmp_path / "sub").mkdir(); (tmp_path / "sub" / "m.py").write_text("import tools.web_tools as wt\nwt.prefers_gateway()\n")
     (tmp_path / "tests").mkdir(); (tmp_path / "tests" / "t.py").write_text("from tools.web_tools import prefers_gateway\n")
     hits = pc.scan_plugin(tmp_path, MANIFEST)
     assert sorted(h.file for h in hits) == ["__init__.py", "sub/m.py"]

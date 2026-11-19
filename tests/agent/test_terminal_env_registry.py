@@ -106,7 +106,6 @@ def test_provider_flag_reads_attributes():
     assert reg.provider_flag("testbox", "is_container") is True
     assert reg.provider_flag("testbox", "session_isolated_when_nonpersistent") is True
     assert reg.provider_flag("testbox", "cache_path_base", None) == "~/.hermes"
-    assert reg.provider_flag("testbox", "skip_container_guards") is True
 
 
 def test_provider_flag_unknown_backend_returns_default():
@@ -177,7 +176,6 @@ def test_restore_registration_restores_previous():
 
 def test_abc_defaults():
     p = _Provider()
-    assert p.skip_container_guards is True  # defaults to is_container
     assert "TestBox" in p.env_description
     assert p.probe() == ("ready", "")
     assert p.setup_instructions() == []

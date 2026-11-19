@@ -16,20 +16,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional, Sequence, Tuple
 
-# The voice-channel ordering policy is owned by fallback_quota_reorder; this
-# module reuses its score math, thresholds, and reliability ledger instead of
-# copying divergent formulas. The import is acyclic — fallback_quota_reorder
-# only touches quota_channels lazily inside its precise-state loaders.
-from plugins.fallback_quota_reorder.core import (
-    CHANNEL_KEY_TO_PROVIDER as _FALLBACK_CHANNEL_KEY_TO_PROVIDER,
+from plugins.quota_channels.reliability import (
+    ReliabilityRates,
+    rates_for_providers,
+)
+from plugins.quota_channels.scoring import (
+    CHANNEL_KEY_TO_PROVIDER as _CHANNEL_KEY_TO_PROVIDER,
     QuotaReading,
     is_low_quota,
     sanitize_reset_expiry_horizons,
     score_provider,
-)
-from plugins.fallback_quota_reorder.reliability import (
-    ReliabilityRates,
-    rates_for_providers,
 )
 
 HttpFn = Callable[[urllib.request.Request, float], Tuple[int, bytes]]
@@ -40,7 +36,6 @@ PROVIDER_SPECS: Tuple[Tuple[str, str], ...] = (
     ("codex", "Codex"),
     ("kimi", "Kimi"),
     ("zai", "z.ai"),
-    ("cursor", "Cursor"),
     ("grok", "Grok"),
 )
 
@@ -59,9 +54,6 @@ ZAI_USAGE_URL = "https://api.z.ai/api/monitor/usage/quota/limit"
 ZAI_RESET_LIST_URL = (
     "https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL"
 )
-CURSOR_USAGE_URL = (
-    "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage"
-)
 GROK_USAGE_URL = (
     "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig"
 )
@@ -74,9 +66,6 @@ CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 
 CODEX_PROFILE_URL = "https://chatgpt.com/backend-api/wham/profiles/me"
 ZAI_MODEL_USAGE_URL = "https://api.z.ai/api/monitor/usage/model-usage"
-CURSOR_AGG_USAGE_URL = (
-    "https://api2.cursor.sh/aiserver.v1.DashboardService/GetAggregatedUsageEvents"
-)
 
 TOKEN_WINDOW_DAYS = 7
 
@@ -91,9 +80,9 @@ STATE_FILENAME = "quota_channels_state.json"
 CATEGORY_PREFIX = "Models"
 
 # Quota key -> routing provider slug, used to load per-provider reliability
-# from the fallback ledger. Mirrors fallback_quota_reorder's channel map.
+# from the ledger shared with existing installations.
 QUOTA_KEY_TO_PROVIDER: Dict[str, str] = {
-    **_FALLBACK_CHANNEL_KEY_TO_PROVIDER,
+    **_CHANNEL_KEY_TO_PROVIDER,
 }
 
 # Display ranks are `bucket * stride - score`; the stride must exceed any
@@ -121,7 +110,7 @@ def state_path() -> Path:
 
 def _read_env_key(path: Path, key: str) -> str:
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
             line = line.strip()
             if line.startswith(f"{key}="):
                 return line.split("=", 1)[1].strip().strip('"').strip("'")
@@ -142,21 +131,11 @@ def zai_api_key() -> str:
     return _read_env_key(_hermes_home() / "secrets" / "zai.env", "ZAI_API_KEY")
 
 
-def cursor_access_token() -> str:
-    cursor_auth = Path.home() / ".config" / "cursor" / "auth.json"
-    try:
-        token = json.loads(cursor_auth.read_text(encoding="utf-8")).get("accessToken")
-    except (OSError, json.JSONDecodeError) as exc:
-        raise QuotaChannelsError(f"cannot read {cursor_auth}: {exc}") from exc
-    if not token:
-        raise QuotaChannelsError(f"no accessToken in {cursor_auth}")
-    return token
-
 
 def load_store() -> dict:
     auth_path = _hermes_home() / "auth.json"
     try:
-        return json.loads(auth_path.read_text(encoding="utf-8"))
+        return json.loads(auth_path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         raise QuotaChannelsError(f"cannot read {auth_path}: {exc}") from exc
 
@@ -177,7 +156,7 @@ def save_store(store: dict) -> None:
 def load_state() -> dict:
     path = state_path()
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -353,7 +332,7 @@ class ResetCredits(NamedTuple):
     count: int
     expiry_secs: Optional[float] = None
     # each counted credit's own future expiry horizon, earliest first. This is
-    # the per-credit state the fallback score spends on — one full wallet per
+    # the per-credit state the spendability score uses — one full wallet per
     # horizon, never the earliest clock times the count. ``expiry_secs`` stays
     # the single display clock (the earliest horizon) and empty means no
     # per-credit detail exists, so the legacy count + one-clock shape applies.
@@ -744,50 +723,6 @@ def format_zai_name(
     return name
 
 
-def parse_cursor_usage(
-    text: str, now_fn: NowFn = time.time
-) -> Tuple[int, int, float]:
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise QuotaChannelsError("cursor: invalid usage payload JSON") from exc
-    if not isinstance(payload, dict):
-        raise QuotaChannelsError("cursor: invalid usage payload JSON")
-    plan = payload.get("planUsage")
-    if not plan:
-        raise QuotaChannelsError(f"no planUsage in cursor payload: {text[:200]}")
-    if not isinstance(plan, dict):
-        raise QuotaChannelsError("cursor: invalid planUsage in usage payload")
-    try:
-        cursor_models = max(0, 100 - math.floor(float(plan.get("autoPercentUsed") or 0)))
-        other_models = max(0, 100 - math.floor(float(plan.get("apiPercentUsed") or 0)))
-        end_ms = float(payload.get("billingCycleEnd") or 0)
-    except (TypeError, ValueError) as exc:
-        raise QuotaChannelsError("cursor: invalid planUsage fields in usage payload") from exc
-    reset_secs = max(0.0, end_ms / 1000 - now_fn())
-    return cursor_models, other_models, reset_secs
-
-
-def format_cursor_name(
-    auto_remaining: int,
-    api_remaining: int,
-    reset_secs: float,
-    *,
-    tokens_7d: Optional[int] = None,
-    preserved_token_segment: Optional[str] = None,
-) -> str:
-    reset_part = format_reset_left(reset_secs)
-    if tokens_7d is not None:
-        mid = f"{format_compact_tokens(tokens_7d)} tok/7d"
-    elif preserved_token_segment:
-        mid = preserved_token_segment
-    else:
-        return f"Cursor: {auto_remaining}%/{api_remaining}% \u2022 {reset_part}"
-    return (
-        f"Cursor: {auto_remaining}%/{api_remaining}% \u2022 {mid} \u2022 {reset_part}"
-    )
-
-
 def pb_varint(buf: bytes, i: int) -> Tuple[int, int]:
     val = shift = 0
     nbytes = 0
@@ -1093,7 +1028,7 @@ def load_quota_config(
         import yaml
 
         try:
-            raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+            raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8-sig")) or {}
         except OSError as exc:
             raise QuotaChannelsError(f"cannot read {config_path}: {exc}") from exc
         except Exception as exc:
@@ -1352,24 +1287,6 @@ def zai_reset_cards(
         return None, redact_secrets(_error_text(exc), (api_key,))
 
 
-def fetch_cursor_usage(
-    access: str,
-    http_fn: HttpFn = default_http,
-) -> Tuple[int, str]:
-    req = urllib.request.Request(
-        CURSOR_USAGE_URL,
-        data=b"{}",
-        headers={
-            "Authorization": f"Bearer {access}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": "hermes-quota-channel",
-        },
-        method="POST",
-    )
-    return http_text(req, http_fn=http_fn)
-
-
 def _grok_grpc_request(url: str, access: str) -> urllib.request.Request:
     # both billing service methods take an empty protobuf request frame
     return urllib.request.Request(
@@ -1502,35 +1419,6 @@ def run_zai_provider(
     return format_zai_name(remaining, reset_secs, resets=resets), reset_secs, "z.ai"
 
 
-def _cursor_quota_metrics(
-    http_fn: HttpFn = default_http,
-    now_fn: NowFn = time.time,
-) -> Tuple[int, int, float]:
-    status, text = fetch_cursor_usage(cursor_access_token(), http_fn=http_fn)
-    if status == 401:
-        raise QuotaChannelsError(
-            "cursor usage endpoint returned 401: re-run `agent login` to refresh Cursor CLI auth"
-        )
-    if status != 200:
-        raise QuotaChannelsError(
-            f"cursor usage endpoint returned {status}: {text[:200]}"
-        )
-    return parse_cursor_usage(text, now_fn=now_fn)
-
-
-def run_cursor_provider(
-    http_fn: HttpFn = default_http,
-    now_fn: NowFn = time.time,
-) -> Tuple[str, float, str]:
-    auto_remaining, api_remaining, reset_secs = _cursor_quota_metrics(
-        http_fn=http_fn, now_fn=now_fn
-    )
-    return (
-        format_cursor_name(auto_remaining, api_remaining, reset_secs),
-        reset_secs,
-        "Cursor",
-    )
-
 
 def _xai_access_token(store: dict) -> str:
     toks = store.get("providers", {}).get("xai-oauth", {}).get("tokens", {})
@@ -1611,7 +1499,6 @@ PROVIDER_RUNNERS = {
     "codex": run_codex_provider,
     "kimi": run_kimi_provider,
     "zai": run_zai_provider,
-    "cursor": run_cursor_provider,
     "grok": run_grok_provider,
 }
 
@@ -1622,7 +1509,6 @@ QUOTA_METRICS = {
     "codex": _codex_quota_metrics,
     "kimi": _kimi_quota_metrics,
     "zai": _zai_quota_metrics,
-    "cursor": _cursor_quota_metrics,
     "grok": _grok_quota_metrics,
 }
 
@@ -1651,15 +1537,6 @@ def _format_channel_name(
             tokens_7d=tokens_7d,
             preserved_token_segment=preserved_token_segment,
             resets=resets,
-        )
-    if key == "cursor":
-        auto_remaining, api_remaining = metrics
-        return format_cursor_name(
-            auto_remaining,
-            api_remaining,
-            reset_secs,
-            tokens_7d=tokens_7d,
-            preserved_token_segment=preserved_token_segment,
         )
     if key == "kimi":
         return format_kimi_name(metrics, reset_secs)
@@ -1786,56 +1663,6 @@ def parse_zai_model_usage(text: str) -> int:
         ) from exc
 
 
-def cursor_agg_usage_body(now_ms: int) -> Dict[str, str]:
-    # Cursor requires epoch milliseconds as STRINGS; second-precision values
-    # return an empty payload.
-    start_ms = now_ms - TOKEN_WINDOW_DAYS * 86_400_000
-    return {"startDate": str(start_ms), "endDate": str(now_ms)}
-
-
-def fetch_cursor_aggregated_usage(
-    access: str,
-    http_fn: HttpFn = default_http,
-    now_fn: NowFn = time.time,
-) -> Tuple[int, str]:
-    req = urllib.request.Request(
-        CURSOR_AGG_USAGE_URL,
-        data=json.dumps(cursor_agg_usage_body(int(now_fn() * 1000))).encode(),
-        headers={
-            "Authorization": f"Bearer {access}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": "hermes-quota-channel",
-        },
-        method="POST",
-    )
-    return http_text(req, http_fn=http_fn)
-
-
-def parse_cursor_aggregated_usage(text: str) -> int:
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise QuotaChannelsError(
-            "cursor: invalid aggregated usage payload JSON"
-        ) from exc
-    if not isinstance(payload, dict):
-        raise QuotaChannelsError("cursor: invalid aggregated usage payload JSON")
-    input_tokens = payload.get("totalInputTokens")
-    output_tokens = payload.get("totalOutputTokens")
-    if input_tokens is None or output_tokens is None:
-        raise QuotaChannelsError(
-            f"cursor: no token totals in aggregated usage payload: {text[:200]}"
-        )
-    # cache read/write tokens are deliberately excluded from the total
-    try:
-        return int(input_tokens) + int(output_tokens)
-    except (TypeError, ValueError) as exc:
-        raise QuotaChannelsError(
-            "cursor: invalid token totals in aggregated usage payload"
-        ) from exc
-
-
 def fetch_codex_tokens_7d(
     http_fn: HttpFn = default_http,
     now_fn: NowFn = time.time,
@@ -1878,33 +1705,11 @@ def fetch_zai_tokens_7d(
         raise QuotaChannelsError(redact_secrets(_error_text(exc), (key,))) from exc
 
 
-def fetch_cursor_tokens_7d(
-    http_fn: HttpFn = default_http,
-    now_fn: NowFn = time.time,
-) -> int:
-    access = cursor_access_token()
-    try:
-        status, text = fetch_cursor_aggregated_usage(
-            access, http_fn=http_fn, now_fn=now_fn
-        )
-        if status == 401:
-            raise QuotaChannelsError(
-                "cursor aggregated-usage endpoint returned 401: re-run `agent login` "
-                "to refresh Cursor CLI auth"
-            )
-        if status != 200:
-            raise QuotaChannelsError(
-                f"cursor aggregated-usage endpoint returned {status}: {text[:200]}"
-            )
-        return parse_cursor_aggregated_usage(text)
-    except Exception as exc:
-        raise QuotaChannelsError(redact_secrets(_error_text(exc), (access,))) from exc
 
 
 TOKEN_FETCHERS = {
     "codex": fetch_codex_tokens_7d,
     "zai": fetch_zai_tokens_7d,
-    "cursor": fetch_cursor_tokens_7d,
 }
 
 
@@ -1914,8 +1719,8 @@ def quota_display_ranks(
 ) -> Dict[str, float]:
     """Display rank per quota key: ascending rank = display order (best first).
 
-    Exactly the fallback_quota_reorder ordering policy, expressed as a single
-    ascending sort key for plan_position_moves: healthy entries by descending
+    The quota_channels ordering policy, expressed as a single ascending sort
+    key for plan_position_moves: healthy entries by descending
     score_provider() (quota_frac * 168/hours_remaining, plus one full wallet
     per pending usage-limit reset on its own expiry clock, all times the
     uptime factors from the shared reliability ledger), entries the shared
@@ -2059,10 +1864,7 @@ def run_provider_quota(
     raw = QUOTA_METRICS[key](http_fn=http_fn, now_fn=now_fn)
     resets: Optional[ResetCredits] = None
     reset_error: Optional[str] = None
-    if key == "cursor":
-        auto_remaining, api_remaining, reset_secs = raw
-        fmt_metrics: Any = (auto_remaining, api_remaining)
-    elif key in ("codex", "zai"):
+    if key in ("codex", "zai"):
         # Live `_codex_quota_metrics`/`_zai_quota_metrics` return (remaining,
         # reset_secs, ResetCredits, reset_error). Existing tests (and any
         # stub) still return the 3-tuple without the error or the 2-tuple
@@ -2464,18 +2266,10 @@ def run_tick(
 
 
 def _remaining_from_name(channel_name: str, label: str) -> Any:
-    if label == "Cursor":
-        body = channel_name.split(":", 1)[1].strip()
-        pct_part = body.split("\u2022", 1)[0].strip()
-        auto, api = pct_part.split("/", 1)
-        return {"auto": int(auto.rstrip("%")), "api": int(api.rstrip("%"))}
     body = channel_name.split(":", 1)[1].strip()
     pct = body.split("\u2022", 1)[0].strip().rstrip("%")
     return int(pct)
 
 
 def _reading_pct(remaining: Any) -> int:
-    # cursor carries auto/api remaining; precise state scores the weaker one
-    if isinstance(remaining, Mapping):
-        return min(int(remaining["auto"]), int(remaining["api"]))
     return int(remaining)

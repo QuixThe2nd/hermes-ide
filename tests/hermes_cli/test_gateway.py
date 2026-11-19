@@ -128,7 +128,7 @@ def _run_native_windows_gateway_start_diag(
     return json.loads(line.removeprefix("DIAG_JSON="))
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 @pytest.mark.parametrize(
     ("marker", "expected_breakaway"),
     [("1", True), ("0", False), (None, None)],

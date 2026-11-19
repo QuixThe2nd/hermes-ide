@@ -1,11 +1,9 @@
-"""Stale-while-revalidate behavior for the model-id disk cache and the
-remote model-catalog manifest.
+"""Stale-while-revalidate behavior for the model-id disk cache.
 
 Regression tests for the /model picker stall: when the 1h provider-models
-cache TTL (or the catalog manifest TTL) lapsed mid-session, the picker
-blocked on 8-9 serial /v1/models round-trips (~2-3s) before rendering.
-With SWR, an expired-but-credential-matching entry is served immediately
-and refreshed off-thread for the next open.
+cache TTL lapsed mid-session, the picker blocked on 8-9 serial /v1/models
+round-trips (~2-3s) before rendering. With SWR, an expired-but-credential-
+matching entry is served immediately and refreshed off-thread for the next open.
 """
 
 from __future__ import annotations
@@ -148,41 +146,6 @@ class TestProviderModelsSWR:
         assert "openrouter" not in mod._swr_refresh_inflight  # cleared on completion
 
 
-class TestCatalogSWR:
-    def test_stale_disk_catalog_served_with_background_refresh(self, tmp_path, monkeypatch):
-        import hermes_cli.model_catalog as mc
-
-        manifest = {"version": 1, "providers": {"nous": {"models": [{"id": "hermes-4"}]}}}
-        monkeypatch.setattr(mc, "_catalog_cache", None)
-        monkeypatch.setattr(mc, "_catalog_cache_source_mtime", 0.0)
-        with patch.object(mc, "_load_catalog_config", return_value={
-                 "enabled": True, "ttl_hours": 1.0, "url": "https://example/cat.json",
-                 "providers": {}}), \
-             patch.object(mc, "_read_disk_cache", return_value=(manifest, time.time() - 7200)), \
-             patch.object(mc, "_spawn_catalog_swr_refresh") as spawn, \
-             patch.object(mc, "_fetch_manifest_with_fallback") as fetch:
-            out = mc.get_catalog()
-        assert out == manifest  # stale copy served without blocking
-        spawn.assert_called_once()
-        fetch.assert_not_called()
-
-    def test_cold_cache_still_blocks_on_fetch(self, monkeypatch):
-        import hermes_cli.model_catalog as mc
-
-        manifest = {"version": 1, "providers": {}}
-        monkeypatch.setattr(mc, "_catalog_cache", None)
-        monkeypatch.setattr(mc, "_catalog_cache_source_mtime", 0.0)
-        with patch.object(mc, "_load_catalog_config", return_value={
-                 "enabled": True, "ttl_hours": 1.0, "url": "https://example/cat.json",
-                 "providers": {}}), \
-             patch.object(mc, "_read_disk_cache", return_value=(None, 0.0)), \
-             patch.object(mc, "_spawn_catalog_swr_refresh") as spawn, \
-             patch.object(mc, "_write_disk_cache"), \
-             patch.object(mc, "_fetch_manifest_with_fallback", return_value=manifest) as fetch:
-            out = mc.get_catalog()
-        assert out == manifest
-        fetch.assert_called_once()
-        spawn.assert_not_called()
 
 
 class TestCorruptCacheRowDegradation:

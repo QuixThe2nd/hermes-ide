@@ -81,7 +81,7 @@ class TestDetectToolFailureTerminal:
 
     def test_multimodal_envelope_dict_is_still_a_success(self):
         envelope = {"_multimodal": True, "content": [{"type": "text", "text": "screenshot taken"}]}
-        assert _detect_tool_failure("browser_exec", envelope) == (False, "")
+        assert _detect_tool_failure("browser_vision", envelope) == (False, "")
 
     def test_degraded_backend_without_hint_shows_reason_alone(self):
         result = json.dumps({"output": "", "exit_code": -1, "status": "degraded",

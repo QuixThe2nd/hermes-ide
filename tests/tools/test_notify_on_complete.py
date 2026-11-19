@@ -358,9 +358,9 @@ def test_background_without_notify_emits_silent_process_hint(monkeypatch, tmp_pa
 def test_background_without_notify_in_headless_session_does_not_recommend_notify(
     monkeypatch, tmp_path,
 ):
-    """Kanban/cron/one-shot sessions cannot deliver notify_on_complete.
+    """One-shot and stateless sessions cannot deliver notify_on_complete.
     Recommending that flag is a false recovery path (pc_9eaef6f2ffd8)."""
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t-headless-notify")
+    monkeypatch.setattr("gateway.session_context.async_delivery_supported", lambda: False)
     tt = _silent_bg_harness(monkeypatch, tmp_path)
     try:
         result = json.loads(

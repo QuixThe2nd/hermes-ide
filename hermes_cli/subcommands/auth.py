@@ -21,8 +21,6 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
         help="Place the new credential at this priority (0 = tried first under fill_first); "
              "appends last when omitted")
     auth_add.add_argument("--api-key", help="API key value (otherwise prompted securely)")
-    auth_add.add_argument("--portal-url", help="Nous portal base URL")
-    auth_add.add_argument("--inference-url", help="Nous inference base URL")
     auth_add.add_argument("--client-id", help="OAuth client id")
     auth_add.add_argument("--scope", help="OAuth scope override")
     auth_add.add_argument(
@@ -59,23 +57,4 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
     auth_logout = auth_subparsers.add_parser(
         "logout", help="Log out a provider and clear stored auth state")
     auth_logout.add_argument("provider", help="Provider id")
-    auth_upgrade = auth_subparsers.add_parser(
-        "upgrade", help="Sign in with a Nous account, keeping your connectors")
-    auth_upgrade.add_argument(
-        "--no-browser", action="store_true", help="Do not auto-open a browser for sign-in")
-    auth_upgrade.add_argument("--timeout", type=float, help="Network timeout in seconds")
-    auth_spotify = auth_subparsers.add_parser(
-        "spotify", help="Authenticate Hermes with Spotify via PKCE")
-    auth_spotify.add_argument(
-        "spotify_action", nargs="?", choices=["login", "status", "logout"], default="login")
-    auth_spotify.add_argument(
-        "--client-id", help="Spotify app client_id (or set HERMES_SPOTIFY_CLIENT_ID)")
-    auth_spotify.add_argument(
-        "--redirect-uri", help="Allow-listed localhost redirect URI for your Spotify app")
-    auth_spotify.add_argument("--scope", help="Override requested Spotify scopes")
-    auth_spotify.add_argument(
-        "--no-browser", action="store_true",
-        help="Do not attempt to open the browser automatically")
-    auth_spotify.add_argument(
-        "--timeout", type=float, help="Callback/token exchange timeout in seconds")
     auth_parser.set_defaults(func=cmd_auth)

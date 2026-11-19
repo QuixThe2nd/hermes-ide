@@ -58,21 +58,21 @@ def test_per_turn_sessions_bridge_skips_secondary_scope(two_homes, monkeypatch):
 def test_resolve_proxy_url_reads_routed_profile_scope(two_homes, monkeypatch):
     root, alpha = two_homes
     from gateway.platforms.base import resolve_proxy_url
-    monkeypatch.setenv("TELEGRAM_PROXY", "socks5://default-proxy:1080")  # launch profile's .env
+    monkeypatch.setenv("DISCORD_PROXY", "socks5://default-proxy:1080")  # launch profile's .env
     ss.set_multiplex_active(True)
-    token = ss.set_secret_scope({"TELEGRAM_PROXY": "socks5://alpha-proxy:1080"})
+    token = ss.set_secret_scope({"DISCORD_PROXY": "socks5://alpha-proxy:1080"})
     try:
-        assert resolve_proxy_url("TELEGRAM_PROXY") == "socks5://alpha-proxy:1080"
+        assert resolve_proxy_url("DISCORD_PROXY") == "socks5://alpha-proxy:1080"
     finally:
         ss.reset_secret_scope(token)
     token = ss.set_secret_scope({})  # a served profile with NO proxy must not borrow the default's
     try:
         monkeypatch.delenv("HTTPS_PROXY", raising=False)
-        assert resolve_proxy_url("TELEGRAM_PROXY") is None
+        assert resolve_proxy_url("DISCORD_PROXY") is None
     finally:
         ss.reset_secret_scope(token)
     ss.set_multiplex_active(False)
-    assert resolve_proxy_url("TELEGRAM_PROXY") == "socks5://default-proxy:1080"  # standalone: env
+    assert resolve_proxy_url("DISCORD_PROXY") == "socks5://default-proxy:1080"  # standalone: env
 
 
 def test_stale_served_turn_never_recreates_archived_profile(two_homes):

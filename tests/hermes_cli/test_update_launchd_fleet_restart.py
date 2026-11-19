@@ -27,6 +27,7 @@ import pytest
 
 import hermes_cli.gateway as gw
 import hermes_cli.profiles
+import hermes_cli.update_cmd_fleet as fleet
 from hermes_cli.gateway import (
     _locate_launchd_gateway_service,
     _parse_launchd_pid_from_print_output,
@@ -290,9 +291,12 @@ def _fleet(monkeypatch, tmp_path, *, current, labels, located,
     monkeypatch.setattr(gw, "_locate_launchd_gateway_service", fake_locate)
     monkeypatch.setattr(gw, "_launchd_service_registered", fake_registered)
     monkeypatch.setattr(
-        gw,
-        "_graceful_restart_via_sigusr1",
-        lambda pid, drain_timeout, **_: (rec.drains.append(pid), (drain_results or {}).get(pid, False))[1],
+        fleet,
+        "_drain_or_signal_gateway_for_update",
+        lambda pid, budget, label: (
+            rec.drains.append(pid),
+            (drain_results or {pid: True}).get(pid, False),
+        )[1],
     )
 
     def fake_kickstart(label, domain):
@@ -327,12 +331,10 @@ def _fleet(monkeypatch, tmp_path, *, current, labels, located,
 
 
 class TestRestartMacosLaunchdGateways:
-    def test_current_delegates_and_siblings_kickstart_in_own_domains(
+    def test_current_delegates_and_siblings_use_gateway_owned_handoffs(
         self, monkeypatch, tmp_path
     ):
-        """Current profile keeps launchd_restart(); every sibling (including
-        the root gateway when a named profile invokes the update) is
-        kickstarted — and verified — in the domain IT was located in."""
+        """Every live sibling uses the unified handoff in its own profile; no second kickstart."""
         current = "ai.hermes.gateway-merit-ops"
         rec = _fleet(
             monkeypatch,
@@ -351,14 +353,8 @@ class TestRestartMacosLaunchdGateways:
         _restart_macos_launchd_gateways(restarted, failed, drain_budget=0.0)
 
         assert rec.current_restarts == [current]
-        assert rec.kickstarts == [
-            f"gui/{UID}/ai.hermes.gateway",
-            f"user/{UID}/ai.hermes.gateway-user-scoped",
-        ]
-        assert rec.waits == [
-            f"gui/{UID}/ai.hermes.gateway",
-            f"user/{UID}/ai.hermes.gateway-user-scoped",
-        ]
+        assert rec.kickstarts == []
+        assert rec.waits == []
         assert restarted == [
             current,
             "ai.hermes.gateway",
@@ -472,8 +468,7 @@ class TestRestartMacosLaunchdGateways:
     def test_graceful_drain_with_keepalive_respawn_skips_kickstart(
         self, monkeypatch, tmp_path
     ):
-        """When SIGUSR1 rec.drains the sibling and KeepAlive already respawned it
-        on a fresh PID, a second hard kickstart would kill the new process."""
+        """An acknowledged successor is authoritative; a second kickstart would kill it."""
         rec = _fleet(
             monkeypatch,
             tmp_path,
@@ -492,7 +487,7 @@ class TestRestartMacosLaunchdGateways:
 
         assert rec.drains == [200]
         assert rec.kickstarts == []
-        assert rec.waits == [f"gui/{UID}/ai.hermes.gateway-a"]
+        assert rec.waits == []
         assert restarted == ["ai.hermes.gateway", "ai.hermes.gateway-a"]
         assert failed == []
 
@@ -510,8 +505,8 @@ class TestRestartMacosLaunchdGateways:
             ],
             located={
                 "ai.hermes.gateway": (f"gui/{UID}", 100),
-                "ai.hermes.gateway-bad": (f"gui/{UID}", 200),
-                "ai.hermes.gateway-good": (f"gui/{UID}", 300),
+                "ai.hermes.gateway-bad": (f"gui/{UID}", None),
+                "ai.hermes.gateway-good": (f"gui/{UID}", None),
             },
             kick_errors={
                 "ai.hermes.gateway-bad": subprocess.CalledProcessError(
@@ -557,7 +552,7 @@ class TestRestartMacosLaunchdGateways:
         _restart_macos_launchd_gateways(restarted, failed, drain_budget=0.0)
 
         assert failed == ["ai.hermes.gateway-wedged"]
-        assert rec.kickstarts == [f"gui/{UID}/ai.hermes.gateway-after"]
+        assert rec.kickstarts == []
         assert restarted == ["ai.hermes.gateway", "ai.hermes.gateway-after"]
 
     def test_timeout_during_kickstart_is_failed_and_rest_continue(
@@ -574,8 +569,8 @@ class TestRestartMacosLaunchdGateways:
             ],
             located={
                 "ai.hermes.gateway": (f"gui/{UID}", 100),
-                "ai.hermes.gateway-wedged": (f"gui/{UID}", 200),
-                "ai.hermes.gateway-after": (f"gui/{UID}", 300),
+                "ai.hermes.gateway-wedged": (f"gui/{UID}", None),
+                "ai.hermes.gateway-after": (f"gui/{UID}", None),
             },
             kick_errors={
                 "ai.hermes.gateway-wedged": subprocess.TimeoutExpired(
@@ -600,7 +595,7 @@ class TestRestartMacosLaunchdGateways:
             labels=["ai.hermes.gateway", "ai.hermes.gateway-zombie"],
             located={
                 "ai.hermes.gateway": (f"gui/{UID}", 100),
-                "ai.hermes.gateway-zombie": (f"gui/{UID}", 200),
+                "ai.hermes.gateway-zombie": (f"gui/{UID}", None),
             },
             wait_results={"ai.hermes.gateway-zombie": False},
         )

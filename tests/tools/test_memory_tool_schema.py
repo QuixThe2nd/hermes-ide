@@ -38,3 +38,19 @@ def test_memory_schema_has_no_forbidden_top_level_combinators():
 
 def test_memory_schema_is_json_serializable():
     json.dumps(MEMORY_SCHEMA)
+
+
+def test_memory_schema_description_progress_arg_placement():
+    """``description`` (progress-narration phrase) exists on the single-op shape only —
+    never inside batch ``operations`` items, where it would be per-op noise."""
+    props = MEMORY_SCHEMA["parameters"]["properties"]
+    assert isinstance(props.get("description", {}).get("description"), str)
+    op_items = props["operations"]["items"]["properties"]
+    assert "description" not in op_items
+
+
+def test_memory_tool_handler_accepts_description_kwarg():
+    """The registered handler / inline-executor path may forward ``description``."""
+    import inspect
+    from tools.memory_tool import memory_tool
+    assert "description" in inspect.signature(memory_tool).parameters

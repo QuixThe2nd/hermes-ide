@@ -53,7 +53,6 @@ def test_store_fetch_resumes_interrupted_download(tmp_path, dl_server, monkeypat
     # Isolate the store root (and thus the managed partials area) to tmp_path.
     runtime = tmp_path / "runtime"
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(runtime))
-    paths._stamp.cache_clear()
 
     # Serve in small pieces so the mid-body abort fires inside the single
     # byte range (the shared fixture resets this to 1 MiB).

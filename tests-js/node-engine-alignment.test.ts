@@ -70,7 +70,6 @@ function satisfiesRange(version: string, range: string): boolean {
 }
 
 const rootManifest = readJson<Manifest>('package.json')
-const desktopManifest = readJson<Manifest>('apps/desktop/package.json')
 const lockfile = readJson<Lockfile>('package-lock.json')
 
 function nodeRange(manifest: Manifest, label: string): string {
@@ -81,24 +80,20 @@ function nodeRange(manifest: Manifest, label: string): string {
 
 describe('Node engine alignment', () => {
   const rootRange = nodeRange(rootManifest, 'root package.json')
-  const desktopRange = nodeRange(desktopManifest, 'apps/desktop/package.json')
 
-  test.each(['22.22.0', '22.23.1', '24.11.0', '24.18.2', '26.0.0'])('all workspace manifests accept supported Node %s', version => {
+  test.each(['22.22.0', '22.23.1', '24.11.0', '24.18.2', '26.0.0'])('root manifest accepts supported Node %s', version => {
     assert.ok(satisfiesRange(version, rootRange))
-    assert.ok(satisfiesRange(version, desktopRange))
   })
 
   test.each(['22.21.1', '23.0.0', '24.0.0', '24.10.9', '25.2.1'])(
-    'all workspace manifests reject dependency-incompatible Node %s',
+    'root manifest rejects dependency-incompatible Node %s',
     version => {
       assert.ok(!satisfiesRange(version, rootRange))
-      assert.ok(!satisfiesRange(version, desktopRange))
     }
   )
 
-  test('lockfile workspace mirrors match their manifests', () => {
+  test('lockfile root mirror matches its manifest', () => {
     assert.equal(nodeRange(lockfile.packages?.[''] ?? {}, 'root lock entry'), rootRange)
-    assert.equal(nodeRange(lockfile.packages?.['apps/desktop'] ?? {}, 'desktop lock entry'), desktopRange)
   })
 
   test.each(['~22.22.0', '22.x', '>=26.0.0-rc.1'])(

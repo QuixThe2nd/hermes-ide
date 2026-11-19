@@ -822,13 +822,22 @@ def _preflight_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Di
 
 
 def _preflight_role_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Dict[str, Any]:
-    """Untyped ``user``/``assistant`` role message — the only legal shape besides typed items."""
+    """Untyped ``user``/``assistant`` role message — the only legal shape besides typed items.
+    A ``system`` role message is legal ONLY as the leading item (bridged Responses routes
+    carry the system prompt there so LiteLLM-style bridges can cache it); content must be
+    non-blank so the cacheable row is never an empty stub."""
     role = item.get("role")
-    if role not in {"user", "assistant"}:
+    if role == "system" and idx != 0:
+        raise ValueError(f"Codex Responses input[{idx}] system message is only legal as the leading item.")
+    if role not in {"user", "assistant", "system"}:
         raise ValueError(
             f"Codex Responses input[{idx}] has unsupported item shape (type={item.get('type')!r}, role={role!r})."
         )
     content = item.get("content", "")
+    if role == "system":
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError(f"Codex Responses input[{idx}] system message requires non-blank text content.")
+        return {"role": "system", "content": ctx.sanitize_text(content)}
     if not isinstance(content, list):
         return {"role": role, "content": ctx.sanitize_text(_str_or_empty(content))}
     # Parts are already Responses-shaped; validate and re-type text for the role.
@@ -936,20 +945,32 @@ def _preflight_codex_api_kwargs(
 ) -> Dict[str, Any]:
     if not isinstance(api_kwargs, dict):
         raise ValueError("Codex Responses request must be a dict.")
-    if missing := sorted(key for key in ("model", "instructions", "input") if key not in api_kwargs):
+    raw_input = api_kwargs.get("input")
+    leading_system_item = (
+        isinstance(raw_input, list) and bool(raw_input)
+        and isinstance(raw_input[0], dict) and raw_input[0].get("role") == "system"
+    )
+    # A leading system item carries the system prompt (bridged Responses routes);
+    # ``instructions`` is then unnecessary, and an EMPTY value must not fall back to the
+    # default identity — that would emit a second system row which can capture the bridge's
+    # cache_control injection point and leave the real prompt cache-cold.
+    required = ("model", "input") if leading_system_item else ("model", "instructions", "input")
+    if missing := sorted(key for key in required if key not in api_kwargs):
         raise ValueError(f"Codex Responses request missing required field(s): {', '.join(missing)}.")
     model = api_kwargs.get("model")
     if not _nonblank(model):
         raise ValueError("Codex Responses request 'model' must be a non-empty string.")
-    instructions = _str_or_empty(api_kwargs.get("instructions")).strip() or DEFAULT_AGENT_IDENTITY
-    if sanitize_harmony_tokens:
+    instructions: Optional[str] = _str_or_empty(api_kwargs.get("instructions")).strip()
+    if not instructions:
+        instructions = None if leading_system_item else DEFAULT_AGENT_IDENTITY
+    if sanitize_harmony_tokens and instructions is not None:
         instructions = _neutralize_harmony_tokens(instructions)
     input_items = _preflight_codex_input_items(
         api_kwargs.get("input"), is_github_responses=is_github_responses, sanitize_harmony_tokens=sanitize_harmony_tokens,
     )
-    normalized: Dict[str, Any] = {
-        "model": model.strip(), "instructions": instructions, "input": input_items, "store": False,
-    }
+    normalized: Dict[str, Any] = {"model": model.strip(), "input": input_items, "store": False}
+    if instructions is not None:
+        normalized["instructions"] = instructions
     tools = api_kwargs.get("tools")
     if tools is not None:
         if not isinstance(tools, list):
@@ -1169,6 +1190,12 @@ def _normalize_codex_response(
     if not final_text and (scan.saw_final_answer_phase or not scan.saw_commentary_phase):
         out_text = getattr(response, "output_text", "")
         final_text = out_text.strip() if isinstance(out_text, str) else final_text
+    # A clean-stop echo of our reserved interruption scaffold is not an answer. Keep the
+    # normalized text/replay items for the bounded continuation, but never finalize it.
+    # Local import avoids a module cycle with the runtime helpers that own the sentinel.
+    from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+
+    interrupted_placeholder_only = not tool_calls and final_text == _INTERRUPTED_PLACEHOLDER
     # Tool-call leak recovery: gpt-5.x sometimes emits the intended ``function_call`` as plain Harmony text
     # (``to=functions.foo {json}``) or Codex-CLI shell JSON (``{"cmd": ...}``). Treat as incomplete so the
     # continuation re-elicits a real call; clear the garbage.
@@ -1213,11 +1240,17 @@ def _normalize_codex_response(
     elif response_incomplete_content_filter:
         finish_reason = "content_filter"
     elif (
-        leaked_tool_call_text
+        interrupted_placeholder_only
+        or leaked_tool_call_text
         or scan.saw_streaming_or_item_incomplete
         or ((scan.has_incomplete_items or scan.saw_commentary_phase) and not scan.saw_final_answer_phase)
         or (reasoning_only and not trusted_final)
     ):
+        if interrupted_placeholder_only:
+            logger.warning(
+                "Codex response contained only the internal interruption placeholder; "
+                "treating it as incomplete for same-run continuation."
+            )
         finish_reason = "incomplete"
     else:
         finish_reason = "stop"

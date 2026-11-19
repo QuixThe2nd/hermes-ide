@@ -4,7 +4,7 @@ Relay invokes its collector for every post-intercept chunk and then its finalize
 as the provider stream ends — concurrently with Hermes' consumer thread, which may not have
 read the last chunk yet. The finalizer therefore builds Relay's recorded response from
 collector-observed state only, never from the consumer loop's closures. Sibling of
-``relay_llm.AnthropicStreamAccumulator``; Bedrock and Codex follow the same contract.
+``relay_llm.AnthropicStreamAccumulator``; Codex follows the same contract.
 """
 
 from __future__ import annotations

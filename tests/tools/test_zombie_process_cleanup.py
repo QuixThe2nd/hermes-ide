@@ -11,6 +11,8 @@ import subprocess
 import sys
 import threading
 
+import pytest
+
 
 
 def _spawn_sleep(seconds: float = 60) -> subprocess.Popen:
@@ -32,6 +34,7 @@ def _pid_alive(pid: int) -> bool:
 class TestZombieReproduction:
     """Demonstrate that subprocesses survive when cleanup is not called."""
 
+    @pytest.mark.platforms("linux")
     def test_orphaned_processes_survive_without_cleanup(self):
         """REPRODUCTION: processes spawned directly survive if no one kills
         them — this models the gap that causes zombie accumulation when
@@ -305,7 +308,6 @@ class TestGatewayCleanupWiring:
         runner.adapters = {}
         runner._background_tasks = set()
         runner._pending_messages = {}
-        runner._pending_approvals = {}
         runner._pending_model_notes = {}
         runner._shutdown_event = asyncio.Event()
         runner._exit_reason = None
@@ -317,13 +319,11 @@ class TestGatewayCleanupWiring:
         runner._restart_detached = False
         runner._restart_via_service = False
         runner._restart_drain_timeout = 0.1
-        runner._voice_mode = {}
         runner._session_model_overrides = {}
         runner._update_prompt_pending = {}
         runner._busy_input_mode = "interrupt"
         runner._agent_cache = {}
         runner._agent_cache_lock = threading.Lock()
-        runner._shutdown_all_gateway_honcho = lambda: None
         runner._update_runtime_status = MagicMock()
 
         mock_agent_1 = MagicMock()

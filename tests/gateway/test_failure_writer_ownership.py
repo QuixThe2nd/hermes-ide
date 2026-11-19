@@ -54,7 +54,7 @@ def test_failure_owner_follows_only_live_lineage_markers(tmp_path):
             (location, pid) for location in cases for pid in (None, "100")
         ):
             source = SessionSource(
-                platform=Platform.TELEGRAM, chat_id=f"fixture-{index}", user_id="fixture"
+                platform=Platform.DISCORD, chat_id=f"fixture-{index}", user_id="fixture"
             )
             entry = store.get_or_create_session(source)
             sid = entry.session_id
@@ -67,12 +67,12 @@ def test_failure_owner_follows_only_live_lineage_markers(tmp_path):
             )
             db.append_message(sid, "user", "same [screenshot]")
             middle = sid + "-middle"
-            db.create_session(middle, source="telegram", parent_session_id=sid)
+            db.create_session(middle, source="discord", parent_session_id=sid)
             orphan = sid + "-orphan"
             child = sid + "-live"
-            db.create_session(orphan, source="telegram", parent_session_id=middle)
+            db.create_session(orphan, source="discord", parent_session_id=middle)
             db.end_session(orphan, "ws_orphan_reap")
-            db.create_session(child, source="telegram", parent_session_id=middle)
+            db.create_session(child, source="discord", parent_session_id=middle)
             target = {"ancestor": sid, "middle-ancestor": middle, "reaped": orphan}.get(location, child)
             marker = {"gateway_input_owner": "foreign-writer"} if location == "foreign" else metadata
             current_id = db.append_message(
@@ -144,7 +144,7 @@ def test_context_overflow_exception_persists_nothing(tmp_path):
             return None
 
         runner._hmwa_stop_typing_for_turn = stop_typing
-        source = SessionSource(platform=Platform.TELEGRAM, chat_id="overflow", user_id="u")
+        source = SessionSource(platform=Platform.DISCORD, chat_id="overflow", user_id="u")
         entry = store.get_or_create_session(source)
         db = store._db_for_session_id(entry.session_id)
         prepared = runner._PreparedTurn(
@@ -178,7 +178,7 @@ def test_context_overflow_error_reply_carries_no_partial_effect_notice():
         return None
 
     runner._hmwa_stop_typing_for_turn = stop_typing
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="c", user_id="u")
+    source = SessionSource(platform=Platform.DISCORD, chat_id="c", user_id="u")
     prepared = runner._PreparedTurn([{"role": "user", "content": "x"}] * 51, "", None, None, None, None)
     err = RuntimeError("payload too large")
     err.status_code = 400
@@ -213,7 +213,7 @@ def test_fresh_session_agent_flushed_failed_turn_is_closed(tmp_path):
             return None
 
         runner._refresh_agent_cache_message_count = noop
-        source = SessionSource(platform=Platform.TELEGRAM, chat_id="fresh", user_id="u")
+        source = SessionSource(platform=Platform.DISCORD, chat_id="fresh", user_id="u")
         entry = store.get_or_create_session(source)
         sid = entry.session_id
         db = store._db_for_session_id(sid)

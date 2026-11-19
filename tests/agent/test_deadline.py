@@ -609,7 +609,7 @@ class TestResolveNameList:
     def test_non_list_falls_back_to_default(self, monkeypatch):
         monkeypatch.setattr(
             "agent.deadline._timeouts_section",
-            lambda: {"tools": {"unbounded_tools": "delegate_cursor_agent"}},
+            lambda: {"tools": {"unbounded_tools": "delegate_claude_agent"}},
         )
         assert self._resolve() == frozenset({"a", "b"})
 
@@ -629,7 +629,6 @@ class TestUnboundedToolsResolver:
 
         monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
         names = tool_executor._resolve_unbounded_tools()
-        assert "delegate_cursor_agent" in names
         assert "delegate_claude_agent" in names
         assert "restart" in names
 
@@ -648,18 +647,26 @@ class TestUnboundedToolsResolver:
     def test_default_covers_all_four_public_names_and_legacy_aliases(
         self, monkeypatch
     ):
-        """Every delegation tool blocks by default, so every name is exempt.
+        """Every blocking delegation tool is exempt, under every dispatchable name.
 
-        The hidden ``delegate_task`` registry alias stays dispatchable, and a
-        replayed old-name call is exactly as long-running as a new-name one.
+        The hidden ``delegate_task`` registry alias stays dispatchable, a
+        replayed old-name call is exactly as long-running as a new-name one,
+        and the four lane tools (ui/client/backend/reverse-engineer) block
+        the same way in foreground mode — their multi-hour runs must not be
+        killed by the generic batch deadline.
         """
         from agent import tool_executor
 
         monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
         names = tool_executor._resolve_unbounded_tools()
-        assert {"delegate_agent", "delegate_claude_agent"} <= names
-        assert {"delegate_cursor_agent", "delegate_assistant"} <= names
+        assert {"delegate_agent", "delegate_claude_agent", "delegate_assistant"} <= names
         assert "delegate_task" in names
+        assert {
+            "delegate_ui_dev",
+            "delegate_client_dev",
+            "delegate_backend_dev",
+            "delegate_reverse_engineer",
+        } <= names
         assert "dispatch_assistant" not in names
 
     def test_user_override_normalizes_legacy_spellings(self, monkeypatch):
@@ -685,11 +692,40 @@ class TestUnboundedToolsResolver:
 
         monkeypatch.setattr(
             "agent.deadline._timeouts_section",
-            lambda: {"tools": {"unbounded_tools": ["delegate_cursor_agent"]}},
+            lambda: {"tools": {"unbounded_tools": ["delegate_claude_agent"]}},
         )
         assert tool_executor._resolve_unbounded_tools() == frozenset(
-            {"delegate_cursor_agent"}
+            {"delegate_claude_agent"}
         )
+
+    def test_default_contains_lane_tools(self, monkeypatch):
+        """Foreground lane runs block legitimately (an OMP RPC goal-mode
+        reverse-engineer pass can run for hours); the 420s generic deadline
+        must not kill them — the same class as ``delegate_agent``."""
+        from agent import tool_executor
+
+        monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
+        names = tool_executor._resolve_unbounded_tools()
+        assert {
+            "delegate_ui_dev", "delegate_client_dev",
+            "delegate_backend_dev", "delegate_reverse_engineer",
+        } <= names
+
+    def test_user_override_omitting_lane_tools_warns(self, monkeypatch, caplog):
+        """A user list that replaces the default and omits lane tools warns,
+        the same way an omitted ``delegate_agent`` already warns."""
+        import logging
+
+        from agent import tool_executor
+
+        monkeypatch.setattr(
+            "agent.deadline._timeouts_section",
+            lambda: {"tools": {"unbounded_tools": ["delegate_agent"]}},
+        )
+        with caplog.at_level(logging.WARNING, logger="agent.tool_executor"):
+            names = tool_executor._resolve_unbounded_tools()
+        assert names == frozenset({"delegate_agent", "delegate_task"})
+        assert "delegate_reverse_engineer" in caplog.text
 # ---------------------------------------------------------------------------
 # Phase 3a (#85125): SuspectableBackend — poisoned-state contract.
 # ---------------------------------------------------------------------------

@@ -18,7 +18,7 @@ from gateway.session import SessionEntry, SessionSource, build_session_key
 
 def _make_source() -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         user_id="u1",
         chat_id="c1",
         user_name="tester",
@@ -47,12 +47,11 @@ def _make_runner():
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="***")}
     )
     adapter = MagicMock()
     adapter.send = AsyncMock()
-    runner.adapters = {Platform.TELEGRAM: adapter}
-    runner._voice_mode = {}
+    runner.adapters = {Platform.DISCORD: adapter}
     runner.hooks = SimpleNamespace(
         emit=AsyncMock(),
         emit_collect=AsyncMock(return_value=[]),
@@ -64,7 +63,7 @@ def _make_runner():
         session_id="sess-1",
         created_at=datetime.now(),
         updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="dm",
     )
     runner.session_store = MagicMock()
@@ -76,7 +75,6 @@ def _make_runner():
     runner.session_store.update_session = MagicMock()
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}
@@ -86,7 +84,6 @@ def _make_runner():
     runner._set_session_env = lambda _context: None
     runner._should_send_voice_reply = lambda *_args, **_kwargs: False
     runner._send_voice_reply = AsyncMock()
-    runner._capture_gateway_honcho_if_configured = lambda *args, **kwargs: None
     runner._emit_gateway_run_progress = AsyncMock()
     return runner
 
@@ -134,23 +131,8 @@ async def test_known_slash_command_not_flagged_as_unknown(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_egress_slash_command_reports_proxy_status(monkeypatch):
-    runner = _make_runner()
-    monkeypatch.setattr(
-        "hermes_cli.proxy_cli.format_status_text",
-        lambda: "Egress proxy status\nEnabled: no",
-    )
-
-    result = await runner._handle_message(_make_event("/egress"))
-
-    assert result is not None
-    assert "Egress proxy status" in result
-    assert "Unknown command" not in result
-
-
-@pytest.mark.asyncio
 async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch):
-    """Telegram autocomplete sends /reload_mcp for the /reload-mcp built-in.
+    """Platform autocomplete can send /reload_mcp for the /reload-mcp built-in.
     That must NOT be flagged as unknown."""
     import gateway.run as gateway_run
 

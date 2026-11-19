@@ -1,6 +1,5 @@
-"""Models-category behavior: score-based channel ordering (same policy as
-fallback_quota_reorder), the retired OpenRouter row staying absent, and
-backward-compatible config."""
+"""Models-category behavior: score-based channel ordering, the retired
+OpenRouter row staying absent, and backward-compatible config."""
 
 from __future__ import annotations
 
@@ -10,7 +9,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from plugins.fallback_quota_reorder.reliability import ReliabilityRates
+from plugins.quota_channels.reliability import ReliabilityRates
 from plugins.quota_channels import core as core
 from plugins.quota_channels.core import (
     PROVIDER_SPECS,
@@ -32,7 +31,7 @@ def _reading(pct: int, reset_seconds: float) -> dict:
     return {"pct": pct, "reset_seconds": reset_seconds, "label": "unused"}
 
 
-def _five_id_section() -> dict:
+def _four_id_section() -> dict:
     return {
         "guild_id": "guild",
         "category_id": "cat",
@@ -40,7 +39,6 @@ def _five_id_section() -> dict:
             "codex": "c1",
             "kimi": "c2",
             "zai": "c3",
-            "cursor": "c4",
             "grok": "c5",
         },
     }
@@ -52,13 +50,12 @@ def _five_id_section() -> dict:
 
 
 class TestConfigCompatibility:
-    def test_legacy_five_id_config_without_enabled_providers_still_valid(self):
-        config = validate_quota_config(_five_id_section())
+    def test_legacy_four_id_config_without_enabled_providers_still_valid(self):
+        config = validate_quota_config(_four_id_section())
         assert [key for key, _, _ in config["providers"]] == [
             "codex",
             "kimi",
             "zai",
-            "cursor",
             "grok",
         ]
         assert "openrouter" not in config["channel_ids"]
@@ -66,33 +63,31 @@ class TestConfigCompatibility:
     def test_openrouter_channel_id_no_longer_activates_a_row(self):
         # the retired virtual row auto-enabled as soon as its channel ID was
         # wired; the leftover key is now inert — no row, no rename, no score
-        section = _five_id_section()
+        section = _four_id_section()
         section["channel_ids"]["openrouter"] = "c6"
         config = validate_quota_config(section)
         assert [key for key, _, _ in config["providers"]] == [
             "codex",
             "kimi",
             "zai",
-            "cursor",
             "grok",
         ]
         assert "openrouter" not in config["channel_ids"]
 
     def test_explicit_provider_list_still_controls_rows(self):
-        section = _five_id_section()
+        section = _four_id_section()
         section["enabled_providers"] = ["codex", "kimi"]
         config = validate_quota_config(section)
         assert [key for key, _, _ in config["providers"]] == ["codex", "kimi"]
 
     def test_explicit_provider_map_cannot_resurrect_openrouter(self):
         # even an explicit enablement of the retired key activates nothing
-        section = _five_id_section()
+        section = _four_id_section()
         section["channel_ids"]["openrouter"] = "c6"
         section["enabled_providers"] = {
             "codex": True,
             "kimi": True,
             "zai": True,
-            "cursor": True,
             "grok": True,
             "openrouter": True,
         }
@@ -101,7 +96,6 @@ class TestConfigCompatibility:
             "codex",
             "kimi",
             "zai",
-            "cursor",
             "grok",
         ]
         assert "openrouter" not in config["channel_ids"]
@@ -132,7 +126,7 @@ class TestModelsCategoryNaming:
 
 
 # ---------------------------------------------------------------------------
-# Score ordering (shared fallback policy)
+# Score ordering
 # ---------------------------------------------------------------------------
 
 
@@ -144,7 +138,6 @@ class TestScoreOrdering:
             "codex": _reading(95, WEEK),
             "kimi": _reading(1, 5 * DAY),  # <5%: low-quota bucket
             "zai": _reading(23, 3 * DAY),
-            "cursor": _reading(38, 22 * DAY),
             "grok": _reading(81, 5 * DAY),
         }
         ranks = quota_display_ranks(readings)
@@ -152,7 +145,6 @@ class TestScoreOrdering:
             "grok",  # 0.81 * 168/120 = 1.134
             "codex",  # 0.95 * 1.0 = 0.95
             "zai",  # 0.23 * 168/72 = 0.537
-            "cursor",  # 0.38 * 168/528 = 0.121
             "kimi",  # low-quota bucket, after all healthy entries
         ]
 
@@ -171,10 +163,10 @@ class TestScoreOrdering:
     def test_low_quota_bucket_sinks_behind_every_healthy_entry(self):
         readings = {
             "kimi": _reading(4, 60),  # would score ~403 if healthy
-            "cursor": _reading(38, 22 * DAY),  # weakest healthy score 0.121
+            "zai": _reading(23, 3 * DAY),  # weakest healthy score 0.537
         }
         ranks = quota_display_ranks(readings)
-        assert ranks["cursor"] < ranks["kimi"]
+        assert ranks["zai"] < ranks["kimi"]
 
     def test_equal_scores_keep_spec_order(self):
         readings = {
@@ -236,12 +228,11 @@ class TestRunTickModelsIntegration:
                 "codex": lambda http_fn=None, now_fn=None: (95, WEEK),
                 "kimi": lambda http_fn=None, now_fn=None: (1, 5 * DAY),
                 "zai": lambda http_fn=None, now_fn=None: (23, 3 * DAY),
-                "cursor": lambda http_fn=None, now_fn=None: (38, 50, 22 * DAY),
                 "grok": lambda http_fn=None, now_fn=None: (81, 5 * DAY),
             },
         )
         monkeypatch.setattr(core, "TOKEN_FETCHERS", {})
-        section = _five_id_section()
+        section = _four_id_section()
         # a leftover retired-row channel id must activate nothing
         section["channel_ids"]["openrouter"] = "c6"
         return validate_quota_config(section)
@@ -252,7 +243,6 @@ class TestRunTickModelsIntegration:
                 {"id": "c1", "position": 13},
                 {"id": "c2", "position": 10},
                 {"id": "c3", "position": 12},
-                {"id": "c4", "position": 11},
                 {"id": "c5", "position": 15},
                 # c6 (the retired OpenRouter row) is not a guild channel —
                 # the tick neither renames nor repositions it
@@ -270,7 +260,7 @@ class TestRunTickModelsIntegration:
         assert "c6" not in renames
         assert renames["c5"] == {"name": "Grok: 81% • 5d left • 0 resets"}
         state = json.loads(state_path().read_text(encoding="utf-8"))
-        assert set(state["readings"]) == {"codex", "kimi", "zai", "cursor", "grok"}
+        assert set(state["readings"]) == {"codex", "kimi", "zai", "grok"}
         assert state["readings"]["grok"]["pct"] == 81
         assert state["readings"]["grok"]["reset_seconds"] == 5 * DAY
         assert state["readings"]["grok"]["label"] == "Grok"
@@ -280,18 +270,17 @@ class TestRunTickModelsIntegration:
         assert result["sorted"] is True
         assert discord.position_patch == [
             {"id": "c5", "position": 10},  # grok 1.134
-            {"id": "c1", "position": 11},  # codex 0.95
-            {"id": "c4", "position": 13},  # cursor 0.121
+            {"id": "c1", "position": 12},  # codex 0.95
+            {"id": "c3", "position": 13},  # z.ai 0.537
             {"id": "c2", "position": 15},  # kimi: low-quota bucket
-        ]  # z.ai keeps slot 12 — already in place
+        ]
 
     def test_no_moves_when_positions_already_match(self, wired):
         discord = _FakeDiscord(
             [
                 {"id": "c5", "position": 10},
-                {"id": "c1", "position": 11},
-                {"id": "c3", "position": 12},
-                {"id": "c4", "position": 13},
+                {"id": "c1", "position": 12},
+                {"id": "c3", "position": 13},
                 {"id": "c2", "position": 15},
             ]
         )

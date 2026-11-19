@@ -49,6 +49,8 @@ def agent(tmp_path, monkeypatch):
     instance.compression_enabled = False
     instance._cleanup_task_resources = lambda *_a, **_kw: None
     instance._save_trajectory = lambda *_a, **_kw: None
+    # The loop streams by default; these stubs return whole SimpleNamespaces.
+    instance._disable_streaming = True
     return instance
 
 
@@ -76,8 +78,11 @@ def test_registered_hook_keeps_loop_going(agent, monkeypatch):
     ):
         result = agent.run_conversation("what's new?")
 
-    # The loop continued: the second model answer is the final response.
-    assert result["final_response"] == "second answer"
+    # The loop continued, but the continuation answered the meta directive
+    # ("start a conversation?"), not the question, so the answer composed
+    # before the nudge is what the user gets. Delivering "second answer" here
+    # replaces the user's answer with the continuation's verdict.
+    assert result["final_response"] == "first answer"
     assert result["turn_exit_reason"] == "text_response(finish_reason=stop)"
     assert result["completed"] is True
     agent._handle_max_iterations.assert_not_called()

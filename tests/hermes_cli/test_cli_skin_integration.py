@@ -14,9 +14,6 @@ def _make_cli_stub():
     cli._clarify_freetext = False
     cli._command_running = False
     cli._agent_running = False
-    cli._voice_recording = False
-    cli._voice_processing = False
-    cli._voice_mode = False
     cli._command_spinner_frame = lambda: "⟳"
     cli._tui_style_base = {
         "prompt": "#fff",
@@ -43,20 +40,6 @@ class TestCliSkinPromptIntegration:
 
         set_active_skin("ares")
         assert cli._get_tui_prompt_fragments() == [("class:sudo-prompt", "🔑 ⚔ ")]
-
-
-    def test_narrow_terminals_compact_voice_recording_prompt_fragments(self):
-        cli = _make_cli_stub()
-        cli._voice_recording = True
-        cli._voice_recorder = SimpleNamespace(current_rms=3000)
-
-        with patch.object(HermesCLI, "_get_tui_terminal_width", return_value=50):
-            frags = cli._get_tui_prompt_fragments()
-
-        assert frags[0][0] == "class:voice-recording"
-        assert frags[0][1].startswith("●")
-        assert "❯" not in frags[0][1]
-
 
 
     def test_build_tui_style_dict_uses_skin_overrides(self):

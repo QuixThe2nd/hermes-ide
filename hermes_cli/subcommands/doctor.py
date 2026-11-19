@@ -15,7 +15,7 @@ def build_doctor_parser(subparsers, *, cmd_doctor: Callable) -> None:
     doctor_parser.add_argument(
         "--live", action="store_true",
         help="Opt-in: run one bounded, read-only real-call health probe per "
-            "configured tool backend (Firecrawl/FAL/browser/MCP/TTS/STT) "
+            "configured tool backend (Firecrawl/FAL/browser/MCP) "
             "after the static checks. Makes real network calls.")
     doctor_parser.add_argument(
         "--ack", metavar="ADVISORY_ID", default=None,

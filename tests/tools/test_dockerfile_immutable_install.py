@@ -69,25 +69,3 @@ def test_dockerfile_disables_lazy_installs() -> None:
     """
     assert "ENV HERMES_DISABLE_LAZY_INSTALLS=1" in _dockerfile_text()
     assert "HERMES_LAZY_INSTALL_TARGET" not in _dockerfile_text()
-
-
-def test_dockerfile_bakes_photon_sidecar_deps() -> None:
-    """The Photon sidecar's node_modules must be baked at build time (NS-606).
-
-    The install tree is immutable at runtime, so a lazy `npm ci` on first
-    connect would hit EROFS. Baking the deps (from the committed lockfile,
-    which also runs the spectrum-ts postinstall patch) makes the hosted
-    happy path install-free. Guards the contract between the Dockerfile
-    and plugins/platforms/photon/sidecar_paths.resolve_sidecar_dir, which
-    runs in place only when the baked deps exist and match the lockfile.
-    """
-    text = _dockerfile_text()
-
-    assert "plugins/platforms/photon/sidecar/package-lock.json" in text
-    assert re.search(
-        r"RUN cd plugins/platforms/photon/sidecar && \\\n\s+npm ci", text
-    ), "sidecar deps must be installed with `npm ci` (deterministic, runs postinstall patch)"
-    # Immutability contract: never chown the sidecar tree to the runtime user.
-    assert not re.search(
-        r"chown\s+-R\s+hermes:hermes\s+/opt/hermes/plugins", text
-    )

@@ -149,14 +149,14 @@ def _pip_install(args: List[str], *, timeout: int = 300, capture_output: bool = 
     venv_root = Path(sys.executable).parent.parent
     install_flags = _post_setup_no_window_flags(streams_to_console=not capture_output)
 
-    # Managed uv first: $HERMES_HOME/bin is never on PATH, so a bare which() misses the uv Hermes
-    # installed; ensure_uv() (not a pure lookup) because installing uv is in scope during setup.
-    from hermes_cli.managed_uv import ensure_uv
-    uv_bin = ensure_uv()
+    # Resolve uv and its target environment through PM, not ambient PATH.
+    from pm.ensure import uv as pm_uv
+
+    uv_bin, uv_env = pm_uv(realize=True, venv=venv_root)
     try:  # a failed uv run falls through to pip — it may have failed for a reason pip can handle
         result = uv_bin and _run_text([uv_bin, "pip", "install", *args], timeout=timeout,
                                       capture_output=capture_output, creationflags=install_flags,
-                                      env={**os.environ, "VIRTUAL_ENV": str(venv_root)})
+                                      env=uv_env)
         if result and result.returncode == 0:
             return result
     except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -419,7 +419,7 @@ def _clear_stale_cua_install_lock() -> None:
         if not lock_dir.is_dir():
             return
         try:
-            lines = (lock_dir / "info").read_text(encoding="utf-8", errors="replace").splitlines()
+            lines = (lock_dir / "info").read_text(encoding="utf-8-sig", errors="replace").splitlines()
             holder_pid = next((int(line.split("=", 1)[1].strip()) for line in lines
                                if line.startswith("pid=")), None)
         except (OSError, ValueError):

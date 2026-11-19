@@ -301,30 +301,21 @@ _CLI_FAMILIES: dict[str, tuple[_CliSurface, str]] = {
         _sub("webhook", "build_webhook_parser", "cmd_webhook"),
         "list, *subscribe, *remove, test"),
     "hooks": (_sub("hooks", "build_hooks_parser", "cmd_hooks"), "list, *test, *doctor, *revoke"),
-    "slack": (_sub("slack", "build_slack_parser", "cmd_slack"), "manifest"),
     "profile": (
         _sub("profile", "build_profile_parser", "cmd_profile"),
         "list, show, info, *create, *use, *describe, *rename, *delete, *export, *import, "
         "*install, *update"),
     "cron": (_sub("cron", "build_cron_parser", "cmd_cron"), "*create, *edit, *remove, *tick"),
-    "portal": (_CliSurface("adder", "hermes_cli.portal_cli", "add_parser"), "info, tools"),
     "project": (
         _CliSurface("builder", "hermes_cli.projects_cmd", "build_parser", "cmd_project"),
         "list, show, *create, *add-folder, *remove-folder, *rename, *set-primary, *use, "
-        "*archive, *restore, *bind-board"),
-    "kanban": (
-        _CliSurface("builder", "hermes_cli.kanban", "build_parser", "cmd_kanban"),
-        "*init, boards list, *boards create, *boards rm, *boards switch, boards current, "
-        "*boards rename, *boards set-workdir, *create, list, show, *assign, *reclaim, *reassign, "
-        "diagnose, *link, *unlink, *claim, *comment, *complete, *edit, *block, *schedule, "
-        "*unblock, *promote, *archive, stats, runs, heartbeat, assignments, context"),
+        "*archive, *restore"),
     "bundles": (_reg("bundles", "bundles_command"), "list, show, *create, *delete, *reload"),
     "checkpoints": (_reg("checkpoints"), "status, list, *prune, *clear, *clear-legacy"),
     "curator": (
         _reg("curator"),
         "status, *run, *pause, *resume, *pin, *unpin, *restore, list-archived, *archive, *prune, "
         "*backup, *rollback"),
-    "pets": (_reg("pets"), "list, *install, *select, show, *off, *scale, *remove, doctor"),
 }
 
 # Only extracted/registered families skip nested prompts after console confirmation
@@ -360,16 +351,6 @@ _BLOCKED_PAIRS = {
     ("profile", "alias"): "`profile alias` creates shell wrappers and is not available in Hermes Console.",
     ("skills", "config"): "`skills config` is interactive and is not available in Hermes Console.",
     ("skills", "publish"): "`skills publish` is not available in Hermes Console.",
-    ("portal", "login"): "`portal login` is interactive and is not available in Hermes Console.",
-    ("portal", "open"): "`portal open` opens a browser and is not available in Hermes Console.",
-    ("kanban", "tail"): "`kanban tail` streams output and is not available in Hermes Console.",
-    ("kanban", "watch"): "`kanban watch` streams output and is not available in Hermes Console.",
-    ("kanban", "daemon"): "`kanban daemon` starts a service and is not available in Hermes Console.",
-    ("kanban", "dispatcher"): "`kanban dispatcher` starts a worker and is not available in Hermes Console.",
-    ("kanban", "swarm"): "`kanban swarm` starts agent work and is not available in Hermes Console.",
-    ("kanban", "decompose"): "`kanban decompose` starts agent work and is not available in Hermes Console.",
-    ("kanban", "specify"): "`kanban specify` starts agent work and is not available in Hermes Console.",
-    ("kanban", "gc"): "`kanban gc` is not available in Hermes Console.",
     ("sessions", "delete"): "`sessions delete` and `sessions prune` are not available in Hermes Console.",
     ("sessions", "prune"): "`sessions delete` and `sessions prune` are not available in Hermes Console.",
 }
@@ -616,7 +597,7 @@ def _sessions_stats(_engine: HermesConsoleEngine, args: list[str]) -> str:
             f"Total sessions: {total}",
             f"Listable sessions: {listable}",
             f"Total messages: {db.message_count()}"]
-        for source in ["cli", "tui", "telegram", "discord", "slack", "cron"]:
+        for source in ["cli", "tui", "discord", "slack", "cron"]:
             count = db.session_count(source=source)
             if count:
                 lines.append(f"  {source}: {count}")

@@ -39,7 +39,7 @@ def _state_path() -> Path:
 
 def _read_last_directive_at() -> float:
     try:
-        with _state_path().open("r", encoding="utf-8") as fh:
+        with _state_path().open("r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
         if not isinstance(data, dict):
             return 0.0

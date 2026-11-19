@@ -1,14 +1,13 @@
 # Durable & Background Systems
 
-Four systems run alongside the main conversation loop. Quick reference
-here; full developer notes live in `AGENTS.md`, user-facing docs under
-`website/docs/user-guide/features/`.
+Three systems run alongside the main conversation loop. Quick reference
+here; full developer notes live in `AGENTS.md`.
 
 ### Delegation (`delegate_agent`)
 
 Spawn a subagent with an isolated context + terminal session. One lifecycle
-across all four delegate tools (`delegate_agent`, `delegate_claude_agent`,
-`delegate_cursor_agent`, `delegate_assistant`): the mode comes only from the
+across all three delegate tools (`delegate_agent`, `delegate_claude_agent`,
+`delegate_assistant`): the mode comes only from the
 explicit `background` argument.
 
 - **Single:** `delegate_agent(goal, context)`.
@@ -59,16 +58,14 @@ so nothing is lost.
 - **CLI:** `hermes curator <verb>` — `status`, `usage`, `run`, `pause`,
   `resume`, `pin`, `unpin`, `archive`, `restore`, `list-archived`, `prune`,
   `backup`, `rollback`.
-- **Slash:** `/curator <subcommand>` mirrors the CLI.
 - **Scope:** only touches skills with `created_by: "agent"` provenance.
   Bundled + hub-installed skills are off-limits. **Never deletes** —
   max destructive action is archive. Pinned skills are exempt from
   every auto-transition and every LLM review pass.
-- **Cost:** the deterministic inactivity/prune sweep runs for free. The
-  aux-model "consolidate overlapping skills into umbrellas" pass is
-  **off by default** — opt in with `curator.consolidate: true` or
-  `hermes curator run --consolidate`. Routine background curation costs
-  zero tokens.
+- **Cost:** the deterministic inactivity/prune sweep runs for free. Every
+  review also runs the aux-model "consolidate overlapping skills into
+  umbrellas" pass (always on; a pre-run snapshot guards it). Route it to a
+  cheaper model via the `auxiliary.curator` slot.
 - **Telemetry:** sidecar at `~/.hermes/skills/.usage.json` holds
   per-skill `use_count`, `view_count`, `patch_count`,
   `last_activity_at`, `state`, `pinned`.
@@ -76,32 +73,3 @@ so nothing is lost.
 Config: `curator.*` (`enabled`, `interval_hours`, `min_idle_hours`,
 `stale_after_days`, `archive_after_days`, `backup.*`).
 User docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/curator
-
-### Kanban (multi-agent work queue)
-
-Durable SQLite board for multi-profile / multi-worker collaboration.
-Users drive it via `hermes kanban <verb>`; dispatcher-spawned workers
-see a focused `kanban_*` toolset gated by `HERMES_KANBAN_TASK`, and
-orchestrator profiles can opt into the broader `kanban` toolset. Normal
-sessions still have zero `kanban_*` schema footprint unless configured.
-
-- **CLI verbs (common):** `init`, `create`, `list` (alias `ls`),
-  `show`, `assign`, `link`, `unlink`, `comment`, `complete`, `block`,
-  `unblock`, `archive`, `tail`. Less common: `watch`, `stats`, `runs`,
-  `log`, `dispatch`, `daemon`, `gc`.
-- **Worker/orchestrator toolset:** `kanban_show`, `kanban_complete`,
-  `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_create`,
-  `kanban_link`; profiles that explicitly enable the `kanban` toolset
-  outside a dispatcher-spawned task also get `kanban_list` and
-  `kanban_unblock` for board routing.
-- **Dispatcher** runs inside the gateway by default
-  (`kanban.dispatch_in_gateway: true`) — reclaims stale claims,
-  promotes ready tasks, atomically claims, spawns assigned profiles.
-  Auto-blocks a task after `failure_limit` consecutive spawn failures
-  (default 2; configurable via `kanban.failure_limit` or per-task
-  `max_retries`).
-- **Isolation:** board is the hard boundary (workers get
-  `HERMES_KANBAN_BOARD` pinned in env); tenant is a soft namespace
-  within a board for workspace-path + memory-key isolation.
-
-User docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban

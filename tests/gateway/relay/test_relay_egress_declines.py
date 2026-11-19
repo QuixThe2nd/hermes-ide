@@ -322,7 +322,7 @@ def test_thread_qualified_session_id_attests_the_bare_chat():
         # splitting invented attestations for ids whose colon is part of the
         # address (Matrix). The PROPERTY below is unchanged.
         cd._build_from_sessions = lambda _p: [{"id": "-100999:77", "thread_id": "77"}]
-        ids = eg._session_ids("telegram")
+        ids = eg._session_ids("matrix")
     finally:
         cd._build_from_sessions = original
 
@@ -366,92 +366,6 @@ def test_relay_plane_attests_the_union_of_fronted_platforms():
     assert "C-DISCORD" in targets and "C-SLACK" in targets, (
         "the relay plane must union the fronted platforms (M21)"
     )
-
-
-# ── B-2: Telegram `@username` is authorized by the CONNECTOR ────────────────
-#
-# Provenance stores RESOLVED numeric chat ids; a public `@channel` is not a
-# destination until the Bot API resolves it at send time. Comparing the two
-# could only ever refuse, which regressed the username support added in
-# #53573. The guard fires only on relay-fronted deployments, where the
-# CONNECTOR holds the bot token — so the gateway has no way to resolve it, and
-# the connector's own egress floor (gg#238) is the layer that authorizes it.
-#
-# These tests pin the carve-out's EDGES. It must not widen.
-
-
-def _relay_env(monkeypatch, platform="telegram", directory=None):
-    import gateway.channel_directory as cd
-
-    monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", platform)
-    monkeypatch.setattr(
-        cd, "load_directory", lambda: {"platforms": {platform: directory or []}}
-    )
-    monkeypatch.setattr(cd, "_build_from_sessions", lambda _p: [])
-    import gateway.relay.egress as eg
-
-    monkeypatch.setattr(eg, "_notification_channel_id", lambda _p: None)
-    monkeypatch.setattr(eg, "_has_live_native_adapter", lambda _p: False)
-    return eg
-
-
-def test_telegram_username_defers_to_the_connector(monkeypatch):
-    """The regression case: a public handle must not be refused here."""
-    eg = _relay_env(monkeypatch)
-    assert eg.authorize_relay_target("telegram", "@some_public_channel") is None
-
-
-def test_numeric_telegram_target_is_still_guarded(monkeypatch):
-    """The carve-out must not leak to resolved ids — the guard's whole point."""
-    eg = _relay_env(monkeypatch)
-    denial = eg.authorize_relay_target("telegram", "-1009999999999")
-    assert denial is not None and "-1009999999999" in denial
-
-
-def test_carve_out_is_telegram_only(monkeypatch):
-    """Another platform's `@` form is NOT a Telegram handle.
-
-    Matrix targets `@user:server.org`; Slack has `@handle` pseudo-ids. Neither
-    is resolved by the Telegram Bot API, so neither may ride this exemption.
-    """
-    eg = _relay_env(monkeypatch, platform="matrix")
-    denial = eg.authorize_relay_target("matrix", "@someone:server.org")
-    assert denial is not None, "the carve-out widened beyond telegram"
-
-
-def test_attested_handle_takes_the_normal_path(monkeypatch):
-    """Order check: attestation is consulted BEFORE the carve-out.
-
-    A handle that IS attested must pass as attested, not as an exemption —
-    otherwise the carve-out would be masking whether attestation still works.
-
-    Both paths return None, so asserting the verdict cannot tell them apart:
-    my first version of this test passed happily with the carve-out moved
-    ABOVE the attestation lookup. Observe the MECHANISM instead — attestation
-    must actually be consulted — which is the difference between the two
-    orderings.
-    """
-    eg = _relay_env(monkeypatch, directory=[{"id": "@known_channel"}])
-
-    consulted: list[str] = []
-    real = eg.attested_relay_targets
-    monkeypatch.setattr(
-        eg,
-        "attested_relay_targets",
-        lambda p: (consulted.append(p), real(p))[1],
-    )
-
-    assert eg.authorize_relay_target("telegram", "@known_channel") is None
-    assert consulted == ["telegram"], (
-        "attestation was skipped — the carve-out is short-circuiting it"
-    )
-    assert "@known_channel" in real("telegram")
-
-
-def test_username_like_but_not_prefixed_is_guarded(monkeypatch):
-    """No `@`, no exemption — a bare name is still an unattested target."""
-    eg = _relay_env(monkeypatch)
-    assert eg.authorize_relay_target("telegram", "some_public_channel") is not None
 
 
 # ── code-only declines: the wire shape that has NO marker colon ─────────────
@@ -505,7 +419,7 @@ def test_code_only_prompt_decline_reaches_the_caller_as_a_decline(code_only_rela
     degrades to "failed" — the cue that triggers the text fallback into the
     chat the connector just refused.
     """
-    from gateway.run import _approval_send_outcome
+    from gateway.run import _prompt_send_outcome
 
     adapter, connector = code_only_relay
     result = asyncio.run(
@@ -523,7 +437,7 @@ def test_code_only_prompt_decline_reaches_the_caller_as_a_decline(code_only_rela
         def result(self, timeout=None):
             return result
 
-    assert _approval_send_outcome(_Fut(), timeout=1) == "declined"
+    assert _prompt_send_outcome(_Fut(), timeout=1) == "declined"
     # A prompt that never rendered must not stay pending.
     assert adapter._pending_prompts == {}
 
@@ -631,11 +545,14 @@ def test_declined_INITIAL_draft_is_not_retried_as_a_plain_send():
     StreamTransportMixin: ops were ['draft', 'send'].
     """
     from gateway.platforms.base import SendResult
+    from gateway.stream_consumer import GatewayStreamConsumer
     from gateway.stream_consumer_transport import StreamTransportMixin
 
     adapter, connector = _code_only_adapter()
 
     class _Consumer(StreamTransportMixin):
+        _first_send = GatewayStreamConsumer._first_send
+
         def __init__(self):
             self.adapter = adapter
             self.chat_id = "C1"

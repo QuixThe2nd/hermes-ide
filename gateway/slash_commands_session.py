@@ -112,7 +112,7 @@ def _strip_resume_name(parts: list[str]) -> str:
 class GatewaySessionCommandsMixin:
     """Session-transcript slash commands (/new, /resume, /sessions, /branch, /title, /save, /undo, /retry, /topic, /compress)."""
 
-    # ------------------------------------------------------------------ /new, /reset
+    # ------------------------------------------------------------------ /new
 
     async def _cleanup_old_agent_for_reset(self, session_key: str) -> None:
         """Close the old agent's tool resources (sandboxes, browsers, subprocesses) before eviction.
@@ -150,7 +150,7 @@ class GatewaySessionCommandsMixin:
         await self.hooks.emit("session:reset", dict(hook_payload))
 
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
-        """Handle /new or /reset command."""
+        """Handle /new by creating a fresh ordinary session."""
         source = event.source
         session_key = self._session_key_for_source(source)
         self._invalidate_session_run_generation(session_key, reason="session_reset")
@@ -192,17 +192,10 @@ class GatewaySessionCommandsMixin:
         else:  # no existing session: create one
             new_entry = await self.async_session_store.get_or_create_session(source, force_new=True)
             default_header = t("gateway.reset.header_new")
-        header = await asyncio.to_thread(self._telegram_topic_new_header, source) or default_header
+        header = default_header
         _title_arg = event.get_command_args().strip()
         if _title_arg and self._session_db and new_entry:
             header = await self._reset_titled_header(header, new_entry.session_id, _title_arg)
-        # Telegram DM topic lane: rebind (chat_id, thread_id) → session_id so the next message uses
-        # the fresh session instead of switching back to the old one.
-        if await asyncio.to_thread(self._is_telegram_topic_lane, source) and new_entry is not None:
-            try:
-                await asyncio.to_thread(self._record_telegram_topic_binding, source, new_entry)
-            except Exception:
-                logger.debug("Failed to rebind Telegram topic after /new", exc_info=True)
         _new_sid = new_entry.session_id if new_entry else None
         # Plugin on_session_reset hook (new session guaranteed to exist); best-effort.
         try:
@@ -479,7 +472,7 @@ class GatewaySessionCommandsMixin:
             return (
                 "🗜️ Nothing to compact: this session runs on the Codex app-server runtime, whose "
                 "context lives in a Codex-owned thread that only exists while the agent is active. "
-                "Send a message first, then /compress — or /reset to start fresh.")
+                "Send a message first, then /compress — or /new to start fresh.")
         compressor = getattr(agent, "context_compressor", None)
         count_before = getattr(compressor, "compression_count", 0)
         try:
@@ -493,7 +486,7 @@ class GatewaySessionCommandsMixin:
                 "unchanged by design — the app-server now carries the compacted context.")
         return (
             "⚠️ Codex app-server compaction did not complete — the thread is unchanged. Check the "
-            "app-server logs, retry /compress, or /reset for a clean session.")
+            "app-server logs, retry /compress, or /new for a clean session.")
 
     async def _handle_compress_command_inner(self, event: MessageEvent) -> str:
         """Handle /compress -- manually compress conversation context; ``/compress <focus>`` tells
@@ -622,82 +615,11 @@ class GatewaySessionCommandsMixin:
                     f"failed to persist compressed transcript for session {new_session_id}")
             session_entry.session_id = new_session_id
             await self.async_session_store._save()
-            await asyncio.to_thread(self._sync_telegram_topic_binding, source, session_entry,
-                                    reason="compress-command")
         elif not getattr(tmp_agent, "_last_compaction_in_place", False):
             logger.warning(
                 "Manual /compress: session rotation did not occur (session_id unchanged) and in-place "
                 "mode is off — preserving original transcript instead of overwriting it (#44794).")
         await self.async_session_store.update_session(session_entry.session_key, last_prompt_tokens=0)
-
-    # ------------------------------------------------------------------------ /topic
-
-    async def _handle_topic_command(self, event: MessageEvent, args: str = "") -> str:
-        """Handle /topic for Telegram DM user-managed topic sessions."""
-        source = event.source
-        if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
-            return t("gateway.topic.not_telegram_dm")
-        if not self._session_db:
-            return self._session_db_unavailable_reply()
-
-        # Defense in depth: /topic mutates SQLite side tables, so re-check the allowlist here.
-        try:
-            if not self._is_user_authorized_for_source(source):
-                return t("gateway.topic.unauthorized")
-        except Exception:
-            logger.debug("Topic auth check failed", exc_info=True)
-
-        args = event.get_command_args().strip()
-        if args.lower() in {"help", "?", "-h", "--help"}:
-            return self._telegram_topic_help_text()
-        if args.lower() in {"off", "disable", "stop"}:
-            return await self._disable_telegram_topic_mode_for_chat(source)
-        if args:
-            if not source.thread_id:
-                return t("gateway.topic.restore_needs_topic")
-            return await self._restore_telegram_topic_session(event, args)
-
-        capabilities = await self._get_telegram_topic_capabilities(source)
-        if capabilities.get("checked"):
-            blocked_key = None
-            if capabilities.get("has_topics_enabled") is False:
-                blocked_key = "gateway.topic.topics_disabled"
-            elif capabilities.get("allows_users_to_create_topics") is False:
-                blocked_key = "gateway.topic.topics_user_disallowed"
-            if blocked_key:  # debounced BotFather screenshot
-                if self._should_send_telegram_capability_hint(source):
-                    await self._send_telegram_topic_setup_image(source)
-                return t(blocked_key)
-
-        profile_name = self._telegram_topic_profile_name(source)
-        try:
-            await self._session_db.enable_telegram_topic_mode(
-                chat_id=str(source.chat_id), user_id=str(source.user_id), profile_name=profile_name,
-                has_topics_enabled=capabilities.get("has_topics_enabled"),
-                allows_users_to_create_topics=capabilities.get("allows_users_to_create_topics"))
-        except Exception as exc:
-            logger.exception("Failed to enable Telegram topic mode")
-            return t("gateway.topic.enable_failed", error=exc)
-
-        if not source.thread_id:
-            await self._ensure_telegram_system_topic(source)
-            return await self._telegram_topic_root_status_message(source)
-        try:
-            binding = await self._session_db.get_telegram_topic_binding(
-                chat_id=str(source.chat_id), thread_id=str(source.thread_id),
-                profile_name=profile_name)
-        except Exception:
-            logger.debug("Failed to read Telegram topic binding", exc_info=True)
-            binding = None
-        if not binding:
-            return t("gateway.topic.thread_ready")
-        session_id = str(binding.get("session_id") or "")
-        try:
-            title = await self._session_db.get_session_title(session_id)
-        except Exception:
-            title = None
-        return t("gateway.topic.bound_status", label=title or t("gateway.topic.untitled_session"),
-                 session_id=session_id)
 
     # ------------------------------------------------------------------ /save, /title
 
@@ -793,11 +715,6 @@ class GatewaySessionCommandsMixin:
                 return t("gateway.title.not_found")
         except ValueError as e:
             return t("gateway.shared.warn_passthrough", error=e)
-        # Mirror the title onto the Telegram forum topic name (auto titles already do this).
-        try:
-            await asyncio.to_thread(self._schedule_telegram_topic_title_rename, source, session_id, sanitized)
-        except Exception:
-            logger.debug("Failed to rename Telegram topic from /title", exc_info=True)
         return t("gateway.title.set_to", title=sanitized)
 
     # -------------------------------------------------------------- /resume, /sessions
@@ -859,7 +776,7 @@ class GatewaySessionCommandsMixin:
         """Handle /resume command — list or switch to a previous session."""
         if not self._session_db:
             return self._session_db_unavailable_reply()
-        source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
+        source = event.source
         session_key = self._session_key_for_source(source)
         try:
             parts = shlex.split(event.get_command_args().strip())
@@ -956,7 +873,7 @@ class GatewaySessionCommandsMixin:
             return "Usage: `/sessions search <query>`"
         if target:
             return await self._handle_resume_command(dataclasses.replace(event, text=f"/resume {target}"))
-        source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
+        source = event.source
         session_key = self._session_key_for_source(source)
         # `/sessions all` is admin-only like `/resume --all` (else any caller could enumerate other
         # origins' ids/titles/previews); a non-admin gets explicit feedback, not a silent narrowing.

@@ -14,17 +14,11 @@ source: https://developers.cloudflare.com/agents/model-context-protocol/cloudfla
 # We pin `?codemode=false` deliberately. The server's default mode fronts
 # the API through its own search()/execute() indirection ("Code Mode"),
 # where the model must query a spec index and then write JavaScript that
-# runs in a provider-side sandbox. Hermes already has progressive tool
-# disclosure (tool_search) — stacking a second, server-side search layer
-# on top of it would mean two search hops before any real call, and our
-# tool_search would only ever see 2 opaque meta-tools instead of the real
-# surface. With codemode=false the server registers each API endpoint as
-# its own tool (~3,300 as of July 2026) with a real JSON Schema derived
-# from the endpoint's path/query/body parameters. Hermes's tool_search
-# then defers the whole surface behind its bridge tools and searches the
-# FULL catalog with complete schemas — one disclosure layer, ours, with
-# total information. Calls go straight to the Cloudflare API; no sandbox
-# indirection.
+# runs in a provider-side sandbox. With codemode=false the server registers
+# each API endpoint as its own tool (~3,300 as of July 2026) with a real JSON
+# Schema derived from the endpoint's path/query/body parameters. Hermes
+# advertises the enabled tools directly and calls go straight to the
+# Cloudflare API; no sandbox or extra discovery indirection.
 transport:
   type: http
   url: https://mcp.cloudflare.com/mcp?codemode=false
@@ -110,9 +104,9 @@ post_install: |
   org-fleet, and read-only-analytics product families are disabled —
   ~1,400 tools), leaving ~1,900 tools for the products people actually
   drive from an agent: DNS, Workers, R2, KV, D1, Queues, Pages, WAF,
-  rulesets, tunnels, Access, Stream, Images, AI, Vectorize. Hermes's
-  tool_search defers them all, so your context is not flooded — the agent
-  discovers the right endpoint on demand with full schemas.
+  rulesets, tunnels, Access, Stream, Images, AI, Vectorize. Enabled tools
+  appear directly in the session with their full schemas; use the exclusion
+  configuration to keep the advertised surface focused.
 
   Run a Zero Trust org or want Radar/Magic/API-Shield surfaces back?
   Delete their patterns from mcp_servers.cloudflare.tools.exclude in
@@ -130,8 +124,8 @@ post_install: |
 
   Prefer the provider-side Code Mode surface instead (2 search/execute
   meta-tools, ~1k-token schema, sandboxed JS composition)? Drop the
-  `?codemode=false` from the url. Not recommended together with Hermes
-  tool_search — you'd be stacking two tool-discovery layers.
+  `?codemode=false` from the url. That chooses Cloudflare's discovery and
+  execution layer instead of direct endpoint tools.
 
   Cloudflare also runs product-specific MCP servers (same OAuth flow, add
   manually via `hermes mcp add <name> --url <url>` if you want a narrower

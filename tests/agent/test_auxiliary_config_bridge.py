@@ -25,8 +25,6 @@ def _run_auxiliary_bridge(config_dict, monkeypatch):
     for key in (
         "AUXILIARY_VISION_PROVIDER", "AUXILIARY_VISION_MODEL",
         "AUXILIARY_VISION_BASE_URL", "AUXILIARY_VISION_API_KEY",
-        "AUXILIARY_APPROVAL_PROVIDER", "AUXILIARY_APPROVAL_MODEL",
-        "AUXILIARY_APPROVAL_BASE_URL", "AUXILIARY_APPROVAL_API_KEY",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -41,12 +39,6 @@ def _run_auxiliary_bridge(config_dict, monkeypatch):
                 "model": "AUXILIARY_VISION_MODEL",
                 "base_url": "AUXILIARY_VISION_BASE_URL",
                 "api_key": "AUXILIARY_VISION_API_KEY",
-            },
-            "approval": {
-                "provider": "AUXILIARY_APPROVAL_PROVIDER",
-                "model": "AUXILIARY_APPROVAL_MODEL",
-                "base_url": "AUXILIARY_APPROVAL_BASE_URL",
-                "api_key": "AUXILIARY_APPROVAL_API_KEY",
             },
         }
         for task_key, env_map in aux_task_env.items():
@@ -85,32 +77,11 @@ class TestAuxiliaryConfigBridge:
         # auto provider should not be set
         assert os.environ.get("AUXILIARY_VISION_PROVIDER") is None
 
-    def test_approval_bridged(self, monkeypatch):
-        config = {
-            "auxiliary": {
-                "approval": {"provider": "nous", "model": "gemini-2.5-flash"},
-            }
-        }
-        _run_auxiliary_bridge(config, monkeypatch)
-        assert os.environ.get("AUXILIARY_APPROVAL_PROVIDER") == "nous"
-        assert os.environ.get("AUXILIARY_APPROVAL_MODEL") == "gemini-2.5-flash"
 
 
 
 
 
-    def test_mixed_tasks(self, monkeypatch):
-        config = {
-            "auxiliary": {
-                "vision": {"provider": "openrouter", "model": ""},
-                "approval": {"provider": "auto", "model": "custom-llm"},
-            }
-        }
-        _run_auxiliary_bridge(config, monkeypatch)
-        assert os.environ.get("AUXILIARY_VISION_PROVIDER") == "openrouter"
-        assert os.environ.get("AUXILIARY_VISION_MODEL") is None
-        assert os.environ.get("AUXILIARY_APPROVAL_PROVIDER") is None
-        assert os.environ.get("AUXILIARY_APPROVAL_MODEL") == "custom-llm"
 
 
 

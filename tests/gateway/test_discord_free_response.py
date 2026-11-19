@@ -189,6 +189,16 @@ class FakeHistoryChannel(FakeTextChannel):
         return _iter()
 
 
+class FakeHistoryThread(FakeThread):
+    """A Discord thread fake whose history honors before/after snowflakes."""
+
+    history = FakeHistoryChannel.history
+
+    def __init__(self, history_messages, **kwargs):
+        super().__init__(**kwargs)
+        self._history_messages = list(history_messages)
+
+
 @pytest.mark.asyncio
 async def test_discord_free_response_in_server_channels(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
@@ -578,6 +588,159 @@ async def test_fetch_channel_context_skips_self_improvement_boundary_message(ada
     )
 
 
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_cold_retains_human_pasted_jev_notice(adapter, monkeypatch):
+    """Cold recovery keeps a human-quoted notice line and drops the bot's own.
+
+    The ``🔎 jev`` textual fallback is provenance-scoped: only a message the
+    owning bot authored is excluded. A human pasting the identical notice text
+    is ordinary conversational history and must survive a cold recovery (no
+    tracked ids, no metadata) — the no-prefix-blanket-suppression contract.
+    """
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter.config.extra["history_backfill_limit"] = 10
+
+    notice = (
+        "🔎 jev response-gate user message from Alice: deny "
+        "(addresses_bot=0.09 continues_bot_thread=0.88 joins_bot_thread=0.02 noise=0.75)"
+    )
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+
+    channel = FakeHistoryChannel(
+        [
+            make_history_message(author=human, content="ordinary human control", msg_id=3),
+            make_history_message(author=human, content=notice, msg_id=2),
+            make_history_message(author=adapter._client.user, content=notice, msg_id=1),
+        ],
+        channel_id=123,
+    )
+
+    result = await adapter._fetch_channel_context(
+        channel, before=make_message(channel=channel, content="trigger")
+    )
+
+    assert result == (
+        "[Recent channel messages]\n"
+        f"[Alice] {notice}\n"
+        "[Alice] ordinary human control"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_cold_retains_human_pasted_goal_intent_status(adapter, monkeypatch):
+    """Cold recovery keeps a human-quoted fenced status and drops the bot's own.
+
+    The goal-intent notice is a fenced code block, so the exclusion must
+    match the fence lines themselves (a bare ``🔎`` marker never appears in
+    it). A human quoting the block is ordinary history and must survive a
+    cold recovery; the bot's identical copy must not.
+    """
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter.config.extra["history_backfill_limit"] = 10
+
+    status = "```\n🔍 Goal Intent: 0.91 Confidence\n```"
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+
+    channel = FakeHistoryChannel(
+        [
+            make_history_message(author=human, content="ordinary human control", msg_id=3),
+            make_history_message(author=human, content=status, msg_id=2),
+            make_history_message(author=adapter._client.user, content=status, msg_id=1),
+        ],
+        channel_id=123,
+    )
+
+    result = await adapter._fetch_channel_context(
+        channel, before=make_message(channel=channel, content="trigger")
+    )
+
+    assert result == (
+        "[Recent channel messages]\n"
+        f"[Alice] {status}\n"
+        "[Alice] ordinary human control"
+    )
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_reply_window_scopes_jev_notice_by_provenance(adapter, monkeypatch):
+    """The reply-anchored window (filtered by ``_keep`` alone) scopes the same way.
+
+    The reply scan has no cold-scan pre-partition check, so this exercises the
+    second exclusion site directly: our own notice line stays out of the
+    hydrated context while the human's identical quote of it comes through.
+    """
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter.config.extra["history_backfill_limit"] = 10
+    adapter._client = SimpleNamespace(
+        user=SimpleNamespace(id=999, name="hermes", display_name="Hermes")
+    )
+
+    notice = "🔎 jev reaction-gate user message from Tek: react 🔥 (abstain 0.10)"
+    bot_user = adapter._client.user
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+
+    channel = FakeHistoryChannel(
+        [
+            make_history_message(author=human, content="latest note", msg_id=6),
+            make_history_message(author=bot_user, content="our prior response", msg_id=5),
+            make_history_message(author=bot_user, content="the bot answer being replied to", msg_id=4),
+            make_history_message(author=human, content=notice, msg_id=3),
+            make_history_message(author=bot_user, content=notice, msg_id=2),
+            make_history_message(author=human, content="older question", msg_id=1),
+        ],
+        channel_id=123,
+    )
+
+    reply_target = SimpleNamespace(id=4)
+    trigger = make_message(channel=channel, content="follow-up about that")
+
+    result = await adapter._fetch_channel_context(channel, before=trigger, reply_target=reply_target)
+
+    assert result == (
+        "[Context around the replied-to message]\n"
+        "[Alice] older question\n"
+        f"[Alice] {notice}\n"
+        "[Hermes] the bot answer being replied to\n"
+        "\n[Recent channel messages]\n"
+        "[Alice] latest note"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_warm_tracked_notice_id_still_excludes(adapter, monkeypatch):
+    """Warm state keeps the trusted tracked-id exclusion author-independent.
+
+    The tracker holds the id our own notice send produced; the human's quote
+    has a different id and no metadata and must survive despite identical
+    text. Trusted exclusion (tracked ids, metadata flags) never depended on
+    authorship and must keep working when the textual fallback is scoped.
+    """
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter.config.extra["history_backfill_limit"] = 10
+
+    notice = "```\n🔍 Goal Intent: 0.91 Confidence\n```"
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+
+    channel = FakeHistoryChannel(
+        [
+            make_history_message(author=human, content="ordinary human control", msg_id=3),
+            make_history_message(author=human, content=notice, msg_id=2),
+            make_history_message(author=adapter._client.user, content=notice, msg_id=1),
+        ],
+        channel_id=123,
+    )
+    await adapter._nonconversational_messages.mark_many(["1"])
+
+    result = await adapter._fetch_channel_context(
+        channel, before=make_message(channel=channel, content="trigger")
+    )
+
+    assert result == (
+        "[Recent channel messages]\n"
+        f"[Alice] {notice}\n"
+        "[Alice] ordinary human control"
+    )
+
 @pytest.mark.asyncio
 async def test_fetch_channel_context_hydrates_around_reply_target(adapter, monkeypatch):
     """Replying to an older message pulls the surrounding exchange into context.
@@ -654,6 +817,134 @@ async def test_fetch_channel_context_reply_target_in_primary_window_not_duplicat
     # No separate reply block, and the target text appears exactly once.
     assert "[Context around the replied-to message]" not in result
     assert result.count("recent reply target") == 1
+
+
+@pytest.mark.asyncio
+async def test_incognito_thread_backfill_starts_at_starter_and_excludes_old_reply(adapter):
+    adapter.config.extra["history_backfill_limit"] = 10
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    thread = FakeHistoryThread(
+        [
+            make_history_message(author=human, content="after starter", msg_id=202),
+            make_history_message(author=human, content="thread starter", msg_id=200),
+            make_history_message(author=human, content="before starter", msg_id=199),
+        ],
+        channel_id=200,
+    )
+    history_calls = []
+    real_history = thread.history
+
+    def recording_history(**kwargs):
+        history_calls.append(dict(kwargs))
+        # Simulate a transport/test double that ignores after=: the local guard must still hold.
+        forwarded = dict(kwargs)
+        forwarded.pop("after", None)
+        return real_history(**forwarded)
+
+    thread.history = recording_history
+    trigger = make_message(channel=thread, content="current")
+    trigger.id = 300
+
+    result = await adapter._fetch_channel_context(
+        thread,
+        before=trigger,
+        reply_target=SimpleNamespace(id=150),
+        incognito=True,
+    )
+
+    assert result == "[Recent channel messages]\n[Alice] thread starter\n[Alice] after starter"
+    assert "before starter" not in result
+    assert "[Context around the replied-to message]" not in result
+    assert history_calls[0]["after"].id == 199
+
+
+@pytest.mark.asyncio
+async def test_incognito_reply_window_also_enforces_starter_bound(adapter):
+    adapter.config.extra["history_backfill_limit"] = 10
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    thread = FakeHistoryThread(
+        [
+            make_history_message(author=adapter._client.user, content="bot partition", msg_id=203),
+            make_history_message(author=human, content="reply target", msg_id=202),
+            make_history_message(author=human, content="thread starter", msg_id=200),
+            make_history_message(author=human, content="before starter", msg_id=199),
+        ],
+        channel_id=200,
+    )
+    history_calls = []
+    real_history = thread.history
+
+    def recording_history(**kwargs):
+        history_calls.append(dict(kwargs))
+        forwarded = dict(kwargs)
+        forwarded.pop("after", None)
+        return real_history(**forwarded)
+
+    thread.history = recording_history
+    trigger = make_message(channel=thread, content="current")
+    trigger.id = 300
+
+    result = await adapter._fetch_channel_context(
+        thread, before=trigger, reply_target=SimpleNamespace(id=202), incognito=True,
+    )
+
+    assert "reply target" in result
+    assert "thread starter" in result
+    assert "before starter" not in result
+    assert history_calls[1]["after"].id == 199
+
+@pytest.mark.asyncio
+async def test_incognito_non_thread_backfill_is_empty_without_reading_history(adapter):
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    channel = FakeHistoryChannel(
+        [make_history_message(author=human, content="old channel secret", msg_id=1)],
+        channel_id=123,
+    )
+    channel.history = MagicMock(side_effect=AssertionError("history must not be read"))
+
+    result = await adapter._fetch_channel_context(
+        channel, before=make_message(channel=channel, content="current"), incognito=True,
+    )
+
+    assert result == ""
+    channel.history.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_incognito_discord_event_keeps_only_bounded_thread_context(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    adapter.config.extra["history_backfill"] = True
+    adapter.gateway_runner = SimpleNamespace(_is_session_incognito=lambda _source: True)
+    human = SimpleNamespace(id=42, display_name="Jezza", name="Jezza", bot=False)
+    parent = FakeTextChannel(channel_id=100)
+    thread = FakeHistoryThread(
+        [
+            make_history_message(author=human, content="thread starter", msg_id=200),
+            make_history_message(author=human, content="before starter", msg_id=199),
+        ],
+        channel_id=200,
+        parent=parent,
+    )
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=thread,
+        content=f"<@{bot_user.id}> current",
+        mentions=[bot_user],
+    )
+    message.id = 300
+    message.reference = SimpleNamespace(
+        message_id=150,
+        channel_id=100,
+        resolved=SimpleNamespace(id=150, content="parent channel secret", attachments=[]),
+    )
+
+    await adapter._handle_message(message)
+
+    event = adapter.handle_message.await_args.args[0]
+    assert event.channel_context == "[Recent channel messages]\n[Jezza] thread starter"
+    assert event._incognito_context_bounded is True
+    assert event.reply_to_text is None
+    assert event._incognito_reply_bounded is False
 
 
 def test_nonconversational_fallback_requires_self_improvement_emoji():
@@ -896,6 +1187,63 @@ async def test_discord_send_does_not_cache_nonconversational_status_as_history_b
     assert adapter._last_self_message_id["777"] == "111"
     assert "222" in adapter._nonconversational_messages
 
+
+@pytest.mark.asyncio
+async def test_discord_send_does_not_cache_jev_notice_as_history_boundary(adapter):
+    """A jev notice line sent without metadata must not move the boundary either.
+
+    Production notice sends carry ``non_conversational_history`` metadata, but
+    the textual fallback at the send sites must keep treating a ``🔎 jev``
+    line as non-conversational when metadata is missing: a recovered notice
+    must never become the last-self-message partition.
+    """
+
+    class SendingChannel(FakeTextChannel):
+        async def send(self, content, reference=None):
+            return SimpleNamespace(id=333)
+
+    channel = SendingChannel(channel_id=778)
+    adapter._client = SimpleNamespace(
+        user=adapter._client.user,
+        get_channel=lambda channel_id: channel if channel_id == 778 else None,
+        fetch_channel=AsyncMock(return_value=channel),
+    )
+    adapter._last_self_message_id["778"] = "111"
+
+    result = await adapter.send(
+        "778",
+        "🔎 jev response-gate user message from Alice: allow "
+        "(addresses_bot=0.91 continues_bot_thread=0.12 joins_bot_thread=0.03 noise=0.05)",
+    )
+
+    assert result.success is True
+    assert adapter._last_self_message_id["778"] == "111"
+
+
+@pytest.mark.asyncio
+async def test_discord_send_does_not_cache_goal_intent_status_as_history_boundary(adapter):
+    """The fenced goal-intent status must not move the boundary either.
+
+    The status block carries no ``🔎 jev`` prefix line, so the textual
+    fallback must recognize the fence itself, not the single-line marker.
+    """
+
+    class SendingChannel(FakeTextChannel):
+        async def send(self, content, reference=None):
+            return SimpleNamespace(id=333)
+
+    channel = SendingChannel(channel_id=778)
+    adapter._client = SimpleNamespace(
+        user=adapter._client.user,
+        get_channel=lambda channel_id: channel if channel_id == 778 else None,
+        fetch_channel=AsyncMock(return_value=channel),
+    )
+    adapter._last_self_message_id["778"] = "111"
+
+    result = await adapter.send("778", "```\n🔍 Goal Intent: 0.90 Confidence\n```")
+
+    assert result.success is True
+    assert adapter._last_self_message_id["778"] == "111"
 
 @pytest.mark.asyncio
 async def test_discord_shared_channel_backfill_prepends_context(adapter, monkeypatch):

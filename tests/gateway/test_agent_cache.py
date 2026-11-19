@@ -35,8 +35,8 @@ class TestAgentConfigSignature:
 
         runtime = {"api_key": "sk-test12345678", "base_url": "https://openrouter.ai/api/v1",
                     "provider": "openrouter"}
-        sig1 = GatewayRunner._agent_config_signature("claude-sonnet-4", runtime, ["hermes-telegram"], "")
-        sig2 = GatewayRunner._agent_config_signature("claude-opus-4.6", runtime, ["hermes-telegram"], "")
+        sig1 = GatewayRunner._agent_config_signature("claude-sonnet-4", runtime, ["hermes-matrix"], "")
+        sig2 = GatewayRunner._agent_config_signature("claude-opus-4.6", runtime, ["hermes-matrix"], "")
         assert sig1 != sig2
 
     def test_same_token_prefix_different_full_token_changes_signature(self):
@@ -57,8 +57,8 @@ class TestAgentConfigSignature:
         }
 
         assert rt1["api_key"][:8] == rt2["api_key"][:8]
-        sig1 = GatewayRunner._agent_config_signature("gpt-5.3-codex", rt1, ["hermes-telegram"], "")
-        sig2 = GatewayRunner._agent_config_signature("gpt-5.3-codex", rt2, ["hermes-telegram"], "")
+        sig1 = GatewayRunner._agent_config_signature("gpt-5.3-codex", rt1, ["hermes-matrix"], "")
+        sig2 = GatewayRunner._agent_config_signature("gpt-5.3-codex", rt2, ["hermes-matrix"], "")
         assert sig1 != sig2
 
     def test_provider_change_different_signature(self):
@@ -66,8 +66,8 @@ class TestAgentConfigSignature:
 
         rt1 = {"api_key": "sk-test12345678", "base_url": "https://openrouter.ai/api/v1", "provider": "openrouter"}
         rt2 = {"api_key": "sk-test12345678", "base_url": "https://api.anthropic.com", "provider": "anthropic"}
-        sig1 = GatewayRunner._agent_config_signature("claude-sonnet-4", rt1, ["hermes-telegram"], "")
-        sig2 = GatewayRunner._agent_config_signature("claude-sonnet-4", rt2, ["hermes-telegram"], "")
+        sig1 = GatewayRunner._agent_config_signature("claude-sonnet-4", rt1, ["hermes-matrix"], "")
+        sig2 = GatewayRunner._agent_config_signature("claude-sonnet-4", rt2, ["hermes-matrix"], "")
         assert sig1 != sig2
 
     def test_capability_change_different_signature(self):
@@ -301,17 +301,17 @@ class TestAgentCacheLifecycle:
         from run_agent import AIAgent
 
         runner = _make_runner()
-        session_key = "telegram:12345"
+        session_key = "discord:12345"
         runtime = {"api_key": "test", "base_url": "https://openrouter.ai/api/v1",
                     "provider": "openrouter", "api_mode": "chat_completions"}
-        sig = runner._agent_config_signature("anthropic/claude-sonnet-4", runtime, ["hermes-telegram"], "")
+        sig = runner._agent_config_signature("anthropic/claude-sonnet-4", runtime, ["hermes-matrix"], "")
 
         # First message — create and cache
         agent1 = AIAgent(
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True, skip_context_files=True,
-            skip_memory=True, platform="telegram",
+            skip_memory=True, platform="discord",
         )
         with runner._agent_cache_lock:
             runner._agent_cache[session_key] = (agent1, sig)
@@ -329,7 +329,7 @@ class TestAgentCacheLifecycle:
         from run_agent import AIAgent
 
         runner = _make_runner()
-        session_key = "telegram:12345"
+        session_key = "discord:12345"
 
         agent = AIAgent(
             model="anthropic/claude-sonnet-4", api_key="test",
@@ -572,7 +572,7 @@ class TestAgentCacheSpilloverLive:
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True,
             skip_context_files=True, skip_memory=True,
-            platform="telegram",
+            platform="discord",
         )
 
     def test_fill_to_cap_then_spillover(self, monkeypatch):
@@ -612,7 +612,7 @@ class TestAgentCacheSpilloverLive:
 class TestAgentCacheIdleResume:
     """End-to-end: idle-TTL-evicted session resumes cleanly with task state.
 
-    Real-world scenario: user leaves a Telegram session open for 2+ hours.
+    Real-world scenario: user leaves a messaging session open for 2+ hours.
     Idle-TTL evicts their cached agent.  They come back and send a message.
     The new agent built for the same session_id must inherit:
       - Conversation history (from SessionStore — outside cache concern)
@@ -849,7 +849,7 @@ class TestCachedAgentInactivityReset:
 class TestAgentConfigSignatureUserId:
     """Shared-thread cache must not reuse an agent across users.
 
-    HonchoSessionManager freezes the resolved runtime user identity at
+    The memory provider freezes the resolved runtime user identity at
     first-message init.  When the gateway session_key omits the participant
     ID (``thread_sessions_per_user=False``), a cached AIAgent created by
     user A would otherwise be reused for user B, attributing B's writes to
@@ -871,10 +871,10 @@ class TestAgentConfigSignatureUserId:
         from gateway.run import GatewayRunner
         runtime = {"provider": "anthropic", "api_key": "k", "base_url": "", "api_mode": "chat_completions"}
         sig_implicit = GatewayRunner._agent_config_signature(
-            "claude-sonnet-4", runtime, ["hermes-telegram"], "",
+            "claude-sonnet-4", runtime, ["hermes-matrix"], "",
         )
         sig_explicit_none = GatewayRunner._agent_config_signature(
-            "claude-sonnet-4", runtime, ["hermes-telegram"], "",
+            "claude-sonnet-4", runtime, ["hermes-matrix"], "",
             user_id=None, user_id_alt=None,
         )
         assert sig_implicit == sig_explicit_none
@@ -935,28 +935,28 @@ class TestAgentCacheMessageCountRebaseline:
         from hermes_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "sessions.db")
-        db.create_session("s1", source="telegram")
+        db.create_session("s1", source="discord")
         runner = self._runner_with_db(db)
         agent = object()
 
         with runner._agent_cache_lock:
             _row = db.get_session("s1")
-            runner._agent_cache["telegram:s1"] = (
+            runner._agent_cache["discord:s1"] = (
                 agent, "sig", (_row.get("message_count", 0) if _row else 0),
             )
 
         # Our own turn + re-baseline -> reuse next turn.
         db.append_message("s1", role="user", content="u")
         db.append_message("s1", role="assistant", content="a")
-        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
-        assert self._guard_would_reuse(runner, "telegram:s1", "s1") is True
+        await runner._refresh_agent_cache_message_count("discord:s1", "s1")
+        assert self._guard_would_reuse(runner, "discord:s1", "s1") is True
 
         # ANOTHER process (e.g. the desktop dashboard backend) appends a turn
         # to the SAME session in the shared DB — we have NOT re-baselined for it.
         db.append_message("s1", role="user", content="external from dashboard")
 
         # Guard must now reject reuse so the agent rebuilds from fresh disk.
-        assert self._guard_would_reuse(runner, "telegram:s1", "s1") is False
+        assert self._guard_would_reuse(runner, "discord:s1", "s1") is False
 
 
     @pytest.mark.asyncio
@@ -981,7 +981,7 @@ class TestAgentCacheMessageCountRebaseline:
         from hermes_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "sessions.db")
-        db.create_session("s1", source="telegram")
+        db.create_session("s1", source="discord")
         runner = self._runner_with_db(db)
         agent = object()
 
@@ -989,7 +989,7 @@ class TestAgentCacheMessageCountRebaseline:
         _row = db.get_session("s1")
         build_count = _row.get("message_count", 0) if _row else 0
         with runner._agent_cache_lock:
-            runner._agent_cache["telegram:s1"] = (agent, "sig", build_count)
+            runner._agent_cache["discord:s1"] = (agent, "sig", build_count)
 
         # First turn flushes its own user + assistant rows.
         db.append_message("s1", role="user", content="u")
@@ -997,15 +997,15 @@ class TestAgentCacheMessageCountRebaseline:
 
         # Bug reproduction: re-entering the guard at the in-band follow-up
         # boundary WITHOUT the re-baseline sees the grown count and rebuilds.
-        assert self._guard_would_reuse(runner, "telegram:s1", "s1") is False
+        assert self._guard_would_reuse(runner, "discord:s1", "s1") is False
 
         # The fix: re-baseline at the follow-up boundary.
-        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        await runner._refresh_agent_cache_message_count("discord:s1", "s1")
 
         # The in-band follow-up now REUSES the cached, warm-prefix agent.
-        assert self._guard_would_reuse(runner, "telegram:s1", "s1") is True
+        assert self._guard_would_reuse(runner, "discord:s1", "s1") is True
         with runner._agent_cache_lock:
-            assert runner._agent_cache["telegram:s1"][0] is agent
+            assert runner._agent_cache["discord:s1"][0] is agent
 
 
 class TestCrossProcessInvalidationDefersCleanup:
@@ -1077,9 +1077,9 @@ class TestCrossProcessInvalidationDefersCleanup:
 
         old_agent = MagicMock()
         with runner._agent_cache_lock:
-            runner._agent_cache["telegram:s1"] = (old_agent, "sig", 3)
+            runner._agent_cache["discord:s1"] = (old_agent, "sig", 3)
 
-        self._evict_like_production(runner, "telegram:s1")
+        self._evict_like_production(runner, "discord:s1")
 
         # Wait until the (blocking) cleanup is mid-flight.
         assert cleanup_started.wait(timeout=2.0)
@@ -1094,5 +1094,5 @@ class TestCrossProcessInvalidationDefersCleanup:
         release_lock.set()
 
         # Stale entry was popped, hard-teardown path never used.
-        assert "telegram:s1" not in runner._agent_cache
+        assert "discord:s1" not in runner._agent_cache
         runner._cleanup_agent_resources.assert_not_called()

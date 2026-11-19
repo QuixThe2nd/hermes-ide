@@ -19,8 +19,8 @@ transport:
 auth:
   type: oauth
 
-# Excluded: vendor skill-discovery pair (instruction-loading indirection —
-# Hermes skills/tool_search cover this).
+# Excluded: vendor skill-discovery pair; Hermes skills provide instruction
+# loading and the remaining Calendly tools are advertised directly.
 tools:
   default_excluded:
     - list_calendly_skills

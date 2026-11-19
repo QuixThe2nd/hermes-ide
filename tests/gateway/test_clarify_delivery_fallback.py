@@ -2,8 +2,8 @@
 not pass for user inactivity (#112684).
 
 Real ``TurnRunner._clarify_callback_sync`` + real ``tools.clarify_gateway`` + a real gateway loop
-thread; the adapter is Telegram-shaped (``SendResult`` shapes from
-``plugins/platforms/telegram/adapter.py::_send_prompt``) with a native ``send_clarify`` override.
+thread; the adapter is platform-shaped (``SendResult`` shapes from the base
+contract) with a native ``send_clarify`` override.
 """
 
 import asyncio

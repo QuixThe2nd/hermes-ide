@@ -25,14 +25,14 @@ def _reset_logging_state():
     """Reset the module-level sentinel and clean up root logger handlers
     added by setup_logging() so tests don't leak state.
 
-    Under xdist (-n auto) other test modules may have called setup_logging()
-    in the same worker process, leaving RotatingFileHandlers on the root
-    logger.  We strip ALL RotatingFileHandlers before each test so the count
-    assertions are stable regardless of test ordering.
+    Under a shared-process run, other test modules may have called
+    setup_logging() in the same process, leaving RotatingFileHandlers on the
+    root logger.  We strip ALL RotatingFileHandlers before each test so the
+    count assertions are stable regardless of test ordering.
     """
     hermes_logging._logging_initialized = False
     # File handlers now live behind the async QueueListener, not on the root
-    # logger; tear down any leaked from other xdist tests in this worker.
+    # logger; tear down any leaked from other tests in this process.
     hermes_logging._reset_queued_handlers()
     root = logging.getLogger()
     prev_root_level = root.level
@@ -138,9 +138,8 @@ class TestSetupLogging:
         assert "profile-routed cron record" in (
             profile_home / "logs" / "agent.log"
         ).read_text()
-        assert "profile-routed cron record" not in (
-            hermes_home / "logs" / "agent.log"
-        ).read_text()
+        default_log = hermes_home / "logs" / "agent.log"
+        assert not default_log.exists() or "profile-routed cron record" not in default_log.read_text()
 
     def test_release_profile_log_handlers_closes_only_deleted_profile(self, hermes_home, tmp_path):
         """Profile deletion releases its routed log files without disturbing another profile."""
@@ -314,14 +313,14 @@ class TestGatewayMode:
         """gateway.log captures records from gateway.* loggers."""
         hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
 
-        gw_logger = logging.getLogger("plugins.platforms.telegram.adapter")
-        gw_logger.info("telegram connected")
+        gw_logger = logging.getLogger("plugins.platforms.discord.adapter")
+        gw_logger.info("discord connected")
 
         hermes_logging.flush_log_queue()
 
         gw_log = hermes_home / "logs" / "gateway.log"
         assert gw_log.exists()
-        assert "telegram connected" in gw_log.read_text()
+        assert "discord connected" in gw_log.read_text()
 
     def test_gateway_log_rejects_non_gateway_records(self, hermes_home):
         """gateway.log does NOT capture records from tools.*, agent.*, etc."""
@@ -361,7 +360,7 @@ class TestGuiMode:
     def test_gui_log_receives_only_gui_components(self, hermes_home):
         hermes_logging.setup_logging(hermes_home=hermes_home, mode="gui")
 
-        logging.getLogger("hermes_cli.web_server").info("dashboard online")
+        logging.getLogger("tui_gateway.server").info("tui online")
         logging.getLogger("tui_gateway.ws").info("ws connected")
         logging.getLogger("gateway.run").info("gateway event")
 
@@ -491,6 +490,7 @@ class TestAddRotatingHandler:
         assert "[factory_test]" in content
 
         # Clean up
+    @pytest.mark.platforms("linux")
     def test_managed_mode_initial_open_sets_group_writable(self, tmp_path):
         log_path = tmp_path / "managed-open.log"
         formatter = logging.Formatter("%(message)s")
@@ -527,7 +527,7 @@ class TestWindowsConcurrentLogLockTimeout:
         logger.addHandler(handler)
         return logger, handler
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_helper_only_matches_windows_concurrent_lock_timeout(self):
         # Windows-only: concurrent-log-handler (and therefore its cross-process
         # lock timeout) is only installed on Windows — faking sys.platform
@@ -539,7 +539,7 @@ class TestWindowsConcurrentLogLockTimeout:
             RuntimeError("some other logging failure")
         )
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_helper_never_matches_off_windows(self):
         # On POSIX the suppression must stay inert: stdlib RotatingFileHandler
         # is in use, so this RuntimeError text is never a CLH lock timeout.
@@ -547,7 +547,7 @@ class TestWindowsConcurrentLogLockTimeout:
             RuntimeError("Cannot acquire lock after 20 attempts")
         )
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_lock_timeout_routed_to_handle_error_is_suppressed(self, tmp_path, capsys):
         """Mirror CLH's real control flow.
 

@@ -134,7 +134,7 @@ class TestDurableDeadline:
 
     def test_fresh_compressors_resume_the_same_window(self, tmp_path):
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session(session_id="sess-1", source="telegram")
+        db.create_session(session_id="sess-1", source="discord")
         db.set_compression_ineffective_count("sess-1", 2)
         base = 5000.0
         first = self._bound(db)
@@ -160,7 +160,7 @@ class TestDurableDeadline:
 
     def test_fresh_compressor_inside_window_stays_blocked(self, tmp_path):
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session(session_id="sess-1", source="telegram")
+        db.create_session(session_id="sess-1", source="discord")
         db.set_compression_ineffective_count("sess-1", 2)
         base = 5000.0
         first = self._bound(db)
@@ -173,7 +173,7 @@ class TestDurableDeadline:
 
     def test_backward_clock_jump_is_bounded_to_one_window(self, tmp_path):
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session(session_id="sess-1", source="telegram")
+        db.create_session(session_id="sess-1", source="discord")
         db.set_compression_ineffective_count("sess-1", 2)
         window = ContextCompressor._ANTI_THRASH_RECOVERY_SECONDS
         db.set_compression_recovery_deadline("sess-1", 1_000_000.0)
@@ -185,7 +185,7 @@ class TestDurableDeadline:
 
     def test_clearing_the_guard_disarms_the_durable_deadline(self, tmp_path):
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session(session_id="sess-1", source="telegram")
+        db.create_session(session_id="sess-1", source="discord")
         db.set_compression_ineffective_count("sess-1", 2)
         cc = self._bound(db)
         with patch("agent.context_compressor.time.time", return_value=5000.0):

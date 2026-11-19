@@ -7,9 +7,8 @@ Two halves:
    RUNNING event loop — the desktop dashboard shape) spawns a fresh thread that
    did not inherit the profile ContextVars; it must run inside a copy of the
    active context so the sender reads THIS profile's home + secrets.
-2. The desktop ticker must stand down, per tick, for a profile whose OWN
-   gateway is running — that gateway ticks it with live adapters, and racing it
-   on the tick lock lets the adapter-less desktop ticker deliver standalone.
+2. The multiplex ticker must stand down, per tick, for a profile whose OWN
+   gateway is running — that gateway ticks it with live adapters.
 """
 import asyncio
 import threading
@@ -33,24 +32,24 @@ def test_standalone_fallback_pool_keeps_profile_scope(tmp_path, monkeypatch):
     sec_home = tmp_path / "profiles" / "ops"
     for home in (default_home, sec_home):
         (home / "cron").mkdir(parents=True)
-        (home / "config.yaml").write_text("platforms:\n  telegram:\n    enabled: true\n")
+        (home / "config.yaml").write_text("platforms:\n  discord:\n    enabled: true\n")
     monkeypatch.setenv("HERMES_HOME", str(default_home))
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "DEFAULT-TOKEN")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "DEFAULT-TOKEN")
     set_multiplex_active(True)
 
     seen = {}
 
     async def fake_send(platform, pconfig, chat_id, message, **kwargs):
         seen["home"] = str(get_hermes_home())
-        seen["token"] = get_secret("TELEGRAM_BOT_TOKEN", None)
+        seen["token"] = get_secret("DISCORD_BOT_TOKEN", None)
         return {"success": True, "message_id": "1"}
 
-    job = {"id": "j1", "name": "probe", "deliver": "telegram:12345", "schedule": {"kind": "cron"}}
+    job = {"id": "j1", "name": "probe", "deliver": "discord:12345", "schedule": {"kind": "cron"}}
 
     async def _inside_running_loop():
         # Emulate the multiplex ticker's per-profile scope on the caller.
         set_hermes_home_override(str(sec_home))
-        set_secret_scope({"TELEGRAM_BOT_TOKEN": "OPS-TOKEN"})
+        set_secret_scope({"DISCORD_BOT_TOKEN": "OPS-TOKEN"})
         return sched._deliver_result(job, "hello", adapters={}, loop=None)
 
     try:
@@ -105,52 +104,3 @@ def test_multiplex_ticker_profile_gate_skips_rejected_profile(tmp_path):
     # gateway owns that status surface.
     assert not (own_gateway / "cron" / "ticker_last_success").exists()
     assert (orphan / "cron" / "ticker_last_success").exists()
-
-
-@pytest.mark.parametrize("profile_count", [1, 2])
-def test_desktop_ticker_gates_on_profile_gateway_running(tmp_path, monkeypatch, profile_count):
-    """Desktop yields to each live gateway, including a single-profile install."""
-    from hermes_cli import web_server
-
-    homes = [("default", tmp_path / "default"), ("ops", tmp_path / "ops")][:profile_count]
-    running = {homes[-1][1]}
-    monkeypatch.setattr(
-        "hermes_cli.profiles.profiles_to_serve", lambda multiplex=False: list(homes)
-    )
-    monkeypatch.setattr(
-        "hermes_cli.profiles._check_gateway_running", lambda home: home in running
-    )
-    monkeypatch.setattr("hermes_cli.profiles._served_by_running_multiplexer", lambda name: False)
-    captured = {}
-
-    class _Provider:
-        name = "fake"
-
-        def start(self, stop_event, **kwargs):
-            captured.update(kwargs)
-
-    from cron import scheduler_provider as sp
-
-    monkeypatch.setattr(web_server, "resolve_cron_scheduler", lambda: _Provider(), raising=False)
-    monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: _Provider())
-    monkeypatch.setattr(sp, "InProcessCronScheduler", _Provider)
-    monkeypatch.setattr("hermes_logging.enable_profile_log_routing", lambda homes: None)
-
-    web_server._start_desktop_cron_ticker(threading.Event(), interval=0)
-
-    # The Desktop hands the scheduler a live enumerator, not a startup snapshot,
-    # so profiles created or deleted while the app runs are picked up per tick.
-    profile_homes = captured.get("profile_homes")
-    assert callable(profile_homes)
-    assert profile_homes() == homes
-    gate = captured.get("profile_gate")
-    assert gate is not None, "desktop ticker did not install a profile gate"
-    for name, home in homes:
-        assert gate(name, home) is (home not in running)
-
-    # Re-evaluate on each tick: Desktop resumes fallback after gateway exit
-    # and stands down again if a gateway starts later.
-    running.clear()
-    assert all(gate(name, home) for name, home in homes)
-    running.update(home for _, home in homes)
-    assert not any(gate(name, home) for name, home in homes)

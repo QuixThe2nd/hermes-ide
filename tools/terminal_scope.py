@@ -26,8 +26,7 @@ _terminal_scope_var: ContextVar = ContextVar("hermes_terminal_scope", default=No
 # without them the projection is not total.
 _TOOL_LEVEL_DEFAULTS: Dict[str, Any] = {
     "cwd": ".", "ssh_host": "", "ssh_user": "", "ssh_port": 22, "ssh_key": "",
-    "docker_orphan_reaper": True, "docker_persist_across_processes": True,
-    "sandbox_dir": "", "lifetime_seconds": 300, "docker_shared_container_key": "",
+    "sandbox_dir": "", "lifetime_seconds": 300,
     "home_mode": "auto",
 }
 
@@ -96,7 +95,7 @@ def build_profile_terminal_scope(
     file is unreadable.
 
     *env_overlay* is a TRUSTED ``TERMINAL_*`` mapping captured from the launch process before
-    multiplexing began (``tui_gateway/launch_terminal_policy.py``): the launch profile's
+    multiplexing began (see gateway/launch_profile_policy.py): the launch profile's
     env-only policy (``TERMINAL_ENV=ssh`` from systemd, ``op run``, a launcher bridge) has no
     file to rebuild it from, and reading live ``os.environ`` here is the leak this module
     closes. It sits where the process env sits in the standalone bridge — explicit YAML keys
@@ -146,7 +145,7 @@ def build_profile_terminal_scope(
         from hermes_cli.config import fast_safe_load
 
         try:
-            with open(config_path, encoding="utf-8") as f:
+            with open(config_path, encoding="utf-8-sig") as f:
                 raw = fast_safe_load(f)
         except Exception as exc:
             raise TerminalPolicyUnavailable(f"cannot parse {config_path}: {exc}") from exc
@@ -171,8 +170,6 @@ def _resolve_scope_cwd_placeholder(scope: Dict[str, str]) -> None:
     resolved = resolve_placeholder_terminal_cwd(
         configured_cwd="", terminal_backend=scope.get("TERMINAL_ENV", ""),
         messaging_cwd=None,
-        docker_mount_cwd_to_workspace=scope.get(
-            "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower() in {"true", "1", "yes"},
         home_fallback=str(Path.home()),
     )
     if resolved:

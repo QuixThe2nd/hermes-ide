@@ -14,7 +14,7 @@ def test_real_run_ledger_and_incident_match_actual_presentation(tmp_path, monkey
         f"display: {{suppress_warning_notifications: {str(suppress).lower()}}}\n"
     )
     config = GatewayConfig()
-    config.platforms[Platform.TELEGRAM] = PlatformConfig(enabled=True)
+    config.platforms[Platform.DISCORD] = PlatformConfig(enabled=True)
     monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
     sent = []
 
@@ -30,7 +30,7 @@ def test_real_run_ledger_and_incident_match_actual_presentation(tmp_path, monkey
         return (mode == "success", "retained raw output", "required result", None if mode == "success" else "isolated provider failure")
 
     monkeypatch.setattr(scheduler, "run_job", run)
-    job = jobs.create_job(prompt="fixture only", schedule="every 1h", deliver="telegram:fixture")
+    job = jobs.create_job(prompt="fixture only", schedule="every 1h", deliver="discord:fixture")
     if external_worker:
         from cron import delivery_queue
         execution = executions.create_execution(job["id"], source="fixture")

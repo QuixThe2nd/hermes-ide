@@ -1,8 +1,8 @@
 # plugins/ — plugin kinds, compat contract, in-tree policy
 
 Applies on top of the root `AGENTS.md`. Authoring guide + canonical compat contract:
-`website/docs/developer-guide/plugins/index.md`. Per-kind guides: `memory-provider-plugin.md`,
-`model-provider-plugin.md`, `context-engine-plugin.md`, `image-gen-provider-plugin.md`, ...
+the developer guide. Per-kind guides cover memory-provider,
+model-provider, context-engine, and image-gen-provider plugins.
 
 ## Plugins never touch core (Teknium, May 2026)
 
@@ -16,15 +16,16 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
 
 ## What may live in this tree (policy)
 
-- **No new in-tree memory providers (May 2026).** `plugins/memory/` is closed (honcho, mem0,
-  supermemory, byterover, hindsight, holographic, openviking, retaindb stay; bug fixes welcome). New
+- **In-tree memory providers.** `plugins/memory/` ships hindsight; bug fixes welcome.
+  Retired names (byterover, holographic, supermemory, retaindb, and the earlier
+  honcho/mem0/openviking cuts) fail closed and are not rediscovered. New
   backends ship as standalone repos implementing the same `MemoryProvider` ABC, discovered through
   the same path, integrated via `hermes memory setup` / `post_setup()`.
 - **No new third-party-product plugins (June 2026).** Observability/metrics backends, vendor SaaS
   connectors, analytics dashboards, paid-service tie-ins ship as standalone plugin repos
   (`~/.hermes/plugins/` or pip entry point) promoted in Discord `#plugins-skills-and-skins`. Reason:
   every absorbed product is our maintenance burden against a fast-moving core for a backend we don't
-  own. `observability/`, `kanban/`, `disk-cleanup/` are precedent, not an invitation. Closing such a
+  own. `observability/`, `disk-cleanup/` are precedent, not an invitation. Closing such a
   PR is a coupling decision, not a quality judgment.
 - Reference/docs-companion plugins (`example-dashboard`, `strike-freedom-cockpit`,
   `plugin-llm-example`, `plugin-llm-async-example`) live in
@@ -35,11 +36,11 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
 The ONLY discovery system for out-of-tree plugins. One YAML per entry, 40-hex SHA pin mandatory,
 human-merged via PR (`plugin-catalog/README.md` = admission policy; `plugin-catalog-ci.yml` clones
 each changed entry at its pin and runs `hermes plugins validate`). `removed.yaml` is the kill list —
-every install path (CLI, dashboard, TUI) refuses matches; only the CLI has a loud `--allow-removed`.
+every install path (CLI, TUI) refuses matches; only the CLI has a loud `--allow-removed`.
 Code: `hermes_cli/plugin_catalog.py` (loader, live refresh from
 `/docs/api/plugin-catalog.json` published by the docs build, in-tree fallback),
 `hermes_cli/plugins_cmd_catalog.py` (resolution, `.hermes-catalog.json` provenance sidecar,
-search/info/validate, re-pin on `update`, dashboard/TUI payloads). Never add a second name index:
+search/info/validate, re-pin on `update`, TUI payloads). Never add a second name index:
 bare names resolve through the catalog or error.
 
 ## Plugin kinds and their discovery systems

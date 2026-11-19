@@ -54,24 +54,23 @@ from hermes_cli.doctor_state import (
     _check_profiles,
     _check_skills_hub,
     _check_state_db,
+    _check_update_provenance,
 )
 
 _PROVIDER_ENV_HINTS = (
     "DEEPINFRA_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
-    "OPENAI_BASE_URL", "NOUS_API_KEY", "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY", "KIMI_API_KEY",
+    "OPENAI_BASE_URL", "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY", "KIMI_API_KEY",
     "KIMI_CN_API_KEY", "GMI_API_KEY", "FIREWORKS_API_KEY", "ACTUAL_API_KEY", "ACTUAL_BASE_URL", "MINIMAX_API_KEY",
     "MINIMAX_CN_API_KEY", "KILOCODE_API_KEY", "DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "HF_TOKEN",
     "AI_GATEWAY_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY", "COMMANDCODE_API_KEY", "XIAOMI_API_KEY",
     "TOKENHUB_API_KEY", "TOKENPLAN_API_KEY",
 )
 
-
 @doctor_check()
 def _check_auth_providers(should_fix: bool, f: Finding) -> None:
     """Refresh-free OAuth status snapshot (doctor must never trigger a token refresh)."""
     with warn_on_error("Auth provider status", "(could not check: {e})"):
-        from hermes_cli.auth import get_nous_auth_status_local, get_codex_auth_status, get_minimax_oauth_auth_status
-        _login_row("Nous Portal auth", get_nous_auth_status_local())
+        from hermes_cli.auth import get_codex_auth_status, get_minimax_oauth_auth_status
         # Native OAuth is Hermes' own device-code flow; the Codex CLI only imports existing ~/.codex/auth.json
         # tokens, so the hint sits under the Codex row (not as another provider's remedy).
         if not _login_row("OpenAI Codex auth", get_codex_auth_status(), show_error=True) and not _safe_which("codex"):
@@ -186,7 +185,8 @@ DOCTOR_CHECKS = (
     ('xAI Model Retirement (May 15, 2026)', _check_xai_retirement),
     ('Plugin import paths (removed Sep 14, 2026)', _check_plugin_compat), ('Auth Providers', _check_auth_providers),
     ('Directory Structure', _check_directory_structure), (None, _check_state_db), (None, _check_checkpoint_store),
-    (None, _check_gateway_supervision), ('Plugin Provenance', _check_plugin_provenance),
+    (None, _check_update_provenance), (None, _check_gateway_supervision),
+    ('Plugin Provenance', _check_plugin_provenance),
     (None, _check_command_installation),
     ('External Tools', _check_git_and_rg), (None, _check_terminal_backend), (None, _check_node_and_browser),
     (None, _check_npm_audit), ('API Connectivity', _check_api_connectivity),
@@ -310,16 +310,13 @@ _PLUGIN_COMPAT_LAZY = {
     'FTS_STORAGE_VERSION': ('hermes_state_common', 'FTS_STORAGE_VERSION'),
     'OPENROUTER_MODELS_URL': ('hermes_constants', 'OPENROUTER_MODELS_URL'),
     'STATE_DB_SIZE_WARN_BYTES': ('hermes_cli.doctor_state', 'STATE_DB_SIZE_WARN_BYTES'),
-    'agent_browser_runnable': ('hermes_constants', 'agent_browser_runnable'),
     'base_url_host_matches': ('utils', 'base_url_host_matches'),
     'check_certificates': ('hermes_cli.doctor_platform', 'check_certificates'),
     'check_macos_full_disk_access': ('hermes_cli.doctor_platform', 'check_macos_full_disk_access'),
     'check_macos_tcc_anchor': ('hermes_cli.doctor_platform', 'check_macos_tcc_anchor'),
-    'check_macos_tcc_grants': ('hermes_cli.doctor_platform', 'check_macos_tcc_grants'),
     'collect_deprecated_config_keys': ('hermes_cli.doctor_config', 'collect_deprecated_config_keys'),
     'collect_deprecated_env_vars': ('hermes_cli.doctor_config', 'collect_deprecated_env_vars'),
     'collect_relay_plugin_cutover_findings': ('hermes_cli.doctor_config', 'collect_relay_plugin_cutover_findings'),
-    'describe_vercel_auth': ('hermes_cli.vercel_auth', 'describe_vercel_auth'),
     'detect_install_method': ('hermes_cli.config', 'detect_install_method'),
     'is_nix_install_method': ('hermes_cli.config', 'is_nix_install_method'),
     'managed_scope_check': ('hermes_cli.doctor_config', 'managed_scope_check'),

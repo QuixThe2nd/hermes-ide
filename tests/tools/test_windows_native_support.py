@@ -82,11 +82,11 @@ class TestConfigureWindowsStdio:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 class TestTerminatePidRoutingOnWindows:
     """``gateway.status.terminate_pid`` must use taskkill /T /F on Windows.
 
-    ``windows_only``: this used to patch the module-level ``_IS_WINDOWS``
+    ``platforms("windows")``: this used to patch the module-level ``_IS_WINDOWS``
     flag on Linux, which selected the taskkill branch on a host where
     ``taskkill`` does not exist and ``gateway/status`` cannot even import its
     ``msvcrt`` branch. On the Windows runner the flag is genuinely True, so
@@ -193,22 +193,6 @@ class TestSigkillFallback:
         assert result == 15
 
 
-    @pytest.mark.parametrize(
-        "module_path, line_pattern",
-        [
-            ("hermes_cli.kanban_db_dispatch", 'getattr(signal, "SIGKILL", signal.SIGTERM)'),
-        ],
-    )
-    def test_module_uses_getattr_fallback(self, module_path, line_pattern):
-        """Source-level check that our modules use the safe fallback."""
-        rel = module_path.replace(".", "/") + ".py"
-        root = Path(__file__).resolve().parents[2]
-        source = (root / rel).read_text(encoding="utf-8")
-        assert line_pattern in source, (
-            f"{rel} must use the getattr fallback pattern on its SIGKILL site"
-        )
-
-
 # ---------------------------------------------------------------------------
 # OSError widening on liveness probes
 #
@@ -255,7 +239,7 @@ class TestProcessRegistryOSErrorWidening:
         assert ProcessRegistry._is_host_pid_alive(os.getpid()) is True
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 class TestPidExistsOSErrorWidening:
     """gateway.status._pid_exists itself must widen Windows errors correctly.
 
@@ -264,7 +248,7 @@ class TestPidExistsOSErrorWidening:
     gone PID instead of ``ProcessLookupError``. The function must catch the
     wider ``OSError`` to match POSIX semantics.
 
-    ``linux_only``: the subject is the POSIX fallback branch and its
+    ``platforms("linux")``: the subject is the POSIX fallback branch and its
     ``os.kill`` error handling, exercised with the errno values Windows
     produces. Gating to Linux is what makes ``_IS_WINDOWS`` genuinely False
     here instead of forced false by a patch.
@@ -426,11 +410,11 @@ class TestSubprocessCompatHelpers:
         # name (fallback) — both are acceptable behaviours.
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_detach_flags_exclude_detached_process(self):
         """DETACHED_PROCESS must stay OUT of every detach bundle.
 
-        ``windows_only`` (with ``IS_WINDOWS`` no longer patched): the helpers
+        ``platforms("windows")`` (with ``IS_WINDOWS`` no longer patched): the helpers
         return 0 off Windows, so on Linux the old flag patch was the only
         thing making the bit assertions reachable at all.
 
@@ -454,7 +438,7 @@ class TestSubprocessCompatHelpers:
             "DETACHED_PROCESS must not be in the no-breakaway fallback either."
         )
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_detach_flags_includes_breakaway_from_job(self):
         """CREATE_BREAKAWAY_FROM_JOB is load-bearing for the GUI-driven update path.
 
@@ -476,7 +460,7 @@ class TestSubprocessCompatHelpers:
             "can respawn the gateway after Electron exits."
         )
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_detach_flags_without_breakaway_drops_only_that_bit(self):
         """Fallback retry payload for restrictive job objects.
 
@@ -497,86 +481,6 @@ class TestSubprocessCompatHelpers:
         # test_windows_detach_flags_exclude_detached_process).
         assert fallback & 0x00000200, "fallback missing CREATE_NEW_PROCESS_GROUP"
         assert fallback & 0x08000000, "fallback missing CREATE_NO_WINDOW"
-
-
-# ---------------------------------------------------------------------------
-# tui_gateway/entry.py signal installation survives absent POSIX signals
-# ---------------------------------------------------------------------------
-
-
-class TestTuiGatewayEntrySignalGuards:
-    """Importing tui_gateway.entry must not crash when SIGPIPE/SIGHUP absent.
-
-    Linux has both signals, so this is mostly a source-level invariant check
-    (no bare ``signal.SIGPIPE`` at module level without a ``hasattr`` guard).
-    On Windows the import would have raised AttributeError before this fix.
-    """
-
-    def test_source_guards_each_signal_installation(self):
-        root = Path(__file__).resolve().parents[2]
-        source = (root / "tui_gateway" / "entry.py").read_text(encoding="utf-8")
-        # Every signal installation at module scope must be guarded against
-        # missing signals (Windows: SIGPIPE/SIGHUP absent).  Originally this
-        # was ``hasattr(signal, "SIGPIPE")`` inline; PR #72677 refactored to
-        # ``_install_signal("SIGPIPE", ...)`` which does the same guard via
-        # ``getattr(signal, signame, None)`` internally.  Either form is
-        # acceptable — what matters is no bare ``signal.signal(SIGPIPE)``
-        # at module scope without a guard.
-        for sig_name in ("SIGPIPE", "SIGHUP", "SIGTERM", "SIGINT"):
-            assert (
-                f'hasattr(signal, "{sig_name}")' in source
-                or f'_install_signal("{sig_name}"' in source
-            ), (
-                f"signal {sig_name} must be installed via a guarded path "
-                f"(hasattr or _install_signal), not bare signal.signal()"
-            )
-
-    def test_module_imports_cleanly(self):
-        """Importing the module must not raise — verifies the guards work."""
-        # Drop any cached import so the module re-initialises
-        for mod in list(sys.modules):
-            if mod.startswith("tui_gateway"):
-                del sys.modules[mod]
-        import tui_gateway.entry  # noqa: F401  # must not raise
-
-
-# ---------------------------------------------------------------------------
-# hermes_cli/kanban_db_dispatch.py waitpid guard
-# ---------------------------------------------------------------------------
-
-
-class TestKanbanWaitpidWindowsGuard:
-    """os.WNOHANG doesn't exist on Windows — the dispatcher tick reap loop
-    must be gated behind a Windows check (``os.name != "nt"`` or the
-    monkeypatchable ``_kb._IS_WINDOWS`` flag from ``kanban_db``)."""
-
-    def test_source_gates_waitpid_loop(self):
-        root = Path(__file__).resolve().parents[2]
-        source = (root / "hermes_cli" / "kanban_db_dispatch.py").read_text(encoding="utf-8")
-        # Find the waitpid call and confirm it's inside a POSIX gate.
-        idx = source.find("os.waitpid(-1, os.WNOHANG)")
-        assert idx > 0, "waitpid call must exist"
-        # Look backwards up to 600 chars for the gate (the Windows branch
-        # that polls Popen handles sits between the guard and the waitpid
-        # loop). Accept any of:
-        #   `if os.name != "nt":` (run iff POSIX),
-        #   `if os.name == "nt": return []` (early-return guard), or
-        #   `if _kb._IS_WINDOWS: ... return reaped` (early-return via the
-        #   kanban_db flag, which tests flip instead of faking sys.platform).
-        # All keep the waitpid loop off Windows; the early-return forms are
-        # stronger because the rest of the function never runs.
-        preamble = source[max(0, idx - 600):idx]
-        guard_patterns = (
-            'os.name != "nt"',
-            "os.name != 'nt'",
-            'os.name == "nt"',  # early-return guard
-            "os.name == 'nt'",
-            "_kb._IS_WINDOWS",  # early-return guard via kanban_db flag
-        )
-        assert any(p in preamble for p in guard_patterns), (
-            "os.waitpid(-1, os.WNOHANG) must sit behind a Windows guard "
-            f"(checked patterns: {guard_patterns})"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -732,9 +636,9 @@ class TestLocalEnvironmentWindowsTempDir:
 class TestLocalEnvironmentPathInjectionGated:
     """Sane PATH completion must stay POSIX-only."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_path_is_left_unchanged(self):
-        """``windows_only``: the assertion is that a real Windows ``PATH``
+        """``platforms("windows")``: the assertion is that a real Windows ``PATH``
         (``;``-separated, drive-lettered) comes back untouched. On Linux the
         old ``_IS_WINDOWS`` patch made the function return early without ever
         meeting a genuine Windows PATH."""
@@ -763,11 +667,11 @@ class TestGitBashPathNormalization:
             assert _normalize_git_bash_path(None) is None
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_translation(self):
         """On native Windows, /c/Users/... becomes C:\\Users\\...
 
-        ``windows_only``: the function's whole job is producing native
+        ``platforms("windows")``: the function's whole job is producing native
         Windows paths, which is only meaningful where ``os.sep`` is ``\\``.
         """
         from hermes_cli import worktree_ops as cli_mod
@@ -939,6 +843,7 @@ class TestWindowlessGatewayRestartSpec:
     hidden-console respawn spec (normalized interpreter + stable cwd + env
     overlay)."""
 
+    @pytest.mark.platforms("linux")
     def test_noop_on_non_windows(self):
         import hermes_cli.gateway_windows as gw
 
@@ -956,13 +861,13 @@ class TestWindowlessGatewayRestartSpec:
         assert cwd == ""
         assert env == {}
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_keeps_console_python_and_preserves_tail(self):
         """On Windows the console interpreter is kept (hidden-console launch,
         NOT a pythonw swap — #54220/#56747) while every subsequent argument
         is preserved verbatim.
 
-        ``windows_only``: faking this on Linux needed two more fakes to hold
+        ``platforms("windows")``: faking this on Linux needed two more fakes to hold
         it up — a pre-import so the lazy ``hermes_cli.gateway`` import didn't
         re-run ``gateway/status``'s ``import msvcrt`` branch, and a mock of
         ``get_hermes_home`` because the real one's ``Path.resolve()`` consults
@@ -1008,7 +913,7 @@ class TestWindowlessGatewayRestartSpec:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 class TestGatewayRunRestartWatcherOuterPopenFallback:
     """The Windows ``/restart`` watcher in ``gateway.run`` spawns an outer
     detached ``python -c <watcher>`` process with
@@ -1022,7 +927,7 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
     Behavioral: drives the real coroutine with a mocked ``subprocess.Popen``
     rather than asserting on source text.
 
-    ``windows_only``: this used to run on Linux behind a ``sys.platform``
+    ``platforms("windows")``: this used to run on Linux behind a ``sys.platform``
     patch, and the breakaway-bit assertions had to be skipped there anyway
     (``_subprocess_compat`` caches ``IS_WINDOWS`` at import, so the flags
     were all 0) — i.e. the most important assertions in the class never

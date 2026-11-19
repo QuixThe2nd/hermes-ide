@@ -45,7 +45,7 @@ def hermes_home(tmp_path, monkeypatch):
 
 def _make_source() -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         user_id="u1",
         chat_id="c1",
         user_name="tester",
@@ -76,7 +76,7 @@ def _make_runner_with_adapter(session_id: str = None):
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")},
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="***")},
     )
     runner.adapters = {}
     runner._running_agents = {}
@@ -84,7 +84,7 @@ def _make_runner_with_adapter(session_id: str = None):
     runner._queued_events = {}
 
     src = _make_source()
-    # Default to a unique session_id so xdist parallel runs on the same worker
+    # Default to a unique session_id so parallel runs
     # don't see each other's GoalManager state (DEFAULT_DB_PATH gets frozen at
     # module-import time, defeating per-test HERMES_HOME monkeypatches).
     session_entry = SessionEntry(
@@ -92,7 +92,7 @@ def _make_runner_with_adapter(session_id: str = None):
         session_id=session_id or f"goal-sess-{uuid.uuid4().hex[:8]}",
         created_at=datetime.now(),
         updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="dm",
     )
 
@@ -101,7 +101,7 @@ def _make_runner_with_adapter(session_id: str = None):
     runner.session_store._generate_session_key.return_value = build_session_key(src)
 
     adapter = _RecordingAdapter()
-    runner.adapters[Platform.TELEGRAM] = adapter
+    runner.adapters[Platform.DISCORD] = adapter
     return runner, adapter, session_entry, src
 
 

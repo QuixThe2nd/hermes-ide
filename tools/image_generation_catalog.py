@@ -84,7 +84,7 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
     "fal-ai/nano-banana-pro": _model(
         "Nano Banana Pro (Gemini 3 Pro Image)", "~8s", "Gemini 3 Pro, reasoning depth, text rendering", "$0.15/image (1K)",
         style="aspect_ratio",
-        # "1K" is the cheapest tier; 4K doubles the per-image cost (Nous Subscription billing).
+        # "1K" is the cheapest tier; 4K doubles the per-image cost on the managed gateway.
         defaults={
             "num_images": 1, "output_format": "png", "safety_tolerance": "5",
             "resolution": "1K",
@@ -124,7 +124,7 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         style="gpt_literal", sizes={
             "landscape": "1536x1024", "square": "1024x1024", "portrait": "1024x1536",
         },
-        # quality pinned to medium (also for gpt-image-2) so portal billing stays
+        # quality pinned to medium (also for gpt-image-2) so managed-gateway billing stays
         # predictable: low is too rough, high is 3-6x the per-image cost.
         defaults={"quality": "medium", "num_images": 1, "output_format": "png"},
         supports={

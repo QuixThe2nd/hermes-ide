@@ -56,6 +56,7 @@ def _json_stdout(findings=None, summary=""):
 # Exit code → action mapping
 # ---------------------------------------------------------------------------
 
+@pytest.mark.platforms("linux")
 class TestExitCodeMapping:
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
@@ -96,6 +97,7 @@ class TestExitCodeMapping:
 # JSON parse failure (exit code still wins)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.platforms("linux")
 class TestJsonParseFailure:
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
@@ -121,6 +123,7 @@ class TestJsonParseFailure:
 # Operational failures + fail_open
 # ---------------------------------------------------------------------------
 
+@pytest.mark.platforms("linux")
 class TestOSErrorFailOpen:
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
@@ -143,6 +146,7 @@ class TestOSErrorFailOpen:
         assert "fail-closed" in result["summary"]
 
 
+@pytest.mark.platforms("linux")
 class TestTimeoutFailOpen:
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
@@ -155,6 +159,7 @@ class TestTimeoutFailOpen:
         assert "fail-closed" in result["summary"]
 
 
+@pytest.mark.platforms("linux")
 class TestUnknownExitCode:
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
@@ -235,6 +240,7 @@ class TestDisabled:
 # Findings cap + summary cap
 # ---------------------------------------------------------------------------
 
+@pytest.mark.platforms("linux")
 class TestCaps:
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
@@ -252,6 +258,7 @@ class TestCaps:
 # Programming errors propagate
 # ---------------------------------------------------------------------------
 
+@pytest.mark.platforms("linux")
 class TestProgrammingErrors:
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
@@ -275,6 +282,7 @@ class TestEnsureInstalled:
         _tirith_mod._resolved_path = None
         assert ensure_installed() is None
 
+    @pytest.mark.platforms("linux")
     @patch("tools.tirith_security.shutil.which", return_value="/usr/local/bin/tirith")
     @patch("tools.tirith_security._load_security_config")
     def test_found_on_path_returns_immediately(self, mock_cfg, mock_which):
@@ -352,6 +360,7 @@ class TestUnsupportedPlatform:
 # ---------------------------------------------------------------------------
 
 class TestFailedDownloadCaching:
+    @pytest.mark.platforms("linux")
     @patch("tools.tirith_security._mark_install_failed")
     @patch("tools.tirith_security._is_install_failed_on_disk", return_value=False)
     @patch("tools.tirith_security._install_tirith", return_value=(None, "download_failed"))
@@ -394,6 +403,7 @@ class TestExplicitPathNoAutoDownload:
 
         _tirith_mod._resolved_path = None
 
+    @pytest.mark.platforms("linux")
     @patch("tools.tirith_security._mark_install_failed")
     @patch("tools.tirith_security._is_install_failed_on_disk", return_value=False)
     @patch("tools.tirith_security._install_tirith", return_value=("/auto/tirith", ""))
@@ -543,6 +553,7 @@ class TestInstallArchiveMemberValidation:
 # ---------------------------------------------------------------------------
 
 class TestBackgroundInstall:
+    @pytest.mark.platforms("linux")
     def test_ensure_installed_non_blocking(self):
         """ensure_installed must return immediately when download needed."""
         _tirith_mod._resolved_path = None
@@ -639,6 +650,7 @@ class TestHermesHomeIsolation:
 # Warn-once dedupe (issue: tirith spawn failed spamming on Windows)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.platforms("linux")
 class TestSpawnWarningDedup:
     """When tirith isn't installed yet (background install in flight, or
     install marked failed), every terminal command spammed an identical
@@ -689,6 +701,7 @@ _CFG = {"tirith_enabled": True, "tirith_path": "tirith",
         "tirith_timeout": 5, "tirith_fail_open": True}
 
 
+@pytest.mark.platforms("linux")
 class TestAppTldSuppression:
     """warn verdicts whose only finding is lookalike_tld/.app are downgraded to allow."""
 
@@ -782,6 +795,7 @@ class TestIsAppTldFinding:
 # mkdtemp OSError → no_space (disk-full leak prevention)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.platforms("linux")
 class TestMkdtempOSErrorNoSpace:
     """When tempfile.mkdtemp raises OSError (e.g. disk full), _install_tirith
     must return (None, "no_space") instead of propagating the exception.

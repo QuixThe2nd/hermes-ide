@@ -97,7 +97,7 @@ def test_authorization_happens_before_database_open_and_denial_is_generic(monkey
         secrets=Secrets("postgresql://test/db", b"k" * 32), connector=lambda dsn: opened.append(dsn), denial_path=str(tmp_path / "denied.jsonl"))
     assert json.loads(output) == {"error": "authorization_failed"}
     assert opened == []
-    assert "99999999999999999" not in (tmp_path / "denied.jsonl").read_text(encoding="utf-8")
+    assert "99999999999999999" not in (tmp_path / "denied.jsonl").read_text(encoding="utf-8-sig")
 
 
 def test_wrong_current_thread_parent_never_opens_database(monkeypatch, tmp_path):

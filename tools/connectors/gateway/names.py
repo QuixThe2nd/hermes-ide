@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 __all__ = [
-    "CONNECTOR_BATCH_SENTINEL",
     "CONNECTOR_NAME_PREFIX",
     "ConnectorName",
     "format_connector_name",
@@ -19,9 +18,6 @@ __all__ = [
 ]
 
 CONNECTOR_NAME_PREFIX = "connectors__"
-
-# Planner sentinel, not a callable connector name.
-CONNECTOR_BATCH_SENTINEL = "connectors__execute"
 
 
 @dataclass(frozen=True)

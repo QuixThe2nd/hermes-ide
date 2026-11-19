@@ -70,19 +70,19 @@ def out_of_turn():
 
     Earlier AIAgent-driven tests in this process can leave those contextvars set, which would hand the
     header to an unfixed tree through ``get_conversation_context()`` instead of the explicit runtime."""
-    from agent import portal_tags
+    from agent import conversation_scope
 
     tokens = (
         aux._RUNTIME_MAIN_CONTEXT.set(None),
-        portal_tags.set_conversation_context(None),
-        portal_tags.set_affinity_scope(None),
+        conversation_scope.set_conversation_context(None),
+        conversation_scope.set_affinity_scope(None),
     )
     try:
         yield
     finally:
         aux._RUNTIME_MAIN_CONTEXT.reset(tokens[0])
-        portal_tags.reset_conversation_context(tokens[1])
-        portal_tags.reset_affinity_scope(tokens[2])
+        conversation_scope.reset_conversation_context(tokens[1])
+        conversation_scope.reset_affinity_scope(tokens[2])
 
 
 _OPENCODE_RUNTIME = {
@@ -132,19 +132,18 @@ def test_async_out_of_turn_call_binds_the_explicit_main_runtime_session(monkeypa
     assert aux._RUNTIME_MAIN_CONTEXT.get() is None
 
 
-def test_tui_gateway_oneshot_runtime_snapshot_carries_the_session(monkeypatch, out_of_turn):
-    """The Desktop/TUI-gateway ``llm.oneshot`` path builds its explicit ``main_runtime`` from the live
-    agent; without ``session_id`` an OpenCode title request sends no ``x-opencode-session`` (#112717)."""
-    from tui_gateway.server import _main_runtime_from_agent
-
-    agent = SimpleNamespace(
-        provider="opencode-zen", model="glm-5", base_url="https://opencode.ai/zen/v1", api_key="test-key",
-        api_mode="chat_completions", auth_mode="", session_id="sess-desktop-1",
-    )
+def test_agent_snapshot_runtime_carries_the_session(monkeypatch, out_of_turn):
+    """A one-shot whose explicit ``main_runtime`` snapshots a live agent (the old TUI-gateway
+    ``_main_runtime_from_agent`` shape) sends the conversation's ``x-opencode-session``;
+    without ``session_id`` an OpenCode title request sends none (#112717)."""
+    runtime = {
+        "provider": "opencode-zen", "model": "glm-5", "base_url": "https://opencode.ai/zen/v1",
+        "api_key": "test-key", "api_mode": "chat_completions", "session_id": "sess-desktop-1",
+    }
     captured = {}
     _route_to_fake_opencode_client(monkeypatch, captured, async_mode=False)
 
-    aux.call_llm(task="title_generation", main_runtime=_main_runtime_from_agent(agent), messages=_MSGS)
+    aux.call_llm(task="title_generation", main_runtime=runtime, messages=_MSGS)
 
     assert captured["extra_headers"]["x-opencode-session"] == "sess-desktop-1"
 

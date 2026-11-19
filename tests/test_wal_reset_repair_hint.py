@@ -7,7 +7,7 @@ installs get their steward's update command (#75153).
 
 from unittest.mock import patch
 
-import hermes_state
+import hermes_state_wal as hermes_state
 
 
 def _hint_for(method):
@@ -18,9 +18,7 @@ def _hint_for(method):
 
 
 def test_source_checkout_gets_venv_setup_hint():
-    assert _hint_for("source") == (
-        "source checkouts can repair the runtime by re-running their venv setup"
-    )
+    assert _hint_for("source") == "CMD-source"
 
 
 def test_git_install_gets_hermes_managed_hint():

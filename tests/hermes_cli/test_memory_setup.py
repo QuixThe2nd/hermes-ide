@@ -65,10 +65,10 @@ def test_install_dependencies_force_resyncs_declared_extra(tmp_path, monkeypatch
     so a downgraded/stripped bridge package is restored on hermes update."""
     import yaml as _yaml
 
-    plugin_dir = tmp_path / "mem0"
+    plugin_dir = tmp_path / "supermemory"
     plugin_dir.mkdir()
     (plugin_dir / "plugin.yaml").write_text(
-        _yaml.safe_dump({"extra": "mem0"}), encoding="utf-8"
+        _yaml.safe_dump({"extra": "supermemory"}), encoding="utf-8"
     )
     monkeypatch.setattr(
         "plugins.memory.find_provider_dir", lambda name: plugin_dir
@@ -84,9 +84,9 @@ def test_install_dependencies_force_resyncs_declared_extra(tmp_path, monkeypatch
         lambda extras=None, explicit=False: synced.append((list(extras or []), explicit)),
     )
 
-    memory_setup._install_dependencies("mem0", force=True)
+    memory_setup._install_dependencies("supermemory", force=True)
 
-    assert synced == [(["mem0"], True)]
+    assert synced == [(["supermemory"], True)]
 
 
 def test_cmd_status_memory_tool_gate_disabled(capsys, monkeypatch):

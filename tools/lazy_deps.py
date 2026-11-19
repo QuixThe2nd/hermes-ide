@@ -36,7 +36,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Inference providers ───────────────────────────────────────────────
     # Native Anthropic SDK (provider=anthropic; aggregators use the openai SDK).
     "provider.anthropic": ("anthropic==0.87.0",),  # CVE-2026-34450, CVE-2026-34452
-    "provider.bedrock": ("boto3==1.42.89",),
     # Vertex OAuth2 token minting; google-auth is NOT in [all] on purpose.
     "provider.vertex": (
         "google-auth==2.55.1",
@@ -57,63 +56,13 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "opentelemetry-exporter-otlp-proto-http==1.39.1",
     ),
 
-    # ─── TTS providers ─────────────────────────────────────────────────────
-    # mistralai: 2.4.6 was a malicious quarantined release — never pin below 2.4.7.
-    # Voxtral STT + TTS share the SDK.
-    "tts.mistral": ("mistralai==2.4.8",),
-    "tts.edge": ("edge-tts==7.2.7",),
-    "tts.elevenlabs": ("elevenlabs==1.59.0",),
-
-    # ─── Speech-to-text providers ──────────────────────────────────────────
-    "stt.mistral": ("mistralai==2.4.8",),
-    "stt.faster_whisper": (
-        "faster-whisper==1.2.1",
-        "sounddevice==0.5.5",
-        "numpy==2.4.3",
-    ),
-    # SILK voice-note decoding (WeChat/QQ); silk-v3 codec binding.
-    "stt.silk": ("pilk==0.2.4",),
-
-    # ─── Wake word ("Hey Hermes") engines (sync with the `wake` extra) ──────
-    # openWakeWord's ONNX model scores ~0 on macOS ARM64, so macOS uses the tflite backend
-    # (ai-edge-litert, bridged in tools/wake_word.py). Separate feature because specs cannot
-    # carry PEP 508 markers (";" is rejected) — the caller applies the platform gate.
-    "wake.openwakeword.tflite": (
-        "ai-edge-litert==2.1.6",
-    ),
-    "wake.openwakeword": (
-        "openwakeword==0.6.0",
-        "onnxruntime==1.27.0",
-        "sounddevice==0.5.5",
-        "numpy==2.4.3",
-    ),
-    # Open-vocabulary keyword spotting. sentencepiece is needed by
-    # sherpa_onnx.text2token but undeclared by sherpa-onnx.
-    "wake.sherpa": (
-        "sherpa-onnx==1.13.4",
-        "sentencepiece==0.2.2",
-        "sounddevice==0.5.5",
-        "numpy==2.4.3",
-    ),
-    "wake.porcupine": (
-        "pvporcupine==4.0.3",
-        "sounddevice==0.5.5",
-        "numpy==2.4.3",
-    ),
-
     # ─── Image generation backends ─────────────────────────────────────────
     "image.fal": ("fal-client==0.13.1",),
 
     # ─── Memory providers ──────────────────────────────────────────────────
-    "memory.honcho": ("honcho-ai==2.2.0",),
     "memory.hindsight": ("hindsight-client==0.9.2",),
-    # Cloud memory SDKs MUST be allowlisted + ensure()'d at the import site, or they never
-    # install on the sealed Docker image (durable-target only).
-    "memory.supermemory": ("supermemory==3.50.0",),
-    "memory.mem0": ("mem0ai==2.0.10",),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
-    "platform.telegram": ("python-telegram-bot[webhooks]==22.8",),
     # brotlicffi: aiohttp needs its 2-arg Decompressor for Discord CDN Brotli attachments
     # (google's 1-arg `Brotli` fails "Can not decode br"). aiohttp is only capped transitively
     # by these adapters, so pin the patched floor explicitly.
@@ -121,13 +70,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # uploaded to the Discord gateway fails to decode at att.read() with "Can not decode content-encoding:
     # br" — see #12511 / #15744.
     "platform.discord": (
-        "discord.py[voice]==2.7.1",
+        "discord.py==2.7.1",
         "brotlicffi==1.2.0.2",
-        "aiohttp==3.14.3",
-    ),
-    "platform.slack": (
-        "slack-bolt==1.30.0",
-        "slack-sdk==3.44.1",
         "aiohttp==3.14.3",
     ),
     "platform.matrix": (
@@ -137,35 +81,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "aiohttp-socks==0.11.0",
         "aiohttp==3.14.3",
     ),
-    "platform.dingtalk": (
-        "dingtalk-stream==0.24.3",
-        "alibabacloud-dingtalk==2.2.42",
-        "qrcode==7.4.2",
-    ),
-    "platform.feishu": (
-        "lark-oapi==1.6.8",
-        "qrcode==7.4.2",
-    ),
-    # WeCom callback adapter parses untrusted XML POST bodies -> defusedxml.
-    "platform.wecom_callback": ("defusedxml==0.7.1",),
-    # Teams pulls a heavy tree (msal, dependency-injector); also the `teams` extra.
-    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3"),
-    # Google Chat — Pub/Sub + Chat API. Not in [all]; Docker bakes `--extra google-chat`
-    # so hosted/immutable images do not have to write the sealed venv.
-    "platform.google_chat": (
-        "google-cloud-pubsub==2.39.0",
-        "google-api-python-client==2.194.0",
-        "google-auth==2.55.1",
-        "google-auth-oauthlib==1.3.1",
-        "google-auth-httplib2==0.3.1",
-        "httplib2==0.32.0",
-        "pyasn1==0.6.4",
-    ),
-
-    # ─── Terminal backends ─────────────────────────────────────────────────
-    "terminal.modal": ("modal==1.3.4",),
-    "terminal.daytona": ("daytona==0.155.0",),
-    "terminal.vercel": ("vercel==0.7.2",),
 
     # ─── Skills ────────────────────────────────────────────────────────────
     "skill.google_workspace": (
@@ -180,8 +95,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "skill.youtube": ("youtube-transcript-api==1.2.4",),
 
     # ─── Tools ─────────────────────────────────────────────────────────────
-    # ACP adapter (VS Code / Zed / JetBrains)
-    "tool.acp": ("agent-client-protocol==0.9.0",),
     "tool.dashboard": (
         "fastapi==0.133.1",
         "uvicorn[standard]==0.41.0",
@@ -206,7 +119,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # inside transformers' window and match uv.lock (tests/test_project_metadata.py enforces).
     # HF Agent Trace Viewer upload (hermes trace upload / /upload-trace). huggingface-hub is a SHARED
     # dependency: transformers (pulled by sentence-transformers for local Hindsight embeddings) requires
-    # >=1.5.0,<2, and faster-whisper/tokenizers depend on it transitively. Because active_features() marks a
+    # >=1.5.0,<2. Because active_features() marks a
     # feature active from mere package presence, the `hermes update` lazy-refresh pass re-asserts THIS pin
     # on every install where hub is present — so an exact pin below 1.5.0 force-downgrades the shared
     # package and breaks Hindsight startup (#60783). Policy: keep the exact pin (no ranges — security
@@ -271,7 +184,7 @@ def _ensure_target_ready(target: Path) -> Optional[str]:
         if target.exists():
             have = ""
             with contextlib.suppress(OSError):
-                have = stamp.read_text(encoding="utf-8").strip()
+                have = stamp.read_text(encoding="utf-8-sig").strip()
             if have and have != want:
                 logger.info("Lazy install target %s was built for ABI %r but running ABI is %r; wiping stale packages.", target, have, want)
                 for child in target.iterdir():
@@ -434,8 +347,8 @@ def _core_constraints_file() -> Optional[Path]:
 
 
 def _installed_dist_roots(spec: str, target: Optional[Path]) -> set[Path]:
-    """Package dirs a freshly installed *spec* owns, from the dist's file list (``python-telegram-bot``
-    ships ``telegram``; some ship several)."""
+    """Package dirs a freshly installed *spec* owns, from the dist's file list (``slack-bolt``
+    ships ``slack_bolt``; some ship several)."""
     name = _pkg_name_from_spec(spec)
     roots: set[Path] = set()
     try:

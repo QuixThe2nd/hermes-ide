@@ -69,53 +69,6 @@
     },
     {
       "capabilities": [
-        "browser.dialog"
-      ],
-      "inputSchema": {
-        "additionalProperties": true,
-        "properties": {
-          "action": {
-            "enum": [
-              "inspect",
-              "accept",
-              "dismiss"
-            ],
-            "type": "string"
-          },
-          "delivery_mode": {
-            "enum": [
-              "background",
-              "foreground"
-            ],
-            "type": "string"
-          },
-          "dialog_id": {
-            "type": "string"
-          },
-          "prompt_text": {
-            "type": "string"
-          },
-          "session": {
-            "type": "string"
-          },
-          "tab_id": {
-            "type": "string"
-          },
-          "target_id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "target_id",
-          "tab_id",
-          "action"
-        ],
-        "type": "object"
-      },
-      "name": "browser_dialog"
-    },
-    {
-      "capabilities": [
         "browser.download"
       ],
       "inputSchema": {

@@ -46,7 +46,6 @@ def _slack_desc(**kw) -> CapabilityDescriptor:
         len_unit="chars",
         emoji="\U0001f4ac",
         platform_hint="",
-        pii_safe=False,
     )
     base.update(kw)
     return CapabilityDescriptor(**base)

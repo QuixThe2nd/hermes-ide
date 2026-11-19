@@ -31,7 +31,7 @@ FLAT_INSTALL_RUNTIME_STATE = (
     "state.db.retired-wal-20260914T000000Z-1234/manifest.json",
     # Dot-suffixed `<db>.db.*` runtime artifacts (#112974): cross-process lock
     # files from hermes_state_dbfile / hermes_state_repair / hermes_state_common /
-    # hermes_cli/kanban_db_*, the repair-attempts ledger and malformed backups.
+    # hermes_cli legacy board stores, the repair-attempts ledger and malformed backups.
     "state.db.quarantine.lock",
     "state.db.repair.lock",
     "state.db.fts_rebuild.lock",
@@ -72,7 +72,7 @@ FLAT_INSTALL_RUNTIME_STATE = (
     "hooks/on_session_end.sh",
     "cache/banner_snapshot.json",
     "checkpoints/abcd123d/0001.json",
-    "pending_messages/telegram.json",
+    "pending_messages/discord.json",
     "plugin-data/example/state.json",
     "kanban/boards/x",
     "config.yaml",
@@ -90,7 +90,7 @@ FLAT_INSTALL_RUNTIME_STATE = (
     "profiles/work/config.yaml",
     "credentials/github_token",
     "mcp-tokens/server.json",
-    "pairing/telegram.json",
+    "pairing/discord.json",
     "platforms/pairing/x.json",
     "backups/2026-09-14T06-00-00-pre-update/state.db",
     "vault.key",

@@ -45,7 +45,7 @@ class TestLoadTranscriptReadFailure:
     def test_read_failure_raises_instead_of_returning_empty(self, store, monkeypatch):
         db = store._db
         assert db is not None
-        db.create_session("s1", "telegram", session_key="telegram:1")
+        db.create_session("s1", "discord", session_key="discord:1")
         db.append_message("s1", "user", "the conversation we must not forget")
 
         boom = sqlite3.DatabaseError("database disk image is malformed")
@@ -64,7 +64,7 @@ class TestLoadTranscriptReadFailure:
     def test_genuinely_empty_session_still_returns_empty_list(self, store):
         db = store._db
         assert db is not None
-        db.create_session("s2", "telegram", session_key="telegram:2")
+        db.create_session("s2", "discord", session_key="discord:2")
 
         assert store.load_transcript("s2") == []
 

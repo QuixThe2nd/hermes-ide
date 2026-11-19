@@ -110,7 +110,6 @@ class _ToolCall:
     handle: Any
     category: str
     started_ns: int
-    approval_outcome: str = "not_required"
 
 
 @dataclass
@@ -342,29 +341,6 @@ class _Runtime:
             task.tool_call_ids.add(identity)
             session.tool_calls[key] = self._open_tool_call(task, event)
 
-    def record_approval(self, event: dict[str, Any]) -> None:
-        """Record one bounded approval result without approval text or commands."""
-        session, task = self._approval_task(event)
-        if session is None or task is None:
-            return
-        outcome = contract.tool_approval_outcome(event)
-        attribution = "unattributed"
-        with session.lock:
-            if session.closing or not self._event_matches_task_turn(task, event):
-                return
-            if _text(event, "tool_call_id"):
-                identity = self._tool_call_identity(event)
-                tool_call = session.tool_calls.get((task.task_id, *identity))
-                if tool_call is None:
-                    key = _sole(_compatible_tool_call_keys(session, task.task_id, identity))
-                    tool_call = session.tool_calls[key] if key is not None else None
-                if tool_call is not None:
-                    tool_call.approval_outcome = outcome
-                    attribution = "tool_call"
-            self._mark(
-                session, task, contract.TOOL_APPROVAL_MARK,
-                {"attribution": attribution, "outcome": outcome},
-            )
 
     def record_tool_call(self, event: dict[str, Any]) -> None:
         """Close and count one unique privacy-safe tool lifecycle."""
@@ -632,35 +608,6 @@ class _Runtime:
         self._remember_turn(session, task, event)
         return True
 
-    def _approval_task(
-        self, event: dict[str, Any]
-    ) -> tuple[_MetricsSession | None, _TaskRun | None]:
-        """Resolve approval correlation without guessing across ambiguous turns."""
-        active = relay_runtime.active_turn()
-        if active is not None:
-            session, task = self._task_pair(
-                {**event, "session_id": active.lease.session_id, "task_id": active.task_id}
-            )
-            if task is not None:
-                return session, task
-
-        session, task = self._task_pair(event)
-        if task is not None:
-            return session, task
-
-        turn_id = _text(event, "turn_id")
-        session = None
-        if turn_id:
-            with self._task_sessions_lock:
-                session = _sole(
-                    candidate
-                    for (owner_id, candidate_turn_id), candidate in self._turn_sessions.items()
-                    if candidate_turn_id == turn_id and self._sessions.get(owner_id) is candidate
-                )
-        if session is None:
-            return None, None
-        task = _sole(task for task in session.tasks.values() if turn_id in task.turn_ids)
-        return (None, None) if task is None else (session, task)
 
     def _open_tool_call(self, task: _TaskRun, event: dict[str, Any]) -> _ToolCall:
         handle = self._run_in_task(
@@ -673,7 +620,7 @@ class _Runtime:
         self, task: _TaskRun, tool_call: _ToolCall, event: dict[str, Any]
     ) -> None:
         fields = contract.tool_terminal_fields(
-            event, category=tool_call.category, approval_outcome=tool_call.approval_outcome,
+            event, category=tool_call.category,
             fallback_duration_ms=_elapsed_ms(tool_call.started_ns),
         )
         self._guarded(
@@ -938,7 +885,6 @@ _HOOK_HANDLERS: dict[str, Callable[[_Runtime, dict[str, Any]], Any]] = {
     "pre_api_request": lambda rt, kw: rt.start_model_call(kw),
     "pre_tool_call": lambda rt, kw: rt.start_tool_call(_with_runtime_toolset(kw)),
     "post_tool_call": lambda rt, kw: rt.record_tool_call(_with_runtime_toolset(kw)),
-    "post_approval_response": lambda rt, kw: rt.record_approval(kw),
     "on_skill_lifecycle": lambda rt, kw: rt.record_skill_lifecycle(kw),
     "post_api_request": lambda rt, kw: rt.update_model_call(kw, finish=True),
     "api_request_error": lambda rt, kw: rt.update_model_call(kw, finish=False),
@@ -1066,7 +1012,6 @@ _PLUGIN_COMPAT_LAZY = {
     'SCHEMA_VERSION': ('hermes_cli.observability.shared_metrics_contract', 'SCHEMA_VERSION'),
     'SKILL_LIFECYCLE_MARK': ('hermes_cli.observability.shared_metrics_contract', 'SKILL_LIFECYCLE_MARK'),
     'SKILL_LOAD_MARK': ('hermes_cli.observability.shared_metrics_contract', 'SKILL_LOAD_MARK'),
-    'TOOL_APPROVAL_MARK': ('hermes_cli.observability.shared_metrics_contract', 'TOOL_APPROVAL_MARK'),
     'TOOL_CALL_SCOPE': ('hermes_cli.observability.shared_metrics_contract', 'TOOL_CALL_SCOPE'),
     'model_call_fields': ('hermes_cli.observability.shared_metrics_contract', 'model_call_fields'),
     'skill_lifecycle_fields': ('hermes_cli.observability.shared_metrics_contract', 'skill_lifecycle_fields'),
@@ -1074,7 +1019,6 @@ _PLUGIN_COMPAT_LAZY = {
     'task_start_fields': ('hermes_cli.observability.shared_metrics_contract', 'task_start_fields'),
     'task_terminal_fields': ('hermes_cli.observability.shared_metrics_contract', 'task_terminal_fields'),
     'task_terminal_state': ('hermes_cli.observability.shared_metrics_contract', 'task_terminal_state'),
-    'tool_approval_outcome': ('hermes_cli.observability.shared_metrics_contract', 'tool_approval_outcome'),
     'tool_category': ('hermes_cli.observability.shared_metrics_contract', 'tool_category'),
     'tool_terminal_fields': ('hermes_cli.observability.shared_metrics_contract', 'tool_terminal_fields'),
 }

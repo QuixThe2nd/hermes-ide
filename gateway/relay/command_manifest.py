@@ -37,24 +37,10 @@ def _cmd(name: str, description: str, *options: Dict[str, Any]) -> Dict[str, Any
     return row
 
 
-_REASONING_CHOICES = [
-    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
-    "reset", "show", "hide",
-]
-
-
 def build_relay_command_manifest() -> List[Dict[str, Any]]:
     """The relay lane's Discord slash-command manifest (native-tree mirror)."""
     return [
         _cmd("new", "Start a new conversation"),
-        _cmd("reset", "Reset your Hermes session"),
-        _cmd("model", "Show or change the model",
-             _opt("name", "Model name. Leave empty to see current.")),
-        _cmd("reasoning", "Show/change reasoning effort, or toggle showing it",
-             _opt("effort", "Level, reset, or show/hide. Leave empty to see current.",
-                  choices=_REASONING_CHOICES)),
-        _cmd("personality", "Set a personality",
-             _opt("name", "Personality name. Leave empty to list.")),
         _cmd("retry", "Retry your last message"),
         _cmd("undo", "Remove the last exchange"),
         _cmd("status", "Show Hermes session status"),
@@ -64,25 +50,17 @@ def build_relay_command_manifest() -> List[Dict[str, Any]]:
         _cmd("sethomeserver", "Provision and wire the Discord home server",
              _opt("confirm", "Type 'confirm' to move an existing home server to this server")),
         _cmd("stop", "Stop the running Hermes agent"),
-        _cmd("steer", "Inject a message after the next tool call (no interrupt)",
-             _opt("text", "What to tell the agent")),
         _cmd("compress", "Compress conversation context"),
         _cmd("title", "Set or show the session title",
              _opt("text", "New title. Leave empty to show.")),
         _cmd("resume", "Resume a previously-named session",
              _opt("name", "Session title or id")),
-        _cmd("usage", "Show token usage for this session"),
         _cmd("help", "Show available commands"),
         _cmd("insights", "Show usage insights and analytics"),
         _cmd("reload-mcp", "Reload MCP servers from config"),
         _cmd("reload-skills", "Re-scan skills for new or removed entries"),
-        _cmd("voice", "Toggle voice reply mode"),
         _cmd("update", "Update Hermes Agent to the latest version"),
         _cmd("restart", "Gracefully restart the Hermes gateway"),
-        _cmd("approve", "Approve a pending dangerous command",
-             _opt("scope", "Approval scope", choices=["once", "session", "always", "all"])),
-        _cmd("deny", "Deny a pending dangerous command",
-             _opt("reason", "Why (relayed to the agent)")),
         _cmd("thread", "Create a new thread and start a Hermes session in it",
              _opt("name", "Thread name")),
         _cmd("queue", "Queue a prompt for the next turn (doesn't interrupt)",

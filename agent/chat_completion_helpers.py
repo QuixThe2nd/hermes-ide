@@ -474,23 +474,6 @@ def _prompt_cache_scope_for_agent(agent) -> "str | None":
         return None
 
 
-def _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs: dict) -> dict:
-    """Merge Portal ``tags`` / ``session_id`` onto an Anthropic Messages kwargs dict.
-    The Nous profile is only consulted by the OpenAI-wire transport; ``session_id``
-    only — never ``provider_preferences`` (an OpenAI-wire routing object)."""
-    if getattr(agent, "provider", None) not in {"nous", "nous-portal", "nousresearch"}:
-        return anthropic_kwargs
-    try:
-        from providers import get_provider_profile
-        nous_profile = get_provider_profile("nous")
-        if nous_profile is not None:
-            anthropic_kwargs.setdefault("extra_body", {}).update(
-                nous_profile.build_extra_body(session_id=getattr(agent, "session_id", None)))
-    except Exception as exc:  # noqa: BLE001 — never block a turn on tagging
-        logger.debug("Nous Portal extra_body merge failed: %s", exc)
-    return anthropic_kwargs
-
-
 def _estimate_chunk_bytes(chunk: Any) -> int:
     """Cheap per-chunk size estimate for the stream diagnostic counters: delta
     string lengths plus a framing floor (~3x cheaper than ``len(repr(chunk))``
@@ -569,7 +552,7 @@ def _report_stale_nonstream_kill(agent, api_kwargs: dict, elapsed: float, stale_
         "model=%s context=~%s tokens. Killing connection.", "Inline n" if inline else "N", elapsed,
         stale_timeout, model, f"{estimate_request_context_tokens(api_kwargs):,}")
     try:
-        agent._buffer_diagnostic_status(
+        agent._buffer_transient_reconnect_notice(
             f"⚠️ No response from provider for {int(elapsed)}s (non-streaming, model: {model}). {hint or 'Aborting call.'}")
     except Exception:
         logger.debug("stale status buffering failed", exc_info=True)
@@ -613,78 +596,11 @@ def _scale_stale_timeout_for_context(base: float, est_tokens: int) -> float:
 
 def _cloud_stale_timeout(base: float, api_kwargs: dict) -> float:
     """Cloud stale-stream patience: ``base`` scaled for context size, then floored for
-    known reasoning models. ``model`` (OpenAI/Anthropic) wins over ``modelId`` (Bedrock);
-    Bedrock's dotted, region-prefixed profile id can't match the floor's slug regex
-    directly, so it is normalized as a fallback."""
+    known reasoning models."""
     from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
     timeout = _scale_stale_timeout_for_context(base, estimate_request_context_tokens(api_kwargs))
-    floor = get_reasoning_stale_timeout_floor(api_kwargs.get("model") or api_kwargs.get("modelId") or "")
-    if floor is None and api_kwargs.get("modelId"):
-        floor = _bedrock_reasoning_stale_floor(api_kwargs["modelId"])
+    floor = get_reasoning_stale_timeout_floor(api_kwargs.get("model") or "")
     return timeout if floor is None else max(timeout, floor)
-
-
-def _derive_stream_stale_timeout(agent, api_kwargs: dict) -> float:
-    """Stale-stream patience for a provider that is never a local endpoint (Bedrock):
-    the OpenAI/Anthropic stale detector's budget minus its local branch."""
-    return _cloud_stale_timeout(_configured_stale_base(agent), api_kwargs)
-
-
-def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
-    """Map a Bedrock inference-profile id to its reasoning stale-timeout floor.
-
-    ``us.anthropic.claude-opus-4-6-v1:0`` -> strip the region prefix, then try the
-    segment after the provider namespace (``claude-opus-4-6-v1:0``) and the id with
-    the provider dot dashed (``deepseek-r1-v1:0``). The floor table mixes dashed
-    and dotted versions while Bedrock always dashes, so each candidate is also
-    tried with digit-dash-digit <-> digit-dot-digit swapped (version separators
-    only). First non-None wins; None for unknown models.
-    """
-    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
-    if not model_id or not isinstance(model_id, str):
-        return None
-    name = model_id.strip().lower()
-    for prefix in ("global.", "us.", "eu.", "apac.", "ap.", "au.", "jp.", "ca.", "sa.", "me.", "af."):
-        if name.startswith(prefix):
-            name = name[len(prefix):]
-            break
-    base_candidates = [name]
-    if "." in name:
-        base_candidates.append(name.rsplit(".", 1)[1])   # claude-opus-4-6-v1:0
-        base_candidates.append(name.replace(".", "-", 1))  # deepseek-r1-v1:0
-    candidates = dict.fromkeys(
-        form for cand in base_candidates
-        for form in (cand, re.sub(r"(?<=\d)-(?=\d)", ".", cand), re.sub(r"(?<=\d)\.(?=\d)", "-", cand)))
-    return next((f for f in map(get_reasoning_stale_timeout_floor, candidates) if f is not None), None)
-
-
-def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=None):
-    """Pop the Hermes routing keys and call ``converse`` / ``converse_stream`` (boto3
-    directly) with the shared recovery: a cachePoint rejection (Nova: toolConfig.tools,
-    #97281) drops the marker and resends once inside the same attempt; a streaming IAM
-    denial hands off to ``on_stream_denied(client, kwargs, exc)``; a stale connection
-    evicts the cached client so the outer retry builds a fresh pool. Streaming returns the
-    event stream; non-streaming an OpenAI-shaped SimpleNamespace."""
-    from agent.bedrock_adapter import (_get_bedrock_runtime_client, invalidate_runtime_client,
-        is_stale_connection_error, is_streaming_access_denied_error, normalize_converse_response,
-        recover_from_cache_point_rejection)
-    region = api_kwargs.pop("__bedrock_region__", "us-east-1")
-    api_kwargs.pop("__bedrock_converse__", None)
-    client = _get_bedrock_runtime_client(region)
-    method = client.converse_stream if stream else client.converse
-    finish = (lambda raw: raw.get("stream", [])) if stream else normalize_converse_response
-    try:
-        raw_response = method(**api_kwargs)
-    except Exception as exc:
-        retry_kwargs = recover_from_cache_point_rejection(exc, api_kwargs)
-        if retry_kwargs is not None:
-            return finish(method(**retry_kwargs))
-        if on_stream_denied is not None and is_streaming_access_denied_error(exc):
-            return on_stream_denied(client, api_kwargs, exc)
-        if is_stale_connection_error(exc):
-            invalidate_runtime_client(region)
-        raise
-    return finish(raw_response)
 
 
 def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
@@ -692,7 +608,7 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
 
     Shared by ``interruptible_api_call`` and ``direct_api_call``. ``make_client(reason,
     kind=...)`` builds the per-request client (``"openai"`` / ``"anthropic_messages"``)
-    so callers can register it with their abort/close machinery; bedrock / MoA
+    so callers can register it with their abort/close machinery; MoA
     manage their own clients. Interrupt/abort/close semantics stay in callers.
     """
     if agent.api_mode == "codex_responses":
@@ -703,8 +619,6 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         # from the stranger thread while the worker owns the SDK close (#67142).
         request_client = make_client("anthropic_messages_request", kind="anthropic_messages")
         return agent._anthropic_messages_create(api_kwargs, client=request_client)
-    if agent.api_mode == "bedrock_converse":
-        return _bedrock_converse_call(api_kwargs, stream=False)
     if agent.provider == "moa":
         # MoA is a virtual provider backed by the in-process MoAClient facade — never
         # rebuild a request-local client from the virtual metadata. After a client
@@ -730,7 +644,7 @@ def should_use_direct_api_call(agent) -> bool:
     thread pools that wedge before the socket opens when the request is pushed onto
     yet another daemon worker. Running inline drops the deepest layer; interrupts
     still work because the inline path registers ``agent._active_request_abort``,
-    which ``interrupt()`` invokes cross-thread (#72227). Native/Codex/Bedrock/MoA
+    which ``interrupt()`` invokes cross-thread (#72227). Native/Codex/MoA
     keep their workers: their cancellation and client ownership differ.
     """
     if getattr(agent, "api_mode", None) != "chat_completions" or getattr(agent, "provider", None) == "moa":
@@ -1019,7 +933,7 @@ class _RequestClientRegistry:
     Thread-ownership rule (#29507): the owning worker pops + fully closes on its
     way out. A *stranger* thread only aborts the sockets — never ``client.close()``
     — avoiding the FD-recycling race where a just-closed TLS FD was reassigned to
-    ``kanban.db`` and the live SSL BIO wrote into the SQLite header. The abort
+    ``state.db`` and the live SSL BIO wrote into the SQLite header. The abort
     happens under the lock: once released the worker may cache the client and the
     NEXT call check it out. Stream handles are safe to close from any thread.
     """
@@ -1289,11 +1203,11 @@ def _reasoning_config_for_wire(agent):
     return cfg
 
 
-def _alias_tool_search_bridge_for_xai(agent, transport, tools_for_api):
-    """xAI chat-completions reserves ``tool_search`` and 400s when the bridge declares
-    it (#95003): rename the wire declaration; ``normalize_response`` maps calls back
-    via the transport's ``_last_wire_aliases`` (reset here so a stale map can't
-    reverse-map a name this request never aliased). Deep-copy first (#27907)."""
+def _alias_reserved_tool_names_for_xai(agent, transport, tools_for_api):
+    """Alias xAI-reserved client function names; reverse-map calls via request-local provenance.
+
+    Reset ``_last_wire_aliases`` so a stale map cannot rewrite a name this request never
+    aliased. Deep-copy before rewriting the shared schema list (#27907)."""
     if transport is not None and hasattr(transport, "_last_wire_aliases"):
         transport._last_wire_aliases = {}
     is_xai_chat = agent.provider in {"xai", "xai-oauth"} or agent._base_url_hostname == "api.x.ai"
@@ -1301,17 +1215,17 @@ def _alias_tool_search_bridge_for_xai(agent, transport, tools_for_api):
         return tools_for_api
     try:
         import copy as _copy_xai
-        from agent.transports.chat_completions import _rename_tool_search_bridge_for_xai
-        has_bridge = any(
+        from agent.transports.chat_completions import _rename_reserved_tool_names_for_xai
+        has_reserved_name = any(
             (t.get("function") or {}).get("name") == "tool_search" for t in tools_for_api if isinstance(t, dict)
         )
-        if has_bridge:
+        if has_reserved_name:
             tools_for_api = _copy_xai.deepcopy(tools_for_api)
-            tools_for_api, alias_map = _rename_tool_search_bridge_for_xai(tools_for_api)
+            tools_for_api, alias_map = _rename_reserved_tool_names_for_xai(tools_for_api)
             if transport is not None:
                 transport._last_wire_aliases = alias_map
     except Exception as exc:
-        logger.warning("%s⚠️ Failed to alias tool_search bridge for xAI: %s", getattr(agent, "log_prefix", ""), exc)
+        logger.warning("%s⚠️ Failed to alias reserved tool name for xAI: %s", getattr(agent, "log_prefix", ""), exc)
     return tools_for_api
 
 
@@ -1335,16 +1249,7 @@ def _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config
         base_url=getattr(agent, "_anthropic_base_url", None),
         fast_mode=request_overrides.get("speed") == "fast",
         drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)))
-    # Portal reads ``tags`` / ``session_id`` on its Messages route too, but the profile hook
-    # is only consulted by the OpenAI-wire transport — merge here to keep sticky routing.
-    return _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs)
-
-
-def _build_bedrock_kwargs(agent, api_messages, tools_for_api):
-    # Bedrock Converse — the adapter converts messages/tools and calls boto3 directly.
-    return agent._get_transport().build_kwargs(model=agent.model, messages=api_messages, tools=tools_for_api,
-        max_tokens=agent.max_tokens, region=getattr(agent, "_bedrock_region", None) or "us-east-1",
-        guardrail_config=getattr(agent, "_bedrock_guardrail_config", None))
+    return anthropic_kwargs
 
 
 def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
@@ -1378,13 +1283,15 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
         is_codex_backend=is_codex_backend, is_xai_responses=is_xai_responses,
         github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
         replay_encrypted_reasoning=bool(getattr(agent, "_codex_reasoning_replay_enabled", True)),
-        context_management=context_management, text_verbosity=getattr(agent, "text_verbosity", None))
+        context_management=context_management, text_verbosity=getattr(agent, "text_verbosity", None),
+        claude_code_plan_identity=bool(getattr(agent, "_claude_code_plan_identity", False)),
+    )
 
 
 
 def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
     transport = agent._get_transport()
-    tools_for_api = _alias_tool_search_bridge_for_xai(agent, transport, tools_for_api)
+    tools_for_api = _alias_reserved_tool_names_for_xai(agent, transport, tools_for_api)
 
     _is_qwen = agent._is_qwen_portal()
     _is_or = agent._is_openrouter_url()
@@ -1418,7 +1325,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         max_tokens_param_fn=agent._max_tokens_param, reasoning_config=reasoning_config,
         request_overrides=request_overrides, session_id=getattr(agent, "session_id", None),
         cache_scope_id=cache_scope_id, ollama_num_ctx=agent._ollama_num_ctx,
-        provider_preferences=_prefs or None, openrouter_min_coding_score=agent.openrouter_min_coding_score,
+        provider_preferences=_prefs or None,
         supports_reasoning=agent._supports_reasoning_extra_body(),
         qwen_session_metadata=_qwen_meta)
     if _profile:
@@ -1430,7 +1337,6 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         **_common,
         model_lower=(agent.model or "").lower(),
         is_openrouter=_is_or,
-        is_nous=base_url_host_matches(_host, "nousresearch.com"),
         is_qwen_portal=_is_qwen,
         is_github_models=_is_gh,
         is_nvidia_nim=base_url_host_matches(_host, "integrate.api.nvidia.com"),
@@ -1478,10 +1384,8 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
     request_overrides = effective_request_overrides(agent)
     if agent.api_mode == "anthropic_messages":
         return _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides)
-    if agent.api_mode == "bedrock_converse":
-        return _build_bedrock_kwargs(agent, api_messages, tools_for_api)
     # Rotation-stable logical cache scope shared by every OpenAI-wire branch
-    # (memoized on the agent); anthropic/bedrock above don't use it.
+    # (memoized on the agent); anthropic above doesn't use it.
     cache_scope_id = _prompt_cache_scope_for_agent(agent)
     builder = _build_codex_kwargs if agent.api_mode == "codex_responses" else _build_chat_completions_kwargs
     return builder(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id)
@@ -1643,7 +1547,7 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     # (reconstruction reorders signed blocks -> HTTP 400); codex_* items are
     # the encrypted reasoning / exact message items Responses prefix caching
     # needs.
-    for attr in ("anthropic_content_blocks", "bedrock_content_blocks", "codex_reasoning_items", "codex_message_items"):
+    for attr in ("anthropic_content_blocks", "codex_reasoning_items", "codex_message_items"):
         value = getattr(assistant_message, attr, None)
         if value:
             msg[attr] = value
@@ -1688,19 +1592,6 @@ def rewrite_prompt_model_identity(agent, model: str, provider: str) -> None:
 def _fallback_entry_key(fb: dict) -> tuple[str, str, str]:
     return (str(fb.get("provider") or "").strip().lower(), str(fb.get("model") or "").strip(),
             str(fb.get("base_url") or "").strip().rstrip("/"))
-
-
-def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str]:
-    """Return a skip reason for fallback entries known to be unusable locally."""
-    if (fb.get("provider") or "").strip().lower() != "nous":
-        return None
-    try:
-        from hermes_cli.auth import get_provider_auth_state
-        state = get_provider_auth_state("nous") or {}
-    except Exception as exc:
-        return f"nous_auth_unreadable:{type(exc).__name__}"
-    has_token = any(isinstance(t, str) and t.strip() for t in (state.get("access_token"), state.get("refresh_token")))
-    return None if has_token else "nous_token_missing"
 
 
 _FALLBACK_REASON_LABELS = {
@@ -1780,10 +1671,6 @@ def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_
         # (minimax, qwen) and chat_completions models behind one provider; the primary /model path
         # already re-derives per model — the fallback wire must agree (#102148).
         return opencode_model_api_mode(opencode_family, fb_model)
-    if fb_provider in {"nous", "nous-portal", "nousresearch"}:
-        # Portal is dual-wire: anthropic/* must land on /v1/messages (the swap rebuilds the native client).
-        from hermes_cli.providers import nous_api_mode
-        return nous_api_mode(fb_model)
     if _is_anthropic_wire_url(fb_base_url):
         # Named custom providers (cron-anthropic) resolve base_url from config; the hint pass never saw it.
         return "anthropic_messages"
@@ -1792,9 +1679,6 @@ def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_
     # Provider exceptions (Copilot gpt-5-mini) stay inside the requires-responses predicate.
     if agent._is_direct_openai_url(fb_base_url) or agent._provider_model_requires_responses_api(fb_model, provider=fb_provider):
         return "codex_responses"
-    host = base_url_hostname(fb_base_url)
-    if fb_provider == "bedrock" or (host.startswith("bedrock-runtime.") and base_url_host_matches(fb_base_url, "amazonaws.com")):
-        return "bedrock_converse"
     return "chat_completions"
 
 
@@ -1862,11 +1746,6 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
         return True
     if _candidate_pool_exhausted(agent, fb_provider, fb_model):
         logger.warning("Fallback skip: %s/%s credential pool is exhausted (every entry in cooldown)", fb_provider, fb_model)
-        return True
-    local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
-    if local_skip_reason:
-        unavailable.add(fb_key)
-        logger.warning("Fallback skip: %s/%s is not locally usable (%s); suppressing for this session", fb_provider, fb_model, local_skip_reason)
         return True
     # Identity semantics (axes, shim aliases, credential surfaces, multi-endpoint pools)
     # are owned by agent.backend_identity — do not re-implement comparisons here.
@@ -2075,8 +1954,6 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 model=agent.model, base_url=agent.base_url, provider=fb_provider, is_codex_backend=fb_provider == "openai-codex")
             return True
         except Exception as e:
-            if fb_provider == "nous":
-                unavailable.add(fb_key)
             logger.error("Failed to activate fallback %s: %s", fb_model, e)
             continue  # try next in chain
 
@@ -2192,7 +2069,6 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
             model=agent.model, messages=api_messages, tools=None, max_tokens=agent.max_tokens,
             reasoning_config=agent.reasoning_config, is_oauth=agent._is_anthropic_oauth,
             preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
-        ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw)
         response = _managed_summary_call(agent, api_request_id, ant_kw, agent._anthropic_messages_create, retry_count=retry_count)
         return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)
     return _attempt
@@ -2270,29 +2146,24 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
 
 def cleanup_task_resources(agent, task_id: str) -> None:
-    """Per-turn VM + browser cleanup for a task. Skips ``cleanup_vm`` for persistent
-    terminal envs (``_cleanup_inactive_envs`` reaps them after ``terminal.lifetime_seconds``)
-    and ``cleanup_browser`` in headed mode (the inactivity reaper handles idle sessions)."""
-    def _headed() -> bool:
-        try:
-            from tools.browser_tool_cloud import _is_headed_mode
-            return _is_headed_mode()
-        except Exception:
-            return bool(os.environ.get("AGENT_BROWSER_HEADED"))
+    """End turn-owned browser protection, then clean per-turn VM and Camofox resources."""
+    from tools.browser_tool_lifecycle import release_browser_session
 
-    for label, skip, skip_what, cleanup in (
-        ("VM", is_persistent_env, "cleanup_vm for persistent env", lambda: _ra().cleanup_vm(task_id)),
-        ("browser", lambda _tid: _headed(), "cleanup_browser for headed session", lambda: _ra().cleanup_browser(task_id)),
-    ):
-        try:
-            if skip(task_id):
-                if agent.verbose_logging:
-                    logging.debug(f"Skipping per-turn {skip_what} {task_id}; idle reaper will handle it.")
-            else:
-                cleanup()
-        except Exception as e:
+    release_browser_session(task_id)
+    try:
+        if is_persistent_env(task_id):
             if agent.verbose_logging:
-                logger.warning("Failed to cleanup %s for task %s: %s", label, task_id, e)
+                logging.debug(f"Skipping per-turn cleanup_vm for persistent env {task_id}; idle reaper will handle it.")
+        else:
+            _ra().cleanup_vm(task_id)
+    except Exception as e:
+        if agent.verbose_logging:
+            logger.warning("Failed to cleanup VM for task %s: %s", task_id, e)
+    try:
+        _ra().cleanup_browser(task_id)
+    except Exception as e:
+        if agent.verbose_logging:
+            logger.warning("Failed to cleanup browser for task %s: %s", task_id, e)
 
 
 def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj, *,
@@ -2410,169 +2281,6 @@ def _stream_codex_passthrough(agent, api_kwargs: dict, on_first_delta):
         return _with_stream_emitters(agent, lambda: agent._interruptible_api_call(api_kwargs))
     finally:
         agent._codex_on_first_delta = None
-
-
-class _BedrockStream:
-    """Bedrock Converse streaming: boto3 ``converse_stream()`` on a worker thread
-    with real-time delta callbacks, polled by an interrupt / stale-event watchdog
-    (same UX as the Anthropic and chat_completions streams)."""
-
-    def __init__(self, agent, api_kwargs: dict, on_first_delta):
-        self.agent = agent
-        self.api_kwargs = api_kwargs
-        self.on_first_delta = on_first_delta
-        self.result = {"response": None, "error": None}
-        self.first_delta_fired = False
-        self.response_started = False
-        # Liveness for the boto3 worker: ``for event in event_stream`` has NO read timeout,
-        # so on_event stamps every event and the poll loop trips a watchdog on a long gap.
-        self.started_at = time.time()
-        self.last_event = self.started_at
-        # Read (not popped): the worker's own pop inside _open_stream must
-        # still resolve the same region.
-        self.region = api_kwargs.get("__bedrock_region__", "us-east-1")
-        # Same patience budget as the OpenAI/Anthropic stale detector.
-        self.stale_timeout = _derive_stream_stale_timeout(agent, api_kwargs)
-
-    def _model(self) -> str:
-        return self.api_kwargs.get("modelId", "unknown")
-
-    def _fire_first(self):
-        self.response_started = True
-        if not self.first_delta_fired and self.on_first_delta:
-            self.first_delta_fired = True
-            with contextlib.suppress(Exception):
-                self.on_first_delta()
-
-    def _after_first(self, fire):
-        """Wrap a delta callback so the first delivered event also fires ``on_first_delta``."""
-        def _on(value):
-            self._fire_first()
-            fire(value)
-        return _on
-
-    def _open_stream(self, next_api_kwargs: dict[str, Any]):
-        return _bedrock_converse_call(dict(next_api_kwargs), stream=True, on_stream_denied=self._fall_back_to_converse)
-
-    def _fall_back_to_converse(self, client, final_kwargs: dict, exc: Exception):
-        # InvokeModel-only IAM policies cannot stream; fall back inside the same Relay
-        # attempt (one lifecycle boundary).
-        from agent.bedrock_adapter import normalize_converse_response
-        self.agent._disable_streaming = True
-        self.agent._safe_print("\n⚠  AWS IAM denied bedrock:InvokeModelWithResponseStream — "
-            "falling back to non-streaming InvokeModel.\n"
-            "   Grant that action to restore streaming output.\n", diagnostic=True)
-        logger.info("bedrock: converse_stream denied by IAM (%s) — "
-            "using non-streaming converse() for this session.", type(exc).__name__)
-        return normalize_converse_response(client.converse(**final_kwargs))
-
-    def _worker(self):
-        agent = self.agent
-        stream = None
-        try:
-            from agent import relay_llm
-            from agent.bedrock_adapter import stream_converse_with_callbacks
-            intercepted_events = []
-            writer_token = {"value": None}
-
-            def _stream_created(_stream: Any) -> None:
-                writer_token["value"] = claim_stream_writer(agent)
-
-            def _accept_event(_event: Any) -> bool:
-                token = writer_token["value"]
-                return token is None or stream_writer_is_current(agent, token)
-
-            def _stamp_event() -> None:
-                self.last_event = time.time()
-
-            try:
-                from agent.plugin_stream_hooks import has_reasoning_stream_observer_hooks
-                plugin_reasoning_observer = has_reasoning_stream_observer_hooks()
-            except Exception:
-                logger.debug("plugin reasoning stream observer check failed", exc_info=True)
-                plugin_reasoning_observer = False
-
-            stream = relay_llm.stream(dict(self.api_kwargs), self._open_stream,
-                **_relay_stream_identity(agent, "bedrock"),
-                finalizer=lambda: stream_converse_with_callbacks({"stream": list(intercepted_events)}),
-                on_stream_created=_stream_created, on_chunk=intercepted_events.append,
-                chunk_adapter=lambda chunk: chunk, accept_chunk=_accept_event,
-                completed_response_predicate=lambda response: bool(getattr(response, "choices", None)),
-                metadata=_relay_stream_metadata(agent, "custom"), defer_logical_completion=True)
-            wants_reasoning = agent.reasoning_callback or agent.stream_delta_callback or plugin_reasoning_observer
-            streamed_response = stream_converse_with_callbacks({"stream": stream},
-                on_text_delta=self._after_first(agent._fire_stream_delta) if agent._has_stream_consumers() else None,
-                on_tool_start=self._after_first(agent._fire_tool_gen_started),
-                on_reasoning_delta=self._after_first(agent._fire_reasoning_delta) if wants_reasoning else None,
-                on_interrupt_check=lambda: agent._interrupt_requested, on_event=_stamp_event)
-            self.result["response"] = stream.final_response or streamed_response
-        except Exception as e:
-            self.result["error"] = e
-        finally:
-            if stream is not None:
-                stream.close()
-
-    def _raise_if_interrupted(self, message: str, worker=None) -> None:
-        if not self.agent._interrupt_requested:
-            return
-        _record_interrupted_provider_wait(
-            self.agent, time.time() - self.started_at, response_started=self.response_started)
-        if worker is not None:
-            # Let the worker unwind Relay scopes before raising (#81521).
-            _join_worker_for_relay_teardown(worker, label="Bedrock streaming")
-        raise InterruptedError(message)
-
-    def _on_stale(self, stale_elapsed: float) -> None:
-        """No event past the stale timeout = wedged stream (the worker would
-        block in the event loop forever)."""
-        agent = self.agent
-        logger.warning("Bedrock stream stale for %.0fs (threshold %.0fs) — no events "
-            "received. region=%s model=%s. Aborting call.", stale_elapsed, self.stale_timeout, self.region,
-            self._model())
-        agent._buffer_diagnostic_status(f"⚠️ No events from Bedrock for {int(stale_elapsed)}s (model: {self._model()}). Aborting...")
-        _bump_stale_streak(agent)
-        # Evict the region's cached client so the NEXT call gets a fresh pool.
-        # This does NOT abort the in-flight botocore EventStream (no external
-        # cancellation exists); the daemon worker keeps reading until its
-        # socket errors, so THIS call ends via the TimeoutError below.
-        try:
-            from agent.bedrock_adapter import invalidate_runtime_client
-            invalidate_runtime_client(self.region)
-        except Exception as _inval_exc:
-            logger.debug("bedrock: stale client eviction failed: %s", _inval_exc)
-        self.last_event = time.time()
-        # Raises RuntimeError past HERMES_STREAM_STALE_GIVEUP; otherwise end
-        # THIS call with a TimeoutError and let the streak carry forward.
-        _check_stale_giveup(agent)
-        self.result["error"] = TimeoutError(
-            f"Bedrock stream produced no events for {int(stale_elapsed)}s (threshold {int(self.stale_timeout)}s) "
-            f"— aborting stalled stream so the retry/fallback path can recover.")
-
-    def _poll(self):
-        t = threading.Thread(target=_context_thread_target(self._worker), daemon=True)
-        t.start()
-        while t.is_alive():
-            t.join(timeout=0.3)
-            self._raise_if_interrupted("Agent interrupted during Bedrock API call", worker=t)
-            stale_elapsed = time.time() - self.last_event
-            if stale_elapsed > self.stale_timeout:
-                self._on_stale(stale_elapsed)
-                break
-        # The Bedrock callback returns a PARTIAL response on interrupt without raising
-        # (on_interrupt_check), so the in-loop raise may never fire. Re-check (#59999 area).
-        self._raise_if_interrupted("Agent interrupted during Bedrock API call (post-worker)")
-        if self.result["error"] is not None:
-            raise self.result["error"]
-        # Success clears the cross-turn breaker (#58962).
-        if self.result["response"] is not None:
-            _reset_stale_streak(self.agent)
-        return self.result["response"]
-
-    def run(self):
-        # Cross-turn stale-stream circuit breaker (#58962), as on the OpenAI/
-        # Anthropic path.
-        _check_stale_giveup(self.agent)
-        return _with_stream_emitters(self.agent, self._poll)
 
 
 class _ToolCallAccumulator:
@@ -2842,7 +2550,7 @@ class _StreamingCall(StreamingWaitMonitor):
             body = _provider_error_body(
                 {"code": _err_type or "provider_in_stream_error", "message": str(_err_msg or chunk)}, _status)
             raise ProviderStreamError(status_code=_status, body=body, raw_text=f"{_err_type}: {_err_msg}")
-        # Nous Portal usage frames (choices=[] + lastOne=true, no [DONE]) are a
+        # Aggregator usage frames (choices=[] + lastOne=true, no [DONE]) are a
         # clean terminal, not a drop; relabelled upstreams send 1 / "true".
         # See #90848.
         last_one = getattr(chunk, "lastOne", None)
@@ -2869,8 +2577,6 @@ class _StreamingCall(StreamingWaitMonitor):
     def _chat_stream_created(self, raw_stream: Any) -> None:
         response = self._attempt_stream_response = getattr(raw_stream, "response", None)
         self.agent._capture_rate_limits(response)
-        self.agent._capture_credits(response)
-        self.agent._capture_nous_model_switch(response)
         self.agent._stream_diag_capture_response(self.clients.diag, response)
         self.agent._check_openrouter_cache_status(response)
         self._writer_token = claim_stream_writer(self.agent)
@@ -3311,9 +3017,8 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _maybe_disable_streaming(self, e) -> None:
         """Flip to non-streaming for failures streaming itself cannot survive, or that
-        re-streaming can only repeat: the provider rejecting streams outright,
-        AnthropicBedrock IAM lacking InvokeModelWithResponseStream, or a gateway answering
-        with contentless SSE keepalive frames (a degraded gateway answers every
+        re-streaming can only repeat: the provider rejecting streams outright, or a gateway
+        answering with contentless SSE keepalive frames (a degraded gateway answers every
         streaming request that way, so the retry must change channel to make progress)."""
         if _is_provider_stream_empty_frame_error(e):
             self.agent._disable_streaming = True
@@ -3329,18 +3034,9 @@ class _StreamingCall(StreamingWaitMonitor):
                 "without streaming (streaming stays off for this session).")
             return
         _err_lower = str(e).lower()
-        _is_stream_unsupported = "stream" in _err_lower and "not supported" in _err_lower
-        _is_bedrock_stream_denied = False
-        if not _is_stream_unsupported and "invokemodelwithresponsestream" in _err_lower:
-            # Message pre-check first: importing bedrock_adapter triggers a lazy boto3 install.
-            from agent.bedrock_adapter import is_streaming_access_denied_error
-            _is_bedrock_stream_denied = is_streaming_access_denied_error(e)
-        if _is_stream_unsupported or _is_bedrock_stream_denied:
+        if "stream" in _err_lower and "not supported" in _err_lower:
             self.agent._disable_streaming = True
             self.agent._safe_print(
-                "\n⚠  AWS IAM denied bedrock:InvokeModelWithResponseStream. Switching to non-streaming.\n"
-                "   Grant that action to restore streaming output.\n"
-                if _is_bedrock_stream_denied else
                 "\n⚠  Streaming is not supported for this model/provider. Switching to non-streaming.\n"
                 "   To avoid this delay, set display.streaming: false in config.yaml\n",
                 diagnostic=True,
@@ -3531,7 +3227,7 @@ class _StreamingCall(StreamingWaitMonitor):
             "Stream stale for %.0fs (threshold %.0fs) — no chunks received. model=%s context=~%s tokens. Killing connection.",
             elapsed, self._stream_stale_timeout, self.api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
         )
-        self.agent._buffer_diagnostic_status(
+        self.agent._buffer_transient_reconnect_notice(
             f"⚠️ No response from provider for {int(elapsed)}s (model: {self.api_kwargs.get('model', 'unknown')}, "
             f"context: ~{_est_ctx:,} tokens). Reconnecting...")
         # Captured BEFORE the cancel/abort: the pool sweep can miss a checked-out
@@ -3700,8 +3396,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         raise InterruptedError("Agent interrupted before streaming API call")
     if agent.api_mode == "codex_responses":
         return _stream_codex_passthrough(agent, api_kwargs, on_first_delta)
-    if agent.api_mode == "bedrock_converse":
-        return _BedrockStream(agent, api_kwargs, on_first_delta).run()
     # Cross-turn stale-stream circuit breaker (see ``_stale_streak()``).
     _check_stale_giveup(agent)
     return _StreamingCall(agent, api_kwargs, on_first_delta).run()

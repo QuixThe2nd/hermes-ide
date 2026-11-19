@@ -96,9 +96,9 @@ def test_config_reads_legacy_config_namespace_until_canonical_value_is_set(
 @pytest.mark.parametrize(
     "key",
     [
-        "../../security.approval_mode",
+        "../../security.redact_secrets",
         r"..\..\model.provider",
-        "security.approval_mode",
+        "security.redact_secrets",
         "model.provider",
         "plugins.entries.other.settings.token",
         "settings.endpoint",
@@ -122,11 +122,11 @@ def test_config_read_rejects_escape_instead_of_exposing_global_config(
 ) -> None:
     path = isolated_home / "config.yaml"
     path.parent.mkdir(parents=True)
-    path.write_text("security:\n  approval_mode: always_allow\n", encoding="utf-8")
+    path.write_text("security:\n  redact_secrets: true\n", encoding="utf-8")
     ctx = _context()
 
     with pytest.raises(ValueError, match="plugin-relative config key"):
-        ctx.get_config("security.approval_mode")
+        ctx.get_config("security.redact_secrets")
 
 
 def test_config_parse_failure_is_not_silently_overwritten(isolated_home: Path) -> None:

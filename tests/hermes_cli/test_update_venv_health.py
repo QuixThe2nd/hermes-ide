@@ -42,6 +42,43 @@ def _fake_venv_python(tmp_path, *, windows: bool = False):
     return py
 
 
+def test_venv_core_imports_probe_excludes_fastapi(tmp_path):
+    """PR #552 removed fastapi (dashboard web UI removal); the probe must not require it."""
+    from hermes_cli import update_cmd_deps
+
+    venv_python = _fake_venv_python(tmp_path)
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
+        cli_main, "_is_windows", return_value=False
+    ), patch.object(update_cmd_deps.subprocess, "run", fake_run):
+        healthy, detail = update_cmd_deps._venv_core_imports_healthy()
+        assert healthy is True
+        assert detail == ""
+
+    assert len(captured) == 1
+    probe_cmd = captured[0]
+    assert probe_cmd[0] == str(venv_python)
+    assert probe_cmd[1] == "-c"
+    check_src = probe_cmd[2]
+    assert "'fastapi'" not in check_src
+    for mod in ("'uvicorn'", "'pydantic'", "'openai'", "'yaml'"):
+        assert mod in check_src
+
+
+def test_sibling_candidate_venv_probes_exclude_fastapi():
+    """PR #552 removed fastapi (dashboard removal); the sibling candidate-venv smoke
+    probes in runtime_repair and managed_uv must not require it either."""
+    import inspect
+
+    from hermes_cli import managed_uv, runtime_repair
+
+    assert "fastapi" not in inspect.getsource(runtime_repair._smoke_candidate_venv)
+    assert "fastapi" not in inspect.getsource(managed_uv._smoke_candidate_venv)
 
 
 # ---------------------------------------------------------------------------
@@ -280,8 +317,7 @@ def test_current_checkout_with_stale_dependency_set_runs_the_sync(monkeypatch, c
     monkeypatch.setattr(update_cmd, "_venv_core_imports_healthy", lambda: (True, ""))
     monkeypatch.setattr(hm, "_is_windows", lambda: False)
     monkeypatch.delenv(hm._UPDATE_REEXEC_ENV, raising=False)
-    monkeypatch.setattr("hermes_cli.managed_uv.update_managed_uv", lambda **kwargs: None)
-    monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda **kwargs: "uv")
+    monkeypatch.setattr("pm.ensure", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(update_cmd, "_repair_venv_on_current_checkout",
                         lambda **kwargs: calls.append("sync") or True)
     monkeypatch.setattr(update_cmd, "_repair_node_deps_on_current_checkout",
@@ -291,11 +327,11 @@ def test_current_checkout_with_stale_dependency_set_runs_the_sync(monkeypatch, c
         monkeypatch.setattr(update_cmd, "_venv_dependency_set_stale", lambda: stale)
         return update_cmd._repair_current_checkout(
             assume_yes=True, gateway_mode=False, pre_update_snapshot_id=None,
-            had_desktop_app_before_update=False, active_lazy_features=[], active_tool_dependencies=[],
-            upstream_checked=True, _windows_gateway_resume=None)
+            active_lazy_features=[], active_tool_dependencies=[],
+            _windows_gateway_resume=None)
 
-    assert run((True, "installed hermes-agent 0.20.6, checkout is 0.21.2")) is True
+    assert run((True, "installed hermes-agent 0.20.6, checkout is 0.21.2"))[0] is True
     assert calls == ["sync"]
     assert "never synced after the last pull" in capsys.readouterr().out
-    assert run((False, "")) is True
+    assert run((False, ""))[0] is True
     assert calls == ["sync", "✓ Already up to date!"]

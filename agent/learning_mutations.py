@@ -56,6 +56,9 @@ def _locate_memory(node_id: str) -> tuple[Path, list[str], int]:
     return path, chunks, local
 
 
+# ── Helpers ─────────────────────────────────────────────────────────────────
+
+
 def _write_memory(path: Path, chunks: list[str]) -> None:
     """Atomic temp-file + rename via the memory tool, so a concurrent reader
     never sees a half-written file (and the §-join stays single-sourced)."""

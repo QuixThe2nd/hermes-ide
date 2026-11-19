@@ -137,15 +137,15 @@ class TestStaleSelfHealAgentCacheEviction:
         session_id.
         """
         runner, db = _make_runner_with_db(tmp_path)
-        db.create_session("dead_sid", source="telegram")
+        db.create_session("dead_sid", source="discord")
         db.end_session("dead_sid", "user_requested")  # #54878 self-heal target
 
         agent = object()
         with runner._agent_cache_lock:
-            runner._agent_cache["telegram:USER1"] = (agent, "sig", 642, "dead_sid")
+            runner._agent_cache["discord:USER1"] = (agent, "sig", 642, "dead_sid")
 
         would_reuse, evicted = _guard_would_reuse_after_fix(
-            runner, "telegram:USER1", "fresh_sid_after_selfheal"
+            runner, "discord:USER1", "fresh_sid_after_selfheal"
         )
 
         assert would_reuse is False, (
@@ -154,7 +154,7 @@ class TestStaleSelfHealAgentCacheEviction:
         )
         assert evicted is True
         with runner._agent_cache_lock:
-            assert "telegram:USER1" not in runner._agent_cache
+            assert "discord:USER1" not in runner._agent_cache
 
     def test_live_sibling_session_id_switch_still_reuses(self, tmp_path):
         """#54947 invariant must hold: switching between two LIVE sibling
@@ -163,20 +163,20 @@ class TestStaleSelfHealAgentCacheEviction:
         fire when the cached session_id is not actually ended.
         """
         runner, db = _make_runner_with_db(tmp_path)
-        db.create_session("sA", source="telegram")
-        db.create_session("sB", source="telegram")
+        db.create_session("sA", source="discord")
+        db.create_session("sB", source="discord")
         # sA is NOT ended — a genuine live sibling conversation.
 
         agent = object()
         with runner._agent_cache_lock:
-            runner._agent_cache["telegram:USER1"] = (agent, "sig", 3, "sA")
+            runner._agent_cache["discord:USER1"] = (agent, "sig", 3, "sA")
 
-        would_reuse, evicted = _guard_would_reuse_after_fix(runner, "telegram:USER1", "sB")
+        would_reuse, evicted = _guard_would_reuse_after_fix(runner, "discord:USER1", "sB")
 
         assert would_reuse is True, "Regression: legit #54947 sibling-switch reuse broke."
         assert evicted is False
         with runner._agent_cache_lock:
-            assert runner._agent_cache["telegram:USER1"][0] is agent
+            assert runner._agent_cache["discord:USER1"][0] is agent
 
     def test_cross_process_write_same_session_still_invalidates(self, tmp_path):
         """#45966 invariant must hold: same session_id, message_count
@@ -184,14 +184,14 @@ class TestStaleSelfHealAgentCacheEviction:
         unaffected by the new dead-session check.
         """
         runner, db = _make_runner_with_db(tmp_path)
-        db.create_session("s1", source="telegram")
+        db.create_session("s1", source="discord")
 
         agent = object()
         with runner._agent_cache_lock:
-            runner._agent_cache["telegram:s1"] = (agent, "sig", 0, "s1")
+            runner._agent_cache["discord:s1"] = (agent, "sig", 0, "s1")
 
         would_reuse, evicted = _guard_would_reuse_after_fix(
-            runner, "telegram:s1", "s1", current_mc=2
+            runner, "discord:s1", "s1", current_mc=2
         )
 
         assert would_reuse is False

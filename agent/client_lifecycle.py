@@ -67,11 +67,6 @@ def _valid_credential_pair(api_key: Any, base_url: Any) -> bool:
 def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb_base_url: str, fb_api_mode: str) -> None:
     """Install the fallback client(s) in place, honoring request_timeout_seconds (None = SDK default)."""
     timeout = get_provider_request_timeout(fb_provider, fb_model)
-    if fb_provider == "bedrock" and fb_api_mode in ("anthropic_messages", "bedrock_converse"):
-        # Non-Mantle Bedrock: boto3-chain auth, no OpenAI/Anthropic SDK client to carry over.
-        from agent.bedrock_adapter import bind_bedrock_runtime
-        bind_bedrock_runtime(agent, fb_base_url, fb_api_mode)
-        return
     # The SDK exposes an empty/stale api_key when a rotating source is installed.
     key_provider = vars(fb_client).get("_api_key_provider")
     credential = key_provider if callable(key_provider) else fb_client.api_key
@@ -119,6 +114,13 @@ class ClientLifecycleMixin:
                         process["session_id"], source="agent_close", consume_output=True,
                     )
 
+        def release_browser_turns() -> None:
+            from tools.browser_tool_lifecycle import release_browser_session
+
+            owners = {task_id, *getattr(self, "_process_owner_task_ids", ())}
+            for owner in owners:
+                release_browser_session(owner)
+
         def release_computer_use() -> None:
             from tools.computer_use.tool import release_computer_use_session
             release_computer_use_session(task_id)
@@ -132,7 +134,7 @@ class ClientLifecycleMixin:
                 if owner and owner != task_id:
                     clear_file_ops_cache(owner)
 
-        for step in (kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id),
+        for step in (release_browser_turns, kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id),
                      release_computer_use, forget_file_state):
             _quietly(step)
 
@@ -214,7 +216,7 @@ class ClientLifecycleMixin:
         The shared primary client has no single owning thread — worker threads from stale-killed attempts
         may still be unwinding their SSL BIOs, and the codex-direct / MoA paths stream on the shared client
         itself. If we release an FD while another thread's SSL layer still caches the raw integer fd, the
-        kernel can recycle it into an unrelated ``open()`` (e.g. ``kanban.db``) and the unwinding TLS flush
+        kernel can recycle it into an unrelated ``open()`` (e.g. a SQLite DB) and the unwinding TLS flush
         then writes an application-data record into that file — the SQLite-header corruption documented in
         #29507/#70773.
         """
@@ -478,9 +480,7 @@ class ClientLifecycleMixin:
         self._abort_request_slot_client(_OPENAI_SLOT, client, reason=reason)
 
     def _request_anthropic_client_key(self) -> tuple:
-        """Cache key over everything forcing a fresh client: credential, base URL/region, timeout, 1M-beta flag."""
-        if getattr(self, "provider", None) == "bedrock":
-            return ("bedrock", getattr(self, "_bedrock_region", "us-east-1") or "us-east-1")
+        """Cache key over everything forcing a fresh client: credential, base URL, timeout, 1M-beta flag."""
         return (
             "direct", self._anthropic_api_key, getattr(self, "_anthropic_base_url", None),
             get_provider_request_timeout(self.provider, self.model), bool(getattr(self, "_oauth_1m_beta_disabled", False)),
@@ -497,9 +497,7 @@ class ClientLifecycleMixin:
         return _is_oauth_token(token) if self.provider == "anthropic" else False
 
     def _build_anthropic_client_for_key(self, key: tuple) -> Any:
-        from agent.anthropic_adapter import build_anthropic_bedrock_client, build_anthropic_client
-        if key[0] == "bedrock":
-            return build_anthropic_bedrock_client(key[1])
+        from agent.anthropic_adapter import build_anthropic_client
         return build_anthropic_client(key[1], key[2], timeout=key[3], drop_context_1m_beta=key[4])
 
     def _create_request_anthropic_client(self, *, reason: str) -> Any:
@@ -597,81 +595,6 @@ class ClientLifecycleMixin:
             logger.debug("%s credential refresh returned the same token; refresh likely failed silently", self.provider)
             return False
         return self._adopt_openai_credentials(api_key, base_url, reason=f"{self.provider}_credential_refresh")
-
-    def _try_refresh_nous_client_credentials(self, *, force: bool = True, require_account: str | None = None) -> bool:
-        # Portal serves anthropic/* on the native Messages route, so either client kind may hold the expiring JWT.
-        if self.provider != "nous" or self.api_mode not in ("chat_completions", "anthropic_messages"):
-            return False
-        try:
-            from hermes_cli.auth import resolve_nous_runtime_credentials
-            timeout = env_float("HERMES_NOUS_TIMEOUT_SECONDS", 15)
-            # Pass the bearer that just 401'd so a refresh already done by a sibling process is
-            # adopted instead of rotating the grant again.
-            creds = resolve_nous_runtime_credentials(
-                timeout_seconds=timeout, force_refresh=force, stale_access_token=self.api_key or None,
-            )
-        except Exception as exc:
-            logger.debug("Nous credential refresh failed: %s", exc)
-            return False
-        api_key, base_url = creds.get("api_key"), creds.get("base_url")
-        if not _valid_credential_pair(api_key, base_url):
-            return False
-        if (str(api_key).strip() == str(self.api_key or "").strip()
-                and str(base_url).strip().rstrip("/") == str(self.base_url or "").strip().rstrip("/")):
-            return False  # store holds the same key on the same route: nothing to adopt, no client rebuild
-        if require_account is not None:
-            try:
-                from hermes_cli.auth_constants import _decode_jwt_claims
-                new_account = _decode_jwt_claims(str(api_key)).get("sub")
-            except Exception:
-                new_account = None
-            if str(new_account or "") != require_account:
-                logger.info(
-                    "Nous pre-expiry adoption skipped: the store's key belongs to a different account "
-                    "than the one in hand; keeping the current credential."
-                )
-                return False
-        if self.api_mode == "anthropic_messages":
-            self.api_key, self.base_url = api_key.strip(), base_url.strip().rstrip("/")
-            self._anthropic_api_key, self._anthropic_base_url = self.api_key, self.base_url
-            self._rebuild_anthropic_client()
-            return True
-        # Nous requests should not inherit OpenRouter-only attribution headers.
-        self._client_kwargs.pop("default_headers", None)
-        return self._adopt_openai_credentials(api_key, base_url, reason="nous_credential_refresh")
-
-    # Adopt a fresh key this many seconds before the one in hand expires. Wider than the store's
-    # own refresh skew (120 s) so the keepalive has normally already minted the replacement.
-    _NOUS_KEY_ADOPT_SKEW_S = 180
-
-    def _adopt_nous_key_before_expiry(self) -> bool:
-        """Swap in a fresh Nous agent key BEFORE the one in hand expires, so the request never 401s.
-
-        The agent key is a JWT; its ``exp`` is read locally (no network). Inside the skew the store
-        is re-read under the auth-store lock: the keepalive thread normally holds a fresh key already
-        (adopt, no POST), otherwise ONE refresh runs and every peer adopts its result. Before this,
-        every agent in a process learned about the hourly expiry from its own 401, all in the same
-        minute (620 in one 200-subagent run), and the pool benched the sole credential for all of
-        them. Returns True when a new key was adopted.
-
-        Identity guard: the replacement must belong to the SAME account (``sub`` claim) as the key
-        in hand. The store holds the logged-in singleton; an agent running on an explicitly supplied
-        or pool-selected key for a different account must never be silently moved onto it (that
-        changes who is billed). When either side lacks a ``sub`` nothing is adopted here; the
-        reactive 401 path is unchanged.
-        """
-        if getattr(self, "provider", "") != "nous" or not getattr(self, "api_key", None):
-            return False
-        try:
-            from hermes_cli.auth_constants import _decode_jwt_claims
-            claims = _decode_jwt_claims(self.api_key)
-        except Exception:
-            return False
-        exp, account = claims.get("exp"), claims.get("sub")
-        if not account or not isinstance(exp, (int, float)) or exp - time.time() > self._NOUS_KEY_ADOPT_SKEW_S:
-            return False
-        return self._try_refresh_nous_client_credentials(force=False, require_account=str(account))
-
 
     def _resolve_env_credentials(self) -> Optional[tuple]:
         """Current ``.env``-sourced ``(api_key, base_url, default_base)`` for this provider, or ``None``.
@@ -916,7 +839,7 @@ class ClientLifecycleMixin:
         if apply_user_headers:
             self._apply_user_default_headers()
         # Per-provider extra_headers last so they survive swaps/rebuilds. SECURITY: may carry credentials; never log.
-        if self.api_mode not in ("anthropic_messages", "bedrock_converse"):
+        if self.api_mode != "anthropic_messages":
             try:
                 from hermes_cli.config import apply_custom_provider_extra_headers_to_client_kwargs
                 apply_custom_provider_extra_headers_to_client_kwargs(self._client_kwargs, base_url)
@@ -925,8 +848,8 @@ class ClientLifecycleMixin:
 
     def _apply_user_default_headers(self) -> None:
         """Merge config ``model.default_headers`` onto the OpenAI client (user wins; WAFs rejecting SDK headers).
-        Delegates to ``agent.auxiliary_client`` so main and aux clients cannot drift. No-op for Anthropic/Bedrock."""
-        if self.api_mode in ("anthropic_messages", "bedrock_converse"):
+        Delegates to ``agent.auxiliary_client`` so main and aux clients cannot drift. No-op for Anthropic."""
+        if self.api_mode == "anthropic_messages":
             return
         from agent.auxiliary_client import _apply_user_default_headers as _merge_user_headers
         merged = _merge_user_headers(self._client_kwargs.get("default_headers"))
@@ -945,11 +868,6 @@ class ClientLifecycleMixin:
             from hermes_cli.auth import normalize_actual_base_url
             runtime_base = normalize_actual_base_url(runtime_base)
         stripped_base = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
-        # Refuse BEFORE any state changes below: a refused swap must leave the agent exactly as it was.
-        from hermes_cli.anon_auth import route_can_serve_model
-        if not route_can_serve_model(getattr(self, "provider", None), stripped_base, getattr(self, "model", None)):
-            logger.info("Credential %s skipped: its route cannot serve model %s", getattr(entry, "id", "?"), self.model)
-            return False
         if actual_route:
             self.api_mode = "chat_completions"
             if hasattr(self, "_transport_cache"):
@@ -1005,5 +923,5 @@ class ClientLifecycleMixin:
         )
 
     def _rebuild_anthropic_client(self) -> None:
-        """Rebuild the Anthropic client after an interrupt/stale call (Bedrock SDK for bedrock; honors 1M-beta flag)."""
+        """Rebuild the Anthropic client after an interrupt/stale call (honors 1M-beta flag)."""
         self._anthropic_client = self._build_anthropic_client_for_key(self._request_anthropic_client_key())

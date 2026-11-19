@@ -66,7 +66,7 @@ def test_repo_has_powershell_scripts_to_gate() -> None:
     assert "install.ps1" in names, PS1_SCRIPTS
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_powershell_scripts_parse(tmp_path: Path) -> None:
     host = _powershell_host()
     assert host is not None, "no PowerShell host on a Windows runner"

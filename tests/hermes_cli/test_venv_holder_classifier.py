@@ -19,7 +19,7 @@ class TestHolderSubcommand:
             (r"python -m hermes_cli.main --profile serve gateway run", "gateway"),
             (r"python -m hermes_cli.main -p work serve", "serve"),
             # 90778: flags containing subcommand words are not subcommands
-            (r"python -m hermes_cli.main kanban --preserve-cache", "kanban"),
+            (r"python -m hermes_cli.main chat --preserve-cache", "chat"),
             # 91869 review: EVERY top-level value flag must be skipped —
             # a flag VALUE equal to a subcommand must not become the label
             (r"python -m hermes_cli.main --reasoning high serve", "serve"),
@@ -51,7 +51,7 @@ class TestHolderMessage:
         assert "hermes dashboard" in message
 
     def test_preserve_cache_not_labeled_serve(self):
-        message = self._msg(r"python -m hermes_cli.main kanban --preserve-cache")
+        message = self._msg(r"python -m hermes_cli.main chat --preserve-cache")
         holder_line = next(l for l in message.splitlines() if "PID 4242" in l)
         # the holder LINE gets no serve/desktop hint (generic footer text
         # legitimately mentions the desktop app)

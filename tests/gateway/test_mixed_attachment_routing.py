@@ -67,14 +67,14 @@ def test_placeholder_document_in_photo_message_is_not_an_image():
 async def test_mixed_document_event_preserves_audio_as_non_stt_file_path():
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")}
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="fake")}
     )
     runner.adapters = {}
     runner._pending_native_image_paths_by_session = {}
     runner._session_model_overrides = {}
     runner._session_reasoning_overrides = {}
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="mixed-audio",
         chat_type="dm",
         user_id="42",
@@ -102,7 +102,7 @@ async def test_mixed_document_event_preserves_audio_as_non_stt_file_path():
 
 def test_pending_media_merge_preserves_per_attachment_inline_contract():
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="merge",
         chat_type="dm",
         user_id="42",

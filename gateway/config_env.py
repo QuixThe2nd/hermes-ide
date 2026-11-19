@@ -35,21 +35,16 @@ _EXPLICIT_DISABLE_WARNED: set = set()
 
 # Env var(s) whose presence drives each platform's env-enable branch, named in the explicit-disable WARNING.
 _ENV_ENABLE_CREDENTIALS: dict = {
-    Platform.TELEGRAM: ("TELEGRAM_BOT_TOKEN",),
     Platform.DISCORD: ("DISCORD_BOT_TOKEN",),
     Platform.SLACK: ("SLACK_BOT_TOKEN",),
     Platform.WHATSAPP: ("WHATSAPP_ENABLED",),
     Platform.WHATSAPP_CLOUD: ("WHATSAPP_CLOUD_PHONE_NUMBER_ID", "WHATSAPP_CLOUD_ACCESS_TOKEN"),
     Platform.SIGNAL: ("SIGNAL_HTTP_URL",),
-    Platform.MATTERMOST: ("MATTERMOST_TOKEN",),
     Platform.MATRIX: ("MATRIX_ACCESS_TOKEN", "MATRIX_PASSWORD"),
     Platform.HOMEASSISTANT: ("HASS_TOKEN",),
     Platform.EMAIL: ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
     Platform.SMS: ("TWILIO_ACCOUNT_SID",),
-    Platform.DINGTALK: ("DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"),
     Platform.FEISHU: ("FEISHU_APP_ID", "FEISHU_APP_SECRET"),
-    Platform.WECOM: ("WECOM_BOT_ID", "WECOM_SECRET"),
-    Platform.WECOM_CALLBACK: ("WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET"),
     Platform.WEIXIN: ("WEIXIN_TOKEN", "WEIXIN_ACCOUNT_ID"),
     Platform.BLUEBUBBLES: ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD"),
     Platform.QQBOT: ("QQ_APP_ID", "QQ_CLIENT_SECRET"),
@@ -238,10 +233,6 @@ def _ReplyMode(platform: Platform, env: str):
 
 # --- platform-unique branches ------------------------------------------------
 
-def _telegram_fallback_ips(config: GatewayConfig) -> None:
-    if ips := getenv("TELEGRAM_FALLBACK_IPS"):
-        config.platforms.setdefault(Platform.TELEGRAM, PlatformConfig()).extra["fallback_ips"] = _csv_list(ips)
-
 
 def _whatsapp(config: GatewayConfig) -> None:
     """WhatsApp (Baileys bridge) uses a flag, not credentials. WHATSAPP_ENABLED=false overrides YAML;
@@ -355,7 +346,7 @@ def _enable_plugin_platform(config: GatewayConfig, entry) -> None:
         # registered ``ensure_deps_fn`` still gets enabled here — the registry's ``create_adapter()`` runs
         # the active installer at gateway start, when the user actually wants the platform up. Historically
         # the ACTIVE installer was wired as ``check_fn`` and this sweep pip-installed
-        # Discord/Telegram/Slack/Feishu/Dingtalk SDKs on every ``load_gateway_config()`` call — including
+        # Discord/Slack/Feishu/Dingtalk SDKs on every ``load_gateway_config()`` call — including
         # the desktop/dashboard readiness probe (``GET /api/status``) — blocking startup until every install
         # finished and boot-looping the desktop app at 94%. The check_fn/ensure_deps_fn split (#79812) makes
         # that impossible by construction.
@@ -442,9 +433,6 @@ def _scrub_explicit_markers(config: GatewayConfig) -> None:
 # Order is significant (steps may depend on entries created by earlier ones). Relay disabling runs
 # after the plugin pass; the marker scrub must be last.
 _ENV_STEPS: tuple = (
-    _Cred(Platform.TELEGRAM, ("TELEGRAM_BOT_TOKEN",), token="TELEGRAM_BOT_TOKEN"),
-    _ReplyMode(Platform.TELEGRAM, "TELEGRAM_REPLY_TO_MODE"),
-    _telegram_fallback_ips,
     _Cred(Platform.DISCORD, ("DISCORD_BOT_TOKEN",), token="DISCORD_BOT_TOKEN"),
     _ReplyMode(Platform.DISCORD, "DISCORD_REPLY_TO_MODE"),
     _whatsapp,
@@ -468,11 +456,6 @@ _ENV_STEPS: tuple = (
         ),
     ),
     _Cred(
-        Platform.MATTERMOST, ("MATTERMOST_TOKEN",), token="MATTERMOST_TOKEN",
-        warn_missing=("MATTERMOST_URL", "MATTERMOST_TOKEN set but MATTERMOST_URL is missing"),
-        fixed=(("url", "MATTERMOST_URL"),),
-    ),
-    _Cred(
         Platform.MATRIX, (("MATRIX_ACCESS_TOKEN", "MATRIX_PASSWORD"),), token="MATRIX_ACCESS_TOKEN",
         warn_missing=("MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN/MATRIX_PASSWORD set but MATRIX_HOMESERVER is missing"),
         fixed=(("homeserver", "MATRIX_HOMESERVER"),),
@@ -489,31 +472,12 @@ _ENV_STEPS: tuple = (
     _webhook,
     _msgraph_webhook,
     _Cred(
-        Platform.DINGTALK, ("DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"),
-        fixed=(("client_id", "DINGTALK_CLIENT_ID"), ("client_secret", "DINGTALK_CLIENT_SECRET"))
-    ),
-    _Cred(
         Platform.FEISHU, ("FEISHU_APP_ID", "FEISHU_APP_SECRET"),
         fixed=(
             ("app_id", "FEISHU_APP_ID"), ("app_secret", "FEISHU_APP_SECRET"),
             ("domain", "FEISHU_DOMAIN", "feishu"), ("connection_mode", "FEISHU_CONNECTION_MODE", "websocket"),
         ),
         optional=(("encrypt_key", "FEISHU_ENCRYPT_KEY"), ("verification_token", "FEISHU_VERIFICATION_TOKEN"))
-    ),
-    _Cred(
-        Platform.WECOM, ("WECOM_BOT_ID", "WECOM_SECRET"),
-        fixed=(("bot_id", "WECOM_BOT_ID"), ("secret", "WECOM_SECRET")),
-        optional=(("websocket_url", "WECOM_WEBSOCKET_URL"),)
-    ),
-    _Cred(
-        Platform.WECOM_CALLBACK, ("WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET"),
-        fixed=(
-            ("corp_id", "WECOM_CALLBACK_CORP_ID"), ("corp_secret", "WECOM_CALLBACK_CORP_SECRET"),
-            ("agent_id", "WECOM_CALLBACK_AGENT_ID"), ("token", "WECOM_CALLBACK_TOKEN"),
-            ("encoding_aes_key", "WECOM_CALLBACK_ENCODING_AES_KEY"),
-            # No host default: falsy extra.host lets the adapter's dual-stack DEFAULT_HOST=None bind v4+v6.
-            ("host", "WECOM_CALLBACK_HOST"), ("port", "WECOM_CALLBACK_PORT", "", _int_or(8645)),
-        ),
     ),
     # Weixin (personal WeChat via iLink Bot API)
     _Cred(

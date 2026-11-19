@@ -54,7 +54,7 @@ def _cua_no_overlay() -> bool:
     if val is not None or sys.platform != "linux":
         return bool(val) if val is not None else sys.platform == "darwin"
     wsl = False
-    with contextlib.suppress(Exception), open("/proc/version", encoding="utf-8") as f:
+    with contextlib.suppress(Exception), open("/proc/version", encoding="utf-8-sig") as f:
         wsl = "microsoft" in f.read().lower()
     return wsl or not os.environ.get("DISPLAY") or (
         # Linux/X11: the cursor overlay is a fullscreen, always-on-top, all-workspaces X11 window
@@ -71,26 +71,10 @@ def _cua_telemetry_disabled() -> bool:
     return not bool(_computer_use_cfg().get("cua_telemetry", False))
 
 def _cua_configured_permission_mode() -> str:
-    """``computer_use.permission_mode``: ``standard`` (default) or ``bounded``; unknown values fall closed to
-    ``standard``. ``unrestricted`` is deliberately NOT a config value — it stays tied to the per-session YOLO
-    toggle so a stale config line can never silently bypass approvals."""
+    """``computer_use.permission_mode``: ``standard`` (default) or ``bounded``."""
     raw = str(_computer_use_cfg().get("permission_mode", "standard") or "").strip().lower()
     return "bounded" if raw == "bounded" else "standard"
 
-def _manifest_is_mode_independent(path: str) -> bool:
-    """True when this manifest may accompany any permission mode: v1/v2 declare ``mode: bounded`` and abort
-    startup under an unrestricted runtime; v3 has no mode and is the ceiling the driver accepts alongside any
-    mode. Unreadable / unparseable -> False (forwarding one would turn a working session into a hard startup
-    failure; bounded forwards unconditionally anyway)."""
-    try:
-        import yaml
-        with open(path, "r", encoding="utf-8") as handle:
-            parsed = yaml.safe_load(handle)
-    except Exception:
-        logger.debug("could not read capability manifest %s", path, exc_info=True)
-        return False
-    version = parsed.get("version") if isinstance(parsed, dict) else None
-    return isinstance(version, int) and not isinstance(version, bool) and version >= 3
 
 def _computer_use_max_image_dimension() -> Optional[int]:
     """``computer_use.max_image_dimension`` longest-edge cap (default 1456 = aux-vision downscale); ``0``/negative -> None."""
@@ -234,13 +218,11 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
     """Default computer-use backend. Cross-platform via cua-driver MCP."""
 
     def __init__(self, permission_mode: str = "standard") -> None:
-        if permission_mode not in {"standard", "bounded", "unrestricted"}:
+        if permission_mode not in {"standard", "bounded"}:
             raise ValueError(f"unsupported cua-driver permission mode: {permission_mode}")
         self.permission_mode = permission_mode
         self._embedded_daemon: Optional[_EmbeddedCuaDaemon] = None
-        if permission_mode != "standard":
-            # Manifest: mandatory for bounded (the daemon validates it), optional for unrestricted where it still
-            # caps what an approval-bypassed run may touch.
+        if permission_mode == "bounded":
             raw = _computer_use_cfg().get("capability_manifest")
             self._embedded_daemon = _EmbeddedCuaDaemon(
                 resolve_cua_driver_cmd() or "", permission_mode,
@@ -402,7 +384,7 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
 # Names external plugins imported from this module before the Sep 2026 decomposition.
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
 # The whole block is removed by reverting the commit that added it.
-from pathlib import PureWindowsPath  # noqa: F401,E402
+from pathlib import PurePosixPath, PureWindowsPath  # noqa: F401,E402
 from typing import Tuple  # noqa: F401,E402
 import asyncio  # noqa: F401,E402
 import base64  # noqa: F401,E402

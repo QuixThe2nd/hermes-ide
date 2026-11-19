@@ -224,7 +224,7 @@ def _outcome_journal_path() -> Path:
 def _load_mission(mission_id: str) -> Optional[Dict[str, Any]]:
     path = _mission_path(mission_id)
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return None
     except (OSError, json.JSONDecodeError) as exc:
@@ -254,7 +254,7 @@ def list_active_missions() -> List[Dict[str, Any]]:
         return []
     for p in paths:
         try:
-            m = json.loads(p.read_text(encoding="utf-8"))
+            m = json.loads(p.read_text(encoding="utf-8-sig"))
             if isinstance(m, dict) and m.get("status") == "active":
                 out.append(m)
         except (OSError, json.JSONDecodeError):
@@ -420,7 +420,7 @@ def _append_outcome(entry: Dict[str, Any]) -> None:
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, sort_keys=True) + "\n")
         # Bound the journal.
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
         if len(lines) > _OUTCOME_JOURNAL_MAX:
             path.write_text("\n".join(lines[-_OUTCOME_JOURNAL_MAX:]) + "\n", encoding="utf-8")
     except OSError as exc:
@@ -954,7 +954,7 @@ def _handle_status(args: Dict[str, Any], **kwargs: Any) -> str:
     recent: List[Dict[str, Any]] = []
     journal = _outcome_journal_path()
     try:
-        for line in journal.read_text(encoding="utf-8").splitlines()[-10:]:
+        for line in journal.read_text(encoding="utf-8-sig").splitlines()[-10:]:
             try:
                 recent.append(json.loads(line))
             except json.JSONDecodeError:
@@ -1210,6 +1210,10 @@ DELEGATE_ASSISTANT_SCHEMA = {
                 # capability-conditional (see resolve_background_arg), so a
                 # plain schema default would lie on half the sessions.
                 "description": (
+                    "Prefer blocking (background=false): avoid running in "
+                    "the background unless you are doing multiple things at "
+                    "a time (other independent work to continue, or several "
+                    "parallel delegations). "
                     "Delivery mode for the outcome. Omitted: runs in the "
                     "background — a handle returns immediately and the "
                     "outcome re-enters the conversation as a new message "
@@ -1368,10 +1372,8 @@ def apply_assistant_handoff_tools(agent: Any) -> bool:
             configured = isinstance(enabled, (list, tuple, set, frozenset)) and (
                 HANDOFF_TOOLSET in enabled
             )
-            # Tool Search may replace both plugin schemas with its bridge
-            # before this turn gate runs, so the trusted configured toolset is
-            # the primary opt-in signal. ``present`` preserves lightweight
-            # fake-agent and pre-Tool-Search compatibility.
+            # The configured toolset is authoritative; ``present`` preserves lightweight
+            # fake-agent compatibility and direct-schema opt-in.
             opted_in = bool(configured or present)
             setattr(agent, "_assistant_handoff_opted_in", opted_in)
         if not opted_in:
@@ -1420,7 +1422,7 @@ def _chat_id_from_session_key(session_key: str) -> str:
 def _trusted_session_key(**kwargs: Any) -> str:
     """The gateway-built session key for THIS turn, from trusted sources only.
 
-    Ladder: executor-passed kwarg → the per-thread approval ContextVar the
+    Ladder: executor-passed kwarg → the per-thread session ContextVar the
     gateway installs around a turn → the gateway's own env mirror. None of
     these are model-readable, so a tool call cannot influence which chat it
     is answered from.
@@ -1428,7 +1430,7 @@ def _trusted_session_key(**kwargs: Any) -> str:
     session_key = str(kwargs.get("session_key") or "").strip()
     if not session_key:
         try:
-            from tools.approval import get_current_session_key
+            from tools.session_context import get_current_session_key
 
             session_key = str(get_current_session_key(default="") or "").strip()
         except Exception:

@@ -391,19 +391,19 @@ class TestGroupMissionPrompt:
         other_context = _context_for(_group_source(chat_id=OTHER_GROUP))
         context = _context_for(_group_source())
 
-        before = GatewayRunner._ephemeral_change_key(context, redact_pii=False)
-        other_before = GatewayRunner._ephemeral_change_key(other_context, redact_pii=False)
+        before = GatewayRunner._ephemeral_change_key(context)
+        other_before = GatewayRunner._ephemeral_change_key(other_context)
 
         started = _start_group_mission(missions_home)
-        during = GatewayRunner._ephemeral_change_key(context, redact_pii=False)
-        during_again = GatewayRunner._ephemeral_change_key(context, redact_pii=False)
-        other_during = GatewayRunner._ephemeral_change_key(other_context, redact_pii=False)
+        during = GatewayRunner._ephemeral_change_key(context)
+        during_again = GatewayRunner._ephemeral_change_key(context)
+        other_during = GatewayRunner._ephemeral_change_key(other_context)
 
         assert before != during  # start re-renders exactly once for this chat
         assert during == during_again  # stable across turns while active
         assert other_before == other_during  # other chats keep their cache
 
         _close_mission(missions_home, started["mission_id"])
-        after = GatewayRunner._ephemeral_change_key(context, redact_pii=False)
+        after = GatewayRunner._ephemeral_change_key(context)
         assert after != during  # close re-renders
         assert after == before  # back to the no-mission baseline digest

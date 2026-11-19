@@ -218,7 +218,7 @@ def _settle_client() -> Any:
     if client is not None:
         # atexit is LIFO: registering AFTER the SDK's constructor means our
         # finalizer runs first, so root spans ended there still get flushed
-        # by the SDK (short-lived processes: kanban workers, chat -q, cron).
+        # by the SDK (short-lived processes: automation workers, chat -q, cron).
         atexit.register(_finalize_all_traces)
     return settled
 
@@ -417,11 +417,11 @@ def _coerce_request_messages(*, request_messages: Any = None, messages: Any = No
 
 
 def _serialize_system_prompt(system_prompt: Any) -> Optional[dict[str, Any]]:
-    """Normalize Anthropic/Bedrock ``system`` param or OpenAI-style system content."""
+    """Normalize Anthropic-style ``system`` param or OpenAI-style system content."""
     if isinstance(system_prompt, str):
         text = system_prompt.strip()
     elif isinstance(system_prompt, list):
-        # Anthropic: {"type": "text", "text": ...}; Bedrock Converse: {"text": ...}; or bare strings.
+        # Anthropic: {"type": "text", "text": ...}; or bare strings (and untyped {"text": ...} blocks).
         blocks = ((b.get("text", "") if b.get("type") in ("text", None) and "text" in b else None)
                   if isinstance(b, dict) else b for b in system_prompt)
         text = "\n\n".join(b for b in blocks if isinstance(b, str) and b)
@@ -621,7 +621,7 @@ def _end_root(state: TraceState, label: str) -> None:
 
 
 def _finalize_all_traces() -> None:
-    """atexit: end every open root span. Short-lived processes (kanban workers,
+    """atexit: end every open root span. Short-lived processes (automation workers,
     ``chat -q``, cron) exit with tool calls queued; children export via the SDK
     flush but an un-ended root leaves an anonymous trace. Registered after the
     client is built so (LIFO) it runs before the SDK's shutdown hook."""

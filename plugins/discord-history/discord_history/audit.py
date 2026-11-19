@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import fcntl
+
+
 import hashlib
 import hmac
 import json
@@ -78,6 +79,10 @@ def append_denial_event(
     path: str | os.PathLike[str] | None = None,
 ) -> None:
     """Append one bounded, redacted denial event without touching PostgreSQL."""
+    try:
+        import fcntl
+    except ImportError:
+        raise AuditError() from None
     if not isinstance(audit_hmac_key, bytes) or len(audit_hmac_key) != 32:
         raise AuditError()
     event: dict[str, Any] = {

@@ -1,7 +1,7 @@
 """Shared runtime provider resolution for CLI, gateway, cron, and helpers: the resolution ORDER
 (:func:`resolve_runtime_provider`), api_mode / base_url helpers and the pool / OAuth / explicit paths.
 Custom-provider lookup lives in :mod:`hermes_cli.runtime_provider_custom`; Azure Foundry,
-OpenRouter/bare-custom, Bedrock and external-process builders in
+OpenRouter/bare-custom and external-process builders in
 :mod:`hermes_cli.runtime_provider_backends` — both re-exported here so
 ``hermes_cli.runtime_provider.<name>`` imports and test patches keep working."""
 
@@ -22,8 +22,8 @@ from agent.credential_pool import (  # custom_provider_pool_key_candidates is re
 from agent.secret_scope import get_secret_str
 from hermes_cli.auth import (  # resolve_external_process_provider_credentials is read via origin by runtime_provider_backends
     ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, AuthError, DEFAULT_CODEX_BASE_URL, DEFAULT_QWEN_BASE_URL, DEFAULT_XAI_OAUTH_BASE_URL,
-    PROVIDER_REGISTRY, _agent_key_is_usable, _nous_inference_env_override, format_auth_error, resolve_provider,
-    resolve_nous_runtime_credentials, resolve_codex_runtime_credentials, resolve_xai_oauth_runtime_credentials,
+    PROVIDER_REGISTRY, format_auth_error, resolve_provider,
+    resolve_codex_runtime_credentials, resolve_xai_oauth_runtime_credentials,
     resolve_qwen_runtime_credentials, resolve_api_key_provider_credentials,
     resolve_external_process_provider_credentials,  # noqa: F401
     has_usable_secret, is_actual_local_base_url, normalize_actual_base_url,
@@ -31,8 +31,8 @@ from hermes_cli.auth import (  # resolve_external_process_provider_credentials i
 from hermes_cli import config as _config_mod
 from hermes_cli import models as _models  # attribute access keeps ``hermes_cli.models.<name>`` patches effective
 from hermes_constants import OPENROUTER_BASE_URL
-from hermes_cli.providers import determine_api_mode, get_provider, is_actual_route, is_official_openai_host, nous_api_mode
-from utils import base_url_host_matches, base_url_hostname, base_url_path, env_int
+from hermes_cli.providers import determine_api_mode, get_provider, is_actual_route, is_official_openai_host
+from utils import base_url_host_matches, base_url_hostname, base_url_path
 
 
 # Late-bound delegates, deliberately NOT module-level from-imports: this module is often imported
@@ -93,7 +93,7 @@ _HOST_MANDATED_API_MODES = {
 
 # codex_app_server is opt-in: hand the whole turn to a `codex app-server` subprocess (Codex's own
 # tool runtime), gated on `model.openai_runtime == "codex_app_server"` AND provider in {openai, openai-codex}.
-_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}
+_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages", "codex_app_server"}
 
 
 def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
@@ -364,18 +364,6 @@ def _pool_entry_base_url(entry: Any) -> str:
     return getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or ""
 
 
-def _nous_entry_key_usable(entry: Any, min_ttl: int) -> bool:
-    return _agent_key_is_usable({k: getattr(entry, k, None) for k in ("agent_key", "agent_key_expires_at", "scope")}, min_ttl)
-
-
-def _nous_min_key_ttl() -> int:
-    return max(60, env_int("HERMES_NOUS_MIN_KEY_TTL_SECONDS", 1800))
-
-
-def _resolve_nous_creds() -> Dict[str, Any]:
-    return resolve_nous_runtime_credentials(timeout_seconds=float(get_secret_str("HERMES_NOUS_TIMEOUT_SECONDS", "15")))
-
-
 def _finalize_base_url(provider: str, api_mode: str, base_url: str) -> str:
     """Shared tail for pool-entry and api-key paths: OpenCode /v1 rule (OpenCode URLs end with /v1
     for OpenAI-compatible models but the Anthropic SDK prepends its own /v1/messages — strip for
@@ -459,7 +447,7 @@ from hermes_cli.runtime_provider_custom import (  # noqa: E402,F401
     find_custom_provider_identity_by_model, has_named_custom_provider, is_routable_provider,
 )
 from hermes_cli.runtime_provider_backends import (  # noqa: E402,F401
-    _is_external_process_provider, _resolve_azure_foundry_runtime, _resolve_bedrock_runtime,
+    _is_external_process_provider, _resolve_azure_foundry_runtime,
     _resolve_external_process_runtime, _resolve_openrouter_runtime,
 )
 
@@ -494,8 +482,6 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
         return api_mode, base_url or (default_url() if callable(default_url) else default_url)
     if provider == "anthropic":
         return "anthropic_messages", _anthropic_cfg_base_url(model_cfg) or base_url or _ANTHROPIC_DEFAULT_BASE_URL
-    if provider == "nous":
-        return nous_api_mode(effective_model), (_nous_inference_env_override() or "") or base_url
     if provider == "copilot":
         api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""), target_model=effective_model)
         return api_mode, base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
@@ -541,27 +527,6 @@ def _openrouter_should_use_pool(requested_provider, model_cfg, explicit_api_key,
     return requested_provider in {"openrouter", "auto"} and not has_custom_endpoint and not bool(explicit_api_key or explicit_base_url)
 
 
-def _refresh_nous_pool_entry(pool: CredentialPool, entry: Any, pool_api_key: str):
-    """Nous pool entries carry the agent_key (an invoke JWT) which the pool does not refresh on
-    selection (avoids network calls in `hermes auth list`); refresh here before falling back to
-    singleton auth resolution. Returns (entry, pool_api_key) — key "" when still unusable."""
-    min_ttl = _nous_min_key_ttl()
-    if _nous_entry_key_usable(entry, min_ttl):
-        return entry, pool_api_key
-    logger.debug("Nous pool entry agent_key expired/missing, refreshing selected pool entry")
-    try:
-        refreshed = pool.try_refresh_current()
-    except Exception as exc:
-        logger.debug("Nous pool entry refresh failed: %s", exc)
-        refreshed = None
-    if refreshed is not None:
-        entry, pool_api_key = refreshed, _pool_entry_api_key(refreshed)
-    if not pool_api_key or not _nous_entry_key_usable(entry, min_ttl):
-        logger.debug("Nous pool entry agent_key still unavailable, falling through to runtime resolution")
-        pool_api_key = ""
-    return entry, pool_api_key
-
-
 def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: Dict[str, Any], explicit_api_key, explicit_base_url,
                        target_model) -> Optional[Dict[str, Any]]:
     """Runtime from the provider's credential pool, or None to continue down the ladder."""
@@ -577,8 +542,6 @@ def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: Dict[s
     if entry is None:
         return None
     pool_api_key = _pool_entry_api_key(entry)
-    if provider == "nous":
-        entry, pool_api_key = _refresh_nous_pool_entry(pool, entry, pool_api_key)
     if pool_api_key and credential_pool_matches_provider(pool, provider, base_url=_pool_entry_base_url(entry)):
         return _resolve_runtime_from_pool_entry(provider=provider, entry=entry, requested_provider=requested_provider,
                                                 model_cfg=model_cfg, pool=pool, target_model=target_model)
@@ -608,20 +571,6 @@ def _explicit_codex(requested_provider, model_cfg, api_key, explicit_base_url, t
                                                       None, "last_refresh", resolve_codex_runtime_credentials)
     return _runtime("openai-codex", "codex_responses", base_url, api_key, source="explicit", last_refresh=last_refresh,
                     requested_provider=requested_provider)
-
-
-def _explicit_nous(requested_provider, model_cfg, api_key, explicit_base_url, target_model):
-    state = auth_mod.get_provider_auth_state("nous") or {}
-    base_url = (explicit_base_url or _nous_inference_env_override()
-                or str(state.get("inference_base_url") or auth_mod.DEFAULT_NOUS_INFERENCE_URL).strip().rstrip("/"))
-    # The agent_key compatibility field is used for inference only when it holds a NAS invoke JWT;
-    # raw OAuth access_token fallback is handled by resolve_nous_runtime_credentials().
-    api_key = api_key or (str(state.get("agent_key") or "").strip() if _agent_key_is_usable(state, _nous_min_key_ttl()) else "")
-    api_key, base_url, expires_at = _creds_fallback(api_key, explicit_base_url, base_url,
-                                                    state.get("agent_key_expires_at") or state.get("expires_at"), "expires_at",
-                                                    _resolve_nous_creds)
-    return _runtime("nous", nous_api_mode(_effective_model(model_cfg, target_model)), base_url, api_key, source="explicit",
-                    expires_at=expires_at, requested_provider=requested_provider)
 
 
 def _actual_local_key(provider: str, api_key: str, base_url: str) -> str:
@@ -658,7 +607,7 @@ def _explicit_api_key_provider(provider, pconfig, requested_provider, model_cfg,
 # Providers with a dedicated explicit-credential builder; everything else goes through the
 # registry ``api_key`` path (or None when the provider takes no explicit creds).
 _EXPLICIT_RESOLVERS: Dict[str, Callable[..., Dict[str, Any]]] = {
-    "anthropic": _explicit_anthropic, "openai-codex": _explicit_codex, "nous": _explicit_nous,
+    "anthropic": _explicit_anthropic, "openai-codex": _explicit_codex,
     "azure-foundry": lambda rq, mc, key, url, tm: _resolve_azure_foundry_runtime(requested_provider=rq, model_cfg=mc,
                                                                                  explicit_api_key=key, explicit_base_url=url),
 }
@@ -698,8 +647,6 @@ class _OAuthRuntimeSpec:
 # ``resolve`` entries are late-bound lambdas so tests can monkeypatch the module-level
 # ``resolve_*_runtime_credentials`` names.
 _OAUTH_RUNTIME_PROVIDERS: Dict[str, _OAuthRuntimeSpec] = {
-    "nous": _OAuthRuntimeSpec(_resolve_nous_creds, nous_api_mode, "portal", "expires_at",
-                              "Auto-detected Nous provider but credentials failed"),
     "openai-codex": _OAuthRuntimeSpec(lambda: resolve_codex_runtime_credentials(), "codex_responses", "hermes-auth-store",
                                       "last_refresh", "Auto-detected Codex provider but credentials failed"),
     "xai-oauth": _OAuthRuntimeSpec(lambda: resolve_xai_oauth_runtime_credentials(), "codex_responses", "hermes-auth-store",
@@ -867,171 +814,6 @@ def _resolve_requested_shortcuts(requested_provider, explicit_api_key, explicit_
     return None
 
 
-# ── shared-owner (central llm_usage_proxy) credential-less resolution ─────────────────────
-
-
-def _shared_owner_target(provider: str, model_cfg: Dict[str, Any], target_model) -> Optional[tuple]:
-    """``(provider, api_mode, base_url)`` for *provider* without reading any credential.
-
-    Shared-owner mode resolves the exact shape the credentialed ladder would have
-    produced, so the routing seam sees the same base URL whether the profile
-    holds the upstream secret or the central proxy does. Returns None when no
-    endpoint is derivable (unknown provider).
-    """
-    effective_model = _effective_model(model_cfg, target_model)
-    spec = _OAUTH_RUNTIME_PROVIDERS.get(provider)
-    if spec is not None:
-        api_mode = spec.api_mode(effective_model) if callable(spec.api_mode) else spec.api_mode
-        base_url = spec.default_base_url
-        if provider == "openai-codex":
-            # Profile-wide override applies to every credential source, the
-            # shared owner included (mirrors the pool-entry path).
-            base_url = get_secret_str("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
-        elif provider == "nous":
-            base_url = (_nous_inference_env_override() or "") or base_url
-        if not base_url:
-            pconfig = PROVIDER_REGISTRY.get(provider)
-            base_url = getattr(pconfig, "inference_base_url", "") if pconfig else ""
-        return (provider, api_mode, base_url.rstrip("/")) if base_url else None
-    if provider == "minimax-oauth":
-        pconfig = PROVIDER_REGISTRY.get(provider)
-        base_url = getattr(pconfig, "inference_base_url", "") if pconfig else ""
-        return (provider, "anthropic_messages", base_url.rstrip("/")) if base_url else None
-    if provider == "anthropic":
-        return (provider, "anthropic_messages",
-                _anthropic_cfg_base_url(model_cfg) or _ANTHROPIC_DEFAULT_BASE_URL)
-    if provider == "openrouter":
-        base_url = _config_base_url_for_provider(model_cfg, provider) or OPENROUTER_BASE_URL
-        return (provider, "chat_completions", base_url.rstrip("/"))
-    custom_provider = _get_named_custom_provider(provider)
-    if custom_provider and custom_provider.get("base_url"):
-        base_url = str(custom_provider["base_url"]).rstrip("/")
-        api_mode = _parse_api_mode(custom_provider.get("api_mode")) or _fallback_api_mode(
-            "custom", base_url, effective_model)
-        return ("custom", api_mode, base_url)
-    pconfig = PROVIDER_REGISTRY.get(provider)
-    if pconfig and pconfig.auth_type == "api_key":
-        # Reads env/config for the endpoint only; a missing key does not raise
-        # here (the credentialed rung is what enforces keys).
-        creds = resolve_api_key_provider_credentials(provider)
-        base_url = _actual_url(provider, _config_base_url_for_provider(model_cfg, provider)
-                               or str(creds.get("base_url", "")).rstrip("/"))
-        if not base_url:
-            return None
-        api_mode = _api_key_provider_api_mode(provider, model_cfg, "", base_url,
-                                              effective_model, opencode_by_model=True)
-        return provider, api_mode, _finalize_base_url(provider, api_mode, base_url)
-    return None
-
-
-def _resolve_shared_owner_runtime(requested_provider, explicit_api_key, explicit_base_url,
-                                  target_model) -> Optional[Dict[str, Any]]:
-    """Shared-owner rung: resolve through the central proxy with no local credential.
-
-    When this profile names a shared owner (``llm_usage_proxy.owner_endpoint``)
-    the profile needs no upstream secret of its own: the runtime carries the
-    profile's *caller token* as the API key, the request goes to the provider's
-    usual base URL, and the routing seam rewrites it to the verified owner,
-    which swaps the token for the real credential (static key or proxy-refreshed
-    OAuth). Explicit creds bypass the rung (normal ladder; the seam still
-    reroutes when covered). Unroutable or unresolvable providers fall through
-    fail-open, or raise a clear AuthError when the profile enforces.
-    """
-    try:
-        from plugins.llm_usage_proxy.owner import caller_token, owner_policy
-    except ImportError:
-        return None
-    policy = owner_policy()
-    if policy is None:
-        return None
-    enforce = bool(policy.get("enforce"))
-    endpoint = str(policy.get("endpoint") or "")
-    explicit_key = (explicit_api_key or "").strip()
-    explicit_base = str(explicit_base_url or "").strip().rstrip("/")
-    model_cfg = _get_model_config()
-    provider = requested_provider
-    if provider in ("auto", ""):
-        provider = _cfg_provider(model_cfg) or "auto"
-    if provider in ("auto", ""):
-        if enforce:
-            raise AuthError(
-                "Shared-owner routing is enforced but no provider is selected: set"
-                " model.provider in config.yaml (or pass a provider) so the request"
-                f" can be routed through the central proxy at {endpoint}.",
-                provider=requested_provider, code="shared_owner_no_provider")
-        return None
-
-    from hermes_cli.llm_usage_routes import base_url_routable
-
-    def _shared_owner_runtime(provider_name: str, api_mode: str, base_url: str) -> Optional[Dict[str, Any]]:
-        if not base_url_routable(base_url):
-            if enforce:
-                raise AuthError(
-                    f"provider '{provider}' resolves to {base_url}, which the shared"
-                    f" owner at {endpoint} does not route; enforced routing refuses"
-                    " to send it direct. Add the route on the owner"
-                    " (`hermes llm_usage_proxy keys set`/`set-oauth` plus the"
-                    " upstream on the owner profile) or turn llm_usage_proxy.enforce"
-                    " off.",
-                    provider=provider, code="shared_owner_unrouted")
-            return None
-        token = caller_token()
-        if not token:
-            if enforce:
-                raise AuthError(
-                    f"shared owner {endpoint} is configured and enforced but this"
-                    " profile has no caller token: set HERMES_USAGE_PROXY_CALLER_TOKEN"
-                    " in this profile's .env to a token minted on the owner with"
-                    " `hermes llm_usage_proxy callers create <name>`.",
-                    provider=provider, code="shared_owner_no_caller_token")
-            return None
-        return _runtime(provider_name, api_mode, base_url, token, source="shared-owner",
-                        requested_provider=requested_provider)
-
-    if explicit_key:
-        if enforce:
-            base_for_policy = explicit_base
-            if not base_for_policy:
-                hinted = _shared_owner_target(provider, model_cfg, target_model)
-                if hinted is not None:
-                    base_for_policy = hinted[2]
-            if base_for_policy and not base_url_routable(base_for_policy):
-                raise AuthError(
-                    f"provider '{provider}' targets {base_for_policy}, which the shared"
-                    f" owner at {endpoint} does not route; enforced routing refuses"
-                    " to send an explicit local credential direct.",
-                    provider=provider, code="shared_owner_unrouted")
-        return None
-
-    if explicit_base:
-        target = _shared_owner_target(provider, model_cfg, target_model)
-        effective_model = _effective_model(model_cfg, target_model)
-        if target is not None:
-            provider_name, api_mode, _cfg_base = target
-        else:
-            provider_name = provider
-            api_mode = _fallback_api_mode(provider, explicit_base, effective_model)
-        pconfig = PROVIDER_REGISTRY.get(provider)
-        if pconfig and pconfig.auth_type == "api_key":
-            api_mode = _api_key_provider_api_mode(
-                provider, model_cfg, "", explicit_base, effective_model, opencode_by_model=True)
-            base_url = _finalize_base_url(provider, api_mode, explicit_base)
-            return _shared_owner_runtime(provider, api_mode, base_url)
-        base_url = explicit_base
-        return _shared_owner_runtime(provider_name, api_mode, base_url)
-
-    target = _shared_owner_target(provider, model_cfg, target_model)
-    if target is None:
-        if enforce:
-            raise AuthError(
-                f"provider '{provider}' has no endpoint the shared owner at"
-                f" {endpoint} could route; enforced routing refuses to resolve it"
-                " locally.",
-                provider=provider, code="shared_owner_unknown_provider")
-        return None
-    provider_name, api_mode, base_url = target
-    return _shared_owner_runtime(provider_name, api_mode, base_url)
-
 
 def _local_endpoint_bypass(requested_provider: str, explicit_api_key, explicit_base_url) -> Optional[Dict[str, Any]]:
     """provider "auto"/unset with a config base_url at a custom/local endpoint routes through the
@@ -1064,16 +846,13 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     rung returns or raises, else falls to the next):
       1. disabled-provider guard (``providers.<name>.enabled: false``)
       2. requested-name shortcuts: moa, anthropic@azure, azure-foundry, vertex
-      2b. shared-owner mode (``llm_usage_proxy.owner_endpoint``): credential-less runtime carrying
-          the profile's proxy caller token; the routing seam delivers the request to the central
-          proxy, which owns the upstream credential
       3. named custom provider / llamacpp alias / bare-custom direct alias
       4. local-endpoint bypass (no explicit creds, config base_url at a non-cloud host)
       5. ``auth.resolve_provider`` → explicit --api-key/--base-url path
       6. credential pool (OpenRouter pool only without custom endpoint/override)
-      7. OAuth specs (nous/codex/xai/qwen; "auto" swallows AuthError, logs, and stamps it on a
+      7. OAuth specs (codex/xai/qwen; "auto" swallows AuthError, logs, and stamps it on a
          keyless fallback as ``auth_error``) → minimax-oauth
-         → external-process → anthropic env → bedrock → registry api_key providers
+         → external-process → anthropic env → registry api_key providers
       8. OpenRouter / bare-custom fallback
     target_model overrides model_cfg["default"] when computing provider-specific api_mode (e.g.
     OpenCode Zen/Go where different models route through different API surfaces)."""
@@ -1109,10 +888,6 @@ def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, targe
     """Ladder rungs 2-8, yielded lazily so each is evaluated only when the previous one returned
     nothing; the last rung (OpenRouter / bare-custom fallback) always yields a runtime."""
     yield _resolve_requested_shortcuts(requested_provider, explicit_api_key, explicit_base_url, target_model)
-    # Shared-owner mode (llm_usage_proxy.owner_endpoint set): resolve the provider's
-    # usual shape with the profile's caller token as the key and let the routing
-    # seam send the request to the central proxy, which owns the real credential.
-    yield _resolve_shared_owner_runtime(requested_provider, explicit_api_key, explicit_base_url, target_model)
     yield _tag(_resolve_named_custom_runtime(requested_provider=requested_provider, explicit_api_key=explicit_api_key,
                                              explicit_base_url=explicit_base_url, target_model=target_model), requested_provider)
     # If provider is "auto" (or unset) but config.yaml has an explicit base_url pointing at a custom/local
@@ -1144,8 +919,6 @@ def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, targe
         yield _resolve_external_process_runtime(provider, requested_provider)
     if provider == "anthropic":
         yield _anthropic_env_runtime(requested_provider, model_cfg, target_model)
-    if provider == "bedrock":
-        yield _resolve_bedrock_runtime(requested_provider, model_cfg, target_model)
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         yield _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, target_model)

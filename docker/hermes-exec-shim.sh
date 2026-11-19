@@ -8,14 +8,12 @@
 # `hermes` user (UID 10000). When an operator runs `docker exec <c> hermes ...`
 # the default UID is root (0), and any file the command writes under
 # $HERMES_HOME — auth.json, .env, config.yaml — ends up root-owned and
-# unreadable to the supervised gateway. The most common manifestation: the
-# user runs `docker exec <c> hermes login`, this writes
-# /opt/data/auth.json as root:root mode 0600, and from then on the gateway
-# returns "Provider authentication failed: Hermes is not logged into Nous
-# Portal" on every incoming message — even though `docker exec <c> hermes
-# chat -q ping` (also running as root) succeeds because root happens to be
-# able to read its own root-owned file. See systematic-debugging skill
-# notes attached to this fix.
+# unreadable to the supervised gateway. For example, an auth command run this
+# way can write /opt/data/auth.json as root:root mode 0600, after which the
+# gateway can no longer read the refreshed credentials — even though
+# `docker exec <c> hermes chat -q ping` (also running as root) succeeds because
+# root happens to be able to read its own root-owned file. See
+# systematic-debugging skill notes attached to this fix.
 #
 # Fix
 # ---
@@ -24,7 +22,7 @@
 # before exec'ing the real venv binary, so anything that writes under
 # $HERMES_HOME is uid-aligned with the supervised processes. When invoked
 # as any non-root UID — including the supervised processes themselves,
-# `docker exec --user hermes`, kanban subagents, etc. — it short-circuits
+# `docker exec --user hermes`, delegated subagents, etc. — it short-circuits
 # straight to the venv binary with no privilege change. Net: one extra
 # fork on the docker-exec-as-root path, zero behavioral change on every
 # other path.

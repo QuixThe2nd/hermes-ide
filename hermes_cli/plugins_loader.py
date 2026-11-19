@@ -81,12 +81,17 @@ def _dist_installed(req: str) -> Optional[bool]:
 class PluginLoaderMixin:
     @staticmethod
     def _platform_name_from_manifest(manifest: PluginManifest) -> str:
-        """Derive the platform name without importing the adapter: strip a trailing ``-platform`` from the
-        manifest name, else the directory basename (the bundled convention)."""
+        """Derive the platform key without importing the adapter: strip a trailing ``-platform``
+        from the manifest name, else the directory basename (the bundled convention). Dashes
+        normalize to underscores — platform keys are snake_case (Platform enum members, dir
+        basenames), and the deferred loader must be keyed exactly like the name the adapter
+        registers or the gateway never materializes the platform."""
         name = manifest.name or ""
         if name.endswith("-platform"):
-            return name[: -len("-platform")]
-        return Path(manifest.path).name if manifest.path else name
+            name = name[: -len("-platform")]
+        elif manifest.path:
+            name = Path(manifest.path).name
+        return name.replace("-", "_")
 
     @_serialized_replacement
     def _register_deferred_platform(self, manifest: PluginManifest) -> None:

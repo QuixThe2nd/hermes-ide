@@ -1,10 +1,4 @@
-"""pm uv cache: hermes-owned UV_CACHE_DIR + sealed-venv bootstrap seed.
-
-The cache ships with bundles and is copied out to the writable machine
-cache on first use; every pm-internal uv invocation pins UV_CACHE_DIR.
-The mutable venv on sealed installs lives in the machine hermes root,
-seeded from the payload's shipped venv when lazy installs are off.
-"""
+"""PM caches are writable; shipped dependency environments stay immutable."""
 
 from __future__ import annotations
 
@@ -63,66 +57,21 @@ def test_uv_cache_dir_cold_machine_no_payload(monkeypatch, tmp_path):
     assert (machine / ".seeded").is_file()
 
 
-def test_venv_dir_sealed_goes_to_machine_root(monkeypatch, tmp_path):
+@pytest.mark.parametrize("lazy_allowed", [False, True])
+def test_bundle_uses_shipped_environment_until_an_extension_is_committed(monkeypatch, tmp_path, lazy_allowed):
+    import json
+    import importlib
+    import pm.paths as paths
+
     home = tmp_path / "home"
-    home.mkdir()
-    import sys
-
-    import hermes_constants
-
-    monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: home)
-    ensure_mod = sys.modules["pm.ensure"]
-    monkeypatch.setattr(ensure_mod, "sealed", lambda: True)
-    venv = pkgs.Venv()
-    assert venv.venv_dir() == home / "venv"
-
-
-def test_seed_mutable_venv_copies_payload_venv(monkeypatch, tmp_path):
-    home = tmp_path / "home"
-    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
     payload = tmp_path / "payload"
-    (payload / "venv" / "Scripts").mkdir(parents=True)
-    (payload / "venv" / "Scripts" / "python.exe").write_text("bin", encoding="utf-8")
-
-    import hermes_constants
-
-    monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: home)
-    import sys
-
-    ensure_mod = sys.modules["pm.ensure"]
-    import pm.paths as paths_mod
-
-    monkeypatch.setattr(ensure_mod, "sealed", lambda: True)
-    monkeypatch.setattr(ensure_mod, "lazy_installs_allowed", lambda: False)
-    monkeypatch.setattr(paths_mod, "store_root", lambda: payload / "tools")
-
-    venv = pkgs.Venv()
-    reason = venv.seed_mutable_venv()
-    assert reason is None
-    seeded = home / "venv"
-    assert (seeded / "Scripts" / "python.exe").read_text(encoding="utf-8") == "bin"
-    # idempotent: second call is a no-op
-    assert venv.seed_mutable_venv() is None
-
-
-def test_seed_mutable_venv_lazy_on_skips_copy(monkeypatch, tmp_path):
-    home = tmp_path / "home"
-    home.mkdir()
-    payload = tmp_path / "payload"
-    (payload / "venv").mkdir(parents=True)
-
-    import hermes_constants
-
-    monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: home)
-    import sys
-
-    ensure_mod = sys.modules["pm.ensure"]
-    import pm.paths as paths_mod
-
-    monkeypatch.setattr(ensure_mod, "sealed", lambda: True)
-    monkeypatch.setattr(ensure_mod, "lazy_installs_allowed", lambda: True)
-    monkeypatch.setattr(paths_mod, "store_root", lambda: payload / "tools")
-
-    venv = pkgs.Venv()
-    assert venv.seed_mutable_venv() is None
-    assert not (home / "venv").exists()  # builds fresh later, no seed copy
+    core = payload / "hermes-agent"
+    core.mkdir(parents=True)
+    shipped = payload / "venv"
+    shipped.mkdir()
+    (payload / "manifest.json").write_text(json.dumps({"repo": "hermes-agent", "venv": "venv"}))
+    monkeypatch.setattr(paths, "repo_root", lambda: core)
+    monkeypatch.setattr(importlib.import_module("pm.ensure"), "lazy_installs_allowed", lambda: lazy_allowed)
+    assert pkgs.Venv().venv_dir() == shipped
+    assert not home.exists(), "selecting shipped dependencies must not copy or mutate them"

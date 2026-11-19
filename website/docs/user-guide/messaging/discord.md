@@ -6,7 +6,7 @@ description: "Set up Hermes Agent as a Discord bot"
 
 # Discord Setup
 
-Hermes Agent integrates with Discord as a bot, letting you chat with your AI assistant through direct messages or server channels. The bot receives your messages, processes them through the Hermes Agent pipeline (including tool use, memory, and reasoning), and responds in real time. It supports text, voice messages, file attachments, and slash commands.
+Hermes Agent integrates with Discord as a bot, letting you chat with your AI assistant through direct messages or server channels. The bot receives your messages, processes them through the Hermes Agent pipeline (including tool use, memory, and reasoning), and responds in real time. It supports text, audio/voice message attachments, file attachments, and slash commands.
 
 Before setup, here's the part most people want to know: how Hermes behaves once it's in your server.
 
@@ -104,6 +104,25 @@ The old `liveness_interval_seconds` and `liveness_failure_threshold` names remai
 Any knob at `0` disables the whole WebSocket liveness probe. Values that fail to parse as a positive number (e.g. `15s`, `nan`, `true`, `-1`) also disable it, and log a warning each time the adapter starts — check `gateway.log` if the probe seems inactive.
 
 `websocket_event_max_silence_seconds` is the exception: it guards a single dimension (event dispatch), so `0` opts out of **that check only** — ready/ACK/latency keep guarding. A socket can stay ESTABLISHED and keep ACKing heartbeats while delivering zero Gateway events; heartbeat ACKs are frames without an event type, so no transport-side check can see that state. The default (4 hours) matches the outage window operators have observed in the field; a quiet guild can legitimately go hours without a single Gateway event, so keep this bound generous unless you know your traffic.
+
+## Saving Browser Logins from Discord
+
+In an interactive Discord session, the browser save-login tool can post a one-time **Open unmasked modal** button in the requesting channel or thread. Only the user who requested the save can open or cancel that prompt. A submitted modal is consumed once; replays and new save requests do not reuse it.
+
+:::warning[Discord input is not a masked password prompt]
+Discord text inputs are **unmasked**, and Discord processes the submitted username and password. Hermes sends the submission directly to its existing vault-save callback, not through Discord message ingestion, the model, or session history. The values are not posted as chat messages. Use this transport only when that disclosure is acceptable for the credential.
+:::
+
+When Discord runs through the shared hub transport (`hermes-discord-hub.service`), the prompt works the same way: the gateway relays the request to the hub process, which hosts the button and modal on the Discord connection, and the submission returns only to the session that requested it. Everything else on this page — ownership, expiry, disclosure warning, and the locked/OTP restrictions — applies unchanged.
+
+Prefer these local alternatives for sensitive credentials:
+
+- `hermes vault add`
+- **Desktop → Settings → Passwords & Logins**
+
+The prompt expires after **five minutes**. **Cancel**, timeout, Discord disconnect, or a prompt failure closes it without saving. Closing Discord's native modal with its X control does not notify Hermes and the same modal cannot be reopened; use **Cancel** on the original prompt or wait for it to expire.
+
+Master-password unlock and manually entered one-time-code prompts are **not available on Discord**. If the manager is locked, use the local `hermes vault add` or Desktop save alternatives above instead. External-manager unlock tokens live in process memory per profile: unlocking a separate CLI/Desktop process does not unlock a separately running Discord gateway. Saving an authenticator key with the login still lets supported one-time codes be generated automatically. Headless, cron, single-query, and API sessions never open these Discord prompts.
 
 ## Step 1: Create a Discord Application
 
@@ -304,7 +323,7 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_FREE_RESPONSE_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds without requiring an `@mention`, even when `DISCORD_REQUIRE_MENTION` is `true`. |
 | `DISCORD_IGNORE_NO_MENTION` | No | `true` | When `true`, the bot stays silent if a message `@mentions` other users but does **not** mention the bot. Prevents the bot from jumping into conversations directed at other people. Only applies in server channels, not DMs. |
 | `DISCORD_AUTO_THREAD` | No | `true` | When `true`, automatically creates a new thread for every `@mention` in a text channel, so each conversation is isolated (similar to Slack behavior). Messages already inside threads or DMs are unaffected. |
-| `DISCORD_FREE_RESPONSE_AUTO_THREAD` | No | `false` | When `true`, free-response channels (listed in `DISCORD_FREE_RESPONSE_CHANNELS`) also auto-create a thread for each top-level message, while staying mention-free. Default `false` preserves the lightweight inline-chat behavior. Requires `DISCORD_AUTO_THREAD=true`; `DISCORD_NO_THREAD_CHANNELS` still wins, and voice-linked channels always ignore it. |
+| `DISCORD_FREE_RESPONSE_AUTO_THREAD` | No | `false` | When `true`, free-response channels (listed in `DISCORD_FREE_RESPONSE_CHANNELS`) also auto-create a thread for each top-level message, while staying mention-free. Default `false` preserves the lightweight inline-chat behavior. Requires `DISCORD_AUTO_THREAD=true`; `DISCORD_NO_THREAD_CHANNELS` still wins. |
 | `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. By default, either enabled mode still requires a literal inline mention; see the next setting. |
 | `DISCORD_BOTS_REQUIRE_INLINE_MENTION` | No | `true` | Require a literal `<@BOT_ID>` / `<@!BOT_ID>` token to start a bot handoff. Reply metadata alone does not start one. Brief same-sender/channel continuations are admitted as described below. Set to `false` only for trusted relays needing legacy admission. Human messages are unaffected. |
 | `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
@@ -378,8 +397,6 @@ discord:
     max_dispatches: 10            # Recovery dispatch cap per reconnect
     max_attempts: 3               # Lifetime re-dispatch cap per message
   channel_prompts: {}             # Per-channel ephemeral system prompts
-  voice_channel_inactivity_timeout_seconds: 300  # Set 0 to stay in VC until explicit /voice leave
-  voice_playback_timeout_seconds: 120             # Minimum playback watchdog; long clips get duration+padding
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
     everyone: false               # @everyone / @here pings (default: false)
     roles: false                  # @role pings (default: false)
@@ -448,7 +465,7 @@ discord:
   free_response_auto_thread: true  # thread every top-level message there
 ```
 
-Requires `discord.auto_thread: true` (with it off, nothing threads anywhere). [`discord.no_thread_channels`](#discordno_thread_channels) still wins, voice-linked text channels always reply inline, and reply-type messages follow [`discord.auto_thread_replies`](#discordauto_thread_replies) (auto-threaded by default).
+Requires `discord.auto_thread: true` (with it off, nothing threads anywhere). [`discord.no_thread_channels`](#discordno_thread_channels) still wins and reply-type messages follow [`discord.auto_thread_replies`](#discordauto_thread_replies) (auto-threaded by default).
 
 `DISCORD_FREE_RESPONSE_AUTO_THREAD` wins over the `config.yaml` key when both are set — the YAML value only seeds the env var when it isn't already set, like every other `discord.*` bridge.
 
@@ -472,7 +489,7 @@ discord:
     timeout_seconds: 3.0      # per-request budget; over budget means deny
     context_messages: 10      # recent same-channel messages sent as evidence
     context_chars: 8000       # total character budget for that evidence block
-    model: typesafe/jev-1.13  # judge model; fixed default, no fallback chain
+    model: jev-1.14.0  # judge model; fixed default, no fallback chain
     threads_require_membership: true  # threads stay silent until the bot has participated (default)
 ```
 
@@ -486,7 +503,7 @@ discord:
 
 **Evidence.** The judge sees the candidate message plus a bounded window of recent messages from the same channel or thread — up to `context_messages` messages and `context_chars` characters. Nothing from other channels, and nothing beyond that window.
 
-**Fail-closed.** A timeout, a malformed answer, or a missing `OPENROUTER_API_KEY` means a silent deny in `enforce`; the gate never admits on failure. Because a silent deny is easy to miss, `enforce` without a usable key also logs one loud warning at startup — `shadow` does not. The key is read once at connect time from the profile environment, so it must be set before the gateway starts; it is not a `config.yaml` key.
+**Fail-closed.** A timeout, a malformed answer, or a missing `LITELLM_API_KEY` (a litellm virtual key) means a silent deny in `enforce`; the gate never admits on failure. Because a silent deny is easy to miss, `enforce` without a usable key also logs one loud warning at startup — `shadow` does not. The key is read once at connect time from the profile environment, so it must be set before the gateway starts; it is not a `config.yaml` key.
 
 Values outside the documented ranges (threshold or any of the three cutoffs outside `0..1`, `timeout_seconds` above `30`, oversized context bounds) refuse to load rather than quietly degrading into "admit everything".
 
@@ -516,7 +533,7 @@ discord:
     timeout_seconds: 3.0       # per-request budget; over budget means no reaction
     context_messages: 10       # recent same-channel messages sent as evidence
     context_chars: 8000        # total character budget for that evidence block
-    model: typesafe/jev-1.13   # judge model; fixed default, no fallback chain
+    model: jev-1.14.0  # judge model; fixed default, no fallback chain
     decision_formula: 'abstain < 0.5 or (emoji_count >= 2 and top > 5 * second)'  # the default rule, spelled out
     include_threads: true            # a listed parent channel id also selects its threads (default)
     threads_require_membership: true  # in-scope threads stay silent until the bot has participated (default)
@@ -540,7 +557,7 @@ discord:
 
 **Evidence.** The judge sees the candidate message plus a bounded window of recent messages from the same channel *or thread* — up to `context_messages` messages and `context_chars` characters. The window holds the messages that preceded the candidate when it arrived (never the candidate itself) plus this bot's own delivered final replies, so a user's "thanks" after one of them reads as connected. A thread's evidence never merges its parent channel's history, and nothing from other channels is included. Message text is evidence about the conversation, never instructions to the judge, and logs carry only channel/message ids and the outcome — never message content.
 
-**Fail-closed.** A missing `OPENROUTER_API_KEY`, timeout, transport error, malformed answer, unknown option, or an incoherent probability distribution means *no reaction* — never a fallback emoji and never a text reply. Like the speaking gate, the key is read once at connect time from the profile environment, not from `config.yaml`.
+**Fail-closed.** A missing `LITELLM_API_KEY` (a litellm virtual key), timeout, transport error, malformed answer, unknown option, or an incoherent probability distribution means *no reaction* — never a fallback emoji and never a text reply. Like the speaking gate, the key is read once at connect time from the profile environment, not from `config.yaml`.
 
 **Live reload.** Edits to the `reaction_gate` block in `config.yaml` are picked up by the running adapter within a few seconds — no restart needed. The reload resolves the block exactly like startup does (including the [managed-scope](/user-guide/managed-scope) overlay and the nested `gateway.platforms.discord` / `platforms.discord` / `gateway.discord` spellings), so a live edit has the same effect as a restart, and administrator-pinned values cannot be bypassed by editing the user file. An invalid edit — broken YAML, a non-mapping document (including an empty file mid-save), or a block that fails validation — keeps the active gate; removing the block from an otherwise valid file, or setting `enabled: false`, turns it off. That includes `decision_formula`: changing thresholds or flipping `or` to `and` applies on the next decision after the reload, with no restart or reconnect.
 
@@ -566,7 +583,7 @@ discord:
   auto_thread_replies: false  # answer quote-replies inline instead of threading them
 ```
 
-Requires `discord.auto_thread: true`. All other exclusions still apply: DMs and existing threads are unaffected, and [`discord.no_thread_channels`](#discordno_thread_channels), voice-linked text channels, and free-response channels (unless [`discord.free_response_auto_thread`](#discordfree_response_auto_thread) is `true`) keep their inline replies.
+Requires `discord.auto_thread: true`. All other exclusions still apply: DMs and existing threads are unaffected, and [`discord.no_thread_channels`](#discordno_thread_channels) and free-response channels (unless [`discord.free_response_auto_thread`](#discordfree_response_auto_thread) is `true`) keep their inline replies.
 
 #### `discord.reactions`
 
@@ -736,7 +753,7 @@ Controls whether the bot sends progress messages in the chat while processing (e
 
 ```yaml
 display:
-  tool_progress: "all"    # off | new | all | verbose
+  tool_progress: "describe"    # off | new | all | verbose | describe (default: describe; rows always render in code boxes)
 ```
 
 - `off` — no progress messages
@@ -745,7 +762,7 @@ display:
 - `verbose` — show full tool call details (can produce long messages)
 - `describe` — one short line saying what each tool call is for (the call's own description), instead of the raw command/code
 
-When a `delegate_agent(backend="cursor")` (or legacy `delegate_cursor_agent`) call reports live progress, Discord posts a Cursor-branded embed with a **Watch live session** hyperlink instead of dumping the raw URL.
+When a `delegate_agent(backend="claude")` call reports live progress, Discord posts a Claude-branded embed with a **Watch live session** hyperlink into the local viewer instead of dumping the raw URL.
 
 #### `display.tool_progress_command`
 
@@ -758,24 +775,18 @@ display:
   tool_progress_command: true
 ```
 
-#### `display.reasoning_style`
+#### `display.show_reasoning`
 
-**Type:** string — **Default (Discord):** `"subtext"` — **Values:** `code`, `blockquote`, `subtext`, `compact`
+**Type:** boolean — **Default:** `false`
 
-Controls how the model's reasoning block is rendered when reasoning display is enabled. Discord defaults to `subtext`, which uses Discord's native `-# ` small grey metadata text so reasoning stays visually secondary to the answer. `blockquote` renders it as a `>` quote, and `code` (the default on other platforms) uses a fenced code block. Long reasoning is collapsed to the first 15 lines. `compact` shows only a single `💭 thought for Xs` duration line (no reasoning text at all), with an optional `(N tokens)` suffix carrying this turn's thinking/output tokens when the provider reports them.
+When enabled, prepends one reasoning-summary line to the final response: `-# 💭 Reasoned about <describe>` on Discord and `_💭 Reasoned about <describe>_` on other platforms. `<describe>` is the first non-empty reasoning line, truncated to 80 characters with an ellipsis when longer. The multi-line reasoning body is never rendered, and there is no style or verbosity setting.
 
 ```yaml
 display:
   platforms:
     discord:
-      reasoning_style: subtext   # code | blockquote | subtext | compact
+      show_reasoning: true
 ```
-
-#### `display.long_running_notifications`
-
-**Type:** boolean|string — **Default (Discord):** `"phase"` — **Values:** `true`, `false`, `"generic"`, `"phase"`
-
-Discord heartbeats are phase lines by default: the bubble names the current wait and how long that wait has lasted — `⏳ terminal 1m42s` while a tool is in flight, `⏳ grok-4.6 38s` while waiting on the next model response, `⏳ packing 12s` once the last tool has returned and the next call is being packed — with no iteration counter or provider wait diagnostics. Set `display.platforms.discord.long_running_notifications: true` for the old verbose diagnostic line (`⏳ Working — 3 min — iteration 1/256, …`), `"generic"` for the plain catalog phrase, or `false` to turn heartbeats off. The `"generic"` phrase comes from the [status-phrase catalog](/user-guide/messaging#configurable-status-phrases), so you can also customize it via `display.status_phrases`.
 
 ## Slash Command Access Control
 
@@ -819,15 +830,6 @@ gateway:
 
 Use `/whoami` to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run.
 
-## Interactive Model Picker
-
-Send `/model` with no arguments in a Discord channel to open a dropdown-based model picker:
-
-1. **Provider selection** — a Select dropdown showing available providers (up to 25).
-2. **Model selection** — a second dropdown with models for the chosen provider (up to 25).
-
-The picker times out after 120 seconds. Only authorized users (those in `DISCORD_ALLOWED_USERS`) can interact with it. If you know the model name, type `/model <name>` directly.
-
 ## Native Slash Commands for Skills
 
 Hermes automatically registers installed skills as **native Discord Application Commands**. This means skills appear in Discord's autocomplete `/` menu alongside built-in commands.
@@ -835,7 +837,7 @@ Hermes automatically registers installed skills as **native Discord Application 
 - Each skill becomes a Discord slash command (e.g., `/code-review`, `/ascii-art`)
 - Skills accept an optional `args` string parameter
 - Discord has a limit of 100 application commands per bot — if you have more skills than available slots, extra skills are skipped with a warning in the logs
-- Skills are registered during bot startup alongside built-in commands like `/model`, `/reset`, and `/bg`
+- Skills are registered during bot startup alongside built-in commands like `/new` and `/bg`
 
 No extra configuration is needed — any skill installed via `hermes skills install` is automatically registered as a Discord slash command on the next gateway restart.
 
@@ -907,7 +909,7 @@ The buttons disable themselves once a choice is made so duplicate clicks don't d
 
 ### Prompt layout
 
-Interactive prompts (command approvals, `clarify` questions, and slash-command confirmations) share one layout: the **plain message** carries the full payload — the command and why it was flagged plus the approval deadline, or the question and reply hint — the **embed card** underneath is a header only, and the buttons sit below the card. Everything you need to decide is in the plain text, so the prompt reads correctly on clients that hide or detach embeds, and nothing is shown twice on clients that render them.
+Interactive prompts (`clarify` questions and slash-command confirmations) share one layout: the **plain message** carries the full payload — the question and reply hint — the **embed card** underneath is a header only, and the buttons sit below the card. Everything you need to decide is in the plain text, so the prompt reads correctly on clients that hide or detach embeds, and nothing is shown twice on clients that render them.
 
 ## Proactive Delivery Targets
 
@@ -915,54 +917,13 @@ Cron jobs and reminders deliver to an explicit target you configure per job — 
 
 Gateway lifecycle notices (restart/shutdown) go to the platform's **notification channel**: run `/setnotify` in the destination channel to designate it, and `/clearnotify` to remove it.
 
-## Voice Messages
+## Voice Message Attachments
 
-Hermes Agent supports Discord voice messages:
-
-- **Incoming voice messages** are automatically transcribed using the configured STT provider: local `faster-whisper` (no key), Groq Whisper (`GROQ_API_KEY`), or OpenAI Whisper (`VOICE_TOOLS_OPENAI_KEY`).
-- **Text-to-speech**: Use `/voice tts` to have the bot send spoken audio responses alongside text replies.
-- **Discord voice channels**: Hermes can also join a voice channel, listen to users speaking, and talk back in the channel.
-
-For the full setup and operational guide, see:
-- [Voice Mode](../features/voice-mode.md)
-- [Use Voice Mode with Hermes](../../guides/use-voice-mode-with-hermes.md)
-
-### Voice Channel Audio Effects (ambient + verbal acks)
-
-When the bot is in a voice channel, you can give it a more conversational feel: a short verbal acknowledgement ("let me look into that") before it starts working, and a subtle ambient "thinking" bed that plays underneath while tools run — the speech ducks the ambient down and swells it back when finished, similar to Grok voice mode.
-
-discord.py plays only one audio stream per connection, so Hermes installs a software mixer on the outgoing stream that sums an ambient loop, acknowledgements, and TTS replies into that single stream — they overlap instead of cutting each other off.
-
-This is **off by default**. Enable it in `config.yaml`:
-
-```yaml
-discord:
-  voice_fx:
-    enabled: true          # master switch
-    ambient_enabled: true  # idle "thinking" bed while tools run
-    ambient_path: ""       # custom loop file (any audio format); "" = built-in synthesised pad
-    ambient_gain: 0.18     # idle bed loudness (0.0–1.0)
-    duck_gain: 0.06        # ambient loudness while the bot is speaking
-    speech_gain: 1.0       # TTS / acknowledgement loudness
-    ack_enabled: true      # speak a short phrase before the first tool call of a turn
-    ack_phrases:           # picked at random; set to [] to disable the spoken ack
-      - "Let me look into that."
-      - "One moment."
-      - "Checking on that now."
-```
-
-Notes:
-- Set `voice_channel_inactivity_timeout_seconds: 0` if you want the bot to remain in the voice channel until an explicit `/voice leave` or manual disconnect. The default preserves the historical 300-second idle auto-leave.
-- `voice_playback_timeout_seconds` is a floor, not a hard cap for long TTS. Hermes probes the generated audio duration and waits for `duration + 30s` when that is longer than the configured floor.
-- The acknowledgement fires at most once per turn, only when the bot is in a voice channel and the mixer is active. It uses your configured TTS provider.
-- `ambient_path` accepts any file `ffmpeg` can decode; it's looped seamlessly. Leave it empty to use the built-in synthesised pad (no asset needed).
-- All settings live in `config.yaml` (not `.env`) — they're behavioral, not secrets.
-- When `voice_fx.enabled` is `false`, voice playback uses the original one-shot path and nothing changes.
-
+Discord voice messages arrive as regular audio file attachments. The agent can listen to their content only by processing the attached file (e.g. via a skill or `execute_code`); there is no built-in transcription, TTS, or voice-channel playback — outgoing audio files are delivered through the normal attachment lane below.
 
 ## Forum Channels
 
-Discord forum channels (type 15) don't accept direct messages — every post in a forum must be a thread. Hermes auto-detects forum channels and creates a new thread post whenever it needs to send there, so text replies, TTS, images, voice messages, and file attachments all work without special handling from the agent.
+Discord forum channels (type 15) don't accept direct messages — every post in a forum must be a thread. Hermes auto-detects forum channels and creates a new thread post whenever it needs to send there, so text replies, images, audio files, and file attachments all work without special handling from the agent.
 
 - **Thread name** is derived from the first line of the message (markdown heading prefix stripped, capped at 100 chars). When the message is attachment-only, the filename is used as the fallback thread name.
 - **Attachments** ride along on the starter message of the new thread — no separate upload step, no partial sends.

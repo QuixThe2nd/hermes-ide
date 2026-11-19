@@ -106,12 +106,9 @@ class TestOpenRouterProfile:
 
 
     def test_pareto_min_coding_score_emitted_for_pareto_model(self):
-        """min_coding_score → plugins block when model is openrouter/pareto-code."""
+        """The Pareto plugin uses the fixed coding-score floor."""
         p = get_provider_profile("openrouter")
-        body = p.build_extra_body(
-            model="openrouter/pareto-code",
-            openrouter_min_coding_score=0.65,
-        )
+        body = p.build_extra_body(model="openrouter/pareto-code")
         assert body["plugins"] == [
             {"id": "pareto-router", "min_coding_score": 0.65}
         ]
@@ -208,41 +205,6 @@ class TestOpenRouterProfile:
         _, tl = p.build_api_kwargs_extras(model="openai/gpt-5.6-sol")
         assert "model" not in tl
         assert p.build_extra_body(model="openai/gpt-5.6-sol", provider_preferences={"ignore": ["x"]})["provider"] == {"ignore": ["x"]}
-
-
-class TestNousProfile:
-    def test_tags(self):
-        from agent.portal_tags import nous_portal_tags
-        p = get_provider_profile("nous")
-        body = p.build_extra_body()
-        assert body["tags"] == nous_portal_tags()
-
-    def test_sticky_session_id_normalizes_cron_timestamp(self):
-        """Cron re-fires of the same job keep the same sticky routing key."""
-        p = get_provider_profile("nous")
-        first = p.build_extra_body(session_id="cron_job42_20260801_090000")
-        second = p.build_extra_body(session_id="cron_job42_20260802_090000")
-        assert first["session_id"] == "cron_job42"
-        assert first["session_id"] == second["session_id"]
-
-    def test_extra_body_ignores_provider_preferences(self):
-        """Nous Portal rejects caller-supplied provider routing prefs (HTTP 400)."""
-        p = get_provider_profile("nous")
-        body = p.build_extra_body(
-            provider_preferences={"allow": ["anthropic"], "sort": "price"}
-        )
-        assert "provider" not in body
-        assert "tags" in body
-
-
-
-
-
-    def test_auth_type(self):
-        p = get_provider_profile("nous")
-        assert p.auth_type == "oauth_device_code"
-
-
 
 
 class TestQwenProfile:

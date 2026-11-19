@@ -45,7 +45,7 @@ def store(tmp_path, monkeypatch):
 
 def _make_source() -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         user_id="170829464",
         chat_id="170829464",
         chat_type="dm",
@@ -68,7 +68,6 @@ def _make_branch_runner(store: SessionStore):
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._busy_ack_ts = {}
-    runner._pending_approvals = {}
     runner._update_prompt_pending = {}
     runner._agent_cache_lock = None
     runner.session_store = store

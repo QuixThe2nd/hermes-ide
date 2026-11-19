@@ -21,16 +21,12 @@ class TurnContext:
     # registered the watch.  Their routine delivery surfaces stay quiet.
     scheduled_heartbeat: bool = False
     _run_still_current: Callable[[], bool] = None  # type: ignore[assignment]
-    _live_status_adapter: Any = None
+    _live_status_adapter_snapshot: Any = None
+    _live_status_adapter_provider: Optional[Callable] = None
     _live_status_mode: str = "off"
     _thinking_enabled: bool = False
     progress_mode: str = "off"
     progress_grouping: str = "grouped"
-    # This turn's resolved tool_progress_codebox flag: accumulated progress
-    # groups render as one unlabelled fenced code block when true. Snapshotted
-    # at turn start like progress_grouping — never read from process-global
-    # config mid-turn.
-    progress_codebox: bool = False
     # This turn's resolved tool_preview_length (0 = unlimited), snapshotted at turn
     # start. Rendering reads this turn-owned value, never the process-global
     # agent.display budget: interleaved turns (Discord unlimited vs a capped
@@ -39,26 +35,23 @@ class TurnContext:
     tool_progress_enabled: bool = False
     progress_queue: Any = None
     log_queue: Any = None
-    # Structured tool-stage events (moa_ask / moa_debate round
-    # transitions) for surfaces that render one self-editing card per tool
-    # invocation. None on every platform except Discord-with-embeds, so the
-    # agent.moa_loop stage bus simply has no subscriber elsewhere.
+    # Structured tool-stage events (MoA cards and automatic browser images).
+    # The bus has a subscriber only while this turn owns a queue.
     stage_event_queue: Any = None
     _stage_embed_adapter: Any = None
+    _browser_progress_enabled: bool = False
 
     # --- mutable single-element containers (shared with the outer body) --
     # Monotonic timestamp of this turn's last USER-VISIBLE progress (a delivered
     # tool update, commentary line, successful progress/status/stream edit or
     # send — never typing indicators, internal model/tool activity, or failed and
-    # suppressed sends). The long-running heartbeat waits for gateway_notify_interval
-    # of silence since this timestamp, so continuous visible progress suppresses
-    # "still working" bubbles. Turn-scoped by construction: another chat's traffic
+    # suppressed sends). Turn-scoped by construction: another chat's traffic
     # writes its own TurnContext. None until the first visible delivery.
     _last_visible_progress: List[float] = field(default_factory=lambda: [None])
     # Lazily-created per-turn asyncio.Lock serializing user-visible transport
-    # operations (tool/commentary/stream send+edit) against the heartbeat
-    # edit/send, so a heartbeat can never interleave with - or land stale after -
-    # same-turn visible progress (and vice versa). Created on the turn's loop.
+    # operations (tool/commentary/stream send+edit) against each other, so one
+    # can never interleave with - or land stale after - same-turn visible
+    # progress. Created on the turn's loop.
     _delivery_lock: Any = None
     last_progress_msg: list = field(default_factory=lambda: [None])
     last_tool: list = field(default_factory=lambda: [None])
@@ -104,27 +97,26 @@ class TurnContext:
     result_holder: list = field(default_factory=lambda: [None])
     tools_holder: list = field(default_factory=lambda: [None])
     stream_consumer_holder: list = field(default_factory=lambda: [None])
+    # Streaming-TTS sink for stream deltas (None = no TTS this turn), single-element
+    # so the outer body can wire it after the context is built.
     streaming_tts_consumer_holder: list = field(default_factory=lambda: [None])
     # voice-ack wiring
-    _voice_ack_fired: list = field(default_factory=lambda: [False])
-    _voice_ack_guild: list = field(default_factory=lambda: [None])
-    _voice_ack_loop: Any = None
     # hook / status bridge wiring
     _loop_for_step: Any = None
     _hooks_ref: Any = None
-    _status_adapter: Any = None
+    _status_adapter_snapshot: Any = None
+    _status_adapter_provider: Optional[Callable] = None
     _status_chat_id: Any = None
     _status_thread_metadata: Optional[dict] = None
     # bound TurnRunner callbacks read via ctx
     progress_callback: Optional[Callable] = None
-    voice_ack_callback: Optional[Callable] = None
     _step_callback_sync: Optional[Callable] = None
     _event_callback_sync: Optional[Callable] = None
     _status_callback_sync: Optional[Callable] = None
     # Slack-native task cards (opt-in); ID-bearing callbacks correlate start/complete by call ID
     # --- Slack-native task-card progress (opt-in; #29483) ------------------ True when the Slack adapter's
     # ``native_task_cards_enabled()`` opt-in is set for this turn's platform. The ID-bearing lifecycle
-    # callbacks are published by TurnRunner (like voice_ack_callback above) so tool starts and completions
+    # callbacks are published by TurnRunner so tool starts and completions
     # correlate by real tool-call ID instead of tool name.
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None
@@ -242,15 +234,45 @@ class TurnContext:
     # duplicate viewer event for the same call must not spawn a second card.
     _agent_viewer_cards_sent: set = field(default_factory=set)
 
+    @property
+    def _status_adapter(self):
+        """Re-resolve the status transport after a mid-turn hub reconnect; snapshot is turn-start fallback."""
+        provider = getattr(self, "_status_adapter_provider", None)
+        if provider is not None:
+            try:
+                live = provider()
+            except Exception:
+                live = None
+            if live is not None:
+                return live
+        return getattr(self, "_status_adapter_snapshot", None)
+
+    @_status_adapter.setter
+    def _status_adapter(self, value):
+        self._status_adapter_snapshot = value
+
+    @property
+    def _live_status_adapter(self):
+        """Re-resolve live-status transport after reconnect; snapshot preserves turn-start wiring."""
+        provider = getattr(self, "_live_status_adapter_provider", None)
+        if provider is not None:
+            try:
+                live = provider()
+            except Exception:
+                live = None
+            if live is not None:
+                return live
+        return getattr(self, "_live_status_adapter_snapshot", None)
+
+    @_live_status_adapter.setter
+    def _live_status_adapter(self, value):
+        self._live_status_adapter_snapshot = value
+
     def mark_visible_progress(self) -> None:
         """Record a successful user-visible delivery for this turn (see
         ``_last_visible_progress``). Called only after a send/edit result confirmed
-        success, so failed, declined and suppressed output never resets the
-        heartbeat's silence clock."""
+        success, so failed, declined and suppressed output never counts."""
         self._last_visible_progress[0] = time.monotonic()
-
-    def last_visible_progress_monotonic(self) -> Optional[float]:
-        return self._last_visible_progress[0]
 
     def delivery_lock(self):
         """The per-turn visible-delivery lock (see ``_delivery_lock``); lazily
@@ -264,12 +286,12 @@ class TurnContext:
     async def deliver_visible(self, deliver):
         """Await ``deliver()`` under the turn's delivery lock and mark visible
         progress only when it reports success. Serializes actual tool/commentary/
-        stream transport operations against the heartbeat edit/send: whichever
-        acquires first completes (and marks) before the other's transport call
-        starts, so a heartbeat can no longer land an edit/send that same-turn
-        visible progress has already superseded. ``deliver`` (and anything it
-        calls back into, e.g. mark callbacks) must not acquire the lock -
-        reentrancy would deadlock."""
+        stream transport operations against each other: whichever acquires first
+        completes (and marks) before the other's transport call starts, so one
+        delivery can no longer land an edit/send that same-turn visible progress
+        has already superseded. ``deliver`` (and anything it calls back into,
+        e.g. mark callbacks) must not acquire the lock - reentrancy would
+        deadlock."""
         async with self.delivery_lock():
             result = await deliver()
             if getattr(result, "success", False):

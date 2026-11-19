@@ -1,7 +1,7 @@
 """Tests for the shared tar.gz writer (``hermes_cli.archive_safe.make_targz``).
 
-``make_targz`` backs both ``hermes profile export`` and ``hermes kanban
-export``. The contract pinned down here: a failure partway through writing
+``make_targz`` backs profile export and other archive flows. The contract
+pinned down here: a failure partway through writing
 the archive (disk full, permission loss, interruption) must never destroy a
 pre-existing file at the destination path — the same failure-atomicity
 guarantee the desktop gateway-download path already has.

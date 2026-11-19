@@ -72,3 +72,119 @@ def test_reaching_the_model_resets_ladder_and_oneshots_never_retry(tmp_cron_home
     assert mark_job_run(once["id"], False, "ConnectError: dns", model_unreachable=True)
     remaining = get_job(once["id"])
     assert remaining is None or remaining.get(ur.STATE_KEY) is None
+
+# ---------------------------------------------------------------------------
+# is_model_unreachable_failure — recognition of the shapes the scheduler raises
+# ---------------------------------------------------------------------------
+
+
+class _Agent:
+    """Agent double: only ``session_api_calls`` (completed calls) matters to the guard."""
+
+    def __init__(self, session_api_calls: int = 0):
+        self.session_api_calls = session_api_calls
+
+
+@pytest.mark.parametrize("text", [
+    "Connection error.",
+    "Connection refused",
+    "Connection reset by peer",
+    "server disconnected without response",
+    "Network is unreachable",
+    "Temporary failure in name resolution",
+    "upstream request timed out",
+    "Codex stream produced no parsed stream event within 120s (TTFB threshold: 120s)",
+])
+def test_wrapped_transport_error_texts_are_recognized_at_zero_calls(text):
+    """The scheduler's failure path raises ``RuntimeError(<agent error text>)``
+    (``cron/scheduler.py::_final_response_from_result``): the transport exception
+    TYPE is gone, only the prose survives. A transient transport text at zero
+    completed API calls must flag the run or the re-run ladder is dead."""
+    assert ur.is_model_unreachable_failure(RuntimeError(text), _Agent(0))
+
+
+def test_wrapped_transport_error_after_reaching_the_model_is_not_recognized():
+    """Zero-API-calls guard: a run that completed model calls may have partial work
+    and side effects — it must never auto-retry, whatever the error text says."""
+    assert not ur.is_model_unreachable_failure(RuntimeError("Connection error."), _Agent(3))
+
+
+@pytest.mark.parametrize(("reason", "retryable"), [
+    ("rate_limit", True),
+    ("billing", False),
+    ("auth", True),
+    ("auth_permanent", False),
+    ("content_policy_blocked", False),
+    ("context_overflow", False),
+])
+def test_nontransient_failures_are_never_recognized(reason, retryable):
+    """Walls a re-run cannot move — rate limit, billing/quota, auth, content policy,
+    context overflow — must surface immediately, both as wrapped text and as the
+    agent result's structured verdict."""
+    text = {
+        "rate_limit": "Rate limit exceeded (429): too many requests, quota exhausted",
+        "billing": "Billing or credits exhausted: 402 Payment Required",
+        "auth": "401 Unauthorized: Incorrect API key provided",
+        "auth_permanent": "403 Forbidden: credential revoked",
+        "content_policy_blocked": "content_policy_blocked: I can't help with that request",
+        "context_overflow": "Context overflow: prompt is too large for the model window",
+    }[reason]
+    assert not ur.is_model_unreachable_failure(RuntimeError(text), _Agent(0))
+    result = {"failed": True, "completed": False, "failure_reason": reason,
+              "failure_retryable": retryable}
+    assert not ur.is_model_unreachable_failure(RuntimeError(text), _Agent(0), result=result)
+
+
+def test_structured_verdict_flags_transient_provider_reasons():
+    """The agent result carries the classifier's verdict (``failure_reason`` /
+    ``failure_retryable``, or a ``turn_exit_reason`` the finalizer's table maps);
+    when present it is authoritative, so recognition no longer depends on the
+    wrapped prose matching a needle."""
+    classified = {"failed": True, "completed": False, "error": "Connection error.",
+                  "api_calls": 3, "failure_reason": "timeout", "failure_retryable": True}
+    assert ur.is_model_unreachable_failure(
+        RuntimeError("Connection error."), _Agent(0), result=classified)
+    # Finalizer shape: verdict derived from turn_exit_reason (all_retries_exhausted_
+    # no_response -> server_error, retryable), no explicit failure_reason.
+    exit_reason_shaped = {"failed": True, "completed": False,
+                          "turn_exit_reason": "all_retries_exhausted_no_response"}
+    assert ur.is_model_unreachable_failure(
+        RuntimeError("provider didn't answer"), _Agent(0), result=exit_reason_shaped)
+    # 503/529 provider overload is the same zero-spend transient family (retryable).
+    overloaded = {"failed": True, "completed": False,
+                  "failure_reason": "overloaded", "failure_retryable": True}
+    assert ur.is_model_unreachable_failure(
+        RuntimeError("503 overloaded"), _Agent(0), result=overloaded)
+
+
+def test_structured_verdict_excludes_transport_looking_context_failures():
+    """A context-compression timeout says "timed out" but is a context wall, not a
+    transport blip; its own exit-reason verdict must exclude it from the ladder."""
+    result = {"failed": True, "completed": False,
+              "error": "Turn-start preflight compression timed out",
+              "turn_exit_reason": "context_compression_timeout"}
+    assert not ur.is_model_unreachable_failure(
+        RuntimeError("Turn-start preflight compression timed out"), _Agent(0), result=result)
+
+
+def test_structured_verdict_with_completed_calls_is_not_recognized():
+    """The structured verdict never bypasses the zero-completed-calls guard."""
+    result = {"failed": True, "completed": False, "error": "Connection error.",
+              "failure_reason": "timeout", "failure_retryable": True}
+    assert not ur.is_model_unreachable_failure(
+        RuntimeError("Connection error."), _Agent(2), result=result)
+
+
+def test_raw_transport_exception_types_are_still_recognized():
+    """Preflight/DNS failures raise raw transport exceptions (not wrapped prose);
+    the existing type/DNS-text matching in ``_is_transient_provider_resolve_error``
+    keeps working unchanged through the delegation."""
+    import socket
+
+    import httpx
+
+    assert ur.is_model_unreachable_failure(httpx.ConnectError("dns blip"), _Agent(0))
+    assert ur.is_model_unreachable_failure(
+        socket.gaierror(-2, "Name or service not known"), _Agent(0))
+    assert ur.is_model_unreachable_failure(
+        RuntimeError("name or service not known"), _Agent(0))

@@ -297,6 +297,27 @@ def step_provision_runtimes() -> dict:
     return {"ok": True, "refreshed": refreshed}
 
 
+def step_report_runtime_drift() -> dict:
+    """CHECK-ONLY machine step for automatic boot.
+
+    ``pm.check()`` is O(1) stamp comparisons against the installed-state
+    ledger — no network, no installs. Drift is reported loudly (the same
+    verdict the CLI startup block prints) so the user knows to run
+    ``hermes pm install``; boot itself never installs anything. The
+    installing pass is MACHINE_STEPS below, owned by the explicit update
+    flow — automatic boot must not run network installers.
+    """
+    import pm
+
+    problems = pm.check()
+    if not problems:
+        return {"ok": True, "skipped": "current"}
+    logger.warning(
+        "install out of sync (%s) — run `hermes pm install`", "; ".join(problems)
+    )
+    return {"ok": True, "drift": problems}
+
+
 def step_expose_cli() -> dict:
     """Keep the user-facing ``hermes`` launchers alive across updates.
 
@@ -306,7 +327,7 @@ def step_expose_cli() -> dict:
     stale or missing launchers that nothing repairs until a full
     reinstall. This step makes the POST-UPDATE side own the recurring
     maintenance: rewrite the three wrappers (hermes, hermes-agent,
-    hermes-acp) whenever their recorded shape drifts from what this
+    hermes-agent) whenever their recorded shape drifts from what this
     tree would write today. First-time PATH bootstrapping (shell-rc
     edits, Windows registry) stays installer-side on purpose — a
     boot-time step must not edit rc files on every update.
@@ -328,18 +349,20 @@ def step_expose_cli() -> dict:
 
     root = _install_root()
 
-    # Shape FIRST, capability second. The stamp is the shape authority: a
-    # bundled desktop payload never gets installer-written wrappers — its
-    # launchers SHIP in agent-payload/bin as prebuilt signed shims. macOS
-    # is the one platform where nothing at install time can expose them
-    # (a dragged .app runs no installer), so there — and only there —
-    # link the user's bin dir at the bundle's own shims. A Linux AppImage
-    # mounts at a transient path a symlink to which would dangle the
-    # moment the app exits.
-    if _is_bundled_payload(root):
-        if sys.platform == "darwin":
-            return _symlink_sealed_launchers(root.parent / "bin")
-        return {"ok": True, "skipped": "bundle-owns-launchers"}
+    # pm-store-managed install: the launchers are owned by
+    # hermes_cli._launchers (staged by install.ps1 / _install_repair —
+    # boot the STORE python with a repo-first PYTHONPATH, never
+    # venv/Scripts|bin python). This step's venv-wrapper shape is NOT
+    # that shape; writing it here would rewrite a store launcher into a
+    # venv boot. No alternate writer: the existing owner maintains
+    # these (per-name, at install and at process-start repair).
+    try:
+        from hermes_cli._launchers import resolve_store_python
+
+        if resolve_store_python(root) is not None:
+            return {"ok": True, "skipped": "store-launchers-owned"}
+    except Exception as exc:  # noqa: BLE001 — never kill boot over a probe
+        logger.debug("store-python probe failed: %s", exc)
 
     # Capability probe for the checkout shape: the wrapper bodies bake
     # these two paths into text, so both must exist to have anything to
@@ -354,7 +377,6 @@ def step_expose_cli() -> dict:
     wrappers = {
         "hermes": f'exec "{venv_python}" "{entrypoint}" "$@"',
         "hermes-agent": f'exec "{venv_python}" "{root / "run_agent.py"}" "$@"',
-        "hermes-acp": f'exec "{venv_python}" "{entrypoint}" acp "$@"',
     }
 
     written: list[str] = []
@@ -403,64 +425,6 @@ def step_expose_cli() -> dict:
     return {"ok": True, "written": written}
 
 
-def _is_bundled_payload(root: Path) -> bool:
-    """Is ``root`` a desktop bundle's agent payload? The stamp is the
-    authority (payload marker / desktop-app distribution), never a
-    sibling-directory sniff; a .git tree is a dev checkout regardless."""
-    if (root / ".git").exists():
-        return False
-    from hermes_cli.steward import STEWARD_DESKTOP, read_install_stamp
-
-    stamp = read_install_stamp(root)
-    if not stamp:
-        return False
-    return bool(stamp.get("payload")) or stamp.get("distribution") == STEWARD_DESKTOP
-
-
-def _symlink_sealed_launchers(payload_bin) -> dict:
-    """Link ~/.local/bin/{hermes,hermes-agent,hermes-acp} at a sealed
-    bundle's own prebuilt shims (macOS only).
-
-    Symlinks, not copies: the shims are signed as part of the app bundle,
-    and a copy would both orphan the signature's context and go stale on
-    every app update — a symlink into the .app follows the bundle's
-    content wherever Squirrel.Mac swaps it.
-
-    Ownership guard mirrors step_expose_cli's wrapper logic: an existing
-    entry is replaced only when it is ours — a symlink into THIS app
-    bundle's payload — or missing/broken. A user's own `hermes` (pipx,
-    another checkout's wrapper) is never touched.
-    """
-    link_dir = Path.home() / ".local" / "bin"
-    payload_root = payload_bin.parent
-    written: list[str] = []
-    try:
-        link_dir.mkdir(parents=True, exist_ok=True)
-        for name in ("hermes", "hermes-agent", "hermes-acp"):
-            source = payload_bin / name
-            if not source.is_file():
-                continue
-            target = link_dir / name
-            if target.is_symlink():
-                current = os.readlink(target)
-                if current == str(source):
-                    continue  # already ours and current
-                # Ours if it points into this payload (stale app path from
-                # a previous version counts — resolve() of a dangling link
-                # still yields the old path text) — or dangling entirely.
-                points_into_payload = str(Path(current)).startswith(str(payload_root) + os.sep)
-                if not points_into_payload and target.exists():
-                    continue  # a live foreign link — user's arrangement
-            elif target.exists():
-                continue  # a real file we did not write — never clobber
-            target.unlink(missing_ok=True)
-            target.symlink_to(source)
-            written.append(name)
-    except OSError as exc:
-        return {"ok": False, "error": str(exc)}
-    return {"ok": True, "written": written, "mode": "sealed-symlinks"}
-
-
 # ---------------------------------------------------------------------------
 # step registries — boot_bootstrap gates each list with the matching record
 # ---------------------------------------------------------------------------
@@ -473,13 +437,33 @@ HOME_STEPS: tuple = (
     ("expose_cli", step_expose_cli),
 )
 
-# Machine steps may be slow (network installers); boot bootstrap runs them
-# AFTER writing the machine record, detached from boot readiness.
+# What AUTOMATIC boot runs for the home scope: HOME_STEPS minus the
+# bundled-skills sync — startup skill syncing already has exactly one
+# owner per entrypoint (main.py's _sync_bundled_skills_for_startup for
+# the CLI, gateway/run.py's configure-logging sync for the gateway), and
+# `hermes update`'s explicit pass keeps the full HOME_STEPS. Adding the
+# sync here made boot a third writer racing those two.
+BOOT_HOME_STEPS: tuple = tuple(
+    step for step in HOME_STEPS if step[0] != "sync_skills"
+)
+
+# Machine steps may be slow (network installers); they run ONLY in the
+# explicit update phase (``python -m hermes_cli.post_update --update-phase``,
+# i.e. `hermes update`'s fresh-interpreter step pass) — never on automatic
+# boot.
 #
 # There is no separate cua-driver refresh step: pinned managed tools ride
 # provision_runtimes' pm sweep — one authority on every tool's version.
 MACHINE_STEPS: tuple = (
     ("provision_runtimes", step_provision_runtimes),
+)
+
+# What AUTOMATIC boot runs for the machine scope: the same pm.check()
+# verdict, reported instead of installed (boot must not block on, or
+# trigger, network installs — the user runs `hermes pm install` or the
+# explicit update pass when they want the repair).
+BOOT_MACHINE_STEPS: tuple = (
+    ("report_runtime_drift", step_report_runtime_drift),
 )
 
 

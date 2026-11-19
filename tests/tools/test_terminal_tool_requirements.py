@@ -33,29 +33,6 @@ class TestTerminalRequirements:
         assert terminal_tool_module.check_terminal_requirements() is True
 
 
-    def test_terminal_and_execute_code_tools_resolve_for_managed_modal(self, monkeypatch, tmp_path):
-        monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
-        monkeypatch.setattr("tools.terminal_tool_backends.managed_nous_tools_enabled", lambda: True)
-        monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.setenv("USERPROFILE", str(tmp_path))
-        monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
-        monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
-        monkeypatch.setattr(
-            terminal_tool_module,
-            "_get_env_config",
-            lambda: {"env_type": "modal", "modal_mode": "managed"},
-        )
-        monkeypatch.setattr(
-            "tools.terminal_tool_backends.is_managed_tool_gateway_ready",
-            lambda _vendor: True,
-        )
-        tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
-        names = {tool["function"]["name"] for tool in tools}
-
-        assert "terminal" in names
-        assert "execute_code" in names
-
-
 class TestCheckFnTransientFailureSuppression:
     """The check_fn TTL cache should absorb transient probe failures.
 
@@ -149,9 +126,9 @@ class TestCheckFnTransientFailureSuppression:
 
     def test_core_tool_drop_after_success_warns_once_never_configured_stays_info(self, monkeypatch, caplog):
         """A check_fn that drops a ``_HERMES_CORE_TOOLS`` member it had previously admitted logs at
-        WARNING naming the tool (#112649 atom 4): core tools are non-deferrable, so a dropped one
-        leaves neither the schema nor the tool_search catalog and the model's "no such tool" is
-        accurate. A core tool whose probe never succeeded (unconfigured browser/image_gen/HA on a
+        WARNING naming the tool (#112649 atom 4): dropping a previously available core tool removes
+        its direct schema, making the model's "no such tool" response accurate. A core tool whose
+        probe never succeeded (unconfigured browser/image_gen/HA on a
         stock home) keeps the INFO verdict of ae5666f7fc4 — the live pass counted 13 WARNINGs per
         process when every unconfigured core tool warned. The WARNING fires once per probe per
         process, not on every TTL re-probe.
@@ -262,7 +239,6 @@ class TestCheckFnTransientFailureSuppression:
                 tools_a = get_tool_definitions(
                     enabled_toolsets=["profile-cache-test"],
                     quiet_mode=True,
-                    skip_tool_search_assembly=True,
                 )
             finally:
                 reset_secret_scope(secrets_a)
@@ -274,7 +250,6 @@ class TestCheckFnTransientFailureSuppression:
                 tools_b = get_tool_definitions(
                     enabled_toolsets=["profile-cache-test"],
                     quiet_mode=True,
-                    skip_tool_search_assembly=True,
                 )
             finally:
                 reset_secret_scope(secrets_b)
@@ -379,70 +354,6 @@ class TestCheckFnTransientFailureSuppression:
         assert {"read_file", "write_file", "patch", "search_files", "terminal"}.issubset(
             child_names
         )
-    def test_terminal_and_execute_code_tools_resolve_for_vercel_sandbox(self, monkeypatch):
-        monkeypatch.setenv("VERCEL_OIDC_TOKEN", "oidc-token")
-        monkeypatch.setattr(
-            terminal_tool_module,
-            "_get_env_config",
-            lambda: {"env_type": "vercel_sandbox", "container_disk": 51200},
-        )
-        monkeypatch.setattr(
-            importlib.util,
-            "find_spec",
-            lambda _name: object(),
-        )
-        tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
-        names = {tool["function"]["name"] for tool in tools}
-
-        assert "terminal" in names
-        assert "execute_code" in names
-
-    def test_terminal_and_execute_code_tools_hide_for_unsupported_vercel_runtime(self, monkeypatch):
-        monkeypatch.setenv("VERCEL_OIDC_TOKEN", "oidc-token")
-        monkeypatch.setattr(
-            terminal_tool_module,
-            "_get_env_config",
-            lambda: {
-                "env_type": "vercel_sandbox",
-                "container_disk": 51200,
-                "vercel_runtime": "node20",
-            },
-        )
-        monkeypatch.setattr(
-            importlib.util,
-            "find_spec",
-            lambda _name: object(),
-        )
-        tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
-        names = {tool["function"]["name"] for tool in tools}
-
-        assert "terminal" not in names
-        assert "execute_code" not in names
-
-    def test_terminal_and_execute_code_tools_hide_for_vercel_without_auth(self, monkeypatch):
-        monkeypatch.delenv("VERCEL_OIDC_TOKEN", raising=False)
-        monkeypatch.delenv("VERCEL_TOKEN", raising=False)
-        monkeypatch.delenv("VERCEL_PROJECT_ID", raising=False)
-        monkeypatch.delenv("VERCEL_TEAM_ID", raising=False)
-        monkeypatch.setattr(
-            terminal_tool_module,
-            "_get_env_config",
-            lambda: {
-                "env_type": "vercel_sandbox",
-                "container_disk": 51200,
-                "vercel_runtime": "node22",
-            },
-        )
-        monkeypatch.setattr(
-            importlib.util,
-            "find_spec",
-            lambda _name: object(),
-        )
-        tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
-        names = {tool["function"]["name"] for tool in tools}
-
-        assert "terminal" not in names
-        assert "execute_code" not in names
 
 
 class TestUnscopedSecretReadLogging:

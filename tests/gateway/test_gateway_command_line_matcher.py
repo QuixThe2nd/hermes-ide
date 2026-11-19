@@ -23,6 +23,7 @@ ACCEPT = [
     "python -m hermes_cli.main --profile work gateway run",
     "python -m hermes_cli.main gateway run --replace",
     "python -m hermes_cli/main.py gateway run",
+    "/opt/hermes/.venv/bin/python -m gateway.run",
     "python gateway/run.py",
     "hermes-gateway.exe",
     "hermes gateway",          # bare `hermes gateway` defaults to run
@@ -43,6 +44,8 @@ ACCEPT = [
 
 REJECT = [
     "python -m tui_gateway",                              # unrelated module
+    "python -m gateway.run_other",
+    "python -m not_gateway.run",
     "python -m hermes_cli.main gateway status",           # other subcommand
     "python -m hermes_cli.main gateway restart",
     "python -m hermes_cli.main gateway stop",

@@ -88,9 +88,6 @@ models trim less aggressively in practice.
 - **`max_concurrent_children` is a per-parent cap, not a global cap.**
   Confirmed in `ui-tui/src/components/appChrome.tsx`. Two different
   parents can each spawn `max_children` workers concurrently.
-- **`subagent_auto_approve: false` does not cap concurrency.** It only
-  controls whether children inherit yolo / approval bypass. Don't mistake
-  it for a throttle.
 - **The cost-warning log fires on every call** when the value is > 10.
   Don't take its presence as evidence that anything was capped — only
   the `Truncated...` and `Too many tasks` lines indicate actual capping.

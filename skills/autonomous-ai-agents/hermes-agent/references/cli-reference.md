@@ -17,7 +17,6 @@ hermes [flags] [command]        (no subcommand = interactive chat)
   --worktree, -w            Isolated git worktree mode (parallel agents)
   --skills, -s SKILL        Preload skills (comma-separate or repeat)
   --profile, -p NAME        Use a named profile
-  --yolo                    Skip dangerous command approval
   --tui / --cli             Force the Ink TUI / classic REPL
   --ignore-rules            Skip AGENTS.md/SOUL.md/memory/skill injection
   --safe-mode               Disable ALL customizations (troubleshooting)
@@ -40,11 +39,11 @@ hermes chat [flags]
 ### Configuration
 
 ```
-hermes setup [section]      Wizard (model|tts|terminal|gateway|tools|agent)
+hermes setup [section]      Wizard (model|terminal|gateway|tools|agent)
 hermes model                Interactive model/provider picker
 hermes fallback [add|remove|list]  Fallback provider chain
 hermes config [show|edit|get|set|unset|path|env-path|check|migrate]
-hermes login / logout       OAuth sign-in / clear stored auth
+hermes logout               Clear stored auth
 hermes doctor [--fix]       Check dependencies and config
 hermes status [--all]       Component status
 ```
@@ -78,7 +77,7 @@ Details (transport, tool discovery, catalog): `references/native-mcp.md`.
 hermes gateway run|install|start|stop|restart|status|setup
 ```
 
-20+ platforms: Telegram, Discord, Slack, WhatsApp (Baileys + Business Cloud API), iMessage (Photon — `hermes photon setup`), Signal, Email, SMS, Matrix, Mattermost, Teams, LINE, SimpleX, ntfy, Google Chat, Home Assistant, DingTalk, Feishu, WeCom, Weixin, API Server, Webhooks. Open WebUI connects via the API Server adapter. Most adapters ship under `plugins/platforms/`.
+20+ platforms: Discord, Slack, WhatsApp (Baileys + Business Cloud API), iMessage (Photon — `hermes photon setup`), Signal, Email, SMS, Matrix, Mattermost, Teams, LINE, SimpleX, ntfy, Google Chat, Home Assistant, DingTalk, Feishu, WeCom, Weixin, API Server, Webhooks. Open WebUI connects via the API Server adapter. Most adapters ship under `plugins/platforms/`.
 Docs: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/
 
 ### Sessions
@@ -108,7 +107,7 @@ hermes profile migrate-identity A B   Retry a completed rename's session/routing
 
 ```
 hermes auth                 Interactive credential manager
-hermes auth add [PROVIDER]  Add OAuth or API-key credential (nous, openai-codex, qwen-oauth, …)
+hermes auth add [PROVIDER]  Add OAuth or API-key credential (openai-codex, qwen-oauth, …)
 hermes auth list|remove P IDX|reset PROVIDER|status
 ```
 Multiple credentials per provider form a pool that rotates automatically and skips exhausted keys.
@@ -116,14 +115,9 @@ Multiple credentials per provider form a pool that rotates automatically and ski
 ### Other
 
 ```
-hermes desktop / gui        Native desktop app
-hermes dashboard            Web admin panel + embedded chat (--stop / --status)
 hermes proxy                OpenAI-compatible local proxy backed by an OAuth provider
-hermes portal               Quick setup / sign in via Nous Portal
-hermes kanban <verb>        Multi-agent work-queue board
 hermes project              Named multi-folder workspaces
 hermes skin list|use|set    Switch/tweak skins (see references/themes.md)
-hermes pets <verb>          Pet mascots (see references/petdex.md)
 hermes memory setup|status|off|reset   Memory provider
 hermes secrets bitwarden|onepassword   External secret stores
 hermes moa                  Mixture-of-Agents slots

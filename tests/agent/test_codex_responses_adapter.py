@@ -903,6 +903,54 @@ def _final_text_response(text):
     )
 
 
+def test_normalize_codex_response_recovers_only_exact_interruption_placeholder():
+    from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+
+    placeholder, placeholder_finish = _normalize_codex_response(
+        _final_text_response(_INTERRUPTED_PLACEHOLDER), issuer_kind="codex_backend"
+    )
+    explanation, explanation_finish = _normalize_codex_response(
+        _final_text_response(f"The literal text {_INTERRUPTED_PLACEHOLDER} is reserved."),
+        issuer_kind="codex_backend",
+    )
+
+    assert placeholder_finish == "incomplete"
+    assert placeholder.content == _INTERRUPTED_PLACEHOLDER
+    assert placeholder.codex_message_items
+    assert explanation_finish == "stop"
+    assert explanation.content == f"The literal text {_INTERRUPTED_PLACEHOLDER} is reserved."
+
+
+def test_normalize_codex_response_placeholder_preserves_tool_call_precedence():
+    from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+
+    response = _final_text_response(_INTERRUPTED_PLACEHOLDER)
+    response.output.append(SimpleNamespace(
+        type="function_call", id="fc_1", call_id="call_1", name="terminal",
+        arguments="{}", status="completed",
+    ))
+
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind="codex_backend"
+    )
+
+    assert finish_reason == "tool_calls"
+    assert len(assistant_message.tool_calls) == 1
+    assert assistant_message.tool_calls[0].function.name == "terminal"
+
+
+def test_normalize_codex_response_placeholder_preserves_content_filter_precedence():
+    from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+
+    response = _final_text_response(_INTERRUPTED_PLACEHOLDER)
+    response.status = "incomplete"
+    response.incomplete_details = SimpleNamespace(reason="content_filter")
+
+    _, finish_reason = _normalize_codex_response(response, issuer_kind="codex_backend")
+
+    assert finish_reason == "content_filter"
+
+
 @pytest.mark.parametrize("text", [
     'Creating the PowerShell script now.\n{"cmd": "mkdir -p /c/Temp && cat > /c/Temp/x.ps1 <<\'EOF\'"}',
     'Sure, let me run the tests.\n{"cmd": "pytest -q", "workdir": "/repo", "timeout": 120}',
@@ -999,3 +1047,98 @@ def test_codex_preflight_passes_text_verbosity_through():
     assert _preflight_codex_api_kwargs(dict(kwargs))["text"] == {"verbosity": "low"}
     # An empty block is dropped, like the other optional fields, instead of rejected.
     assert "text" not in _preflight_codex_api_kwargs({**kwargs, "text": {}})
+
+
+def test_preflight_accepts_leading_system_item_and_drops_empty_instructions():
+    """Bridged Responses routes carry the system prompt as the leading input item; an
+    empty ``instructions`` must be dropped (not swapped for the default identity, which
+    would emit a second system row that can capture the bridge's cache_control
+    injection and leave the real prompt uncached)."""
+    kwargs = {
+        "model": "hermes",
+        "instructions": "",
+        "input": [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "hello"},
+        ],
+        "store": False,
+    }
+    normalized = _preflight_codex_api_kwargs(kwargs)
+    assert "instructions" not in normalized
+    assert normalized["input"][0] == {"role": "system", "content": "You are Hermes."}
+    assert normalized["input"][1] == {"role": "user", "content": "hello"}
+    # Re-preflighting an already-normalized payload (retry/fallback paths) is idempotent.
+    assert _preflight_codex_api_kwargs(dict(normalized)) == normalized
+
+
+def test_preflight_accepts_missing_instructions_with_leading_system_item():
+    kwargs = {
+        "model": "hermes",
+        "input": [{"role": "system", "content": "You are Hermes."}],
+        "store": False,
+    }
+    normalized = _preflight_codex_api_kwargs(kwargs)
+    assert "instructions" not in normalized
+    assert normalized["input"][0]["role"] == "system"
+
+
+def test_preflight_rejects_system_item_outside_leading_position():
+    kwargs = {
+        "model": "hermes",
+        "instructions": "",
+        "input": [
+            {"role": "user", "content": "hello"},
+            {"role": "system", "content": "You are Hermes."},
+        ],
+        "store": False,
+    }
+    with pytest.raises(ValueError, match="system"):
+        _preflight_codex_api_kwargs(kwargs)
+
+
+def test_preflight_rejects_blank_leading_system_item():
+    kwargs = {
+        "model": "hermes",
+        "instructions": "",
+        "input": [{"role": "system", "content": "   "}, {"role": "user", "content": "x"}],
+        "store": False,
+    }
+    with pytest.raises(ValueError, match="system"):
+        _preflight_codex_api_kwargs(kwargs)
+
+
+def test_preflight_keeps_nonempty_instructions_alongside_system_item():
+    """A caller that sets both keeps its ``instructions`` — preflight never silently
+    discards a non-empty field; the transport is the single owner of the layout."""
+    kwargs = {
+        "model": "hermes",
+        "instructions": "explicit",
+        "input": [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "hello"},
+        ],
+        "store": False,
+    }
+    normalized = _preflight_codex_api_kwargs(kwargs)
+    assert normalized["instructions"] == "explicit"
+    assert normalized["input"][0]["role"] == "system"
+
+
+def test_preflight_empty_instructions_without_system_item_keeps_identity_fallback():
+    """The historical contract for every route that carries the system prompt in
+    ``instructions``: an empty value still falls back to the default identity."""
+    from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+
+    kwargs = {
+        "model": "gpt-5.5",
+        "instructions": "",
+        "input": [{"role": "user", "content": "hello"}],
+        "store": False,
+    }
+    assert _preflight_codex_api_kwargs(kwargs)["instructions"] == DEFAULT_AGENT_IDENTITY
+
+
+def test_preflight_rejects_missing_instructions_without_system_item():
+    kwargs = {"model": "gpt-5.5", "input": [{"role": "user", "content": "x"}], "store": False}
+    with pytest.raises(ValueError, match="instructions"):
+        _preflight_codex_api_kwargs(kwargs)

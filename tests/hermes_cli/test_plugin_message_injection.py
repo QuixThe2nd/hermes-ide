@@ -75,7 +75,7 @@ def test_gateway_injection_requires_explicit_permission(tmp_path, monkeypatch):
     assert (
         context.inject_message(
             "wake up",
-            session_key="agent:main:telegram:dm:42",
+            session_key="agent:main:discord:dm:42",
         )
         is False
     )
@@ -95,7 +95,7 @@ def test_gateway_injection_does_not_treat_string_as_permission(tmp_path, monkeyp
     assert (
         context.inject_message(
             "wake up",
-            session_key="agent:main:telegram:dm:42",
+            session_key="agent:main:discord:dm:42",
         )
         is False
     )
@@ -114,7 +114,7 @@ def test_gateway_injection_fails_closed_when_config_cannot_be_read():
         assert (
             context.inject_message(
                 "wake up",
-                session_key="agent:main:telegram:dm:42",
+                session_key="agent:main:discord:dm:42",
             )
             is False
         )
@@ -134,7 +134,7 @@ def test_gateway_injection_requires_live_host(tmp_path, monkeypatch):
     assert (
         context.inject_message(
             "wake up",
-            session_key="agent:main:telegram:dm:42",
+            session_key="agent:main:discord:dm:42",
         )
         is False
     )
@@ -153,12 +153,12 @@ def test_gateway_injection_passes_host_owned_plugin_identity(tmp_path, monkeypat
     result = context.inject_message(
         "wake up",
         role="system",
-        session_key="agent:main:telegram:dm:42",
+        session_key="agent:main:discord:dm:42",
     )
 
     assert result is True
     injector.assert_called_once_with(
-        session_key="agent:main:telegram:dm:42",
+        session_key="agent:main:discord:dm:42",
         content="[system] wake up",
         plugin_id="notify-plugin",
     )
@@ -179,7 +179,7 @@ def test_gateway_injection_returns_host_rejection(tmp_path, monkeypatch):
     assert (
         context.inject_message(
             "wake up",
-            session_key="agent:main:telegram:dm:42",
+            session_key="agent:main:discord:dm:42",
         )
         is False
     )
@@ -198,7 +198,7 @@ def test_gateway_injection_fails_closed_on_host_exception(tmp_path, monkeypatch)
     assert (
         context.inject_message(
             "wake up",
-            session_key="agent:main:telegram:dm:42",
+            session_key="agent:main:discord:dm:42",
         )
         is False
     )

@@ -101,8 +101,8 @@ async def test_rename_thread_carries_the_no_clobber_guard():
     assert action["message_id"] == "th1"
     assert action["thread_name"] == "Fix the build"
     assert action["only_if_current_name"] == "Hermes"
-    # chat_id defaults to the thread id (Discord ignores it; Telegram callers
-    # pass parent_chat_id explicitly).
+    # chat_id defaults to the thread id (platforms that key threads by their
+    # own id ignore it; callers pass parent_chat_id explicitly).
     assert action["chat_id"] == "th1"
 
 
@@ -195,7 +195,7 @@ def test_event_from_wire_reply_to_absent_and_partial():
         {
             "text": "hi",
             "message_type": "text",
-            "source": {"platform": "telegram", "chat_id": "5", "chat_type": "dm"},
+            "source": {"platform": "discord", "chat_id": "5", "chat_type": "dm"},
         }
     )
     assert plain.reply_to_text is None

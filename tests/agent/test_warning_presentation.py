@@ -36,7 +36,7 @@ def test_warning_policy_at_real_presentation_boundary(tmp_path, monkeypatch, set
     assert len(callbacks) == 3
 
 
-@pytest.mark.parametrize("platform", ["cli", "tui", "api_server", "slack", "telegram"])
+@pytest.mark.parametrize("platform", ["cli", "tui", "api_server", "slack", "discord"])
 def test_canonical_policy_has_no_raw_surface_exemption(platform):
     from gateway.warning_notifications import warning_notifications_enabled
     assert not warning_notifications_enabled(platform, {"display": {"suppress_warning_notifications": True}})
@@ -144,7 +144,7 @@ def test_missing_key_banner_is_classified_without_hiding_initialization(tmp_path
     monkeypatch.setattr(agent_init, "_explicit_client_kwargs",
                         lambda *a: {"api_key": "dummy-key", "base_url": agent.base_url})
     monkeypatch.setattr(agent_init, "_apply_openai_header_policy", lambda *a: None)
-    monkeypatch.setattr("agent.ssl_guard.verify_ca_bundle", lambda: None)
+    monkeypatch.setattr("agent.ssl_verify.install_truststore", lambda: None)
     agent_init._init_openai_client(agent, "dummy-key", agent.base_url, None, 30)
     output = capsys.readouterr().out
     assert ("API key appears invalid or missing" in output) is (suppress is not True)

@@ -5,8 +5,8 @@ others drop it. OSC 777 (``ESC ] 777 ; notify ; warp://cli-agent ; <json> BEL``)
 structured CLI-agent protocol (tab status + notification mailbox).
 
 Inside the running CLI, ``HermesCLI._ring_bell`` sends ``notification_sequence()`` through the
-prompt_toolkit output on the app loop (a second writer on the tty would splice into an in-flight kitty
-pet frame). ``write_tty`` is the no-app path: ``/dev/tty`` because ``patch_stdout``'s wrapper strips raw
+prompt_toolkit output on the app loop so a second writer cannot splice into in-flight terminal output.
+``write_tty`` is the no-app path: ``/dev/tty`` because ``patch_stdout``'s wrapper strips raw
 escapes, falling back to ``sys.stdout`` when ``/dev/tty`` can't be opened (Windows, no controlling
 terminal). Never raises.
 """

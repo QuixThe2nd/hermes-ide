@@ -17,14 +17,14 @@ NOT on the FINAL chunk (line 4853-4854: ``if _len(prefix) + _len(remaining)
 skips the fence-closing check that intermediate chunks get at line 4904-4922).
 
 Test categories:
-  A. truncate_message — reasoning-fence format (basic)
+  A. truncate_message — fenced content (basic)
   B. truncate_message — unclosed fence (content ≤ max_length → passes through)
   C. truncate_message — multiple alternating ``` blocks
   D. truncate_message — last chunk gap (intermediate closes, final may not)
   E. _filter_and_accumulate — preserves ``` outside think blocks
   F. _split_text_chunks — NO fence tracking (GAP)
-  G. Reasoning truncation — short content (passes through unfixed)
-  H. Reasoning truncation — long content (intermediate closed, last may not)
+  G. Fenced-content truncation — short content (passes through unfixed)
+  H. Fenced-content truncation — long content (intermediate closed, last may not)
   I. Integration: what a fix would look like
 """
 
@@ -62,7 +62,7 @@ def _assert_balanced(chunks, label="chunk"):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  A. truncate_message — reasoning-fence format (short content)
+#  A. truncate_message — fenced-content format (short content)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestTruncateMessageShort:
@@ -71,7 +71,7 @@ class TestTruncateMessageShort:
 
     def test_short_unclosed_fence_passes_through(self):
         """Short content with unclosed ``` is returned as-is (no fix)."""
-        content = "💭 **Reasoning:**\n```\ncut off"
+        content = "Example output:\n```\ncut off"
         result = BasePlatformAdapter.truncate_message(content, 500)
         assert result == [content]
         assert _odd_fences(result[0]), "Short unclosed content stays unclosed"
@@ -88,7 +88,7 @@ class TestTruncateMessageIntermediateCloses:
     def test_split_inside_fence_closes_first_chunk(self):
         """First split lands inside ``` → first chunk gets closing fence."""
         body = "\n".join(f"line{i}" for i in range(50))
-        content = f"💭 **Reasoning:**\n```\n{body}\n```\nDone."
+        content = f"Example output:\n```\n{body}\n```\nDone."
         max_len = 150
         chunks = BasePlatformAdapter.truncate_message(content, max_len)
         assert len(chunks) >= 2
@@ -211,17 +211,17 @@ class TestSplitTextChunks:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  G. Reasoning truncation — model cut off mid-reasoning-block
+#  G. Fenced-content truncation — model cut off mid-block
 # ═══════════════════════════════════════════════════════════════════════════
 
-class TestReasoningTruncation:
-    """When the model runs out of tokens mid-reasoning-block."""
+class TestFencedContentTruncation:
+    """When the model runs out of tokens mid-fenced-block."""
 
     DISCORD_LIMIT = 2000
 
     def test_short_truncation_unfixed(self):
         """Fits in one message → truncate_message passes through unfixed."""
-        truncated = "💭 **Reasoning:**\n```\nI was thinking about"
+        truncated = "Example output:\n```\nI was thinking about"
         chunks = BasePlatformAdapter.truncate_message(truncated, self.DISCORD_LIMIT)
         assert chunks == [truncated]
         assert _odd_fences(chunks[0])

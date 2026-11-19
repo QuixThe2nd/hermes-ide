@@ -15,6 +15,16 @@ from unittest.mock import patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _capture_selection(monkeypatch):
+    import hermes_cli.plugins_cmd as pc
+    from hermes_cli import plugins_admission
+    def save(enabled, disabled, **kwargs):
+        pc._save_enabled_set(enabled)
+        pc._save_disabled_set(disabled)
+    monkeypatch.setattr(plugins_admission, "admit_plugin_set_change", save)
+
+
 def _make_plugin_dir(parent: Path, name: str, manifest: dict) -> Path:
     d = parent / name
     d.mkdir(parents=True, exist_ok=True)

@@ -108,20 +108,11 @@ def _bundle_package_names() -> list[str]:
     return names
 
 
-def _drop_unloadable_runtime_files(store_dir: Path) -> None:
-    """Drop the x64 VC runtime that python-build-standalone ships beside ARM64 Python."""
-    if current_target() != "win32-arm64":
-        return
-    facts = _facts()
-    facts.reload()
-    python = facts.get("python")
-    if python and "entry" in python:
-        (store_dir / python["entry"] / "vcruntime140_1.dll").unlink(missing_ok=True)
-
-
 def cmd_install(args) -> int:
+    # Source-install launchers require the store interpreter, even though
+    # Python remains optional when provisioning individual tools.
     names = args.names or [
-        n for n in _lockfile().names() if not get_package(n).optional
+        n for n in _lockfile().names() if not get_package(n).optional or n == "python"
     ]
     failed = _install_names(names)
     if not args.names:
@@ -150,7 +141,7 @@ def cmd_env(args) -> int:
 
 
 def cmd_doctor(args) -> int:
-    from pm.ensure import _identity
+    from pm.ensure import _identity, _installed_location
     from pm.store import tree_digest
 
     lockfile = _lockfile()
@@ -164,6 +155,7 @@ def cmd_doctor(args) -> int:
         if reason is not None:
             print(f"- {name}: n/a on {target} ({reason})")
             continue
+        facts, store = _installed_location(package, lockfile, target) or (_facts(), _store())
         fact = facts.get(name)
         soft = package.optional or package.internal
         identity = _identity(lockfile, name, target)
@@ -359,10 +351,16 @@ def _gc_store(store, facts) -> tuple[int, int]:
 
 
 def cmd_gc(args) -> int:
-    facts = _facts()
-    store = _store()
+    from pm.paths import writable_store_root
+    from pm.lock import Facts
+    from pm.store import Store
+    store = Store(writable_store_root())
+    facts = _facts() if store.root == _store().root else Facts(store.root / "facts.json")
     removed, kept = _gc_store(store, facts)
-    print(f"gc: removed {removed}, kept {kept}")
+    from hermes_cli.runtime_state import collect_generations
+    from pm.paths import repo_root
+    generations = collect_generations(repo_root())
+    print(f"gc: removed {removed}, kept {kept}; removed {len(generations)} dependency generations")
     return 0
 
 
@@ -575,14 +573,11 @@ def cmd_bundle(args) -> int:
     print(f"✓ repo ({ref})")
 
     os.environ["HERMES_RUNTIME_DIR"] = str(store_dir)
-    paths._stamp.cache_clear()
 
-    failed = 0
     names = _bundle_package_names()
-    failed += _install_names(
+    failed = _install_names(
         [n for n in names if get_package(n).missing_reason(current_target()) is None]
     )
-    _drop_unloadable_runtime_files(store_dir)
 
     # Prune the staged store BEFORE the venv sync and packaging: drop the
     # fetch-<sha> download-cache archives (needed only at install time — dead

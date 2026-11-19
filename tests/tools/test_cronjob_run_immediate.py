@@ -43,9 +43,9 @@ class TestCronjobRunExecutesImmediately:
         m_run.assert_called_once_with(claimed, adapters=None, loop=None, extra_prompt=None)
 
     def test_run_reconciles_external_provider_after_claimed_execution(self):
-        """A direct run must re-arm Chronos after it advances next_run_at.
+        """A direct run must re-arm the external provider after it advances next_run_at.
 
-        Otherwise a scheduled Chronos fire that loses its claim to this direct
+        Otherwise a scheduled external fire that loses its claim to this direct
         run is consumed without a successor one-shot, permanently stalling the
         recurring job.
         """
@@ -303,7 +303,7 @@ class TestManualRunReportsDeliveryFailure:
             "id": "job-run-1",
             "last_status": "delivery_failed",
             "last_error": None,
-            "last_delivery_error": "live adapter send failed: 502 (target telegram:123)",
+            "last_delivery_error": "live adapter send failed: 502 (target discord:123)",
         }
         with patch("tools.cronjob_tools.claim_job_for_fire",
                    return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \

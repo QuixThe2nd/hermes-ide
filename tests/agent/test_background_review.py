@@ -62,7 +62,7 @@ class FakeReviewAgent:
 def _bare_agent() -> AIAgent:
     agent = object.__new__(AIAgent)
     agent.model = "fake-model"
-    agent.platform = "telegram"
+    agent.platform = "discord"
     agent.provider = "openai"
     agent.base_url = ""
     agent.api_key = ""

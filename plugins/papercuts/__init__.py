@@ -46,7 +46,6 @@ _MAX_TEXT = {
     "workaround": 2_000,
     "suggested_fix": 2_000,
     "component": 120,
-    "note": 1_000,
 }
 
 
@@ -61,7 +60,7 @@ PAPERCUTS_SCHEMA = {
         "transient error that immediately succeeded on retry, expected approval "
         "boundaries, user mistakes, or speculative complaints. At most one new "
         "papercut is accepted per user turn. Use list/stats for review and "
-        "resolve/ignore only when the item has actually been addressed or triaged."
+        "resolve/ignore only when the item has actually been addressed or triaged. "
     ),
     "parameters": {
         "type": "object",
@@ -197,8 +196,10 @@ def _clean_text(name: str, value: Any, *, required: bool = False) -> str:
     text = str(value or "").strip()
     if required and not text:
         raise ValueError(f"{name} is required")
-    limit = _MAX_TEXT[name]
-    if len(text) > limit:
+    # Notes remain intact in the journal and on Discord; hermes_starts splits
+    # their delivery into message-sized parts instead of truncating them here.
+    limit = _MAX_TEXT.get(name)
+    if limit is not None and len(text) > limit:
         text = text[: limit - 1].rstrip() + "…"
     try:
         from agent.redact import redact_sensitive_text
@@ -253,7 +254,7 @@ def _metadata(kwargs: Dict[str, Any]) -> Dict[str, Any]:
 
 def _read_events_unlocked() -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
-    with _events_path().open("r", encoding="utf-8") as fh:
+    with _events_path().open("r", encoding="utf-8-sig") as fh:
         for line_no, line in enumerate(fh, 1):
             line = line.strip()
             if not line:
@@ -310,6 +311,14 @@ def _fold(events: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
                 item.pop("closing_note", None)
         elif kind in {"resolve", "ignore"}:
             item["status"] = "resolved" if kind == "resolve" else "ignored"
+            item["closed_at"] = event.get("ts")
+            item["closing_note"] = event.get("note", "")
+        elif kind == "stage" and str(event.get("stage") or "") == "closed":
+            # Legacy journals from the removed per-papercut thread lifecycle
+            # carry stage/steer events. Only the closed transition is state:
+            # a papercut the old advance-to-closed path resolved must not
+            # resurrect as open. Every other stage/steer event is ignored.
+            item["status"] = "resolved"
             item["closed_at"] = event.get("ts")
             item["closing_note"] = event.get("note", "")
     return items
@@ -390,7 +399,7 @@ def _handle_log(args: Dict[str, Any], kwargs: Dict[str, Any]) -> str:
                 **meta,
             }
             _append_event_unlocked(event)
-            folded = _fold([*events, event])[item_id]
+            folded = _fold(_read_events_unlocked())[item_id]
             return _json(
                 {
                     "success": True,

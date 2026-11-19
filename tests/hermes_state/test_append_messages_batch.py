@@ -207,12 +207,9 @@ class TestShadowedCheckpointRowsArePruned:
 
     @staticmethod
     def _agent(db):
-        from agent.session_persistence import SessionPersistenceMixin
+        from run_agent import AIAgent
 
-        class _Agent(SessionPersistenceMixin):
-            pass
-
-        agent = _Agent()
+        agent = object.__new__(AIAgent)
         agent._session_db, agent._session_db_created, agent.session_id = db, True, "sess-batch"
         agent._last_flushed_db_idx, agent._flushed_db_message_ids = 0, set()
         agent._flushed_db_message_session_id, agent._persist_disabled = None, False

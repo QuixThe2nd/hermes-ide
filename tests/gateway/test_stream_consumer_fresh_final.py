@@ -4,7 +4,7 @@ Ported from openclaw/openclaw#72038.  When a streamed preview has been
 visible long enough that the platform's edit timestamp would be
 noticeably stale by completion time, the stream consumer delivers the
 final reply as a brand-new message and best-effort deletes the old
-preview.  This makes Telegram's visible timestamp reflect completion
+preview.  This makes the platform's visible timestamp reflect completion
 time instead of first-token time.
 """
 
@@ -176,7 +176,7 @@ class TestCancelledBestEffortDeliveryFinalizes:
     The gateway cancels the consumer shortly after finish(). The
     CancelledError handler re-delivers the accumulated text; previously it
     did so with finalize=False, so REQUIRES_EDIT_FINALIZE platforms
-    (Telegram) kept the plain streaming preview — the whole final reply
+    kept the plain streaming preview — the whole final reply
     rendered with raw markdown markers — while the success flags still
     suppressed the gateway's formatted re-send.
     """
@@ -446,20 +446,3 @@ class TestStreamingConfigFreshFinalField:
             "fresh_final_after_seconds": 0,
         })
         assert cfg.fresh_final_after_seconds == 0.0
-
-
-class TestTelegramAdapterDeleteMessage:
-    """Contract: Telegram adapter implements ``delete_message``."""
-
-    def test_delete_message_method_exists(self):
-        telegram = pytest.importorskip("plugins.platforms.telegram.adapter")
-        import inspect
-        cls = telegram.TelegramAdapter
-        assert hasattr(cls, "delete_message"), (
-            "TelegramAdapter.delete_message is required for the fresh-final "
-            "cleanup path (openclaw/openclaw#72038 port)."
-        )
-        sig = inspect.signature(cls.delete_message)
-        params = list(sig.parameters)
-        assert params[:3] == ["self", "chat_id", "message_id"]
-

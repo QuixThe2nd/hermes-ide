@@ -1,8 +1,8 @@
 """Tests for the store-level CAS fire claim (Phase 4C).
 
 `claim_job_for_fire` gives multi-machine at-most-once semantics when an external
-scheduler (Chronos) fires a job: across N gateway replicas, exactly ONE wins the
-claim for a given fire. Single-machine deployments always win (unaffected).
+provider fires a job: across N gateway replicas, exactly ONE wins the claim for
+a given fire. Single-machine deployments always win (unaffected).
 
 These exercise the real store against a temp HERMES_HOME (no mocks) per the
 E2E-over-mocks discipline for file-touching code.
@@ -319,7 +319,7 @@ def test_claim_seconds_before_the_slot_owns_it_once(temp_home, monkeypatch):
     claimed = jobs.claim_job_for_fire(job["id"], return_job=True)
     assert claimed["_scheduled_instant"] == scheduled_instant(slot)
     row = executions.create_execution(
-        job["id"], source="chronos", scheduled_instant=claimed["_scheduled_instant"])
+        job["id"], source="external", scheduled_instant=claimed["_scheduled_instant"])
     executions.finish_execution(row["id"], success=True)
     jobs.mark_job_run(job["id"], True)
 

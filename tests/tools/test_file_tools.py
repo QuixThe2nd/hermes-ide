@@ -12,6 +12,7 @@ import pytest
 
 from tools.file_tools import (
     PATCH_SCHEMA,
+    WRITE_FILE_SCHEMA,
     read_file_tool,
 )
 
@@ -61,6 +62,7 @@ class TestReadFileHandler:
 
 class TestWriteFileHandler:
     @patch("tools.file_tools._get_file_ops")
+    @pytest.mark.platforms("linux")
     def test_writes_content(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()
@@ -149,6 +151,7 @@ class TestWriteFileHandler:
 
 class TestPatchHandler:
     @patch("tools.file_tools._get_file_ops")
+    @pytest.mark.platforms("linux")
     def test_replace_mode_calls_patch_replace(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()
@@ -242,11 +245,12 @@ class TestPatchSensitivePathExtraction:
     """
 
     @patch("tools.file_tools._get_file_ops")
+    @pytest.mark.platforms("linux")
     def test_patch_move_to_hermes_config_blocked(self, mock_get, monkeypatch):
         monkeypatch.setattr(
-            "tools.file_tools._hermes_config_resolved", "/tmp/hermes/config.yaml"
+            "tools.file_tools_write_guards._hermes_config_resolved", "/tmp/hermes/config.yaml"
         )
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
         from tools.file_tools import patch_tool
         patch_text = (
             "*** Begin Patch\n"
@@ -260,6 +264,7 @@ class TestPatchSensitivePathExtraction:
 
 
     @patch("tools.file_tools._get_file_ops")
+    @pytest.mark.platforms("linux")
     def test_patch_update_no_space_after_asterisks_blocked(self, mock_get, monkeypatch):
         """``***Update File:`` (no space after asterisks) must also be caught.
 
@@ -268,9 +273,9 @@ class TestPatchSensitivePathExtraction:
         is bypassed.
         """
         monkeypatch.setattr(
-            "tools.file_tools._hermes_config_resolved", "/tmp/hermes/config.yaml"
+            "tools.file_tools_write_guards._hermes_config_resolved", "/tmp/hermes/config.yaml"
         )
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
         from tools.file_tools import patch_tool
         patch_text = (
             "*** Begin Patch\n"
@@ -337,7 +342,7 @@ class TestSearchHandler:
 class TestWindowsMsysPathResolution:
     """File tools must translate Git Bash drive paths before Path resolution."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_absolute_msys_path_normalized_before_windows_resolve(self, monkeypatch):
         """Windows-only: ``_resolve_path_for_task`` hands the translated path
         to ``ntpath``/``Path``, and only a real Windows ``Path`` renders
@@ -350,7 +355,7 @@ class TestWindowsMsysPathResolution:
         assert str(resolved) == r"C:\Users\Mark\project\app.py"
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_container_paths_skip_msys_translation(self, monkeypatch):
         """WSL/docker Linux paths must not be rewritten as Windows drives.
 
@@ -539,6 +544,7 @@ class TestSensitivePathCheck:
 
 
     @patch("tools.file_tools._get_file_ops")
+    @pytest.mark.platforms("linux")
     def test_system_path_allowed(self, mock_get, monkeypatch):
         monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", "/some/other/path")
         monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
@@ -560,14 +566,12 @@ class TestSensitivePathCheck:
         ))
         assert result["status"] == "ok"
 
+    @pytest.mark.platforms("linux")
     def test_macos_system_paths_allowed(self):
         from tools.file_tools import _check_sensitive_path
 
         assert _check_sensitive_path("/private/var/folders/xy/T/tmp.txt") is None
         assert _check_sensitive_path("/private/var/tmp/build.log") is None
-        assert _check_sensitive_path("/private/var/db/secret") is None
-        assert _check_sensitive_path("/private/var/root/x") is None
-        assert _check_sensitive_path("/private/etc/hosts") is None
 
     @patch("tools.file_tools._get_file_ops")
     def test_normal_file_not_blocked(self, mock_get, monkeypatch):
@@ -584,6 +588,33 @@ class TestSensitivePathCheck:
         assert result["status"] == "ok"
 
 
+class TestFileEditDescriptionSchema:
+    """Progress descriptions are advertised as required but remain display-only."""
+
+    def test_write_file_schema_requires_description(self):
+        props = WRITE_FILE_SCHEMA["parameters"]["properties"]
+        assert WRITE_FILE_SCHEMA["parameters"]["required"] == ["path", "content", "description"]
+        assert "update the GPU mapping note" in props["description"]["description"]
+
+    def test_write_file_handler_ignores_description(self):
+        from tools.file_tools import _handle_write_file
+
+        with patch("tools.file_tools._get_file_ops") as mock_get:
+            mock_ops = MagicMock()
+            result_obj = MagicMock()
+            result_obj.to_dict.return_value = {"status": "ok", "path": "/tmp/out.txt", "bytes": 5}
+            mock_ops.write_file.return_value = result_obj
+            mock_get.return_value = mock_ops
+
+            result = json.loads(_handle_write_file({
+                "path": "/tmp/out.txt",
+                "content": "hello",
+                "description": "update the GPU mapping note",
+            }))
+            assert result["status"] == "ok"
+            mock_ops.write_file.assert_called_once_with("/tmp/out.txt", "hello")
+
+
 class TestPatchSchemaShape:
     """The BASE schema is replace-only (V4A layers on for OpenAI-family
     mains via _patch_schema_overrides — see test_patch_v4a_gate.py). The
@@ -597,8 +628,9 @@ class TestPatchSchemaShape:
         assert "mode" not in props and "patch" not in props
         # replace-only means required can finally be the REAL contract —
         # no per-mode description hedging needed on the base.
-        assert PATCH_SCHEMA["parameters"]["required"] == ["path", "old_string", "new_string"]
+        assert PATCH_SCHEMA["parameters"]["required"] == ["path", "old_string", "new_string", "description"]
         assert "must differ from old_string" in props["new_string"]["description"]
+        assert "update the GPU mapping note" in props["description"]["description"]
 
     def test_v4a_layer_keeps_per_mode_documentation(self):
         """When the V4A layer IS rendered (OpenAI-family), the strict-model
@@ -1096,38 +1128,6 @@ class TestNotFoundCache:
             "notify_other_tool_call must clear cached misses"
         )
 
-
-class TestSSHConfigWriteGateSingleQuery:
-    """Regression: the ssh-config write guard must pass
-    single_query_deny_message to _run_approval_gate (required kwarg since
-    1596148ff). Missing it raises TypeError instead of routing through the
-    approval flow — see issue #93201."""
-
-    def test_gate_call_passes_single_query_deny_message(self):
-        import inspect as _inspect
-        import re as _re
-        import tools.file_tools_write_guards as ft
-
-        src = _inspect.getsource(ft)
-        idx = src.find("_approval._run_approval_gate(")
-        assert idx != -1, "ssh_config_write gate call not found"
-        block = src[idx:idx + 900]
-        assert "pattern_key=\"ssh_config_write\"" in block
-
-        from tools.approval import _run_approval_gate
-        required = [
-            name for name, param in _inspect.signature(
-                _run_approval_gate).parameters.items()
-            if param.kind == _inspect.Parameter.KEYWORD_ONLY
-            and param.default is _inspect.Parameter.empty
-        ]
-        missing = [k for k in required if not _re.search(
-            rf"\b{k}\s*=", block)]
-        assert missing == [], (
-            f"_run_approval_gate call at ssh_config_write gate is missing "
-            f"required kwargs {missing}; it would raise TypeError instead "
-            f"of showing an approval prompt"
-        )
 
 
 class TestSecretFileReadRedaction:

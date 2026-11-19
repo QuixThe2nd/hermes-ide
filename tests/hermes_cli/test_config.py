@@ -37,21 +37,11 @@ from hermes_cli.config import (
 
 class TestGetHermesHome:
     def test_default_path(self):
+        from hermes_constants import _get_platform_default_hermes_home
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_HOME", None)
             home = get_hermes_home()
-            if sys.platform == "win32":
-                # Windows default is %LOCALAPPDATA%\hermes — see
-                # hermes_constants._get_platform_default_hermes_home.
-                local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
-                base = (
-                    Path(local_appdata)
-                    if local_appdata
-                    else Path.home() / "AppData" / "Local"
-                )
-                assert home == base / "hermes"
-            else:
-                assert home == Path.home() / ".hermes"
+            assert home == _get_platform_default_hermes_home()
 
 
 class TestEnsureHermesHome:
@@ -261,6 +251,37 @@ class TestEmptyConfigSections:
         assert merged["section"] == {"a": 1}
 
 
+class TestLegacyKanbanConfigStillLoads:
+    """Configs written while the Kanban feature existed carry a top-level ``kanban:``
+    section and ``kanban`` entries in the per-platform toolset disable lists. The feature
+    is gone, but those configs must still load and the stale toolset name must stay a
+    silent no-op instead of a startup failure."""
+
+    def test_load_config_tolerates_legacy_kanban_keys(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text(
+                "model:\n"
+                "  default: test/custom\n"
+                "kanban:\n"
+                "  enabled: true\n"
+                "  default_board: work\n"
+                "tools:\n"
+                "  discord:\n"
+                "    disabled: [kanban]\n"
+            )
+            config = load_config()
+            assert config["model"]["default"] == "test/custom"
+            assert config["kanban"] == {"enabled": True, "default_board": "work"}
+            assert config["tools"]["discord"]["disabled"] == ["kanban"]
+
+    def test_legacy_kanban_toolset_name_is_a_silent_no_op(self):
+        from toolsets import get_toolset, resolve_multiple_toolsets, resolve_toolset
+
+        assert not get_toolset("kanban")
+        assert resolve_toolset("kanban") == []
+        assert resolve_multiple_toolsets(["kanban"]) == []
+
+
 class TestSaveAndLoadRoundtrip:
     @staticmethod
     def _deny_config_reads(config_path):
@@ -321,7 +342,7 @@ class TestSaveAndLoadRoundtrip:
             "  provider: anthropic\n"
             "gateway:\n"
             "  platforms:\n"
-            "    telegram:\n"
+            "    discord:\n"
             "      enabled: true\n"
             "broken: [unterminated\n"
         )
@@ -717,8 +738,7 @@ class TestOptionalEnvVarsRegistry:
 class TestMemoryProviderEnvVarsRegistry:
     """Every memory provider that reads an API key from the environment must
     have that key catalogued in OPTIONAL_ENV_VARS so the dashboard Keys page
-    and `hermes setup` surface it (previously only Honcho was listed, leaving
-    Hindsight/Supermemory/Mem0/RetainDB/ByteRover/OpenViking invisible).
+    and `hermes setup` surface it.
 
     This is a behavior contract, not a snapshot: it asserts each provider's
     primary credential key is present, tool-categorised, and password-masked —
@@ -727,13 +747,7 @@ class TestMemoryProviderEnvVarsRegistry:
 
     # provider primary-credential env key -> the tool-call name it powers.
     MEMORY_PROVIDER_KEYS = {
-        "HONCHO_API_KEY": "honcho_context",
         "HINDSIGHT_API_KEY": "hindsight_recall",
-        "SUPERMEMORY_API_KEY": "supermemory_search",
-        "MEM0_API_KEY": "mem0_search",
-        "RETAINDB_API_KEY": "retaindb_search",
-        "BRV_API_KEY": "brv_query",
-        "OPENVIKING_API_KEY": "viking_search",
     }
 
     def test_memory_provider_keys_are_catalogued(self):
@@ -933,7 +947,7 @@ class TestConfigSupportFloor:
     _V12_FIXTURE = {
         "_config_version": 12,
         "model": {"default": "openai/gpt-5.4", "provider": "openrouter"},
-        "display": {"tool_progress_overrides": {"telegram": "verbose"}},
+        "display": {"tool_progress_overrides": {"discord": "verbose"}},
         "stt": {"model": "base", "provider": "local"},
         "compression": {"summary_model": "gpt-x", "summary_provider": "auto"},
         "model_catalog": {"ttl_hours": 24},
@@ -952,8 +966,8 @@ class TestConfigSupportFloor:
         "compression": {},
         "delegation": {"max_concurrent_children": 8},
         "display": {
-            "platforms": {"telegram": {"tool_progress": "verbose"}},
-            "tool_progress_overrides": {"telegram": "verbose"},
+            "platforms": {"discord": {"tool_progress": "verbose"}},
+            "tool_progress_overrides": {"discord": "verbose"},
         },
         "memory": {"write_approval": True},
         "model": {"default": "openai/gpt-5.4", "provider": "openrouter"},
@@ -1329,7 +1343,7 @@ class TestDiscordChannelPromptsConfig:
         # File must NOT be a defaults dump — assert specific DEFAULT_CONFIG
         # top-level keys are absent (they should only appear via load_config's
         # deep-merge, not be written to the user's file by migration).
-        for default_key in ("tts", "compression", "security", "whatsapp", "bedrock"):
+        for default_key in ("tts", "compression", "security", "whatsapp"):
             assert default_key not in raw, (
                 f"{default_key} should not be in migrated config file — "
                 f"migration should use read_raw_config() to avoid defaults dump"
@@ -1386,11 +1400,9 @@ class TestEnvWriteDenylist:
             "HERMES_OPTIONAL_MCPS",
             "HERMES_COPILOT_ACP_COMMAND",
             "HERMES_COPILOT_ACP_ARGS",
-            "HERMES_YOLO_MODE",
             "HERMES_ACCEPT_HOOKS",
             "HERMES_REDACT_SECRETS",
             "HERMES_INTERACTIVE",
-            "HERMES_EXEC_ASK",
             "HERMES_GATEWAY_SESSION",
             "HERMES_CRON_SESSION",
             "HERMES_SINGLE_QUERY_SESSION",
@@ -1399,7 +1411,7 @@ class TestEnvWriteDenylist:
         ],
     )
     def test_hermes_security_control_keys_are_not_writable(self, protected_key):
-        """Generic writers must not persist runtime or approval controls."""
+        """Generic writers must not persist runtime security controls."""
         with pytest.raises(ValueError, match="denylist"):
             save_env_value(protected_key, "1")
 
@@ -1422,7 +1434,7 @@ class TestEnvWriteDenylist:
         ("key", "expected"),
         [
             ("Path", "PATH"),
-            ("Hermes_Yolo_Mode", "HERMES_YOLO_MODE"),
+            ("Hermes_Accept_Hooks", "HERMES_ACCEPT_HOOKS"),
             ("Hermes_Optional_Mcps", "HERMES_OPTIONAL_MCPS"),
             ("Hermes_Copilot_Acp_Command", "HERMES_COPILOT_ACP_COMMAND"),
             ("Hermes_Copilot_Acp_Args", "HERMES_COPILOT_ACP_ARGS"),
@@ -1446,7 +1458,7 @@ class TestEnvWriteDenylist:
         assert _env_line_defines_key(line, "PATH", is_windows=True)
         assert not _env_line_defines_key(line, "PATH", is_windows=False)
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     @pytest.mark.parametrize(
         "protected_key",
         [
@@ -1559,7 +1571,7 @@ class TestMigrationWriteInvariant:
         # neither from per-version seeds nor the catch-all finalizer.
         for default_key in (
             "timezone", "curator", "auxiliary", "tts", "compression",
-            "whatsapp", "bedrock",
+            "whatsapp",
         ):
             assert default_key not in raw, (
                 f"{default_key} was materialised into a lean config by the "
@@ -1850,21 +1862,8 @@ class TestProviderEnabledRuntimeGate:
 
 
 # ---------------------------------------------------------------------------
-# DEFAULT_CONFIG must not carry a duplicate "kanban" key
+# DEFAULT_CONFIG must not carry duplicate top-level keys
 # ---------------------------------------------------------------------------
-
-def test_default_config_kanban_block_not_dropped_by_duplicate_key():
-    """DEFAULT_CONFIG previously declared ``"kanban"`` twice, so Python kept
-    only the second literal and silently dropped the first — losing the
-    ``auto_subscribe_on_create`` default. Both sets of defaults must survive.
-    """
-    kanban = DEFAULT_CONFIG["kanban"]
-    # From the first (dropped) block:
-    assert kanban.get("auto_subscribe_on_create") is True
-    # From the second block:
-    assert "dispatch_in_gateway" in kanban
-    assert "auto_decompose" in kanban
-
 
 def test_default_config_has_no_duplicate_top_level_keys():
     """Guard against any duplicate key silently shadowing a default."""
@@ -1876,7 +1875,7 @@ def test_default_config_has_no_duplicate_top_level_keys():
     for node in ast.walk(tree):
         if isinstance(node, ast.Dict):
             keys = [k.value for k in node.keys if isinstance(k, ast.Constant)]
-            if "model" in keys and "kanban" in keys:  # the DEFAULT_CONFIG literal
+            if "model" in keys and "agent" in keys:  # the DEFAULT_CONFIG literal
                 dupes = {k for k in keys if keys.count(k) > 1}
                 assert not dupes, f"duplicate DEFAULT_CONFIG keys: {sorted(dupes)}"
 

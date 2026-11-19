@@ -13,7 +13,10 @@ invocation styles, i.e. their host/session enables strict mode).
 
 The fix initializes ``$script:LastResolver = 'none'`` at script scope before
 ``Set-LongProfileEnvVars`` can run any resolver — ``'none'`` being the
-resolver's own value for "nothing ran".
+resolver's own value for "nothing ran". Since the upstream eeb3da55
+dot-source-guard port, the resolver run happens inside
+``Initialize-ResolvedPaths`` and only on real (non-dot-sourced) entry; the
+ordering contract below is unchanged.
 
 install.ps1 only runs on Windows, so these tests lock the contract at the
 source-text level (same style as test_install_ps1_uv_install_fallback.py).
@@ -44,7 +47,10 @@ def test_last_resolver_initialized_at_script_scope():
 def test_initialization_precedes_resolver_run_and_report_read():
     source = _ps1()
     init = re.search(r"^\$script:LastResolver = 'none'\s*$", source, re.MULTILINE)
-    run = re.search(r"^\$script:NormalizedProfilePaths = Set-LongProfileEnvVars", source, re.MULTILINE)
+    # The prologue call now lives inside Initialize-ResolvedPaths (upstream
+    # eeb3da55 dot-source-guard port), so it is function-indented; the
+    # ordering contract itself is unchanged.
+    run = re.search(r"^\s*\$script:NormalizedProfilePaths = Set-LongProfileEnvVars", source, re.MULTILINE)
     read = re.search(r"^\s+resolver\s+= \$script:LastResolver\s*$", source, re.MULTILINE)
     assert init and run and read, "init / Set-LongProfileEnvVars / report read must all exist"
     assert init.start() < run.start() < read.start(), (

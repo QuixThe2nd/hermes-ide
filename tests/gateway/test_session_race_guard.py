@@ -41,15 +41,13 @@ class _FakeAdapter:
 def _make_runner():
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="***")}
     )
-    runner.adapters = {Platform.TELEGRAM: _FakeAdapter()}
+    runner.adapters = {Platform.DISCORD: _FakeAdapter()}
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._session_run_generation = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
-    runner._voice_mode = {}
     runner._background_tasks = set()
     runner._draining = False
     runner._restart_requested = False
@@ -70,7 +68,7 @@ def _make_runner():
 
 def _make_event(text="hello", chat_id="12345"):
     source = SessionSource(
-        platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm",
+        platform=Platform.DISCORD, chat_id=chat_id, chat_type="dm",
         user_id="u1",
     )
     return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)
@@ -122,7 +120,7 @@ async def test_sentinel_placed_before_agent_setup():
 def test_merge_pending_message_event_merges_text_and_photo_followups():
     pending = {}
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="12345",
         chat_type="dm",
         user_id="u1",
@@ -152,50 +150,9 @@ def test_merge_pending_message_event_merges_text_and_photo_followups():
     assert merged.media_types == ["image/png"]
 
 
-@pytest.mark.asyncio
-async def test_recent_telegram_followups_append_in_pending_queue():
-    runner = _make_runner()
-    first = _make_event(text="part one")
-    second = _make_event(text="part two")
-    session_key = build_session_key(first.source)
-
-    fake_agent = MagicMock()
-    fake_agent.get_activity_summary.return_value = {"seconds_since_activity": 0}
-    runner._running_agents[session_key] = fake_agent
-    import time as _time
-    runner._running_agents_ts[session_key] = _time.time()
-
-    await runner._handle_message(first)
-    await runner._handle_message(second)
-
-    fake_agent.interrupt.assert_not_called()
-    adapter = runner.adapters[Platform.TELEGRAM]
-    assert adapter._pending_messages[session_key].text == "part one\npart two"
-
-
 # ------------------------------------------------------------------
 # Test 5: Sentinel not placed for command messages
 # ------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_start_command_is_noop_during_active_session():
-    """A mid-run /start must not interrupt the active agent or show commands."""
-    runner = _make_runner()
-    event = _make_event(text="/start")
-    session_key = build_session_key(event.source)
-
-    fake_agent = MagicMock()
-    fake_agent.get_activity_summary.return_value = {"seconds_since_activity": 0}
-    runner._running_agents[session_key] = fake_agent
-    runner._handle_help_command = AsyncMock(return_value="Help text")
-
-    result = await runner._handle_message(event)
-
-    assert result == ""
-    runner._handle_help_command.assert_not_awaited()
-    fake_agent.interrupt.assert_not_called()
-    assert session_key not in runner.adapters[Platform.TELEGRAM]._pending_messages
 
 
 @pytest.mark.asyncio
@@ -227,7 +184,7 @@ async def test_active_session_bypass_commands_dispatch_without_interrupt(
 
     assert result == handler_result
     fake_agent.interrupt.assert_not_called()
-    assert session_key not in runner.adapters[Platform.TELEGRAM]._pending_messages
+    assert session_key not in runner.adapters[Platform.DISCORD]._pending_messages
 
 
 # ------------------------------------------------------------------
@@ -267,7 +224,7 @@ async def test_stop_during_sentinel_force_cleans_session():
         )
 
         # Should NOT be queued as pending
-        adapter = runner.adapters[Platform.TELEGRAM]
+        adapter = runner.adapters[Platform.DISCORD]
         assert session_key not in adapter._pending_messages
 
         barrier.set()

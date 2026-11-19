@@ -55,7 +55,6 @@ let
         lib.genAttrs [
           "alibabacloud-credentials-api"
           "alibabacloud-endpoint-util"
-          "alibabacloud-gateway-dingtalk"
           "alibabacloud-gateway-spi"
           "alibabacloud-tea"
         ] (_: null)

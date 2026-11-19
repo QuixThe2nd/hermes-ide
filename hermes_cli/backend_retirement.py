@@ -9,6 +9,7 @@ import logging
 import secrets
 import threading
 import time
+from typing import Callable, Optional
 
 
 class RetirementFence:
@@ -57,7 +58,7 @@ class RetirementFence:
                 self.release()
 
     def prepare(self):
-        from hermes_cli.web_server_idle_proof import idle_proof
+        idle_proof = globals()["idle_proof"]
 
         with self._lock:
             self._expire()
@@ -101,3 +102,56 @@ class RetirementFence:
 
 
 retirement = RetirementFence()
+
+
+# --- Idle proof (moved from the removed dashboard's web_server_idle_proof /
+# web_server_idle_exit; backend retirement is the surviving consumer) ---
+
+_log = logging.getLogger(__name__)
+
+_probe_failure_logged = False
+
+
+
+
+def idle_proof(turn_probe: Callable[[], "bool | str | None"] = None) -> dict:
+    """Return whether no turn is in flight.
+
+    ``None`` means the turn ledger is indeterminate and retirement must stay blocked.
+    """
+    if turn_probe is None:
+        turn_probe = busy_ledger
+    turn = turn_probe()
+    if turn is None:
+        return {"idle": None, "reason": "turn_probe_unavailable"}
+    if turn:
+        return {"idle": False, "reason": "turn_in_flight", "detail": turn if isinstance(turn, str) else None}
+    return {"idle": True, "reason": None}
+
+
+
+def busy_ledger() -> Optional[str]:
+    """Name the ledger that holds work — ``"retirement_admission"``, ``"session:<id>"``,
+    ``"delegation"``, ``"cron:<job ids>"`` — ``""`` when every ledger is empty, ``None`` when one
+    cannot be read. The idle probe reports this so a backend that will not retire says
+    WHICH work it is protecting, instead of an opaque "turn in flight".
+
+    Cron runs live outside any session table (``cron.scheduler.get_running_job_ids``, the same
+    ledger the gateway shutdown drain reads): without it a daily job mid-run reported "no turn"
+    and the exit killed it (#107485). None keeps the backend alive forever, so the cause is
+    logged once — a silent never-exits would be the original bug with a new face."""
+    global _probe_failure_logged
+    try:
+        if retirement.active_count():
+            return "retirement_admission"
+        from tools.async_delegation import active_count
+        from cron.scheduler import get_running_job_ids
+        if active_count():
+            return "delegation"
+        running_jobs = get_running_job_ids()
+        return "cron:" + ",".join(sorted(running_jobs)) if running_jobs else ""
+    except Exception:
+        if not _probe_failure_logged:
+            _probe_failure_logged = True
+            _log.warning("idle-exit turn probe unavailable; this backend will not self-retire", exc_info=True)
+        return None

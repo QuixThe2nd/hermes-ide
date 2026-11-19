@@ -216,7 +216,7 @@ def _recover_gateway_restart_after_abort(
 
 def _warn_stale_serve_runtimes(rows) -> None:
     """Name the serve/dashboard processes still on pre-update code: ``hermes serve`` hosts
-    ``tui_gateway.server``, and an un-restarted unit keeps the pre-pull ``sys.modules`` graph so
+    the serve backend, and an un-restarted unit keeps the pre-pull ``sys.modules`` graph so
     every chat turn fails with an ``ImportError`` no gateway row explains."""
     if not rows:
         return

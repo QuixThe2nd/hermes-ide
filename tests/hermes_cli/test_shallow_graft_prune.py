@@ -94,7 +94,10 @@ def test_update_check_prunes_and_reports_count(tmp_path, monkeypatch, capsys):
     """`hermes update --check` prunes grafts after its depth-1 fetch and reports the prune."""
     import hermes_cli.update_cmd as update_cmd
 
-    fake_root = SimpleNamespace(PROJECT_ROOT=tmp_path)
+    fake_root = SimpleNamespace(
+        PROJECT_ROOT=tmp_path,
+        _get_origin_url=lambda *args: "https://github.com/example/custom-hermes.git",
+    )
     monkeypatch.setattr(update_cmd, "_m", lambda: fake_root)
     (tmp_path / ".git").mkdir()
     monkeypatch.setattr(
@@ -105,15 +108,14 @@ def test_update_check_prunes_and_reports_count(tmp_path, monkeypatch, capsys):
 
     def fake_git_run(git_cmd, args, **kwargs):
         joined = " ".join(args)
-        if "get-url" in joined and "upstream" in joined:
-            return MagicMock(returncode=1, stdout="", stderr="")  # no upstream remote
         if "fetch" in joined:
             return MagicMock(returncode=0, stdout="", stderr="")  # depth-1 fetch lands
         return MagicMock(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(update_cmd, "_git_run", fake_git_run)
     monkeypatch.setattr(update_cmd, "_base_git_cmd", lambda: ["git"])
-    monkeypatch.setattr("hermes_cli.banner._github_compare_behind", lambda *a, **k: 0)
+    compare = MagicMock(return_value=0)
+    monkeypatch.setattr("hermes_cli.banner._github_compare_behind", compare)
     prune_calls = []
     monkeypatch.setattr(
         "hermes_cli.gitlock.prune_stale_shallow_grafts",
@@ -124,4 +126,5 @@ def test_update_check_prunes_and_reports_count(tmp_path, monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert prune_calls == [tmp_path]
+    compare.assert_called_once_with(SHA_A, SHA_B, "example/custom-hermes")
     assert "pruned 2 stale shallow graft(s)" in out

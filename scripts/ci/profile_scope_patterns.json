@@ -14,8 +14,7 @@
       "C9": "systemd/launchd unit variants & migration transactionality",
       "C10": "profile lifecycle ops under a live multiplexer",
       "C11": "bare thread lifecycle / supervision",
-      "C12": "Desktop topology / surface parity (CLI vs REST vs RPC)",
-      "C13": "kanban notifier routing / silent fail-closed"
+      "C12": "Desktop topology / surface parity (CLI vs REST vs RPC)"
     },
     "dropped": [
       "P01: 296 hits on main",
@@ -45,16 +44,16 @@
     {
       "id": "P06",
       "class": "C5",
-      "pattern_regex": "os\\.getenv\\(\\s*[\"'](DISCORD|TELEGRAM|SLACK|MATRIX|WHATSAPP|FEISHU|SIGNAL|TEAMS|LINE|WECOM|YUANBAO|HINDSIGHT|BRV|A2A|WEIXIN)_|os\\.environ\\.get\\(\\s*[\"'](DISCORD|TELEGRAM|SLACK|MATRIX|WHATSAPP|FEISHU|SIGNAL|TEAMS|LINE|WECOM|YUANBAO|HINDSIGHT|BRV|A2A|WEIXIN)_",
+      "pattern_regex": "os\\.getenv\\(\\s*[\"'](DISCORD|SLACK|MATRIX|WHATSAPP|FEISHU|SIGNAL|TEAMS|LINE|WECOM|YUANBAO|HINDSIGHT|BRV|A2A|WEIXIN)_|os\\.environ\\.get\\(\\s*[\"'](DISCORD|SLACK|MATRIX|WHATSAPP|FEISHU|SIGNAL|TEAMS|LINE|WECOM|YUANBAO|HINDSIGHT|BRV|A2A|WEIXIN)_",
       "scope_hint": "plugins/platforms/*, plugins/memory/*, gateway/run_config_loaders.py, gateway/platforms/*. Replace with gateway.platforms._shared.extra_or_secret(extra, key, ENV, default) or get_scoped_secret.",
-      "why": "Raw env is the launch profile's. A secondary that omits a key must get the adapter default, not the launch profile's value (Matrix notices/session_scope, Discord everyone-mentions, Slack ignored channels all inherited). MindDragon probe still lists TELEGRAM_WEBHOOK_HOST and run_config_loaders.py:64,93 as open."
+      "why": "Raw env is the launch profile's. A secondary that omits a key must get the adapter default, not the launch profile's value (Matrix notices/session_scope, Discord everyone-mentions, Slack ignored channels all inherited). MindDragon probe still lists run_config_loaders.py:64,93 as open."
     },
     {
       "id": "P08",
       "class": "C5",
       "pattern_regex": "configured\\s*=\\s*extra\\.get\\(|if\\s+configured\\s+is\\s+not\\s+None:\\s*return|extra\\.get\\([\"'][a-z_]+[\"']\\)\\s*(if|or)\\s*.*os\\.getenv",
       "scope_hint": "Any 'YAML first, env fallback' reader in an adapter. Order must be explicit scoped env -> own YAML -> default; add the single-profile control test (env=false beats materialized YAML true).",
-      "why": "Materialized defaults (telegram.reactions: false) are always present in YAML, so a YAML-first reader makes the documented env switch a permanent no-op."
+      "why": "Materialized defaults (discord.reactions: false) are always present in YAML, so a YAML-first reader makes the documented env switch a permanent no-op."
     },
     {
       "id": "P10",
@@ -68,7 +67,7 @@
       "class": "C4",
       "pattern_regex": "^(_active_sessions|_DB_CACHE|_servers|_backends|_session_owner_homes|_trust[a-z_]*|_parallel[a-z_]*|_cooldown[a-z_]*)\\s*[:=]\\s*(\\{\\}|dict\\(|\\{\\s*$)|\\.setdefault\\((task_id|session_id|server_name|name)\\b",
       "scope_hint": "Module-level dicts keyed by session_id / task_id / server_name / display alone. Key must include hermes_home_key() or (scope, name) when a profile override is active; release must use the same key.",
-      "why": "Two profiles legitimately share session names, DISPLAY numbers and MCP server names; the first profile's entry wins and B's release stops A's driver. #108935 keyed 36 caches and still missed browser_exec/computer_use."
+      "why": "Two profiles legitimately share session names, DISPLAY numbers and MCP server names; the first profile's entry wins and B's release stops A's driver. #108935 keyed 36 caches and still missed browser/computer_use."
     },
     {
       "id": "P13",
@@ -96,7 +95,7 @@
       "class": "C10",
       "pattern_regex": "copytree\\([^)]*symlinks\\s*=\\s*True|shutil\\.copytree\\(.*profiles|old_dir\\.rename\\(|_check_gateway_running\\(\\s*old_dir",
       "scope_hint": "Profile create/clone/rename/delete: materialize symlinked .env/config.yaml/auth.json before editing; build in profiles/.<name>.staging-<pid> and publish with one rename; under a live multiplexer unroute before mutating (a served secondary has no gateway.pid of its own).",
-      "why": "--clone-all stripped the SOURCE's Telegram token through a preserved symlink; the hot-serve rescan adopted a half-copied clone with the source's bots; rename left a ghost the multiplexer re-scaffolded and served."
+      "why": "--clone-all stripped the SOURCE's bot token through a preserved symlink; the hot-serve rescan adopted a half-copied clone with the source's bots; rename left a ghost the multiplexer re-scaffolded and served."
     },
     {
       "id": "P21",
@@ -123,14 +122,14 @@
       "id": "P25",
       "class": "C12",
       "pattern_regex": "fetch\\(\\s*[`'\"]/api/(gateway|status|mcp|cron|sessions)[^`'\"]*[`'\"]\\s*[,)]|apiFetch\\([^)]*\\)(?!.*profile)|profilePickConnectionId\\(|resolveNewChatOwnerRoute\\(",
-      "scope_hint": "apps/desktop/src and web/src: every lifecycle/status/settings request against a pooled local backend must carry ?profile= (or the profile param) and every new-session tile must record an owner route.",
+      "scope_hint": "web/src: every lifecycle/status/settings request against a pooled local backend must carry ?profile= (or the profile param) and every new-session tile must record an owner route.",
       "why": "A pooled local backend routed lifecycle to the ambient profile (served profiles showed stopped); tab-strip + on a named local profile minted a session with no owner metadata so session.control.read failed closed."
     },
     {
       "id": "P27",
       "class": "C11",
       "pattern_regex": "def start\\(self\\).*\\n(?:.*\\n){0,15}?.*(recover_interrupted|record_ticker_heartbeat)|record_ticker_heartbeat\\(",
-      "scope_hint": "cron/scheduler_provider.py and the Desktop desktop-cron-ticker: all pre-loop work inside the BaseException guard; publish the profile list only after the gate filtered it; housekeeping respawns a dead ticker.",
+      "scope_hint": "cron/scheduler_provider.py: all pre-loop work inside the BaseException guard; publish the profile list only after the gate filtered it; housekeeping respawns a dead ticker.",
       "why": "A corrupt executions.db killed the ticker thread before the guarded loop; gateway stayed up, heartbeat frozen, no jobs, no error marker."
     },
     {

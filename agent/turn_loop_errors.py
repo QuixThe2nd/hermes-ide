@@ -155,7 +155,7 @@ def handle_outer_loop_error(
         # finalize_turn stamps failure_reason=loop_error from the exit reason so the desktop
         # card stops reading these as "unknown"/retryable. The deterministic local bug keeps
         # ``failed`` as it was (an incomplete, not failed, turn): flipping it made every such
-        # child run a strike against the kanban dispatcher breaker.
+        # child run count as an automation failure.
         detail = short_detail(e)
         if _is_local_processing_error:
             _turn_exit_reason = f"local_processing_error({error_msg[:80]})"

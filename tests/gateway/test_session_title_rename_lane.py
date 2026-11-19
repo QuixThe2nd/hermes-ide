@@ -2,7 +2,7 @@
 
 Titling is two-stage: a derived slice of the user's own words lands inline, and
 the model's version replaces it a moment later. A local sidebar wants both. A
-Discord thread or a Telegram topic wants only the second — renaming twice lands
+Discord thread or a Matrix inbox room wants only the second — renaming twice lands
 on the same name at twice the cost, and Discord allows two channel renames per
 ten minutes, so the throwaway can be the one that survives.
 """
@@ -26,10 +26,10 @@ def _attach(lane):
     source = types.SimpleNamespace(platform=Platform.DISCORD, chat_id="chan-1")
 
     runner = types.SimpleNamespace(
-        _is_telegram_topic_lane=lambda src: lane == "telegram",
+        _is_matrix_inbox_room_lane=lambda src: lane == "matrix",
         _is_discord_auto_thread_lane=lambda src: lane == "discord",
         _is_relay_discord_channel_lane=lambda src: False,
-        _schedule_telegram_topic_title_rename=(
+        _schedule_matrix_room_title_rename=(
             lambda src, sid, title: renames.append(title)
         ),
         _schedule_discord_semantic_thread_rename=(
@@ -47,7 +47,7 @@ def _attach(lane):
     return agent._on_session_title, renames
 
 
-@pytest.mark.parametrize("lane", ["telegram", "discord"])
+@pytest.mark.parametrize("lane", ["matrix", "discord"])
 def test_the_rename_waits_for_the_model_title(lane):
     callback, renames = _attach(lane)
 
@@ -86,6 +86,11 @@ async def test_native_thread_rename_passes_only_the_initial_name_guard():
 
         def _delivery_adapter_for(self, source):
             return self.adapters[source.platform]
+
+        # The production lane resolves through the pre-rename compat alias,
+        # which forwards to _delivery_adapter_for on the real runner.
+        def _adapter_for_source(self, source):
+            return self._delivery_adapter_for(source)
 
     source = types.SimpleNamespace(
         platform=Platform.DISCORD,

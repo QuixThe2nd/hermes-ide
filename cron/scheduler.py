@@ -43,8 +43,6 @@ from hermes_cli.config import (
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
 from agent.interrupt_compat import request_hard_interrupt
-from agent.delegation_context import (
-    enter_non_dispatcher_owned_context, exit_non_dispatcher_owned_context)
 from agent.memory_provider import ctx_bound
 
 logger = logging.getLogger(__name__)
@@ -160,10 +158,10 @@ class CronTickYielded(RuntimeError):
     """A stale-code ticker yielded this tick to a fresh gateway.
 
     Raised by ``tick()`` BEFORE the tick lock when boot fingerprint ≠ disk, this process does NOT
-    own the runtime lock and a fresh process holds it — the stale process must stay out of the
-    dispatch race (contention would starve the fresh ticker). Skew ``None`` never yields (fail
-    open). Raised, not returned, so ``record_ticker_error`` sees it and ``hermes cron status``
-    isn't green.
+    own the runtime lock and a process PROVABLY fresher than this one (not our overlap predecessor,
+    started later) holds it — the stale process must stay out of the dispatch race (contention
+    would starve the fresh ticker). Skew ``None`` never yields (fail open). Raised, not returned,
+    so ``record_ticker_error`` sees it and ``hermes cron status`` isn't green.
     """
 
     def __init__(self, boot_rev: str, disk_rev: str) -> None:
@@ -180,10 +178,41 @@ _YIELD_LOG_INTERVAL_SECONDS = 3600.0
 _last_yield_log: dict[str, object] = {}
 
 
+def _runtime_lock_holder_is_fresher() -> bool:
+    """True only when the gateway runtime-lock holder is PROVABLY fresher than this process:
+    its lock record (``gateway/status.py``) carries a usable pid + start time, that pid is not
+    this process's overlap predecessor, and the holder started strictly later than this process.
+    A draining overlap predecessor legitimately holds the lock while its pending successor runs —
+    that holder is older by construction and the successor must keep dispatching cron. Start-time
+    units are host-local (``get_process_start_time``); both values come from the same host, so the
+    comparison is sound. Any unreadable record or failed probe → False — yielding is a certainty
+    claim, never a guess."""
+    try:
+        from gateway import status as _gateway_status
+        from gateway.overlap_restart import overlap_predecessor_pid
+    except Exception:
+        return False
+    try:
+        record = _gateway_status._read_gateway_lock_record()
+        if not isinstance(record, dict):
+            return False
+        holder_pid = int(record.get("pid") or 0)
+        holder_start = int(record.get("start_time") or 0)
+        own_start = _gateway_status.get_process_start_time(os.getpid())
+    except Exception:
+        return False
+    if holder_pid <= 0 or holder_start <= 0 or own_start is None or own_start <= 0:
+        return False
+    if holder_pid == overlap_predecessor_pid():
+        return False
+    return holder_start > own_start
+
+
 def _should_yield_tick_to_fresh_gateway() -> tuple[str, str] | None:
     """``(boot_rev, disk_rev)`` when this tick must yield to a fresher gateway, else None. Yields
-    only when ALL hold: code skew, we don't own the runtime lock, another process holds it. Every
-    probe failure returns None — yielding is a certainty claim, never a guess."""
+    only when ALL hold: code skew, we don't own the runtime lock, another process holds it, and
+    that holder is provably fresher than this process (see ``_runtime_lock_holder_is_fresher``).
+    Every probe failure returns None — yielding is a certainty claim, never a guess."""
     skew = _detect_gateway_code_skew()
     if skew is None:
         return None
@@ -197,6 +226,8 @@ def _should_yield_tick_to_fresh_gateway() -> tuple[str, str] | None:
         if not _gateway_status.is_gateway_runtime_lock_active():
             return None
     except Exception:
+        return None
+    if not _runtime_lock_holder_is_fresher():
         return None
     return skew
 
@@ -250,7 +281,7 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     if not job.get("no_agent"):
         notice = provider_failure_notice(
             job_name, job_id, classify_cron_failure_reason(text),
-            backup_provider_phrase=_fallback_chain_phrase(), provider=job.get("provider"))
+            backup_provider_phrase=_fallback_chain_phrase())
         if notice is not None:
             return notice
 
@@ -1379,28 +1410,14 @@ class _CronJobConfig:
     cron_default_provider: str
 
 
-def _snapshot_pin(job: dict, axis: str, current: str, job_id: str) -> str:
-    """The creation snapshot is an unpinned axis's effective pin: return it, logging once when it
-    differs from *current* (the live global default); ``""`` for legacy jobs without one, which keep
-    following the global default. A global model/provider change must never stop a cron job; a job
-    keeps running on what it was created under until the operator pins it or sets a cron.* fleet
-    default (#44585)."""
-    snapshot = str(job.get(f"{axis}_snapshot") or "").strip()
-    if snapshot and current and snapshot.lower() != current.lower():
-        logger.info(
-            "Job '%s': running on creation-snapshot %s %r (global default is now %r); "
-            "`hermes cron resnap %s` adopts the new default (stays unpinned), "
-            "`hermes cron edit %s --%s <value>` or cron.%s in config.yaml pins it.",
-            job_id, axis, snapshot, current, job_id, job_id, axis,
-            "model" if axis == "model" else "model_provider")
-    return snapshot
-
-
 def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConfig:
-    """Load config.yaml and resolve the run's model: per-job override > cron.model (fleet default) >
-    creation snapshot > HERMES_MODEL > config ``model:``. Re-read every tick (no cache) so
-    ``hermes cron edit --model`` applies next tick."""
-    model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
+    """Load config.yaml and resolve the run's model: cron.model (fleet default) > global default >
+    HERMES_MODEL > config ``model:``. Re-read every tick (no cache) so config edits apply next tick.
+
+    Jobs are NEVER model-specific: any per-job ``model``/``model_snapshot`` fields still present in
+    an existing store are tolerated on load and have zero effect here (a stale pin must not stop a
+    job after the provider it names is gone)."""
+    model = cron_env_setting("HERMES_MODEL") or ""
     _cron_default_provider = ""
     _cfg: dict = {}
     _model_cfg: Any = {}
@@ -1416,13 +1433,12 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
             if isinstance(_cron_cfg_for_model, dict):
                 _cron_default_model = str(_cron_cfg_for_model.get("model") or "").strip()
                 _cron_default_provider = str(_cron_cfg_for_model.get("model_provider") or "").strip()
-            if not job.get("model"):
-                if _cron_default_model:
-                    model = _cron_default_model
-                else:
-                    _, _global_model = resolve_cron_model_drift_defaults(
-                        _cfg, environ={"HERMES_MODEL": cron_env_setting("HERMES_MODEL")})
-                    model = _snapshot_pin(job, "model", _global_model, job_id) or _global_model or model
+            if _cron_default_model:
+                model = _cron_default_model
+            else:
+                _, _global_model = resolve_cron_model_drift_defaults(
+                    _cfg, environ={"HERMES_MODEL": cron_env_setting("HERMES_MODEL")})
+                model = _global_model or model
     except Exception as e:
         logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
@@ -1431,19 +1447,11 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
     if not (isinstance(model, str) and model.strip()):
         raise RuntimeError(
             f"Cron job '{job_name}' has no model configured "
-            f"(job.model={job.get('model')!r}, "
-            f"HERMES_MODEL={cron_env_setting('HERMES_MODEL')!r}, "
+            f"(HERMES_MODEL={cron_env_setting('HERMES_MODEL')!r}, "
             "config.yaml model.default missing or empty). "
-            f"Set a per-job model via "
-            f"`hermes cron edit {job_id} --model <name>` or set a "
-            "default with `hermes model <name>`."
+            "Set a fleet default with `hermes model <name>` or cron.model in config.yaml."
         )
 
-    with contextlib.suppress(Exception):
-        from hermes_constants import apply_ipv4_preference
-        _net_cfg = _cfg.get("network", {})
-        if isinstance(_net_cfg, dict) and _net_cfg.get("force_ipv4"):
-            apply_ipv4_preference(force=True)
     return _CronJobConfig(_cfg, model, _model_cfg, _cron_default_provider)
 
 
@@ -1532,20 +1540,15 @@ def _blocked_config_result(job_id: str, job_name: str, _pf_reason: str) -> tuple
 def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[dict, str]:
     """Resolve the runtime, walking the fallback chain on auth/transient-network errors. Returns
     ``(runtime, model)``; provider+model swap atomically (never swap only the provider while keeping
-    a paid primary model). Provider precedence: per-job pin > cron.model_provider > creation
-    snapshot > persisted global config."""
+    a paid primary model). Provider precedence: cron.model_provider > persisted global config.
+    Per-job ``provider``/``provider_snapshot`` fields are tolerated but ignored — jobs always run on
+    the fleet default, so a stale provider pin can never stop a job."""
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider, format_runtime_provider_error)
     from hermes_cli.auth import AuthError
 
     model = jc.model
-    requested = job.get("provider") or jc.cron_default_provider or None
-    if not requested:
-        global_provider = (
-            str(jc.model_cfg.get("provider") or "").strip() if isinstance(jc.model_cfg, dict) else "")
-        # None (not the config provider) keeps the legacy no-snapshot path resolving from persisted
-        # config exactly as before.
-        requested = _snapshot_pin(job, "provider", global_provider, job_id) or None
+    requested = jc.cron_default_provider or None
     try:
         # Do NOT pass HERMES_INFERENCE_PROVIDER as `requested`: it would override persisted config
         # and resurrect stale providers for unpinned jobs.
@@ -2084,7 +2087,7 @@ class _CronRunScope:
     statement, ``exit()`` in the finally — every setter here has a matching reset there.
 
     HERMES_SESSION_* are deliberately NOT seeded from job["origin"]: it is delivery metadata, not
-    a sender, and terminal/tts/skills/send_message tools would act as if the origin user were
+    a sender, and terminal/skills/send_message tools would act as if the origin user were
     driving the agent. Delivery reads job["origin"] / HERMES_CRON_AUTO_DELIVER_* directly.
     """
 
@@ -2099,10 +2102,9 @@ class _CronRunScope:
             platform="",
             chat_id="",
             chat_name="",
-            # The job's durable identity, bound OUTSIDE the chat routing keys:
-            # the usage-proxy transport reads it to attribute the run's LLM
-            # requests to this job (one ledger chat per job, not per run),
-            # while delivery routing keeps seeing an empty chat.
+            # The job's durable identity, bound OUTSIDE the chat routing keys
+            # (one identity per job, not per run), while delivery routing
+            # keeps seeing an empty chat.
             job_id=job_id,
             job_name=str(job.get("name") or job_id),
             # Cron can't receive completions after its turn; async delegation output could
@@ -2128,17 +2130,11 @@ class _CronRunScope:
             record_session_cwd(self.task_id, self.workdir)
         self._cron_session_var = _VAR_MAP["HERMES_CRON_SESSION"]
         self._cron_session_token = None
-        self._non_dispatcher_token = None
 
     def enter(self) -> None:
         # Scope cron approval policy; exit() RESETS via token (pinning "" would suppress the legacy
         # os.environ fallback used by standalone entrypoints/tests).
         self._cron_session_token = self._cron_session_var.set("1")
-        # Mark NOT the kanban worker: a worker's cronjob(action="run") lands here with
-        # HERMES_KANBAN_TASK in env, and an unrelated job could close the worker's task. Must be a
-        # ContextVar, NOT an os.environ clear (env is shared with the worker heartbeat and
-        # concurrent jobs); copy_context() carries it into the agent thread.
-        self._non_dispatcher_token = enter_non_dispatcher_owned_context()
 
     def exit(self) -> None:
         from gateway.session_context import clear_session_vars
@@ -2148,8 +2144,6 @@ class _CronRunScope:
         clear_session_vars(self._ctx_tokens)  # also clears _SESSION_CWD
         if self._cron_session_token is not None:
             self._cron_session_var.reset(self._cron_session_token)
-        if self._non_dispatcher_token is not None:
-            exit_non_dispatcher_owned_context(self._non_dispatcher_token)
         for name in _CRON_DELIVERY_VARS:
             self._var_map[name].set("")
 
@@ -2249,7 +2243,6 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         providers_ignored=pr.get("ignore"),
         providers_order=pr.get("order"),
         provider_sort=pr.get("sort"),
-        openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
         enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
         disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
         quiet_mode=True,
@@ -2321,6 +2314,9 @@ def run_job(
 
     agent = None
     model = ""
+    # The agent result dict survives into the except handler so the unreachable-model
+    # classifier can read the structured verdict instead of pattern-matching prose.
+    result: Optional[dict] = None
     _session_db = None
     _audit: Optional[_FireAudit] = None
     _worker_state: dict = {}
@@ -2370,7 +2366,7 @@ def run_job(
         # tail can schedule a bounded automatic re-run instead of waiting a full period.
         try:
             from cron.unreachable_retry import is_model_unreachable_failure
-            if is_model_unreachable_failure(e, agent):
+            if is_model_unreachable_failure(e, agent, result=result):
                 job["_model_unreachable"] = True
             # Provider usage window closed for a known duration (cron/quota_hold.py): flag it so the
             # bookkeeping tail parks the job past the window instead of re-firing into it (#89376).
@@ -2986,8 +2982,8 @@ def _run_one_job_body(
     try:
         # Commit a finite one-shot's dispatch BEFORE its side effect so a tick dying mid-run cannot
         # re-fire it forever on restart. No-op for recurring/infinite jobs (at-most-times).
-        # This lives here in the shared body so BOTH the built-in ticker and the external provider (Chronos
-        # fire_due) get at-most-times semantics. See #38758.
+        # This lives here in the shared body so BOTH the built-in ticker and external providers
+        # get at-most-times semantics. See #38758.
         if not claim_dispatch(job["id"]):
             logger.info(
                 "Job '%s': one-shot dispatch limit reached — skipping",
@@ -3354,14 +3350,12 @@ def _launch_external_cron_worker(job: dict) -> bool:
     finally:
         reset_secret_scope(secret_token)
     worker_env = systemd_user_bus_env(worker_env)
-    # Unattended worker: the gateway sets HERMES_EXEC_ASK at startup (interactive launches set
-    # the other two), and an inherited presence var makes every env-fallback consumer in the
+    # Unattended worker: inherited presence variables make env-fallback consumers in the
     # child (`_is_interactive_cli`, sudo prompting, `check_cronjob_requirements`) believe a
     # human is present to answer (#110932).
     for _presence_var in (
         "HERMES_INTERACTIVE",
         "HERMES_GATEWAY_SESSION",
-        "HERMES_EXEC_ASK",
     ):
         worker_env.pop(_presence_var, None)
     # `-m cron.scheduler` has no hermes_cli.main bootstrap; pin this checkout explicitly
@@ -3689,7 +3683,7 @@ def _maybe_run_worktree_maintenance() -> None:
             repos = _worktree_maintenance_repos()
             if not repos:
                 return
-            from cli import _prune_stale_worktrees
+            from hermes_cli.worktree_ops import _prune_stale_worktrees
 
             for repo in repos:
                 try:

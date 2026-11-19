@@ -42,8 +42,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = REPO_ROOT / "hermes_cli" / "__init__.py"
 PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 UV_LOCK_FILE = REPO_ROOT / "uv.lock"
-DESKTOP_PKG_FILE = REPO_ROOT / "apps" / "desktop" / "package.json"
-PKG_LOCK_FILE = REPO_ROOT / "package-lock.json"
 
 # ──────────────────────────────────────────────────────────────────────
 # Git email → GitHub username mapping
@@ -80,7 +78,7 @@ LEGACY_AUTHOR_MAP = {
     "emrekoca2003@gmail.com": "kocaemre",  # PR #36051 salvage (docs: audit round 3 code/doc reconciliation)
     "focusedmiqa@gmail.com": "m1qaweb",  # PR #29290 salvage (gateway: strip /queue prefix when idle)
     "13574+otsune@users.noreply.github.com": "otsune",  # PR #36019 salvage (kanban: attachment toolset + CLI)
-    "205466933+wesleion@users.noreply.github.com": "wesleion",  # PR #36049 salvage (telegram: per-topic free-response allowlist)
+    "205466933+wesleion@users.noreply.github.com": "wesleion",  # PR #36049 salvage (messaging: per-topic free-response allowlist)
     "evefromwayback@gmail.com": "evefromwayback",  # PR #64611 salvage (agent: never load install-tree AGENTS.md as project context)
     "Regina@Andreys-Mini.true.true": "Rival",  # PR #64935/#64936 salvage (state: restore-boundary alternation repair; agent: turn-overlap tripwire)
     "embwl0x@users.noreply.github.com": "embwl0x",  # PR #65105 salvage (gateway: preserve external supervisor ownership)
@@ -103,11 +101,11 @@ LEGACY_AUTHOR_MAP = {
     "VrtxOmega@pm.me": "VrtxOmega",  # PR #43809 salvage (desktop: WSL folder-picker path bridge)
     "gn00742754@gmail.com": "SemonCat",  # PR #56786 salvage (Slack Agent View manifests and Assistant APIs)
     "KCAYAAI@users.noreply.github.com": "KCAYAAI",  # PR #62248 partial salvage (resume typing after clarify reply)
-    "jake.long.vu@vucar.net": "jakelongvu-bot",  # PR #36683 partial salvage (approval: honor canonical approvals.timeout in gateway waits)
+    "jake.long.vu@vucar.net": "jakelongvu-bot",  # PR #36683 partial salvage (approval: honor canonical approval timeout in gateway waits)
     "luigi@users.noreply.github.com": "Tortugasaur",  # PR #43205 salvage (desktop: profile-aware three-way approval mode statusbar control)
     "kavi@local.hermes": "kavioavio",  # Issue #46544 / PR #47705 evolution (smart DENY exact-operation owner override)
     "135129512+ansel-f@users.noreply.github.com": "ansel-f",  # PR #62388 salvage (approval: allow exact verifier temp cleanup without broadening rm safety boundary)
-    "robert@modern-minds.ai": "Hopfensaft",  # PR #31933 salvage (dashboard: align approvals.mode dropdown with canonical engine values)
+    "robert@modern-minds.ai": "Hopfensaft",  # PR #31933 salvage (dashboard: align approval-mode dropdown with canonical engine values)
     "palmer@dugoutfantasy.com": "professorpalmer",  # PR #48591 salvage (sessions: CLI workspace filter + restore-cwd-on-resume)
     "true@supersynergy.de": "Supersynergy",  # PR #59241 salvage (desktop: workspace path status-bar action)
     "me@roryford.com": "roryford",  # PR #63132 salvage (compression: fail closed for errors from a resolved lock API, preserving lineage)
@@ -142,13 +140,13 @@ LEGACY_AUTHOR_MAP = {
     "poowis2011@hotmail.com": "Umi4Life",  # PR #47377 salvage (agent: emit one-shot fallback switch notice on successful fallback so gateway users see model/provider change; #35419)
     "austin@openvm067.space": "austinlaw076",  # PR #57563 partial salvage (auth: lazy per-profile Anthropic OAuth file; gateway: whatsapp_cloud/line added to port-binding platform set)
     "sunsky.lau@gmail.com": "liuhao1024",  # PR #56993 salvage (gateway: process-level HERMES_HOME for pid/lock/status identity files; #56986)
-    "roseycomanagement@roseyco.co.uk": "Roseyco-management",  # PR #63581 salvage (telegram: require getUpdates progress before polling is healthy; #63243, #63766)
+    "roseycomanagement@roseyco.co.uk": "Roseyco-management",  # PR #63581 salvage (messaging: require getUpdates progress before polling is healthy; #63243, #63766)
     "nima20002000@users.noreply.github.com": "nima20002000",  # PR #36022/#36025 salvage (code-exec truncation metadata; achievements hover loop)
     "gauravsaxena.jaipur@gmail.com": "gauravsaxena1997",  # PR #59868 partial salvage (agent: guard response.text against httpx.ResponseNotRead in _summarize_api_error; #59769)
     "blueirobin02@gmail.com": "irresi",  # PR #59048 salvage (gateway: scope reset banners' session info to the serving profile; #59003)
     "jashlee+microsoft@microsoft.com": "s905060",  # PR #57943 salvage (photon: auto-reinstall stale sidecar node_modules when lockfile is newer than npm's install marker; #59169)
     "lohinth25@proton.me": "l0h1nth",  # PR #32210 salvage (mattermost: accept leading-space slash commands from mobile clients; #25184)
-    "roseycomanagement@roseyco.co.uk": "arnispiekus",  # PR #63581 salvage (telegram: require getUpdates progress before polling is healthy; #63243)
+    "roseycomanagement@roseyco.co.uk": "arnispiekus",  # PR #63581 salvage (messaging: require getUpdates progress before polling is healthy; #63243)
     "perkintahmaz50@gmail.com": "devatnull",  # PR #58704 salvage (whatsapp: native Baileys polls, clarify-as-poll, location pins, structured quoted replies, PTT/audio split, bridge_helpers extraction)
     "tim@iteachyouai.com": "tjp2021",  # PR #4097 salvage (copilot: per-turn x-initiator header so user prompts bill as premium requests; #3040)
     "39274208+falkoro@users.noreply.github.com": "falkoro",  # PRs #58519/#58520 salvage (config: env-ref-aware load_config cache invalidation; auxiliary: honor auxiliary.<task>.base_url/api_key with explicit provider arg)
@@ -157,7 +155,7 @@ LEGACY_AUTHOR_MAP = {
     "williamumu@users.noreply.github.com": "williamumu",  # PR #31041 salvage (pairing: merge split legacy/new pairing store dirs at PairingStore init so approved users aren't re-prompted to pair)
     "jonathan@mintrx.com": "JAlmanzarMint",  # PR #52688 salvage (vision: rasterize SVG / re-encode unsupported raster formats to PNG before embedding), folded into #57890
     "alex@fireworks.ai": "alex-fireworks",  # PR #61182 salvage (Fireworks AI model-provider integration)
-    "al3060388206@gmail.com": "ooiuuii",  # PR #58466/#58377 salvage (redact: fireworks fw-/fpk_ prefixes; telegram: redact bot tokens out of transport error strings). Also PR #58433 salvage (codex: accept recorded final_text when app-server omits turn/completed) and PR #58472 salvage (gateway: cap proxy SSE line buffer at 16MiB).
+    "al3060388206@gmail.com": "ooiuuii",  # PR #58466/#58377 salvage (redact: fireworks fw-/fpk_ prefixes; messaging: redact bot tokens out of transport error strings). Also PR #58433 salvage (codex: accept recorded final_text when app-server omits turn/completed) and PR #58472 salvage (gateway: cap proxy SSE line buffer at 16MiB).
     "Jigoooo@users.noreply.github.com": "Jigoooo",  # PR #58474 salvage (auxiliary: fall back to token resolver when anthropic pool has no usable entry)
     "root@vmi3351581.contaboserver.net": "ostravajih",  # PR #58374 salvage (poolside: coerce integer finish_reason and tool_call id to strings)
     "hello@sahil-shubham.in": "sahil-shubham",  # PR #58448 salvage (whatsapp_cloud: honor documented WHATSAPP_CLOUD_ALLOWED_USERS / ALLOW_ALL_USERS in the DM intake gate)
@@ -165,7 +163,7 @@ LEGACY_AUTHOR_MAP = {
     "ignaciopastorsan@gmail.com": "IpastorSan",  # PR #63690 salvage (codex: rescue reasoning-only turns that die after 3 continuation attempts)
     "Ahmett101@users.noreply.github.com": "Ahmett101",  # PR #59455 salvage (background-review: guard summarize against list-shaped tool responses; #59437)
     "wyuebei@gmail.com": "wyuebei-cloud",  # PR #56640 salvage (hermes journey: replace GNU-only %-d strftime with dt.day for Windows)
-    "yingwaizhiying@gmail.com": "msh01",  # PR #58250 salvage (telegram: wall-clock init timeout via daemon-thread deadline + abandon the shielded initialize task on timeout so the retry ladder advances instead of hanging on attempt 1/8 under s6 supervision; #58236). Also covers PR #58276 salvage (compression: preserve a real user turn after compaction; #55677).
+    "yingwaizhiying@gmail.com": "msh01",  # PR #58250 salvage (messaging: wall-clock init timeout via daemon-thread deadline + abandon the shielded initialize task on timeout so the retry ladder advances instead of hanging on attempt 1/8 under s6 supervision; #58236). Also covers PR #58276 salvage (compression: preserve a real user turn after compaction; #55677).
     "danilo@falcao.org": "danilofalcao",  # PR #56674 salvage (update: skip unsupported platform.matrix lazy refresh on native Windows — python-olm has no Windows wheel)
     "huanshan5195@users.noreply.github.com": "huanshan5195",  # PR #57601 salvage (custom-provider: emit reasoning_effort at the live CustomProfile path so GLM-5.2/ARK/vLLM/Ollama endpoints receive it; + "max" reasoning level)
     "infinitycrew39@gmail.com": "infinitycrew39",  # PR #56431 salvage (honor live vLLM context limits on local endpoints)
@@ -190,7 +188,7 @@ LEGACY_AUTHOR_MAP = {
     "zhangml@tech.icbc.com.cn": "zmlgit",  # PR #54872 salvage (multiplex-profile kanban: route task notifications via the owning profile's adapter + wake the creator agent with a synthetic internal MessageEvent on terminal events)
     "1079826437@qq.com": "nankingjing",  # PR #56404 salvage (gateway: while a state.db compression lock is held for the session, demote busy_input_mode 'interrupt' to 'queue' so a rapid message burst can't interrupt and fork orphaned compression siblings off a stale parent; #56391)
     "ud@arubangles.com": "udatny",  # PR #29433 salvage (subdirectory_hints: catch RuntimeError from Path.expanduser()/Path.home() so a literal ~ in tool-call args — e.g. LLM "~500-700" or ~unknownuser — can't escape the hint walker and crash the conversation loop)
-    "brett@personalfinancelab.com": "brett539",  # PR #49369 salvage (cap Telegram initialize() with asyncio.wait_for(HERMES_TELEGRAM_INIT_TIMEOUT, default 30s) per attempt so an unreachable fallback-IP connect chain can't block gateway startup indefinitely; add WARNING progress logs before DoH discovery and each connect attempt)
+    "brett@personalfinancelab.com": "brett539",  # PR #49369 salvage (cap gateway platform initialize() with asyncio.wait_for(the platform init timeout, default 30s) per attempt so an unreachable fallback-IP connect chain can't block gateway startup indefinitely; add WARNING progress logs before DoH discovery and each connect attempt)
     "randomuser2026x@proton.me": "randomuser2026x",  # PR #50204 salvage (gateway /restart under systemd: probe both system + --user scope for MainPID instead of hardcoding --user; always exit 75 so RestartForceExitStatus=75 revives the unit under Restart=on-failure too, not just Restart=always)
     "mac-studio@Fabios-Mac-Studio.local": "valenteff",  # PR #53277 salvage (macOS launchd reload: retry bootstrap via _launchctl_bootstrap until launchctl-list confirms registration or the restart-drain window elapses; retry TimeoutExpired not just CalledProcessError; log persistent orphans)
     "steve@lightpathapps.com": "slawt",  # PR #8427 salvage (Google Vertex AI provider for Gemini: OAuth2 token minting via service-account JSON / ADC on the OpenAI-compat endpoint, rewired as a provider profile with per-turn 401 token refresh)
@@ -201,7 +199,7 @@ LEGACY_AUTHOR_MAP = {
     "swissly@users.noreply.github.com": "swissly",  # PR #47167 salvage (wrap cron delivery thread-pool fallback in its own try/except so a per-target failure can't escape the except-RuntimeError block and crash the multi-target delivery loop; #47163)
     "53571168+shawchanshek@users.noreply.github.com": "shawchanshek",  # PR #44126 salvage (strip <think>...</think> reasoning blocks from title-generator LLM output via the canonical strip_think_blocks scrubber so reasoning-model output can't leak into session titles)
     "30854794+YLChen-007@users.noreply.github.com": "YLChen-007",  # PR #27289 salvage (case-insensitive streaming reasoning-tag filter in cli.py _stream_delta + gateway stream_consumer so mixed-case variants like <Think>/<ThInK> are suppressed, not just the hardcoded case literals)
-    "27672904+kangsoo-bit@users.noreply.github.com": "kangsoo-bit",  # PR #47508 salvage (keep Telegram gateway alive on transient bootstrap network errors: best-effort deleteWebhook + resilient start_polling degrade to background recovery instead of failing startup)
+    "27672904+kangsoo-bit@users.noreply.github.com": "kangsoo-bit",  # PR #47508 salvage (keep the messaging gateway alive on transient bootstrap network errors: best-effort deleteWebhook + resilient start_polling degrade to background recovery instead of failing startup)
     "259353979+testingbuddies24@users.noreply.github.com": "testingbuddies24",  # PR #43192 salvage (strip orphan think-tag close tags in progressive gateway stream so a bare </think> whose open was dropped upstream can't leak to the user)
     "shx_929@163.com": "Lazymonter",  # PR #42914 salvage (retry launchd bootstrap after bootout on EIO for install/start instead of degrading to detached)
     "96322396+WXBR@users.noreply.github.com": "WXBR",  # PR #46183 salvage (persist recovered final_response at the finalize_turn chokepoint so recovery-path breaks don't drop the delivered assistant row)
@@ -224,7 +222,7 @@ LEGACY_AUTHOR_MAP = {
     "syahidfrd@gmail.com": "syahidfrd",  # PR #17059 salvage (tag unverified senders in Slack thread context to mitigate indirect prompt injection)
     "22971845+H2KFORGIVEN@users.noreply.github.com": "H2KFORGIVEN",  # PR #22523 salvage (turn-pair preservation: never orphan the last user ask at head_end during compaction)
     "5823452+sgabel@users.noreply.github.com": "sgabel",  # PR #13139 salvage (redact secrets in user-facing approval prompts)
-    "130270192+CRWuTJ@users.noreply.github.com": "CRWuTJ",  # PR #17082 salvage (cancel delayed Telegram deliveries on disconnect so buffered flushes don't dispatch into a torn-down session)
+    "130270192+CRWuTJ@users.noreply.github.com": "CRWuTJ",  # PR #17082 salvage (cancel delayed platform deliveries on disconnect so buffered flushes don't dispatch into a torn-down session)
     "cyb3rwr3n@users.noreply.github.com": "cyb3rwr3n",  # PR #11333 salvage (sanitize FTS5 queries for natural-language recall in holographic memory)
     "9350182+codexGW@users.noreply.github.com": "codexGW",  # PR #12302 salvage (Discord raw <@!ID> mention detection + drop bare mention-only pings)
     "chufengfan@jackroooc-2.local": "jackroofan",  # PR #54609 salvage (add anthropic to MoA _slot_runtime name-preserve set; OAuth sk-ant-oat* needs Bearer + anthropic-beta header)
@@ -232,7 +230,7 @@ LEGACY_AUTHOR_MAP = {
     "justin@newartifice.com": "JustinOhms",  # PR #24469 salvage (route native-SDK delegation providers through runtime resolver; fail on '(empty)' sentinel instead of accepting it as success)
     "186512915+lEWFkRAD@users.noreply.github.com": "lEWFkRAD",  # PR #53848 salvage (stream the MoA aggregator response to the user)
     "193368749+jimmyjohansson84@users.noreply.github.com": "jimmyjohansson84",  # PR #27123 salvage (Kanban unknown-skill warn-instead-of-crash; #27136)
-    "gxalong@gmail.com": "Jeffgithub0029",  # PR #28558 salvage (chunk Telegram text *after* MarkdownV2/HTML formatting so escaping inflation can't push a send over the 4096 UTF-16 limit; #28557)
+    "gxalong@gmail.com": "Jeffgithub0029",  # PR #28558 salvage (chunk chat-platform text *after* MarkdownV2/HTML formatting so escaping inflation can't push a send over the 4096 UTF-16 limit; #28557)
     "273238055+fayenix@users.noreply.github.com": "fayenix",  # PR #28846 salvage (normalize _cfg_model in gateway fallback-eviction so vendor-prefixed config matches stripped agent.model on native providers)
     "phanvanhoa@gmail.com": "theAgenticBuilder",  # PR #14180 salvage (route delegate_agent progress lines through _safe_print so ACP stdio JSON-RPC frames stay clean)
     "huangxudong663@gmail.com": "huangxudong663-sys",  # PR #15157 salvage (isinstance(dict) guard on tool-call model_extra; NVIDIA NIM non-dict crash)
@@ -251,8 +249,8 @@ LEGACY_AUTHOR_MAP = {
     "huangsen365@gmail.com": "huangsen365",  # PR #42334 (CVE dependency pins + pin-drift guard)
     "telos@apex-z.com": "telos-oc",  # PR #14353 salvage (propagate custom_providers key_env into ProviderDef.api_key_env_vars; named + bare-custom self-heal paths)
     "256073454+Kolektori@users.noreply.github.com": "Kolektori",  # PR #6436 salvage (require approval for host-bound Docker commands; container guard fast-path)
-    "41764686+LIC99@users.noreply.github.com": "LIC99",  # PR #4682 salvage (warn + default to manual on unknown approvals.mode; #4261)
-    "carlosmcejas@gmail.com": "cmcejas",  # PR #41188 salvage (early Telegram auth gate before event build/observe; #40863)
+    "41764686+LIC99@users.noreply.github.com": "LIC99",  # PR #4682 salvage (warn + default to manual on unknown approval mode; #4261)
+    "carlosmcejas@gmail.com": "cmcejas",  # PR #41188 salvage (early messaging auth gate before event build/observe; #40863)
     "ha-agent@homelab.4410.us": "oreoluwa",  # PR #49845 salvage (skip preflight content-type probe for OAuth MCP servers so OAuth discovery runs; Akiflow/Hospitable)
     "prathamesh290504@gmail.com": "PRATHAMESH75",  # PR #37550 salvage (ExecStopPost cgroup-orphan reaper to unblock systemd restart; #37454)
     "der@konsi.org": "konsisumer",  # PR #19608 salvage (read-modify-write merge in write_credential_pool to preserve concurrently-added credentials; #19566)
@@ -272,7 +270,7 @@ LEGACY_AUTHOR_MAP = {
     "piyrw9754@gmail.com": "rlaope",  # PR #35075 salvage (align cron invisible-unicode set with install-time scanner; #35075)
     "bukim0119@gmail.com": "bykim0119",  # PR #22335 salvage (honor "*" wildcard in DISCORD_ALLOWED_USERS; #22334)
     "rebel@rebels-Mac-Studio-2.local": "rebel0789",  # PR #47308 salvage (redact browser_type typed text across display surfaces; #47197)
-    "267614622+agt-user@users.noreply.github.com": "agt-user",  # PR #48496 salvage (telegram CLOSE-WAIT polling heartbeat, #48495)
+    "267614622+agt-user@users.noreply.github.com": "agt-user",  # PR #48496 salvage (messaging CLOSE-WAIT polling heartbeat, #48495)
     "80915+DavidMetcalfe@users.noreply.github.com": "DavidMetcalfe",  # PR #52272 salvage (route reasoning-model thinking-timeouts to timeout not context_overflow + reasoning-specific guidance; #52271)
     "66773372+Tranquil-Flow@users.noreply.github.com": "Tranquil-Flow",  # PR #52623 salvage (auxiliary Anthropic base_url host validation; #52608)
     "nikshepsvn@gmail.com": "nikshepsvn",  # PR #27426 salvage (two-layer guard against hallucinated acp_command crashing the gateway on hosts with no ACP CLI)
@@ -283,7 +281,7 @@ LEGACY_AUTHOR_MAP = {
     "8180647+herbalizer404@users.noreply.github.com": "herbalizer404",  # PR #49076 + #51835 salvage (auxiliary compression fallback: 403/session-usage payment errors + honor fallback chain when aux provider auth unavailable)
     "pyxl-dev@users.noreply.github.com": "pyxl-dev",  # PR #52230 salvage (include rate-limit in auxiliary capacity-error fallback gate; #52228)
     "yashiel@skyner.co.za": "yashiels",  # PR #53284 salvage (discord markdown table-to-bullet conversion; #21168)
-    "46495124+yungchentang@users.noreply.github.com": "yungchentang",  # PR #53622 salvage (drain Telegram general send pool on pool timeout before retry; #53524)
+    "46495124+yungchentang@users.noreply.github.com": "yungchentang",  # PR #53622 salvage (drain platform general send pool on pool timeout before retry; #53524)
     "15205536+595650661@users.noreply.github.com": "595650661",  # PR #37851 salvage (classify MiniMax new_sensitive content filter → content_policy_blocked; #32421)
     "qWaitCrypto@users.noreply.github.com": "qWaitCrypto",  # PR #52534 salvage (preserve assistant tool_use cache_control marker in Anthropic conversion so cache breakpoints aren't dropped from the wire)
     "benbenwyb@gmail.com": "benbenlijie",  # PR #47205 salvage (named custom-provider extra_body + Z.AI Coding overload adaptive backoff; #50663)
@@ -788,7 +786,7 @@ LEGACY_AUTHOR_MAP = {
     "zyrixtrex@gmail.com": "Zyrixtrex",  # PR #26754 salvage (avoid duplicate text after auto-TTS)
     "264138787+nftpoetrist@users.noreply.github.com": "nftpoetrist",  # PR #25856 salvage (escape slash-confirm preview)
     "197455947+samahn0601@users.noreply.github.com": "samahn0601",  # PR #27887 salvage (retry wrapped connect timeouts)
-    "gonzes7@gmail.com": "aqilaziz",  # PR #26406 salvage (preserve native audio outside Telegram)
+    "gonzes7@gmail.com": "aqilaziz",  # PR #26406 salvage (preserve native audio outside the chat platform)
     "karthikeyann@users.noreply.github.com": "karthikeyann",  # PR #26609 salvage (DM-topic routing pin)
     "rino.alpin@gmail.com": "kunci115",  # PR #27098 salvage (thread-not-found retry)
     "hayka-pacha@users.noreply.github.com": "hayka-pacha",  # PR #25270 salvage (registry-aware mcp_ prefix strip)
@@ -1783,7 +1781,7 @@ LEGACY_AUTHOR_MAP = {
     "wtyopenclaw@gmail.com": "WuTianyi123",  # PR #20275 salvage of #13723 (feishu markdown)
     "zhicheng.han@mathematik.uni-goettingen.de": "hanzckernel",  # PR #20311 (api-server approval events)
     "agentsmithlaor@gmail.com": "oferlaor",  # PR #22356 salvage (cron origin sender identity)
-    "jhin.lee@unity3d.com": "leehack",  # PR #22053 salvage (telegram DM topic reply fallback)
+    "jhin.lee@unity3d.com": "leehack",  # PR #22053 salvage (DM topic reply fallback)
     "caojiguang@gmail.com": "caojiguang",  # PR #35117 carries #31853 (weixin _api_post/_api_get wait_for)
     "gooku94123@gmail.com": "goku94123",  # PR #46609 salvage (MiniMax reasoning extra_body)
     # pander: empty email, salvaged via PR #19665 from #16126 by @ms-alan
@@ -1821,7 +1819,7 @@ LEGACY_AUTHOR_MAP = {
     "98992931+oxngon@users.noreply.github.com": "oxngon",  # PR #25603 salvage (forward image attachments to bg tasks)
     "37467487+yifengingit@users.noreply.github.com": "yifengingit",  # PR #25589 salvage (AUTOINCREMENT id ordering)
     "89525629+vanthinh6886@users.noreply.github.com": "vanthinh6886",  # PR #25562 salvage (.env 0600 perms)
-    "16034932+Arkmusn@users.noreply.github.com": "Arkmusn",  # PR #25559 salvage (approvals.timeout from config)
+    "16034932+Arkmusn@users.noreply.github.com": "Arkmusn",  # PR #25559 salvage (approval timeout from config)
     "nidhi2894@gmail.com": "nidhi-singh02",  # PR #2752 salvage (slack whitespace-only IndexError guard)
     "38173192+nidhi-singh02@users.noreply.github.com": "nidhi-singh02",
     "Jaaneek@users.noreply.github.com": "Jaaneek",  # PR #26457 (xAI Grok OAuth provider)
@@ -1852,7 +1850,7 @@ LEGACY_AUTHOR_MAP = {
     "beastant1@gmail.com": "nekwo",  # PR #26481 (PS5.1 UTF-8 BOM)
     "43717185+nekwo@users.noreply.github.com": "nekwo",
     "9785479+stepanov1975@users.noreply.github.com": "stepanov1975",  # PR #22074 (setup config picker writes)
-    "devsart95@gmail.com": "devsart95",  # PR #23249 (cron Telegram DM topic delivery)
+    "devsart95@gmail.com": "devsart95",  # PR #23249 (cron DM topic delivery)
     "67979730+flooryyyy@users.noreply.github.com": "flooryyyy",  # PR #26374 (tool_trace error detection)
     "188585318+dgians@users.noreply.github.com": "dgians",  # PR #26034 (.ts/.py/.sh docs types)
     "zealy@tz.co": "dgians",  # PR #26034 (bot-committed by zealy-tzco under dgians' PR)
@@ -1865,7 +1863,7 @@ LEGACY_AUTHOR_MAP = {
     "darvsum@users.noreply.github.com": "darvsum",  # PR #26766 (preserve discover_models in normalize)
     "peter@Peters-Mac-mini.local": "hueilau",  # PR #26498 (strip image parts for non-vision)
     "33933019+hueilau@users.noreply.github.com": "hueilau",
-    "32297275+Timur00Kh@users.noreply.github.com": "Timur00Kh",  # PR #27114 (telegram DM topic for synthetic events)
+    "32297275+Timur00Kh@users.noreply.github.com": "Timur00Kh",  # PR #27114 (DM topic for synthetic events)
     "al.bellemare@gmail.com": "Grogger",  # PR #27061 (windows console flash suppress)
     "7065068+Grogger@users.noreply.github.com": "Grogger",
     "18091625+Grogger@users.noreply.github.com": "Grogger",  # stale salvage commit alias (PR #28330)
@@ -1900,7 +1898,7 @@ LEGACY_AUTHOR_MAP = {
     "wesley.simplicio.ext@siemens-energy.com": "wesleysimplicio",  # PR #25777 (xterm.js native selection)
     "6108320+wesleysimplicio@users.noreply.github.com": "wesleysimplicio",
     "carryzuo00@gmail.com": "Carry00",  # PR #26851 (doctor SSH env vars)
-    "alaamohanad169-ship-it@users.noreply.github.com": "alaamohanad169-ship-it",  # PR #26036 (telegram typing after send)
+    "alaamohanad169-ship-it@users.noreply.github.com": "alaamohanad169-ship-it",  # PR #26036 (platform typing after send)
     "vigo@hermes": "hawknewton",  # PR #26294 (bedrock boto3 lazy_deps)
     "211668+hawknewton@users.noreply.github.com": "hawknewton",
     "quenvix00@gmail.com": "QuenVix",  # PR #26761/26772 salvage
@@ -1941,7 +1939,7 @@ LEGACY_AUTHOR_MAP = {
     "259054917+houenyang-momo@users.noreply.github.com": "houenyang-momo",  # PR #28205 salvage (charizard contrast)
     "33547839+sir-ad@users.noreply.github.com": "sir-ad",  # PR #31941 salvage (compaction noise)
     "adarsh.agrahari26@gmail.com": "sir-ad",
-    "269599864+rdasilva1016-ui@users.noreply.github.com": "rdasilva1016-ui",  # PR #31098 salvage (Telegram /start ping)
+    "269599864+rdasilva1016-ui@users.noreply.github.com": "rdasilva1016-ui",  # PR #31098 salvage (messaging /start ping)
     "rdasilva1016-ui@users.noreply.github.com": "rdasilva1016-ui",
     "35931201+iqdoctor@users.noreply.github.com": "iqdoctor",  # PR #28095 salvage (windows installer docs)
     "29513231+joe102084@users.noreply.github.com": "joe102084",  # PR #28151 salvage (whitespace cron responses)
@@ -1986,7 +1984,7 @@ LEGACY_AUTHOR_MAP = {
     "chenglunhu@gmail.com": "hclsys",  # PR #31985 (TUI /q alias regression test)
     "dearmayo@localhost": "ffr31mr",  # PR #32103 (SubdirectoryHintTracker workspace boundary)
     "TheOnlyMika@users.noreply.github.com": "TheOnlyMika",  # PR #32155 (dashboard XSS + defusedxml)
-    "krislidimo@gmail.com": "krislidimo",  # PR #29775 (tighten Telegram table row-group spacing; drop redundant first bullet)
+    "krislidimo@gmail.com": "krislidimo",  # PR #29775 (tighten platform table row-group spacing; drop redundant first bullet)
     "timothy.b.dixon@gmail.com": "Codename-11",  # PR #29302 (API server session controls — sessions/chat/fork/stream)
     "jpschwartz2@uwalumni.com": "Schwartz10",  # PR #29302 sub-PR (multimodal media in session chat API)
     "JohnC1009@users.noreply.github.com": "JohnC1009",  # PR #32020 salvage (auth: global auth.json fallback in _load_provider_state)
@@ -2050,7 +2048,7 @@ LEGACY_AUTHOR_MAP = {
     "marvin@photon.codes": "underthestars-zhy",  # PR #46907 co-author (Photon Spectrum project ids)
     "omar@kostudios.io": "OmarB97",  # PR #43977 (desktop session model metadata)
     "omarbaradei21@gmail.com": "OmarB97",  # PR #43977 (desktop session model metadata)
-    "p.fabiszewski@gmail.com": "szafranski",  # PR #36020 (Telegram voice/audio duration)
+    "p.fabiszewski@gmail.com": "szafranski",  # PR #36020 (voice/audio duration)
     "philip.a.dsouza@gmail.com": "PhilipAD",  # direct email match
     "qs2816661685@gmail.com": "qingshan89",  # PR #46895 co-author (desktop remote artifact download)
     "yspdev@gmail.com": "AJ",  # PR #44510 co-author (desktop named-profile boot loop)
@@ -2152,72 +2150,6 @@ def list_remotes() -> list[str]:
     if result.returncode != 0:
         return []
     return [name for name in result.stdout.split() if name]
-
-
-def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
-    """Start the desktop bundled build for ``tag``. Returns True on success.
-
-    This is how EVERY release of either kind gets its installers. The
-    workflow takes workflow_dispatch only, because that is one of the two
-    events GITHUB_TOKEN is allowed to raise: the scheduled canary pushes
-    its tag as github-actions[bot], and a bot-pushed tag starts no
-    workflow run at all. A tag-push trigger would therefore work for a
-    hand-cut stable release and silently do nothing for the canary.
-
-    Called after the draft release exists — its body is where the
-    builds-pending / builds-table jobs splice the download tables (the
-    binaries themselves go to the R2 bucket; the release carries notes
-    only). The workflow FILE is taken from the repo's DEFAULT BRANCH (not
-    the tag): a tag-dispatched run scopes actions/cache under
-    refs/heads/refs/tags/<tag> — a mangled per-tag scope that can never be
-    restored by a later canary, so every canary rebuilt from cold. On a
-    branch ref the caches scope to refs/heads/<branch> and persist across
-    canaries. The build CODE still comes from the tag via the `tag` input
-    (the workflow checks out ${{ inputs.tag }}), so an old-tag rebuild
-    builds the old snapshot with the current workflow.
-    """
-    cmd = [
-        "gh", "workflow", "run", "desktop-bundled-release.yml",
-        "--ref", "main",  # placeholder — replaced after the which-guard below
-        "-f", f"tag={tag}",
-        "-f", "upload_release=true",
-    ]
-    if gh_repo:
-        cmd += ["--repo", gh_repo]
-
-    if not shutil.which("gh"):
-        print("  ✗ Cannot start the desktop build: `gh` CLI not found.")
-        print(f"    Start it manually: {' '.join(cmd)}")
-        return False
-
-    dispatch_ref = _default_branch(gh_repo) or "main"
-    cmd[cmd.index("--ref") + 1] = dispatch_ref
-
-    result = subprocess.run(
-        cmd, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", cwd=str(REPO_ROOT),
-    )
-    if result.returncode != 0:
-        print(f"  ✗ Could not start the desktop build: {result.stderr.strip()}")
-        print(f"    Start it manually: {' '.join(cmd)}")
-        return False
-
-    print(f"  ✓ Desktop build started for {tag} (workflow from {dispatch_ref})")
-    return True
-
-
-def _default_branch(gh_repo: str | None) -> str | None:
-    """The repo's default branch, resolved via gh. None on any failure."""
-    cmd = ["gh", "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"]
-    if gh_repo:
-        cmd += ["--repo", gh_repo]
-    result = subprocess.run(
-        cmd, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", cwd=str(REPO_ROOT),
-    )
-    if result.returncode != 0:
-        return None
-    return result.stdout.strip() or None
 
 
 def resolve_push_remote(requested: str | None) -> str:
@@ -2371,31 +2303,6 @@ def update_version_files(semver: str, calver_date: str) -> list[str]:
     )
     PYPROJECT_FILE.write_text(pyproject, encoding="utf-8")
 
-    # Keep the desktop Electron app's package.json version in lockstep with the
-    # Python package version. The desktop About panel reads the live Hermes
-    # version at runtime, but app.getVersion()/packaging metadata still come
-    # from this field, so it must track pyproject to avoid drift.
-    pkg_text = DESKTOP_PKG_FILE.read_text(encoding="utf-8-sig")
-    pkg_text = re.sub(
-        r'("version"\s*:\s*)"[^"]+"',
-        rf'\g<1>"{semver}"',
-        pkg_text,
-        count=1,
-    )
-    DESKTOP_PKG_FILE.write_text(pkg_text, encoding="utf-8")
-
-    # npm mirrors each workspace package's version into the root lockfile.
-    # Update the apps/desktop entry so `npm ci`/`npm install` do not see the
-    # lockfile as out of date and rewrite it (or fail in CI) after a bump.
-    lock_text = PKG_LOCK_FILE.read_text(encoding="utf-8-sig")
-    lock_text = re.sub(
-        r'("apps/desktop"\s*:\s*\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"version"\s*:\s*)"[^"]+"',
-        rf'\g<1>"{semver}"',
-        lock_text,
-        count=1,
-    )
-    PKG_LOCK_FILE.write_text(lock_text, encoding="utf-8")
-
     # uv.lock records the editable root package's version from pyproject.
     # Update it in place so a post-release `uv sync`/`uv lock` is a no-op.
     uv_text = UV_LOCK_FILE.read_text(encoding="utf-8-sig")
@@ -2407,72 +2314,12 @@ def update_version_files(semver: str, calver_date: str) -> list[str]:
     )
     UV_LOCK_FILE.write_text(uv_text, encoding="utf-8")
 
-    # Keep the bootstrap installer (Hermes-Setup.dmg CFBundleShortVersionString)
-    # in lockstep with the Python package version. Tauri reads `version` from
-    # package.json + tauri.conf.json; a hardcoded 0.0.1 ships in the DMG.
-    installer_pkg = REPO_ROOT / "apps" / "bootstrap-installer" / "package.json"
-    if installer_pkg.exists():
-        pkg_text = installer_pkg.read_text(encoding="utf-8")
-        pkg_text = re.sub(
-            r'("version"\s*:\s*)"[^"]+"',
-            rf'\g<1>"{semver}"',
-            pkg_text,
-            count=1,
-        )
-        installer_pkg.write_text(pkg_text, encoding="utf-8")
-
-    installer_tauri = (
-        REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "tauri.conf.json"
-    )
-    if installer_tauri.exists():
-        pkg_text = installer_tauri.read_text(encoding="utf-8")
-        pkg_text = re.sub(
-            r'("version"\s*:\s*)"[^"]+"',
-            rf'\g<1>"{semver}"',
-            pkg_text,
-            count=1,
-        )
-        installer_tauri.write_text(pkg_text, encoding="utf-8")
-
-    installer_cargo = (
-        REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "Cargo.toml"
-    )
-    if installer_cargo.exists():
-        cargo_text = installer_cargo.read_text(encoding="utf-8")
-        cargo_text = re.sub(
-            r'^version\s*=\s*"[^"]+"',
-            f'version = "{semver}"',
-            cargo_text,
-            count=1,
-            flags=re.MULTILINE,
-        )
-        installer_cargo.write_text(cargo_text, encoding="utf-8")
-
-    return [
-        str(VERSION_FILE),
-        str(PYPROJECT_FILE),
-        str(DESKTOP_PKG_FILE),
-        str(PKG_LOCK_FILE),
-        str(UV_LOCK_FILE),
-    ] + [
-        str(extra)
-        for extra in (installer_pkg, installer_tauri, installer_cargo)
-        if extra.exists()
-    ]
+    return [str(VERSION_FILE), str(PYPROJECT_FILE), str(UV_LOCK_FILE)]
 
 
 def version_files_to_stage() -> list[str]:
     """Return version-bearing files that exist and should be `git add`ed after a bump."""
-    candidates = [
-        VERSION_FILE,
-        PYPROJECT_FILE,
-        PKG_LOCK_FILE,
-        UV_LOCK_FILE,
-        REPO_ROOT / "apps" / "desktop" / "package.json",
-        REPO_ROOT / "apps" / "bootstrap-installer" / "package.json",
-        REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "tauri.conf.json",
-        REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "Cargo.toml",
-    ]
+    candidates = [VERSION_FILE, PYPROJECT_FILE, UV_LOCK_FILE]
     return [str(path) for path in candidates if path.exists()]
 
 
@@ -2637,17 +2484,6 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
     lines.append("")
     lines.append(f"**Release Date:** {date_str}")
     lines.append("")
-    # The builds-pending job in desktop-bundled-release.yml replaces this
-    # marker with a "builds in progress" link to the run as soon as the
-    # workflow starts. The builds-table job then replaces the link with
-    # the download tables once every matrix leg has uploaded its
-    # artifacts to the R2 bucket (real object names, never predicted
-    # ones; the release body links point at the R2 public URL). A release
-    # whose matrix never finishes keeps the link — visibly unfinished,
-    # and it points at the run that stopped.
-    lines.append("<!-- HERMES_BUILDS_TABLE -->")
-    lines.append("")
-
     if first_release:
         lines.append("> 🎉 **First official release!** This marks the beginning of regular weekly releases")
         lines.append("> for Hermes Agent. See below for everything included in this initial release.")
@@ -2739,27 +2575,8 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
     return "\n".join(lines)
 
 
-def _canary_timestamp(tag: str) -> str | None:
-    """The YYYYMMDD[HHMMSS] UTC stamp embedded in a canary tag, or None."""
-    if not _CANARY_TAG_RE.fullmatch(tag):
-        return None
-    return tag.split("-canary.", 1)[1]
-
-
-def _stamp_epoch(stamp: str) -> int | None:
-    """Epoch seconds for a YYYYMMDD or YYYYMMDDHHMMSS UTC stamp."""
-    try:
-        if len(stamp) == 14:
-            return int(datetime.strptime(stamp, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).timestamp())
-        if len(stamp) == 8:
-            return int(datetime.strptime(stamp, "%Y%m%d").replace(tzinfo=timezone.utc).timestamp())
-    except ValueError:
-        pass
-    return None
-
-
 def cmd_canary(args) -> None:
-    """--canary: tag + draft today's canary prerelease.
+    """--canary: tag and publish today's canary prerelease.
 
     Owns ALL the tag math (the workflow passes only --publish/--remote):
     next-MINOR over the newest stable tag, dated suffix, changelog since
@@ -2767,13 +2584,8 @@ def cmd_canary(args) -> None:
     bump, no commit — the tag points at HEAD as-is, and the stamp's
     displayVersion carries the canary version from the tag.
 
-    Created as a DRAFT prerelease, for the same reason the stable path
-    drafts: a published release with no installers attached is a release
-    users can reach and cannot use. The desktop matrix attaches the
-    installers to this draft by tag, and the canary workflow's publish
-    job flips it to published only after that matrix is green. A failed
-    bundle therefore leaves an inspectable draft rather than a broken
-    canary.
+    Published as a prerelease with source notes; no bundled application
+    artifacts are produced.
 
     Exits 0 with "nothing to do" when HEAD is already tagged by the last
     canary — the skip-if-no-new-commits gate lives HERE, not in workflow
@@ -2793,25 +2605,6 @@ def cmd_canary(args) -> None:
         print(f"✓ {tag_name} already exists — nothing to do.")
         return
 
-    # The canary MSIX build number is minutes-since-the-last-stable (see
-    # msix-shared.mjs). Two canaries of the same LINE cut within the SAME
-    # minute would share a build number → identical MSIX version → App
-    # Installer refuses the second over the first. Refuse the second cut
-    # loudly instead of shipping an uninstallable equal-version package.
-    # (A same-minute cut on a NEW line — after a fresh stable — is fine: the
-    # patch bump already outversions the old line, so no collision.)
-    prev_ts = _canary_timestamp(prev_canary) if prev_canary else None
-    same_line = bool(prev_canary) and prev_canary.split("-canary.", 1)[0] == tag_name.split("-canary.", 1)[0]
-    prev_min = _stamp_epoch(prev_ts) // 60 if prev_ts and _stamp_epoch(prev_ts) is not None else None
-    cur_min = _stamp_epoch(date_utc) // 60 if _stamp_epoch(date_utc) is not None else None
-    if same_line and prev_min is not None and prev_min == cur_min:
-        print(
-            f"✗ {tag_name} is in the same minute as {prev_canary} — they would "
-            "share an MSIX build number (minutes since the last stable). Wait a "
-            "minute and re-run."
-        )
-        return
-
     if prev_canary:
         head = git("rev-parse", "HEAD")
         if head and head == git("rev-parse", f"{prev_canary}^{{commit}}"):
@@ -2823,26 +2616,9 @@ def cmd_canary(args) -> None:
         print(f"✓ No new commits since {since} — nothing to do.")
         return
 
-    # MSIX version components are 16-bit (makeappx rejects >65535). The
-    # canary build number is minutes-since-the-last-stable, which crosses
-    # the cap at 45.5 days. A canary cut on a stable base older than 45
-    # days cannot carry a legal build number — fail loudly, never clamp (a
-    # clamped number would break monotonicity and the update path).
-    stable_epoch = git("log", "-1", "--format=%ct", stable_tag)
-    canary_epoch = _stamp_epoch(date_utc)
-    if stable_epoch.isdigit() and canary_epoch is not None:
-        days_old = (canary_epoch - int(stable_epoch)) / 86400
-        if days_old > 45:
-            print(
-                f"✗ {stable_tag} is {days_old:.1f} days old — a canary cut now "
-                "would overflow the 16-bit MSIX build number (minutes since "
-                "this stable). Cut a stable release first."
-            )
-            sys.exit(1)
-
     version = tag_name.lstrip("v")
     print(f"Canary: {tag_name} ({len(commits)} commits since {since})")
-    changelog = generate_changelog(
+    changelog = "Bug fixes, features, and performance improvements." if args.no_changelog else generate_changelog(
         commits, tag_name, version, prev_tag=since, first_release=False
     )
 
@@ -2870,7 +2646,6 @@ def cmd_canary(args) -> None:
     changelog_file.write_text(changelog, encoding="utf-8")
     gh_cmd = [
         "gh", "release", "create", tag_name,
-        "--draft",
         "--prerelease",
         # Abort rather than let gh invent a tag: without this it creates a
         # missing tag from the default branch's tip, which would silently
@@ -2890,13 +2665,9 @@ def cmd_canary(args) -> None:
         print(f"    Notes kept at {changelog_file}; tag {tag_name} is pushed.")
         sys.exit(1)
     changelog_file.unlink(missing_ok=True)
-    print(f"✓ Canary prerelease drafted: {result.stdout.strip()}")
-    # The build stages the installers to the R2 bucket and, for a canary
-    # tag, publishes it when the whole matrix is green.
-    dispatch_desktop_build(tag_name, gh_repo)
-    # Record the tag for any workflow step that wants it. release.py
-    # starts the build itself, so nothing consumes this today; it stays
-    # because a step output is the cheap, conventional handle for "which
+    print(f"✓ Canary prerelease published: {result.stdout.strip()}")
+    # Record the tag for any workflow step that wants the conventional
+    # handle for "which
     # tag did this run cut".
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output:
@@ -2971,6 +2742,8 @@ def main():
                         help="Mark as first release (no previous tag expected)")
     parser.add_argument("--output", type=str,
                         help="Write changelog to file instead of stdout")
+    parser.add_argument("--no-changelog", action="store_true",
+                        help="Skip changelog")
     args = parser.parse_args()
 
     if args.canary and args.bump:
@@ -3091,13 +2864,7 @@ def main():
             print("    Continue manually after fixing access:")
             print(f"    git push {push_remote} HEAD --tags")
 
-        # Create the GitHub release as a DRAFT (it carries the notes only),
-        # then start the desktop build. The build stages the installers and
-        # feed files to the R2 bucket and the finalize job publishes the
-        # feeds; the builds-table job renders the download links into this
-        # draft's body. Publishing now would expose an artifact-less
-        # release; a stable release is published by hand once the matrix
-        # is green.
+        # Create the GitHub source release as a draft for manual review.
         changelog_file = REPO_ROOT / ".release_notes.md"
         changelog_file.write_text(changelog, encoding="utf-8")
 
@@ -3129,10 +2896,8 @@ def main():
         if result and result.returncode == 0:
             changelog_file.unlink(missing_ok=True)
             print(f"  ✓ GitHub draft release created: {result.stdout.strip()}")
-            dispatch_desktop_build(tag_name, gh_repo)
             print(f"\n  🎉 Release v{new_version} ({tag_name}) drafted!")
-            print("     The Desktop Bundled Release workflow stages installers to the R2 bucket.")
-            print("     Publish once it is green:")
+            print("     Publish when ready:")
             repo_flag = f" --repo {gh_repo}" if gh_repo else ""
             print(f"     gh release edit {tag_name}{repo_flag} --draft=false")
         else:

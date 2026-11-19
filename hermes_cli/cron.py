@@ -32,7 +32,7 @@ def _cron_api(**kwargs):
 
 
 def _active_cron_provider_name() -> str:
-    """Resolved cron scheduler provider name ('builtin', 'chronos', …); 'builtin' on failure."""
+    """Resolved cron scheduler provider name ('builtin' or an external provider); 'builtin' on failure."""
     try:
         from cron.scheduler_provider import resolve_cron_scheduler
         return resolve_cron_scheduler().name or "builtin"
@@ -165,8 +165,15 @@ def _unverified_targets(unverified) -> str:
 _STATE_BADGES = {"paused": ("[paused]", Colors.YELLOW), "completed": ("[completed]", Colors.BLUE)}
 
 
-def cron_list(show_all: bool = False):
-    """List all scheduled jobs."""
+def cron_list(show_all: bool = False, as_json: bool = False):
+    """List all scheduled jobs. ``as_json`` prints the exact payload the agent
+    ``cronjob`` tool returns for action='list', so scripts never scrape the
+    human table."""
+    if as_json:
+        result = _cron_api(action="list", include_disabled=show_all)
+        print(json.dumps(result, indent=2))
+        return
+
     from cron.jobs import effective_job_state, list_jobs
     jobs = list_jobs(include_disabled=show_all)
 
@@ -644,13 +651,21 @@ def cron_doctor() -> int:
 
 _JOB_ARG_FIELDS = (("name", "name"), ("deliver", "deliver"), ("failure_deliver", "failure_deliver"),
                    ("repeat", "repeat"), ("script", "script"), ("workdir", "workdir"),
-                   ("model", "model"), ("provider", "model_provider"),
                    ("monitor_script", "monitor_script"), ("monitor_url", "monitor_url"),
                    ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"))
 
 
+def _warn_ignored_model_pins(args) -> None:
+    """Per-job model/provider pins are removed; --model/--provider are accepted no-ops."""
+    if getattr(args, "model", None) or getattr(args, "model_provider", None):
+        print(color("⚠ per-job cron model/provider pins are removed; jobs always use the "
+                    "fleet default (cron.model config override > global default). "
+                    "--model/--provider ignored.", Colors.YELLOW))
+
+
 def _job_api_kwargs(args) -> Dict[str, Any]:
     """Collect the create/update kwargs shared by ``cron create`` and ``cron edit``."""
+    _warn_ignored_model_pins(args)
     return {api_key: getattr(args, attr, None) for api_key, attr in _JOB_ARG_FIELDS}
 
 
@@ -726,6 +741,12 @@ def cron_edit(args):
                        schedule=getattr(args, "schedule", None),
                        prompt=getattr(args, "prompt", None), skills=final_skills,
                        no_agent=getattr(args, "no_agent", None), **_job_api_kwargs(args))
+    if not result.get("success") and str(result.get("error", "")).startswith("No updates provided") and (
+            getattr(args, "model", None) or getattr(args, "model_provider", None)):
+        # Only deprecated model/provider flags were passed: nothing to write, treat as a no-op.
+        print(color(f"Updated job: {job.get('name', args.job_id)} ({args.job_id}) — "
+                    "no other changes requested", Colors.GREEN))
+        return 0
     if not result.get("success"):
         print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))
         return 1
@@ -855,7 +876,7 @@ def cron_notepad(args) -> int:
 
 # Late-bound lambdas keep module-level monkeypatching working; list/status/runs return None -> 0.
 _CRON_SUBCOMMANDS = {
-    "list": lambda a: cron_list(getattr(a, "all", False)) or 0,
+    "list": lambda a: cron_list(getattr(a, "all", False), getattr(a, "json", False)) or 0,
     "status": lambda a: cron_status() or 0,
     "doctor": lambda a: cron_doctor(),
     "tick": lambda a: cron_tick(),

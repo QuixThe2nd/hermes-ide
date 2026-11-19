@@ -387,76 +387,6 @@ def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
 
 
 
-def test_model_flow_nous_does_not_restore_stale_custom_api_key(tmp_path, monkeypatch):
-    import yaml
-
-    config_home = tmp_path / "hermes"
-    config_home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(config_home))
-
-    config_path = config_home / "config.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "model": {
-                    "provider": "custom",
-                    "default": "glm-5.2",
-                    "base_url": "https://api.neuralwatt.com/v1",
-                    "api_key": "${NEURALWATT_API_KEY}",
-                    "api_mode": "chat_completions",
-                }
-            },
-            sort_keys=False,
-        )
-    )
-
-    stale_config = yaml.safe_load(config_path.read_text()) or {}
-    selected_model = "deepseek/deepseek-v4-flash"
-
-    monkeypatch.setattr(
-        "hermes_cli.auth.get_provider_auth_state",
-        lambda provider: {
-            "access_token": "nous-token",
-            "portal_base_url": "https://portal.example.com",
-        },
-    )
-    monkeypatch.setattr(
-        "hermes_cli.auth.resolve_nous_runtime_credentials",
-        lambda *args, **kwargs: {
-            "base_url": "https://inference-api.nousresearch.com/v1",
-            "api_key": "nous-key",
-        },
-    )
-    monkeypatch.setattr(
-        "hermes_cli.models.get_curated_nous_model_ids",
-        lambda: [selected_model],
-    )
-    monkeypatch.setattr("hermes_cli.models_pricing.get_pricing_for_provider", lambda provider: {})
-    monkeypatch.setattr("hermes_cli.models.check_nous_free_tier", lambda **kwargs: False)
-    monkeypatch.setattr(
-        "hermes_cli.models.union_with_portal_paid_recommendations",
-        lambda model_ids, pricing, portal_url: (model_ids, pricing),
-    )
-    monkeypatch.setattr(
-        "hermes_cli.auth._prompt_model_selection",
-        lambda *args, **kwargs: selected_model,
-    )
-    monkeypatch.setattr(
-        "hermes_cli.nous_subscription.prompt_enable_tool_gateway",
-        lambda config: None,
-    )
-
-    hermes_main._model_flow_nous(stale_config, current_model="glm-5.2")
-
-    config = yaml.safe_load(config_path.read_text()) or {}
-    model = config.get("model")
-    assert model["provider"] == "nous"
-    assert model["default"] == selected_model
-    assert model["base_url"] == "https://inference-api.nousresearch.com/v1"
-    assert "api_key" not in model
-    assert "api_mode" not in model
-
-
 def _seed_stale_custom_model(tmp_path, monkeypatch):
     import yaml
 
@@ -700,59 +630,6 @@ def test_model_flow_custom_persists_selected_api_mode(monkeypatch):
     key_env = captured_provider["key_env"]
     assert saved_cfg["model"]["api_key"] == f"${{{key_env}}}"
     assert saved_env[key_env] == "test-key"
-
-
-def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
-    monkeypatch.setattr(hermes_main, "_require_tty", lambda *a: None)
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config",
-        lambda: {"model": {"default": "gpt-5", "provider": "nous"}},
-    )
-    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
-    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda key: "")
-    monkeypatch.setattr("hermes_cli.config.save_env_value", lambda key, value: None)
-    monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda requested, **kwargs: "nous")
-    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider_id: None)
-    monkeypatch.setattr(hermes_main, "_prompt_provider_choice", lambda choices, **kwargs: 0)
-    monkeypatch.setattr(hermes_cli_main_provider_setup, "_prompt_provider_choice", lambda choices, **kwargs: 0)
-
-    captured = {}
-
-    def _fake_login(login_args, provider_config):
-        captured["portal_url"] = login_args.portal_url
-        captured["inference_url"] = login_args.inference_url
-        captured["client_id"] = login_args.client_id
-        captured["scope"] = login_args.scope
-        captured["no_browser"] = login_args.no_browser
-        captured["timeout"] = login_args.timeout
-        captured["ca_bundle"] = login_args.ca_bundle
-        captured["insecure"] = login_args.insecure
-
-    monkeypatch.setattr("hermes_cli.auth._login_nous", _fake_login)
-
-    hermes_main.cmd_model(
-        SimpleNamespace(
-            portal_url="https://portal.nousresearch.com",
-            inference_url="https://inference.nousresearch.com/v1",
-            client_id="hermes-local",
-            scope="openid profile",
-            no_browser=True,
-            timeout=7.5,
-            ca_bundle="/tmp/local-ca.pem",
-            insecure=True,
-        )
-    )
-
-    assert captured == {
-        "portal_url": "https://portal.nousresearch.com",
-        "inference_url": "https://inference.nousresearch.com/v1",
-        "client_id": "hermes-local",
-        "scope": "openid profile",
-        "no_browser": True,
-        "timeout": 7.5,
-        "ca_bundle": "/tmp/local-ca.pem",
-        "insecure": True,
-    }
 
 
 # ---------------------------------------------------------------------------

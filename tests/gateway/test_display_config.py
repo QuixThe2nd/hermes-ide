@@ -13,15 +13,15 @@ class TestToolProgressProvenance:
             ({}, None, ("off", False)),
             ({}, "all", ("all", True)),
             ({"tool_progress": None}, "all", ("all", True)),
-            ({"platforms": {"slack": {"tool_progress": None}}}, "off", ("off", True)),
-            ({"tool_progress_overrides": {"slack": None}}, "new", ("new", True)),
+            ({"platforms": {"whatsapp_cloud": {"tool_progress": None}}}, "off", ("off", True)),
+            ({"tool_progress_overrides": {"whatsapp_cloud": None}}, "new", ("new", True)),
             ({"tool_progress": False}, "all", ("off", True)),
-            ({"tool_progress": "all", "platforms": {"slack": {"tool_progress": None}}}, "off", ("all", True)),
-            ({"tool_progress": "off", "tool_progress_overrides": {"slack": "new"}}, "all", ("new", True)),
-            ({"tool_progress_overrides": {"slack": "off"}, "platforms": {"slack": {"tool_progress": "all"}}}, None, ("all", True)),
+            ({"tool_progress": "all", "platforms": {"whatsapp_cloud": {"tool_progress": None}}}, "off", ("all", True)),
+            ({"tool_progress": "off", "tool_progress_overrides": {"whatsapp_cloud": "new"}}, "all", ("new", True)),
+            ({"tool_progress_overrides": {"whatsapp_cloud": "off"}, "platforms": {"whatsapp_cloud": {"tool_progress": "all"}}}, None, ("all", True)),
         ]
         for display, env, expected in cases:
-            assert resolve_tool_progress({"display": display}, "slack", env) == expected
+            assert resolve_tool_progress({"display": display}, "whatsapp_cloud", env) == expected
 
 
 class TestResolveDisplaySetting:
@@ -35,11 +35,11 @@ class TestResolveDisplaySetting:
             "display": {
                 "tool_progress": "all",
                 "platforms": {
-                    "telegram": {"tool_progress": "verbose"},
+                    "whatsapp": {"tool_progress": "verbose"},
                 },
             }
         }
-        assert resolve_display_setting(config, "telegram", "tool_progress") == "verbose"
+        assert resolve_display_setting(config, "whatsapp", "tool_progress") == "verbose"
 
     def test_global_setting_when_no_platform_override(self):
         """Falls back to display.<key> when no platform override exists."""
@@ -51,7 +51,7 @@ class TestResolveDisplaySetting:
                 "platforms": {},
             }
         }
-        assert resolve_display_setting(config, "telegram", "tool_progress") == "new"
+        assert resolve_display_setting(config, "whatsapp", "tool_progress") == "new"
 
 
     def test_platform_override_only_affects_that_platform(self):
@@ -67,7 +67,7 @@ class TestResolveDisplaySetting:
             }
         }
         assert resolve_display_setting(config, "slack", "tool_progress") == "off"
-        assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
+        assert resolve_display_setting(config, "whatsapp", "tool_progress") == "all"
 
 
 # ---------------------------------------------------------------------------
@@ -86,12 +86,12 @@ class TestBackwardCompat:
                 "tool_progress": "all",
                 "tool_progress_overrides": {
                     "signal": "off",
-                    "telegram": "verbose",
+                    "whatsapp": "verbose",
                 },
             }
         }
         assert resolve_display_setting(config, "signal", "tool_progress") == "off"
-        assert resolve_display_setting(config, "telegram", "tool_progress") == "verbose"
+        assert resolve_display_setting(config, "whatsapp", "tool_progress") == "verbose"
 
 
 # ---------------------------------------------------------------------------
@@ -106,44 +106,8 @@ class TestYAMLNormalisation:
         from gateway.display_config import resolve_display_setting
 
         config = {"display": {"tool_progress": False}}
-        assert resolve_display_setting(config, "telegram", "tool_progress") == "off"
+        assert resolve_display_setting(config, "whatsapp", "tool_progress") == "off"
 
-
-    def test_only_long_running_visibility_accepts_generic_mode(self):
-        from gateway.display_config import resolve_display_setting
-
-        config = {
-            "display": {
-                "platforms": {
-                    "whatsapp": {
-                        "thinking_progress": "generic",
-                        "interim_assistant_messages": "generic",
-                        "long_running_notifications": "generic",
-                    }
-                }
-            }
-        }
-        assert resolve_display_setting(config, "whatsapp", "thinking_progress") is False
-        assert resolve_display_setting(config, "whatsapp", "interim_assistant_messages") is False
-        assert resolve_display_setting(config, "whatsapp", "long_running_notifications") == "generic"
-
-    def test_long_running_notifications_accepts_phase_mode(self):
-        from gateway.display_config import resolve_display_setting
-
-        config = {
-            "display": {
-                "platforms": {
-                    "whatsapp": {
-                        "thinking_progress": "phase",
-                        "interim_assistant_messages": "phase",
-                        "long_running_notifications": "phase",
-                    }
-                }
-            }
-        }
-        assert resolve_display_setting(config, "whatsapp", "thinking_progress") is False
-        assert resolve_display_setting(config, "whatsapp", "interim_assistant_messages") is False
-        assert resolve_display_setting(config, "whatsapp", "long_running_notifications") == "phase"
 
     def test_thinking_progress_string_false_normalised_to_false(self):
         from gateway.display_config import resolve_display_setting
@@ -160,68 +124,37 @@ class TestPlatformDefaults:
     """Built-in defaults reflect platform capability tiers."""
 
     def test_high_tier_platforms(self):
-        """Discord defaults to 'all'; Telegram defaults quiet for mobile."""
+        """Discord (tier_high) defaults to 'describe'; matrix (tier_medium) to 'new'."""
         from gateway.display_config import resolve_display_setting
 
-        # Telegram: tier_high transport, but quiet mobile default.
-        assert resolve_display_setting({}, "telegram", "tool_progress") == "off"
         # Discord: pure tier_high.
-        assert resolve_display_setting({}, "discord", "tool_progress") == "all"
+        assert resolve_display_setting({}, "discord", "tool_progress") == "describe"
+        # Matrix: tier_medium — editing support, but quieter default.
+        assert resolve_display_setting({}, "matrix", "tool_progress") == "new"
 
 
     def test_low_tier_platforms(self):
-        """Signal, BlueBubbles, etc. default to 'off' tool progress."""
+        """No-edit / batch platforms default to 'off' (or minimal) tool progress."""
         from gateway.display_config import resolve_display_setting
 
-        for plat in ("signal", "bluebubbles", "weixin", "wecom", "dingtalk", "whatsapp_cloud"):
+        for plat in ("whatsapp_cloud", "webhook"):
             assert resolve_display_setting({}, plat, "tool_progress") == "off", plat
 
 
-    def test_telegram_mobile_chatter_defaults(self):
-        """Telegram keeps real mid-turn signal (interim commentary + heartbeats)
-        but skips the verbose busy-ack iteration counter by default."""
+    def test_discord_chatter_defaults(self):
+        """Discord keeps interim commentary and busy-ack detail on
+        (desktop-first, more vertical space)."""
         from gateway.display_config import resolve_display_setting
 
-        # Real model voice — keep on. Without this, Telegram users see
-        # "typing..." for the entire turn duration with no feedback.
-        assert resolve_display_setting({}, "telegram", "interim_assistant_messages") is True
-        # Periodic "Working — N min" heartbeat — keep on. Otherwise long
-        # turns appear completely silent.
-        assert resolve_display_setting({}, "telegram", "long_running_notifications") is True
-        # Verbose iteration counter in busy-ack and heartbeat — off by
-        # default on Telegram (mobile chat is cramped enough without
-        # "iteration 21/60" debug detail).
-        assert resolve_display_setting({}, "telegram", "busy_ack_detail") is False
-        # Discord keeps interim commentary and busy-ack detail on
-        # (desktop-first, more vertical space), but its long-running
-        # heartbeat defaults to the phase line ("⏳ terminal 1m42s" /
-        # "⏳ grok-4.6 38s" / "⏳ packing 12s") rather than the raw
-        # diagnostic join.
         assert resolve_display_setting({}, "discord", "interim_assistant_messages") is True
-        assert resolve_display_setting({}, "discord", "long_running_notifications") == "phase"
         assert resolve_display_setting({}, "discord", "busy_ack_detail") is True
 
-    def test_discord_long_running_generic_still_resolves_when_configured(self):
-        """Users can opt Discord back into the catalog phrase ("generic")."""
+    def test_webhook_batch_chatter_defaults(self):
+        """Tier-minimal batch delivery (webhook) leaves no mid-turn breadcrumbs."""
         from gateway.display_config import resolve_display_setting
 
-        config = {
-            "display": {
-                "platforms": {"discord": {"long_running_notifications": "generic"}},
-            }
-        }
-        assert (
-            resolve_display_setting(config, "discord", "long_running_notifications")
-            == "generic"
-        )
-
-    def test_slack_workspace_chatter_defaults(self):
-        """Slack should not leave permanent heartbeat/debug breadcrumbs in channels."""
-        from gateway.display_config import resolve_display_setting
-
-        assert resolve_display_setting({}, "slack", "tool_progress") == "off"
-        assert resolve_display_setting({}, "slack", "long_running_notifications") is False
-        assert resolve_display_setting({}, "slack", "busy_ack_detail") is False
+        assert resolve_display_setting({}, "webhook", "tool_progress") == "off"
+        assert resolve_display_setting({}, "webhook", "busy_ack_detail") is False
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +174,7 @@ class TestConfigMigration:
             "display": {
                 "tool_progress_overrides": {
                     "signal": "off",
-                    "telegram": "all",
+                    "whatsapp": "all",
                 },
             },
         }
@@ -258,7 +191,7 @@ class TestConfigMigration:
         updated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         platforms = updated.get("display", {}).get("platforms", {})
         assert platforms.get("signal", {}).get("tool_progress") == "off"
-        assert platforms.get("telegram", {}).get("tool_progress") == "all"
+        assert platforms.get("whatsapp", {}).get("tool_progress") == "all"
 
 
 # ---------------------------------------------------------------------------
@@ -275,35 +208,10 @@ class TestStreamingPerPlatform:
 
         config = {
             "display": {
-                "platforms": {"telegram": {"streaming": False}},
+                "platforms": {"whatsapp": {"streaming": False}},
             }
         }
-        assert resolve_display_setting(config, "telegram", "streaming") is False
-
-    def test_wecom_default_is_streaming_enabled(self):
-        """WeCom has a native streaming transport (msgtype: stream) so its
-        built-in default opts into streaming even though it sits in the
-        non-editable tier."""
-        from gateway.display_config import resolve_display_setting
-
-        assert resolve_display_setting({}, "wecom", "streaming") is True
-
-    def test_wecom_callback_default_remains_off(self):
-        """The legacy callback adapter has no stream protocol — keep off."""
-        from gateway.display_config import resolve_display_setting
-
-        assert resolve_display_setting({}, "wecom_callback", "streaming") is False
-
-    def test_wecom_user_can_still_disable_streaming(self):
-        """Per-platform override beats the built-in default."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {
-            "display": {
-                "platforms": {"wecom": {"streaming": False}},
-            }
-        }
-        assert resolve_display_setting(config, "wecom", "streaming") is False
+        assert resolve_display_setting(config, "whatsapp", "streaming") is False
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +225,7 @@ class TestCleanupProgress:
         """No config set → cleanup_progress resolves to False everywhere."""
         from gateway.display_config import resolve_display_setting
 
-        for plat in ("telegram", "discord", "slack", "email"):
+        for plat in ("whatsapp", "discord", "slack", "email"):
             assert resolve_display_setting({}, plat, "cleanup_progress") is False
 
 
@@ -328,10 +236,10 @@ class TestCleanupProgress:
         for val in ("true", "yes", "on", "1"):
             config = {
                 "display": {
-                    "platforms": {"telegram": {"cleanup_progress": val}},
+                    "platforms": {"whatsapp": {"cleanup_progress": val}},
                 }
             }
-            assert resolve_display_setting(config, "telegram", "cleanup_progress") is True, val
+            assert resolve_display_setting(config, "whatsapp", "cleanup_progress") is True, val
 
 
 class TestToolProgressGrouping:
@@ -342,7 +250,7 @@ class TestToolProgressGrouping:
         from gateway.display_config import resolve_display_setting
 
         assert (
-            resolve_display_setting({}, "telegram", "tool_progress_grouping")
+            resolve_display_setting({}, "whatsapp", "tool_progress_grouping")
             == "accumulate"
         )
 
@@ -356,35 +264,35 @@ class TestToolProgressGrouping:
         )
 
 
-class TestReasoningStyle:
-    """Per-platform reasoning render style (code | blockquote | subtext | compact)."""
+class TestReasoningDisplay:
+    """Reasoning summaries have one hardcoded rendering per platform family."""
 
-    def test_discord_defaults_to_code(self):
-        from gateway.display_config import resolve_display_setting
+    def test_discord_uses_subtext_summary(self):
+        from gateway.display_config import format_reasoning_prefix
 
-        # Reasoning ships as its own fenced interim message on Discord, so the
-        # fenced code block is now the default there too (subtext is opt-in).
-        assert resolve_display_setting({}, "discord", "reasoning_style") == "code"
+        assert format_reasoning_prefix("Compare options.", "discord") == (
+            "-# 💭 Reasoned about Compare options."
+        )
 
-    def test_other_platforms_default_to_code(self):
-        from gateway.display_config import resolve_display_setting
+    def test_other_platforms_use_italic_summary(self):
+        from gateway.display_config import format_reasoning_prefix
 
-        for plat in ("telegram", "slack", "matrix", "api_server"):
-            assert (
-                resolve_display_setting({}, plat, "reasoning_style") == "code"
+        for plat in ("whatsapp", "slack", "matrix", "api_server"):
+            assert format_reasoning_prefix("Compare options.", plat) == (
+                "_💭 Reasoned about Compare options._"
             ), plat
 
-    def test_compact_is_a_valid_style(self):
-        from gateway.display_config import resolve_display_setting
+    def test_only_first_non_empty_line_is_rendered(self):
+        from gateway.display_config import format_reasoning_prefix
 
-        config = {"display": {"reasoning_style": "compact"}}
-        assert resolve_display_setting(config, "discord", "reasoning_style") == "compact"
+        assert format_reasoning_prefix("\nCompare options.\nOmit this.", "discord") == (
+            "-# 💭 Reasoned about Compare options."
+        )
 
-    def test_unknown_style_still_coerces_to_code(self):
-        from gateway.display_config import resolve_display_setting
+    def test_empty_reasoning_has_no_prefix(self):
+        from gateway.display_config import format_reasoning_prefix
 
-        config = {"display": {"reasoning_style": "summary"}}
-        assert resolve_display_setting(config, "discord", "reasoning_style") == "code"
+        assert format_reasoning_prefix(" \n\t", "discord") == ""
 
 
 class TestLiveStatusSetting:
@@ -396,3 +304,31 @@ class TestLiveStatusSetting:
         assert resolve_display_setting({}, "slack", "live_status") == "full"
 
 
+
+
+class TestToolProgressDefaults:
+    """display.tool_progress defaults to describe; explicit config wins."""
+
+    def test_unconfigured_discord_defaults_to_describe(self):
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "discord", "tool_progress") == "describe"
+
+    def test_explicit_overrides_win(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"tool_progress": "all"}}
+        assert resolve_display_setting(config, "discord", "tool_progress") == "all"
+
+    def test_boolean_true_still_means_verbose_all(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"tool_progress": True}}
+        assert resolve_display_setting(config, "discord", "tool_progress") == "all"
+
+    def test_quiet_tiers_stay_quiet(self):
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "whatsapp_cloud", "tool_progress") == "off"
+        assert resolve_display_setting({}, "webhook", "tool_progress") == "off"
+        assert resolve_display_setting({}, "matrix", "tool_progress") == "new"

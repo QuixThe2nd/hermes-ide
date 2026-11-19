@@ -33,7 +33,7 @@ def _event(text: str):
     event = MagicMock()
     event.text = text
     event.session_id = "20261025_120000_flush"
-    event.platform = "telegram"
+    event.platform = "discord"
     event.sender_id = "1"
     event.sender_name = "tester"
     event.reply_to = None
@@ -59,7 +59,7 @@ def test_overflow_flush_during_restart_stamped_and_noted_on_recovery(
     # Flush for real, then rewrite the stamp pid to the (dead) foreign pid the
     # probe confirms — the successor-process recovery scenario.
     assert flush_overflow_to_file(
-        {"agent:main:telegram:dm:1": [_event("orphan during restart")]},
+        {"agent:main:discord:dm:1": [_event("orphan during restart")]},
         reason="shutdown",
         restart_requested=True,
     ) == 1
@@ -85,7 +85,7 @@ def test_slot_flush_during_restart_dead_pid_noted(tmp_path, monkeypatch):
     flush_dir = _make_flush_dir(tmp_path)
     monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
     assert flush_pending_to_file(
-        {"agent:main:telegram:dm:1": _event("head during restart")},
+        {"agent:main:discord:dm:1": _event("head during restart")},
         reason="shutdown",
         restart_requested=True,
     ) == 1
@@ -107,7 +107,7 @@ def test_plain_shutdown_flush_has_no_stamp_and_no_note(tmp_path, monkeypatch):
     flush_dir = _make_flush_dir(tmp_path)
     monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
     assert flush_overflow_to_file(
-        {"agent:main:telegram:dm:1": [_event("plain shutdown")]}
+        {"agent:main:discord:dm:1": [_event("plain shutdown")]}
     ) == 1
     payload = json.loads(next(flush_dir.glob("*.json")).read_text(encoding="utf-8"))
     assert "restart_drain" not in payload
@@ -126,7 +126,7 @@ def test_same_pid_stamp_yields_no_note(tmp_path, monkeypatch):
     flush_dir = _make_flush_dir(tmp_path)
     monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
     payload = {
-        "session_key": "agent:main:telegram:dm:1",
+        "session_key": "agent:main:discord:dm:1",
         "reason": "shutdown",
         "ts": 1700000000,
         "restart_drain": {"requested": True, "pid": os.getpid()},
@@ -141,12 +141,12 @@ def test_same_pid_stamp_yields_no_note(tmp_path, monkeypatch):
 
 
 def test_note_renders_exactly_once_across_recovery_and_replay(tmp_path, monkeypatch):
-    """(4) One recovery bakes the note into stored content once; a replay of that
-    stored turn sees exactly one note (and the drained file cannot recover twice)."""
+    """(4) One recovery bakes the note into stored content exactly once (and the
+    drained file cannot recover twice — there is no replay path to double it)."""
     flush_dir = _make_flush_dir(tmp_path)
     monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
     assert flush_overflow_to_file(
-        {"agent:main:telegram:dm:1": [_event("once only")]},
+        {"agent:main:discord:dm:1": [_event("once only")]},
         restart_requested=True,
     ) == 1
     payload_path = next(flush_dir.glob("*.json"))
@@ -159,14 +159,6 @@ def test_note_renders_exactly_once_across_recovery_and_replay(tmp_path, monkeypa
     assert recover_pending_to_db(db) == 1
     db.append_message.assert_called_once()
     content = db.append_message.call_args.kwargs["content"]
-    assert content.count("[Gateway restart completed") == 1
-    # The turn-level seam (format_drain_restart_receipt) reads an event attribute
-    # the flushed-recovery path never sets, so replaying the stored row adds none.
-    from gateway.platforms.event import MessageEvent
-    from gateway.run_drain_queue import format_drain_restart_receipt
-
-    replayed = MessageEvent(text=content, source=MagicMock())
-    assert format_drain_restart_receipt(replayed) is None
     assert content.count("[Gateway restart completed") == 1
     # The flush file is consumed — no second recovery is possible.
     assert not list(flush_dir.glob("*.json"))
@@ -187,7 +179,7 @@ def test_flushed_stamp_negative_classes_yield_no_note(tmp_path, monkeypatch):
     }
     for name, stamp in cases.items():
         payload = {
-            "session_key": "agent:main:telegram:dm:1",
+            "session_key": "agent:main:discord:dm:1",
             "reason": "shutdown",
             "ts": 1700000000,
             "data": {"text": f"msg {name}", "session_id": f"sid-{name}"},

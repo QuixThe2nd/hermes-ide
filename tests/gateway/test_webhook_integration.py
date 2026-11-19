@@ -3,7 +3,7 @@
 These tests exercise end-to-end flows through the webhook adapter:
 1. GitHub PR webhook → agent MessageEvent created
 2. Skills config injects skill content into the prompt
-3. Cross-platform delivery routes to a mock Telegram adapter
+3. Cross-platform delivery routes to a mock Discord adapter
 4. GitHub comment delivery invokes ``gh`` CLI (mocked subprocess)
 """
 
@@ -207,35 +207,35 @@ class TestSkillsInjection:
 
 
 # ===================================================================
-# Test 3: Cross-platform delivery (webhook → Telegram)
+# Test 3: Cross-platform delivery (webhook → Discord)
 # ===================================================================
 
 class TestCrossPlatformDelivery:
 
     @pytest.mark.asyncio
     async def test_cross_platform_delivery(self):
-        """When deliver='telegram', the response is routed to the
-        Telegram adapter via gateway_runner.adapters."""
+        """When deliver='discord', the response is routed to the
+        Discord adapter via gateway_runner.adapters."""
         routes = {
             "alerts": {
                 "secret": _INSECURE_NO_AUTH,
                 "prompt": "Alert: {message}",
-                "deliver": "telegram",
+                "deliver": "discord",
                 "deliver_extra": {"chat_id": "12345"},
             }
         }
         adapter = _make_adapter(routes)
         adapter.handle_message = AsyncMock()
 
-        # Set up a mock gateway runner with a mock Telegram adapter
-        mock_tg_adapter = AsyncMock()
-        mock_tg_adapter.send = AsyncMock(return_value=SendResult(success=True))
+        # Set up a mock gateway runner with a mock Discord adapter
+        mock_discord_adapter = AsyncMock()
+        mock_discord_adapter.send = AsyncMock(return_value=SendResult(success=True))
 
         mock_runner = MagicMock()
-        mock_runner.adapters = {Platform.TELEGRAM: mock_tg_adapter}
+        mock_runner.adapters = {Platform.DISCORD: mock_discord_adapter}
         mock_runner._authorization_adapter = lambda platform, profile=None: mock_runner.adapters.get(platform)
         mock_runner.config = GatewayConfig(
-            platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")}
+            platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="fake")}
         )
         adapter.gateway_runner = mock_runner
 
@@ -257,7 +257,7 @@ class TestCrossPlatformDelivery:
         result = await adapter.send(chat_id, "I've acknowledged the alert.")
 
         assert result.success is True
-        mock_tg_adapter.send.assert_awaited_once_with(
+        mock_discord_adapter.send.assert_awaited_once_with(
             "12345", "I've acknowledged the alert.", metadata=None
         )
         # Delivery info is retained after send() so interim status messages

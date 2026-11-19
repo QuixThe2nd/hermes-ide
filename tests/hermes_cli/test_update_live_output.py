@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from hermes_cli import main_dashboard as output
+from hermes_cli import main_update_output as output
 from hermes_cli import update_cmd
 
 

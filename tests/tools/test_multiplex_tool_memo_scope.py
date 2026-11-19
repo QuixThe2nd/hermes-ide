@@ -35,15 +35,12 @@ def _under(home, fn):
         reset_hermes_home_override(token)
 
 
-def test_checkpoint_and_snapshot_paths_follow_active_profile(two_profiles):
+def test_checkpoint_paths_follow_active_profile(two_profiles):
     import tools.process_registry as pr
-    from tools.environments import modal, singularity
 
     prof_a, prof_b = two_profiles
     _under(prof_a, pr._checkpoint_path)  # warm under A
     assert _under(prof_b, pr._checkpoint_path) == prof_b / "processes.json"
-    assert _under(prof_b, modal._snapshot_store) == prof_b / "modal_snapshots.json"
-    assert _under(prof_b, singularity._snapshot_store) == prof_b / "singularity_snapshots.json"
     assert _under(prof_a, pr._checkpoint_path) == prof_a / "processes.json"
 
 
@@ -72,11 +69,10 @@ def test_config_caches_are_keyed_by_profile(two_profiles):
 def test_schema_path_hints_follow_active_profile(two_profiles):
     import tools.cronjob_tools  # noqa: F401  (registers cronjob_manage)
     import tools.skill_manager_tool  # noqa: F401
-    import tools.tts_tool  # noqa: F401
     from tools.registry import registry
 
     prof_a, prof_b = two_profiles
-    names = {"cronjob_manage", "text_to_speech", "skill_manage"}
+    names = {"cronjob_manage", "skill_manage"}
 
     def definitions():
         return json.dumps(registry.get_definitions(names, quiet=True))

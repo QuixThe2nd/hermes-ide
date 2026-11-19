@@ -108,14 +108,14 @@ def test_successful_marker_ending_output_survives_persisted_replay(tmp_path):
 
     from agent.codex_runtime import _persist_projected_messages
     from agent.replay_cleanup import canonicalize_replay_history
-    from agent.session_persistence import SessionPersistenceMixin
     from hermes_state import SessionDB
+    from run_agent import AIAgent
 
     output = "Documentation example:\n[Command interrupted]\n"
     item = {"type": "commandExecution", "id": "child", "command": "cat doc", "cwd": str(tmp_path),
             "status": "completed", "exitCode": 0, "aggregatedOutput": output}
     projected = CodexEventProjector().project({"method": "item/completed", "params": {"item": item}}).messages
-    store = SessionPersistenceMixin()
+    store = object.__new__(AIAgent)
     store._session_db = SessionDB(tmp_path / "session.db")
     store.session_id = "command-replay"
     store._session_db.create_session(store.session_id, source="cli")

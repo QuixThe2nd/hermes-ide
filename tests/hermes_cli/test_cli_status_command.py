@@ -32,31 +32,6 @@ def test_status_command_is_available_in_cli_registry():
     assert cmd.gateway_only is False
 
 
-def test_egress_command_is_available_in_cli_registry():
-    cmd = resolve_command("egress")
-    assert cmd is not None
-    assert cmd.gateway_only is False
-    assert "status" in cmd.subcommands
-
-
-
-
-def test_process_command_egress_prints_proxy_status(monkeypatch):
-    cli_obj = _make_cli()
-    monkeypatch.setattr(
-        "hermes_cli.proxy_cli.format_status_text",
-        lambda: "Egress proxy status\nEnabled: no",
-    )
-
-    assert cli_obj.process_command("/egress") is True
-
-    cli_obj.console.print.assert_called()
-    printed = "\n".join(str(call.args[0]) for call in cli_obj.console.print.call_args_list)
-    assert "Egress proxy status" in printed
-
-
-
-
 def test_status_prefix_prefers_status_command_over_statusbar_toggle():
     cli_obj = _make_cli()
 
@@ -94,8 +69,8 @@ def test_show_session_status_prints_gateway_style_summary():
     assert kwargs.get("markup") is False
 
 
-def test_show_session_status_includes_reasoning_approvals_context():
-    """C-02: /status surfaces reasoning level, approval mode, and context %."""
+def test_show_session_status_includes_reasoning_context():
+    """C-02: /status surfaces reasoning level and context %."""
     cli_obj = _make_cli()
     cli_obj.agent = SimpleNamespace(session_total_tokens=1000, session_api_calls=2,
                                     reasoning_config={"enabled": True, "effort": "high"})
@@ -107,14 +82,11 @@ def test_show_session_status_includes_reasoning_approvals_context():
         "context_tokens": 50000, "context_length": 200000, "context_percent": 25,
     }
 
-    with patch("hermes_constants.display_hermes_home", return_value="~/.hermes"), \
-         patch("tools.approval_context._get_approval_mode", return_value="manual"), \
-         patch("tools.approval.is_approval_bypass_active_for_session", return_value=False):
+    with patch("hermes_constants.display_hermes_home", return_value="~/.hermes"):
         cli_obj._show_session_status()
 
     printed = "\n".join(str(call.args[0]) for call in cli_obj.console.print.call_args_list)
     assert "Reasoning: high (display: on)" in printed
-    assert "Approvals: manual" in printed
     assert "Context: 75% left · 50,000 / 200,000 tokens used" in printed
 
 

@@ -143,7 +143,7 @@ class TestRunJobScript:
         assert success is True
         assert output == "ABSENT"
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_uv_venv_python_script_bypasses_launcher(self, cron_env, tmp_path, monkeypatch):
         # Windows-only: the real ``Scripts/python.exe`` launcher layout and
         # CREATE_NO_WINDOW creationflags this branch exists for cannot be
@@ -234,7 +234,7 @@ class TestRunJobScript:
         )
         assert captured["kwargs"]["creationflags"] == expected_flags
         env = captured["kwargs"]["env"]
-        assert env["VIRTUAL_ENV"] == str(venv)
+        assert "VIRTUAL_ENV" not in env  # store-python boot uses explicit import paths
         assert str(site_packages) in env["PYTHONPATH"]
 
     def test_bootstrap_argv_makes_pth_editable_installs_importable(self, cron_env, tmp_path):
@@ -648,7 +648,7 @@ class TestRunJobEnvVarCleanup:
             "prompt": "test",
             "schedule_display": "every 1h",
             "origin": {
-                "platform": "telegram",
+                "platform": "discord",
                 "chat_id": "12345",
                 "chat_name": "Test Chat",
             },

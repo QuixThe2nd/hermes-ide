@@ -163,9 +163,7 @@ class TestRuntimeFtsRebuild:
         (
             ("/usr/local/bin/hermes", "gateway"),
             ("/usr/local/bin/hermes-agent", "serve"),
-            ("/usr/local/bin/hermes-acp", "--stdio"),
             ("/usr/bin/python3", "-m", "hermes_cli.main", "gateway"),
-            ("/usr/bin/python3", "-m", "acp_adapter"),
             ("/usr/bin/python3", "-Im", "hermes_cli.main", "gateway"),
             ("/usr/bin/python3", "-mhermes_cli.main", "gateway"),
             ("/usr/bin/python3", "-W", "ignore", "-m", "hermes_cli.main"),
@@ -182,7 +180,7 @@ class TestRuntimeFtsRebuild:
     def test_uninspectable_hermes_process_remains_a_holder(self, argv):
         assert hermes_state_holders._looks_like_hermes(argv)
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_foreign_holder_detection_proc_readlink_deleted_wal(
         self, db, tmp_path, monkeypatch
     ):
@@ -237,7 +235,7 @@ class TestRuntimeFtsRebuild:
         holders = hermes_state_holders.foreign_state_db_holders(db_path)
         assert holders == [(222, db_path_wal + " (deleted)")]
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     @pytest.mark.parametrize("different_device", (False, True))
     def test_foreign_holder_ignores_same_path_with_different_file_identity(
         self, db, tmp_path, monkeypatch, different_device
@@ -295,7 +293,7 @@ class TestRuntimeFtsRebuild:
 
         assert hermes_state_holders.foreign_state_db_holders(db_path) == []
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_foreign_holder_uninspectable_process_cmdline_fallback(
         self, db, tmp_path, monkeypatch
     ):

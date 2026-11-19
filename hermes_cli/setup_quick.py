@@ -1,8 +1,7 @@
-"""Streamlined setup flows: the Nous Portal one-shot (`hermes portal`), first-time quick setup,
-Blank Slate setup and the `--quick` missing-items pass. Names from setup.py are imported lazily
-per function so test patches on ``hermes_cli.setup`` take effect."""
+"""Streamlined setup flows: Blank Slate setup and the ``--quick`` missing-items pass.
+Names from setup.py are imported lazily per function so test patches on ``hermes_cli.setup``
+take effect."""
 
-import contextlib
 import logging
 import os
 import sys
@@ -11,7 +10,7 @@ from pathlib import Path
 logger = logging.getLogger("hermes_cli.setup")
 
 # (env-var name substring, platform label, emoji) — order matters: first match wins.
-_MESSAGING_PLATFORMS = (("TELEGRAM", "Telegram", "📱"), ("DISCORD", "Discord", "💬"), ("SLACK", "Slack", "💼"))
+_MESSAGING_PLATFORMS = (("DISCORD", "Discord", "💬"), ("SLACK", "Slack", "💼"))
 
 
 
@@ -35,108 +34,6 @@ def _reload_config_into(config: dict, *, dict_only: bool = False) -> None:
         config.update(refreshed)
 
 
-def _run_nous_flow(config: dict, *, context: str, cancel_exc: tuple, cancel_lines: tuple, print_error) -> bool:
-    """Run ``_model_flow_nous`` (login, model pick, provider switch, Tool Gateway opt-in) — the
-    single source of truth shared with ``hermes model``. False when cancelled or failed (the
-    message is already printed)."""
-    from hermes_cli.setup import _info
-    try:
-        from hermes_cli.model_setup_flows import _model_flow_nous
-        _model_flow_nous(config)
-        return True
-    except cancel_exc:
-        # _login_nous raises SystemExit(130)/(1) on cancel/failure; the expired-session re-login
-        # path inside _model_flow_nous only catches Exception, so SystemExit would kill the CLI.
-        _info(*cancel_lines)
-    except Exception as exc:
-        logger.debug("_model_flow_nous error during %s: %s", context, exc)
-        print_error(exc)
-    return False
-
-
-def _run_portal_one_shot(config: dict) -> None:
-    """One-shot Nous Portal setup (``hermes setup --portal`` / ``hermes portal``)."""
-    from hermes_cli.setup import _info, _print_banner, print_error, print_info, print_success
-    _print_banner("│     ☤ Hermes Setup — Nous Portal (one-shot)             │")
-    _info(None, "  One subscription, 300+ models, plus the Tool Gateway:",
-          "    web search, image generation, TTS, browser automation",
-          "    — all routed through your Nous Portal sub.", None,
-          "  Sign up: https://portal.nousresearch.com/manage-subscription", None)
-
-    def _on_error(exc: Exception) -> None:
-        from hermes_cli.auth_error_copy import provider_setup_failure_lines
-        print()
-        lead, *rest = provider_setup_failure_lines(exc, retry_command="hermes portal")
-        print_error(f"  {lead}")
-        for line in rest:
-            print_info(f"  {line}")
-
-    if not _run_nous_flow(config, context="`hermes portal`", cancel_exc=(KeyboardInterrupt, EOFError, SystemExit),
-                          cancel_lines=(None, "  Setup cancelled.", "  You can retry later with `hermes portal`."),
-                          print_error=_on_error):
-        return
-
-    # Re-sync from disk so a caller's later save_config(config) can't clobber the login save.
-    with contextlib.suppress(Exception):
-        _reload_config_into(config, dict_only=True)
-    print()
-    print_success("Portal setup complete.")
-    _info("  Run `hermes portal info` to inspect routing.", "  Run `hermes` to start chatting.")
-
-
-def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
-    """Streamlined first-time setup via Nous Portal: OAuth, model, terminal & messaging;
-    everything else gets defaults."""
-    from hermes_cli.setup import (
-        _apply_default_agent_settings, _info, print_header, print_info, _print_setup_summary, print_success,
-        print_warning, prompt_choice, save_config, setup_gateway, setup_terminal_backend
-    )
-    # Step 1: Nous Portal — OAuth login + model selection (provider set to "nous" by the save).
-    print_header("Nous Portal", gap=True)
-    _info("One subscription, 300+ models, plus the Tool Gateway:",
-          "  web search, image generation, TTS, browser automation.",
-          "Sign up: https://portal.nousresearch.com/manage-subscription", None)
-
-    def _on_error(exc: Exception) -> None:
-        from hermes_cli.auth_error_copy import provider_setup_failure_lines
-        lead, *rest = provider_setup_failure_lines(exc, retry_command="hermes model")
-        print_warning(lead)
-        for line in rest:
-            print_info(line)
-
-    _run_nous_flow(config, context="quick setup", cancel_exc=(KeyboardInterrupt, EOFError),
-                   cancel_lines=(None, "Nous Portal setup cancelled."), print_error=_on_error)
-    # The wizard's later save_config(config) must not clobber the login/model save.
-    _reload_config_into(config)
-
-    # Step 2: Terminal Backend; Step 3: defaults for everything else.
-    setup_terminal_backend(config)
-    _apply_default_agent_settings(config)
-    save_config(config)
-
-    # Step 4: Offer messaging gateway setup
-    print()
-    gateway_choice = prompt_choice("Connect a messaging platform? (Telegram, Discord, etc.)", [
-        "Set up messaging now (recommended)", "Skip — set up later with 'hermes setup gateway'",
-    ], 0)
-    if gateway_choice == 0:
-        setup_gateway(config)
-        save_config(config)
-    else:
-        # Messaging skipped — still install/start the gateway service so cron jobs run and
-        # platforms come alive as soon as tokens are added later (e.g. via `hermes import`).
-        from hermes_cli.gateway import ensure_gateway_service
-        ensure_gateway_service(context="setup")
-    print()
-    print_success("Setup complete! You're ready to go.")
-    _info(None, "  Configure all settings:    hermes setup")
-    if gateway_choice != 0:
-        print_info("  Connect Telegram/Discord:  hermes setup gateway")
-    _print_macos_fda_tip()
-    print()
-    _print_setup_summary(config, hermes_home)
-
-
 def _print_macos_fda_tip() -> None:
     """One-time macOS tip: one Full Disk Access grant kills every per-folder prompt. Same
     prompt-free probe as doctor's check_macos_full_disk_access (the FDA-gated TCC dir never
@@ -156,7 +53,7 @@ def _print_macos_fda_tip() -> None:
         return  # indeterminate — don't nag
     _info(None, "  macOS tip: silence ALL folder permission prompts with one switch —",
           "  System Settings → Privacy & Security → Full Disk Access → enable",
-          "  your terminal (and Hermes.app if you use Desktop), or run:",
+          "  your terminal, or run:",
           "    open \"x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles\"",
           "  The grant is permanent — it survives every Hermes update.")
 
@@ -166,7 +63,7 @@ def _blank_slate_minimal_toolsets(config: dict):
     ``vision`` (``read_file`` can't read images) and ``skills`` (the seeded ``hermes-agent`` skill
     needs ``skill_view``) stay on. Two layers enforce it: ``platform_toolsets["cli"]`` (explicit,
     so defaults aren't re-expanded) and ``agent.disabled_toolsets`` (hard-suppression applied last
-    in ``_get_platform_tools``, overriding the recovery that would re-add e.g. ``kanban``)."""
+    in ``_get_platform_tools``, overriding any default toolset recovery)."""
     keep = {"file", "terminal", "vision", "skills"}
     config.setdefault("platform_toolsets", {})["cli"] = sorted(keep)
     try:
@@ -174,7 +71,7 @@ def _blank_slate_minimal_toolsets(config: dict):
         from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_plugin_toolset_keys
         all_keys = {k for k, _, _ in CONFIGURABLE_TOOLSETS}
         all_keys.update(_get_plugin_toolset_keys())
-        # Plain TOOLSETS entries catch recovered toolsets like ``kanban``. Skip "hermes-*" platform
+        # Plain TOOLSETS entries catch every recovered toolset. Skip "hermes-*" platform
         # composites, "includes" groupings, and posture toolsets (session-level picks by
         # agent/coding_context.py — disabling them would subtract terminal/read_file).
         for k, tdef in TOOLSETS.items():
@@ -326,7 +223,7 @@ def _blank_slate_walkthrough(config: dict, hermes_home):
 
     # Optional messaging gateway
     print()
-    if prompt_yes_no("Connect a messaging platform (Telegram, Discord, …)?", default=False):
+    if prompt_yes_no("Connect a messaging platform (Discord, Slack, …)?", default=False):
         setup_gateway(config)
     save_config(config)
     _blank_slate_done(config, hermes_home, "  Enable more tools:   hermes tools")

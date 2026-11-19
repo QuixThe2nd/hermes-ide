@@ -31,9 +31,9 @@ class _Adapter:
 
 def _runner():
     r = object.__new__(GatewayRunner)
-    r.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")})
-    r.adapters = {Platform.TELEGRAM: _Adapter()}
-    r._profile_adapters = {"sec": {Platform.TELEGRAM: _Adapter()}, "nobot": {}}
+    r.config = GatewayConfig(platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="t")})
+    r.adapters = {Platform.DISCORD: _Adapter()}
+    r._profile_adapters = {"sec": {Platform.DISCORD: _Adapter()}, "nobot": {}}
     r._primary_profile_name = "default"
     r.session_store = None
     r._session_sources = None
@@ -46,15 +46,15 @@ def _runner():
 @pytest.mark.asyncio
 async def test_shutdown_notice_for_secondary_session_uses_its_own_bot():
     r = _runner()
-    r._running_agents["agent:sec:telegram:dm:42"] = object()
-    r._running_agents["agent:nobot:telegram:dm:43"] = object()
+    r._running_agents["agent:sec:discord:dm:42"] = object()
+    r._running_agents["agent:nobot:discord:dm:43"] = object()
     r._snapshot_running_agents = lambda: list(r._running_agents)
 
     await r._notify_active_sessions_of_shutdown()
 
-    assert r._profile_adapters["sec"][Platform.TELEGRAM].sent == ["42"]
+    assert r._profile_adapters["sec"][Platform.DISCORD].sent == ["42"]
     # The default bot never speaks for a secondary session — not even one whose bot is down.
-    assert r.adapters[Platform.TELEGRAM].sent == []
+    assert r.adapters[Platform.DISCORD].sent == []
 
 
 @pytest.mark.asyncio
@@ -62,13 +62,13 @@ async def test_restart_marker_from_secondary_session_notifies_via_its_own_bot(tm
     import gateway.run as gateway_run
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     r = _runner()
-    src = SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm", user_id="42", profile="sec")
+    src = SessionSource(platform=Platform.DISCORD, chat_id="42", chat_type="dm", user_id="42", profile="sec")
     event = MessageEvent(text="/restart", message_type=MessageType.TEXT, source=src, message_id="7")
     (tmp_path / ".restart_notify.json").write_text(json.dumps(_restart_notify_payload(event)))
 
-    assert await r._send_restart_notification() == ("telegram", "42", None)
-    assert r._profile_adapters["sec"][Platform.TELEGRAM].sent == ["42"]
-    assert r.adapters[Platform.TELEGRAM].sent == []
+    assert await r._send_restart_notification() == ("discord", "42", None)
+    assert r._profile_adapters["sec"][Platform.DISCORD].sent == ["42"]
+    assert r.adapters[Platform.DISCORD].sent == []
 
 
 @pytest.mark.asyncio
@@ -94,11 +94,11 @@ async def test_loop_wakeup_from_secondary_route_fires_through_its_own_bot(monkey
     monkeypatch.setattr(loops, "goal_blocks_loop_tick", lambda sid: False)
     r = _runner()
     r._running = True
-    route = {"platform": "telegram", "chat_id": "42", "chat_type": "dm", "user_id": "42", "profile": "sec"}
+    route = {"platform": "discord", "chat_id": "42", "chat_type": "dm", "user_id": "42", "profile": "sec"}
     state = SimpleNamespace(awaiting_response=False, next_due_at=0, route=route)
 
     await r._loop_wakeup_fire_one("sid", state, 1e12, set())
     await r._loop_wakeup_fire_one("sid2", SimpleNamespace(**{**vars(state), "route": {**route, "profile": "nobot"}}), 1e12, set())
 
-    assert r._profile_adapters["sec"][Platform.TELEGRAM].handled == ["tick"]
-    assert r.adapters[Platform.TELEGRAM].handled == []
+    assert r._profile_adapters["sec"][Platform.DISCORD].handled == ["tick"]
+    assert r.adapters[Platform.DISCORD].handled == []

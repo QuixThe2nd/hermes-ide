@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Tests for execute_code's session kernel mode.
+"""Tests for execute_code's session kernel.
 
-``code_execution.kernel_mode: session`` keeps one Python child alive per
-(task, mode, interpreter, cwd, tool-set) so state survives across calls.
-These tests pin the contract:
+Session kernels are always on (the ``code_execution.kernel_mode`` key is
+retired): each (task, mode, interpreter, cwd, tool-set) owner keeps one
+Python child alive so state survives across calls. These tests pin the
+contract:
 
-  - default stays per-call (no state carries over unless opted in)
   - state persists across cells and reset=true discards it
   - a raised exception keeps the kernel (and its state) alive
   - a timeout kills the kernel; the next call gets a fresh one
   - fd-level output from user-spawned subprocesses reaches the result
   - sys.exit() inside a cell ends the kernel deliberately
 
-Mode is sourced from ``code_execution.kernel_mode`` in config.yaml only;
+Mode is sourced from ``code_execution.mode`` in config.yaml only;
 tests patch ``_load_config`` directly, mirroring test_code_execution_modes.
 """
 
@@ -36,7 +36,7 @@ os.environ["TERMINAL_ENV"] = "local"
 
 @pytest.fixture(autouse=True)
 def _force_local_terminal(monkeypatch):
-    """Mirror test_code_execution.py — guarantee local backend under xdist."""
+    """Mirror test_code_execution.py — guarantee local backend."""
     monkeypatch.setenv("TERMINAL_ENV", "local")
 
 
@@ -46,8 +46,10 @@ from tools.code_kernel import _KERNELS, shutdown_all_kernels
 
 @contextmanager
 def _kernel_config(**overrides):
-    """Pin code_execution config; strict mode keeps the test hermetic."""
-    config = {"mode": "strict", "kernel_mode": "session", "timeout": 30}
+    """Pin code_execution config; strict mode keeps the test hermetic.
+    ``mode`` (strict/project) is the only config knob — session kernels are
+    always on; the retired ``kernel_mode`` key is ignored by the tool."""
+    config = {"mode": "strict", "timeout": 30}
     config.update(overrides)
     with patch("tools.code_execution_tool._load_config", return_value=config):
         yield
@@ -216,7 +218,7 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
     """
 
     def _run_as(self, session_key, code, task_id, **kwargs):
-        from tools.approval_context import reset_current_session_key, set_current_session_key
+        from tools.session_context import reset_current_session_key, set_current_session_key
 
         token = set_current_session_key(session_key)
         try:
@@ -335,14 +337,14 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
         self.assertIn("2", still["output"])
 
     def test_session_clear_disposes_the_owners_kernels(self):
-        from tools.approval import clear_session
+        from tools.code_kernel import clear_tool_session_resources
 
         with _kernel_config():
             self._run_as("conv-a", "x = 41", task_id="turn-1")
             self.assertEqual(len(_KERNELS), 1)
             kernel = next(iter(_KERNELS.values()))
             self.assertTrue(kernel.alive())
-            clear_session("conv-a")
+            clear_tool_session_resources("conv-a")
             self.assertEqual(len(_KERNELS), 0)
             kernel.proc.wait(timeout=10)
             self.assertFalse(kernel.alive())
@@ -389,26 +391,42 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
         """Parallel cells for one owner race the first spawn. Each racer
         used to see proc=None as 'dead', replace the registry entry, and
         orphan the winner's process — 110 live kernels under a 4-capped
-        process (Sep 2026). Every kernel process must stay registry-owned."""
-        import subprocess
+        process (Sep 2026). Every kernel process must stay registry-owned.
+
+        Capture actual children so an unregistered spawn cannot hide behind
+        the registry count. The owned process must exit on teardown."""
         import threading
 
+        spawned = []
+        real_popen = subprocess.Popen
+
+        def _capturing_popen(args, **kwargs):
+            proc = real_popen(args, **kwargs)
+            spawned.append((proc, list(args)))
+            return proc
+
         results = []
-        with _kernel_config():
-            def _cell():
-                results.append(self._run_as("conv-a", "import time; time.sleep(0.3)", task_id="t"))
-            threads = [threading.Thread(target=_cell) for _ in range(6)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
+        with patch("tools.code_kernel.subprocess.Popen", side_effect=_capturing_popen):
+            with _kernel_config():
+                def _cell():
+                    results.append(self._run_as("conv-a", "import time; time.sleep(0.3)", task_id="t"))
+                threads = [threading.Thread(target=_cell) for _ in range(6)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join()
         self.assertEqual([r["status"] for r in results], ["success"] * 6)
         self.assertEqual(len(_KERNELS), 1)
-        live = subprocess.run(
-            ["pgrep", "-fc", "-P", str(os.getpid()), "hermes_kernel_runner"],
-            capture_output=True, text=True,
-        ).stdout.strip()
-        self.assertEqual(live, "1")
+        runners = [proc for proc, args in spawned
+                   if len(args) == 2 and Path(args[1]).name == "hermes_kernel_runner.py"]
+        self.assertEqual(len(runners), 1, "parallel cells spawned an unowned kernel")
+        kernel = next(iter(_KERNELS.values()))
+        self.assertIs(kernel.proc, runners[0])
+        self.assertIsNone(kernel.proc.poll())
+        shutdown_all_kernels()
+        for proc in runners:
+            proc.wait(timeout=10)
+            self.assertIsNotNone(proc.returncode)
 
 
 class TestPerCellRpcAuthority(unittest.TestCase):
@@ -418,12 +436,12 @@ class TestPerCellRpcAuthority(unittest.TestCase):
         def _handle(tool_name, tool_args, task_id=None):
             from tools.thread_context import _callback_api
 
-            (get_approval, _set_a), *_rest = _callback_api()
+            from tools.terminal_tool import _get_sudo_password_callback
             seen.append(
                 {
                     "tool": tool_name,
                     "task_id": task_id,
-                    "approval_cb": get_approval(),
+                    "sudo_cb": _get_sudo_password_callback(),
                 }
             )
             return json.dumps({"ok": True})
@@ -431,7 +449,7 @@ class TestPerCellRpcAuthority(unittest.TestCase):
         return _handle
 
     def test_a_later_cells_rpc_runs_under_that_cells_authority(self):
-        from tools.terminal_tool import set_approval_callback
+        from tools.terminal_tool import set_sudo_password_callback
 
         seen = []
         cell = "import hermes_tools\nhermes_tools.web_search(query='q')\n"
@@ -444,27 +462,26 @@ class TestPerCellRpcAuthority(unittest.TestCase):
             def cb_two():
                 return "two"
 
-            set_approval_callback(cb_one)
+            set_sudo_password_callback(cb_one)
             try:
                 first = _run(cell)
-                set_approval_callback(cb_two)
+                set_sudo_password_callback(cb_two)
                 second = _run(cell)
             finally:
-                set_approval_callback(None)
+                set_sudo_password_callback(None)
         self.assertEqual(first["status"], "success", first)
         self.assertEqual(second["status"], "success", second)
         self.assertEqual(len(seen), 2)
-        self.assertIs(seen[0]["approval_cb"], cb_one)
-        self.assertIs(seen[1]["approval_cb"], cb_two)
+        self.assertIs(seen[0]["sudo_cb"], cb_one)
+        self.assertIs(seen[1]["sudo_cb"], cb_two)
         self.assertEqual(seen[0]["task_id"], "kernel-test")
 
     def test_cross_cell_alias_dispatches_under_the_current_cell(self):
         # Adversarial cross-cell dataflow: a callable captured in cell 1 and
         # invoked by an opaque global name in cell 2 still crosses the RPC
-        # boundary — under cell 2's authority, allow-list, and budget — the
-        # operative enforcement a per-script static scan cannot provide once
-        # state persists (composition contract with the execute-code guard).
-        from tools.terminal_tool import set_approval_callback
+        # boundary — under cell 2's authority and budget. The operative
+        # enforcement is RPC dispatch, not an approval policy.
+        from tools.terminal_tool import set_sudo_password_callback
 
         seen = []
         with _kernel_config(), patch(
@@ -476,17 +493,17 @@ class TestPerCellRpcAuthority(unittest.TestCase):
             def cb_two():
                 return "two"
 
-            set_approval_callback(cb_one)
+            set_sudo_password_callback(cb_one)
             try:
                 first = _run("import hermes_tools\nalias = hermes_tools.web_search\n")
-                set_approval_callback(cb_two)
+                set_sudo_password_callback(cb_two)
                 second = _run("alias(query='q')\n")
             finally:
-                set_approval_callback(None)
+                set_sudo_password_callback(None)
         self.assertEqual(first["status"], "success", first)
         self.assertEqual(second["status"], "success", second)
         self.assertEqual(len(seen), 1)
-        self.assertIs(seen[0]["approval_cb"], cb_two)
+        self.assertIs(seen[0]["sudo_cb"], cb_two)
 
     def test_a_settled_cells_authority_refuses_dispatch(self):
         from tools.code_kernel import CellAuthority

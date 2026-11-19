@@ -7,8 +7,8 @@ Covers:
   password-only fill selection
 - origin-binding refusal (pre-check + in-script TOCTOU assert)
 - fail-closed secret eval (no argv fallback)
-- vault-value redaction registry (browser_cdp read-back regression)
-- tool gating: check_fn False when the vault is empty
+- vault-value redaction at the browser evaluate model boundary
+- tool gating: the local-vault config kill switch removes schemas
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+from model_tools import get_tool_definitions  # noqa: E402
 from agent.vault_login_classifier import (  # noqa: E402
     ClassifiedLoginControl,
     LoginControl,
@@ -57,6 +58,34 @@ def _add_login(store, origin="https://example.com", password="s3cret-pw"):
             "origin": origin,
         },
     )
+
+
+def _fill_login_controls(store, controls, *, purpose=None, page_origin="https://example.com/login",
+                         fill_result=None):
+    """Drive the registered vault-fill handler with a controlled page inspection."""
+    from tools import browser_vault_tool
+
+    meta = _add_login(store)
+    secret_exprs = []
+
+    def fake_eval(task_id, expression):
+        if "location.href" in expression:
+            return {"success": True, "result": page_origin}
+        return {"success": True, "result": json.dumps(controls)}
+
+    def fake_eval_secret(task_id, expression):
+        secret_exprs.append(expression)
+        return {"success": True, "result": json.dumps(fill_result or {"filled": 1})}
+
+    args = {"handle": meta.id}
+    if purpose is not None:
+        args["purpose"] = purpose
+    with patch("agent.vault_store.get_vault_store", return_value=store), \
+         patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+         patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+        raw = browser_vault_tool.registry.dispatch("browser_vault_fill", args, task_id=None)
+    assert isinstance(raw, str)
+    return json.loads(raw), raw, secret_exprs
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +269,8 @@ class TestClassifier:
         assert "data-vault-secret" not in js
         assert "elements[f.index]" not in js
         assert "[data-hermes-vault-slot=" in js and "nonce + ':' + f.index" in js
-        assert 'f.token === "current-password" && el.type !== "password"' in js  # a password fill never lands in a text box
+        assert 'const passwordTokens = ["current-password", "new-password", "confirm-password"]' in js
+        assert "passwordTokens.includes(f.token) && el.type !== \"password\"" in js
         assert js.index('removeAttribute("data-hermes-vault-slot")') > js.index("setter.set.call")
 
     def test_build_fill_js_asserts_origin_before_any_write(self):
@@ -274,20 +304,15 @@ class TestVaultLocalKillSwitch:
         import model_tools
         from model_tools import get_tool_definitions
 
-        with patch("hermes_cli.config.load_config", return_value={"vault": {"local": {"enabled": False}}}), \
-             patch("tools.browser_tool_install.check_browser_requirements", return_value=True), \
-             patch("tools.browser_use_cli.is_browser_use_cli_mode", return_value=False):
+        with patch("hermes_cli.config.load_config", return_value={"vault": {"local": {"enabled": False}}}):
             defs = get_tool_definitions(enabled_toolsets=["browser"])
         names = [d["function"]["name"] for d in defs]
         assert not any(n.startswith("browser_vault_") for n in names)
         assert "browser_navigate" in names
 
     def test_key_absent_keeps_all_five(self):
-        from model_tools import get_tool_definitions
-
-        with patch("hermes_cli.config.load_config", return_value={}), \
-             patch("tools.browser_tool_install.check_browser_requirements", return_value=True), \
-             patch("tools.browser_use_cli.is_browser_use_cli_mode", return_value=False):
+        import model_tools  # noqa: F401 — triggers discovery
+        with patch("hermes_cli.config.load_config", return_value={}):
             names = {d["function"]["name"] for d in get_tool_definitions(enabled_toolsets=["browser"])}
         assert set(_VAULT_TOOL_NAMES) <= names
 
@@ -295,9 +320,7 @@ class TestVaultLocalKillSwitch:
         import model_tools  # noqa: F401 — triggers discovery
         from tools.registry import registry
 
-        with patch("hermes_cli.config.load_config", return_value={"vault": {"local": {"enabled": False}}}), \
-             patch("tools.browser_tool_install.check_browser_requirements", return_value=True), \
-             patch("tools.browser_use_cli.is_browser_use_cli_mode", return_value=False):
+        with patch("hermes_cli.config.load_config", return_value={"vault": {"local": {"enabled": False}}}):
             entry = registry.get_entry("browser_vault_list")
         assert entry is not None and callable(entry.handler)
         result = entry.handler({}, task_id=None)
@@ -306,22 +329,15 @@ class TestVaultLocalKillSwitch:
 
 
 class TestBrowserVaultTools:
-    def test_check_fn_follows_the_browser_not_the_item_count(self, tmp_path):
-        """The vault tools ride with the browser toolset: an empty vault must still expose
-        browser_vault_save_login (that is how the first login gets saved), and no browser means no tools."""
+    def test_empty_vault_stays_available_with_browser(self, tmp_path):
+        """An empty vault still exposes save-login; browser availability controls the tool family."""
         from tools import browser_vault_tool
 
-        empty = VaultStore(base_dir=tmp_path / "empty-vault")
-        with patch("agent.vault_store.get_vault_store", return_value=empty), \
-             patch("tools.browser_use_cli.is_browser_use_cli_mode", return_value=False):
-            with patch("tools.browser_tool_install.check_browser_requirements", return_value=True):
+        with patch("hermes_cli.config.load_config", return_value={}):
+            with patch("tools.browser_tool.check_browser_requirements", return_value=True):
                 assert browser_vault_tool._check_vault_available() is True
-            with patch("tools.browser_tool_install.check_browser_requirements", return_value=False):
+            with patch("tools.browser_tool.check_browser_requirements", return_value=False):
                 assert browser_vault_tool._check_vault_available() is False
-        # Browser Use mode: check_browser_requirements() is False by design, the vault must still ride along
-        with patch("tools.browser_use_cli.is_browser_use_cli_mode", return_value=True), \
-             patch("tools.browser_tool_install.check_browser_requirements", return_value=False):
-            assert browser_vault_tool._check_vault_available() is True
 
     def test_list_returns_identifier_never_password(self, store):
         from tools import browser_vault_tool
@@ -478,6 +494,148 @@ class TestBrowserVaultTools:
         assert '"index": 0' not in secret_exprs[0]
         assert "user@example.com" not in secret_exprs[0]
 
+    def test_password_reset_dispatch_fills_id_only_new_password(self, store):
+        # Inspection joins empty DOM name + id=newPassword, preserving the separator.
+        controls = [
+            {"autocomplete": "", "formIndex": 0, "index": 0, "label": "",
+             "name": " newPassword", "type": "password"},
+        ]
+
+        out, raw, secret_exprs = _fill_login_controls(
+            store, controls, purpose="password_reset",
+        )
+
+        assert out["success"] is True, out
+        assert out["filled_fields"] == 1
+        assert len(secret_exprs) == 1
+        assert '"index": 0' in secret_exprs[0]
+        assert '"token": "new-password"' in secret_exprs[0]
+        assert "s3cret-pw" not in raw
+
+    def test_password_reset_default_login_still_refuses_new_password(self, store):
+        controls = [
+            {"autocomplete": "", "formIndex": 0, "index": 0, "label": "",
+             "name": " newPassword", "type": "password"},
+        ]
+
+        out, raw, secret_exprs = _fill_login_controls(store, controls)
+
+        assert out["success"] is False
+        assert "No login form fields" in out["error"]
+        assert secret_exprs == []
+        assert "s3cret-pw" not in raw
+
+    def test_password_reset_fills_unambiguous_confirmation_pair(self, store):
+        controls = [
+            {"autocomplete": "new-password", "formIndex": 0, "index": 0,
+             "label": "New password", "name": "newPassword", "type": "password"},
+            {"autocomplete": "new-password", "formIndex": 0, "index": 1,
+             "label": "Confirm password", "name": "confirmPassword", "type": "password"},
+        ]
+
+        out, raw, secret_exprs = _fill_login_controls(
+            store, controls, purpose="password_reset", fill_result={"filled": 2},
+        )
+
+        assert out["success"] is True, out
+        assert out["filled_fields"] == 2
+        assert len(secret_exprs) == 1
+        assert '"index": 0' in secret_exprs[0] and '"index": 1' in secret_exprs[0]
+        assert '"token": "confirm-password"' in secret_exprs[0]
+        assert "s3cret-pw" not in raw
+
+    def test_password_reset_refuses_ambiguous_targets_before_secret_transport(self, store):
+        controls = [
+            {"autocomplete": "new-password", "formIndex": 0, "index": 0,
+             "label": "New password", "name": "firstNewPassword", "type": "password"},
+            {"autocomplete": "new-password", "formIndex": 1, "index": 1,
+             "label": "New password", "name": "secondNewPassword", "type": "password"},
+        ]
+
+        out, raw, secret_exprs = _fill_login_controls(
+            store, controls, purpose="password_reset",
+        )
+
+        assert out["success"] is False
+        assert out["error_type"] == "ambiguous_password_reset"
+        assert secret_exprs == []
+        assert "s3cret-pw" not in raw
+
+    def test_password_reset_never_targets_current_password_challenge(self, store):
+        controls = [
+            {"autocomplete": "current-password", "formIndex": 0, "index": 0,
+             "label": "Current password", "name": "currentPassword", "type": "password"},
+            {"autocomplete": "new-password", "formIndex": 0, "index": 1,
+             "label": "New password", "name": "newPassword", "type": "password"},
+        ]
+
+        out, raw, secret_exprs = _fill_login_controls(
+            store, controls, purpose="password_reset",
+        )
+
+        assert out["success"] is True, out
+        assert len(secret_exprs) == 1
+        assert '"index": 1' in secret_exprs[0] and '"index": 0' not in secret_exprs[0]
+        assert "s3cret-pw" not in raw
+
+    def test_password_reset_refuses_cross_form_confirmation(self, store):
+        controls = [
+            {"autocomplete": "new-password", "formIndex": 0, "index": 0,
+             "label": "New password", "name": "newPassword", "type": "password"},
+            {"autocomplete": "new-password", "formIndex": 1, "index": 1,
+             "label": "Confirm password", "name": "confirmPassword", "type": "password"},
+        ]
+
+        out, raw, secret_exprs = _fill_login_controls(
+            store, controls, purpose="password_reset",
+        )
+
+        assert out["success"] is False
+        assert out["error_type"] == "ambiguous_password_reset"
+        assert secret_exprs == []
+        assert "s3cret-pw" not in raw
+
+    def test_password_reset_preserves_atomic_origin_refusal(self, store):
+        controls = [
+            {"autocomplete": "new-password", "formIndex": 0, "index": 0,
+             "label": "New password", "name": "newPassword", "type": "password"},
+        ]
+
+        out, raw, secret_exprs = _fill_login_controls(
+            store, controls, purpose="password_reset",
+            fill_result={"refused": "origin_changed", "found": "https://evil.example"},
+        )
+
+        assert out["success"] is False
+        assert out["error_type"] == "origin_changed"
+        assert out.get("filled_fields", 0) == 0
+        assert "s3cret-pw" not in raw
+        assert len(secret_exprs) == 1
+        assert "window.location.origin" in secret_exprs[0]
+
+    def test_password_reset_rejects_unknown_purpose(self, store):
+        out, raw, secret_exprs = _fill_login_controls(store, [], purpose="signup")
+
+        assert out["success"] is False
+        assert out["error_type"] == "invalid_purpose"
+        assert secret_exprs == []
+        assert "s3cret-pw" not in raw
+
+    def test_password_reset_origin_mismatch_sends_no_secret(self, store):
+        controls = [
+            {"autocomplete": "new-password", "formIndex": 0, "index": 0,
+             "label": "New password", "name": "newPassword", "type": "password"},
+        ]
+
+        out, raw, secret_exprs = _fill_login_controls(
+            store, controls, purpose="password_reset", page_origin="https://evil.example/reset",
+        )
+
+        assert out["success"] is False
+        assert out["error_type"] == "origin_mismatch"
+        assert secret_exprs == []
+        assert "s3cret-pw" not in raw
+
     def test_fill_toctou_navigation_writes_nothing(self, store):
         """P1-2 schedule regression: inspection passes on the allowed origin,
         the page navigates before the fill script runs, the in-script origin
@@ -518,8 +676,8 @@ class TestBrowserVaultTools:
         assert out.get("filled_fields", 0) == 0
         assert "s3cret-pw" not in raw
 
-    def test_secret_eval_fails_closed_without_supervisor(self, store):
-        """P1-1: the secret-bearing eval NEVER falls back to the argv path."""
+    def test_secret_fill_fails_closed_without_camofox_auth(self, store):
+        """The integrated fill never sends secret-bearing JS without bearer authentication."""
         from tools import browser_vault_tool
 
         meta = _add_login(store, origin="https://example.com")
@@ -532,42 +690,28 @@ class TestBrowserVaultTools:
                 return {"success": True, "result": "https://example.com/login"}
             return {"success": True, "result": json.dumps(controls)}
 
-        # No supervisor registered and the local daemon exposes no CDP endpoint → the fill refuses.
-        # The daemon may be asked for its endpoint (`get cdp-url`, no secret) but NEVER handed an
-        # `eval` carrying the password: that is the argv exposure this test pins.
-        with patch("agent.vault_store.get_vault_store", return_value=store), \
-             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
-             patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as reg, \
-             patch("tools.browser_tool_session._run_browser_command", return_value={"success": False}) as run_cmd:
-            reg.get.return_value = None
+        with (
+            patch("agent.vault_store.get_vault_store", return_value=store),
+            patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval),
+            patch("tools.browser_camofox.get_camofox_url", return_value="http://camofox.lan:9377"),
+            patch("agent.secret_scope.get_secret", return_value=""),
+            patch("tools.browser_camofox._post") as post,
+        ):
             raw = browser_vault_tool.browser_vault_fill(meta.id)
+
         out = json.loads(raw)
         assert out["success"] is False
-        assert out["error_type"] == "supervisor_required"
-        assert "supervis" in out["error"].lower()
-        assert all(call.args[1] == "get" for call in run_cmd.call_args_list), run_cmd.call_args_list
-        assert "s3cret-pw" not in json.dumps([str(c) for c in run_cmd.call_args_list]) and "s3cret-pw" not in raw
+        assert out["error_type"] == "camofox_session_required"
+        assert "CAMOFOX_API_KEY" in out["error"]
+        assert "s3cret-pw" not in raw
+        post.assert_not_called()
 
-    def test_nonsecret_eval_fallback_still_works(self):
-        """_eval_js (non-secret) may still fall back to the CLI eval path."""
-        from tools import browser_vault_tool
-
-        with patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as reg, \
-             patch("tools.browser_tool._last_session_key", return_value="k"), \
-             patch("tools.browser_tool_session._run_browser_command") as run_cmd:
-            reg.get.return_value = None
-            run_cmd.return_value = {"success": True, "data": {"result": "https://x.test"}}
-            res = browser_vault_tool._eval_js("t", "window.location.href")
-        assert res == {"success": True, "result": "https://x.test"}
-        run_cmd.assert_called_once()
-
-    def test_vault_canary_redacted_from_browser_cdp_results(self, store):
-        """P1-1 regression: a filled, non-token-shaped canary password must be
-        unrecoverable through a model-facing browser_cdp-style result."""
+    def test_vault_canary_redacted_from_browser_eval_results(self, store):
+        """A filled non-token-shaped canary is unrecoverable through browser evaluation output."""
         from agent import redact
         from agent.redact import redact_sensitive_text
         from tools import browser_vault_tool
-        from tools.browser_cdp_tool import _redact_cdp_output
+        from tools.browser_tool_snapshot import _redact_browser_output
 
         canary = "plain sentence nobody would flag 7"
         meta = _add_login(store, origin="https://example.com", password=canary)
@@ -590,13 +734,13 @@ class TestBrowserVaultTools:
                 out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
             assert out["success"] is True
 
-            # Simulate a browser_cdp Runtime.evaluate sibling read echoing
-            # the canary back (e.g. reading the input's value from the DOM).
-            cdp_result = {
+            # A later Camofox evaluate result can echo the filled input value;
+            # the shared browser model-boundary scrub must remove it.
+            eval_result = {
                 "result": {"type": "string", "value": canary},
                 "description": f"input value is {canary}",
             }
-            scrubbed = _redact_cdp_output(cdp_result)
+            scrubbed = _redact_browser_output(eval_result)
             assert canary not in json.dumps(scrubbed)
             assert "«redacted-vault-secret»" in json.dumps(scrubbed, ensure_ascii=False)
 
@@ -606,10 +750,8 @@ class TestBrowserVaultTools:
         finally:
             redact.clear_vault_redaction_values()
 
-    def test_payment_fill_requires_confirmation_then_fills_card_fields(self, store):
-        """A card is written only after the user confirms (a prompt injection reaching a checkout must not be
-        able to spend); the secret eval then targets the classified card controls and the result carries
-        the field tokens but never a value."""
+    def test_payment_fill_redacts_card_values(self, store):
+        """Payment fields fill directly without exposing secret values."""
         from tools import browser_vault_tool
         from agent import redact
 
@@ -635,16 +777,7 @@ class TestBrowserVaultTools:
         try:
             with patch("agent.vault_store.get_vault_store", return_value=store), \
                  patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
-                 patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret), \
-                 patch("tools.approval_prompt.request_elicitation_consent", return_value="decline"):
-                declined = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
-            assert declined["success"] is False and declined["error_type"] == "payment_declined"
-            assert secret_exprs == []
-
-            with patch("agent.vault_store.get_vault_store", return_value=store), \
-                 patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
-                 patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret), \
-                 patch("tools.approval_prompt.request_elicitation_consent", return_value="accept"):
+                 patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
                 raw = browser_vault_tool.browser_vault_fill(meta.id)
             out = json.loads(raw)
             assert out["success"] is True and out["fields"] == ["cc-csc", "cc-exp", "cc-number"]
@@ -709,22 +842,31 @@ class TestVaultHardening:
 
 
 class TestVaultSchemaCrossToolset:
-    def test_vault_schemas_name_the_input_tool_of_the_active_browser_stack(self):
-        """The vault tools sit in `browser`; the tool that types the identifier lives in `browser-use`
-        (`fill_input` inside browser_exec) or is browser_type. A static name would be a ghost on one stack,
-        so model_tools resolves it per session from the tools actually present."""
+    def test_password_reset_purpose_is_explicit_and_defaults_to_login(self):
+        from tools.browser_vault_tool import BROWSER_VAULT_FILL_SCHEMA
+
+        purpose = BROWSER_VAULT_FILL_SCHEMA["parameters"]["properties"]["purpose"]
+        assert purpose["enum"] == ["login", "password_reset"]
+        assert purpose["default"] == "login"
+
+    def test_vault_schema_names_browser_type_only_when_available(self):
+        """The identifier hint resolves only to a tool present in the session."""
         import model_tools
         from tools.browser_vault_tool import BROWSER_VAULT_FILL_SCHEMA
 
-        assert "fill_input" not in BROWSER_VAULT_FILL_SCHEMA["description"]
         base = model_tools._fn_def(dict(BROWSER_VAULT_FILL_SCHEMA))
-        with_exec = model_tools._apply_dynamic_schemas([base, model_tools._fn_def({"name": "browser_exec", "description": "x"}),
-                                                        model_tools._fn_def({"name": "terminal", "description": "x"})])
-        with_builtin = model_tools._apply_dynamic_schemas([base, model_tools._fn_def({"name": "browser_type", "description": "x"})])
-        desc_exec = with_exec[0]["function"]["description"]
-        desc_builtin = with_builtin[0]["function"]["description"]
-        assert "`fill_input` inside browser_exec" in desc_exec and "browser_type" not in desc_exec
-        assert "browser_type" in desc_builtin and "fill_input" not in desc_builtin
+        with_browser = model_tools._apply_dynamic_schemas([
+            base,
+            model_tools._fn_def({"name": "browser_type", "description": "x"}),
+        ])
+        without_browser = model_tools._apply_dynamic_schemas([
+            base,
+            model_tools._fn_def({"name": "terminal", "description": "x"}),
+        ])
+        assert "browser_type" in with_browser[0]["function"]["description"]
+        unavailable_desc = without_browser[0]["function"]["description"]
+        assert "the browser's input tool" in unavailable_desc
+        assert "browser_type" not in unavailable_desc
 
 
 def test_every_registered_tool_schema_declares_openai_style_parameters():
@@ -798,15 +940,17 @@ class TestManagerAutoDetection:
             assert [b.name for b in base.enabled_backends()] == ["local"]
 
 
-def test_every_vault_tool_is_in_the_browser_toolset():
+def test_every_vault_tool_is_reachable_through_a_toolset():
     """toolsets.py is a hand-maintained list; a tool registered here but missing there is invisible to the model
-    (live: browser_vault_save_login was registered, tested, and never offered)."""
+    (live: browser_vault_save_login was registered, tested, and never offered). The vault tools ride
+    with the browser via _HERMES_CORE_TOOLS rather than the browser toolset itself."""
     import toolsets
     from tools import browser_vault_tool  # noqa: F401  (registers)
     from tools.registry import registry
 
     registered = {e.name for e in registry.get_all_entries() if e.name.startswith("browser_vault_")}
-    assert registered <= set(toolsets.TOOLSETS["browser"]["tools"]), registered - set(toolsets.TOOLSETS["browser"]["tools"])
+    reachable = set(toolsets.TOOLSETS["browser"]["tools"]) | set(toolsets._HERMES_CORE_TOOLS)
+    assert registered <= reachable, registered - reachable
 
 
 class TestTwoFactor:
@@ -849,7 +993,6 @@ class TestTwoFactor:
             return {"success": True, "result": json.dumps({"filled": 1})}
 
         with patch("agent.vault_store.get_vault_store", return_value=store), \
-             patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
              patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_secret):
             raw = browser_vault_tool.browser_vault_enter_code(meta.id, task_id="t")
@@ -874,7 +1017,6 @@ class TestTwoFactor:
             return {"success": True, "result": json.dumps({"filled": 6})}
 
         with patch("agent.vault_backends.unlock.can_prompt_here", return_value=True), \
-             patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
              patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_secret):
             out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
@@ -907,7 +1049,6 @@ class TestTwoFactor:
         from tools import browser_vault_tool
 
         fake_eval = lambda t, e: {"success": True, "result": json.dumps([{"index": 0, "type": "text", "name": "q", "label": "Search", "autocomplete": ""}]) if "querySelectorAll" in e else "https://acme.test/approve"}
-        with patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \
-             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
+        with patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
             out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
         assert out["error_type"] == "no_code_field" and "device" in out["error"]

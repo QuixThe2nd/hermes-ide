@@ -33,7 +33,7 @@ def test_draining_status_names_chat_and_cron_units_and_clears_when_running(tmp_p
     state = SessionState()
     state.turn.agent = _FakeAgent()
     state.turn.started_ts = time.time() - 10
-    runner._sessions_map()["telegram:dm:1"] = state
+    runner._sessions_map()["discord:dm:1"] = state
     assert sched.try_register_running_job("job-a")
     try:
         with sched._running_lock:
@@ -41,7 +41,7 @@ def test_draining_status_names_chat_and_cron_units_and_clears_when_running(tmp_p
         runner._update_runtime_status("draining")
         record = json.loads((tmp_path / "gateway_state.json").read_text())
         by_kind = {unit["kind"]: unit for unit in record["active_work"]}
-        assert by_kind["chat"]["session"] == "telegram:dm:1" and by_kind["chat"]["current_tool"] == "terminal"
+        assert by_kind["chat"]["session"] == "discord:dm:1" and by_kind["chat"]["current_tool"] == "terminal"
         assert by_kind["cron"]["job_id"] == "job-a" and by_kind["cron"]["pid"] == 4242 and by_kind["cron"]["external"]
         assert record["active_agents"] == len(record["active_work"])
     finally:

@@ -14,7 +14,7 @@ from gateway.session import SessionEntry, SessionSource, build_session_key
 
 def _make_source() -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         user_id="u1",
         chat_id="c1",
         user_name="tester",
@@ -40,14 +40,14 @@ def _make_runner(history: list[dict[str, str]]):
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="***")}
     )
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),
         session_id="sess-1",
         created_at=datetime.now(),
         updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="dm",
     )
     runner.session_store = MagicMock()
@@ -259,9 +259,9 @@ async def test_compress_command_preserves_platform_and_gateway_session_key():
 
     assert mock_agent.call_count == 1
     _, kwargs = mock_agent.call_args
-    # Platform preserved as the live turn's config key (TELEGRAM -> "telegram"),
+    # Platform preserved as the live turn's config key (DISCORD -> "discord"),
     # not the unbound "cli"/"local" fallback.
-    assert kwargs.get("platform") == "telegram"
+    assert kwargs.get("platform") == "discord"
     # Stable gateway session key preserved, identical to a normal gateway turn.
     assert kwargs.get("gateway_session_key") == runner._session_key_for_source(_make_source())
     assert kwargs["gateway_session_key"]
@@ -372,7 +372,7 @@ async def test_compress_command_multiplexed_runs_under_profile_secret_scope(tmp_
     ]
     runner = _make_runner(history)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")},
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="***")},
         multiplex_profiles=True,
     )
     profile_home = tmp_path / "profiles" / "milo"

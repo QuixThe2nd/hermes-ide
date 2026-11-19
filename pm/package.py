@@ -86,8 +86,7 @@ class Package:
     def latest_versions(self, target: str, locked: Optional[str] = None) -> list[str]:
         """Newest-first candidate versions for `target` — the "how do I find
         latest" hook for `hermes pm update`. Empty list = this package has
-        no auto-update source (chromium follows agent-browser; venv is a
-        state; Playwright browsers are revision-pinned by playwright).
+        no auto-update source; state packages manage their own generations.
 
         Subclasses resolve their upstream's real release index here; the
         update driver intersects across targets (per version_style) and

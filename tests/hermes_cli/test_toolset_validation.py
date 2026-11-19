@@ -12,7 +12,7 @@ from hermes_cli.toolset_validation import validate_platform_toolsets
 # that is the corruption #38798 reported (`hermes-cli` rewritten to `hermes`).
 _KNOWN = {
     "hermes-cli",
-    "hermes-telegram",
+    "hermes-matrix",
     "hermes-discord",
     "hermes-whatsapp",
     "discord",
@@ -60,11 +60,11 @@ def test_mixed_valid_and_invalid_flags_only_the_invalid():
 def test_empty_list_on_a_platform_warns_even_when_others_are_valid():
     # The #89050 shape: the active platform is wiped to [] while every other
     # platform stays populated. The global zero-valid-toolsets net does not fire
-    # (telegram/discord are valid), so without a per-platform check this config
+    # (matrix/discord are valid), so without a per-platform check this config
     # produces no warning at all and the agent silently starts with no tools.
     cfg = {
         "cli": [],
-        "telegram": ["hermes-telegram"],
+        "matrix": ["hermes-matrix"],
         "discord": ["hermes-discord"],
     }
     warnings = validate_platform_toolsets(cfg, _is_valid)
@@ -74,14 +74,14 @@ def test_empty_list_on_a_platform_warns_even_when_others_are_valid():
     assert "platform 'cli'" in empty[0]
     assert "no tools" in empty[0]
     # Populated platforms must not be implicated.
-    assert "telegram" not in empty[0]
+    assert "matrix" not in empty[0]
     # The global net is genuinely suppressed here — the per-platform warning is
     # the only thing standing between the user and a silent zero-tool agent.
     assert not any("zero valid toolsets" in w for w in warnings)
 
 
 def test_empty_list_warns_for_each_affected_platform():
-    cfg = {"cli": [], "discord": [], "telegram": ["hermes-telegram"]}
+    cfg = {"cli": [], "discord": [], "matrix": ["hermes-matrix"]}
     warnings = validate_platform_toolsets(cfg, _is_valid)
 
     empty = [w for w in warnings if "empty toolset list" in w]
@@ -104,7 +104,7 @@ def test_empty_list_does_not_mask_unknown_names_on_other_platforms():
 def test_null_platform_warns_even_when_others_are_valid():
     # YAML's ``cli:`` parses as None. The resolver treats it as absent and uses
     # the platform default, so the warning must not claim that tools disappear.
-    cfg = {"cli": None, "telegram": ["hermes-telegram"]}
+    cfg = {"cli": None, "matrix": ["hermes-matrix"]}
     warnings = validate_platform_toolsets(cfg, _is_valid)
 
     assert any(
@@ -117,7 +117,7 @@ def test_null_platform_warns_even_when_others_are_valid():
 
 
 def test_null_platform_uses_canonical_default_for_alias():
-    cfg = {"whatsapp_cloud": None, "telegram": ["hermes-telegram"]}
+    cfg = {"whatsapp_cloud": None, "matrix": ["hermes-matrix"]}
     warnings = validate_platform_toolsets(cfg, _is_valid)
 
     assert any(
@@ -129,7 +129,7 @@ def test_null_platform_uses_canonical_default_for_alias():
 
 
 def test_scalar_platform_value_warns_but_uses_platform_default():
-    cfg = {"cli": "bogus", "telegram": ["hermes-telegram"]}
+    cfg = {"cli": "bogus", "matrix": ["hermes-matrix"]}
     warnings = validate_platform_toolsets(cfg, _is_valid)
 
     assert any(
@@ -142,11 +142,11 @@ def test_scalar_platform_value_warns_but_uses_platform_default():
 
 
 def test_platform_restricted_toolset_warns_when_other_platform_is_valid():
-    cfg = {"telegram": ["discord"], "cli": ["hermes-cli"]}
+    cfg = {"matrix": ["discord"], "cli": ["hermes-cli"]}
     warnings = validate_platform_toolsets(cfg, _is_valid)
 
     assert any(
-        "platform 'telegram'" in w
+        "platform 'matrix'" in w
         and "toolset 'discord'" in w
         and "not available" in w
         for w in warnings
@@ -168,7 +168,7 @@ def test_null_plugin_platform_uses_synthetic_default():
         )
     )
     try:
-        cfg = {platform: None, "telegram": ["hermes-telegram"]}
+        cfg = {platform: None, "matrix": ["hermes-matrix"]}
         warnings = validate_platform_toolsets(cfg, _is_valid)
 
         assert resolve_toolset(f"hermes-{platform}")
@@ -183,7 +183,7 @@ def test_null_plugin_platform_uses_synthetic_default():
 
 
 def test_all_invalid_platform_warns_even_when_others_are_valid():
-    cfg = {"cli": ["bogus"], "telegram": ["hermes-telegram"]}
+    cfg = {"cli": ["bogus"], "matrix": ["hermes-matrix"]}
     warnings = validate_platform_toolsets(cfg, _is_valid)
 
     assert any("unknown toolset 'bogus'" in w for w in warnings)
@@ -194,6 +194,6 @@ def test_all_invalid_platform_warns_even_when_others_are_valid():
 
 
 def test_populated_platforms_produce_no_empty_list_warning():
-    cfg = {"cli": ["hermes-cli"], "telegram": ["hermes-telegram"]}
+    cfg = {"cli": ["hermes-cli"], "matrix": ["hermes-matrix"]}
     warnings = validate_platform_toolsets(cfg, _is_valid)
     assert warnings == []

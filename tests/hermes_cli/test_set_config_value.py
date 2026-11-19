@@ -43,13 +43,11 @@ class TestExplicitAllowlist:
         "OPENROUTER_API_KEY",
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
-        "HONCHO_API_KEY",
         "FIRECRAWL_API_KEY",
-        "BROWSERBASE_API_KEY",
         "FAL_KEY",
         "SUDO_PASSWORD",
         "GITHUB_TOKEN",
-        "TELEGRAM_BOT_TOKEN",
+        "DISCORD_BOT_TOKEN",
         "DISCORD_BOT_TOKEN",
         "SLACK_BOT_TOKEN",
         "SLACK_APP_TOKEN",
@@ -243,8 +241,7 @@ class TestConfigGetPhantomKeyNotice:
     def test_unseeded_live_key_notice_hedges_instead_of_asserting_unread(
         self, _isolated_hermes_home, capsys
     ):
-        # The check is a DEFAULT_CONFIG walk; ``browser.cloud_provider`` is deliberately unseeded
-        # yet read by tools/browser_tool_cloud.py, so the notice must not claim it is never read.
+        # Removed browser selection keys remain readable from existing raw YAML.
         (_isolated_hermes_home / "config.yaml").write_text("browser:\n  cloud_provider: local\n")
 
         config_command(argparse.Namespace(config_command="get", key="browser.cloud_provider", json=False))
@@ -340,7 +337,7 @@ class TestListNavigation:
     def test_deeper_nesting_through_list(self, _isolated_hermes_home):
         """Navigation path mixing dict → list → dict → scalar."""
         self._write_config(_isolated_hermes_home, (
-            "telegram:\n"
+            "discord:\n"
             "  allowlist:\n"
             "    - name: alice\n"
             "      role: admin\n"
@@ -348,15 +345,15 @@ class TestListNavigation:
             "      role: user\n"
         ))
 
-        # NOTE: original test path was ``platforms.telegram.allowlist.1.role``,
+        # NOTE: original test path was ``platforms.discord.allowlist.1.role``,
         # which #34067 schema validation correctly rejects (platform configs
         # live at the top level, not under a ``platforms`` namespace). Use
         # the canonical path.
-        set_config_value("telegram.allowlist.1.role", "admin")
+        set_config_value("discord.allowlist.1.role", "admin")
 
         import yaml
         reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
-        allowlist = reloaded["telegram"]["allowlist"]
+        allowlist = reloaded["discord"]["allowlist"]
         assert isinstance(allowlist, list)
         assert allowlist[0] == {"name": "alice", "role": "admin"}
         assert allowlist[1] == {"name": "bob", "role": "admin"}
@@ -412,16 +409,15 @@ class TestStringTypedConfigValues:
     @pytest.mark.parametrize("value", ["off", "on", "yes", "no", "true", "false", "01"])
     def test_string_typed_values_are_not_coerced(self, _isolated_hermes_home, value):
         """Values stay strings when DEFAULT_CONFIG declares the leaf as a string."""
-        set_config_value("approvals.mode", value)
+        set_config_value("display.skin", value)
 
         import yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
-        assert saved["approvals"]["mode"] == value
-        assert isinstance(saved["approvals"]["mode"], str)
+        assert saved["display"]["skin"] == value
+        assert isinstance(saved["display"]["skin"], str)
 
     @pytest.mark.parametrize("key, value, expected", [
         ("terminal.persistent_shell", "off", False),
-        ("approvals.timeout", "30", 30),
     ])
     def test_non_string_defaults_keep_existing_coercion(
         self, _isolated_hermes_home, key, value, expected
@@ -535,8 +531,8 @@ class TestSchemaValidation:
         assert f"Did you mean: {suggestion}" in err
 
     @pytest.mark.parametrize("key,value,expected,suggestion", [
-        # ``stt.provider`` is read at runtime (tools/transcription_tools.py) but has no seeded
-        # default: a stored value is an explicit user pick, so the schema walk must not refuse it.
+        # ``stt.provider`` is a retired key with no seeded default. A stored value must
+        # still be written so old configs keep loading; the schema walk must not refuse it.
         ("stt.provider", "whisper", "whisper", None),
         # TRADE-OFF made explicit: a same-section typo (``agent.max_turnz``) is indistinguishable
         # from an unseeded key, so it is written too — the user gets the sibling suggestion
@@ -577,16 +573,6 @@ class TestSchemaValidation:
 
 
 
-    def test_desktop_macos_signing_identity_is_accepted(self, _isolated_hermes_home, capsys):
-        """The documented TCC signing identity setting is part of the schema."""
-        set_config_value("desktop.macos_signing_identity", "Hermes Local Signing")
-        import yaml
-        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
-        assert saved["desktop"]["macos_signing_identity"] == "Hermes Local Signing"
-        assert "not a recognized config key" not in capsys.readouterr().out
-
-
-
     def test_force_suppresses_notice(self, _isolated_hermes_home, capsys):
         """``--force`` writes unknown keys without the notice (scripted
         forward-compat writes)."""
@@ -606,13 +592,11 @@ class TestValidateConfigKey:
         "terminal.backend",
         "agent.max_turns",
         "discord.gateway_restart_notification",
-        "telegram.bot_token",
         "mcp_servers.foo.command",
         "providers.openrouter.api_key",
         "gateway.strict",
         "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",
-        "approvals.mode",
         # _EXTRA_KNOWN_ROOT_KEYS: read by the runtime (setup wizard / tools_config save flow)
         # but absent from DEFAULT_CONFIG; they used to trip the false "not a recognized config
         # key" notice with a bogus near-miss suggestion (platform_hints.cli).

@@ -80,7 +80,7 @@ def read_catalog_sidecar(plugin_dir) -> Optional[dict]:
     if path is None or not path.is_file():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
     return data if isinstance(data, dict) and data.get("catalog_name") else None
@@ -268,7 +268,7 @@ def cmd_validate(path: str, as_json: bool = False, install_deps: bool = False) -
 # ── Dashboard / TUI payloads ─────────────────────────────────────────────────
 
 def installed_catalog_state(installed: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-    """Catalog entries merged with local state for the dashboard. *installed* maps every alias (name
+    """Catalog entries merged with local state. *installed* maps every alias (name
     and registry key) of a discovered plugin to ``{"dir", "runtime_status"}``. A catalog name rarely
     equals the manifest name (``hermes-plugin-x`` vs ``x``), so installs are matched through the
     sidecar's ``catalog_name`` first and by name only as a fallback."""

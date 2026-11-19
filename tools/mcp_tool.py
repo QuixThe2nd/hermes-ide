@@ -312,7 +312,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
     __slots__ = (
         "name", "session", "tool_timeout", "_task", "_ready", "_shutdown_event", "_reconnect_event",
         "_tools", "_error", "_config", "_sampling", "_elicitation", "_registered_tool_names",
-        "_auth_type", "_refresh_lock", "_rpc_lock", "_pending_refresh_tasks", "_pending_call_context",
+        "_auth_type", "_refresh_lock", "_rpc_lock", "_pending_refresh_tasks",
         "_lifecycle_started_at", "_last_tool_call_at", "_idle_timeout_seconds", "_max_lifetime_seconds",
         "_recycled_reason", "initialize_result", "_ping_unsupported", "_list_cache_meta",
         "_reconnect_retries", "_session_proven", "_was_parked", "_inflight_tasks", "_reconnecting",
@@ -384,9 +384,6 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         # call): serialize client-initiated RPCs per server (HTTP too, for ordering).
         self._rpc_lock = asyncio.Lock()
         self._pending_refresh_tasks: set[asyncio.Task] = set()
-        # contextvars snapshot inside session.call_tool(): the SDK runs elicitation/create on a
-        # task that does not inherit HERMES_SESSION_PLATFORM, so the callback replays this.
-        self._pending_call_context: Optional[contextvars.Context] = None
         self._lifecycle_started_at = self._last_tool_call_at = time.monotonic()
         self._idle_timeout_seconds = self._max_lifetime_seconds = self._recycled_reason = None
         # Handshake InitializeResult: the server's REAL advertised capabilities.
@@ -471,18 +468,9 @@ _server_breaker_opened_at: Dict[Any, float] = {}
 _server_errors_all_application: Dict[Any, bool] = {}
 _CIRCUIT_BREAKER_THRESHOLD, _CIRCUIT_BREAKER_COOLDOWN_SEC = 3, 60.0
 
-# Trust-tier gating (``trust: full | untrusted``): on an untrusted server every write-capable
-# call (discovery-time ``readOnlyHint`` not exactly True; malformed fails closed) needs approval
-# before the RPC fires. A lying readOnlyHint can only skip approval for calls the operator was
-# already warned about, never widen access. Missing trust = full; unrecognized = untrusted (a
-# typo must never disable the gate). Classified at CALL time from DISCOVERY data: no schema
-# mutation, prompt cache intact. ``_server_trust_levels`` is keyed by the CONSUMING profile's own
-# key (its policy for the name, even when it adopted another profile's connection);
-# ``_tool_read_only_hints`` by the connection key (the server's own tool annotations).
-_server_trust_levels: Dict[Any, str] = {}
+# Discovery-time readOnlyHint values decide whether an uncertain transport
+# failure may be replayed. Missing or malformed values remain write-capable.
 _tool_read_only_hints: Dict[Any, Dict[str, bool]] = {}
-
-_TRUST_FULL, _TRUST_UNTRUSTED = "full", "untrusted"
 
 
 def _bump_server_error(server_name: str, *, application: bool = False) -> None:

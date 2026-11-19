@@ -831,7 +831,7 @@ class TestHealthDetailedEndpoint:
         app = _create_app(adapter)
         with patch("gateway.status.read_runtime_status", return_value={
             "gateway_state": "running",
-            "platforms": {"telegram": {"state": "connected"}},
+            "platforms": {"discord": {"state": "connected"}},
             "active_agents": 2,
             "exit_reason": None,
             "updated_at": "2026-04-14T00:00:00Z",
@@ -846,7 +846,7 @@ class TestHealthDetailedEndpoint:
                 assert data["status"] == "ok"
                 assert data["platform"] == "hermes-agent"
                 assert data["gateway_state"] == "running"
-                assert data["platforms"] == {"telegram": {"state": "connected"}}
+                assert data["platforms"] == {"discord": {"state": "connected"}}
                 assert data["active_agents"] == 2
                 # Derived busy/drainable: this endpoint is served BY the live
                 # gateway, so running + 2 agents ⇒ busy and drainable.
@@ -877,7 +877,6 @@ class TestHealthDetailedEndpoint:
         adapter._run_statuses = {
             "queued": {"status": "queued"},
             "running": {"status": "running"},
-            "approval": {"status": "waiting_for_approval"},
             "stopping": {"status": "stopping"},
             "done": {"status": "completed"},
             "cancelled": {"status": "cancelled"},
@@ -885,7 +884,7 @@ class TestHealthDetailedEndpoint:
 
         with patch("tools.process_registry.process_registry.completion_queue.qsize", return_value=0), \
              patch("tools.async_delegation.active_count", return_value=0):
-            assert adapter._readiness_work_counts() == (4, 0, 0)
+            assert adapter._readiness_work_counts() == (3, 0, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -1057,7 +1056,6 @@ class TestToolsetsEndpoint:
             ("default", "Default Tools", "Core tools"),
             ("web", "Web Tools", "Search and extract"),
         ]
-        feature_snapshot = object()
         with patch(
             "hermes_cli.tools_config._get_effective_configurable_toolsets",
             return_value=fake_toolsets,
@@ -1065,9 +1063,6 @@ class TestToolsetsEndpoint:
             "hermes_cli.tools_config._get_platform_tools",
             return_value={"default"},
         ), patch(
-            "hermes_cli.tools_config.get_nous_subscription_features",
-            return_value=feature_snapshot,
-        ) as resolve_features, patch(
             "hermes_cli.tools_config._toolset_has_keys",
             return_value=True,
         ) as has_keys, patch(
@@ -1091,12 +1086,12 @@ class TestToolsetsEndpoint:
                 assert by_name["web"]["tools"] == ["web_search"]
                 assert by_name["default"]["configured"] is True
 
-        resolve_features.assert_called_once()
         assert has_keys.call_count == len(fake_toolsets)
-        assert all(
-            call.kwargs["features"] is feature_snapshot
-            for call in has_keys.call_args_list
-        )
+        config = has_keys.call_args_list[0].args[1]
+        assert [call.args for call in has_keys.call_args_list] == [
+            (name, config) for name, _, _ in fake_toolsets
+        ]
+        assert all(not call.kwargs for call in has_keys.call_args_list)
 
 
 # ---------------------------------------------------------------------------
@@ -2519,7 +2514,7 @@ class TestSessionIdHeader:
 
 class TestSessionKeyHeader:
     """The session key is a stable per-channel identifier that scopes
-    long-term memory (e.g. Honcho) independently of the transcript-scoped
+    long-term memory (e.g. Hindsight) independently of the transcript-scoped
     session_id.  A third-party Web UI passes one stable key per assistant
     channel and rotates session_id on /new, matching the native
     gateway's session_key / session_id split.

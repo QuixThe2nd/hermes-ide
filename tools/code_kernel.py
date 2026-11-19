@@ -419,17 +419,17 @@ _CHILD_OWNER_QUALIFIER = "::child::"
 
 
 def _resolve_owner(task_id: str) -> str:
-    """The stable identity a session kernel belongs to: the conversation's approval session key
+    """The stable identity a session kernel belongs to: the conversation's tool session key
     (context-propagated, stable across turns, distinct per session). ``run_agent`` mints a fresh
     task id per turn, so a task-keyed kernel would neither survive the next turn nor be torn down
     with anything; the task id is only the last-resort owner (embeds/tests without a session).
 
-    Delegated children INHERIT the parent's approval session key — without the ``::child::``
+    Delegated children INHERIT the parent's tool session key — without the ``::child::``
     qualifier a child's execute_code would attach to the parent's kernel and read its state
     (verified live, both directions). Children get their own kernels keyed by delegation session id.
     """
     try:
-        from tools.approval_context import get_current_session_key
+        from tools.session_context import get_current_session_key
         session_key = get_current_session_key(default="")
     except Exception:
         session_key = ""
@@ -451,8 +451,7 @@ def shutdown_all_kernels() -> None:
 
 
 def shutdown_kernels_for_owner(owner: str) -> None:
-    """Dispose every kernel a session owns — wired into ``tools.approval.clear_session``
-    so kernels die at the same boundary that clears approval/yolo state (/new, session close).
+    """Dispose every kernel owned by a session at its cleanup boundary.
 
     See #88637.
     """

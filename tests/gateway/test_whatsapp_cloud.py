@@ -81,9 +81,6 @@ def _make_adapter(**overrides):
     adapter._accepted_count = 0
     adapter._rejected_signature_count = 0
 
-    # Phase 4 state — one-shot warnings.
-    adapter._warned_no_ffmpeg = False
-
     # Phase 10 state — per-chat latest inbound wamid (for typing/read).
     adapter._last_inbound_wamid_by_chat = {}
 
@@ -102,7 +99,6 @@ def _make_adapter(**overrides):
     adapter._active_sessions = {}
     adapter._pending_messages = {}
     adapter._background_tasks = set()
-    adapter._auto_tts_disabled_chats = set()
 
     # Apply any leftover overrides directly
     for key, value in overrides.items():
@@ -723,37 +719,6 @@ class TestSendDocument:
             _os.unlink(path)
 
 
-class TestSendVoice:
-    """MP3 voice with ffmpeg present -> opus; without ffmpeg -> MP3 fallback."""
-
-
-    @pytest.mark.asyncio
-    async def test_send_voice_ffmpeg_present_uses_opus(self):
-        adapter = _make_adapter()
-        adapter._http_client = MagicMock()
-        adapter._http_client.post = AsyncMock(side_effect=[
-            _mock_upload_response("voice_id"),
-            _mock_message_response(),
-        ])
-        # Pretend ffmpeg conversion succeeded by returning a fake opus path.
-        opus_path = _tmpfile(".ogg", content=b"OggS")
-        adapter._convert_to_opus = AsyncMock(return_value=opus_path)
-
-        mp3_path = _tmpfile(".mp3", content=b"ID3")
-        try:
-            result = await adapter.send_voice("15551234567", mp3_path)
-            assert result.success is True
-            # Conversion was invoked with the original MP3
-            uploaded_path = adapter._convert_to_opus.call_args.args[0]
-            assert uploaded_path == mp3_path
-            send_payload = adapter._http_client.post.call_args_list[1].kwargs["json"]
-            assert send_payload["type"] == "audio"
-        finally:
-            _os.unlink(mp3_path)
-            if _os.path.exists(opus_path):
-                _os.unlink(opus_path)
-
-
 # ---------------------------------------------------------------------------
 # Inbound media — Graph two-step download (Phase 4)
 # ---------------------------------------------------------------------------
@@ -938,19 +903,10 @@ class TestGroupMessageGuard:
 
 
 # =========================================================================
-# Phase 9 — Interactive button messages (clarify / approval / slash-confirm)
-# =========================================================================
+# Interactive button messages (clarify / slash-confirm)
 #
-# These tests cover the four hooks the gateway uses for richer UX on
-# platforms that support interactive buttons:
-#   - send_clarify         (mid-conversation multi-choice question)
-#   - send_exec_approval   (dangerous-command Y/N gate)
-#   - send_slash_confirm   (3-button slash-command preview)
-#   - _dispatch_interactive_reply (inbound side: route button taps to
-#                                  the right resolver)
-# Telegram and Discord have the same hooks; we mirror their callback-id
-# format (cl:, appr:, sc:) so the gateway's existing degrade-to-text
-# fallback works transparently.
+# These hooks cover multi-choice questions and Once/Always/Cancel or
+# Once/Cancel slash confirmation. Callback ids are cl: and sc:.
 
 
 class TestSendClarifyButtons:
@@ -987,41 +943,6 @@ class TestSendClarifyButtons:
         assert adapter._clarify_state["abc123"] == "sess-1"
 
 
-class TestSendExecApprovalButtons:
-    """``send_exec_approval`` outbound — 2-button Approve/Deny gate."""
-
-    @pytest.mark.asyncio
-    async def test_approval_renders_two_buttons(self):
-        adapter = _make_adapter()
-        adapter._http_client = MagicMock()
-        adapter._http_client.post = AsyncMock(
-            return_value=_mock_httpx_response(200, {"messages": [{"id": "wamid.a1"}]})
-        )
-
-        result = await adapter.send_exec_approval(
-            chat_id="15551234567",
-            command="rm -rf /tmp/foo",
-            session_key="sess-app-1",
-            description="cleanup script",
-        )
-
-        assert result.success
-        payload = adapter._http_client.post.call_args.kwargs["json"]
-        assert payload["interactive"]["type"] == "button"
-        buttons = payload["interactive"]["action"]["buttons"]
-        assert len(buttons) == 2
-        assert "Approve" in buttons[0]["reply"]["title"]
-        assert "Deny" in buttons[1]["reply"]["title"]
-        approve_id = buttons[0]["reply"]["id"]
-        deny_id = buttons[1]["reply"]["id"]
-        assert approve_id.startswith("appr:") and approve_id.endswith(":approve")
-        assert deny_id.startswith("appr:") and deny_id.endswith(":deny")
-        approval_id = approve_id.split(":")[1]
-        assert deny_id.split(":")[1] == approval_id
-        body = payload["interactive"]["body"]["text"]
-        assert "rm -rf /tmp/foo" in body
-        assert "cleanup script" in body
-        assert adapter._exec_approval_state[approval_id] == "sess-app-1"
 
 
 class TestSendSlashConfirmButtons:
@@ -1050,6 +971,30 @@ class TestSendSlashConfirmButtons:
         ids = [b["reply"]["id"] for b in buttons]
         assert ids == ["sc:once:cf-9", "sc:always:cf-9", "sc:cancel:cf-9"]
         assert adapter._slash_confirm_state["cf-9"] == "sess-sc-1"
+
+    @pytest.mark.asyncio
+    async def test_reload_mcp_offers_only_once_and_cancel(self):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(200, {"messages": [{"id": "wamid.s2"}]})
+        )
+
+        result = await adapter.send_slash_confirm(
+            chat_id="15551234567",
+            title="Reload MCP",
+            message="This will restart all MCP servers.",
+            session_key="sess-sc-2",
+            confirm_id="cf-10",
+            include_always=False,
+        )
+
+        assert result.success
+        payload = adapter._http_client.post.call_args.kwargs["json"]
+        buttons = payload["interactive"]["action"]["buttons"]
+        assert [b["reply"]["id"] for b in buttons] == [
+            "sc:once:cf-10", "sc:cancel:cf-10",
+        ]
 
 
 @pytest.mark.usefixtures("authorized_interactive_env")
@@ -1115,41 +1060,6 @@ class TestDispatchInteractiveReplyClarify:
         assert handled is False
 
 
-@pytest.mark.usefixtures("authorized_interactive_env")
-class TestDispatchInteractiveReplyApproval:
-    """Inbound side: approval-tap → resolve_gateway_approval."""
-
-    @pytest.mark.asyncio
-    async def test_approve_tap_calls_resolver_and_confirms(self, monkeypatch):
-        adapter = _make_adapter()
-        adapter._exec_approval_state["app1"] = "sess-app-1"
-        adapter._http_client = MagicMock()
-        adapter._http_client.post = AsyncMock(
-            return_value=_mock_httpx_response(200, {"messages": [{"id": "x"}]})
-        )
-
-        calls = []
-        monkeypatch.setattr(
-            "tools.approval.resolve_gateway_approval",
-            lambda session_key, choice: calls.append((session_key, choice)) or 1,
-        )
-
-        raw = {
-            "from": "15551234567",
-            "type": "interactive",
-            "interactive": {
-                "type": "button_reply",
-                "button_reply": {"id": "appr:app1:approve", "title": "Approve"},
-            },
-        }
-        handled = await adapter._dispatch_interactive_reply(raw, {})
-
-        assert handled is True
-        assert calls == [("sess-app-1", "approve")]
-        assert "app1" not in adapter._exec_approval_state
-        confirm_payload = adapter._http_client.post.call_args.kwargs["json"]
-        assert confirm_payload["type"] == "text"
-        assert "Approved" in confirm_payload["text"]["body"]
 
 
 @pytest.mark.usefixtures("authorized_interactive_env")
@@ -1196,39 +1106,6 @@ class TestDispatchInteractiveReplySlashConfirm:
         assert "MCP reloaded" in reply_payload["text"]["body"]
 
 
-class TestDispatchInteractiveReplyAuthorization:
-    """Interactive taps must honor the same DM allowlist as text intake."""
-
-
-    @pytest.mark.asyncio
-    async def test_approval_tap_allowed_when_sender_allowlisted(self, monkeypatch):
-        adapter = _make_adapter(
-            _dm_policy="allowlist",
-            _allow_from={"15551234567"},
-        )
-        adapter._exec_approval_state["app1"] = "sess-app-1"
-        adapter._http_client = MagicMock()
-        adapter._http_client.post = AsyncMock(
-            return_value=_mock_httpx_response(200, {"messages": [{"id": "x"}]})
-        )
-        calls = []
-        monkeypatch.setattr(
-            "tools.approval.resolve_gateway_approval",
-            lambda session_key, choice: calls.append((session_key, choice)) or 1,
-        )
-
-        raw = {
-            "from": "15551234567",
-            "type": "interactive",
-            "interactive": {
-                "type": "button_reply",
-                "button_reply": {"id": "appr:app1:approve", "title": "Approve"},
-            },
-        }
-        handled = await adapter._dispatch_interactive_reply(raw, {})
-
-        assert handled is True
-        assert calls == [("sess-app-1", "approve")]
 
 
 @pytest.mark.usefixtures("authorized_interactive_env")

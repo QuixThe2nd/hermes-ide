@@ -26,12 +26,12 @@ def fleet(tmp_path, monkeypatch):
     for sub in ("profiles/coder", "profiles/ops"):
         (root / sub).mkdir(parents=True)
     (root / "config.yaml").write_text("model:\n  default: x\n", encoding="utf-8")
-    (root / ".env").write_text("TELEGRAM_BOT_TOKEN=111111:default-token\n", encoding="utf-8")
-    (root / "profiles/coder/.env").write_text("TELEGRAM_BOT_TOKEN=222222:coder-token\n", encoding="utf-8")
+    (root / ".env").write_text("DISCORD_BOT_TOKEN=111111:default-discord-token\n", encoding="utf-8")
+    (root / "profiles/coder/.env").write_text("DISCORD_BOT_TOKEN=222222:coder-discord-token\n", encoding="utf-8")
     (root / "profiles/ops/.env").write_text("DISCORD_BOT_TOKEN=ops-discord-333333\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
-    for name in ("TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN", "API_SERVER_KEY", "WEBHOOK_ENABLED"):
+    for name in ("DISCORD_BOT_TOKEN", "API_SERVER_KEY", "WEBHOOK_ENABLED"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
 
@@ -110,8 +110,8 @@ def test_dry_run_and_blocked_preflight_change_nothing(fleet, capsys):
 
     gm.cmd_migrate(SimpleNamespace(multiplex=True, standalone=False, dry_run=True, yes=True))  # returns; no exit
     assert "dry run" in capsys.readouterr().out
-    # Blocked: coder reuses the default's Telegram token -> the gateway's own fingerprint says duplicate.
-    (fleet.root / "profiles/coder/.env").write_text("TELEGRAM_BOT_TOKEN=111111:default-token\n", encoding="utf-8")
+    # Blocked: coder reuses the default's Discord token -> the gateway's own fingerprint says duplicate.
+    (fleet.root / "profiles/coder/.env").write_text("DISCORD_BOT_TOKEN=111111:default-discord-token\n", encoding="utf-8")
     blocked = gm.build_migration_plan()
     assert blocked.blocked and "profile_routes" in blocked.blockers[0] and "'coder'" in blocked.blockers[0]
     with pytest.raises(SystemExit) as exc:
@@ -142,8 +142,8 @@ def test_apply_records_manifest_flips_flag_and_rollback_restores(fleet, capsys):
     runtime_path = fleet.root / "gateway_state.json"
     runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
     runtime["platforms"] = {
-        "telegram": {"state": "connected"},
-        "coder:telegram": {"state": "connected"},
+        "discord": {"state": "connected"},
+        "coder:discord": {"state": "connected"},
         "ops:discord": {"state": "connected"},
     }
     runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
@@ -158,7 +158,7 @@ def test_apply_records_manifest_flips_flag_and_rollback_restores(fleet, capsys):
     assert fleet.refused_at_start == {"coder": False, "ops": False}
     runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
     assert runtime["served_profiles"] == []
-    assert runtime["platforms"] == {"telegram": {"state": "connected"}}
+    assert runtime["platforms"] == {"discord": {"state": "connected"}}
     from hermes_cli.gateway import named_profile_served_by_running_multiplexer
     assert named_profile_served_by_running_multiplexer("coder") is False
     assert not (fleet.root / gm.MANIFEST_NAME).exists()
@@ -295,10 +295,9 @@ def test_serves_profile_prefix_is_read_from_adapter_classes():
     assert gm.platform_serves_profile_prefix("webhook") is True
     # Every adapter that binds through shared_ingress.bind_listener is served at /p/<profile>/
     # for a secondary, so migrate must report it as a notice, never a blocker.
-    for platform in ("sms", "line", "teams", "bluebubbles", "whatsapp_cloud", "msgraph_webhook"):
-        assert gm.platform_serves_profile_prefix(platform) is True, platform
+    assert gm.platform_serves_profile_prefix("whatsapp_cloud") is True
     # An outbound-only adapter never declares it (and never needs to).
-    assert gm.platform_serves_profile_prefix("telegram") is False
+    assert gm.platform_serves_profile_prefix("discord") is False
 
 
 def test_update_hook_migrates_when_unblocked_and_only_warns_when_blocked(fleet, capsys):
@@ -314,7 +313,7 @@ def test_update_hook_migrates_when_unblocked_and_only_warns_when_blocked(fleet, 
     (fleet.root / "config.yaml").write_text("model:\n  default: x\n", encoding="utf-8")
     fleet.services.update({"coder": ("systemd", False), "default": ("systemd", False)})
     fleet.pids.update({"coder": 4101}); fleet.ops.clear()
-    (fleet.root / "profiles/coder/.env").write_text("TELEGRAM_BOT_TOKEN=111111:default-token\n", encoding="utf-8")
+    (fleet.root / "profiles/coder/.env").write_text("DISCORD_BOT_TOKEN=111111:default-discord-token\n", encoding="utf-8")
     gm.maybe_auto_migrate_after_update()
     out = capsys.readouterr().out
     assert gm.MIGRATE_COMMAND in out and "profile_routes" in out

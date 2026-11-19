@@ -230,7 +230,7 @@ def _holder_value_flags() -> frozenset:
 def _hermes_holder_subcommand(cmdline: str) -> str | None:
     """The actual Hermes SUBCOMMAND a venv-holder argv runs, or None (callers must NOT guess a label).
 
-    Token-based, never substring (``kanban --preserve-cache`` contains "serve"): find the ``hermes_cli.main`` /
+    Token-based, never substring (``chat --preserve-cache`` contains "serve"): find the ``hermes_cli.main`` /
     ``hermes(.exe)`` entry token, return the first following token that isn't a flag or a flag's value.
 
     Profile selectors (``--profile X``, ``-p X``) are skipped like the canonical gateway matcher does. See
@@ -406,7 +406,8 @@ def _relaunch_stopped_serves(token: dict) -> None:
     """Idempotent atexit relaunch of manual serves stopped by the venv guard.
 
     `pending` flips False on first invocation so explicit call + atexit registration cannot double-spawn."""
-    from hermes_cli.update_cmd import _m, _record_update_step
+    from hermes_cli.update_cmd import _m
+    from hermes_cli.update_receipt import record_step as _record_update_step
     if not token.get("pending"):
         return
     token["pending"] = False
@@ -593,7 +594,7 @@ def _looks_like_desktop_control_plane(cmdline: str) -> bool:
     """True for this-install ``hermes serve`` / ``hermes dashboard`` argv (Desktop control plane).
 
     Not the messaging gateway — don't feed into ``looks_like_gateway_command_line``. Token-based via the
-    parser-derived classifier, never substring (``kanban --preserve-cache``, ``-m dashboard chat``).
+    parser-derived classifier, never substring (``chat --preserve-cache``, ``-m dashboard chat``).
     Undeterminable subcommand is NOT a control plane.
 
     See #92091.
@@ -1321,7 +1322,8 @@ def _clear_windows_venv_holders_or_exit(args, gateway_mode: bool, _windows_gatew
     Rungs in order: leftover pausable gateways -> ledger orphaned backends -> orphaned Desktop backends ->
     ledger manual serve (relaunched at exit on the same bind) -> GUI hand-off leaks. Remaining holders are
     refused (the sync would corrupt against a locked .pyd)."""
-    from hermes_cli.update_cmd import _m, _record_update_step, _refuse_gateway_ancestor_tree_kill
+    from hermes_cli.update_cmd import _m, _refuse_gateway_ancestor_tree_kill
+    from hermes_cli.update_receipt import record_step as _record_update_step
 
     def _resume_and_exit():
         _m()._resume_windows_gateways_after_update(_windows_gateway_resume)

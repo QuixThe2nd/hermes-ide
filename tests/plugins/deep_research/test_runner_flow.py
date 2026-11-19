@@ -24,7 +24,6 @@ INVENTED_URL = "https://example.com/i-made-this-up"
 
 def _config(**overrides) -> DeepResearchConfig:
     kwargs = dict(
-        enabled=True,
         worker_profile="researcher",
         default_timeout_minutes=10,
         max_parallel=2,
@@ -480,6 +479,66 @@ class TestCitationGating:
         allowed_block = correction.split("ONLY URLs you may cite", 1)[1].split("## Rules", 1)[0]
         assert GOOD_URL in allowed_block
         assert INVENTED_URL not in allowed_block
+
+
+    def test_correction_leftover_summary_and_redundant_row_publishes(self, home: Path) -> None:
+        job_id, directory = _make_job(home, questions=None)
+        _seed_evidence(directory, GOOD_URL, OTHER_URL)
+        corrected = (
+            "| Runtime | Evidence |\n"
+            "|---|---|\n"
+            f"| a | [good]({GOOD_URL}) and https://example.org/redundant-row |\n"
+            "\n"
+            "## Sources\n"
+            "\n"
+            "- https://example.org/\n"
+            "- https://example.net/index\n"
+            "- https://example.com/\n"
+            f"- [other]({OTHER_URL})\n"
+        )
+        spawn = FakeSpawn(writers=[f"Bad [x]({INVENTED_URL}).", corrected])
+        state = _run(job_id, home, spawn)
+        assert state == "completed"
+        report = (directory / "report.md").read_text(encoding="utf-8")
+        assert "https://example.org/redundant-row" not in report
+        assert "https://example.org/\n" not in report
+        assert "https://example.net/index" not in report
+        assert "https://example.com/" not in report
+        assert GOOD_URL in report and OTHER_URL in report
+        # Lane (no -t by default) + synthesis + correction, no third writer.
+        writer_calls = [argv for argv in spawn.argvs if "-t" in argv or "--toolsets" in argv]
+        assert len(writer_calls) == 2
+
+    def test_sole_invented_body_citation_still_fails_after_correction(self, home: Path) -> None:
+        job_id, directory = _make_job(home, questions=None)
+        _seed_evidence(directory, GOOD_URL)
+        corrected = (
+            f"A claim resting only on [made up]({INVENTED_URL}).\n"
+            "\n"
+            "## Sources\n"
+            "\n"
+            f"- [good]({GOOD_URL})\n"
+        )
+        spawn = FakeSpawn(writers=[f"Bad [x]({INVENTED_URL}).", corrected])
+        state = _run(job_id, home, spawn)
+        assert state == "failed"
+        assert not (directory / "report.md").exists()
+        assert INVENTED_URL in (directory / "report.draft.md").read_text(encoding="utf-8")
+
+    def test_mixed_sources_item_keeps_ledgered_url(self, home: Path) -> None:
+        job_id, directory = _make_job(home, questions=None)
+        _seed_evidence(directory, OTHER_URL)
+        corrected = (
+            "## Sources\n"
+            "\n"
+            f"- kept label with [other]({OTHER_URL}) and https://example.org/index\n"
+        )
+        spawn = FakeSpawn(writers=[f"Bad [x]({INVENTED_URL}).", corrected])
+        state = _run(job_id, home, spawn)
+        assert state == "completed"
+        report = (directory / "report.md").read_text(encoding="utf-8")
+        assert OTHER_URL in report and "kept label" in report
+        assert "https://example.org/index" not in report
 
 
 # ---------------------------------------------------------------------------

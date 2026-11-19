@@ -44,10 +44,10 @@ class TestResolvePlatformHint:
 
 
     def test_other_platform_unaffected(self):
-        """An override for whatsapp must not change telegram's hint."""
+        """An override for whatsapp must not change discord's hint."""
         a = _agent({"whatsapp": {"append": EXTRA}})
-        tg_default = "You are on Telegram. Markdown works."
-        assert _resolve_platform_hint(a, "telegram", tg_default) == tg_default
+        dc_default = "You are on Discord. Markdown works."
+        assert _resolve_platform_hint(a, "discord", dc_default) == dc_default
 
 
     # --- defensive / malformed input: never break prompt assembly ---

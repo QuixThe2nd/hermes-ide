@@ -23,6 +23,7 @@ from plugins.auto_update.platform import (
     resolve_python_executable,
 )
 from plugins.auto_update.systemd import (
+    _systemd_quote,
     atomic_write,
     default_systemctl_runner,
     format_exec_start,
@@ -33,22 +34,6 @@ from plugins.claude_viewer.config import (
     plugin_explicitly_disabled,
 )
 from plugins.claude_viewer.port import FREE, PortState, probe_port_state
-
-logger = logging.getLogger(__name__)
-
-SERVICE_NAME = "hermes-claude-viewer.service"
-
-# Sentinels written into the unit so a human (or a future reconcile) can see
-# why this plugin stands down on a box that already runs a viewer.
-_COEXIST_NOTE = (
-    "# Coexistence: if something already serves the configured port — e.g. a\n"
-    "# hand-started claude-viewer or a foreign unit such as\n"
-    "# /etc/systemd/system/claude-viewer.service — reconcile deliberately does\n"
-    "# NOT install this unit. Two copies would just crash-loop on\n"
-    "# 'Address already in use', and the running one already serves the runs\n"
-    "# directory. Stand-down is reported as a warning, never an error, so it\n"
-    "# cannot fail gateway start."
-)
 
 
 class ProbeOutcome:
@@ -71,6 +56,55 @@ class ProbeResult:
     @property
     def as_bool(self) -> bool:
         return self.outcome == ProbeOutcome.TRUE
+
+
+def _classify_probe(code: int, stdout: str, stderr: str, *, active_words: set[str]) -> ProbeResult:
+    blob = f"{stderr} {stdout}".lower()
+    query_markers = (
+        "failed to connect to bus",
+        "connection timed out",
+        "operation timed out",
+        "timed out after",
+        "access denied",
+        "permission denied",
+        "transport endpoint",
+        "can't connect",
+    )
+    detail = " ".join((stderr or "").split())[:200]
+    if any(marker in blob for marker in query_markers):
+        return ProbeResult(ProbeOutcome.QUERY_FAILED, detail or f"exit code {code}")
+    text = stdout.strip().lower()
+    if code == 0 and text in active_words:
+        return ProbeResult(ProbeOutcome.TRUE)
+    if code in {3, 4}:
+        return ProbeResult(ProbeOutcome.FALSE)
+    if code == 1:
+        if text and text not in {"unknown", "not-found"}:
+            return ProbeResult(ProbeOutcome.FALSE)
+        if not detail:
+            return ProbeResult(ProbeOutcome.FALSE)
+        return ProbeResult(ProbeOutcome.QUERY_FAILED, detail)
+    if detail:
+        return ProbeResult(ProbeOutcome.QUERY_FAILED, detail)
+    if code != 0:
+        return ProbeResult(ProbeOutcome.QUERY_FAILED, f"exit code {code}")
+    return ProbeResult(ProbeOutcome.FALSE)
+
+logger = logging.getLogger(__name__)
+
+SERVICE_NAME = "hermes-claude-viewer.service"
+
+# Sentinels written into the unit so a human (or a future reconcile) can see
+# why this plugin stands down on a box that already runs a viewer.
+_COEXIST_NOTE = (
+    "# Coexistence: if something already serves the configured port — e.g. a\n"
+    "# hand-started claude-viewer or a foreign unit such as\n"
+    "# /etc/systemd/system/claude-viewer.service — reconcile deliberately does\n"
+    "# NOT install this unit. Two copies would just crash-loop on\n"
+    "# 'Address already in use', and the running one already serves the runs\n"
+    "# directory. Stand-down is reported as a warning, never an error, so it\n"
+    "# cannot fail gateway start."
+)
 
 
 @dataclass(frozen=True)
@@ -120,21 +154,6 @@ def build_exec_start_argv(
         "--log-dir",
         str(log_dir_path(home)),
     ]
-
-
-def _systemd_quote(value: str) -> str:
-    if not value:
-        return '""'
-    special = set(' \t\n"\\$%')
-    if not any(ch in special for ch in value):
-        return value
-    escaped = (
-        value.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("$", "\\$")
-        .replace("%", "%%")
-    )
-    return f'"{escaped}"'
 
 
 def render_service_unit(
@@ -187,44 +206,11 @@ StandardError=journal
 
 def write_unit_if_changed(scope: InstallScope, *, body: str) -> bool:
     path = service_unit_path(scope)
-    existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+    existing = path.read_text(encoding="utf-8-sig") if path.is_file() else ""
     if existing == body:
         return False
     atomic_write(path, body)
     return True
-
-
-def _classify_probe(code: int, stdout: str, stderr: str, *, active_words: set[str]) -> ProbeResult:
-    blob = f"{stderr} {stdout}".lower()
-    query_markers = (
-        "failed to connect to bus",
-        "connection timed out",
-        "operation timed out",
-        "timed out after",
-        "access denied",
-        "permission denied",
-        "transport endpoint",
-        "can't connect",
-    )
-    detail = " ".join((stderr or "").split())[:200]
-    if any(marker in blob for marker in query_markers):
-        return ProbeResult(ProbeOutcome.QUERY_FAILED, detail or f"exit code {code}")
-    text = stdout.strip().lower()
-    if code == 0 and text in active_words:
-        return ProbeResult(ProbeOutcome.TRUE)
-    if code in {3, 4}:
-        return ProbeResult(ProbeOutcome.FALSE)
-    if code == 1:
-        if text and text not in {"unknown", "not-found"}:
-            return ProbeResult(ProbeOutcome.FALSE)
-        if not detail:
-            return ProbeResult(ProbeOutcome.FALSE)
-        return ProbeResult(ProbeOutcome.QUERY_FAILED, detail)
-    if detail:
-        return ProbeResult(ProbeOutcome.QUERY_FAILED, detail)
-    if code != 0:
-        return ProbeResult(ProbeOutcome.QUERY_FAILED, f"exit code {code}")
-    return ProbeResult(ProbeOutcome.FALSE)
 
 
 def probe_service_is_enabled(

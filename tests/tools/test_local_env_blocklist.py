@@ -11,6 +11,7 @@ See: https://github.com/NousResearch/hermes-agent/issues/1264
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -49,14 +50,15 @@ def _run_with_env(extra_os_env=None, self_env=None):
     and return the env dict passed to the subprocess."""
     captured = {}
     test_environ = {
-        "PATH": "/usr/bin:/bin",
+        **os.environ,
+        "PATH": os.environ.get("PATH", ""),
         "HOME": "/home/user",
         "USER": "testuser",
     }
     if extra_os_env:
         test_environ.update(extra_os_env)
 
-    env = LocalEnvironment(cwd="/tmp", timeout=10, env=self_env)
+    env = LocalEnvironment(cwd=tempfile.gettempdir(), timeout=10, env=self_env)
 
     with patch("tools.environments.local._find_bash", return_value="/bin/bash"), \
          patch("subprocess.Popen", side_effect=_make_fake_popen(captured)), \
@@ -103,15 +105,16 @@ class TestProviderEnvBlocklist:
             assert var not in result_env, f"{var} leaked into subprocess env"
 
     def test_bedrock_bearer_token_is_stripped(self):
-        """The Bedrock-specific bearer token is a Hermes inference secret
-        (analogous to OPENAI_API_KEY) and must not leak into subprocesses.
+        """The Bedrock bearer token is a Hermes inference secret and must
+        not leak into subprocesses, even though the Bedrock provider itself
+        has been stripped from this fork.
 
         Regression for #32314: AWS_BEARER_TOKEN_BEDROCK leaked into terminal /
-        execute_code children because the ``bedrock`` ProviderConfig declares
-        ``api_key_env_vars=()`` (auth_type="aws_sdk") and the blocklist builder
-        only consulted that field. The reporter caught it when ``opencode
-        models`` run inside a Hermes terminal enumerated the entire Bedrock
-        catalog off the leaked bearer token.
+        execute_code children because the ``bedrock`` ProviderConfig declared
+        ``api_key_env_vars=()`` (auth_type="aws_sdk"). The reporter caught it
+        when ``opencode models`` run inside a Hermes terminal enumerated the
+        entire Bedrock catalog off the leaked bearer token. The var stays on
+        the static blocklist so tokens issued before the strip never leak.
         """
         result_env = _run_with_env(extra_os_env={
             "AWS_BEARER_TOKEN_BEDROCK": "bedrock-bearer-secret",
@@ -199,7 +202,7 @@ class TestProviderEnvBlocklist:
     def test_tool_and_gateway_vars_are_stripped(self):
         """Tool and gateway secrets/config must not leak into subprocess env."""
         leaked_vars = {
-            "TELEGRAM_BOT_TOKEN": "bot-token",
+            "DISCORD_BOT_TOKEN": "bot-token",
             "SLACK_APP_TOKEN": "xapp-secret",
             "WHATSAPP_ALLOWED_USERS": "+15555550123",
             "SIGNAL_ACCOUNT": "+15555550124",
@@ -207,7 +210,7 @@ class TestProviderEnvBlocklist:
             "EMAIL_PASSWORD": "email-secret",
             "FIRECRAWL_API_KEY": "fc-secret",
             "HERMES_DASHBOARD_SESSION_TOKEN": "dashboard-session-secret",
-            "BROWSERBASE_PROJECT_ID": "bb-project",
+            "CAMOFOX_API_KEY": "camofox-secret",
             "ELEVENLABS_API_KEY": "el-secret",
             "GITHUB_TOKEN": "ghp_secret",
             "GH_TOKEN": "gh_alias_secret",
@@ -282,247 +285,6 @@ class TestProviderEnvBlocklist:
         assert result_env["MY_CUSTOM_VAR"] == "keep-this"
 
 
-class TestTerminalFirstPartyPlatformEnv:
-    """BUZZ_* first-party platform credentials must reach terminal children —
-    but ONLY in a Buzz agent context.
-
-    Issue #78026: Buzz platform agents could not use the ``buzz`` CLI from the
-    terminal tool because BUZZ_PRIVATE_KEY / BUZZ_AUTH_TAG / BUZZ_RELAY_URL
-    (and the other BUZZ_* vars) are stripped by _HERMES_PROVIDER_ENV_BLOCKLIST
-    and env_passthrough refuses to re-allow them (GHSA-rhgp-j443-p4rf).
-
-    The carve-out is TERMINAL-ONLY and CONTEXT-GATED: it applies when the
-    process is a Buzz-ACP managed agent (BUZZ_MANAGED_AGENT set by the
-    buzz-acp harness, #76243) or the live session's platform is ``buzz``.
-    Foreground (_make_run_env) and background/PTY (_sanitize_subprocess_env)
-    children then get the BUZZ_* vars; execute_code, hermes_subprocess_env,
-    docker, and env_passthrough registration stay sealed, and non-Buzz
-    sessions/processes keep stripping the vars. The blocklist itself is NOT
-    modified.
-    """
-
-    def test_make_run_env_preserves_buzz_vars(self):
-        """Foreground terminal children get the BUZZ_* credentials when the
-        process is a Buzz-managed agent (BUZZ_MANAGED_AGENT set)."""
-        from tools.environments.local import _make_run_env
-
-        buzz_vars = {
-            "BUZZ_PRIVATE_KEY": "nsec1faketestkey",
-            "BUZZ_AUTH_TAG": '["tag","data","kind","sig"]',
-            "BUZZ_RELAY_URL": "https://mycommunity.communities.buzz.xyz",
-        }
-        with patch.dict(
-            os.environ,
-            {**buzz_vars, "BUZZ_MANAGED_AGENT": "1", "PATH": "/usr/bin:/bin"},
-            clear=True,
-        ):
-            run_env = _make_run_env({})
-
-        for var, value in buzz_vars.items():
-            assert run_env.get(var) == value, (
-                f"{var} missing from foreground terminal env (issue #78026)"
-            )
-
-    def test_sanitize_subprocess_env_preserves_buzz_vars(self, monkeypatch):
-        """Background/PTY terminal children get the BUZZ_* credentials when
-        the process is a Buzz-managed agent."""
-        from tools.environments.local import _sanitize_subprocess_env
-
-        monkeypatch.setenv("BUZZ_MANAGED_AGENT", "1")
-        buzz_vars = {
-            "BUZZ_PRIVATE_KEY": "nsec1faketestkey",
-            "BUZZ_AUTH_TAG": '["tag","data","kind","sig"]',
-            "BUZZ_RELAY_URL": "https://mycommunity.communities.buzz.xyz",
-        }
-        result = _sanitize_subprocess_env({**buzz_vars, "HOME": "/home/user"})
-
-        for var, value in buzz_vars.items():
-            assert result.get(var) == value, (
-                f"{var} missing from background/PTY terminal env (issue #78026)"
-            )
-
-    def test_buzz_vars_stripped_without_buzz_context(self, monkeypatch):
-        """NEGATIVE gate: with no Buzz context signal (no BUZZ_MANAGED_AGENT,
-        session platform not buzz), the BUZZ_* credentials stay stripped from
-        BOTH terminal scrub paths — a Telegram/CLI/cron session on a host that
-        also runs a Buzz gateway must not see BUZZ_PRIVATE_KEY."""
-        from gateway.session_context import _SESSION_PLATFORM
-        from tools.environments.local import _make_run_env, _sanitize_subprocess_env
-
-        monkeypatch.delenv("BUZZ_MANAGED_AGENT", raising=False)
-        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
-        buzz_vars = {
-            "BUZZ_PRIVATE_KEY": "nsec1faketestkey",
-            "BUZZ_AUTH_TAG": '["tag","data","kind","sig"]',
-            "BUZZ_RELAY_URL": "https://mycommunity.communities.buzz.xyz",
-        }
-        for var, value in buzz_vars.items():
-            monkeypatch.setenv(var, value)
-        # Bind a non-buzz session platform (ContextVar-authoritative).
-        token = _SESSION_PLATFORM.set("telegram")
-        try:
-            run_env = _make_run_env({})
-            sanitized = _sanitize_subprocess_env({**buzz_vars, "HOME": "/home/user"})
-        finally:
-            _SESSION_PLATFORM.reset(token)
-
-        for var in buzz_vars:
-            assert var not in run_env, f"{var} leaked into non-Buzz foreground env"
-            assert var not in sanitized, f"{var} leaked into non-Buzz background env"
-
-    def test_session_platform_buzz_enables_carveout(self, monkeypatch):
-        """A live gateway session whose platform is ``buzz`` gets the
-        carve-out even without BUZZ_MANAGED_AGENT (native buzz gateway
-        plugin path), via the concurrency-safe session ContextVar."""
-        from gateway.session_context import _SESSION_PLATFORM
-        from tools.environments.local import _make_run_env, _sanitize_subprocess_env
-
-        monkeypatch.delenv("BUZZ_MANAGED_AGENT", raising=False)
-        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1faketestkey")
-        token = _SESSION_PLATFORM.set("buzz")
-        try:
-            run_env = _make_run_env({})
-            sanitized = _sanitize_subprocess_env(
-                {"BUZZ_PRIVATE_KEY": "nsec1faketestkey", "HOME": "/home/user"}
-            )
-        finally:
-            _SESSION_PLATFORM.reset(token)
-
-        assert run_env.get("BUZZ_PRIVATE_KEY") == "nsec1faketestkey"
-        assert sanitized.get("BUZZ_PRIVATE_KEY") == "nsec1faketestkey"
-
-    def test_buzz_vars_stay_in_blocklist(self):
-        """The carve-out is a scrub-path exemption, NOT a blocklist removal —
-        BUZZ_* must remain blocked for every non-terminal surface (execute_code,
-        hermes_subprocess_env, env_passthrough registration)."""
-        assert {"BUZZ_PRIVATE_KEY", "BUZZ_AUTH_TAG", "BUZZ_RELAY_URL"} <= \
-            _HERMES_PROVIDER_ENV_BLOCKLIST
-
-    def test_buzz_vars_use_plain_value_under_multiplex_without_scope(self, monkeypatch):
-        """First-party platform vars are the process's own env values: with
-        multiplex active and NO profile secret scope installed, the terminal
-        scrub paths must forward the plain env value — NOT raise
-        UnscopedSecretError (the fail-closed regression where the webhook-
-        filter script runner crashed instead of running without the var)."""
-        from agent import secret_scope as ss
-        from tools.environments.local import _make_run_env, _sanitize_subprocess_env
-
-        monkeypatch.setenv("BUZZ_MANAGED_AGENT", "1")
-        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec-plain-value")
-        monkeypatch.setenv("PATH", "/usr/bin:/bin")
-        ss.set_multiplex_active(True)
-        try:
-            run_env = _make_run_env({})
-            sanitized = _sanitize_subprocess_env(
-                {"BUZZ_PRIVATE_KEY": "nsec-plain-value", "HOME": "/home/user"}
-            )
-        finally:
-            ss.set_multiplex_active(False)
-
-        assert run_env["BUZZ_PRIVATE_KEY"] == "nsec-plain-value"
-        assert sanitized["BUZZ_PRIVATE_KEY"] == "nsec-plain-value"
-
-    def test_buzz_vars_are_not_scope_resolved(self, monkeypatch):
-        """First-party matches bypass the profile secret scope: a scope value
-        for BUZZ_PRIVATE_KEY must NOT override the process env value — only
-        skill/config passthrough names are scope-resolved."""
-        from agent import secret_scope as ss
-        from tools.environments.local import _make_run_env, _sanitize_subprocess_env
-
-        monkeypatch.setenv("BUZZ_MANAGED_AGENT", "1")
-        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec-process-env")
-        monkeypatch.setenv("PATH", "/usr/bin:/bin")
-        ss.set_multiplex_active(True)
-        token = ss.set_secret_scope({"BUZZ_PRIVATE_KEY": "nsec-scoped"})
-        try:
-            run_env = _make_run_env({})
-            sanitized = _sanitize_subprocess_env(
-                {"BUZZ_PRIVATE_KEY": "nsec-process-env", "HOME": "/home/user"}
-            )
-        finally:
-            ss.reset_secret_scope(token)
-            ss.set_multiplex_active(False)
-
-        assert run_env["BUZZ_PRIVATE_KEY"] == "nsec-process-env"
-        assert sanitized["BUZZ_PRIVATE_KEY"] == "nsec-process-env"
-
-
-class TestTerminalFirstPartySnapshotIsolation:
-    """BUZZ_* first-party vars must not persist in the shared terminal
-    snapshot — a cross-profile leak under a multiplexed gateway.
-
-    The terminal login-shell snapshot (init_session ``export -p`` dump and the
-    per-command re-dump) captures the child env, which now includes
-    BUZZ_PRIVATE_KEY. The exclusion set is derived from get_all_passthrough()
-    plus backend-specific additions — and BUZZ_* can never be in it, because
-    env_passthrough refuses blocklisted names (GHSA-rhgp-j443-p4rf). Without
-    an exclusion, profile A's BUZZ_PRIVATE_KEY lands in hermes-snap-<id>.sh
-    and profile B's later command on the same collapsed LocalEnvironment
-    sources it. Fix: LocalEnvironment treats first-party terminal env names
-    like profile-scoped passthrough names — excluded from the dump and
-    save/restored per command.
-    """
-
-    def test_snapshot_exclusion_set_includes_first_party_names(self, monkeypatch):
-        """Under multiplex, BUZZ_* names present in the env are added to the
-        snapshot exclusion set, so the dump excludes them and _wrap_command
-        save/restores them per command."""
-        from agent import secret_scope as ss
-        from tools.environments.local import LocalEnvironment
-
-        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec-profile-a")
-        env = LocalEnvironment.__new__(LocalEnvironment)
-        env.env = {}
-        env._snapshot_passthrough_names = set()
-        ss.set_multiplex_active(True)
-        try:
-            excluded = env._snapshot_excluded_passthrough_names()
-        finally:
-            ss.set_multiplex_active(False)
-
-        assert "BUZZ_PRIVATE_KEY" in excluded
-        # The set is monotonic for the environment lifetime: the name stays
-        # excluded (and unset-guarded per command) even once it leaves the env.
-        assert "BUZZ_PRIVATE_KEY" in env._snapshot_passthrough_names
-
-    def test_buzz_secret_never_reaches_second_profile_via_snapshot(self, monkeypatch, tmp_path):
-        """Multiplex regression, end-to-end with real bash: (a) the snapshot
-        file never contains profile A's BUZZ_PRIVATE_KEY, and (b) profile B
-        sharing the same LocalEnvironment does not see profile A's
-        BUZZ_PRIVATE_KEY in its terminal env."""
-        import shutil
-        if not shutil.which("bash"):
-            pytest.skip("bash required")
-
-        from agent import secret_scope as ss
-        from tools.environments.local import LocalEnvironment
-
-        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec-profile-a")
-        ss.set_multiplex_active(True)
-        env = LocalEnvironment(cwd=str(tmp_path), timeout=30)
-        try:
-            # Profile A's command re-dumps the snapshot; the exclusion must
-            # keep BUZZ_PRIVATE_KEY out of BOTH the initial dump and the
-            # per-command re-dump.
-            env.execute("true")
-
-            snap = Path(env._snapshot_path)
-            assert snap.exists()
-            snap_text = snap.read_text(encoding="utf-8", errors="replace")
-            assert "nsec-profile-a" not in snap_text
-            assert "BUZZ_PRIVATE_KEY" not in snap_text
-
-            # Profile B: no BUZZ_PRIVATE_KEY in its env, same LocalEnvironment
-            # (same snapshot file). It must not see profile A's value.
-            monkeypatch.delenv("BUZZ_PRIVATE_KEY")
-            result = env.execute("printf '%s' \"${BUZZ_PRIVATE_KEY-unset}\"")
-            assert "nsec-profile-a" not in result["output"]
-            assert "unset" in result["output"]
-        finally:
-            env.cleanup()
-            ss.set_multiplex_active(False)
-
-
 class TestForceEnvOptIn:
     """Callers can opt in to passing a blocked var via _HERMES_FORCE_ prefix."""
 
@@ -575,6 +337,8 @@ class TestActiveVenvMarkerStripping:
     def test_make_run_env_strips_markers(self):
         from tools.environments.local import _make_run_env
         poison = {"VIRTUAL_ENV": "/venv", "CONDA_PREFIX": "/conda", "PATH": "/usr/bin"}
+        if hh := os.environ.get("HERMES_HOME"):
+            poison = {**poison, "HERMES_HOME": hh}
         with patch.dict(os.environ, poison, clear=True):
             result = _make_run_env({})
         assert "VIRTUAL_ENV" not in result
@@ -759,7 +523,7 @@ class TestPythonpathSelectiveStrip:
         assert hermes_win in entries
         assert user_win in entries
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_hermes_owned_paths_stripped(self):
         """On Windows, a Hermes venv site-packages entry written with
         backslashes is stripped by the same Hermes-owned check, while a
@@ -839,6 +603,51 @@ class TestPythonpathSelectiveStrip:
         monkeypatch.setattr(local, "_hermes_repo_root_aliases", (repo_root,))
         monkeypatch.setattr(local, "_in_venv", False)
         monkeypatch.setattr(local, "_hermes_site_packages", None)
+        monkeypatch.setattr(
+            "hermes_cli.runtime_paths.site_packages", lambda _venv: runtime_sp
+        )
+        monkeypatch.setattr(local.sys, "prefix", str(base_prefix))
+        monkeypatch.setattr(local.sys, "base_prefix", str(base_prefix))
+
+        env = {
+            "VIRTUAL_ENV": str(runtime_venv),
+            "PYTHONPATH": os.pathsep.join([str(runtime_sp), unrelated]),
+        }
+        result = local._sanitize_subprocess_env(env)
+
+        assert Path(local.sys.prefix) == base_prefix
+        assert runtime_venv != Path(local.sys.prefix)
+        assert result["PYTHONPATH"] == unrelated
+        assert "VIRTUAL_ENV" not in result
+
+    def test_base_python_sanitizer_uses_pm_runtime_facts(self, tmp_path, monkeypatch):
+        """A base interpreter strips the pm-provisioned runtime site-packages."""
+        import json
+
+        import tools.environments.local as local
+
+        payload = tmp_path / "payload"
+        store = payload / "tools"
+        runtime_venv = payload / "state" / "environments" / "candidate" / "venv"
+        runtime_sp = __import__("hermes_cli.runtime_paths", fromlist=["site_packages"]).site_packages(runtime_venv)
+        runtime_sp.mkdir(parents=True)
+        store.mkdir(parents=True, exist_ok=True)
+        (payload / "manifest.json").write_text("{}", encoding="utf-8")
+        from hermes_cli.runtime_paths import runtime_facts_path
+        monkeypatch.setattr("hermes_cli.runtime_paths.install_state_dir", lambda repo: payload / "state")
+        repo_root = Path(local.__file__).resolve().parents[2]
+        facts = runtime_facts_path(repo_root)
+        facts.parent.mkdir(parents=True, exist_ok=True)
+        (runtime_venv / "pyvenv.cfg").write_text("version = 3.11\n")
+        facts.write_text(json.dumps({"packages": {"venv": {"environment": str(runtime_venv)}}}))
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+
+        base_prefix = tmp_path / "base-python"
+        unrelated = "/custom/lib/python3.13/site-packages"
+        monkeypatch.setattr(local, "_hermes_repo_root_aliases", (repo_root,))
+        monkeypatch.setattr(local, "_in_venv", False)
+        monkeypatch.setattr(local, "_hermes_site_packages", None)
         monkeypatch.setattr(local.sys, "prefix", str(base_prefix))
         monkeypatch.setattr(local.sys, "base_prefix", str(base_prefix))
 
@@ -904,7 +713,7 @@ class TestPythonpathSelectiveStrip:
             "HOME": "/home/user",
             "PYTHONPATH": os.pathsep.join([venv_sp, "/home/user/my-lib"]),
         }
-        with patch.dict(os.environ, seed, clear=True):
+        with patch.dict(os.environ, seed, clear=False):
             if builder == "_make_run_env":
                 result = local_mod._make_run_env({})
             elif builder == "_sanitize_subprocess_env":
@@ -976,6 +785,7 @@ class TestPythonpathSelectiveStrip:
             captured["staging"] = os.path.dirname(cmd[1])
             proc = MagicMock()
             proc.stdout.read.return_value = b""
+            proc.stdout.read1.return_value = b""
             proc.stderr.read.return_value = b""
             proc.wait.return_value = 0
             proc.returncode = 0
@@ -1238,6 +1048,47 @@ class TestPythonpathSelectiveStrip:
         local_pythonpath._strip_hermes_owned_pythonpath(env)
         assert env["PYTHONPATH"].split(os.pathsep) == ["/home/user/my-lib"]
 
+    def test_pm_runtime_venv_provenance_is_alias_independent(self, tmp_path, monkeypatch):
+        """pm's facts/store layout is the provenance for the runtime venv —
+        not a VIRTUAL_ENV matched against repo aliases. The pm-provisioned
+        venv's site-packages is stripped together with the repo root, while
+        user entries survive, even when an unrelated VIRTUAL_ENV is present.
+        """
+        import json
+
+        import tools.environments.local as local
+        from tools.environments import local_pythonpath
+
+        # pm bundled-install layout, entirely outside the repo aliases.
+        payload = tmp_path / "payload"
+        store = payload / "tools"
+        venv_dir = payload / "state" / "environments" / "candidate" / "venv"
+        venv_sp = __import__("hermes_cli.runtime_paths", fromlist=["site_packages"]).site_packages(venv_dir)
+        venv_sp.mkdir(parents=True)
+        store.mkdir(parents=True, exist_ok=True)
+        (payload / "manifest.json").write_text("{}", encoding="utf-8")
+        from hermes_cli.runtime_paths import runtime_facts_path
+        monkeypatch.setattr("hermes_cli.runtime_paths.install_state_dir", lambda repo: payload / "state")
+        facts = runtime_facts_path(Path(local.__file__).resolve().parents[2])
+        facts.parent.mkdir(parents=True, exist_ok=True)
+        (venv_dir / "pyvenv.cfg").write_text("version = 3.11\n")
+        facts.write_text(json.dumps({"packages": {"venv": {"environment": str(venv_dir)}}}))
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
+
+        validated = local_pythonpath._validated_runtime_venv({"VIRTUAL_ENV": "/somewhere/else"})
+        assert validated is not None
+        assert local_pythonpath._same_path(validated, venv_dir)
+
+        monkeypatch.setattr(local, "_hermes_site_packages", None)
+        monkeypatch.setattr(local, "_in_venv", False)
+        env = {"PYTHONPATH": os.pathsep.join([
+            str(venv_sp),
+            "/home/user/my-lib",
+        ])}
+        local_pythonpath._strip_hermes_owned_pythonpath(env)
+        assert env["PYTHONPATH"].split(os.pathsep) == ["/home/user/my-lib"]
+
+
 class TestPythonhomeSanitized:
     """PYTHONHOME must not leak from the Hermes runtime into subprocesses.
 
@@ -1265,6 +1116,8 @@ class TestPythonhomeSanitized:
             "HOME": "/home/user",
             "PYTHONHOME": "/opt/hermes-venv",
         }
+        if hh := os.environ.get("HERMES_HOME"):
+            seed = {**seed, "HERMES_HOME": hh}
         with patch.dict(os.environ, seed, clear=True):
             if builder == "_make_run_env":
                 result = local_mod._make_run_env({})
@@ -1385,9 +1238,9 @@ class TestBlocklistCoverage:
                 )
 
     def test_bedrock_bearer_token_is_in_blocklist(self):
-        """auth_type='aws_sdk' providers contribute their Hermes-managed
-        inference token (the Bedrock bearer) to the blocklist, keyed off
-        auth_type so any future SDK-cred provider is covered automatically."""
+        """The Bedrock bearer token stays on the static blocklist after the
+        provider strip: tokens issued before the strip may still sit in a
+        user's environment and must never reach a child process."""
         assert "AWS_BEARER_TOKEN_BEDROCK" in _HERMES_PROVIDER_ENV_BLOCKLIST
 
     def test_general_aws_chain_not_in_blocklist(self):
@@ -1530,6 +1383,8 @@ class TestSanePathIncludesHomebrew:
         from tools.environments.local import _SANE_PATH, _make_run_env
         monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", lambda: [])
         minimal_env = {"PATH": "/some/custom/bin"}
+        if hh := os.environ.get("HERMES_HOME"):
+            minimal_env = {**minimal_env, "HERMES_HOME": hh}
         with patch.dict(os.environ, minimal_env, clear=True):
             result = _make_run_env({})
         path_entries = result["PATH"].split(os.pathsep)
@@ -1541,7 +1396,7 @@ class TestSanePathIncludesHomebrew:
                 assert entry in path_entries
 
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_make_run_env_real_launchd_path_gains_homebrew(self):
         """The literal macOS launchd PATH is the production trigger for #35613.
 
@@ -1550,6 +1405,8 @@ class TestSanePathIncludesHomebrew:
         """
         from tools.environments.local import _make_run_env
         launchd_env = {"PATH": os.pathsep.join(["/usr/bin", "/bin", "/usr/sbin", "/sbin"])}
+        if hh := os.environ.get("HERMES_HOME"):
+            launchd_env = {**launchd_env, "HERMES_HOME": hh}
         with patch.dict(os.environ, launchd_env, clear=True):
             result = _make_run_env({})
         path_entries = result["PATH"].split(os.pathsep)
@@ -1559,7 +1416,7 @@ class TestSanePathIncludesHomebrew:
         assert path_entries[:4] == ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_make_run_env_preserves_windows_mixed_case_path_key(self, monkeypatch):
         """Windows-only: ``_path_env_key`` looks for a case-insensitive PATH
         key only on Windows, so the mixed-case ``Path`` preservation this
@@ -1615,9 +1472,12 @@ class TestHermesBinDirOnPath:
         from tools.environments.local import _make_run_env
         self._reset_cache()
         local_mod._HERMES_BIN_DIR = "/opt/hermes/bin"
+        _env = {"PATH": os.pathsep.join(["/usr/bin", "/bin"])}
+        if hh := os.environ.get("HERMES_HOME"):
+            _env = {**_env, "HERMES_HOME": hh}
         with patch.dict(
             os.environ,
-            {"PATH": os.pathsep.join(["/usr/bin", "/bin"])},
+            _env,
             clear=True,
         ):
             result = _make_run_env({})
@@ -1720,12 +1580,15 @@ class TestHermesInternalDynamicSecrets:
     def test_make_run_env_strips_internal_secrets(self):
         """The foreground _make_run_env path strips the same dynamic secrets."""
         from tools.environments.local import _make_run_env
-        with patch.dict(os.environ, {
+        _env = {
             "PATH": "/usr/bin:/bin",
             "AUXILIARY_VISION_API_KEY": "sk-secret",
             "GATEWAY_RELAY_SECRET": "relay-secret",
             "AUXILIARY_VISION_PROVIDER": "openai",
-        }, clear=True):
+        }
+        if hh := os.environ.get("HERMES_HOME"):
+            _env = {**_env, "HERMES_HOME": hh}
+        with patch.dict(os.environ, _env, clear=True):
             run_env = _make_run_env({})
         assert "AUXILIARY_VISION_API_KEY" not in run_env
         assert "GATEWAY_RELAY_SECRET" not in run_env

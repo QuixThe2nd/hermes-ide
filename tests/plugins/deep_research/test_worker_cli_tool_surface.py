@@ -155,11 +155,6 @@ def _profile_config(port: int, *, overlay: bool = True, extra: str = "") -> str:
         f"    base_url: 'http://127.0.0.1:{port}/v1'\n"
         "    model: fake-model\n"
         "    api_key: test-key\n"
-        # Keep every resolved tool directly visible in the request schema —
-        # the tool-search bridge (auto mode) would otherwise defer part of
-        # the surface behind tool_search and weaken the assertions below.
-        "tools:\n"
-        "  tool_search: false\n"
         # The YAML bool under test: a real ``false``, never a string.
         "deep_research:\n"
         "  worker_file_tools: false\n"

@@ -11,6 +11,7 @@ from plugins.quota_channels.core import (
     load_quota_config,
     run_tick,
 )
+from plugins.speed_channels.tool import _load_config_mapping
 
 QUOTA_CHANNELS_TICK_SCHEMA = {
     "name": "quota_channels_tick",
@@ -30,15 +31,6 @@ QUOTA_CHANNELS_TICK_SCHEMA = {
         "additionalProperties": False,
     },
 }
-
-
-def _load_config_mapping() -> dict:
-    try:
-        from hermes_cli.config import load_config_readonly
-
-        return load_config_readonly()
-    except Exception:
-        return {}
 
 
 def check_quota_channels_requirements() -> bool:

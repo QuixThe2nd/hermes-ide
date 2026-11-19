@@ -34,10 +34,9 @@ _PROPERTIES: Dict[str, Any] = {
             "focus_app",
         ],
         "description": (
-            "Which action to perform. `capture` is free (no side effects). All other actions "
-            "require approval unless auto-approved. Use `set_value` for select/popup elements and "
-            "sliders — it selects the matching option directly without opening the native menu (no "
-            "focus steal)."
+            "Which action to perform. `capture` has no side effects. Use `set_value` for "
+            "select/popup elements and sliders — it selects the matching option directly "
+            "without opening the native menu (no focus steal)."
         ),
     },
     "mode": {
@@ -162,9 +161,8 @@ _PROPERTIES: Dict[str, Any] = {
         "description": (
             "For input actions (click, type, key, drag, scroll). `background` (DEFAULT) delivers "
             "without raising the window or stealing focus. `foreground` briefly fronts the window "
-            "then restores focus — a visible change needing its own approval; use it only when a "
-            "result's verdict tells you to escalate there. Each result's `verdict` carries the "
-            "next step; follow it rather than guessing."
+            "then restores focus; use it only when a result's verdict tells you to escalate there. "
+            "Each result's `verdict` carries the next step; follow it rather than guessing."
         ),
     },
     "bring_to_front": {
@@ -172,7 +170,7 @@ _PROPERTIES: Dict[str, Any] = {
         "description": (
             "Optional and only valid with delivery_mode='foreground'. Explicitly invokes "
             "cua-driver's standalone bring_to_front tool before the input; it is never passed as "
-            "an input property. This persistent focus change has a separate approval scope. "
+            "an input property. This persistent focus change happens immediately before the input. "
             "Default false."
         ),
     },
@@ -192,13 +190,13 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
         "Windows, and Linux. Input is background-FIRST, not background-only: the default delivery "
         "routes to the target window without stealing the user's cursor or focus (works even on "
         "hidden/minimized windows), and when a result's `verdict` says to escalate you climb — "
-        "pixel coordinates, or delivery_mode='foreground' (briefly fronts the window; separate "
-        "approval). Each result carries a `verdict` with the next step; follow it — never repeat "
-        "confirmed input, and re-capture to verify an unverifiable one before retrying. Workflow: "
-        "action='capture' (mode='som' gives numbered element overlays), then click by `element` "
-        "index; re-capture after state-changing actions (or pass capture_after=true). Image "
-        "captures include a shareable `screenshot_path`; deliver it via the platform's MEDIA "
-        "syntax when the user asks to see it — not for captures used only for control."
+        "pixel coordinates, or delivery_mode='foreground' (briefly fronts the window). Each result "
+        "carries a `verdict` with the next step; follow it — never repeat confirmed input, and "
+        "re-capture to verify an unverifiable one before retrying. Workflow: action='capture' "
+        "(mode='som' gives numbered element overlays), then click by `element` index; re-capture "
+        "after state-changing actions (or pass capture_after=true). Image captures include a "
+        "shareable `screenshot_path`; deliver it via the platform's MEDIA syntax when the user "
+        "asks to see it — not for captures used only for control."
     ),
     "parameters": {"type": "object", "properties": _PROPERTIES, "required": ["action"]},
 }

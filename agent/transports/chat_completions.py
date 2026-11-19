@@ -19,20 +19,16 @@ from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
-# xAI reserves ``tool_search`` for its server-side tool (HTTP 400 on client
-# declarations); aliased on the wire, mapped back in normalize_response.
-# xAI's chat-completions API reserves the function name ``tool_search`` for its own server-side tool and
-# rejects any request declaring a client function with that name (HTTP 400 "The function name tool_search is
-# reserved for the tool_search tool", #95003). The Tool Search bridge (tools/tool_search.py) assembles its
-# client-side discovery tool under the same literal name for every provider, so Grok providers are unusable
-# whenever the bridge is active. Mirror the web_search treatment in transports/codex.py
-# (_rename_client_web_search_for_xai): alias the wire declaration and map the alias back in
-# normalize_response. The alias value matches _CODEX_TOOL_SEARCH_ALIAS from the Codex-side fix for the same
-# reserved-name class (#83122) so the two transports stay consistent.
+# xAI reserves ``tool_search`` for its server-side tool and rejects client functions with
+# that name (#95003). Alias the wire declaration and reverse-map only aliases emitted by
+# this request; the value matches the Responses transport's alias for the same collision.
 _XAI_TOOL_SEARCH_ALIAS = "hermes_tool_search"
 
 # Persistence-only / cross-transport message keys that strict OpenAI-compatible
 # providers reject with HTTP 400 ("Extra inputs are not permitted").
+# ``bedrock_content_blocks`` survives only in sessions recorded while the Bedrock
+# provider existed; scrub it at the wire boundary so replaying legacy history
+# through another provider cannot 400.
 _STRIP_MSG_KEYS = (
     "codex_reasoning_items", "codex_message_items", "tool_name", "effect_disposition", "timestamp",
     "platform_message_id", "api_content", "anthropic_content_blocks", "bedrock_content_blocks",
@@ -41,10 +37,10 @@ _STRIP_TC_KEYS = ("call_id", "response_item_id")
 _HIGH_EFFORTS = {"high", "xhigh", "max", "ultra"}
 
 
-def _rename_tool_search_bridge_for_xai(tools: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    """Alias the client ``tool_search`` declaration for xAI; returns ``(tools, {alias: "tool_search"})``.
+def _rename_reserved_tool_names_for_xai(tools: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Alias xAI-reserved client function declarations; return tools and request-local reverse aliases.
 
-    If a real tool already holds ``hermes_tool_search``, the bridge takes a ``_2``/``_3`` suffix.
+    Existing alias-shaped client functions are preserved with numeric suffixes on the new aliases.
     """
     from agent.transports.codex import _alias_reserved_tools
 
@@ -257,7 +253,7 @@ def _model_consumes_thought_signature(model: Any) -> bool:
 
 def _route_replays_reasoning_details(base_url: Any) -> bool:
     """True when the target route reads replayed ``reasoning_details`` (OpenRouter's unified
-    reasoning array, also consumed by the Nous Portal).
+    reasoning array).
 
     Every other chat-completions endpoint either ignores the field or, when its schema is
     strict (Groq, Mistral, Cerebras, opencode relays: ``property 'reasoning_details' is
@@ -268,7 +264,7 @@ def _route_replays_reasoning_details(base_url: Any) -> bool:
     """
     from utils import base_url_host_matches
 
-    return base_url_host_matches(base_url, "openrouter.ai") or base_url_host_matches(base_url, "nousresearch.com")
+    return base_url_host_matches(base_url, "openrouter.ai")
 
 
 def _has_replayable_thought_signature(extra_content: Any) -> bool:
@@ -307,15 +303,6 @@ def _dump_extra_content(extra: Any) -> Any:
             except Exception:
                 break
     return extra
-
-
-def _pareto_score(raw: Any) -> float | None:
-    """Coding-score floor for the Pareto router as a float in [0, 1], else None."""
-    try:
-        score = float(raw) if raw not in (None, "") else None
-    except (TypeError, ValueError):
-        return None
-    return score if score is not None and 0.0 <= score <= 1.0 else None
 
 
 def _swap_developer_role(sanitized: list, model_lower: str) -> list:
@@ -490,9 +477,7 @@ class ChatCompletionsTransport(ProviderTransport):
             extra_body["provider"] = params["provider_preferences"]
         # Pareto Code router plugin (same shape as the OpenRouter profile path).
         if is_openrouter and model == "openrouter/pareto-code":
-            _pareto_score_f = _pareto_score(params.get("openrouter_min_coding_score"))
-            if _pareto_score_f is not None:
-                extra_body["plugins"] = [{"id": "pareto-router", "min_coding_score": _pareto_score_f}]
+            extra_body["plugins"] = [{"id": "pareto-router", "min_coding_score": 0.65}]
         if is_kimi:
             extra_body["thinking"] = {"type": "disabled" if thinking_off else "enabled"}
 
@@ -550,7 +535,6 @@ class ChatCompletionsTransport(ProviderTransport):
         profile_body = profile.build_extra_body(
             session_id=params.get("session_id"), provider_preferences=params.get("provider_preferences"), model=model,
             base_url=params.get("base_url"), reasoning_config=reasoning_config,
-            openrouter_min_coding_score=params.get("openrouter_min_coding_score"),
         )
         for part in (profile_body, extra_body_from_profile, params.get("extra_body_additions")):
             if part:

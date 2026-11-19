@@ -5,7 +5,7 @@ its analysis output.  The boundary fix in gateway/run.py runs the generic
 sanitize_context helper over the description so the fenced wrapper and
 its system-note are removed before the description reaches the user.
 
-Plugin-specific header cleanup (e.g. "## Honcho Context") belongs at the
+Plugin-specific header cleanup (e.g. "## Memory Context") belongs at the
 provider boundary, not in this shared gateway path.
 """
 
@@ -36,7 +36,7 @@ class TestEnrichMessageWithVision:
 
     def test_fenced_leak_stripped_plugin_header_preserved(self, gateway_runner):
         """The fenced wrapper is stripped; plugin-specific text outside the
-        fence (e.g. a "## Honcho Context" header) is left to the plugin layer.
+        fence (e.g. a "## Memory Context" header) is left to the plugin layer.
         Gateway core stays plugin-agnostic."""
         leaked = (
             "<memory-context>\n"

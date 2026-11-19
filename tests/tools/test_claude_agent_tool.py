@@ -33,6 +33,14 @@ if argv_out:
     with open(argv_out, "w", encoding="utf-8") as fh:
         json.dump(sys.argv, fh)
 
+
+system_out = os.environ.get("FAKE_CLAUDE_SYSTEM_OUT")
+if system_out and "--append-system-prompt-file" in sys.argv:
+    prompt_path = sys.argv[sys.argv.index("--append-system-prompt-file") + 1]
+    with open(prompt_path, encoding="utf-8") as source:
+        prompt_text = source.read()
+    with open(system_out, "w", encoding="utf-8") as target:
+        target.write(prompt_text)
 env_out = os.environ.get("FAKE_CLAUDE_ENV_OUT")
 if env_out:
     with open(env_out, "w", encoding="utf-8") as fh:
@@ -136,7 +144,7 @@ def test_schema_registration():
 
 
 # ---------------------------------------------------------------------------
-# Lane-rule schema contract (claude / cursor / file tools)
+# Lane-rule schema contract (claude / file tools)
 # ---------------------------------------------------------------------------
 
 def test_claude_schema_description_states_lane_rule():
@@ -147,7 +155,6 @@ def test_claude_schema_description_states_lane_rule():
     assert entry is not None
     description = entry.schema["description"]
     assert "MEDIUM TO LARGE" in description
-    assert "delegate_cursor_agent" in description
     assert "/goal" in description
 
 
@@ -171,16 +178,6 @@ def test_schema_task_description_mentions_goal_cap():
     assert "4000" in task
 
 
-def test_cursor_schema_description_states_lane_rule():
-    import tools.cursor_agent_tool  # noqa: F401
-    from tools.registry import registry
-
-    entry = registry.get_entry("delegate_cursor_agent")
-    assert entry is not None
-    description = entry.schema["description"]
-    assert "SMALL TO MEDIUM" in description
-    assert "delegate_claude_agent" in description
-
 
 def test_file_tool_descriptions_route_source_edits_to_delegate_lanes():
     import tools.file_tools  # noqa: F401
@@ -189,7 +186,6 @@ def test_file_tool_descriptions_route_source_edits_to_delegate_lanes():
 
     for schema in (WRITE_FILE_SCHEMA, PATCH_SCHEMA):
         description = schema["description"]
-        assert 'delegate_agent(backend="cursor")' in description, schema["name"]
         assert 'delegate_agent(backend="claude")' in description, schema["name"]
 
 
@@ -571,6 +567,83 @@ def test_happy_path_e2e(monkeypatch, repo, fake_binary, tmp_path):
     assert argv[-1] == "implement feature"
     # --dangerously-skip-permissions must never be passed (refused under root).
     assert "--dangerously-skip-permissions" not in argv
+
+
+@_REAL_SUBPROC
+def test_plain_task_receives_ownership_in_system_prompt(
+    monkeypatch, repo, fake_binary, tmp_path
+):
+    from tools import claude_agent_tool
+    from tools.delegation_ownership import (
+        CODEBASE_OWNERSHIP_GUIDANCE,
+        CODEBASE_OWNERSHIP_SENTENCE,
+        FORK_CODING_CONVENTIONS,
+    )
+
+    _patch_binary(monkeypatch, fake_binary)
+    argv_out = tmp_path / "argv.json"
+    monkeypatch.setenv("FAKE_CLAUDE_ARGV_OUT", str(argv_out))
+
+    result = json.loads(claude_agent_tool.delegate_claude_agent(
+        task="implement feature", workdir=str(repo),
+    ))
+
+    assert result["success"] is True
+    argv = json.loads(argv_out.read_text(encoding="utf-8"))
+    assert "--append-system-prompt-file" not in argv
+    system_prompt = argv[argv.index("--append-system-prompt") + 1]
+    assert system_prompt.count(CODEBASE_OWNERSHIP_SENTENCE) == 1
+    assert system_prompt.count(CODEBASE_OWNERSHIP_GUIDANCE) == 1
+    assert system_prompt.count(FORK_CODING_CONVENTIONS) == 1
+    assert "never to analyzed target artifacts" in system_prompt
+
+
+@_REAL_SUBPROC
+@pytest.mark.parametrize("include_ownership", [False, True])
+def test_system_prompt_file_has_single_ownership_guidance(
+    monkeypatch, repo, fake_binary, tmp_path, include_ownership
+):
+    from tools import claude_agent_tool
+    from tools.delegation_ownership import (
+        CODEBASE_OWNERSHIP_GUIDANCE,
+        CODEBASE_OWNERSHIP_SENTENCE,
+        FORK_CODING_CONVENTIONS,
+    )
+
+    _patch_binary(monkeypatch, fake_binary)
+    prompt_material = "Lane soul instructions"
+    if include_ownership:
+        prompt_material = f"{FORK_CODING_CONVENTIONS}\n\n{prompt_material}"
+    soul_path = tmp_path / "soul.md"
+    soul_path.write_text(prompt_material, encoding="utf-8")
+    argv_out = tmp_path / "argv.json"
+    monkeypatch.setenv("FAKE_CLAUDE_ARGV_OUT", str(argv_out))
+
+    result = json.loads(claude_agent_tool.delegate_claude_agent(
+        task="implement feature",
+        workdir=str(repo),
+        system_prompt_file=str(soul_path),
+    ))
+
+    assert result["success"] is True
+    argv = json.loads(argv_out.read_text(encoding="utf-8"))
+    prompt_flags = [
+        flag for flag in ("--append-system-prompt", "--append-system-prompt-file")
+        if flag in argv
+    ]
+    assert len(prompt_flags) == 1
+    prompt_flag = prompt_flags[0]
+    prompt_value = argv[argv.index(prompt_flag) + 1]
+    if prompt_flag == "--append-system-prompt-file":
+        system_prompt = Path(prompt_value).read_text(encoding="utf-8")
+    else:
+        system_prompt = prompt_value
+    assert system_prompt.count(CODEBASE_OWNERSHIP_SENTENCE) == 1
+    assert system_prompt.count(CODEBASE_OWNERSHIP_GUIDANCE) == 1
+    assert system_prompt.count(FORK_CODING_CONVENTIONS) == 1
+    assert "Lane soul instructions" in system_prompt
+    if include_ownership:
+        assert prompt_flag == "--append-system-prompt-file"
 
 
 @_REAL_SUBPROC
@@ -993,9 +1066,8 @@ def test_delegate_run_unaffected_when_no_status_callback_bound(
 def test_schema_timeout_description_claims_no_stall_kill():
     """The schema must not tell the model a stall watchdog exists."""
     from tools.claude_agent_tool import DELEGATE_CLAUDE_AGENT_SCHEMA
-    from tools.cursor_agent_tool import CURSOR_AGENT_SCHEMA
 
-    for schema in (DELEGATE_CLAUDE_AGENT_SCHEMA, CURSOR_AGENT_SCHEMA):
+    for schema in (DELEGATE_CLAUDE_AGENT_SCHEMA,):
         description = schema["parameters"]["properties"]["timeout_seconds"][
             "description"
         ]
@@ -1325,3 +1397,53 @@ def test_goal_spill_write_failure_aborts_before_spawn(monkeypatch, repo, fake_bi
     assert "read-only filesystem" in result["error"]
     # The write failure must abort before anything is spawned.
     assert captured == {}
+
+
+def test_goal_spill_refuses_git_tracked_brief_file(monkeypatch, repo, fake_binary):
+    """A brief path tracked by the workdir's repo must never be overwritten:
+    the spill would silently dirty the caller's tree (pc_88c7028680fe)."""
+    import subprocess
+
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    brief = repo / GOAL_BRIEF_NAME
+    original = "tracked content — do not touch\n"
+    brief.write_text(original, encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", GOAL_BRIEF_NAME], check=True)
+
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(
+            task="/goal " + "x" * 4001, workdir=str(repo)
+        )
+    )
+    assert result["success"] is False
+    assert "git-tracked" in result["error"]
+    assert GOAL_BRIEF_NAME in result["error"]
+    # The tracked file is untouched and nothing was spawned.
+    assert brief.read_text(encoding="utf-8") == original
+    assert captured == {}
+
+
+def test_goal_spill_overwrites_untracked_leftover(monkeypatch, repo, fake_binary):
+    """An untracked leftover brief from an earlier spill stays overwriteable."""
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    brief = repo / GOAL_BRIEF_NAME
+    brief.write_text("stale leftover\n", encoding="utf-8")
+
+    task = "/goal " + "x" * 4001
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task=task, workdir=str(repo))
+    )
+    assert result["success"] is True
+    assert brief.read_text(encoding="utf-8") == task
+    assert result["goal_brief_path"] == str(brief)

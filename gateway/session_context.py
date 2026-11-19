@@ -29,33 +29,40 @@ def session_context_engaged() -> bool:
 #   persist a completion's full routing origin (relay egress guards need it).
 # * UI_SESSION_ID: in-process UI tab id, separate from the durable SESSION_ID, so a stale/rotated
 #   durable key is not consumed by the wrong poller.
-# * MESSAGE_ID: reply anchor keeping notifications inside the originating Telegram topic.
+# * MESSAGE_ID: reply anchor keeping notifications inside the originating thread/topic.
 # * CRON_SESSION: tri-state — _UNSET = legacy env fallback; "1" = cron; "" = non-cron, masks env.
 _SESSION_VARS = (
     _SESSION_PLATFORM, _SESSION_SOURCE, _SESSION_CHAT_ID, _SESSION_CHAT_TYPE,
     _SESSION_CHAT_NAME, _SESSION_THREAD_ID, _SESSION_USER_ID, _SESSION_USER_ID_ALT,
     _SESSION_USER_NAME, _SESSION_SCOPE_ID, _SESSION_KEY, _SESSION_ID,
     _SESSION_UI_SESSION_ID, _SESSION_MESSAGE_ID, _SESSION_PROFILE,
-    _BROWSER_CONTROL_PRINCIPAL, _BROWSER_CONTROL_TRANSPORT_FAMILY, _CRON_SESSION, _SESSION_PARENT_CHAT_ID,
+    _CRON_SESSION, _SESSION_PARENT_CHAT_ID,
     _SESSION_JOB_ID, _SESSION_JOB_NAME,
+    _SESSION_GATEWAY_PID, _SESSION_GATEWAY_START,
 ) = tuple(ContextVar(name, default=_UNSET) for name in (
     "HERMES_SESSION_PLATFORM", "HERMES_SESSION_SOURCE", "HERMES_SESSION_CHAT_ID",
     "HERMES_SESSION_CHAT_TYPE", "HERMES_SESSION_CHAT_NAME", "HERMES_SESSION_THREAD_ID",
     "HERMES_SESSION_USER_ID", "HERMES_SESSION_USER_ID_ALT", "HERMES_SESSION_USER_NAME",
     "HERMES_SESSION_SCOPE_ID", "HERMES_SESSION_KEY", "HERMES_SESSION_ID",
     "HERMES_UI_SESSION_ID", "HERMES_SESSION_MESSAGE_ID", "HERMES_SESSION_PROFILE",
-    "HERMES_BROWSER_CONTROL_PRINCIPAL", "HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY",
     "HERMES_CRON_SESSION", "HERMES_SESSION_PARENT_CHAT_ID",
     # The scheduled-job identity of the current task (cron binds its durable
     # job id/name; every other surface leaves them empty).  Kept OUT of the
     # chat routing keys above on purpose: a job id is attribution for the
     # usage ledger, never a deliverable chat, so routing must not see it.
     "HERMES_SESSION_JOB_ID", "HERMES_SESSION_JOB_NAME",
+    # The gateway process serving THIS turn (pid + start fingerprint),
+    # stamped by the runner at bind time. During an overlap restart the
+    # control socket is owned by the draining predecessor, so consumers
+    # comparing "who serves me" against "who answers the socket" (the
+    # restart tool's owner guard) need the serving identity, not the
+    # answerer's. The fingerprint exists because PIDs get reused.
+    "HERMES_SESSION_GATEWAY_PID", "HERMES_SESSION_GATEWAY_START",
 ))
 
 # Whether this channel can route an ASYNC completion back AFTER the turn ends (see
 # ``async_delivery_supported()``).  _UNSET => supported (CLI, contextvar-unaware paths); stateless
-# adapters (API server, Kanban workers) opt OUT via ``supports_async_delivery = False`` at bind.
+# adapters (API server and other one-shot runners) opt OUT via ``supports_async_delivery = False`` at bind.
 _SESSION_ASYNC_DELIVERY = ContextVar("HERMES_SESSION_ASYNC_DELIVERY", default=_UNSET)
 
 # Request-local proof that the client resumes SessionDB history. No env fallback
@@ -136,11 +143,11 @@ def set_session_vars(
     platform: str = "", source: str = "", chat_id: str = "", chat_type: str = "",
     chat_name: str = "", thread_id: str = "", user_id: str = "", user_id_alt: str = "",
     user_name: str = "", scope_id: str = "", session_key: str = "", session_id: str = "",
-    message_id: str = "", profile: str = "", browser_control_principal: str = "",
-    browser_control_transport_family: str = "", cwd: str = "", async_delivery: bool = True,
+    message_id: str = "", profile: str = "", cwd: str = "", async_delivery: bool = True,
     ui_session_id: str = "", cron_session: Any = _UNSET, parent_chat_id: str = "",
     session_history_delivery: str | None = None, delivered_via_upstream_relay: bool = False,
     job_id: str = "", job_name: str = "",
+    gateway_pid: str = "", gateway_start_time: str = "",
 ) -> list:
     """Set all session context variables and return reset tokens.  Call
     ``clear_session_vars(tokens)`` in a ``finally``; not nestable, clearing resets every var
@@ -160,8 +167,8 @@ def set_session_vars(
     values = (
         platform, source, chat_id, chat_type, chat_name, thread_id, user_id, user_id_alt,
         user_name, scope_id, session_key, session_id, ui_session_id, message_id, profile,
-        browser_control_principal, browser_control_transport_family, cron_session, parent_chat_id,
-        job_id, job_name,
+        cron_session, parent_chat_id,
+        job_id, job_name, gateway_pid, gateway_start_time,
     )
     tokens = [var.set(value) for var, value in zip(_SESSION_VARS, values)]
     tokens.append(_SESSION_ASYNC_DELIVERY.set(bool(async_delivery)))
@@ -217,7 +224,7 @@ def get_session_env(name: str, default: str = "") -> str:
 # desktop bind HERMES_SESSION_SOURCE, so both are consulted).  Default-deny: an unrecognized
 # identity counts as messaging.  Mirrors LOCAL_SESSION_SOURCE_IDS in apps/desktop session-source.ts.
 NON_MESSAGING_SESSION_SURFACES = frozenset({
-    "", "api_server", "cli", "codex", "desktop", "gateway", "kanban", "local",
+    "", "api_server", "cli", "codex", "desktop", "gateway", "local",
     "msgraph_webhook", "tool", "tui", "webhook",
 })
 
@@ -249,11 +256,8 @@ def declare_stateless_channel() -> None:
 
 
 def async_delivery_supported() -> bool:
-    """Whether the current session can deliver a background completion later.  False for
-    stateless channels (:func:`declare_stateless_channel`) and Kanban workers
-    (``HERMES_KANBAN_TASK``: one-shot subprocesses whose parent disappears after the turn)."""
-    if os.environ.get("HERMES_KANBAN_TASK"):
-        return False
+    """Whether the current session can deliver a background completion later. False for
+    stateless channels declared with :func:`declare_stateless_channel`."""
     value = _SESSION_ASYNC_DELIVERY.get()
     return True if value is _UNSET else bool(value)
 

@@ -47,7 +47,7 @@ def validate_action(action: str, managed: List[str], mcp: List[str]) -> Optional
             f"action must be one of {', '.join(ALL_ACTIONS)}. "
             f"{', '.join(MCP_ACTIONS)} apply to local MCP servers "
             "(targets {\"name\": ..., \"mcp\": true}); the rest apply to managed connectors. "
-            "Disconnecting an account is done by the user in the Nous Portal dashboard, not "
+            "Disconnecting a managed account is done by the user in the hosting service, not "
             "through this tool."
         )
     if action in MCP_ACTIONS:

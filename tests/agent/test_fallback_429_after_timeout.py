@@ -2,7 +2,7 @@
 HTTP 429 follows a successful primary-transport recovery.
 
 Reproduces the (timeout x N -> recover -> 429 -> no fallback) sequence
-reported against zai/glm-5.1 -> zai/glm-4.7 on the Telegram gateway.
+reported against zai/glm-5.1 -> zai/glm-4.7 on a messaging gateway.
 
 Scenario:
   1. ``_try_recover_primary_transport()`` succeeds after 3 timeouts and

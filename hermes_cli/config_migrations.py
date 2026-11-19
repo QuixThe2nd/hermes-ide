@@ -190,43 +190,6 @@ def _migrate_to_13(results: Dict[str, Any], quiet: bool) -> None:
             pass
 
 
-_LOCAL_WHISPER_MODELS = frozenset({
-    "tiny.en", "tiny", "base.en", "base", "small.en", "small",
-    "medium.en", "medium", "large-v1", "large-v2", "large-v3",
-    "large", "distil-large-v2", "distil-medium.en",
-    "distil-small.en", "distil-large-v3", "distil-large-v3.5",
-    "large-v3-turbo", "turbo"})
-
-
-def _migrate_to_14(results: Dict[str, Any], quiet: bool) -> None:
-    # 13 → 14: legacy flat stt.model → provider section. A provider-agnostic `stt.model` fed
-    # OpenAI names to faster-whisper ("Invalid model size"). Only the raw (user-written) config
-    # decides; a nested model the user already set is never overwritten.
-    raw_stt = read_raw_config().get("stt", {})
-    if not (isinstance(raw_stt, dict) and "model" in raw_stt):
-        return
-    legacy_model = raw_stt["model"]
-    provider = raw_stt.get("provider", "local")
-    config = read_raw_config()
-    stt = config.get("stt", {})
-    stt.pop("model", None)
-
-    def _place(section: str) -> None:
-        existing = raw_stt.get(section, {})
-        if not isinstance(existing, dict) or "model" not in existing:
-            stt.setdefault(section, {})["model"] = legacy_model
-
-    if provider in {"local", "local_command"}:
-        # An OpenAI model name is dropped; the local section already defaults to "base".
-        if legacy_model in _LOCAL_WHISPER_MODELS:
-            _place("local")
-    else:
-        _place(provider)
-    config["stt"] = stt
-    _commit(
-        config, results, quiet, None, "  ✓ Migrated legacy stt.model to provider-specific config")
-
-
 def _migrate_to_16(results: Dict[str, Any], quiet: bool) -> None:
     # 15 → 16: display.tool_progress_overrides → display.platforms.<plat>.tool_progress.
     config = read_raw_config()
@@ -292,7 +255,7 @@ def _installed_user_plugins(disabled: set) -> List[str]:
                 if not manifest_file.exists():
                     continue
                 try:
-                    with open(manifest_file, encoding="utf-8") as _mf:
+                    with open(manifest_file, encoding="utf-8-sig") as _mf:
                         manifest = _c.fast_safe_load(_mf) or {}
                 except Exception:
                     manifest = {}
@@ -394,8 +357,6 @@ def _migrate_to_29(results: Dict[str, Any], quiet: bool) -> None:
                 "  ✓ Renamed write_mode → write_approval (boolean gate)")
 
 
-# 29 → 30 (curator.consolidate defaults to false) is schema-default-only: deep-merge supplies it
-# at read time and persisting a default would only bloat a lean config. No registry entry.
 
 
 def _migrate_to_33(results: Dict[str, Any], quiet: bool) -> None:
@@ -528,7 +489,7 @@ def _migrate_to_39(results: Dict[str, Any], quiet: bool) -> None:
             "removed retired 'bfl' toolset from saved toolset lists",
             "  ✓ Removed the retired BFL FLUX 3 toolset from saved toolset "
             "lists — video generation now lives under `hermes tools` → "
-            "Video Generation (Nous Subscription or FAL).")
+            "Video Generation (FAL or the configured tool gateway).")
 
 
 def _migrate_to_41_soul_cleanup(results: Dict[str, Any], quiet: bool) -> None:
@@ -1135,13 +1096,26 @@ def _migrate_to_45(results: Dict[str, Any], quiet: bool) -> None:
         f"  ✓ Enabled the Connections toolset (Gmail, Linear, Notion, local MCP servers) for {platforms}. "
         "Uncheck Connections in `hermes tools` to turn it off.")
 
+
+def _migrate_to_46(results: Dict[str, Any], quiet: bool) -> None:
+    # 45 → 46: consolidation is unconditional; the retired opt-out has no behavior to preserve.
+    config = read_raw_config()
+    curator = config.get("curator")
+    if not isinstance(curator, dict) or "consolidate" not in curator:
+        return
+    curator.pop("consolidate")
+    config["curator"] = curator
+    _commit(
+        config, results, quiet,
+        "removed curator.consolidate (consolidation is always enabled)",
+        "  ✓ Removed curator.consolidate — the LLM consolidation pass now runs on every curator review.")
+
 #: Registry of (target_version, migration_fn), strictly ascending. The driver
 #: applies every entry whose target version is greater than the on-disk
 #: observe earlier steps' writes via read_raw_config() (filesystem state).
 MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (12, _migrate_to_12),
     (13, _migrate_to_13),
-    (14, _migrate_to_14),
     (16, _migrate_to_16),
     (17, _migrate_to_17),
     (21, _migrate_to_21),
@@ -1253,6 +1227,8 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
             "skills/.archive/ (recoverable with `hermes curator restore`). Set it back to 90 to keep the old window."))),
     # 44 → 45: saved platform_toolsets lists predate the connections toolset (see _migrate_to_45).
     (45, _migrate_to_45),
+    # 45 → 46: remove the retired curator.consolidate opt-out.
+    (46, _migrate_to_46),
 )
 
 

@@ -326,12 +326,12 @@ def test_reclaimed_session_can_request_handoff_again(tmp_path):
         )
     )
 
-    assert db.request_handoff("stuck", "telegram") is False, (
+    assert db.request_handoff("stuck", "discord") is False, (
         "precondition: a stranded 'running' row blocks new handoff requests"
     )
 
     db.reclaim_stale_running_handoffs("gateway died")
 
-    assert db.request_handoff("stuck", "telegram") is True, (
+    assert db.request_handoff("stuck", "discord") is True, (
         "after reclaim the session must be able to hand off again"
     )

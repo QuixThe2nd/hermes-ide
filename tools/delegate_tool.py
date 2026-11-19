@@ -16,7 +16,6 @@ import time
 import weakref
 from typing import Any, Dict, List, Optional
 
-from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb  # noqa: F401  (used via _ChildRun.await_child)
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -29,10 +28,9 @@ from tools.delegate_tool_child_run import (  # noqa: F401
 )
 from tools.delegate_tool_config import (  # noqa: F401
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
-    _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
+    _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled, _get_worktree_isolation,
     _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
     _resolve_child_runtime, _resolve_delegation_credentials,
-    _subagent_auto_approve, _subagent_auto_deny,
 )
 from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
 from tools.delegate_tool_progress import (  # noqa: F401
@@ -55,6 +53,7 @@ from tools.delegate_tool_toolsets import (  # noqa: F401
 from tools.delegate_tool_results import (  # noqa: F401
     _apply_summary_budget, _build_child_preserving_parent_tools, _run_child_lifecycle, _summarize_tool_arguments,
 )
+from tools.delegation_ownership import ensure_codebase_ownership
 
 _ROLES = frozenset({"leaf", "orchestrator"})
 
@@ -92,7 +91,7 @@ def _open_child_session_db(parent_agent) -> Any:
     # and can be closed while a fire-and-forget background child is still flushing on a daemon thread —
     # every subsequent flush then hits the closed handle and the child's transcript is silently dropped
     # (#81267). It MUST point at the same database FILE as the parent's handle: parents can hold non-default
-    # per-profile handles (tui_gateway opens SessionDB(db_path=<profile>/ state.db) for non-launch
+    # per-profile handles (a host can open SessionDB(db_path=<profile>/ state.db) for non-launch
     # profiles), and a bare SessionDB() would write the child's transcript into the launch profile's db,
     # breaking parent_session_id lineage and session_search. AsyncSessionDB wrappers (gateway) forward
     # .db_path via __getattr__, so this works through them.
@@ -178,6 +177,8 @@ def _build_child_agent(
     routing_cfg: Optional[Dict[str, Any]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
+    # Lane soul material prepended to the child's system prompt (harness-level pin).
+    ephemeral_system_prompt: Optional[str] = None,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair."""
@@ -200,9 +201,12 @@ def _build_child_agent(
     # as auxiliary.review.
     delegation_cfg = _load_config()
     child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
-    child_prompt = _build_child_system_prompt(
+    built_prompt = _build_child_system_prompt(
         goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
         max_spawn_depth=max_spawn, child_depth=child_depth,
+    )
+    child_prompt = (
+        ephemeral_system_prompt + "\n\n" + built_prompt if ephemeral_system_prompt else built_prompt
     )
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -387,7 +391,8 @@ def _build_children(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
                 model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role),
+                ephemeral_system_prompt=t.get("ephemeral_system_prompt"), **overrides,
             )
         except ValueError as exc:
             return [], str(exc)
@@ -440,6 +445,7 @@ def delegate_task(
     output_schema: Optional[Dict[str, Any]] = None, images: Optional[List[str]] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
     credentials_cfg: Optional[Dict[str, Any]] = None,
+    ephemeral_system_prompt: Optional[str] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -524,6 +530,12 @@ def delegate_task(
     max_children = _get_max_concurrent_children()
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
     if not err:
+        # Lane dispatch is single-task; direct batches retain per-task material.
+        for t in task_list:
+            t["ephemeral_system_prompt"] = ensure_codebase_ownership(
+                ephemeral_system_prompt or t.get("ephemeral_system_prompt") or ""
+            )
+    if not err:
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
     if not err:
         task_images, err = _coerce_task_images(task_list, images)
@@ -596,12 +608,14 @@ _DESCRIPTION_HEAD = (
     "Spawn subagents in isolated contexts; each gets its own conversation, terminal session, and toolset, and only its "
     "final summary returns to you. Pass every task in `tasks` — one entry spawns one subagent, several run in parallel "
     "(limit in the tasks description).\n\n"
-    "Sessions without a later-result consumer (including one-shot CLI and cron) join parallel children "
-    "and return results in this tool call. "
+    "Sessions with no later-result consumer (one-shot CLI, cron) join the children "
+    "and return results in this call. "
+    "Prefer blocking (background=false): avoid running in the background unless you are doing "
+    "multiple things at a time (other independent work to continue, or several parallel delegations). "
     "Otherwise runs in the background: dispatch returns live transcript paths and results re-enter "
     "as a new message when subagents finish ({delivery}). Background results are delivered only "
-    "BETWEEN your turns: finish whatever does not depend on them, then give a one-line status and END YOUR TURN. Never "
-    "wait or poll on transcripts, artifact files, or CI for a child. "
+    "BETWEEN your turns: finish independent work, give a one-line status, END YOUR TURN. Never "
+    "wait or poll on transcripts or CI for a child. "
     "While children run, `action` (list/steer/stop) controls them live.\n\n"
     "USE FOR: reasoning-heavy subtasks, work that would flood your context, or independent parallel workstreams.\n"
     "DO NOT USE FOR (use these instead):\n"
@@ -609,14 +623,12 @@ _DESCRIPTION_HEAD = (
     "- A single tool call -> call the tool directly\n"
     "- Tasks needing user interaction -> subagents cannot ask questions\n"
     "- Durable work that must survive this session -> cronjob or terminal(background=True, notify=True); /stop, /new, "
-    "or process exit halts running subagents (whole tree); each returns an 'interrupted' completion with partial output.\n\n"
+    "or process exit halts the whole tree; children return 'interrupted' with partial output.\n\n"
     "RULES:\n"
     "- Children know nothing of this conversation: pass everything needed via 'context', including any required "
     "output language, tone, or style (e.g. \"respond in Chinese\").\n"
-    "- Child summaries are SELF-REPORTS, not verified facts: a child claiming \"uploaded successfully\" or "
-    "\"file written\" may be wrong. For external side effects (uploads, remote writes, publishing), require a "
-    "verifiable handle (URL, ID, absolute path) and verify it yourself before telling the user the operation "
-    "succeeded.\n"
+    "- Child summaries are SELF-REPORTS, not verified facts. For external side effects (uploads, remote "
+    "writes, publishing), require a verifiable handle (URL, ID, absolute path) and verify it yourself.\n"
     "- Children cannot close tracked work: a child asked to close it returns findings instead; "
     "the parent applies the transition.\n"
 )
@@ -678,24 +690,22 @@ DELEGATE_TASK_SCHEMA = {
         "properties": {
             # ── Unified delegation backend ────────────────────────────────────
             # The one model-facing delegation dispatch surface: backend routes
-            # to the subagent engine (default), the Claude Code CLI handler, or
-            # the Cursor My Machines cloud handler. The legacy names
-            # delegate_claude_agent / delegate_cursor_agent stay dispatchable
-            # as hidden aliases that preset backend and forward verbatim.
+            # to the subagent engine (default) or the Claude Code CLI handler.
+            # The legacy name delegate_claude_agent stays dispatchable as a
+            # hidden alias that presets backend and forwards verbatim.
             "backend": _p(
                 "string",
                 "Which delegate engine runs this call. 'subagent' (default): spawn the native "
                 "isolated-context children described below (tasks=[...]). 'claude': delegate one dev "
                 "task to the Claude Code CLI in `workdir` — medium/large jobs, `goal` should start "
-                "with '/goal <condition>'. 'cursor': delegate to a Cursor My Machines cloud agent "
-                "built from workdir's pushed GitHub origin — small/medium jobs, nothing runs on this "
-                "host. claude/cursor take `goal` + `workdir` (never `tasks`) and validate their own "
-                "parameters; a missing prerequisite binary is a clear error, never a silent skip.",
-                enum=["subagent", "claude", "cursor"],
+                "with '/goal <condition>'. claude takes `goal` + `workdir` (never `tasks`) and "
+                "validates its own parameters; a missing prerequisite binary is a clear error, "
+                "never a silent skip.",
+                enum=["subagent", "claude"],
             ),
             "goal": _p(
                 "string",
-                "The task brief. REQUIRED for backend=claude/cursor (their `task`): a self-contained dev "
+                "The task brief. REQUIRED for backend=claude (its `task`): a self-contained dev "
                 "task, phrased as a verifiable done condition. For backend=claude start it with "
                 "'/goal <condition>' to run goal mode headless (auto-continues until done; over-4000-char "
                 "conditions are auto-spilled to <workdir>/.hermes-claude-goal-brief.md). For "
@@ -703,18 +713,24 @@ DELEGATE_TASK_SCHEMA = {
             ),
             "workdir": _p(
                 "string",
-                "backend=claude/cursor only: absolute path to the target git repo / workspace directory.",
+                "backend=claude only: absolute path to the target git repo / workspace directory.",
+            ),
+            "description": _p(
+                "string",
+                "backend=claude only: one short phrase (max ~80 chars) saying WHAT the agent is doing, "
+                "e.g. 'implementing the retry gate'. Shown to the user as progress: "
+                "'Delegated to Claude agent: <description>'. Optional.",
             ),
             "model": _p(
                 "string",
-                "backend=claude/cursor only: model for the run. claude: names containing 'kimi' route to "
-                "the claude-kimi wrapper, everything else to claude-glm (omit for the wrapper's pinned "
-                "model). cursor: cloud agent model id (omit for the CLI-configured default).",
+                "backend=claude only: model for the run. Names containing 'kimi' route to the "
+                "claude-kimi wrapper, everything else to claude-glm (omit for the wrapper's pinned "
+                "model).",
             ),
             "timeout_seconds": {
                 "type": "integer",
                 "description": (
-                    "backend=claude/cursor only: maximum wall-clock seconds before the run is "
+                    "backend=claude only: maximum wall-clock seconds before the run is "
                     "terminated. 0 (default) means no limit at all — a quiet run is never killed "
                     "for silence. Positive values clamp to the backend's min/max."
                 ),
@@ -729,11 +745,6 @@ DELEGATE_TASK_SCHEMA = {
                 "backend=claude only: Claude Code permission mode. 'acceptEdits' auto-approves file "
                 "edits; 'plan' only plans without writing.",
                 enum=["acceptEdits", "plan"],
-            ),
-            "force": _p(
-                "boolean",
-                "backend=cursor only: accepted for compatibility; never enables API-side "
-                "auto-created PRs or reviewer requests.",
             ),
             # The handler also accepts the legacy single-goal shape (top-level `goal`/`context`/`output_schema`),
             # wrapped into a one-entry batch at dispatch, and a per-task `role` (legacy, ignored: capability is
@@ -792,13 +803,17 @@ DELEGATE_TASK_SCHEMA = {
                 # capability-conditional (see resolve_background_arg), so a
                 # plain schema default would lie on half the sessions.
                 "description": (
+                    "Prefer blocking (background=false): avoid running in "
+                    "the background unless you are doing multiple things at "
+                    "a time (other independent work to continue, or several "
+                    "parallel delegations). "
                     "Delivery mode for this delegation. Omitted: runs in the "
                     "background and the results are delivered later — the "
                     "call returns immediately with a handle and the "
                     "consolidated results re-enter the conversation as a new "
                     "message when every child has finished; on sessions that "
                     "cannot receive a late completion (one-shot `hermes -z` "
-                    "runs, cron jobs, Kanban workers, stateless HTTP "
+                    "runs, cron jobs, stateless HTTP "
                     "endpoints) an omitted argument instead blocks to "
                     "completion and returns the results inline this turn. "
                     "Configuring delegation.default_background=false "
@@ -818,7 +833,12 @@ DELEGATE_TASK_SCHEMA = {
                 "course-correction text into one child (subagent_id + "
                 "message) without stopping it; 'stop' = end one child "
                 "early (subagent_id; partial result still returns). "
-                "Control actions return immediately; goal/tasks are ignored unless spawning.",
+                "Background CLI coding runs (delegate_claude_agent) "
+                "appear in 'list' under their deleg_* id with "
+                "accepting_steer=false: they cannot be steered mid-run "
+                "(Claude stdin closed) — stop that deleg_* id, then "
+                "re-delegate a corrected run. Control actions return "
+                "immediately; goal/tasks are ignored unless spawning.",
                 enum=["spawn", "list", "steer", "stop"],
             ),
             "subagent_id": _p("string", "Target for action='steer'/'stop' (ids from the spawn response or action='list')."),
@@ -861,12 +881,12 @@ def _strip_model_hidden_task_fields(tasks: Any) -> Any:
 
 # ── Unified backend routing ─────────────────────────────────────────────────
 # delegate_agent is the ONE model-facing delegation dispatch surface. backend
-# routes to the subagent engine (default), the existing Claude Code CLI
-# handler, or the existing Cursor My Machines cloud handler; the old two-tool
-# split stays dispatchable as hidden aliases that preset backend and forward
-# every argument verbatim (same precedent as the delegate_task alias).
+# routes to the subagent engine (default) or the existing Claude Code CLI
+# handler; the old two-tool split stays dispatchable as hidden aliases that
+# preset backend and forward every argument verbatim (same precedent as the
+# delegate_task alias).
 
-_BACKENDS = ("subagent", "claude", "cursor")
+_BACKENDS = ("subagent", "claude")
 
 # Parameters meaningful to exactly one backend family. A call mixing families
 # is a model error: refused with a clear message naming the offending
@@ -874,9 +894,8 @@ _BACKENDS = ("subagent", "claude", "cursor")
 _SUBAGENT_ONLY_PARAMS = (
     "tasks", "context", "output_schema", "images", "action", "subagent_id", "message", "max_iterations", "role",
 )
-_CLAUDE_ONLY_PARAMS = ("allowed_tools", "permission_mode")
-_CURSOR_ONLY_PARAMS = ("force",)
-# Shared by both external backends; forwarded verbatim when present.
+_CLAUDE_ONLY_PARAMS = ("allowed_tools", "permission_mode", "system_prompt_file")
+# Forwarded verbatim to the external backend when present.
 _EXTERNAL_SHARED_PARAMS = ("model", "timeout_seconds", "background")
 
 
@@ -886,8 +905,8 @@ def _normalize_backend(value: Any) -> str:
 
 
 def _is_external_backend(value: Any) -> bool:
-    """True when *value* names a non-subagent delegate backend (claude / cursor)."""
-    return _normalize_backend(value) in ("claude", "cursor")
+    """True when *value* names a non-subagent delegate backend (claude)."""
+    return _normalize_backend(value) == "claude"
 
 
 def _backend_param_error(backend: str, bad_params: list) -> Optional[str]:
@@ -897,8 +916,7 @@ def _backend_param_error(backend: str, bad_params: list) -> Optional[str]:
         f"delegate_agent(backend={backend}) does not accept: {', '.join(sorted(bad_params))}. "
         "Those parameters belong to a different backend; re-issue the call with only this "
         "backend's parameters (goal, workdir, model, timeout_seconds, background"
-        + (", allowed_tools, permission_mode" if backend == "claude" else "")
-        + (", force" if backend == "cursor" else "")
+        + (", allowed_tools, permission_mode, system_prompt_file" if backend == "claude" else "")
         + ")."
     )
 
@@ -906,25 +924,16 @@ def _backend_param_error(backend: str, bad_params: list) -> Optional[str]:
 def _external_backend_handler(backend: str):
     """Per-backend prerequisite check (availability moved off check_fn to dispatch)
     plus the existing model-facing handler. Returns ``(handler, error)``."""
-    if backend == "claude":
-        from tools.claude_agent_tool import (
-            _handle_delegate_claude_agent, check_claude_agent_requirements,
-        )
-        if not check_claude_agent_requirements():
-            return None, tool_error(
-                "backend=claude requires the Claude Code wrapper binary (claude-glm / claude-kimi at "
-                "~/.local/bin, on PATH, or via CLAUDE_GLM_BIN / CLAUDE_KIMI_BIN); none was found."
-            )
-        return _handle_delegate_claude_agent, None
-    from tools.cursor_agent_tool import (
-        _handle_delegate_cursor_agent, check_cursor_agent_requirements,
+    from tools.claude_agent_tool import (
+        _handle_delegate_claude_agent, check_claude_agent_requirements,
     )
-    if not check_cursor_agent_requirements():
+    if not check_claude_agent_requirements():
         return None, tool_error(
-            "backend=cursor requires the Cursor Agent CLI binary (`agent` on PATH or "
-            "~/.local/bin/agent); it was not found."
+            "backend=claude requires the Claude Code wrapper binary (claude-glm / claude-kimi at "
+            "~/.local/bin, on PATH, or via CLAUDE_GLM_BIN / CLAUDE_KIMI_BIN); none was found."
         )
-    return _handle_delegate_cursor_agent, None
+    return _handle_delegate_claude_agent, None
+
 
 
 def _delegate_agent_handler(args: dict, **kw):
@@ -943,7 +952,7 @@ def _delegate_agent_handler(args: dict, **kw):
         )
 
     if backend == "subagent":
-        err = _backend_param_error(backend, [p for p in _CLAUDE_ONLY_PARAMS + _CURSOR_ONLY_PARAMS if p in args])
+        err = _backend_param_error(backend, [p for p in _CLAUDE_ONLY_PARAMS if p in args])
         if err:
             return err
         parent_agent = kw.get("parent_agent")
@@ -955,7 +964,7 @@ def _delegate_agent_handler(args: dict, **kw):
             # below answers with a clear error, never a crash.
             from tools.agent_dispatch_context import get_agent_dispatch_context
             parent_agent = get_agent_dispatch_context()
-        return delegate_agent(
+        subagent_kwargs = dict(
             goal=args.get("goal"),
             context=args.get("context"),
             tasks=_strip_model_hidden_task_fields(args.get("tasks")),
@@ -969,12 +978,14 @@ def _delegate_agent_handler(args: dict, **kw):
             message=args.get("message"),
             parent_agent=parent_agent,
         )
+        if args.get("ephemeral_system_prompt") is not None:
+            subagent_kwargs["ephemeral_system_prompt"] = args.get("ephemeral_system_prompt")
+        return delegate_agent(**subagent_kwargs)
 
-    # External backends (claude / cursor): validate the parameter family, then
+    # External backend (claude): validate the parameter family, then
     # forward to the existing handler with `goal` mapped to its `task` (an
     # alias-replayed old-style `task` argument is honoured too).
     bad = [p for p in _SUBAGENT_ONLY_PARAMS if p in args]
-    bad += [p for p in (_CURSOR_ONLY_PARAMS if backend == "claude" else _CLAUDE_ONLY_PARAMS) if p in args]
     err = _backend_param_error(backend, bad)
     if err:
         return err
@@ -994,7 +1005,7 @@ def _delegate_agent_handler(args: dict, **kw):
     for p in _EXTERNAL_SHARED_PARAMS:
         if args.get(p) is not None:
             forwarded[p] = args.get(p)
-    for p in (_CLAUDE_ONLY_PARAMS if backend == "claude" else _CURSOR_ONLY_PARAMS):
+    for p in _CLAUDE_ONLY_PARAMS:
         if args.get(p) is not None:
             forwarded[p] = args.get(p)
     return handler(forwarded, **kw)

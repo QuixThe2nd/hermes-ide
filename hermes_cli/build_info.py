@@ -16,7 +16,7 @@ _code_identity_cache: Optional[dict] = None
 
 
 def _read_stripped(path: Path) -> str:
-    return path.read_text(encoding="utf-8", errors="replace").strip()
+    return path.read_text(encoding="utf-8-sig", errors="replace").strip()
 
 
 def _sha_or_none(value: str) -> Optional[str]:
@@ -113,7 +113,7 @@ def get_build_sha(short: int = 8) -> Optional[str]:
     try:
         if not _BUILD_SHA_FILE.is_file():
             return None
-        sha = _BUILD_SHA_FILE.read_text(encoding="utf-8").strip()
+        sha = _BUILD_SHA_FILE.read_text(encoding="utf-8-sig").strip()
     except Exception:
         return None
     if not sha:

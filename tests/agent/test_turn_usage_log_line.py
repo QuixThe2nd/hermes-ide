@@ -53,7 +53,7 @@ def test_fields_are_omitted_when_absent(tmp_path, monkeypatch, caplog):
 
 
 def test_forensics_parser_reads_the_new_fields(tmp_path):
-    from evals.postmortem.forensics.logcalls import parse_logs
+    from tests.probes.forensics.logcalls import parse_logs
     log = tmp_path / "agent.log"
     log.write_text(
         "2026-09-06 19:32:08,549 INFO [s1] agent.conversation_loop: API call #3: model=anthropic/claude-fable-5.1 provider=nous "

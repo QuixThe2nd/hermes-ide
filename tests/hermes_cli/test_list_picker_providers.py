@@ -1,7 +1,7 @@
 """Tests for ``list_picker_providers`` — the /model picker filter.
 
 ``list_picker_providers`` wraps ``list_authenticated_providers`` and
-post-processes the result for interactive pickers (Telegram, Discord):
+post-processes the result for interactive pickers (Slack, Discord):
 
 - OpenRouter's ``models`` are replaced with the live-filtered output of
   ``fetch_openrouter_models``, so IDs the live catalog no longer carries
@@ -65,7 +65,7 @@ def test_passthrough_kwargs_to_base(monkeypatch):
 
     The gateway /model picker passes ``current_base_url`` and ``current_model``
     so custom endpoint grouping can mark the current row. Dropping those kwargs
-    regressed Telegram/Discord into the text-list fallback.
+    regressed Slack/Discord into the text-list fallback.
     """
     captured = {}
 

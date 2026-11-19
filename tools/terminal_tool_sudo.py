@@ -191,7 +191,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45, *, command: str = "") -
     if _sudo_cb is not None:
         token = _sudo_prompt_command.set(command)
         try:
-            from tools.approval_human_wait import human_wait_window
+            from tools.sudo_wait import human_wait_window
             with human_wait_window():
                 return _sudo_cb() or ""
         except Exception:
@@ -217,7 +217,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45, *, command: str = "") -
         print("  Password (hidden): ", end="", flush=True)
         password_thread = threading.Thread(target=_read_hidden_password, args=(result,), daemon=True)
         password_thread.start()
-        from tools.approval_human_wait import human_wait_window
+        from tools.sudo_wait import human_wait_window
         with human_wait_window():
             password_thread.join(timeout=timeout_seconds)
         if not result["done"]:

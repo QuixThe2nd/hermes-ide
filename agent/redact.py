@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Exact secret values that transited a server-side vault fill (browser_vault_fill). Generic
 # credential-shaped regexes cannot catch an arbitrary user password, so the fill path registers
-# the exact bytes and every browser_* tool result (including browser_cdp Runtime.evaluate
-# passthrough) is scrubbed against them before it can reach the model. Memory only: never
+# the exact bytes and every browser_* tool result (including browser_console JavaScript
+# evaluation) is scrubbed against them before it can reach the model. Memory only: never
 # persisted or logged. Keyed by profile home so a multiplex gateway never scrubs profile B's
 # output with profile A's passwords (which would also confirm to B that the bytes exist), and
 # bounded per profile: a fill-heavy session evicts its oldest entries rather than growing forever.
@@ -177,7 +177,6 @@ _PREFIX_PATTERNS = [
     r"syt_[A-Za-z0-9]{10,}",            # Matrix access token
     r"retaindb_[A-Za-z0-9]{10,}",       # RetainDB API key
     r"hsk-[A-Za-z0-9]{10,}",            # Hindsight API key
-    r"mem0_[A-Za-z0-9]{10,}",           # Mem0 Platform API key
     r"brv_[A-Za-z0-9]{10,}",            # ByteRover API key
     r"xai-[A-Za-z0-9]{30,}",            # xAI (Grok) API key
     r"ntn_[A-Za-z0-9]{10,}",            # Notion internal integration token
@@ -292,7 +291,7 @@ _YAML_ASSIGN_RE = re.compile(
 # it. Concatenations match via explicit alternatives (``authtoken``, ``apikey``).
 # The side effect: ordinary prose/document words that merely CONTAIN a keyword also matched — ``Secretary:
 # J.Smith`` (secret), ``tokenizer: cl100k_base`` (token), ``author=Smith`` (auth) — mangling legitimate
-# content on the surfaces that run these passes (browser snapshots, log lines, kanban summaries, CLI-echoed
+# content on the surfaces that run these passes (browser snapshots, log lines, automation summaries, CLI-echoed
 # command output). Ported from nearai/ironclaw#6129, where the same substring false positive ("Secretary of
 # the Treasury" matching the ``secret`` marker) scrubbed legitimate tool results from the replayed
 # transcript and sent the model into a re-fetch loop. Common concatenated compounds keep matching via
@@ -493,9 +492,6 @@ _AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s
 # values would otherwise leak when a curl command is echoed into tool output.
 _SECRET_HEADER_NAMES = r"(?:x-api-key|x-goog-api-key|api-key|apikey|x-api-token|x-auth-token|x-access-token)"
 _SECRET_HEADER_RE = re.compile(rf"({_SECRET_HEADER_NAMES}\s*:\s*)(\S+)", re.IGNORECASE)
-
-# Telegram bot tokens: [bot]<digits>:<token>, token >= 30 chars.
-_TELEGRAM_RE = re.compile(r"(bot)?(\d{8,}):([-A-Za-z0-9_]{30,})")
 
 _PRIVATE_KEY_RE = re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----")
 
@@ -745,21 +741,6 @@ def _redact_strict_url_credentials(text: str) -> str:
         text)
 
 
-def redact_cdp_url(value: object) -> str:
-    """Mask secrets in a CDP/browser endpoint URL before it is logged.
-
-    Unlike ``redact_sensitive_text`` (which passes web-URL query params and
-    ``user:pass@`` through for OAuth callbacks / magic links), CDP discovery
-    tokens are pure credentials, so this opts INTO both URL redactors.
-    """
-    text = redact_sensitive_text("" if value is None else str(value))
-    if not text:
-        return text
-    text = _URL_WITH_QUERY_RE.sub(
-        lambda m: f"{m.group(1)}://{m.group(2)}{m.group(3)}?{_redact_query_string(m.group(4))}{m.group(5) or ''}",
-        text,
-    )
-    return _URL_USERINFO_RE.sub(lambda m: f"{m.group(1)}://{m.group(2)}:***@", text)
 
 
 def _redact_form_body(text: str) -> str:
@@ -934,7 +915,6 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 
     if ":" in text:
         text = _SECRET_HEADER_RE.sub(lambda m: m.group(1) + _mask_token(m.group(2)), text)
-        text = _TELEGRAM_RE.sub(lambda m: f"{m.group(1) or ''}{m.group(2)}:***", text)
 
     if "BEGIN" in text and "-----" in text:
         text = _PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)

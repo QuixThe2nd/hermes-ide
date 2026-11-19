@@ -74,7 +74,7 @@ def test_resume_pending_is_cleared_only_after_successful_turn():
     assert _should_clear_resume_pending_after_turn({"error": "boom"}) is False
 
 
-def _make_source(platform=Platform.TELEGRAM, chat_id="123", user_id="u1"):
+def _make_source(platform=Platform.DISCORD, chat_id="123", user_id="u1"):
     return SessionSource(platform=platform, chat_id=chat_id, user_id=user_id)
 
 
@@ -189,7 +189,7 @@ class TestSessionEntryResumeFields:
     def test_defaults(self):
         now = datetime.now()
         entry = SessionEntry(
-            session_key="agent:main:telegram:dm:1",
+            session_key="agent:main:discord:dm:1",
             session_id="sid",
             created_at=now,
             updated_at=now,
@@ -292,7 +292,7 @@ class TestResumePendingSystemNote:
     def _pending_entry(self, reason="restart_timeout") -> SessionEntry:
         now = datetime.now()
         return SessionEntry(
-            session_key="agent:main:telegram:dm:1",
+            session_key="agent:main:discord:dm:1",
             session_id="sid",
             created_at=now,
             updated_at=now,
@@ -595,13 +595,13 @@ async def test_drain_timeout_marks_resume_pending():
     """End-to-end: a drain timeout during gateway stop should flag every
     active session as resume_pending BEFORE the interrupt fires, so the
     next startup's suspend_recently_active() does not destroy them."""
-    runner, adapter = make_restart_runner()
+    runner, adapter = make_restart_runner(platform=Platform.DISCORD)
     adapter.disconnect = AsyncMock()
     runner._restart_drain_timeout = 0.05
 
     running_agent = MagicMock()
-    session_key_one = "agent:main:telegram:dm:A"
-    session_key_two = "agent:main:telegram:dm:B"
+    session_key_one = "agent:main:discord:dm:A"
+    session_key_two = "agent:main:discord:dm:B"
     runner._running_agents = {
         session_key_one: running_agent,
         session_key_two: MagicMock(),
@@ -646,12 +646,12 @@ async def test_startup_auto_resume_skips_unauthorized_owner():
     runner._persist_active_agents = MagicMock()
     source = make_restart_source(chat_id="revoked-chat")
     pending_entry = SessionEntry(
-        session_key="agent:main:telegram:dm:revoked-chat",
+        session_key="agent:main:discord:dm:revoked-chat",
         session_id="sid",
         created_at=datetime.now(),
         updated_at=datetime.now(),
         origin=source,
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="dm",
         resume_pending=True,
         resume_reason="restart_timeout",
@@ -674,18 +674,18 @@ async def test_startup_auto_resume_skips_unauthorized_owner():
 async def test_reconnect_reschedule_is_platform_scoped():
     """The platform filter limits the pass to that platform's sessions, so
     reconnecting one platform never resumes another's pending session."""
-    runner, adapter = make_restart_runner()
-    tg_source = make_restart_source(chat_id="tg-chat")
+    runner, adapter = make_restart_runner(platform=Platform.SLACK)
+    slack_source = make_restart_source(chat_id="slack-chat", platform=Platform.SLACK)
     discord_source = SessionSource(
         platform=Platform.DISCORD, chat_id="dc-chat", chat_type="dm", user_id="u1"
     )
-    tg_entry = SessionEntry(
-        session_key="agent:main:telegram:dm:tg-chat",
-        session_id="sid-tg",
+    slack_entry = SessionEntry(
+        session_key="agent:main:slack:dm:slack-chat",
+        session_id="sid-slack",
         created_at=datetime.now(),
         updated_at=datetime.now(),
-        origin=tg_source,
-        platform=Platform.TELEGRAM,
+        origin=slack_source,
+        platform=Platform.SLACK,
         chat_type="dm",
         resume_pending=True,
         resume_reason="restart_interrupted",
@@ -704,21 +704,21 @@ async def test_reconnect_reschedule_is_platform_scoped():
         last_resume_marked_at=datetime.now(),
     )
     runner.session_store._entries = {
-        tg_entry.session_key: tg_entry,
+        slack_entry.session_key: slack_entry,
         discord_entry.session_key: discord_entry,
     }
     adapter.handle_message = AsyncMock()
-    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.adapters = {Platform.SLACK: adapter}
 
-    scheduled = runner._schedule_resume_pending_sessions(platform=Platform.TELEGRAM)
+    scheduled = runner._schedule_resume_pending_sessions(platform=Platform.SLACK)
     await asyncio.sleep(0)
 
-    # Only the telegram session is resumed; the discord session waits for its
+    # Only the slack session is resumed; the discord session waits for its
     # own reconnect.
     assert scheduled == 1
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
-    assert event.source == tg_source
+    assert event.source == slack_source
 
 
 @pytest.mark.asyncio
@@ -731,12 +731,12 @@ async def test_startup_restore_waits_for_resume_before_draining_inbound():
 
     source = make_restart_source(chat_id="restore-chat")
     pending_entry = SessionEntry(
-        session_key="agent:main:telegram:dm:restore-chat",
+        session_key="agent:main:discord:dm:restore-chat",
         session_id="sid",
         created_at=datetime.now(),
         updated_at=datetime.now(),
         origin=source,
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="dm",
         resume_pending=True,
         resume_reason="restart_interrupted",
@@ -881,10 +881,10 @@ async def test_warmup_disabled_by_nonpositive_timeout(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_restart_notifies_notification_channel_even_without_active_sessions():
-    runner, adapter = make_restart_runner()
+    runner, adapter = make_restart_runner(platform=Platform.DISCORD)
     runner._restart_requested = True
-    runner.config.platforms[Platform.TELEGRAM].notification_channel = DeliveryTarget(
-        platform=Platform.TELEGRAM,
+    runner.config.platforms[Platform.DISCORD].notification_channel = DeliveryTarget(
+        platform=Platform.DISCORD,
         chat_id="home-42",
         name="Ops Restarts",
     )
@@ -892,17 +892,21 @@ async def test_restart_notifies_notification_channel_even_without_active_session
     await runner._notify_active_sessions_of_shutdown()
 
     assert len(adapter.sent) == 1
-    assert "restarting" in adapter.sent[0] and "Send any message" in adapter.sent[0]
+    # The notice is the same shutdown/restart banner either way; the
+    # invariant is that the notification channel is warned even when no
+    # session is active. (The old "Send any message to continue" handover
+    # wording is gone with the durable replay it described.)
+    assert "Gateway" in adapter.sent[0]
 
 
 @pytest.mark.asyncio
 async def test_restart_notification_channel_broadcast_not_deduped_across_threads():
-    runner, adapter = make_restart_runner()
+    runner, adapter = make_restart_runner(platform=Platform.DISCORD)
     runner._restart_requested = True
-    session_key = "agent:main:telegram:group:999"
+    session_key = "agent:main:discord:group:999"
     runner.session_store._entries[session_key] = MagicMock(
         origin=SessionSource(
-            platform=Platform.TELEGRAM,
+            platform=Platform.DISCORD,
             chat_id="999",
             chat_type="group",
             user_id="u1",
@@ -910,8 +914,8 @@ async def test_restart_notification_channel_broadcast_not_deduped_across_threads
         )
     )
     runner._running_agents[session_key] = MagicMock()
-    runner.config.platforms[Platform.TELEGRAM].notification_channel = DeliveryTarget(
-        platform=Platform.TELEGRAM,
+    runner.config.platforms[Platform.DISCORD].notification_channel = DeliveryTarget(
+        platform=Platform.DISCORD,
         chat_id="999",
         name="Ops Restarts",
     )
@@ -983,12 +987,12 @@ async def test_auto_resume_sets_sentinel_before_task_execution():
     runner, adapter = make_restart_runner()
     source = make_restart_source(chat_id="race-chat")
     pending_entry = SessionEntry(
-        session_key="agent:main:telegram:dm:race-chat",
+        session_key="agent:main:discord:dm:race-chat",
         session_id="sid",
         created_at=datetime.now(),
         updated_at=datetime.now(),
         origin=source,
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="dm",
         resume_pending=True,
         resume_reason="restart_interrupted",
@@ -1057,7 +1061,7 @@ async def test_auto_resume_runs_agent_exactly_once_through_full_path():
         created_at=datetime.now(),
         updated_at=datetime.now(),
         origin=source,
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="dm",
         resume_pending=True,
         resume_reason="restart_interrupted",
@@ -1120,6 +1124,134 @@ async def test_auto_resume_runs_agent_exactly_once_through_full_path():
     # No leaked sentinel and no orphaned queued event.
     assert session_key not in runner._running_agents
     assert session_key not in getattr(adapter, "_pending_messages", {})
+
+
+def _wire_resume_cold_path_probe(runner, adapter):
+    """Wire the real adapter/runner dispatch path and record cold-turn entry."""
+    from gateway.run import GatewayRunner
+
+    runner._handle_message = GatewayRunner._handle_message.__get__(
+        runner, GatewayRunner
+    )
+    runner._release_running_agent_state = (
+        GatewayRunner._release_running_agent_state.__get__(runner, GatewayRunner)
+    )
+    runner._check_slash_access = lambda *a, **k: None
+    runner._begin_session_run_generation = lambda session_key: 1
+    runner._is_session_run_current = lambda session_key, generation: True
+    runner._invalidate_session_run_generation = lambda *a, **k: 0
+    runner._claim_active_session_slot = lambda session_key, source: (object(), None)
+    runner._active_session_leases = {}
+    runner._busy_ack_ts = {}
+    runner._post_turn_goal_continuation = AsyncMock()
+    runner.session_store.get_or_create_session.return_value = None
+
+    cold_runs = []
+
+    async def _run(event, source, quick_key, run_generation):
+        cold_runs.append((quick_key, runner._running_agents.get(quick_key)))
+        return "RESUMED OK"
+
+    runner._handle_message_with_agent = _run
+    adapter.set_message_handler(runner._handle_message)
+    adapter.send = AsyncMock()
+    adapter._keep_typing = AsyncMock()
+    adapter._stop_typing_refresh = AsyncMock()
+    adapter._send_with_retry = AsyncMock(
+        return_value=SendResult(success=True, message_id="1")
+    )
+    adapter._run_processing_hook = AsyncMock()
+    return cold_runs
+
+
+@pytest.mark.asyncio
+async def test_preclaimed_resume_event_consumes_claim_in_steer_mode():
+    """The resume event must inherit its own pre-claim, not queue behind it."""
+    runner, adapter = make_restart_runner()
+    runner._busy_input_mode = "steer"
+    source = make_restart_source(chat_id="steer-resume-chat")
+    session_key = runner._session_key_for_source(source)
+    runner.session_store._entries = {
+        session_key: SessionEntry(
+            session_key=session_key,
+            session_id="sid-steer-resume",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            origin=source,
+            platform=Platform.DISCORD,
+            chat_type="dm",
+            resume_pending=True,
+            resume_reason="restart_requester",
+            last_resume_marked_at=datetime.now(),
+        )
+    }
+    cold_runs = _wire_resume_cold_path_probe(runner, adapter)
+    # Drive scheduler -> resume wrapper -> real runner directly. The adapter's
+    # late-drain rescue would hide the sentinel ownership bug under test.
+    adapter.handle_message = runner._handle_message
+
+    assert runner._schedule_resume_pending_sessions() == 1
+    assert runner._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL
+    for _ in range(20):
+        await asyncio.sleep(0.02)
+
+    assert cold_runs == [(session_key, _AGENT_PENDING_SENTINEL)]
+    assert session_key not in runner._running_agents
+    assert session_key not in adapter._pending_messages
+    state = runner._peek_session_state(session_key)
+    assert state is None or not state.conversation.queued_events
+
+
+@pytest.mark.asyncio
+async def test_resume_marker_does_not_bypass_a_real_running_agent():
+    """A marked event still queues normally when the slot holds real work."""
+    runner, adapter = make_restart_runner()
+    runner._busy_input_mode = "steer"
+    source = make_restart_source(chat_id="real-agent-resume-chat")
+    session_key = runner._session_key_for_source(source)
+    cold_runs = _wire_resume_cold_path_probe(runner, adapter)
+    real_agent = object()
+    runner._session_state(session_key).turn.agent = real_agent
+    event = MessageEvent(
+        text="", message_type=MessageType.TEXT, source=source, internal=True,
+    )
+
+    adapter.handle_message = runner._handle_message
+    await runner._run_startup_resume_event(adapter, event, session_key)
+
+    assert cold_runs == []
+    assert runner._running_agents.get(session_key) is real_agent
+    state = runner._peek_session_state(session_key)
+    assert (
+        adapter._pending_messages.get(session_key) is event
+        or event in state.conversation.queued_events
+    )
+    # (No parked-steer map to check: #702 deleted the busy-mode steer
+    # parking these assertions probed.)
+
+
+@pytest.mark.asyncio
+async def test_unmarked_internal_event_cannot_consume_pending_claim():
+    """Only the wrapper's own event may inherit the pending sentinel."""
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="unmarked-resume-chat")
+    session_key = runner._session_key_for_source(source)
+    cold_runs = _wire_resume_cold_path_probe(runner, adapter)
+    runner._session_state(session_key).turn.agent = _AGENT_PENDING_SENTINEL
+    event = MessageEvent(
+        text="", message_type=MessageType.TEXT, source=source, internal=True,
+    )
+
+    await runner._handle_message(event)
+
+    assert cold_runs == []
+    state = runner._peek_session_state(session_key)
+    assert (
+        adapter._pending_messages.get(session_key) is event
+        or event in state.conversation.queued_events
+    )
+    assert runner._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL
+    runner._release_running_agent_state(session_key)
 
 
 # ---------------------------------------------------------------------------
@@ -1193,7 +1325,7 @@ async def test_startup_restore_gate_releases_when_boot_path_send_hangs(
     """A hung restart notification / obligation redelivery must not freeze inbound.
 
     Those sends used to run *before* ``_finish_startup_restore`` released the
-    gate. A Telegram flood-control sleep on either call queued inbound on
+    gate. A platform flood-control sleep on either call queued inbound on
     every platform for the full ``retry_after``.
     """
     monkeypatch.setenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", "0.05")

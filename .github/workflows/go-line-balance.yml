@@ -1,0 +1,78 @@
+name: Go Line Balance
+
+# Required merge gate: a diff may not add more Python lines than Go lines.
+#
+# The fork is moving toward a 100% Go codebase (see "Go-only feature
+# implementation" in AGENTS.md). This check makes that policy mechanical:
+# it counts lines ADDED between the change's merge-base and its head,
+# classifies them by path suffix (.py vs .go), and fails the build when
+# pythonLineDiff > golangLineDiff. Added lines only — deletions never
+# offset additions, there are no path filters and no exemptions.
+#
+# Runs unconditionally from ci.yaml (no change-classifier gate) so every
+# PR and every push to main is measured.
+#
+# SECURITY: same posture as the other called workflows — contents: read
+# only, no secrets.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  go-line-balance:
+    name: Go additions >= Python additions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Full history: the merge-base and both refs must resolve.
+          fetch-depth: 0
+          # Test the PR head itself, not GitHub's ephemeral merge ref.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.24'
+
+      - name: Test the checker
+        working-directory: scripts/go-line-balance
+        run: go test ./...
+
+      - name: Test internal Go packages
+        # Every module under internal/ must actually run here: Go added in a
+        # diff only counts toward the balance when its tests execute in CI.
+        # (Verified locally for all current modules before this step shipped.)
+        run: |
+          set -eu
+          for mod in $(git ls-files 'internal/*/go.mod'); do
+            (cd "$(dirname "$mod")" && go test ./...)
+          done
+
+      - name: Compare added Go vs Python lines
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -eu
+          # PR: diff from the merge-base with the PR's base branch.
+          # Push to main: previous commit on main vs the pushed HEAD.
+          base="${PR_BASE_SHA}"
+          if [ "${EVENT_NAME}" != "pull_request" ]; then
+            base="${BEFORE_SHA}"
+          fi
+          zero=0000000000000000000000000000000000000000
+          if [ -z "${base}" ] || [ "${base}" = "${zero}" ]; then
+            # New history (first push, rewritten ref): fall back to the
+            # parent commit so the gate still measures something.
+            base="${HEAD_SHA}^1"
+          fi
+          cd scripts/go-line-balance
+          go run . --repo "${GITHUB_WORKSPACE}" --base "${base}" --head "${HEAD_SHA}"

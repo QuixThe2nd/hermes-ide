@@ -28,7 +28,7 @@ from gateway.session import SessionEntry, SessionSource, build_session_key
 
 def _make_source() -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         user_id="u1",
         chat_id="c1",
         user_name="tester",
@@ -42,12 +42,11 @@ def _make_runner():
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="tok")}
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="tok")}
     )
     adapter = MagicMock()
     adapter.send = AsyncMock()
-    runner.adapters = {Platform.TELEGRAM: adapter}
-    runner._voice_mode = {}
+    runner.adapters = {Platform.DISCORD: adapter}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner._session_model_overrides = {}
     runner._pending_one_turn_model_restores = {}
@@ -55,7 +54,6 @@ def _make_runner():
     runner._background_tasks = set()
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_db = None
     runner._agent_cache = {}
     runner._agent_cache_lock = None
@@ -68,7 +66,7 @@ def _make_runner():
         session_id="sess-1",
         created_at=datetime.now(),
         updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="dm",
     )
     runner.session_store.get_or_create_session.return_value = session_entry
@@ -128,8 +126,7 @@ class TestApplySessionModelOverride:
 
 class TestIsIntentionalModelSwitch:
     """The fallback-eviction check must not evict a session whose model differs from the config
-    default for a reason the system produced: a /model override, or the Nous gateway moving the
-    session off the ``nous/welcome`` alias the config still carries."""
+    default for a reason the system produced: a /model override selecting the running model."""
 
     def test_matches_override(self):
         runner = _make_runner()
@@ -146,17 +143,21 @@ class TestIsIntentionalModelSwitch:
         agent = SimpleNamespace(model="gpt-5.4")
         assert runner._is_intentional_model_switch(sk, agent, "openai/gpt-5") is True
 
-    def test_server_model_switch_off_the_welcome_alias_is_intentional(self):
+    def test_override_for_a_different_model_is_not_intentional(self):
+        """An override selecting some other model doesn't excuse the running model."""
         runner = _make_runner()
         sk = build_session_key(_make_source())
-        # apply_model_switch moved the session and recorded the move (alias -> backing).
-        agent = SimpleNamespace(model="z-ai/glm-5.3-flash", _nous_model_switch=("nous/welcome", "z-ai/glm-5.3-flash"))
-        assert runner._is_intentional_model_switch(sk, agent, "nous/welcome") is True
-        # A config that names something else is real drift, not the server's move.
-        assert runner._is_intentional_model_switch(sk, agent, "openai/gpt-5") is False
-        # A later fallback onto a third model is drift too, even with the config still on the alias.
-        agent.model = "fallback/model"
-        assert runner._is_intentional_model_switch(sk, agent, "nous/welcome") is False
+
+        runner._session_model_overrides[sk] = {
+            "model": "gpt-5.4",
+            "provider": "openai",
+            "api_key": "key",
+            "base_url": "",
+            "api_mode": "chat_completions",
+        }
+
+        agent = SimpleNamespace(model="fallback/model")
+        assert runner._is_intentional_model_switch(sk, agent, "gpt-5.4") is False
 
     def test_plain_drift_is_not_intentional(self):
         runner = _make_runner()
@@ -189,112 +190,3 @@ class TestOneTurnModelOverrideRestore:
         runner._restore_session_model_override(sk, snapshot)
 
         assert runner._session_model_overrides[sk] == previous
-
-
-class TestOneTurnNeverPersisted:
-    """/model --once must never write through to the session store.
-
-    Regression guard for the #29923 review defect: the original
-    implementation wrote the once-override through set_model_override, so a
-    gateway restart before the finally-restore rehydrated a supposedly
-    one-turn model permanently. Drives the real _handle_model_command with
-    a mocked switch pipeline and asserts on the store boundary.
-    """
-
-    @staticmethod
-    def _runner_with_store(tmp_path, monkeypatch):
-        import yaml as _yaml
-
-        import gateway.run as gateway_run
-        from gateway.run import GatewayRunner
-        from hermes_cli.model_switch import ModelSwitchResult
-
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text(
-            _yaml.safe_dump(
-                {"model": {"default": "old-model", "provider": "openrouter"}}
-            ),
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
-        monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
-        monkeypatch.setattr(
-            "hermes_cli.model_switch.switch_model",
-            lambda **kw: ModelSwitchResult(
-                success=True,
-                new_model="gpt-5.5",
-                target_provider="openrouter",
-                provider_changed=False,
-                api_key="sk-test",
-                base_url="https://openrouter.ai/api/v1",
-                api_mode="chat_completions",
-                runtime_capabilities={"openai_native_compaction": True},
-                provider_label="OpenRouter",
-            ),
-        )
-        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
-        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: hermes_home)
-
-        runner = object.__new__(GatewayRunner)
-        runner.adapters = {}
-        runner._voice_mode = {}
-        runner._session_model_overrides = {}
-        runner._pending_one_turn_model_restores = {}
-        runner._running_agents = {}
-        # async_session_store is a property over session_store; install the
-        # mock behind the private cache attribute it reads.
-        _store = MagicMock()
-        _store.set_model_override = AsyncMock()
-        _store._store = None
-        runner.session_store = None
-        runner._async_session_store = _store
-        return runner
-
-    @staticmethod
-    def _event(text):
-        from gateway.platforms.event import MessageEvent, MessageType
-
-        return MessageEvent(
-            text=text,
-            message_type=MessageType.TEXT,
-            source=_make_source(),
-        )
-
-    @pytest.mark.asyncio
-    async def test_once_skips_session_store_write_through(
-        self, tmp_path, monkeypatch
-    ):
-        runner = self._runner_with_store(tmp_path, monkeypatch)
-        sk = build_session_key(_make_source())
-
-        result = await runner._handle_model_command(
-            self._event("/model gpt-5.5 --once")
-        )
-
-        assert result is not None and "gpt-5.5" in result
-        # In-memory override installed for the next turn + restore queued...
-        assert runner._session_model_overrides[sk]["model"] == "gpt-5.5"
-        assert runner._session_model_overrides[sk]["capabilities"] == {
-            "openai_native_compaction": True
-        }
-        assert sk in runner._pending_one_turn_model_restores
-        # ...but NEVER written through to the persistent session store.
-        runner.async_session_store.set_model_override.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_repeated_once_keeps_the_earliest_restore_target(self, tmp_path, monkeypatch):
-        """`/model X --once` then `/model Y --once` before any turn: the pending snapshot must still
-        be the user's standing override (none here), not X — otherwise slot cleanup would make the
-        first temporary model permanent."""
-        runner = self._runner_with_store(tmp_path, monkeypatch)
-        sk = build_session_key(_make_source())
-
-        await runner._handle_model_command(self._event("/model gpt-5.5 --once"))
-        assert runner._session_model_overrides[sk]["model"] == "gpt-5.5"
-        await runner._handle_model_command(self._event("/model gpt-5.5 --once"))
-
-        # The second producer call snapshotted the live gpt-5.5 override; the pending restore
-        # must still be the ORIGINAL "no override" state.
-        assert runner._pending_one_turn_model_restores[sk]["had_override"] is False
-

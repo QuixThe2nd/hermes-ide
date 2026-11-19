@@ -890,18 +890,18 @@ class TestDeliveryParity:
         fired = []
         mgr = self._fresh_manager(
             monkeypatch,
-            lambda m: m._hooks.setdefault("kanban_task_claimed", []).append(
+            lambda m: m._hooks.setdefault("pre_tool_call", []).append(
                 lambda **kw: fired.append(kw) or "ok"
             ),
         )
 
-        results = plugins_mod.invoke_hook("kanban_task_claimed", task_id="t1")
+        results = plugins_mod.invoke_hook("pre_tool_call", tool_name="search_files")
 
         assert mgr._discovered is True
         # invoke_hook may enrich kwargs (e.g. telemetry_schema_version);
         # assert on what the caller passed rather than exact equality.
         assert len(fired) == 1
-        assert fired[0]["task_id"] == "t1"
+        assert fired[0]["tool_name"] == "search_files"
         assert results == ["ok"]
 
     def test_module_invoke_middleware_lazily_discovers(self, monkeypatch):
@@ -1688,7 +1688,7 @@ class TestPreToolCallBlocking:
 
 
 class TestPreToolCallDirective:
-    """Tests for the extended (block | approve) directive helper."""
+    """Tests for block/modify directive handling and lifecycle observers."""
 
     def test_first_party_observer_receives_pre_tool_call(self, monkeypatch):
         from hermes_cli import observability
@@ -1728,103 +1728,8 @@ class TestPreToolCallDirective:
             )
         ]
 
-    def test_approve_directive_returned(self, monkeypatch):
-        from hermes_cli.plugins import get_pre_tool_call_directive
-        monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
-            lambda hook_name, **kwargs: [
-                {"action": "approve", "message": "needs human ok"}
-            ],
-        )
-        assert get_pre_tool_call_directive("write_file", {}) == (
-            "approve", "needs human ok")
-
-    def test_approve_without_message_is_valid(self, monkeypatch):
-        """approve may omit a message (block may not)."""
-        from hermes_cli.plugins import get_pre_tool_call_directive
-        monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
-            lambda hook_name, **kwargs: [{"action": "approve"}],
-        )
-        assert get_pre_tool_call_directive("write_file", {}) == ("approve", None)
 
 
-class TestResolvePreToolBlock:
-    """Tests for the single dispatch-site chokepoint that resolves a
-    directive (incl. the approve→gate escalation) to a block message."""
-
-
-    def test_approve_gate_receives_tool_observability_context(self, monkeypatch):
-        from hermes_cli.plugins import resolve_pre_tool_block
-        from tools import approval
-        from tools import approval_context
-
-        seen = {}
-        monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
-            lambda hook_name, **kwargs: [
-                {"action": "approve", "message": "why"}
-            ],
-        )
-
-        def _approve(*args, **kwargs):
-            seen["turn_id"] = approval_context._approval_turn_id.get()
-            seen["tool_call_id"] = approval_context._approval_tool_call_id.get()
-            return {"approved": True, "message": None}
-
-        monkeypatch.setattr("tools.approval.request_tool_approval", _approve)
-
-        assert resolve_pre_tool_block(
-            "write_file",
-            {},
-            turn_id="turn-1",
-            tool_call_id="call-1",
-        ) is None
-        assert seen == {"turn_id": "turn-1", "tool_call_id": "call-1"}
-
-    def test_approve_passes_plugin_rule_key_to_gate(self, monkeypatch):
-        from hermes_cli.plugins import resolve_pre_tool_block
-
-        seen = {}
-
-        monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
-            lambda hook_name, **kwargs: [
-                {
-                    "action": "approve",
-                    "message": "why",
-                    "rule_key": "write_file:ssh",
-                }
-            ],
-        )
-
-        def _approve(tool_name, reason, **kwargs):
-            seen["tool_name"] = tool_name
-            seen["reason"] = reason
-            seen["rule_key"] = kwargs.get("rule_key")
-            return {"approved": True, "message": None}
-
-        monkeypatch.setattr("tools.approval.request_tool_approval", _approve)
-
-        assert resolve_pre_tool_block("write_file", {}) is None
-        assert seen == {
-            "tool_name": "write_file",
-            "reason": "why",
-            "rule_key": "write_file:ssh",
-        }
-
-
-    def test_approve_gate_exception_fails_closed(self, monkeypatch):
-        from hermes_cli.plugins import resolve_pre_tool_block
-        monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
-            lambda hook_name, **kwargs: [{"action": "approve", "message": "why"}],
-        )
-        def _boom(*a, **k):
-            raise RuntimeError("gate crashed")
-        monkeypatch.setattr("tools.approval.request_tool_approval", _boom)
-        msg = resolve_pre_tool_block("terminal", {})
-        assert msg is not None and "gate failed" in msg  # fail-closed
 
 
 class TestPreToolCallModify:
@@ -2186,14 +2091,7 @@ class TestPluginToolVisibility:
     """Plugin-registered tools appear in get_tool_definitions()."""
 
     def test_plugin_tools_in_definitions(self, tmp_path, monkeypatch):
-        """Plugin tools are reachable when their toolset is in enabled_toolsets.
-
-        Under tiered disclosure (any MCP/plugin tool defers behind the
-        tool_search bridge), a plugin tool no longer appears as a direct
-        schema — it is deferred and surfaced via the bridge's catalog
-        listing. 'Reachable' therefore means: present directly OR listed
-        in the tool_search bridge description.
-        """
+        """Plugin tools appear directly only when their toolset is enabled."""
         import hermes_cli.plugins as plugins_mod
 
         plugins_dir = tmp_path / "hermes_test" / "plugins"
@@ -2221,26 +2119,20 @@ class TestPluginToolVisibility:
 
         from model_tools import get_tool_definitions
 
-        def _reachable(tools):
-            names = [t["function"]["name"] for t in tools]
-            if "vis_tool" in names:
-                return True  # tool_search inactive → direct schema
-            search = next((t for t in tools
-                           if t["function"]["name"] == "tool_search"), None)
-            return bool(search and "vis_tool" in search["function"]["description"])
+        def _visible(tools):
+            return "vis_tool" in {t["function"]["name"] for t in tools}
 
         # Reachable when its toolset is explicitly enabled
         tools = get_tool_definitions(enabled_toolsets=["terminal", "plugin_vis_plugin"], quiet_mode=True)
-        assert _reachable(tools)
+        assert _visible(tools)
 
-        # Excluded entirely when only other toolsets are enabled — not
-        # direct, not in the deferred listing.
+        # Excluded entirely when only other toolsets are enabled.
         tools2 = get_tool_definitions(enabled_toolsets=["terminal"], quiet_mode=True)
-        assert not _reachable(tools2)
+        assert not _visible(tools2)
 
         # Reachable when no toolset filter is active (all enabled)
         tools3 = get_tool_definitions(quiet_mode=True)
-        assert _reachable(tools3)
+        assert _visible(tools3)
 
 
 # ── TestPluginManagerList ──────────────────────────────────────────────────
@@ -2755,7 +2647,7 @@ class TestDispatchToolWithoutCliRef:
 
     This pins the contract the plugin docs rely on: a plugin can drive
     tools from a hook callback even when running in the gateway or a
-    kanban-spawned worker session, where _cli_ref is None.
+    spawned worker session, where _cli_ref is None.
     """
 
     def test_dispatch_tool_invokes_handler_without_cli_ref(self):

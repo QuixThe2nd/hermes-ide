@@ -66,7 +66,6 @@ def _make_runner(*, platform_extra: dict | None = None,
     adapter = MagicMock()
     adapter.send = AsyncMock()
     runner.adapters = {platform: adapter}
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(
         emit=AsyncMock(),
         emit_collect=AsyncMock(return_value=[]),
@@ -92,7 +91,6 @@ def _make_runner(*, platform_extra: dict | None = None,
     runner._running_agents_ts = {}
     runner._session_run_generation = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_sources = {}
     runner._session_db = MagicMock()
     runner._session_db.get_session_title.return_value = None
@@ -105,7 +103,6 @@ def _make_runner(*, platform_extra: dict | None = None,
     runner._set_session_env = lambda _context: None
     runner._should_send_voice_reply = lambda *_args, **_kwargs: False
     runner._send_voice_reply = AsyncMock()
-    runner._capture_gateway_honcho_if_configured = lambda *args, **kwargs: None
     runner._emit_gateway_run_progress = AsyncMock()
     return runner
 
@@ -238,7 +235,7 @@ async def test_admin_runs_quick_command_when_gating_enabled():
 # Running-agent fast-path gating — admin/user split must hold even when an
 # agent is already running. The fast-path block in _handle_message dispatches
 # /stop, /restart, /new, /steer, /model, /approve, /deny, /agents,
-# /bg, /btw, /kanban, /goal, /yolo, /verbose, /footer, /help, /commands,
+# /bg, /btw, /goal, /yolo, /verbose, /footer, /help, /commands,
 # /profile, /update directly without going through the cold dispatch site.
 # We must apply the gate there too — otherwise non-admins could bypass
 # gating just because an agent happens to be busy.
@@ -289,14 +286,14 @@ async def test_running_agent_fastpath_allows_admin_command():
 
 
 # ---------------------------------------------------------------------------
-# Multi-platform isolation — gating on Discord doesn't leak to Telegram.
+# Multi-platform isolation — gating on Discord doesn't leak to Slack.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_gating_isolated_per_platform():
-    """When Discord is gated and Telegram isn't, the same user_id on
-    Telegram must be unrestricted."""
+    """When one platform is gated and another isn't, the same user_id on
+    the ungated one must be unrestricted."""
     from gateway.run import GatewayRunner
     from gateway.config import GatewayConfig, Platform, PlatformConfig
 
@@ -311,16 +308,15 @@ async def test_gating_isolated_per_platform():
                     "user_allowed_commands": [],
                 },
             ),
-            Platform.TELEGRAM: PlatformConfig(
+            Platform.SLACK: PlatformConfig(
                 enabled=True, token="***", extra={}
             ),
         }
     )
     runner.adapters = {
         Platform.DISCORD: MagicMock(send=AsyncMock()),
-        Platform.TELEGRAM: MagicMock(send=AsyncMock()),
+        Platform.SLACK: MagicMock(send=AsyncMock()),
     }
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(
         emit=AsyncMock(),
         emit_collect=AsyncMock(return_value=[]),
@@ -328,11 +324,11 @@ async def test_gating_isolated_per_platform():
     )
     runner.session_store = MagicMock()
     session_entry = SessionEntry(
-        session_key="agent:main:telegram:dm:c1",
+        session_key="agent:main:slack:dm:c1",
         session_id="sess-1",
         created_at=datetime.now(),
         updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="dm",
         total_tokens=0,
     )
@@ -346,7 +342,6 @@ async def test_gating_isolated_per_platform():
     runner._running_agents_ts = {}
     runner._session_run_generation = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_sources = {}
     runner._session_db = MagicMock()
     runner._session_db.get_session_title.return_value = None
@@ -359,10 +354,9 @@ async def test_gating_isolated_per_platform():
     runner._set_session_env = lambda _context: None
     runner._should_send_voice_reply = lambda *_args, **_kwargs: False
     runner._send_voice_reply = AsyncMock()
-    runner._capture_gateway_honcho_if_configured = lambda *args, **kwargs: None
     runner._emit_gateway_run_progress = AsyncMock()
 
-    # Same user_id on Telegram → must be unrestricted (Telegram has no admin list).
-    tg_src = _make_source(platform=Platform.TELEGRAM, user_id="999", chat_id="t1")
+    # Same user_id on Slack → must be unrestricted (Slack has no admin list).
+    tg_src = _make_source(platform=Platform.SLACK, user_id="999", chat_id="t1")
     result = await runner._handle_message(_make_event("/whoami", tg_src))
     assert "Tier: unrestricted" in result

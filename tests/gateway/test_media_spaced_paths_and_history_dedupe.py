@@ -39,7 +39,7 @@ class TestSpacedPaths:
         media, cleaned = BasePlatformAdapter.extract_media(
             f"MEDIA:{p} is the log you asked for"
         )
-        assert [os.path.realpath(x) for x, _ in media] == [os.path.realpath(str(p))]
+        assert [os.path.realpath(x) for x in media] == [os.path.realpath(str(p))]
         assert "is the log you asked for" in cleaned
 
 
@@ -51,7 +51,7 @@ class TestSpacedPaths:
         media, cleaned = BasePlatformAdapter.extract_media(
             f"MEDIA:{a} MEDIA:{b}"
         )
-        got = sorted(os.path.realpath(x) for x, _ in media)
+        got = sorted(os.path.realpath(x) for x in media)
         assert got == sorted(
             [os.path.realpath(str(a)), os.path.realpath(str(b))]
         )
@@ -87,6 +87,8 @@ class TestHistoryMediaDedupe:
         monkeypatch,
     ):
         monkeypatch.setenv("HOME", str(tmp_path))
+        # On Windows os.path.expanduser("~") reads USERPROFILE, not HOME.
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         history = [
             {
                 "role": "assistant",
@@ -96,7 +98,7 @@ class TestHistoryMediaDedupe:
 
         paths = _collect_history_media_paths(history)
 
-        assert str(tmp_path / "audio cache" / "old.ogg") in paths
+        assert os.path.expanduser("~/audio cache/old.ogg") in paths
 
     def test_empty_history_empty_set(self):
         assert _collect_history_media_paths([]) == set()

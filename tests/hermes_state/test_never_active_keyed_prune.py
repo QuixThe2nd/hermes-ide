@@ -28,9 +28,9 @@ def _insert(db, session_id, *, age_days, **overrides):
     """Insert a keyed gateway row directly, defaulting to the junk shape."""
     row = {
         "id": session_id,
-        "source": "telegram",
+        "source": "discord",
         "user_id": "user-1",
-        "session_key": f"agent:main:telegram:dm:{session_id}",
+        "session_key": f"agent:main:discord:dm:{session_id}",
         "chat_id": "chat-1",
         "chat_type": "dm",
         "started_at": time.time() - age_days * DAY,
@@ -123,12 +123,12 @@ class TestPrune:
         _insert(db, "junk", age_days=45)
         _insert(db, "keeper", age_days=1)
         db.save_gateway_routing_entry(
-            "agent:main:telegram:dm:junk",
+            "agent:main:discord:dm:junk",
             json.dumps({"session_id": "junk"}),
             scope="/tmp/pytest-of-dev/test0",
         )
         db.save_gateway_routing_entry(
-            "agent:main:telegram:dm:keeper",
+            "agent:main:discord:dm:keeper",
             json.dumps({"session_id": "keeper"}),
             scope="/home/dev/project",
         )
@@ -141,7 +141,7 @@ class TestPrune:
         remaining = db._conn.execute(
             "SELECT session_key FROM gateway_routing"
         ).fetchall()
-        assert [r[0] for r in remaining] == ["agent:main:telegram:dm:keeper"]
+        assert [r[0] for r in remaining] == ["agent:main:discord:dm:keeper"]
 
     def test_no_candidates_is_a_no_op(self, db):
         _insert(db, "keeper", age_days=1)

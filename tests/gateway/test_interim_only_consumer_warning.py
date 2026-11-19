@@ -30,7 +30,7 @@ def _run_mark_streamed_delivery(consumer, caplog):
     harness = _InterimOnlyHarness()
     turn_ctx = SimpleNamespace(
         stream_consumer_holder=[consumer],
-        source=SimpleNamespace(platform="telegram"),
+        source=SimpleNamespace(platform="discord"),
         session_key="sess-105341",
     )
     with caplog.at_level("WARNING", logger="gateway.run_turn"):

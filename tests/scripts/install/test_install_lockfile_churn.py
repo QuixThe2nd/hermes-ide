@@ -1,9 +1,9 @@
 """Regression: installer update should discard pure npm lockfile churn.
 
-Desktop/bootstrap installs update an existing managed checkout in place. Local
-build steps often rewrite tracked ``package-lock.json`` without touching the
-matching ``package.json``; treating that churn as a real local edit forces an
-autostash and can abort the repository stage before the desktop comes back up.
+Installer reruns update an existing managed checkout in place. Local build steps
+often rewrite tracked ``package-lock.json`` without touching the matching
+``package.json``; treating that churn as a real local edit forces an autostash
+and can abort the repository stage.
 
 The installer should discard that generated churn before its stash/checkout
 logic, while still preserving intentional package edits where ``package.json``
@@ -96,14 +96,14 @@ def test_install_sh_keeps_root_lockfile_for_dirty_workspace_manifest(
     tmp_path: Path,
 ) -> None:
     """The root lockfile spans the npm workspace graph: a dirty workspace manifest
-    (apps/desktop/package.json) protects it, a manifest outside the graph does not (#112378)."""
+    (web/package.json) protects it, a manifest outside the graph does not (#112378)."""
     repo = tmp_path / "hermes-agent"
-    (repo / "apps" / "desktop").mkdir(parents=True)
+    (repo / "web").mkdir(parents=True)
     (repo / "vendor" / "foo").mkdir(parents=True)
     _git(repo, "init")
-    (repo / "package.json").write_text('{"workspaces": ["apps/*"]}\n')
+    (repo / "package.json").write_text('{"workspaces": ["web"]}\n')
     (repo / "package-lock.json").write_text('{"lock":"old"}\n')
-    (repo / "apps" / "desktop" / "package.json").write_text("{}\n")
+    (repo / "web" / "package.json").write_text("{}\n")
     (repo / "vendor" / "foo" / "package.json").write_text("{}\n")
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "init")
@@ -114,7 +114,7 @@ def test_install_sh_keeps_root_lockfile_for_dirty_workspace_manifest(
         'discard_update_lockfile_churn "$PWD"\n'
     )
 
-    (repo / "apps" / "desktop" / "package.json").write_text('{"dependencies":{"electron":"41"}}\n')
+    (repo / "web" / "package.json").write_text('{"dependencies":{"react":"19"}}\n')
     (repo / "package-lock.json").write_text('{"lock":"workspace-bump"}\n')
     subprocess.run(["bash", "-c", script], cwd=repo, check=True, capture_output=True)
     assert (repo / "package-lock.json").read_text() == '{"lock":"workspace-bump"}\n'

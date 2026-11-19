@@ -287,10 +287,8 @@ def test_real_db_openers_honor_configured_delete(monkeypatch, tmp_path):
     from cron import executions
     from gateway import delivery_ledger
     from gateway.platforms.api_server import ResponseStore
-    from hermes_cli import kanban_db, projects_db
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import projects_db
     from hermes_state import SessionDB
-    from plugins.memory.holographic.store import MemoryStore
     from plugins.platforms.discord.recovery import DiscordRecoveryStore
     from tools import async_delegation
 
@@ -331,14 +329,6 @@ def test_real_db_openers_honor_configured_delete(monkeypatch, tmp_path):
     finally:
         session_db.close()
 
-    kanban_conn = kbc.connect(db_path=tmp_path / "kanban.db")
-    try:
-        observed["kanban"] = kanban_conn.execute(
-            "PRAGMA journal_mode"
-        ).fetchone()[0].lower()
-    finally:
-        kanban_conn.close()
-
     projects_conn = projects_db.connect(db_path=tmp_path / "projects.db")
     try:
         observed["projects"] = projects_conn.execute(
@@ -346,14 +336,6 @@ def test_real_db_openers_honor_configured_delete(monkeypatch, tmp_path):
         ).fetchone()[0].lower()
     finally:
         projects_conn.close()
-
-    holographic = MemoryStore(db_path=tmp_path / "memory_store.db")
-    try:
-        observed["holographic"] = holographic._conn.execute(
-            "PRAGMA journal_mode"
-        ).fetchone()[0].lower()
-    finally:
-        holographic.close()
 
     response_store = ResponseStore(db_path=str(tmp_path / "response_store.db"))
     try:
@@ -370,8 +352,6 @@ def test_real_db_openers_honor_configured_delete(monkeypatch, tmp_path):
         "cron_executions": "delete",
         "discord_recovery": "delete",
         "session_db": "delete",
-        "kanban": "delete",
         "projects": "delete",
-        "holographic": "delete",
         "response_store": "delete",
     }

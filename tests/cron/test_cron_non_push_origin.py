@@ -27,9 +27,9 @@ def test_non_push_session_stamps_no_origin_and_gets_creation_notice():
     assert notice and "NOT be delivered" in notice
 
     # Control: a push-capable platform keeps its origin.
-    tokens = set_session_vars(platform="telegram", chat_id="777", session_key="tg", async_delivery=True)
+    tokens = set_session_vars(platform="discord", chat_id="777", session_key="tg", async_delivery=True)
     try:
-        assert _origin_from_env()["platform"] == "telegram"
+        assert _origin_from_env()["platform"] == "discord"
     finally:
         clear_session_vars(tokens)
 
@@ -53,7 +53,6 @@ def test_non_push_session_creation_notice_says_report_wont_return(monkeypatch):
     promise "I'll report back here"); a push-capable session stays silent."""
     from tools.cronjob_job_args import _local_delivery_notice, _origin_from_env
 
-    monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
     tokens = set_session_vars(platform="api_server", chat_id="desk-1", session_key="desk-1",
                               async_delivery=False)
     try:
@@ -62,7 +61,7 @@ def test_non_push_session_creation_notice_says_report_wont_return(monkeypatch):
         clear_session_vars(tokens)
     assert notice and "NOT be delivered" in notice
 
-    tokens = set_session_vars(platform="telegram", chat_id="777", session_key="tg", async_delivery=True)
+    tokens = set_session_vars(platform="discord", chat_id="777", session_key="tg", async_delivery=True)
     try:
         assert _local_delivery_notice(
             {"id": "j", "deliver": "origin", "origin": _origin_from_env()}, None) is None
@@ -79,7 +78,7 @@ def test_suggestions_accept_origin_shares_the_non_push_guard():
         assert _resolve_origin() is None
     finally:
         clear_session_vars(tokens)
-    tokens = set_session_vars(platform="telegram", chat_id="777", session_key="tg", async_delivery=True)
+    tokens = set_session_vars(platform="discord", chat_id="777", session_key="tg", async_delivery=True)
     try:
         assert _resolve_origin()["chat_id"] == "777"
     finally:

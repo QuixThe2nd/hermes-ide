@@ -113,7 +113,7 @@ def _upstream_tip(sha):
 def test_check_via_rev_recovers_exact_count():
     with _upstream_tip(SHA_B), patch.object(banner, "_github_compare_behind", return_value=61) as compare:
         assert banner._check_via_rev(SHA_A) == 61
-    compare.assert_called_once_with(SHA_A, SHA_B)
+    compare.assert_called_once_with(SHA_A, SHA_B, banner._DEFAULT_REPO_SLUG)
 
 
 def test_check_via_rev_falls_back_to_sentinel_offline():
@@ -142,7 +142,7 @@ def test_check_via_rev_local_ahead_reports_up_to_date():
 def _local_git(head_sha):
     def fake_run(cmd, **kwargs):
         if cmd[:4] == ["git", "remote", "get-url", "origin"]:
-            return MagicMock(returncode=0, stdout="https://github.com/NousResearch/hermes-agent.git\n")
+            return MagicMock(returncode=0, stdout="https://github.com/example/custom-hermes.git\n")
         if cmd[:3] == ["git", "rev-parse", "HEAD"]:
             return MagicMock(returncode=0, stdout=f"{head_sha}\n")
         if cmd[:3] == ["git", "merge-base", "--is-ancestor"]:
@@ -163,8 +163,9 @@ def test_local_checkout_recovers_exact_count(tmp_path):
 
     with patch("hermes_cli.banner.subprocess.run", side_effect=_local_git(SHA_A)), \
             patch.object(banner, "_github_branch_tip", return_value=SHA_B), \
-            patch.object(banner, "_github_compare_behind", return_value=61):
+            patch.object(banner, "_github_compare_behind", return_value=61) as compare:
         assert banner._check_via_local_git(repo_dir) == 61
+    compare.assert_called_once_with(SHA_A, SHA_B, "example/custom-hermes")
 
 
 def test_local_checkout_offline_compare_keeps_honest_sentinel(tmp_path):

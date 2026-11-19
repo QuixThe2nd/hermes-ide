@@ -14,17 +14,18 @@ from pm.package import (
     InstallError,
     Package,
     StatePackage,
-    _entry_listing,
     _missing_reason,
     _probe_reason,
 )
 from pm.registry import register
 from pm.store import ALL_TARGETS, Store, flatten_single_dir, merge_tree
 from pm.update import (
+    btbn_index,
     btbn_versions,
     github_release_tags,
     llama_app_bucket_versions,
     llama_app_latest,
+    martin_riedl_index,
     martin_riedl_versions,
     node_latest_versions,
     npm_dist_tags,
@@ -194,6 +195,13 @@ class Python(BinaryPackage):
         binary = self.binary(staged, target)
         if binary is not None:
             _macos_sign_managed_python(binary)
+        # python-build-standalone ships the x64 VC runtime (vcruntime140_1.dll)
+        # beside ARM64 Windows Python; it cannot load on ARM64 and would fail
+        # the arch guard. Drop it HERE, before publish: the tree digest is
+        # recorded over the shipped bytes, so a post-publish deletion (as the
+        # old bundle-time drop did) makes doctor's re-hash mismatch.
+        if target == "win32-arm64":
+            (staged / "vcruntime140_1.dll").unlink(missing_ok=True)
 
     def fetch_url(self, version: str, target: str) -> str:
         # lock version is "<python>+<release tag>", e.g. "3.11.13+202****0807"
@@ -337,12 +345,11 @@ def _isolated_config_dir() -> Path:
 @register
 class Venv(StatePackage):
     """The project venv: pyproject.toml + uv.lock + enabled extras.
-    Made true by `uv sync --locked`; uv is its internal dependency.
-    `--locked` (not `--frozen`) is load-bearing: it asserts uv.lock is
-    up-to-date with pyproject.toml, so a stale lock fails the sync instead
-    of silently installing a set nothing reconciled. This is the
-    project/lock consistency validation the installers' old
-    run_locked_uv_sync() owned before the sync moved into pm."""
+    Core-only installs use `uv sync --locked`; plugin members use the
+    workspace union lock. `--locked` (not `--frozen`) is load-bearing for
+    the core path: it asserts uv.lock is up-to-date with pyproject.toml,
+    so a stale lock fails instead of silently installing an unreconciled
+    set. Both paths build a candidate environment for the caller to select."""
 
     name = "venv"
     deps = ("uv",)
@@ -353,49 +360,11 @@ class Venv(StatePackage):
         return repo_root()
 
     def venv_dir(self) -> Path:
-        # Sealed installs are read-only: the MUTABLE venv lives in the
-        # writable machine hermes root (get_default_hermes_root()/venv —
-        # per-install, beside the uv cache), seeded on first adopt by
-        # copying the payload's shipped venv out. Dev/source installs
-        # keep the repo-local venv (project_venv_dir) unchanged.
-        from pm.ensure import sealed
+        from hermes_cli.runtime_paths import selected_venv
 
-        if sealed():
-            from hermes_constants import get_default_hermes_root
+        return selected_venv(self.project_root())
 
-            return get_default_hermes_root() / "venv"
-        from hermes_constants import project_venv_dir
-
-        found = project_venv_dir(self.project_root())
-        return found if found else self.project_root() / "venv"
-
-    def seed_mutable_venv(self) -> Optional[str]:
-        """Bootstrap the mutable venv from the shipped payload venv
-        (lazy-off installs). Returns None on success, else why not."""
-        import shutil
-
-        from pm.ensure import lazy_installs_allowed, sealed
-        from pm.paths import store_root
-
-        if not sealed():
-            return None  # dev installs use the repo venv directly
-        dest = self.venv_dir()
-        if dest.exists():
-            return None  # already bootstrapped
-        if lazy_installs_allowed():
-            # Lazy installs ON: build fresh from the shipped uv cache —
-            # no seed copy needed (the sync is near-free from the cache).
-            return None
-        payload_venv = store_root().parent / "venv"
-        if not payload_venv.is_dir():
-            return "payload ships no venv to seed from"
-        try:
-            shutil.copytree(payload_venv, dest)
-        except OSError as exc:
-            return f"seed copy failed: {exc}"
-        return None
-
-    def expected_stamp(self, extras: list[str]) -> str:
+    def expected_stamp(self, extras: list[str], *, plugin_dirs=None) -> str:
         import hashlib
         import sys
 
@@ -413,93 +382,68 @@ class Venv(StatePackage):
         # re-sync even when extras and core lock are unchanged.
         from pm.workspace import enabled_member_dirs, members_stamp
 
-        h.update(members_stamp(enabled_member_dirs()).encode())
+        h.update(members_stamp(enabled_member_dirs() if plugin_dirs is None else plugin_dirs).encode())
         return h.hexdigest()
 
-    def apply(self, extras: list[str]) -> None:
+    def apply(self, extras: list[str], *, plugin_dirs=None) -> dict:
+        """Prepare one complete environment; the caller commits its selection."""
+        import sys
+        import uuid
+        from hermes_cli.runtime_paths import install_state_dir, runtime_facts_path
         from pm.ensure import uv as pm_uv
+        from pm.lock import Facts
         from pm.workspace import enabled_member_dirs, lock_and_sync
 
-        member_dirs = enabled_member_dirs()
-        if member_dirs:
-            # Lazy installs OFF = the frozen bundle feature set: plugin
-            # members are never installed (the bundle IS the install).
-            from pm.ensure import lazy_installs_allowed
-
-            if not lazy_installs_allowed():
-                from pm.features import read_features
-
-                if read_features() is not None:
-                    raise InstallError(
-                        self.name,
-                        "plugin members present but lazy installs are "
-                        "disabled — this bundle's feature set is frozen "
-                        "(remove the plugin or enable lazy installs)",
-                    )
-            # Plugin deps union into the venv through the generated
-            # workspace root (one lock, conflict = loud refusal). On
-            # conflict, resolve_union bisects: fail-alone plugins and
-            # mutual-conflict losers (incumbent wins) are dropped with
-            # their resolver reasons, and the union retries.
-            from pm.workspace import record_disabled_plugins, resolve_union
-
-            import logging
-
-            survivors, decisions = resolve_union(
-                member_dirs, extras, venv_dir=self.venv_dir()
-            )
-            for decision in decisions:
-                logging.getLogger(__name__).warning(
-                    "plugin %s disabled by the venv union: %s",
-                    decision["plugin"],
-                    decision["reason"],
-                )
-            # Write bisect disables back to the plugins enabled config —
-            # `hermes plugins list` must reflect reality and re-enable
-            # must retry. Best-effort: a config write failure never
-            # breaks the sync.
-            try:
-                record_disabled_plugins(decisions)
-            except Exception:
-                logging.getLogger(__name__).warning(
-                    "could not persist bisect disable decisions", exc_info=True
-                )
-            # Receipt: the machine-readable surface for this rebuild
-            # (same schema/dir as update receipts; the updater embeds
-            # these sections via pm.receipt.snapshot()).
-            try:
-                from pm import receipt
-
-                receipt.begin("sync")
-                receipt.record_feature_list(sorted(extras))
-                receipt.record_venv_rebuild(True)
-                if decisions:
-                    receipt.record_bisect(decisions)
-                    receipt.finalize("bisected")
-                else:
-                    receipt.finalize("ok")
-            except Exception:
-                pass
-            return
-
-        uv_bin, env = pm_uv(venv=self.venv_dir())
+        project = self.project_root()
+        generation = install_state_dir(project) / "environments" / uuid.uuid4().hex
+        candidate = generation / "venv"
+        uv_bin, env = pm_uv()
         if uv_bin is None:
             raise InstallError(self.name, "uv is not installed")
-        cmd = [uv_bin, "sync", "--locked"]
-        for extra in sorted(extras):
-            cmd += ["--extra", extra]
-        proc = subprocess.run(
-            cmd,
-            cwd=str(self.project_root()),
-            capture_output=True,
-            text=True,
-            timeout=1800,
-            env=env,
-        )
-        if proc.returncode != 0:
-            raise InstallError(
-                self.name, f"uv sync exited {proc.returncode}: {proc.stderr[-400:]}"
+        env["UV_PROJECT_ENVIRONMENT"] = str(candidate)
+        env.pop("UV_NO_CONFIG", None)  # project indexes/sources belong to the project
+        members = enabled_member_dirs() if plugin_dirs is None else plugin_dirs
+        try:
+            generation.mkdir(parents=True)
+            (generation / ".lease-managed").touch()
+            create = subprocess.run(
+                [uv_bin, "venv", "--relocatable", "--python", sys.executable, str(candidate)],
+                env=env, capture_output=True, text=True, timeout=120,
             )
+            if create.returncode:
+                raise InstallError(self.name, f"uv venv failed: {create.stderr[-600:]}")
+            if members:
+                prior = Facts(runtime_facts_path(project)).get("venv") or {}
+                seed = (Path(prior["resolved_lock"]) if prior.get("resolved_lock")
+                        else project / "uv.lock")
+                lock_and_sync(members, extras, venv_dir=candidate, root=generation / "workspace",
+                              seed_lock=seed, frozen=False, env=env)
+                resolved_lock = generation / "workspace" / "uv.lock"
+            else:
+                cmd = [uv_bin, "sync", "--locked"]
+                for extra in sorted(extras):
+                    cmd += ["--extra", extra]
+                proc = subprocess.run(
+                    cmd, cwd=str(project), env=env, capture_output=True,
+                    text=True, timeout=1800,
+                )
+                if proc.returncode:
+                    raise InstallError(
+                        self.name, f"uv sync exited {proc.returncode}: {proc.stderr[-400:]}"
+                    )
+                resolved_lock = project / "uv.lock"
+            python = candidate / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+            checked = subprocess.run(
+                [uv_bin, "pip", "check", "--python", str(python)],
+                env=env, capture_output=True, text=True, timeout=60,
+            )
+            if checked.returncode:
+                raise InstallError(self.name, f"dependency validation failed: {checked.stderr[-600:]}")
+        except BaseException:
+            shutil.rmtree(generation, ignore_errors=True)
+            raise
+        (generation / ".lease-managed").touch()
+        return {"environment": candidate, "resolved_lock": resolved_lock}
 
 
 @register
@@ -531,12 +475,14 @@ class Npm(BinaryPackage):
         bundled npm instead. --offline pins the bytes to the verified
         tarball; --ignore-scripts + a sanitized env keep user npm/node
         config out of the staging."""
-        from pm.ensure import _facts, _store
+        from pm.ensure import _installed_location, _lockfile
         from pm.registry import get_package
 
-        facts = _facts()
-        store = _store()
         node = get_package("node")
+        location = _installed_location(node, _lockfile(), target)
+        if location is None:
+            raise InstallError(self.name, "npm extends node, which is not installed")
+        facts, store = location
         node_fact = facts.get("node")
         if node_fact is None:
             raise InstallError(self.name, "npm extends node, which is not installed")
@@ -684,45 +630,25 @@ class Ffmpeg(BinaryPackage):
     def fetch_url(self, version: str, target: str) -> str:
         osname, arch = target.split("-")
         if osname == "win32":
-            # BtbN: the newest autobuild tag whose assets carry this version.
-            for tag, asset in btbn_index().get(version, [])[:1]:
-                return (
-                    "https://github.com/BtbN/FFmpeg-Builds/releases/download/"
-                    f"{tag}/{asset}"
-                )
-            # Fall back to the pinned build (index unreachable) — this must
-            # match what the lockfile's own urls carry for the same version.
-            return self._btbn_fallback(version, target)
-        # martin-riedl: /download/<os>/<arch>/<epoch>_<version>/ffmpeg.zip
-        martin = {
-            ("linux", "x64"): "linux/amd64/1787074600_9.0.1",
-            ("linux", "arm64"): "linux/arm64/1787072884_9.0.1",
-            ("darwin", "x64"): "macos/amd64/1787081194_9.0.1",
-            ("darwin", "arm64"): "macos/arm64/1787073674_9.0.1",
-        }
-        epoch = None
-        for t, by_version in martin_riedl_index().items():
-            if t == target and version in by_version:
-                epoch = by_version[version]
-                break
-        if epoch is not None:
-            osdir = "macos" if osname == "darwin" else "linux"
-            return f"https://ffmpeg.martin-riedl.de/download/{osdir}/{arch}/{epoch}_{version}/ffmpeg.zip"
-        # Fall back to the hardcoded pinned path (index unreachable).
-        return f"https://ffmpeg.martin-riedl.de/download/{martin[(osname, arch)]}/ffmpeg.zip"
+            artifact = btbn_index().get(target, {}).get(version)
+            if artifact is not None:
+                tag, asset = artifact
+                return f"https://github.com/BtbN/FFmpeg-Builds/releases/download/{tag}/{asset}"
+        else:
+            epoch = martin_riedl_index().get(target, {}).get(version)
+            if epoch is not None:
+                osdir = "macos" if osname == "darwin" else "linux"
+                source_arch = "amd64" if arch == "x64" else arch
+                return f"https://ffmpeg.martin-riedl.de/download/{osdir}/{source_arch}/{epoch}_{version}/ffmpeg.zip"
+        # Existing installs read exact URLs from the lockfile. Re-pinning
+        # must never silently substitute a different version or target.
+        raise InstallError(self.name, f"no advertised {version} artifact for {target}",
+                           "retry when the upstream index is available, or keep the existing pin")
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
         if target.startswith("win32"):
-            return btbn_versions()
+            return btbn_versions(target)
         return martin_riedl_versions(target)
-
-    def _btbn_fallback(self, version: str, target: str) -> str:
-        arch = "arm64" if target.endswith("arm64") else "64"
-        return (
-            "https://github.com/BtbN/FFmpeg-Builds/releases/download/"
-            f"autobuild-2026-08-28-17-08/ffmpeg-n{version}-11-ge47273f4d9-"
-            f"win{arch}-gpl-9.0.zip"
-        )
 
 
 
@@ -782,123 +708,6 @@ class CuaDriver(BinaryPackage):
         except Exception:
             return dict(os.environ, CUA_DRIVER_RS_TELEMETRY_ENABLED="0")
 
-
-@register
-class AgentBrowser(BinaryPackage):
-    name = "agent-browser"
-    optional = True
-    deps = ("chromium", "chromium-headless-shell")
-    flatten = True
-    probe_version = False
-    url = "https://registry.npmjs.org/agent-browser/-/agent-browser-{version}.tgz"
-    # No win32-arm64 gap: agent-browser ships only win32-x64, and Windows
-    # ARM64 runs it via built-in emulation (its own postinstall falls back
-    # to x64 on arm64). chromium is likewise the x64 build on win32-arm64.
-    emulated_arch_targets = frozenset({"win32-arm64"})
-
-    def latest_versions(self, target: str, locked=None) -> list[str]:
-        latest = npm_dist_tags("agent-browser").get("latest")
-        return [latest] if latest else []
-
-    def _rel(self, target: str) -> Optional[str]:
-        ext = ".exe" if target.startswith("win32") else ""
-        # Windows ARM64 runs the x64 binary under built-in emulation:
-        # agent-browser ships no native arm64 build (its own postinstall
-        # falls back to x64 on arm64), so the staged name is win32-x64.
-        if target == "win32-arm64":
-            target = "win32-x64"
-        return f"bin/agent-browser-{target}{ext}"
-
-    def binary(self, entry: Path, target: str) -> Optional[Path]:
-        # The win32-arm64 payload carries the x64 binary (emulated), so
-        # resolve it under the win32-x64 name.
-        return super().binary(entry, "win32-x64" if target == "win32-arm64" else target)
-
-    def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
-        flatten_single_dir(staged)
-        bin_dir = staged / "bin"
-        if not bin_dir.is_dir():
-            raise InstallError(self.name, "staged without a bin/ directory")
-        keep = Path(self._rel(target)).name
-        if not (bin_dir / keep).is_file():
-            raise InstallError(self.name, f"{keep} missing from the staged tarball")
-        for item in bin_dir.iterdir():
-            if item.is_file() and item.name.startswith("agent-browser-") and item.name != keep:
-                item.unlink()
-
-
-class PlaywrightBrowser(Package):
-    """Playwright resolves browsers by DIRECTORY NAME under one root:
-    `<name with '-'→'_'>-<revision>`, no target suffix. The env points
-    PLAYWRIGHT_BROWSERS_PATH at the store root itself. The entry carries
-    the INSTALLATION_COMPLETE marker playwright checks.
-
-    The version is `<playwright revision>+<chrome version>` — most targets
-    download from the Chrome-for-Testing CDN by chrome version, and the
-    targets CfT doesn't build (linux-arm64) come from playwright's own
-    mirror by revision. The store entry is named by revision only, which
-    is all playwright's resolver reads."""
-
-    optional = True
-    on_path = False
-    _CDN = "https://cdn.playwright.dev"
-
-    # Chrome-for-Testing platform names; targets absent here fall back to
-    # playwright's dbazure mirror with its own platform names.
-    # win32-arm64 uses the win64 (x64) build: CfT publishes no native
-    # win-arm64 chromium, and Windows ARM64 runs x64 binaries via built-in
-    # emulation — the same choice agent-browser's own postinstall makes.
-    _CFT = {
-        "linux-x64": "linux64",
-        "darwin-x64": "mac-x64",
-        "darwin-arm64": "mac-arm64",
-        "win32-x64": "win64",
-        "win32-arm64": "win64",
-    }
-    _MIRROR = {"linux-arm64": "linux-arm64"}
-    _FILE = ""  # "chrome" / "chrome-headless-shell"
-    _MIRROR_FILE = ""  # "chromium" / "chromium-headless-shell"
-
-    def store_entry(self, version: str, target: str) -> str:
-        revision = version.partition("+")[0]
-        return f"{self.name.replace('-', '_')}-{revision}"
-
-    def fetch_url(self, version: str, target: str) -> str:
-        revision, _, chrome = version.partition("+")
-        plat = self._CFT.get(target)
-        if plat and chrome:
-            return f"{self._CDN}/builds/cft/{chrome}/{plat}/{self._FILE}-{plat}.zip"
-        mirror_plat = self._MIRROR[target]
-        return (
-            f"{self._CDN}/dbazure/download/playwright/builds/chromium/"
-            f"{revision}/{self._MIRROR_FILE}-{mirror_plat}.zip"
-        )
-
-    def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
-        (staged / "INSTALLATION_COMPLETE").write_text("", encoding="utf-8")
-
-    def verify(self, entry: Path, target: str) -> str:
-        marker = entry / "INSTALLATION_COMPLETE"
-        if marker.is_file():
-            return ""
-        return f"INSTALLATION_COMPLETE missing under {entry}; {_entry_listing(entry)}"
-
-    def env(self, entry: Path, target: str) -> dict:
-        return {"PLAYWRIGHT_BROWSERS_PATH": str(entry.parent)}
-
-
-@register
-class Chromium(PlaywrightBrowser):
-    name = "chromium"
-    _FILE = "chrome"
-    _MIRROR_FILE = "chromium"
-
-
-@register
-class ChromiumHeadlessShell(PlaywrightBrowser):
-    name = "chromium-headless-shell"
-    _FILE = "chrome-headless-shell"
-    _MIRROR_FILE = "chromium-headless-shell"
 
 
 class LlamaCpp(BinaryPackage):

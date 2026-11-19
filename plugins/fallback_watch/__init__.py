@@ -8,10 +8,9 @@ logger = logging.getLogger(__name__)
 
 
 def register(ctx) -> None:
-    """Service-only plugin: the watcher runs from ``run.py`` under systemd.
+    """Service/library plugins register no model tools or gateway hooks.
 
-    No model tools and no gateway hooks — registration is intentionally
-    empty so plugin discovery has something to call. All logic lives in
-    ``plugins.fallback_watch.core``.
+    The uniform entry point keeps discovery simple while each plugin's logic
+    stays in its own modules.
     """
     return None

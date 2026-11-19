@@ -15,7 +15,7 @@ from gateway.session import SessionSource
 
 
 class RestartTestAdapter(BasePlatformAdapter):
-    def __init__(self, platform: Platform = Platform.TELEGRAM):
+    def __init__(self, platform: Platform = Platform.DISCORD):
         super().__init__(PlatformConfig(enabled=True, token="***"), platform)
         self.sent: list[str] = []
         self.sent_calls: list[tuple[str, str, object]] = []
@@ -42,7 +42,7 @@ def make_restart_source(
     chat_id: str = "123456",
     chat_type: str = "dm",
     thread_id: str | None = None,
-    platform: Platform = Platform.TELEGRAM,
+    platform: Platform = Platform.DISCORD,
     user_id: str | None = "u1",
     **extra,
 ) -> SessionSource:
@@ -61,7 +61,7 @@ def make_restart_source(
 def make_restart_runner(
     adapter: BasePlatformAdapter | None = None,
     *,
-    platform: Platform = Platform.TELEGRAM,
+    platform: Platform = Platform.DISCORD,
 ) -> tuple[GatewayRunner, BasePlatformAdapter]:
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
@@ -74,7 +74,6 @@ def make_restart_runner(
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._pending_model_notes = {}
     runner._background_tasks = set()
     runner._draining = False
@@ -87,13 +86,6 @@ def make_restart_runner(
     runner._restart_command_source = None
     runner._restart_generation = 0
     runner._restart_cycle_open = False
-    runner._restart_wind_down_nonce = None
-    runner._restart_wind_down_offer = None
-    runner._restart_wind_down_accepted = False
-    runner._restart_wind_down_allowlist_written = False
-    runner._restart_wind_down_finalized = False
-    runner._restart_wind_down_final_reason = None
-    runner._restart_wind_down_send_in_flight = None
     runner._restart_drain_timeout = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     runner._restart_after_turn_timeout = DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT
     runner._cron_drain_timeout = DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT
@@ -103,11 +95,9 @@ def make_restart_runner(
     runner._stop_task = None
     runner._busy_input_mode = "interrupt"
     runner._update_prompt_pending = {}
-    runner._voice_mode = {}
     runner._session_model_overrides = {}
     runner._session_sources = OrderedDict()
     runner._session_sources_max = 512
-    runner._shutdown_all_gateway_honcho = lambda: None
     runner._update_runtime_status = MagicMock()
     runner._queue_or_replace_pending_event = GatewayRunner._queue_or_replace_pending_event.__get__(
         runner, GatewayRunner
@@ -147,9 +137,6 @@ def make_restart_runner(
         runner, GatewayRunner
     )
     runner._status_action_gerund = GatewayRunner._status_action_gerund.__get__(
-        runner, GatewayRunner
-    )
-    runner._queue_during_drain_enabled = GatewayRunner._queue_during_drain_enabled.__get__(
         runner, GatewayRunner
     )
     runner._running_agent_count = GatewayRunner._running_agent_count.__get__(
@@ -205,34 +192,8 @@ def make_restart_runner(
         GatewayRunner._await_active_work_before_restart.__get__(runner, GatewayRunner)
     )
     runner.request_restart = GatewayRunner.request_restart.__get__(runner, GatewayRunner)
-    runner._request_cooperative_restart_wind_down = (
-        GatewayRunner._request_cooperative_restart_wind_down.__get__(
-            runner, GatewayRunner
-        )
-    )
     runner._begin_restart_cycle = GatewayRunner._begin_restart_cycle.__get__(
         runner, GatewayRunner
-    )
-    runner._restart_wind_down_offer_eligible = (
-        GatewayRunner._restart_wind_down_offer_eligible.__get__(runner, GatewayRunner)
-    )
-    runner._send_restart_wind_down_prompt = (
-        GatewayRunner._send_restart_wind_down_prompt.__get__(runner, GatewayRunner)
-    )
-    runner._open_restart_wind_down_send = (
-        GatewayRunner._open_restart_wind_down_send.__get__(runner, GatewayRunner)
-    )
-    runner._close_restart_wind_down_send = (
-        GatewayRunner._close_restart_wind_down_send.__get__(runner, GatewayRunner)
-    )
-    runner._await_restart_wind_down_send = (
-        GatewayRunner._await_restart_wind_down_send.__get__(runner, GatewayRunner)
-    )
-    runner.accept_restart_wind_down_opt_in = (
-        GatewayRunner.accept_restart_wind_down_opt_in.__get__(runner, GatewayRunner)
-    )
-    runner._finalize_restart_wind_down_offer = (
-        GatewayRunner._finalize_restart_wind_down_offer.__get__(runner, GatewayRunner)
     )
     runner._wedged_agent_count = GatewayRunner._wedged_agent_count.__get__(
         runner, GatewayRunner

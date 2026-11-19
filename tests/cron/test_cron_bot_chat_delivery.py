@@ -41,7 +41,7 @@ def test_named_token_returns_profile():
 
 
 def test_non_bot_chat_tokens_pass_through():
-    assert parse_bot_chat_deliver_token("telegram:-100:17") is None
+    assert parse_bot_chat_deliver_token("discord:-100:17") is None
     assert parse_bot_chat_deliver_token("origin") is None
     assert parse_bot_chat_deliver_token("local") is None
     assert parse_bot_chat_deliver_token("all") is None
@@ -72,13 +72,13 @@ def test_unknown_profile_resolves_to_none():
 def test_resolve_delivery_targets_combines_with_platform_targets():
     """bot-chat rides the same comma-separated deliver string as explicit
     platform targets."""
-    job = {"id": "j1", "deliver": "bot-chat,telegram:-100123"}
+    job = {"id": "j1", "deliver": "bot-chat,discord:-100123"}
     with mock.patch.object(sched_delivery, "_is_known_delivery_platform", return_value=True), \
          mock.patch.object(sched_delivery, "_resolve_origin", return_value=None):
         targets = _resolve_delivery_targets(job)
     platforms = {t["platform"] for t in targets}
     assert BOT_CHAT_PLATFORM in platforms
-    assert "telegram" in platforms
+    assert "discord" in platforms
 
 
 # ── preflight ────────────────────────────────────────────────────────────────
@@ -111,7 +111,7 @@ def test_create_validation_accepts_bare_and_existing():
 
     assert _validate_bot_chat_deliver("bot-chat") is None
     assert _validate_bot_chat_deliver(None) is None
-    assert _validate_bot_chat_deliver("telegram:-100") is None
+    assert _validate_bot_chat_deliver("discord:-100") is None
     with mock.patch("hermes_cli.profiles.profile_exists", return_value=True):
         assert _validate_bot_chat_deliver("bot-chat:research") is None
 

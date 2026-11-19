@@ -16,9 +16,8 @@ import pytest
 
 from agent.agent_runtime_helpers import _requeue_pending_steer
 from agent.client_lifecycle import ClientLifecycleMixin
-from agent.interrupt_control import InterruptControlMixin
-from agent.session_persistence import SessionPersistenceMixin
 from agent.stream_delivery import StreamDeliveryMixin
+from run_agent import AIAgent
 from gateway.run_agent_cache import GatewayAgentCacheMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
 
@@ -73,7 +72,7 @@ def test_requeue_pending_steer_unlocked_stub_fallback():
     ],
 )
 def test_interrupt_control_slot_reads_fail_loud_only_under_lock(method, lock_attr, slot):
-    fn = getattr(InterruptControlMixin, method)
+    fn = getattr(AIAgent, method)
     call = (lambda a: fn(a, "new")) if method == "steer" else fn
 
     locked = _Bare()
@@ -92,9 +91,9 @@ def test_steer_and_drain_roundtrip_with_lock():
     agent = _Bare()
     agent._pending_steer_lock = threading.Lock()
     agent._pending_steer = None
-    assert InterruptControlMixin.steer(agent, "a")
-    assert InterruptControlMixin.steer(agent, "b")
-    assert InterruptControlMixin._drain_pending_steer(agent) == "a\nb"
+    assert AIAgent.steer(agent, "a")
+    assert AIAgent.steer(agent, "b")
+    assert AIAgent._drain_pending_steer(agent) == "a\nb"
     assert agent._pending_steer is None
 
 
@@ -108,11 +107,11 @@ def test_flush_messages_uses_lock_when_present_and_runs_unlocked_for_stubs():
 
     locked = P()
     locked._session_persist_lock = _RecLock()
-    assert SessionPersistenceMixin._flush_messages_to_session_db(locked, [{"role": "user"}]) == ("called", 1)
+    assert AIAgent._flush_messages_to_session_db(locked, [{"role": "user"}]) == ("called", 1)
     assert locked._session_persist_lock.entered == 1
 
     stub = P()
-    assert SessionPersistenceMixin._flush_messages_to_session_db(stub, [{"role": "user"}]) == ("called", 1)
+    assert AIAgent._flush_messages_to_session_db(stub, [{"role": "user"}]) == ("called", 1)
 
 
 # ---------------------------------------------------------------- stream writer

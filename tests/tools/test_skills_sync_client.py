@@ -3,7 +3,7 @@
 Covers, against the frozen contract (~/src/specs/collective-wisdom/
 the sync wire contract):
   * content addressing (full 64-hex) + canonical JSON (§2.1, §2.5)
-  * the access gate (Nous admin) making sync inert
+  * the access gate (sync-admin claim) making sync inert
   * the M1-D opt-in default (nothing syncs without the sync flag)
   * object building (blob/tree/commit, exec mode, size limit)
   * push (upload + CAS), pull (materialize), and the three-way merge / 409
@@ -298,69 +298,47 @@ class TestAddressing:
 
 
 # ---------------------------------------------------------------------------
-# Access gate (Nous admin) + per-skill opt-in
+# Access gate (sync admin claim) + per-skill opt-in
 # ---------------------------------------------------------------------------
 
 class TestDevGate:
     def test_gate_open_with_claim(self, monkeypatch):
         token = _jwt({"sub": "user1", "tool_gateway_admin": True})
-        monkeypatch.setattr(
-            ssc, "resolve_nous_runtime_credentials",
-            lambda **kw: {"api_key": token, "base_url": "https://x"}, raising=False,
-        )
         # patch the lazily-imported symbol used inside resolve_identity
-        import hermes_cli.auth as auth_mod
-        import hermes_cli.auth_nous as auth_nous
-        monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
-                            lambda **kw: {"api_key": token, "base_url": "https://x"})
-        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials",
-                            lambda **kw: {"api_key": token, "base_url": "https://x"})
+        import tools.managed_tool_gateway as mtg
+        monkeypatch.setattr(mtg, "read_gateway_user_token", lambda: token)
         ident = ssc.resolve_identity()
-        assert ident["nous_admin"] is True
+        assert ident["sync_admin"] is True
         assert ident["owner"] == "user1"
 
     def test_gate_closed_without_claim(self, monkeypatch):
         token = _jwt({"sub": "user1"})  # no tool_gateway_admin
-        import hermes_cli.auth as auth_mod
-        import hermes_cli.auth_nous as auth_nous
-        monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
-                            lambda **kw: {"api_key": token, "base_url": "https://x"})
-        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials",
-                            lambda **kw: {"api_key": token, "base_url": "https://x"})
+        import tools.managed_tool_gateway as mtg
+        monkeypatch.setattr(mtg, "read_gateway_user_token", lambda: token)
         ident = ssc.resolve_identity()
-        assert ident["nous_admin"] is False
+        assert ident["sync_admin"] is False
 
     def test_gate_closed_when_claim_false(self, monkeypatch):
         token = _jwt({"sub": "u", "tool_gateway_admin": False})
-        import hermes_cli.auth as auth_mod
-        import hermes_cli.auth_nous as auth_nous
-        monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
-                            lambda **kw: {"api_key": token, "base_url": "https://x"})
-        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials",
-                            lambda **kw: {"api_key": token, "base_url": "https://x"})
-        assert ssc.resolve_identity()["nous_admin"] is False
+        import tools.managed_tool_gateway as mtg
+        monkeypatch.setattr(mtg, "read_gateway_user_token", lambda: token)
+        assert ssc.resolve_identity()["sync_admin"] is False
 
     def test_maybe_push_inert_when_gate_closed(self, monkeypatch):
         token = _jwt({"sub": "u"})
-        import hermes_cli.auth as auth_mod
-        import hermes_cli.auth_nous as auth_nous
-        monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
-                            lambda **kw: {"api_key": token})
-        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials",
-                            lambda **kw: {"api_key": token})
+        import tools.managed_tool_gateway as mtg
+        monkeypatch.setattr(mtg, "read_gateway_user_token", lambda: token)
         monkeypatch.setattr(ssc, "resolve_sync_base_url", lambda: "http://x")
         # gate closed -> None (inert), never attempts a push
         assert ssc.maybe_push_skills() is None
 
     def test_maybe_pull_inert_when_not_logged_in(self, monkeypatch):
-        import hermes_cli.auth as auth_mod
-        import hermes_cli.auth_nous as auth_nous
+        import tools.managed_tool_gateway as mtg
 
-        def _raise(**kw):
+        def _raise():
             raise RuntimeError("not logged in")
 
-        monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials", _raise)
-        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials", _raise)
+        monkeypatch.setattr(mtg, "read_gateway_user_token", _raise)
         assert ssc.maybe_pull_skills() is None
 
 
@@ -369,6 +347,7 @@ class TestDevGate:
 # ---------------------------------------------------------------------------
 
 class TestObjectBuilding:
+    @pytest.mark.platforms("linux")
     def test_build_tree_blob_and_exec(self, tmp_path):
         d = tmp_path / "skill"
         d.mkdir()
@@ -500,7 +479,7 @@ def synced_env(tmp_path, monkeypatch):
 
     token = _jwt({"sub": "owner1", "tool_gateway_admin": True})
     identity = {"api_key": token, "base_url": "http://x", "owner": "owner1",
-                "nous_admin": True, "claims": {}}
+                "sync_admin": True, "claims": {}}
     return home, skills, identity
 
 
@@ -885,7 +864,7 @@ def _org_identity(role=None, org_id="org-1", owner="owner1"):
         claims["org_role"] = role
     token = _jwt(claims)
     return {"api_key": token, "base_url": "http://x", "owner": owner,
-            "nous_admin": True, "claims": claims,
+            "sync_admin": True, "claims": claims,
             **({"org_id": org_id, "org_role": role} if role else {})}
 
 
@@ -893,23 +872,15 @@ class TestOrgIdentityGate:
     def test_org_identity_requires_role_claim(self, monkeypatch):
         # Personal org: NAS stamps NO org_role -> inert, not an error path.
         token = _jwt({"sub": "u", "org_id": "org-1"})
-        import hermes_cli.auth as auth_mod
-        import hermes_cli.auth_nous as auth_nous
-        monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
-                            lambda **kw: {"api_key": token, "base_url": "https://x"})
-        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials",
-                            lambda **kw: {"api_key": token, "base_url": "https://x"})
+        import tools.managed_tool_gateway as mtg
+        monkeypatch.setattr(mtg, "read_gateway_user_token", lambda: token)
         with pytest.raises(ssc.SyncInertError):
             ssc.resolve_org_identity()
 
     def test_org_identity_with_role(self, monkeypatch):
         token = _jwt({"sub": "u", "org_id": "org-9", "org_role": "MEMBER"})
-        import hermes_cli.auth as auth_mod
-        import hermes_cli.auth_nous as auth_nous
-        monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
-                            lambda **kw: {"api_key": token, "base_url": "https://x"})
-        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials",
-                            lambda **kw: {"api_key": token, "base_url": "https://x"})
+        import tools.managed_tool_gateway as mtg
+        monkeypatch.setattr(mtg, "read_gateway_user_token", lambda: token)
         ident = ssc.resolve_org_identity()
         assert ident["org_id"] == "org-9"
         assert ident["org_role"] == "MEMBER"
@@ -1025,12 +996,8 @@ class TestOrgEndToEnd:
     def test_maybe_pull_org_inert_without_role(self, monkeypatch):
         # Personal org: no org_role claim -> None, never raises.
         token = _jwt({"sub": "u", "org_id": "org-1"})
-        import hermes_cli.auth as auth_mod
-        import hermes_cli.auth_nous as auth_nous
-        monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
-                            lambda **kw: {"api_key": token})
-        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials",
-                            lambda **kw: {"api_key": token})
+        import tools.managed_tool_gateway as mtg
+        monkeypatch.setattr(mtg, "read_gateway_user_token", lambda: token)
         assert org.maybe_pull_org_skills() is None
 
 

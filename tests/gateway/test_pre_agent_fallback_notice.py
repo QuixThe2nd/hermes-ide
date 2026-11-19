@@ -13,6 +13,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import gateway.run as gateway_run
+from gateway.run_turn import GatewayTurnMixin
+from gateway.run_turn_runner import TurnRunner
 from gateway.session import Platform, SessionSource
 from gateway.turn_context import TurnContext
 from hermes_cli.auth import AuthError
@@ -73,8 +75,9 @@ def _runner_with_real_runtime_resolution():
     runner._extract_cache_busting_config.return_value = {}
     runner._refresh_fallback_model.return_value = None
     # Production resolution: the real GatewayRunner method on a stubbed runner,
-    # with the /model-override and channel-override lookups empty.
-    runner._resolve_session_key_or_none.return_value = "test-session-key"
+    # with the /model-override and channel-override lookups empty. The real
+    # resolver derives the key via ``_session_key_for_source``.
+    runner._session_key_for_source.return_value = "test-session-key"
     runner._rehydrate_session_model_override.return_value = None
     runner._peek_session_state.return_value = None
     runner._sessions_map.return_value = {}
@@ -107,6 +110,7 @@ def test_credential_resolution_fallback_reaches_agent_notice_not_agent_kwargs():
         _run_still_current=lambda: True,
         _hooks_ref=SimpleNamespace(loaded_hooks=False),
     )
+    fb = {"provider": "anthropic", "model": "claude-sonnet-5", "api_key": "k"}
     def primary_auth_fails(**kw):
         if kw.get("requested") is None:  # the primary, resolved from config.yaml
             raise AuthError("expired")

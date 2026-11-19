@@ -295,8 +295,8 @@ def _sync_status(ssc) -> int:
     elif status.get("logged_in"):
         _err("\nOrg skills: not applicable — this account isn't a member of a shared organisation.")
     if not status.get("logged_in"):
-        _err("\nNot logged into Nous Portal — sync is inert.")
-    elif not status.get("nous_admin"):
+        _err("\nNo tool-gateway user token is configured — sync is inert.")
+    elif not status.get("sync_admin"):
         _err("\nSync is not enabled for your account yet.")
     elif not status.get("feature_enabled"):
         _err("\nSync feature is off for this instance (set HERMES_SYNC_ENABLED=1 "
@@ -358,7 +358,7 @@ def cmd_sync(args):
     except ssc.SyncInertError as e:
         _err(f"sync inert: {e}")
         return 1
-    if not identity.get("nous_admin"):
+    if not identity.get("sync_admin"):
         _err("sync unavailable: not enabled for your account yet.")
         return 1
     if not ssc.resolve_sync_base_url():
@@ -378,26 +378,3 @@ def cmd_sync(args):
     return 0
 
 
-def cmd_slack(args):
-    """``hermes slack <subcommand>``; ``manifest`` prints or writes a Slack app manifest with
-    every gateway command registered as a first-class slash."""
-    sub = getattr(args, "slack_command", None)
-    if sub in {None, ""}:
-        _err("usage: hermes slack <subcommand>\n"
-             "\n"
-             "subcommands:\n"
-             "  manifest   Generate a Slack app manifest with every gateway\n"
-             "             command registered as a native slash\n"
-             "\n"
-             "Run `hermes slack manifest -h` for details.")
-        return 1
-
-    if sub == "manifest":
-        from hermes_cli.slack_cli import slack_manifest_command
-        status = slack_manifest_command(args)
-        if status:
-            raise SystemExit(status)
-        return status
-
-    _err(f"Unknown slack subcommand: {sub}")
-    return 1

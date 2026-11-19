@@ -2,9 +2,9 @@
 
 The bug class: one relay adapter fronts N platforms on one WS, but the
 capability surface (``MAX_MESSAGE_LENGTH`` / ``message_len_fn``) was a SCALAR
-from whichever descriptor resolved the handshake — so a Discord chat on a
-gateway whose primary identity was Telegram inherited Telegram's 4,096-char
-cap and over-sent into Discord's 2,000-char API 400 (observed live: 2,543 and
+from whichever descriptor resolved the handshake — so a Discord chat on
+a gateway whose primary advertised a 4,096-char cap inherited it and
+over-sent into Discord's 2,000-char API 400 (observed live: 2,543 and
 2,641-char sends rejected).
 
 Covers:
@@ -50,7 +50,7 @@ def _descriptor(platform: str, max_len: int, len_unit: str = "chars") -> Capabil
 
 
 DISCORD = _descriptor("discord", 2000)
-TELEGRAM = _descriptor("telegram", 4096, len_unit="utf16")
+MATRIX = _descriptor("matrix", 4096, len_unit="utf16")
 
 
 class MultiDescriptorStub(StubConnector):
@@ -84,9 +84,9 @@ def _make_transport():
 
     return WebSocketRelayTransport(
         "wss://connector.example/relay",
-        "telegram",
+        "matrix",
         "bot-9",
-        identities=[("telegram", "bot-9"), ("discord", "app-1")],
+        identities=[("matrix", "bot-9"), ("discord", "app-1")],
     )
 
 
@@ -131,24 +131,24 @@ async def test_transport_descriptor_map_resets_on_redial(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_adapter_resolves_per_chat_limits_from_inbound_platform():
-    """The live bug shape: primary identity Telegram (4096), a Discord chat on
-    the same adapter must get Discord's 2000 — not Telegram's scalar."""
-    stub = MultiDescriptorStub(TELEGRAM, DISCORD)
-    stub._identities = [("telegram", "bot-9"), ("discord", "app-1")]
-    adapter = RelayAdapter(PlatformConfig(), TELEGRAM, transport=stub)
+    """The live bug shape: primary identity Matrix (4096), a Discord chat on
+    the same adapter must get Discord's 2000 — not the primary's scalar."""
+    stub = MultiDescriptorStub(MATRIX, DISCORD)
+    stub._identities = [("matrix", "bot-9"), ("discord", "app-1")]
+    adapter = RelayAdapter(PlatformConfig(), MATRIX, transport=stub)
     await adapter.connect()
 
     await _push(stub, Platform.DISCORD, "dc-1")
-    await _push(stub, Platform.TELEGRAM, "tg-1")
+    await _push(stub, Platform.MATRIX, "mx-1")
 
     # Scalar surface still the primary's (back-compat).
     assert adapter.MAX_MESSAGE_LENGTH == 4096
     # Per-chat: each chat resolves its own platform's cap.
     assert adapter.max_message_length_for_chat("dc-1") == 2000
-    assert adapter.max_message_length_for_chat("tg-1") == 4096
-    # Length unit follows the chat too: Telegram utf16, Discord codepoints.
+    assert adapter.max_message_length_for_chat("mx-1") == 4096
+    # Length unit follows the chat too: Matrix utf16, Discord codepoints.
     surrogate = "\U0001f600"  # 2 UTF-16 units, 1 codepoint
-    assert adapter.message_len_fn_for_chat("tg-1")(surrogate) == 2
+    assert adapter.message_len_fn_for_chat("mx-1")(surrogate) == 2
     assert adapter.message_len_fn_for_chat("dc-1")(surrogate) == 1
 
 

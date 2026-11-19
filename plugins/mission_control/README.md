@@ -214,8 +214,8 @@ off entirely, e.g. for proof servers against synthetic data.
 - **Lineage is evidence-based.** A session becomes a Sub-agents child
   only on concrete evidence: a durable research-job artifact whose
   prompt bytes and time window match a session whose own source marks
-  a non-human worker, or a terminal launch recording the child's
-  session id. A human-facing session (CLI, API, Discord, Telegram, …)
+  a non-human worker, or a terminal launch recording the child's session id.
+  A human-facing session (CLI, API, Discord, …)
   keeps its inbox row even when its prompt and start time happen to
   match a job.
 - Deployment guidance is intentionally generic: any "run this on a

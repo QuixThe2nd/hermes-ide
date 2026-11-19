@@ -91,34 +91,24 @@ def _wait_or_kill(process: Any) -> None:
 
 
 class _EmbeddedCuaDaemon:
-    """Private daemon for a non-standard permission mode. cua-driver's permission mode is immutable after daemon
-    startup, so reusing the machine-wide daemon would let one Hermes session's YOLO choice affect another. A
-    private daemon gives the session its own socket, runtime and launch-time authorization; on macOS it is
-    launched through CuaDriver.app so TCC stays attached to ``com.trycua.driver``. ``unrestricted`` = explicit
-    Hermes YOLO (``--dangerously-bypass-approvals``); ``bounded`` = a user-reviewed capability manifest approved
-    at launch is the authorization boundary, not a runtime prompt. The manifest is a ceiling, not a mode: it "can
-    narrow a profile but never widen it", so a configured v3 manifest is forwarded even for ``unrestricted``
-    (bounding an approval-bypassed run). Mandatory for ``bounded``, optional everywhere else."""
+    """Private daemon for manifest-bounded desktop control. cua-driver's permission mode is immutable after daemon
+    startup, so reusing the machine-wide daemon would mix authorization boundaries between Hermes sessions. On macOS
+    it is launched through CuaDriver.app so TCC stays attached to ``com.trycua.driver``. The capability manifest is
+    mandatory and remains the authorization ceiling."""
 
     _START_TIMEOUT_SECONDS = 15.0
 
     def __init__(self, driver_cmd: str, permission_mode: str, capability_manifest: Optional[str] = None) -> None:
-        if permission_mode not in {"unrestricted", "bounded"}:
-            raise ValueError("embedded permission override supports unrestricted or bounded only")
+        if permission_mode != "bounded":
+            raise ValueError("embedded permission override supports bounded mode only")
         manifest = str(capability_manifest or "").strip()
-        if not manifest and permission_mode == "bounded":
+        if not manifest:
             raise ValueError("bounded permission mode requires computer_use.capability_manifest")
-        manifest = os.path.abspath(os.path.expanduser(manifest)) if manifest else ""
-        if manifest and not os.path.isfile(manifest):
+        manifest = os.path.abspath(os.path.expanduser(manifest))
+        if not os.path.isfile(manifest):
             raise ValueError(f"capability manifest not found: {manifest}")
-        self.capability_manifest: Optional[str] = manifest or None
-        # bounded always forwards (driver validates it); other modes accept only v3 — a legacy manifest aborts startup.
-        self.manifest_applies = bool(manifest) and (
-            permission_mode == "bounded" or _cb()._manifest_is_mode_independent(manifest))
-        if manifest and not self.manifest_applies:
-            logger.warning("computer_use.capability_manifest is a legacy (v1/v2) manifest, which cua-driver only accepts in "
-                           "bounded mode — it will NOT bound this %s session. Migrate the manifest to version 3 to keep a "
-                           "ceiling on approval-bypassed runs.", permission_mode)
+        self.capability_manifest: Optional[str] = manifest
+        self.manifest_applies = True
         self.permission_mode, self._driver_cmd, self._command = permission_mode, driver_cmd, driver_cmd
         self._mcp_args: List[str] = list(_driver._CUA_DRIVER_ARGS)
         self._process: Any = None
@@ -129,10 +119,7 @@ class _EmbeddedCuaDaemon:
                             else os.path.join(tempfile.gettempdir(), f"hc-{token}.sock"))
 
     def child_env(self) -> Dict[str, str]:
-        env = {**_cb().cua_driver_child_env(), "CUA_DRIVER_PERMISSION_MODE": self.permission_mode}
-        if self.permission_mode == "unrestricted":
-            env["CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS"] = "1"
-        return env
+        return {**_cb().cua_driver_child_env(), "CUA_DRIVER_PERMISSION_MODE": self.permission_mode}
 
     def _sanitized_env(self) -> Dict[str, str]:
         from tools.environments.local import _sanitize_subprocess_env
@@ -148,7 +135,7 @@ class _EmbeddedCuaDaemon:
 
     def _serve_args(self) -> List[str]:
         serve_args = ["serve", "--embedded", "--socket", self.socket_path, "--no-permissions-gate", "--permission-mode",
-                      self.permission_mode, *(["--dangerously-bypass-approvals"] if self.permission_mode == "unrestricted" else [])]
+                      self.permission_mode]
         if self.manifest_applies:
             serve_args += ["--capability-manifest", str(self.capability_manifest), "--approve-capability-manifest"]
         # The private daemon owns the cursor overlay, so the overlay policy must apply to this long-lived serve

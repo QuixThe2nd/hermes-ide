@@ -86,7 +86,7 @@ async def test_reload_mcp_only_touches_requesting_profile(
     event = MessageEvent(
         text="/reload-mcp", message_id="m1",
         source=SessionSource(
-            platform=Platform.TELEGRAM, user_id="u1", chat_id="c1",
+            platform=Platform.DISCORD, user_id="u1", chat_id="c1",
             chat_type="dm", profile="worker",
         ),
     )
@@ -138,7 +138,7 @@ async def test_reload_mcp_formats_scoped_connection_keys_before_refreshing_cache
     event = MessageEvent(
         text="/reload-mcp", message_id="m1",
         source=SessionSource(
-            platform=Platform.TELEGRAM, user_id="u1", chat_id="c1",
+            platform=Platform.DISCORD, user_id="u1", chat_id="c1",
             chat_type="dm", profile="worker",
         ),
     )
@@ -195,7 +195,7 @@ async def test_reload_mcp_reports_a_shared_server_to_a_non_owner_profile(
     event = MessageEvent(
         text="/reload-mcp", message_id="m1",
         source=SessionSource(
-            platform=Platform.TELEGRAM, user_id="u1", chat_id="c1",
+            platform=Platform.DISCORD, user_id="u1", chat_id="c1",
             chat_type="dm", profile="worker",
         ),
     )
@@ -350,7 +350,8 @@ def test_deregister_scope_kwarg_targets_overlay_and_keeps_plugin_confinement() -
     assert reg.snapshot_registration("mcp__s__t", scope="/home/p1") is None
 
     # A plugin module may not name another profile's overlay.
-    reg._plugin_module_scopes["hermes_plugins.p"] = {"/home/p1"}
+    from hermes_constants import hermes_home_key
+    reg._plugin_module_scopes["hermes_plugins.p"] = {hermes_home_key("/home/p1")}
     reg._caller_module = staticmethod(lambda: "hermes_plugins.p")
     with pytest.raises(PermissionError):
         reg.deregister("anything", scope="/home/p2")

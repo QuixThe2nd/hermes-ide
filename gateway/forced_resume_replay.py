@@ -5,16 +5,16 @@ or shutdown (``restart_timeout`` / ``shutdown_timeout``), a crash
 (``restart_interrupted``), or any legacy/generic marker — used to resume
 with an LLM-visible ``[System note: The previous turn was interrupted by
 a gateway restart ...]`` wrapper.  The model then narrated the outage
-("the advisory call died") instead of simply finishing the turn.  Only
-sessions that accepted ``COOPERATIVE_RESTART_STEER`` should ever see
-restart guidance; a genuinely interrupted victim resumes as if the
-process had stayed alive.
+("the advisory call died") instead of simply finishing the turn.  A
+genuinely interrupted victim resumes as if the process had stayed alive;
+only the idle ``/restart`` requester's synthesized comeback turn (which
+interrupted nothing) takes the note path.
 
 This module owns the pieces of that transparent resume:
 
-* :func:`is_forced_interruption_reason` — recovery classification.
-  Cooperative restarts keep the existing safe-pause guidance; every other
-  reason recovers below the LLM boundary.
+* :func:`is_forced_interruption_reason` — recovery classification: every
+  reason except the requester's idle-comeback marker recovers below the
+  LLM boundary.
 * :func:`build_victim_replay_plan` — locate the FINAL interrupted
   assistant tool batch in the raw transcript and split its calls into
   completed (leave untouched), replayable (re-run through the normal
@@ -66,7 +66,7 @@ from agent.message_sanitization import (
 from agent.replay_cleanup import is_interrupted_tool_result
 from agent.tool_dispatch_helpers import make_tool_result_message
 from agent.tool_result_classification import tool_may_have_side_effect
-from gateway.restart_wind_down import is_cooperative_restart_reason
+from gateway.run_resume_reasons import RESTART_REQUESTER_RESUME_REASON
 
 logger = logging.getLogger(__name__)
 
@@ -77,14 +77,15 @@ GATEWAY_LIFECYCLE_TOOL_NAMES = frozenset({"restart"})
 
 
 def is_forced_interruption_reason(reason: Optional[str]) -> bool:
-    """True for every recovery reason that is NOT a cooperative park.
+    """True for every recovery reason that is a forced mid-turn bounce.
 
-    ``cooperative_restart`` sessions asked to wind down and expect the
-    safe-pause guidance; ``restart_timeout`` / ``shutdown_timeout`` /
-    ``restart_interrupted`` / anything else (including None and legacy
-    markers) are victims of a bounce they did not accept.
+    ``restart_timeout`` / ``shutdown_timeout`` / ``restart_interrupted`` /
+    anything else (including None and legacy markers) are victims of a
+    bounce they did not accept.  The one exception is the idle ``/restart``
+    requester's comeback marker: that session interrupted nothing, so its
+    synthesized turn takes the restore-note path instead of the replay.
     """
-    return not is_cooperative_restart_reason(reason)
+    return reason != RESTART_REQUESTER_RESUME_REASON
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -105,31 +106,6 @@ def _arguments_dict(arguments: Any) -> Optional[dict]:
     return None
 
 
-def resolve_replay_call_target(name: str, arguments: Any) -> Tuple[str, Any]:
-    """Resolve a deferred ``tool_call`` bridge wrapper to its underlying call.
-
-    Returns ``(name, arguments)`` unchanged for every non-bridge call and
-    for a wrapper that does not parse — classification then judges the
-    wrapper as-is instead of guessing.  Deliberately NOT
-    ``tools.tool_search.resolve_underlying_call``: that helper enforces the
-    config-curated deferrable set, and lifecycle classification must not
-    depend on which tools defer-eligibility currently allows — a wrapper
-    naming ``restart`` is a lifecycle request whatever the defer config
-    says.  This is classification only; the dispatcher still executes the
-    original wrapper call as-is.
-    """
-    if name != "tool_call":
-        return name, arguments
-    raw = _arguments_dict(arguments) or {}
-    underlying = raw.get("name")
-    if not isinstance(underlying, str) or not underlying.strip():
-        return name, arguments
-    underlying_args: Any = raw.get("arguments")
-    if isinstance(underlying_args, str):
-        underlying_args = _arguments_dict(underlying_args)
-    return underlying.strip(), underlying_args if underlying_args is not None else {}
-
-
 def is_lifecycle_replay_request(name: str, arguments: Any) -> bool:
     """True when re-running this exact call could re-trigger the bounce.
 
@@ -137,7 +113,6 @@ def is_lifecycle_replay_request(name: str, arguments: Any) -> bool:
     call is not replayed:
 
     * the gateway ``restart`` tool (the agent-side lifecycle request), or
-      a deferred bridge wrapping it;
     * a shell command targeting the gateway's own lifecycle
       (``hermes gateway restart``, ``systemctl restart hermes-gateway``,
       ``launchctl``/``pkill`` variants) — detected with the same
@@ -156,11 +131,10 @@ def is_lifecycle_replay_request(name: str, arguments: Any) -> bool:
     trying to fix the last one.  Calls without a command have nothing to
     classify and stay replayable.
     """
-    resolved_name, resolved_args = resolve_replay_call_target(name, arguments)
-    if resolved_name in GATEWAY_LIFECYCLE_TOOL_NAMES:
+    if name in GATEWAY_LIFECYCLE_TOOL_NAMES:
         return True
     command = None
-    args = _arguments_dict(resolved_args)
+    args = _arguments_dict(arguments)
     if args is not None and isinstance(args.get("command"), str):
         command = args["command"]
     if not command:

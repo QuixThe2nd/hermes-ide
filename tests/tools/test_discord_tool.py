@@ -12,6 +12,7 @@ from tools.discord_tool import (
     _ACTIONS,
     _ADMIN_ACTIONS,
     _CORE_ACTIONS,
+    _build_schema,
     _available_actions,
     _channel_type_name,
     _detect_capabilities,
@@ -284,16 +285,16 @@ class TestMessageSummary:
             "author": {"id": "99", "username": "bot", "global_name": "Bot", "bot": True},
             "embeds": [
                 {
-                    "title": "Cursor Cloud Agent",
+                    "title": "Agent Progress",
                     "description": "Agent is running",
-                    "url": "https://cursor.com/agents/bc-x",
+                    "url": "https://example.com/agents/bc-x",
                 },
             ],
         }
         summary = _message_summary(msg)
         assert len(summary["embeds"]) == 1
-        assert summary["embeds"][0]["title"] == "Cursor Cloud Agent"
-        assert summary["embeds"][0]["url"] == "https://cursor.com/agents/bc-x"
+        assert summary["embeds"][0]["title"] == "Agent Progress"
+        assert summary["embeds"][0]["url"] == "https://example.com/agents/bc-x"
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +369,64 @@ class TestRegistration:
         """Core + admin actions should cover all known actions."""
         assert set(_CORE_ACTIONS.keys()) | set(_ADMIN_ACTIONS.keys()) == set(_ACTIONS.keys())
         assert set(_CORE_ACTIONS.keys()) & set(_ADMIN_ACTIONS.keys()) == set()
+
+    def test_schema_includes_optional_description_not_required(self):
+        from tools.registry import registry
+
+        _DESC_SUBSTR = "One short phrase (max ~80 chars) saying WHY you are calling this"
+
+        for tool_name in ("discord", "discord_admin"):
+            entry = registry.get_entry(tool_name)
+            params = entry.schema["parameters"]
+            props = params["properties"]
+            assert "description" in props
+            assert _DESC_SUBSTR in props["description"]["description"]
+            assert "description" not in params.get("required", [])
+
+            built = _build_schema(
+                list(_CORE_ACTIONS.keys() if tool_name == "discord" else _ADMIN_ACTIONS.keys()),
+                caps={"detected": False},
+                tool_name=tool_name,
+            )
+            assert built is not None
+            bprops = built["parameters"]["properties"]
+            assert "description" in bprops
+            assert _DESC_SUBSTR in bprops["description"]["description"]
+            assert "description" not in built["parameters"].get("required", [])
+
+
+class TestDiscordHandlerIgnoresDescriptionKwarg:
+    """Progress-only ``description`` must not reach action implementations."""
+
+    @patch("tools.discord_tool._discord_request")
+    def test_registry_handler_drops_description_before_action(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        captured = {}
+
+        def spy_fetch(token, **kwargs):
+            captured["kwargs"] = kwargs
+            return json.dumps({"messages": [], "count": 0})
+
+        orig = _CORE_ACTIONS["fetch_messages"]
+        _CORE_ACTIONS["fetch_messages"] = spy_fetch
+
+        from tools.registry import registry
+
+        try:
+            entry = registry.get_entry("discord")
+            result = entry.handler(
+                {
+                    "action": "fetch_messages",
+                    "channel_id": "11",
+                    "description": "progress only",
+                },
+                task_id=None,
+            )
+            out = json.loads(result)
+            assert "error" not in out
+            assert "description" not in captured.get("kwargs", {})
+        finally:
+            _CORE_ACTIONS["fetch_messages"] = orig
 
 
 # ---------------------------------------------------------------------------
@@ -535,10 +594,10 @@ class TestConfigAllowlist:
 
         ``AIAgent(quiet_mode=True)`` globally sets ``tools`` and
         ``tools.*`` children to ``ERROR`` (see run_agent.py quiet_mode
-        block).  xdist workers are persistent, so a streaming test on the
-        same worker will silence WARNING-level logs from
+        block).  A persistent test process keeps that setting, so a
+        streaming test will silence WARNING-level logs from
         ``tools.discord_tool`` for every test that follows.  Reset here so
-        ``caplog`` can capture warnings regardless of worker history.
+        ``caplog`` can capture warnings regardless of earlier tests.
         """
         import logging as _logging
         _prev_tools = _logging.getLogger("tools").level
@@ -763,11 +822,7 @@ class TestModelToolsIntegration:
         mock_req.return_value = {"flags": 0}
 
         from model_tools import get_tool_definitions
-        # skip_tool_search_assembly: this test exercises the dynamic schema
-        # rebuild; under tiered disclosure the discord tools defer behind the
-        # bridge, but the rebuilt schema is what tool_describe serves.
-        tools = get_tool_definitions(enabled_toolsets=["hermes-discord"], quiet_mode=True,
-                                     skip_tool_search_assembly=True)
+        tools = get_tool_definitions(enabled_toolsets=["hermes-discord"], quiet_mode=True)
         discord_admin_tool = next(
             (t for t in tools if t.get("function", {}).get("name") == "discord_admin"),
             None,

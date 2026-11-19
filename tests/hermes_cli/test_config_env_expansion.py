@@ -28,15 +28,15 @@ class TestLoadConfigExpansion:
             "model:\n"
             "  api_key: ${GOOGLE_API_KEY}\n"
             "platforms:\n"
-            "  telegram:\n"
-            "    token: ${TELEGRAM_BOT_TOKEN}\n"
+            "  discord:\n"
+            "    token: ${DISCORD_BOT_TOKEN}\n"
             "plain: no-substitution\n"
         )
         config_file = tmp_path / "config.yaml"
         config_file.write_text(config_yaml)
 
         monkeypatch.setenv("GOOGLE_API_KEY", "gsk-test-key")
-        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "1234567:ABC-token")
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "1234567:ABC-token")
         # Patch the imported function's own globals. Other tests may reload
         # hermes_cli.config, making string-target monkeypatches hit a different
         # module object than this collection-time imported load_config().
@@ -45,7 +45,7 @@ class TestLoadConfigExpansion:
         config = load_config()
 
         assert config["model"]["api_key"] == "gsk-test-key"
-        assert config["platforms"]["telegram"]["token"] == "1234567:ABC-token"
+        assert config["platforms"]["discord"]["token"] == "1234567:ABC-token"
         assert config["plain"] == "no-substitution"
 
 

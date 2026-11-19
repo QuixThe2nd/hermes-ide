@@ -32,7 +32,6 @@ class CapabilityDescriptor:
     len_unit: str  # "chars" | "utf16"
     emoji: str = "\U0001f50c"  # 🔌 (matches PlatformEntry default)
     platform_hint: str = ""
-    pii_safe: bool = False
     # Optional bits default False/empty so an older connector that never sends
     # them reads as "not supported" — additive within contract_version 1
     # (from_json drops unknown keys, so newer connectors are safe against older gateways).

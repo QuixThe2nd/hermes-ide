@@ -29,7 +29,7 @@ _VENDOR_PREFIXES: dict[str, str] = {
 
 # Providers whose APIs consume vendor/model slugs.
 _AGGREGATOR_PROVIDERS: frozenset[str] = frozenset({
-    "openrouter", "nous", "ai-gateway", "kilocode"})
+    "openrouter", "ai-gateway", "kilocode"})
 
 # Providers that want bare names with dots replaced by hyphens.
 _DOT_TO_HYPHEN_PROVIDERS: frozenset[str] = frozenset({

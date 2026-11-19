@@ -432,10 +432,10 @@ def test_tool_update_rejects_the_2026_08_03_destructive_shape(hermes_env):
     from cron.jobs import create_job, get_job
 
     job = create_job(
-        prompt="Check for agent-browser updates with a 14-day safety buffer.",
+        prompt="Check for Camofox updates with a 14-day safety buffer.",
         schedule="0 10 * * *",
-        name="agent-browser safe auto-update",
-        skills=["agent-browser"],
+        name="Camofox safe auto-update",
+        skills=["camofox"],
         deliver="local",
     )
     before = dict(get_job(job["id"]))

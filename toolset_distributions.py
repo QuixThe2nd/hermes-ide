@@ -31,7 +31,7 @@ DISTRIBUTIONS = {
     "reasoning": _dist("Heavy research/reasoning distribution with minimal other tools", web=90, file=60, terminal=20),
     "browser_use": _dist("Full browser-based web interaction with search, vision, and page control", browser=100, web=80, vision=70),
     "browser_only": _dist("Only browser automation tools for pure web interaction tasks", browser=100),
-    # browser-use-tasks.jsonl: one grouped roll keeps web_search (for finding URLs) coupled to browser
+    # Browser task dataset: one grouped roll keeps web_search (for finding URLs) coupled to browser
     # at the original 97% now that `browser` no longer bundles it (#64503).
     "browser_tasks": _dist(
         "Browser-focused distribution with web_search for finding URLs (Google blocks direct browser searches)",

@@ -1,9 +1,9 @@
 """Exit watchdog: arm on shutdown *intent* (signal), never at chat startup.
 
-Regression coverage for the #65998 class: a ``hermes --tui`` process whose
-main thread wedges before ``app.run()`` returns never executes the ``finally``
-that calls ``_run_cleanup`` — the only place the exit watchdog used to be
-armed — so a "dead" CLI lingered indefinitely (observed ~47 min at 4% CPU).
+Regression coverage for the #65998 class: a wedged interactive process whose
+main thread never executes the ``finally`` that calls ``_run_cleanup`` — the
+only place the exit watchdog used to be armed — so a "dead" CLI lingered
+indefinitely (observed ~47 min at 4% CPU).
 
 The fix arms the backstop from the SIGTERM/SIGHUP handlers via
 ``_arm_exit_watchdog_on_shutdown_signal()``. Arming at *startup* (the

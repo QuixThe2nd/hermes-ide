@@ -19,6 +19,9 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
 
     cron_list = cron_subparsers.add_parser("list", help="List scheduled jobs")
     _flag(cron_list, "--all", help="Include disabled jobs")
+    _flag(cron_list, "--json",
+          help="Emit the job list as JSON (same shape as cronjob action=list) "
+               "instead of the human-readable table")
 
     cron_create = cron_subparsers.add_parser(
         "create", aliases=["add"], help="Create a scheduled job")
@@ -27,7 +30,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "prompt", nargs="?", help="Optional self-contained prompt or task instruction")
     cron_create.add_argument("--name", help="Optional human-friendly job name")
     cron_create.add_argument("--deliver",
-        help="Delivery target: origin, local, telegram, discord, signal, "
+        help="Delivery target: origin, local, discord, signal, "
             "platform:chat_id, or bot-chat[:profile] (inject output into a "
             "local profile's canonical Bot Chat as a message the bot responds to)")
     cron_create.add_argument("--failure-deliver", dest="failure_deliver",
@@ -61,14 +64,14 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "instead of a script. Same hash-suppression semantics as "
             "--monitor-script.")
     cron_create.add_argument("--workdir",
-        help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
+        help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
     )
     cron_create.add_argument("--model",
-        help="Pin this job to a specific inference model (user-owned; the "
-            "agent's cronjob tool cannot set this). Omit to follow "
-            "cron.model / model.default from config.yaml.")
+        help="(Deprecated, ignored) Per-job model pins are removed; jobs "
+            "always use the fleet default (cron.model config override > "
+            "global default).")
     cron_create.add_argument("--provider", dest="model_provider",
-        help="Inference provider paired with --model (e.g. 'openrouter', 'nous').")
+        help="(Deprecated, ignored) Kept for script compatibility; see --model.")
     cron_create.add_argument("--reasoning-effort", dest="reasoning_effort",
         help="Pin this job's reasoning (thinking) effort: none, minimal, low, "
             "medium, high, xhigh, max, or ultra. Overrides agent.reasoning_effort "
@@ -127,11 +130,11 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Absolute path for the job to run from (injects AGENTS.md etc. and sets terminal cwd). Pass empty string to clear.",
     )
     cron_edit.add_argument("--model",
-        help="Pin this job to a specific inference model (user-owned; the "
-            "agent's cronjob tool cannot set this). Pass empty string to "
-            "clear the pin and follow cron.model / model.default.")
+        help="(Deprecated, ignored) Per-job model pins are removed; jobs "
+            "always use the fleet default (cron.model config override > "
+            "global default).")
     cron_edit.add_argument("--provider", dest="model_provider",
-        help="Inference provider paired with --model. Pass empty string to clear.")
+        help="(Deprecated, ignored) Kept for script compatibility; see --model.")
     cron_edit.add_argument("--reasoning-effort", dest="reasoning_effort",
         help="Pin this job's reasoning (thinking) effort: none, minimal, low, "
             "medium, high, xhigh, max, or ultra. Pass empty string to clear "

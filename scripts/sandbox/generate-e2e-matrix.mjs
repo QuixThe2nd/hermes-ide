@@ -14,16 +14,14 @@
  * anything the types can't catch is self-evident on the next CI run.
  *
  * Used by .github/workflows/install-e2e.yml, which runs it with the picked
- * release tags (annotated at pick time with what each tag's tree ships):
+ * release tags:
  *
  *   node scripts/sandbox/generate-e2e-matrix.mjs \
- *     --tags '[{"ref":"v2026.8.3","desktop":true}]'
+ *     --tags '["v2026.8.3"]'
  *
  * Prints JSON: { linux: {include:[...]}, windows: {include:[...]},
  * macos: {include:[...]} } -- every entry is {name, install_method,
- * update_method, install_ref, tag_has_desktop} (the tag annotation lets
- * a run workflow natively skip desktop-surface legs from releases that
- * predate the desktop app).
+ * update_method, install_ref}.
  */
 
 import fs from 'node:fs';
@@ -35,46 +33,25 @@ import { fileURLToPath } from 'node:url';
  * The closed method/version vocabulary. Workflows key off these exact
  * strings, so they are types, not conventions.
  *
- * @typedef {'latest'} InstallerVersion
- *   The artifact published on the website right now -- Hermes-Setup.exe has
- *   no versioned archive yet. Widen this union when one exists.
- * @typedef {'installer-script' | 'installer-script+desktop' | 'desktop-installer' | 'packaged-app'} InstallMethod
- *   installer-script is the platform's one-liner (curl | bash on
- *   linux/macos, irm | iex on windows); installer-script+desktop is the
- *   same one-liner with its desktop stage opted in (--include-desktop /
- *   -IncludeDesktop), which also builds the desktop app -- on windows it
- *   registers Start Menu / Desktop shortcuts too, on linux/macos it
- *   builds into the checkout without registering an OS entry point;
- *   packaged-app is declared but not used by any OS spec yet.
- * @typedef {InstallMethod | 'hermes-update' | 'open-app-update' | 'hermes-desktop-app-update'} UpdateMethod
- *   Every install method doubles as an update method (re-run it over the
- *   existing install), plus the updater CLI and the two app-update
- *   variants. The variants differ by launch surface: open-app-update
- *   starts the app from the OS entry point the install registered
- *   (Start Menu / Desktop shortcuts) -- today only the windows desktop
- *   installer's stage registers one (install.sh --include-desktop
- *   builds the app but registers nothing), so these legs pair with a
- *   desktop-installer install; hermes-desktop-app-update starts the app
- *   via `hermes desktop`, which every install method provides on every
- *   OS that ships the desktop app. Both then update through the app's
- *   own Update button.
+ * @typedef {'installer-script'} InstallMethod
+ *   The platform's one-liner (curl | bash on linux/macos, irm | iex on
+ *   windows).
+ * @typedef {InstallMethod | 'hermes-update'} UpdateMethod
+ *   Re-run the installer over the existing install, or use the updater CLI.
  * @typedef {'linux' | 'windows' | 'macos'} Os
  *
- * @typedef {{method: InstallMethod, versions?: InstallerVersion[]}} InstallEntry
- * @typedef {{method: UpdateMethod, versions?: InstallerVersion[]}} UpdateEntry
- *   `versions` expands the entry into one combination per version
- *   ("desktop-installer@latest").
+ * @typedef {{method: InstallMethod}} InstallEntry
+ * @typedef {{method: UpdateMethod}} UpdateEntry
  * @typedef {{install: InstallEntry[], update: UpdateEntry[], secondUpdate?: never[]}} OsSpec
  *   secondUpdate (install -> update -> update again) is a real future axis
  *   -- the updater that RESULTS from an update must itself update -- typed
  *   `never[]` so declaring one is a type error until a leg implements it.
  *
- * @typedef {{ref: string, desktop: boolean}} TagAnnotation
- *   A picked release tag plus what its own tree ships (annotated by
- *   pick-releases in install-e2e.yml).
+ * @typedef {string} TagAnnotation
+ *   A picked release tag.
  *
  * @typedef {{name: string, leg_id: string, install_method: string, update_method: string,
- *            install_ref: string, tag_has_desktop?: boolean}} MatrixEntry
+ *            install_ref: string}} MatrixEntry
  */
 
 /**
@@ -94,73 +71,26 @@ export function legId(name) {
 /** @type {Record<Os, OsSpec>} */
 export const SPEC = {
   windows: {
-    install: [
-      // irm https://hermes.nousresearch.com/install.ps1 | iex
-      { method: 'installer-script' },
-      // The same one-liner with -IncludeDesktop: builds Hermes.exe AND
-      // registers Start Menu / Desktop shortcuts, so it is a second real
-      // path to a hand-launchable app.
-      { method: 'installer-script+desktop' },
-      // Website Hermes-Setup.exe, clicked through the GUI.
-      { method: 'desktop-installer', versions: ['latest'] },
-    ],
-    update: [
-      { method: 'installer-script' },
-      { method: 'installer-script+desktop' },
-      // Run the bootstrap exe again over an existing install (--update flow).
-      { method: 'desktop-installer', versions: ['latest'] },
-      { method: 'hermes-update' },
-      // Settings -> About -> "Update now", app launched from the installed
-      // exe (the entry point the desktop installer created).
-      { method: 'open-app-update' },
-      // Same button, app launched via `hermes desktop`.
-      { method: 'hermes-desktop-app-update' },
-    ],
+    install: [{ method: 'installer-script' }],
+    update: [{ method: 'installer-script' }, { method: 'hermes-update' }],
   },
   macos: {
-    install: [
-      { method: 'installer-script' },
-      { method: 'installer-script+desktop' },
-      // The published Hermes-Setup.dmg from the website, mounted and run.
-      { method: 'desktop-installer', versions: ['latest'] },
-    ],
-    update: [
-      { method: 'installer-script' },
-      { method: 'installer-script+desktop' },
-      { method: 'hermes-update' },
-      // install.sh --include-desktop builds the .app inside the checkout
-      // but registers no OS entry point, so open-app-update legs pair
-      // with a desktop-installer install (the published dmg).
-      { method: 'open-app-update' },
-      { method: 'hermes-desktop-app-update' },
-    ],
+    install: [{ method: 'installer-script' }],
+    update: [{ method: 'installer-script' }, { method: 'hermes-update' }],
   },
   linux: {
-    install: [
-      { method: 'installer-script' },
-      { method: 'installer-script+desktop' },
-    ],
-    update: [
-      { method: 'installer-script' },
-      { method: 'installer-script+desktop' },
-      { method: 'hermes-update' },
-      // No desktop installer and no packaged desktop artifact exist for
-      // linux, so there is no open-app-update; `hermes desktop` is always
-      // the source-mode path (build apps/desktop from the checkout, launch
-      // electron) and is the one app surface a linux install has.
-      { method: 'hermes-desktop-app-update' },
-    ],
+    install: [{ method: 'installer-script' }],
+    update: [{ method: 'installer-script' }, { method: 'hermes-update' }],
   },
 };
 
 /**
- * Expand one method entry into concrete ids ("desktop-installer@latest").
+ * Expand one method entry into its concrete id.
  * @param {InstallEntry | UpdateEntry} entry
  * @returns {string[]}
  */
 export function expandMethod(entry) {
-  if (!entry.versions) return [entry.method];
-  return entry.versions.map((v) => `${entry.method}@${v}`);
+  return [entry.method];
 }
 
 /**
@@ -203,15 +133,11 @@ export function buildMatrices(envs, tags) {
     for (const tag of tags) {
       /** @type {MatrixEntry} */
       const entry = {
-        name: `${env.os}: ${env.install} -> ${env.update} (${tag.ref} -> HEAD)`,
-        leg_id: legId(`${env.os}: ${env.install} -> ${env.update} (${tag.ref} -> HEAD)`),
+        name: `${env.os}: ${env.install} -> ${env.update} (${tag} -> HEAD)`,
+        leg_id: legId(`${env.os}: ${env.install} -> ${env.update} (${tag} -> HEAD)`),
         install_method: env.install,
         update_method: env.update,
-        install_ref: tag.ref,
-        // Every OS declares desktop-surface methods (both app-update
-        // variants at minimum), so every leg carries the annotation and
-        // its run workflow can natively skip pre-desktop tags.
-        tag_has_desktop: tag.desktop,
+        install_ref: tag,
       };
       byOs[env.os].include.push(entry);
     }
@@ -220,24 +146,10 @@ export function buildMatrices(envs, tags) {
 }
 
 /**
- * Does this method id need the starting tag to ship the desktop app?
- * Shared by the plan chart (pre-desktop cells) and the results chart
- * (labeling WHY a skipped leg skipped).
- * @param {string} m
- * @returns {boolean}
- */
-export function methodNeedsDesktop(m) {
-  return m.startsWith('desktop-installer') || m === 'installer-script+desktop' ||
-    m === 'open-app-update' || m === 'hermes-desktop-app-update';
-}
-
-/**
  * Render the plan as a markdown cross-table for $GITHUB_STEP_SUMMARY:
  * one row per {os, install -> update} combination, one column per
  * starting tag. Every cell is dispatched; whether it RUNS or greys out
- * is the run workflow's call (capability lives there, not here), so the
- * chart only distinguishes the one thing the plan itself knows:
- * desktop-surface legs from tags that predate the desktop app.
+ * is the run workflow's call (capability lives there, not here).
  *
  * @param {{os: Os, install: string, update: string}[]} envs
  * @param {TagAnnotation[]} tags
@@ -249,19 +161,11 @@ export function renderMarkdownPlan(envs, tags) {
     '',
     `${envs.length} combinations x ${tags.length} starting tags = ${envs.length * tags.length} legs`,
     '',
-    `| combination | ${tags.map((t) => t.ref).join(' | ')} |`,
+    `| combination | ${tags.join(' | ')} |`,
     `|---|${tags.map(() => '---').join('|')}|`,
   ];
   for (const env of envs) {
-    const cells = tags.map((tag) => {
-      if (
-        !tag.desktop &&
-        (methodNeedsDesktop(env.install) || methodNeedsDesktop(env.update))
-      ) {
-        return 'pre-desktop';
-      }
-      return '⏳ 	';
-    });
+    const cells = tags.map(() => '⏳ 	');
     lines.push(`| \`${env.os}: ${env.install} -> ${env.update}\` | ${cells.join(' | ')} |`);
   }
   return lines.join('\n');
@@ -277,10 +181,6 @@ export function renderMarkdownPlan(envs, tags) {
  * (pick-releases, the report job itself) fall out naturally.
  *
  * @param {{name: string, conclusion: string | null}[]} jobs
- * @param {TagAnnotation[]} [tagAnnotations] When given (the same --tags the
- *   plan got), skipped cells carry their REASON: `pre-desktop` when a
- *   desktop-surface method meets a tag that predates apps/desktop, `TODO`
- *   when the pair is declared but no driver arm runs it yet.
  * @param {Map<string, number>} [artifactById] Artifact name -> id for this
  *   run (the report job's --artifacts). Legs that RAN (success or failure)
  *   get TWO links: 📼 to the run's single player artifact (playback.html,
@@ -293,33 +193,17 @@ export function renderMarkdownPlan(envs, tags) {
  *   name with the same formula the generator mints (legId).
  * @returns {string}
  */
-export function renderMarkdownResults(jobs, tagAnnotations = [], artifactById = new Map()) {
+export function renderMarkdownResults(jobs, artifactById = new Map()) {
   const knownRules = JSON.parse(fs.readFileSync(new URL('../../tests/install/e2e-assets/known-failures.json', import.meta.url), 'utf8'));
   /** @type {Map<string, {number: number, rule: any}>} */
   const footnotes = new Map();
   const LEG = /^(linux|windows|macos): (\S+) -> (\S+) \(([^)]+) -> HEAD\) \//;
-  /** @type {Map<string, boolean>} */
-  const desktopByTag = new Map(tagAnnotations.map((t) => [t.ref, t.desktop]));
-  /**
-   * @param {string} install @param {string} update @param {string} tag
-   * @returns {string}
-   */
-  const skipLabel = (install, update, tag) => {
-    if (desktopByTag.size === 0) return 'skip';
-    if (
-      desktopByTag.get(tag) === false &&
-      (methodNeedsDesktop(install) || methodNeedsDesktop(update))
-    ) {
-      return 'pre-desktop';
-    }
-    return 'TODO';
-  };
   // A combination can surface as SEVERAL jobs with the same leg name (a
   // run workflow may have one inner job per driver arm; exactly one runs
   // and the others natively skip), so cells merge by significance: a real
   // outcome always beats a skip, and a bad outcome beats a good one.
-  const RANK = ['skip', 'TODO', 'pre-desktop', '&#x2705;', 'known', 'running', 'cancelled', '&#x274C;'];
-  const SKIPS = ['skip', 'TODO', 'pre-desktop'];
+  const RANK = ['skip', 'TODO', '&#x2705;', 'known', 'running', 'cancelled', '&#x274C;'];
+  const SKIPS = ['skip', 'TODO'];
   // Rendered success/failure cells carry artifact links after the glyph;
   // rank by the leading token or every such cell would rank as unknown (-1)
   // and lose to any skip already in the map.
@@ -363,7 +247,7 @@ export function renderMarkdownResults(jobs, tagAnnotations = [], artifactById = 
         return `known [^${footnotes.get(rule.id)?.number}]${reel}`;
       }
       case 'failure': return `&#x274C;${reel}`;
-      case 'skipped': return skipLabel(m[2], m[3], tag);
+      case 'skipped': return 'TODO';
       case 'cancelled': return 'cancelled';
       default: return 'running';
     }
@@ -383,7 +267,7 @@ export function renderMarkdownResults(jobs, tagAnnotations = [], artifactById = 
   const lines = [
     '### Install & Update E2E results',
     '',
-    `${passed} passed, ${failed} failed, ${known} known failures, ${skipped} skipped (TODO = declared, no driver arm yet; pre-desktop = the starting release predates apps/desktop), ${cells.length} legs total`,
+    `${passed} passed, ${failed} failed, ${known} known failures, ${skipped} skipped (TODO = declared, no driver arm yet), ${cells.length} legs total`,
     '',
     `| combination | ${tags.join(' | ')} |`,
     `|---|${tags.map(() => '---').join('|')}|`,
@@ -417,7 +301,6 @@ async function main() {
   });
   if (values.format === 'results') {
     const jobs = (await readStdin()).split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
-    const annotations = /** @type {TagAnnotation[]} */ (JSON.parse(values.tags));
     /** @type {Map<string, number>} */
     const artifactById = new Map();
     if (values.artifacts) {
@@ -427,7 +310,7 @@ async function main() {
         if (typeof a.name === 'string' && typeof a.id === 'number') artifactById.set(a.name, a.id);
       }
     }
-    process.stdout.write(renderMarkdownResults(jobs, annotations, artifactById));
+    process.stdout.write(renderMarkdownResults(jobs, artifactById));
     return;
   }
   const tags = /** @type {TagAnnotation[]} */ (JSON.parse(values.tags));

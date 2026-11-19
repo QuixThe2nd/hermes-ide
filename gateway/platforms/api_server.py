@@ -13,7 +13,7 @@ import hashlib
 import hmac
 import itertools
 import json
-from contextlib import contextmanager, nullcontext, suppress
+from contextlib import nullcontext, suppress
 from contextvars import ContextVar, copy_context
 from functools import wraps
 import logging
@@ -45,29 +45,12 @@ def _prefix_names_served_profile(profile: str) -> bool:
 # Per-request /p/<profile>/ selection: set by the profile-prefix middleware, read by handlers.
 _api_request_profile: ContextVar[Optional[str]] = ContextVar(
     "api_server_request_profile", default=None)
-_api_request_browser_control_principal: ContextVar[str] = ContextVar(
-    "api_server_browser_control_principal", default="")
-_api_request_browser_control_transport_family: ContextVar[str] = ContextVar(
-    "api_server_browser_control_transport_family", default="")
-
-class _ArtifactScopeFacade:
-    """Minimal scope for ``artifact_scope_key``: server-derived principal + session + transport family."""
-    __slots__ = ("principal_id", "session_id", "transport_family")
-
-    def __init__(self, principal_id: str, *, session_id: str = "", transport_family: str = ""):
-        self.principal_id = principal_id
-        self.session_id = session_id
-        self.transport_family = transport_family
-
-
-# Advertised in capabilities and echoed in registration responses; validated by the broker.
-_BROWSER_CONTROL_PROTOCOL_VERSION = 1
 
 # /v1/capabilities static feature flags (order is part of the JSON shape).
 _STATIC_FEATURE_FLAGS = {
     "run_status": True, "run_events_sse": True, "run_stop": True, "run_steer": True,
-    "run_approval_response": True, "tool_progress_events": True, "approval_events": True,
-    "session_resources": True, "model_options": True, "session_chat": True,
+    "tool_progress_events": True, "session_resources": True, "model_options": True,
+    "session_chat": True,
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
     "reasoning_streaming": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
@@ -82,7 +65,6 @@ _CAPABILITY_ENDPOINTS = (
     ("responses", ("POST", "/v1/responses")), ("runs", ("POST", "/v1/runs")),
     ("run_status", ("GET", "/v1/runs/{run_id}")),
     ("run_events", ("GET", "/v1/runs/{run_id}/events")),
-    ("run_approval", ("POST", "/v1/runs/{run_id}/approval")),
     ("run_steer", ("POST", "/v1/runs/{run_id}/steer")),
     ("run_stop", ("POST", "/v1/runs/{run_id}/stop")), ("skills", ("GET", "/v1/skills")),
     ("toolsets", ("GET", "/v1/toolsets")), ("sessions", ("GET", "/api/sessions")),
@@ -99,19 +81,9 @@ _CAPABILITY_ENDPOINTS = (
     # waiting-on-the-human poller (routes live in gateway/platforms/api_server_runs.py).
     ("session_clarify", ("GET", "/api/sessions/{session_id}/clarify")),
     ("session_clarify_answer", ("POST", "/api/sessions/{session_id}/clarify")),
-    ("sessions_waiting", ("GET", "/api/sessions/waiting")),
-    ("browser_control_register", ("POST", "/v1/browser-control/register")),
-    ("browser_control_ws", ("GET", "/v1/browser-control/ws")),
-    ("artifact_upload", ("POST", "/v1/artifacts/upload")),
-    ("artifact_download", ("GET", "/v1/artifacts/download/{artifact_id}")))
-_BROWSER_CONTROL_WS_PROTOCOL = "hermes-browser-control-v1"
-_BROWSER_CONTROL_TICKET_PROTOCOL_PREFIX = "hermes-browser-control-ticket."
+    ("sessions_waiting", ("GET", "/api/sessions/waiting")))
 
 
-def _approval_event_choices(*, smart_denied: bool, allow_session: bool, allow_permanent: bool) -> list[str]:
-    if smart_denied or not allow_session:
-        return ["once", "deny"]
-    return ["once", "session", "always", "deny"] if allow_permanent else ["once", "session", "deny"]
 
 
 try:
@@ -125,7 +97,11 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
-from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
+from gateway.platforms.api_server_openai_routes import (
+    OpenAICompatRoutesMixin,
+    _handle_chat_completions as _openai_handle_chat_completions,
+    _handle_responses as _openai_handle_responses,
+)
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
     validate_media_delivery_path)
@@ -133,13 +109,6 @@ from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
 from gateway.readiness import collect_runtime_readiness
-from gateway.browser_control_artifacts import (
-    ArtifactError, ArtifactRateLimiter, ArtifactStore, ArtifactTooLarge, DEFAULT_ALLOWED_MIME_TYPES,
-    DEFAULT_MAX_ARTIFACT_BYTES, DEFAULT_ARTIFACT_TTL_SECONDS)
-from gateway.browser_control_broker import (
-    BROWSER_CONTROL_ARTIFACT_CAPABILITIES, BROWSER_CONTROL_CAPABILITIES, BROWSER_CONTROL_DEVELOPER_CAPABILITIES,
-    ControllerScope, ControllerTicketInvalid, browser_control_developer_mode,
-    browser_control_protocol_supported, filter_browser_control_capabilities, get_browser_control_broker)
 
 from gateway.platforms._shared import coerce_port as _coerce_port
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
@@ -149,37 +118,6 @@ from gateway.platforms.tcp_site import start_tcp_site
 logger = logging.getLogger(__name__)
 
 
-def _browser_controller_ws_sender(ws, loop, *, wait_timeout: float = 10.0):
-    """Return a loop-aware broker sender for one aiohttp controller socket.
-
-    A wait timeout means the coroutine is still in flight, not that the frame was rejected:
-    keep the broker command pending (its own deadline decides); a real send error propagates.
-    """
-
-    def send(frame: dict) -> None:
-        if ws.closed:
-            raise ConnectionError("browser-control websocket is closed")
-        try:
-            on_loop = asyncio.get_running_loop() is loop
-        except RuntimeError:
-            on_loop = False
-        if on_loop:
-            loop.create_task(ws.send_json(frame))
-            return
-        future = asyncio.run_coroutine_threadsafe(ws.send_json(frame), loop)
-        try:
-            future.result(timeout=wait_timeout)
-        except concurrent.futures.TimeoutError:
-            if future.done():
-                raise
-
-            def observe_late_send(completed):
-                try:
-                    completed.result()
-                except Exception:
-                    logger.exception("browser-controller websocket send failed after wait timeout")
-            future.add_done_callback(observe_late_send)
-    return send
 
 
 async def _call_verifier(verifier, *args, **kwargs):
@@ -984,19 +922,6 @@ def _require_auth(handler):
     return _wrapped
 
 
-@contextmanager
-def _reserve_pending_api_work(adapter):
-    """Keep externally-triggered background work visible across awaits; a handler may detach
-    the reservation to a task whose done callback then owns release."""
-    reservation = {"active": True, "detached": False}
-    adapter._pending_agent_requests += 1
-    try:
-        yield reservation
-    finally:
-        if not reservation["detached"]:
-            _release_pending_api_work(adapter, reservation)
-
-
 class _IdempotencyCache:
     """In-memory idempotency cache with TTL and basic LRU semantics."""
     def __init__(self, max_items: int = 1000, ttl_seconds: int = 300):
@@ -1161,6 +1086,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     supports_async_delivery: bool = False
     # ``/p/<profile>/v1/...`` on the shared listener (``_make_profile_prefix_middleware``).
     serves_profile_prefix: bool = True
+    # Owns the /v1 TCP port: intake must stop at overlap authority release
+    # so the newest generation can bind it.
+    owns_singleton_listener: bool = True
     # Same statelessness applies to the startup auto-resume prompt: no client is waiting to answer "session
     # restored — what next?", so a resumed turn should complete the interrupted work rather than acknowledge
     # (#57056).
@@ -1170,8 +1098,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     _history_tool_output_max_chars: int = 0
 
     # Admission-gated OpenAI-compatible entry points (bodies live in the mixin).
-    _handle_chat_completions = _admit_api_agent_request(OpenAICompatRoutesMixin._handle_chat_completions)
-    _handle_responses = _admit_api_agent_request(OpenAICompatRoutesMixin._handle_responses)
+    _handle_chat_completions = _admit_api_agent_request(_openai_handle_chat_completions)
+    _handle_responses = _admit_api_agent_request(_openai_handle_responses)
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.API_SERVER)
@@ -1221,11 +1149,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self.gateway_runner: Optional[Any] = None  # set by gateway/run.py
         # Admitted requests not yet in agent bookkeeping, so shutdown drain counts them.
         self._pending_agent_requests: int = 0
-        # Shared broker; this adapter maps HTTP registration + controller WS onto it.
-        self._browser_control_broker = get_browser_control_broker()
-        # One-shot artifact transport: lazy per-profile stores + limiter (tests inject).
-        self._browser_control_artifacts: Dict[str, ArtifactStore] = {}
-        self._browser_control_artifact_limiter: Optional[ArtifactRateLimiter] = None
 
     def active_agent_work_count(self) -> int:
         """All live agent work: pending admissions + in-flight turns + live /v1/runs tasks
@@ -1257,20 +1180,39 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 logger.debug("[api_server] failed interrupting active agent: %s", exc)
         return interrupted
 
-    @staticmethod
-    def _gateway_is_draining() -> bool:
-        """Whether the owning gateway currently refuses new agent turns."""
+    def _draining_response(self) -> Optional["web.Response"]:
+        """Retryable 503 only when this process can no longer serve the turn.
+
+        An overlap-restart drain is NOT such a state for the API transport:
+        the successor defers the api_server adapter until this process exits,
+        so an admitted request is served locally (its reservation already
+        holds the drain's active-work count above zero). Refusing it would
+        just surface a spurious 503 for a turn we could have completed. Two
+        drains still refuse:
+
+        - external quiesce (``_external_drain_active``): the operator is
+          deliberately driving active work to zero before stopping, so new
+          admissions would break that contract;
+        - terminal shutdown: ``_running`` cleared or ``stop()`` already
+          tasked — adapters are disconnecting and the turn would die with
+          the process.
+        """
         try:
             from gateway.run import _gateway_runner_ref
             runner = _gateway_runner_ref()
-            return bool(runner and (getattr(runner, "_draining", False)
-                                    or getattr(runner, "_external_drain_active", False)))
         except Exception:
-            return False
-
-    def _draining_response(self) -> Optional["web.Response"]:
-        """Return a retryable response while the gateway drains existing work."""
-        if not self._gateway_is_draining():
+            runner = None
+        if runner is None:
+            return None
+        external_quiesce = bool(getattr(runner, "_external_drain_active", False))
+        terminal_shutdown = bool(
+            getattr(runner, "_draining", False)
+            and (
+                not getattr(runner, "_running", False)
+                or getattr(runner, "_stop_task", None) is not None
+            )
+        )
+        if not external_quiesce and not terminal_shutdown:
             return None
         return _error_response(
             "Gateway is draining existing work; retry shortly.", 503, code="gateway_draining",
@@ -1287,7 +1229,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # "stopping" is not terminal: executor work continues until the agent notices.
         active_api_runs = sum(
             1 for status in self._run_statuses.values()
-            if status.get("status") in {"queued", "running", "waiting_for_approval", "stopping"})
+            if status.get("status") in {"queued", "running", "stopping"})
         process_depth = 0
         active_delegations = 0
         with suppress(Exception):
@@ -1560,16 +1502,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             token = _api_request_profile.set(profile)
             try:
                 with self._profile_scope(profile):
-                    resolved_profile = profile or "default"
-                    principal_token = _api_request_browser_control_principal.set(
-                        self._derive_browser_control_principal(resolved_profile))
-                    family_token = _api_request_browser_control_transport_family.set(
-                        self._browser_control_transport_family(request))
-                    try:
-                        return await handler(request)
-                    finally:
-                        _api_request_browser_control_transport_family.reset(family_token)
-                        _api_request_browser_control_principal.reset(principal_token)
+                    return await handler(request)
             finally:
                 _api_request_profile.reset(token)
         return profile_prefix_middleware
@@ -1584,12 +1517,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("GET", "/v1/models", self._handle_models),
             ("GET", "/api/model/options", self._handle_model_options),
             ("GET", "/v1/capabilities", self._handle_capabilities),
-            # Browser-control (gated on browser.extension_control.enabled + API key): POST
-            # mints a short-lived ticket, WS consumes it; artifacts are bounded + scope-bound.
-            ("POST", "/v1/browser-control/register", self._handle_browser_control_register),
-            ("GET", "/v1/browser-control/ws", self._handle_browser_control_ws),
-            ("POST", "/v1/artifacts/upload", self._handle_artifact_upload),
-            ("GET", "/v1/artifacts/download/{artifact_id}", self._handle_artifact_download),
             ("GET", "/v1/skills", self._handle_skills),
             ("GET", "/v1/toolsets", self._handle_toolsets),
             ("GET", "/api/sessions", self._handle_list_sessions),
@@ -1623,14 +1550,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job)]
         routes.extend(_room_grants._http_routes(self))
         routes.extend(_api_runs._http_routes(self))
-        if _CRON_AVAILABLE:
-            # Chronos fire webhook (NAS -> agent): authenticated by a NAS-minted JWT.
-            routes.append(("POST", "/api/cron/fire", self._handle_cron_fire))
         return routes
 
     # -- Session header helpers -------------------------------------------------------
 
-    # Cap on session headers: above any realistic channel id, safe for Honcho / state.db.
+    # Cap on session headers: above any realistic channel id, safe for providers / state.db.
     _MAX_SESSION_HEADER_LEN = 256
     # Source stamped on every session row this platform owns (also hardwired in
     # _bind_api_server_session and _create_agent) so peer lookups can filter on it.
@@ -1990,7 +1914,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @staticmethod
     def _normalize_session_source(value: Any) -> str:
         text = str(value or "").strip().lower()
-        allowed = {"api_server", "hermes_browser", "browser", "cli", "telegram", "discord", "slack", "desktop", "dashboard"}
+        allowed = {"api_server", "hermes_browser", "browser", "cli", "discord", "slack", "desktop", "dashboard"}
         if text not in allowed:
             return "api_server"
         return "hermes_browser" if text == "browser" else text
@@ -2230,7 +2154,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "tool_complete_callback": tool_complete_callback,
             "reasoning_callback": reasoning_callback,
             "session_db": self._ensure_session_db(),
-            # Same fallback provider chain as Telegram/Discord/Slack.
+            # Same fallback provider chain as the messaging platforms.
             "fallback_model": None if confirmed_runtime_lock else GatewayRunner._load_fallback_model(),
             "reasoning_config": request_reasoning_config,
             "gateway_session_key": gateway_session_key}
@@ -2335,370 +2259,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "responses_api": True, "responses_streaming": True, "run_submission": True,
                 "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
                 **_STATIC_FEATURE_FLAGS,
-                "cors": bool(self._cors_origins),
-                # Always advertised for feature-detection; enabled follows config.
-                "browser_extension_control": {
-                    "enabled": self._browser_control_enabled(),
-                    "protocol_version": _BROWSER_CONTROL_PROTOCOL_VERSION,
-                    "capabilities": sorted(BROWSER_CONTROL_CAPABILITIES),
-                    "artifact_capabilities": sorted(BROWSER_CONTROL_ARTIFACT_CAPABILITIES),
-                    "developer_capabilities": sorted(BROWSER_CONTROL_DEVELOPER_CAPABILITIES),
-                    "developer_mode": self._browser_control_developer_mode(),
-                    "artifact_transport": {
-                        "upload": {"method": "POST", "path": "/v1/artifacts/upload"},
-                        "download": {
-                            "method": "GET", "path": "/v1/artifacts/download/{artifact_id}"},
-                        "max_bytes": DEFAULT_MAX_ARTIFACT_BYTES,
-                        "ttl_seconds": DEFAULT_ARTIFACT_TTL_SECONDS,
-                        "allowed_mime_types": sorted(DEFAULT_ALLOWED_MIME_TYPES)},
-                    "real_browser_actions": True,
-                    "transports": {
-                        "local_vps": "websocket-subprotocol-ticket",
-                        "cloud": "authenticated-gateway-rpc"}}},
+                "cors": bool(self._cors_origins)},
             "endpoints": {name: {"method": m, "path": p} for name, (m, p) in _CAPABILITY_ENDPOINTS},
         })
-
-    # -- Browser-extension control (authenticated local/VPS API) ----------------------
-
-    async def _handle_browser_control_register(self, request: "web.Request") -> "web.Response":
-        """POST /v1/browser-control/register — mint a short-lived single-use controller ticket.
-
-        Identity is NOT taken from the body: the principal is a server-derived digest of the
-        authenticated key/profile and capabilities are filtered to the allowlist (a spoofed
-        ``principal_id`` / inflated list is ignored); the session must exist in the profile's
-        SessionDB. Ladder: 404 disabled, 403 no API key, 401 bad Bearer, 201 success.
-        """
-        if not self._browser_control_enabled():
-            return _error_response(
-                "Browser control is not enabled on this server.", 404, code="browser_control_disabled")
-        if not self._api_key:
-            logger.warning(
-                "browser-control registration rejected: no API key configured; "
-                "set API_SERVER_KEY to enable authenticated browser control.")
-            return _error_response(
-                "Browser control registration requires a configured API key.", 403,
-                err_type="gateway_auth_error", code="browser_control_auth_required")
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-        try:
-            payload = await request.json()
-        except Exception:
-            return _error_response("Request body must be valid JSON.", 400)
-        if not isinstance(payload, dict):
-            return _error_response("Request body must be a JSON object.", 400)
-        if not browser_control_protocol_supported(payload.get("protocol_version")):
-            return _error_response(
-                "Unsupported browser-control protocol version.", 400, code="browser_control_protocol_unsupported")
-        controller_id = str(payload.get("controller_id") or "").strip()
-        browser_profile_id = str(payload.get("browser_profile_id") or "").strip()
-        session_id = str(payload.get("session_id") or "").strip()
-        if not controller_id or not browser_profile_id or not session_id:
-            return _error_response(
-                "controller_id, browser_profile_id, and session_id are required.", 400,
-                code="browser_control_invalid_registration")
-        db = await self._ensure_session_db_async()
-        if db is None:
-            return _error_response("Session database unavailable.", 503, code="session_db_unavailable")
-        if not await asyncio.to_thread(db.get_session, session_id):
-            return _error_response(
-                "Browser control may register only for an existing server session.", 403,
-                err_type="gateway_auth_error", code="browser_control_session_forbidden")
-        profile = _api_request_profile.get() or "default"
-        developer_mode = self._browser_control_developer_mode()
-        capabilities = filter_browser_control_capabilities(payload.get("capabilities"), developer_mode=developer_mode)
-        if not capabilities:
-            return _error_response(
-                "At least one permitted browser-control capability is required.", 400,
-                code="browser_control_no_capabilities")
-        # Developer capabilities need broker Developer Mode (fail closed past the filter).
-        if capabilities & BROWSER_CONTROL_DEVELOPER_CAPABILITIES and not developer_mode:
-            return _error_response(
-                "Developer Mode is required for browser_evaluate and raw CDP.", 403,
-                code="browser_control_developer_mode_required")
-        scope = ControllerScope(
-            principal_id=self._derive_browser_control_principal(profile), profile_id=profile,
-            session_id=session_id or None, controller_id=controller_id,
-            browser_profile_id=browser_profile_id,
-            transport_family=self._browser_control_transport_family(request),
-            capabilities=capabilities)
-        ticket = self._browser_control_broker.mint_ticket(scope)
-        ticket_ttl = self._browser_control_broker.ticket_ttl_seconds
-        return web.json_response(
-            {
-                "protocol_version": _BROWSER_CONTROL_PROTOCOL_VERSION, "ticket": ticket.value,
-                # Best-effort wall-clock projection; the broker enforces expiry on its monotonic
-                # clock, so after an NTP step trust ticket_expires_in_seconds.
-                "ticket_expires_at": time.time() + ticket_ttl,
-                "ticket_expires_in_seconds": ticket_ttl,
-                "ws_path": "/v1/browser-control/ws",
-                "scope": {
-                    **{key: getattr(scope, key) for key in (
-                        "principal_id", "profile_id", "session_id", "controller_id",
-                        "browser_profile_id", "transport_family")},
-                    "capabilities": sorted(scope.capabilities)}},
-            status=201)
-
-    async def _handle_browser_control_ws(self, request: "web.Request") -> "web.WebSocketResponse":
-        """GET /v1/browser-control/ws — controller WebSocket (one-shot ticket).
-
-        The ticket rides in ``Sec-WebSocket-Protocol`` (never the query string: targets land in
-        access logs) and is exchanged once for the registration scope; bad/consumed/expired
-        tickets 401 before upgrade. Owner-aware teardown cannot detach a newer generation.
-        """
-        # Re-checked at upgrade so disabling the feature closes the gate immediately.
-        if not self._browser_control_enabled():
-            raise web.HTTPNotFound()
-        if request.query.get("ticket"):
-            raise web.HTTPUnauthorized()
-        requested_protocols = [
-            value.strip() for value in request.headers.get("Sec-WebSocket-Protocol", "").split(",")
-            if value.strip()]
-        ticket_protocols = [
-            value for value in requested_protocols if value.startswith(_BROWSER_CONTROL_TICKET_PROTOCOL_PREFIX)]
-        if _BROWSER_CONTROL_WS_PROTOCOL not in requested_protocols or len(ticket_protocols) != 1:
-            raise web.HTTPUnauthorized()
-        ticket_value = ticket_protocols[0][len(_BROWSER_CONTROL_TICKET_PROTOCOL_PREFIX) :]
-        if not ticket_value:
-            raise web.HTTPUnauthorized()
-        try:
-            scope = self._browser_control_broker.consume_ticket(ticket_value)
-        except ControllerTicketInvalid:
-            raise web.HTTPUnauthorized() from None
-        except Exception:
-            logger.exception("browser-control WS ticket consumption failed")
-            raise web.HTTPUnauthorized() from None
-        ws = web.WebSocketResponse(heartbeat=30.0, protocols=(_BROWSER_CONTROL_WS_PROTOCOL,))
-        await ws.prepare(request)
-        loop = asyncio.get_running_loop()
-        _send = _browser_controller_ws_sender(ws, loop)
-
-        # attach/disconnect take the controller send_lock, which a worker-thread dispatch may
-        # hold while blocking on THIS loop: offload so the race parks a worker, not the loop.
-        await asyncio.to_thread(self._browser_control_broker.attach, scope, _send, owner=ws)
-        try:
-            async for msg in ws:
-                if msg.type == web.WSMsgType.TEXT:
-                    try:
-                        frame = msg.json()
-                    except Exception:
-                        continue
-                    if isinstance(frame, dict):
-                        reply = await asyncio.to_thread(
-                            self._handle_browser_control_frame, scope, frame, owner=ws)
-                        if isinstance(reply, dict):
-                            await ws.send_json(reply)
-                elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
-                    break
-        finally:
-            await asyncio.to_thread(self._browser_control_broker.disconnect, scope, owner=ws)
-        return ws
-
-    def _handle_browser_control_frame(
-        self, scope: "ControllerScope", frame: dict, *, owner: Any = None) -> Optional[dict]:
-        """Apply one controller->broker frame with exact-scope checks."""
-        method = frame.get("method")
-        params = frame.get("params")
-        if not isinstance(params, dict) or owner is None or not self._browser_control_broker.is_owner(scope, owner):
-            return
-        if method == "browser.controller.heartbeat":
-            nonce = str(params.get("nonce") or "").strip()
-            if not nonce or len(nonce) > 128:
-                return
-            # Echoing the opaque nonce proves the socket is live without granting anything.
-            return {"method": "browser.controller.heartbeat", "params": {"nonce": nonce, "ok": True}}
-        if method == "browser.controller.detach":
-            self._browser_control_broker.detach(scope, owner=owner, notify_controller=False)
-            return {"method": "browser.controller.detach", "params": {"ok": True}}
-        if method == "browser.controller.result":
-            command_id = params.get("command_id")
-            if isinstance(command_id, str) and command_id:
-                # The broker resolves only a pending command with this socket's exact scope.
-                ok = params.get("ok") is True
-                self._browser_control_broker.complete(
-                    command_id, scope=scope, ok=ok,
-                    result=params.get("result") if ok else params.get("error"))
-        elif method == "browser.controller.cancel":
-            tool_call_id = params.get("tool_call_id")
-            if isinstance(tool_call_id, str) and tool_call_id:
-                self._browser_control_broker.cancel(scope, tool_call_id=tool_call_id)
-
-    def _browser_control_enabled(self) -> bool:
-        """``browser.extension_control.enabled`` (default False); tests monkeypatch this."""
-        try:
-            from gateway.browser_control_broker import browser_control_enabled as _flag
-            return _flag()
-        except Exception:
-            return False
-
-    def _derive_browser_control_principal(self, profile: str) -> str:
-        """Non-reversible principal digest bound to the profile's expected API key, so a client
-        cannot impersonate another controller by echoing an id."""
-        key = self._expected_api_key() or self._api_key or ""
-        digest = hashlib.sha256(f"{profile}\x00{key}".encode("utf-8")).hexdigest()
-        return f"principal:{profile}:{digest[:32]}"
-
-    def _browser_control_transport_family(self, request: "web.Request") -> str:
-        """``local-api`` for a loopback peer, else ``remote-api``; the broker treats the family as
-        part of exact identity, so a remote controller never satisfies a local-only dispatch."""
-        host = None
-        with suppress(Exception):
-            transport = request.transport
-            peer = transport.get_extra_info("peername") if transport is not None else None
-            if isinstance(peer, tuple) and peer:
-                host = peer[0]
-            elif isinstance(peer, str):
-                host = peer
-        return "local-api" if host in ("127.0.0.1", "::1", "localhost") else "remote-api"
-
-    def _browser_control_developer_mode(self) -> bool:
-        """Broker Developer Mode gate for ``browser_evaluate`` / raw CDP; tests monkeypatch this."""
-        try:
-            return browser_control_developer_mode()
-        except Exception:
-            return False
-
-    # -- One-shot artifact transport --------------------------------------------------
-
-    def _artifact_store_for(self, profile: str) -> ArtifactStore:
-        """Profile-scoped artifact store, lazily created under the profile's data dir and cached
-        BY RESOLVED PROFILE (on a multiplex listener profile A must never pin B to A's root).
-
-        The store root lives under the profile's data directory
-        (``<HERMES_HOME>/plugin-data/.../artifacts``-style controlled root), so artifacts never escape the
-        profile boundary. Stores are cached BY RESOLVED PROFILE — on a multiplex listener, profile A
-        touching the artifact route first must never pin profile B to A's physical root (same frozen-handle
-        class as the per-profile session-storage fix in #88734). The root itself is created on first use;
-        TTL cleanup runs on every store/load/prune.
-        """
-        profile_key = str(profile or "default")
-        store = self._browser_control_artifacts.get(profile_key)
-        if store is not None:
-            return store
-        try:
-            from hermes_cli.profiles import get_profile_dir
-            root = Path(get_profile_dir(profile or "default")) / "artifacts" / "browser-control"
-        except Exception:
-            # Unscoped fallback (tests/manual wiring): controlled root under the Hermes home.
-            try:
-                from hermes_state import get_hermes_home
-                root = Path(get_hermes_home()) / "artifacts" / "browser-control"
-            except Exception:
-                raise ArtifactError("no artifact root is resolvable") from None
-        store = ArtifactStore(
-            root, ttl_seconds=DEFAULT_ARTIFACT_TTL_SECONDS, max_bytes=DEFAULT_MAX_ARTIFACT_BYTES,
-            allowed_mime_types=DEFAULT_ALLOWED_MIME_TYPES)
-        store.prune_expired()
-        self._browser_control_artifacts[profile_key] = store
-        # Shared with the broker so dispatched artifact actions validate against the same
-        # profile's controlled root ("approved artifact id only").
-        try:
-            self._browser_control_broker.attach_artifact_store(store, profile_id=profile_key)
-        except Exception:
-            logger.debug("could not attach artifact store to broker", exc_info=True)
-        return store
-
-    def _artifact_limiter(self) -> ArtifactRateLimiter:
-        """Return the per-principal artifact route limiter (lazy)."""
-        if self._browser_control_artifact_limiter is None:
-            self._browser_control_artifact_limiter = ArtifactRateLimiter(window_seconds=60.0, max_requests=30)
-        return self._browser_control_artifact_limiter
-
-    def _inject_browser_control_artifacts(
-        self, store: Optional[ArtifactStore], limiter: Optional[ArtifactRateLimiter] = None, *,
-        profile: str = "default") -> None:
-        """Inject a store/limiter (tests, diagnostics)."""
-        if store is None:
-            self._browser_control_artifacts.pop(profile, None)
-        else:
-            self._browser_control_artifacts[profile] = store
-        if limiter is not None:
-            self._browser_control_artifact_limiter = limiter
-
-    def _artifact_route_prelude(self, request: "web.Request", action: str, *, check_enabled: bool = True) -> tuple:
-        """Shared upload/download gate (feature flag -> API key -> Bearer -> per-principal rate
-        limit) -> ``((profile, principal), None)`` or ``(None, error_response)``."""
-        if check_enabled and not self._browser_control_enabled():
-            return None, _error_response(
-                "Browser control is not enabled on this server.", 404, code="browser_control_disabled")
-        if not self._api_key:
-            return None, _error_response(
-                "Artifact transport requires a configured API key.", 403,
-                err_type="gateway_auth_error", code="browser_control_auth_required")
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return None, auth_err
-        profile = _api_request_profile.get() or "default"
-        principal = self._derive_browser_control_principal(profile)
-        if not self._artifact_limiter().allow(f"{action}:{principal}"):
-            return None, _error_response(
-                f"Artifact {action} rate limit exceeded.", 429, err_type="rate_limit_error",
-                code="rate_limit_exceeded", headers={"Retry-After": "1"})
-        return (profile, principal), None
-
-    async def _handle_artifact_upload(self, request: "web.Request") -> "web.Response":
-        """POST /v1/artifacts/upload — one-shot bounded raw upload; ``Content-Type`` must be an
-        allowed MIME type, ``X-Artifact-Filename`` is display-only. Returns a provenance receipt
-        (never a filesystem path). Ladder: 404 disabled, 403 no API key, 401 bad Bearer, 429
-        rate limited, 413 too large, 415 MIME rejected, 400 missing filename/scope, 201."""
-        ctx, err = self._artifact_route_prelude(request, "upload")
-        if err is not None:
-            return err
-        profile, principal = ctx
-        content_type = request.headers.get("Content-Type", "")
-        filename = request.headers.get("X-Artifact-Filename", "").strip()
-        if not filename:
-            return _error_response("X-Artifact-Filename header is required.", 400)
-        try:
-            store = self._artifact_store_for(profile)
-        except ArtifactError as exc:
-            return _error_response(str(exc), 500, code="artifact_rejected")
-        max_bytes = store.max_bytes
-        try:
-            # Read cap + 1 so an oversize body is rejected without unbounded buffering.
-            data = await request.content.read(max_bytes + 1)
-        except Exception:
-            return _error_response("Failed to read request body.", 400)
-        if len(data) > max_bytes:
-            return _error_response(f"Artifact exceeds the {max_bytes}-byte cap.", 413, code="artifact_too_large")
-        if not data:
-            return _error_response("Empty artifact body.", 400)
-        scope = _ArtifactScopeFacade(principal, transport_family=self._browser_control_transport_family(request))
-        try:
-            receipt = store.store(data, filename=filename, content_type=content_type, scope=scope)
-        except ArtifactTooLarge as exc:
-            return _error_response(str(exc), 413, code="artifact_too_large")
-        except ArtifactError as exc:
-            if "allowlist" in str(exc):
-                return _error_response(str(exc), 415, code="artifact_mime_rejected")
-            return _error_response(str(exc), 400, code="artifact_rejected")
-        return web.json_response(
-            receipt.to_dict(download_path=f"/v1/artifacts/download/{receipt.artifact_id}"), status=201)
-
-    async def _handle_artifact_download(self, request: "web.Request") -> "web.Response":
-        """GET /v1/artifacts/download/{artifact_id} — one-shot download (a second one 404s) with
-        ``X-Artifact-Sha256``. Ladder: 404 disabled/unknown, 403 no API key, 401 bad Bearer, 429
-        rate limited, 410 expired, 400 invalid id/scope mismatch, 200."""
-        if not self._browser_control_enabled():
-            raise web.HTTPNotFound()
-        ctx, err = self._artifact_route_prelude(request, "download", check_enabled=False)
-        if err is not None:
-            return err
-        profile, principal = ctx
-        artifact_id = request.match_info.get("artifact_id", "")
-        scope = _ArtifactScopeFacade(principal, transport_family=self._browser_control_transport_family(request))
-        try:
-            data, receipt = self._artifact_store_for(profile).load(artifact_id, scope=scope)
-        except ArtifactError as exc:
-            message = str(exc)
-            if "expired" in message:
-                return _error_response(message, 410, code="artifact_expired")
-            status = 400 if "scope" in message or "invalid" in message else 404
-            return _error_response(message, status, code="artifact_not_found")
-        return web.Response(
-            body=data, status=200, content_type=receipt.content_type,
-            headers={"X-Artifact-Sha256": receipt.sha256, "X-Artifact-Id": receipt.artifact_id,
-                     "Content-Disposition": f'attachment; filename="{receipt.filename}"'})
 
     @_require_auth
     async def _handle_skills(self, request: "web.Request") -> "web.Response":
@@ -2723,12 +2286,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         try:
             from hermes_cli.config import load_config
             from hermes_cli.tools_config import (
-                _get_effective_configurable_toolsets, _get_platform_tools, _toolset_has_keys,
-                get_nous_subscription_features)
+                _get_effective_configurable_toolsets, _get_platform_tools, _toolset_has_keys)
             from toolsets import resolve_toolset
             config = load_config()
             enabled_toolsets = _get_platform_tools(config, "api_server", include_default_mcp_servers=False)
-            features = get_nous_subscription_features(config)
             data: List[Dict[str, Any]] = []
             for name, label, desc in _get_effective_configurable_toolsets():
                 try:
@@ -2738,7 +2299,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 data.append({
                     "name": name, "label": label, "description": desc,
                     "enabled": name in enabled_toolsets,
-                    "configured": _toolset_has_keys(name, config, features=features),
+                    "configured": _toolset_has_keys(name, config),
                     "tools": tools})
         except Exception:
             logger.exception("GET /v1/toolsets failed")
@@ -2857,7 +2418,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 # Recoverable-archive resurrection (#92687): a canonical Bot Chat archived by the ws-orphan
                 # reaper / older agent cleanup is invisible to list_sessions_rich (include_archived=False),
                 # which would fail `hermes peer dm` resolution and mint transient sessions — same accident
-                # the tui_gateway lookups heal.
+                # the stale lookups heal.
                 from tools.bot_mode_probe import BOT_CHAT_TITLE
 
                 def _resurrect() -> bool:
@@ -3557,100 +3118,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return self._job_response(
             lambda jid: _cron_trigger(jid, extra_prompt=extra_prompt), job_id, notify=False)
 
-    async def _handle_cron_fire(self, request: "web.Request") -> "web.Response":
-        """POST /api/cron/fire — Chronos fire webhook (NAS -> agent), authenticated by a
-        NAS-minted JWT via the pluggable verifier, NOT API_SERVER_KEY. 202 + background run so
-        a long turn never trips NAS's timeout; the store CAS claim guards double-fire on retry."""
-        from hermes_cli.config import cfg_get, load_config
-        from plugins.cron_providers.chronos.verify import get_fire_verifier
-        auth = request.headers.get("Authorization", "")
-        token = auth[7:].strip() if auth.startswith("Bearer ") else ""
-        cfg = load_config()
-        verifier = get_fire_verifier()
-        verify_kwargs = dict(
-            token=token,
-            expected_audience=cfg_get(cfg, "cron", "chronos", "expected_audience", default=""),
-            jwks_or_key=cfg_get(cfg, "cron", "chronos", "nas_jwks_url", default="") or None,
-            issuer=cfg_get(cfg, "cron", "chronos", "portal_url", default="") or None)
-        try:
-            claims = await _call_verifier(verifier, **verify_kwargs)
-        except Exception:
-            # Fail closed: a crashing verifier must never admit a fire.
-            logger.exception("cron fire: verifier crashed; rejecting token")
-            claims = None
-        if claims is None:
-            logger.warning("cron fire: rejected invalid token: %s", self._request_audit_log_suffix(request))
-            return web.json_response({"error": "invalid fire token"}, status=401)
-        draining = self._draining_response()
-        if draining is not None:
-            return draining
-        with _reserve_pending_api_work(self) as reservation:
-            body = {}
-            with suppress(Exception):
-                body = await request.json()
-            job_id = (body or {}).get("job_id")
-            if not job_id:
-                return web.json_response({"error": "missing job_id"}, status=400)
-            # `hermes pause` ESTOP: refuse the fire and ask NAS to retry later.
-            # Placed after JWT verify (don't leak pause state to unauth callers)
-            # and after the drain check (drain is transient shutdown, ESTOP is
-            # operator override). 503 + Retry-After reschedules the job via NAS
-            # retry or the misfire backstop rather than silently dropping it —
-            # matches _CRON_FIRE_RETRY_AFTER_SECONDS in web_routers/cron.py.
-            with suppress(ImportError):
-                from agent.estop import check_paused as _estop_check_paused
-                if _estop_check_paused("cron-webhook", logger):
-                    return web.json_response(
-                        {"error": "hermes is paused (ESTOP)", "job_id": job_id},
-                        status=503,
-                        headers={"Retry-After": str(60)},
-                    )
-            from cron.scheduler_provider import provider_supports_split_fire, resolve_cron_scheduler
-            provider = resolve_cron_scheduler()
-            loop = asyncio.get_running_loop()
-            # Live adapters (parity with the built-in ticker): E2EE / relay-fronted platforms
-            # have no native credential, so without them delivery fails.
-            runner = self.gateway_runner or request.app.get("gateway_runner")
-            if runner is None:
-                with suppress(Exception):
-                    from gateway.run import _gateway_runner_ref
-                    runner = _gateway_runner_ref()
-            adapters = getattr(runner, "adapters", None) or None
-
-            def _detach_fire(fire_fn, *fire_args) -> "web.Response":
-                # The done callback owns the reservation once the task is detached.
-                task = asyncio.create_task(asyncio.to_thread(fire_fn, *fire_args, adapters=adapters, loop=loop))
-                reservation["detached"] = True
-                task.add_done_callback(lambda _task: _release_pending_api_work(self, reservation))
-                self._track_background_task(task, tolerate_missing=True)
-                return web.json_response({"status": "accepted", "job_id": job_id}, status=202)
-
-            if not provider_supports_split_fire(provider):
-                # A legacy single-phase provider overrides ``fire_due`` but inherits the base
-                # ``claim_fire``; the split path would silently bypass that override.
-                return _detach_fire(provider.fire_due, job_id)
-            # Persist the attempt + exact store owner before acknowledging NAS; a failure here
-            # is retryable and the reservation remains attached.
-            try:
-                claimed_job = await asyncio.to_thread(provider.claim_fire, job_id)
-            except Exception as exc:
-                logger.error("cron fire admission failed for %s: %s", job_id, exc)
-                return web.json_response({"error": "cron fire admission failed", "job_id": job_id}, status=503)
-            if claimed_job is None:
-                return web.json_response({"status": "duplicate", "job_id": job_id}, status=200)
-            return _detach_fire(provider.fire_claimed, claimed_job)
-
     # -- Agent execution --------------------------------------------------------------
 
-    def _track_background_task(self, task, *, tolerate_missing: bool = False) -> None:
-        """Register a task in ``_background_tasks`` (tolerates test doubles) with auto-discard.
-        ``tolerate_missing`` (cron fire paths) also swallows AttributeError from the whole
-        registration; the run/sweep paths only tolerate an unhashable task."""
-        if tolerate_missing:
-            with suppress(TypeError, AttributeError):
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
-            return
+    def _track_background_task(self, task) -> None:
+        """Register a task in ``_background_tasks`` (tolerates test doubles) with auto-discard."""
         with suppress(TypeError):
             self._background_tasks.add(task)
         if hasattr(task, "add_done_callback"):
@@ -3676,7 +3147,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @staticmethod
     def _bind_api_server_session(
         *, chat_id: str = "", session_key: str = "", session_id: str = "", profile: str = "",
-        browser_control_principal: str = "", browser_control_transport_family: str = "",
         session_history_delivery: str = "") -> list:
         """Bind an API turn with push disabled and history delivery default-denied.
 
@@ -3689,8 +3159,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         from gateway.session_context import set_session_vars
         return set_session_vars(
             platform="api_server", chat_id=chat_id, session_key=session_key, session_id=session_id,
-            profile=profile, browser_control_principal=browser_control_principal,
-            browser_control_transport_family=browser_control_transport_family,
+            profile=profile,
             async_delivery=False, cron_session="", session_history_delivery=session_history_delivery)
 
     def _turn_runtime_metadata(
@@ -3780,8 +3249,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         loop = asyncio.get_running_loop()
         # ContextVars do not follow run_in_executor threads: capture here, re-enter in _run().
         request_profile = _api_request_profile.get()
-        request_browser_control_principal = _api_request_browser_control_principal.get()
-        request_browser_control_transport_family = _api_request_browser_control_transport_family.get()
 
         def _run():
             from gateway.session_context import clear_session_vars
@@ -3789,8 +3256,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 tokens = self._bind_api_server_session(
                     chat_id=session_id or "", session_key=gateway_session_key or session_id or "",
                     session_id=session_id or "", profile=request_profile or "",
-                    browser_control_principal=request_browser_control_principal,
-                    browser_control_transport_family=request_browser_control_transport_family,
                     session_history_delivery=session_history_delivery)
                 agent = None
                 from agent.notification_presentation import notification_turn
@@ -3958,7 +3423,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     _handle_get_run = _run_route_delegate("_handle_get_run")
     _handle_run_events = _run_route_delegate("_handle_run_events")
-    _handle_run_approval = _run_route_delegate("_handle_run_approval")
     _handle_steer_run = _run_route_delegate("_handle_steer_run")
     _handle_stop_run = _run_route_delegate("_handle_stop_run")
 
@@ -4150,6 +3614,18 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except Exception as e:
             logger.error("[%s] Failed to start API server: %s", self.name, e)
             return False
+
+    async def stop_intake(self) -> None:
+        """Stop accepting new API requests; in-flight requests finish.
+
+        Overlap authority release calls this so the newest gateway
+        generation can bind the shared port immediately while this process
+        finishes the /v1 runs it already owns.
+        """
+        site, self._site = self._site, None
+        if site is not None:
+            await site.stop()
+            logger.info("[%s] Listener stopped for overlap authority handoff", self.name)
 
     async def disconnect(self) -> None:
         """Stop the aiohttp server and release every owned resource, including the ResponseStore

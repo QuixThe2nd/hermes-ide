@@ -15,16 +15,28 @@ class TestPlatformEnumDynamic:
     """Test that Platform enum accepts unknown values for plugin platforms."""
 
     def test_builtin_members_still_work(self):
-        assert Platform.TELEGRAM.value == "telegram"
-        assert Platform("telegram") is Platform.TELEGRAM
+        assert Platform.DISCORD.value == "discord"
+        assert Platform("discord") is Platform.DISCORD
 
 
     def test_dynamic_member_case_normalised(self):
         """Mixed case normalised to lowercase."""
-        a = Platform("IRC")
-        b = Platform("irc")
-        assert a is b
-        assert a.value == "irc"
+        entry = PlatformEntry(
+            name="irc",
+            label="IRC",
+            adapter_factory=lambda cfg: MagicMock(),
+            check_fn=lambda: True,
+            source="plugin",
+        )
+        from gateway.platform_registry import platform_registry as _reg
+        _reg.register(entry)
+        try:
+            a = Platform("IRC")
+            b = Platform("irc")
+            assert a is b
+            assert a.value == "irc"
+        finally:
+            _reg.unregister("irc")
 
     def test_dynamic_member_with_hyphens(self):
         """Registered plugin platforms with hyphens work once registered."""
@@ -254,7 +266,6 @@ class TestPlatformEntryExtendedFields:
         assert entry.allowed_users_env == ""
         assert entry.allow_all_env == ""
         assert entry.max_message_length == 0
-        assert entry.pii_safe is False
         assert entry.emoji == "🔌"
         assert entry.allow_update_command is True
 
@@ -267,8 +278,8 @@ class TestCronPlatformResolution:
 
     def test_builtin_platform_resolves(self):
         """Built-in platform names resolve via Platform() call."""
-        p = Platform("telegram")
-        assert p is Platform.TELEGRAM
+        p = Platform("discord")
+        assert p is Platform.DISCORD
 
 
 # ── platforms.py integration ──────────────────────────────────────────
@@ -684,9 +695,8 @@ class TestMigratedPlatformWiring:
     @_pytest.mark.parametrize(
         "platform_name",
         [
-            "teams", "telegram", "discord", "slack",
-            "matrix", "dingtalk", "feishu", "wecom_callback",
-            "google_chat",
+            "discord",
+            "matrix",
         ],
     )
     def test_lazy_installable_platform_has_split_wiring(self, platform_name):
@@ -695,8 +705,6 @@ class TestMigratedPlatformWiring:
         discover_plugins()
         from gateway.platform_registry import platform_registry
 
-        # Materialize deferred loaders (wecom_callback is registered by the
-        # "wecom" manifest's loader; a cold get() by its own name misses).
         platform_registry.plugin_entries()
         entry = platform_registry.get(platform_name)
         assert entry is not None, f"{platform_name} not registered"

@@ -1,6 +1,6 @@
 """``hermes pause`` / ``hermes resume`` — the global emergency stop.
 
-``pause`` writes the ESTOP sentinel at ``$HERMES_HOME/ESTOP``; cron, kanban and new gateway
+``pause`` writes the ESTOP sentinel at ``$HERMES_HOME/ESTOP``; cron and new gateway
 turns halt on their next check (in-flight work is never killed). ``resume`` removes it and
 operation resumes on the next tick — no restart. Ported from gastownhall/gastown estop.go (MIT).
 """
@@ -23,7 +23,7 @@ def cmd_pause(args: argparse.Namespace) -> int:
     print(f"⏸️  {verb}{detail}")
     print(f"    sentinel: {path}")
     print(
-        "    Cron dispatch, kanban dispatch, and new gateway turns are on hold.\n"
+        "    Cron dispatch and new gateway turns are on hold.\n"
         "    In-flight work keeps running. Run `hermes resume` to lift the pause.")
     return 0
 
@@ -42,9 +42,9 @@ def cmd_resume(args: argparse.Namespace) -> int:
 def build_pause_parser(subparsers) -> None:
     """Attach the ``pause`` and ``resume`` subcommands to ``subparsers``."""
     pause_parser = subparsers.add_parser(
-        "pause", help="Emergency stop: pause cron/kanban dispatch and new gateway turns",
+        "pause", help="Emergency stop: pause cron dispatch and new gateway turns",
         description="Engage the global emergency stop. Halts NEW work only — cron "
-            "dispatch, kanban dispatch, and new gateway turns — until "
+            "dispatch and new gateway turns — until "
             "`hermes resume`. In-flight work is never killed.")
     pause_parser.add_argument(
         "--reason", default=None, help="Optional reason stored in the sentinel and shown to users")

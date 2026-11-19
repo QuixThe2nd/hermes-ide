@@ -223,8 +223,11 @@ def test_activate_fails_cleanly_without_a_store(tmp_path: Path):
     env = os.environ.copy()
     env["HERMES_RUNTIME_DIR"] = _posix(tmp_path / "empty-store")
     env.pop(CANARY, None)
+    isolated = tmp_path / "no-install" / "activate"
+    isolated.parent.mkdir()
+    shutil.copy2(ACTIVATE, isolated)
     script = (
-        f'source "{_posix(ACTIVATE)}" 2>/dev/null; '
+        f'source "{_posix(isolated)}" 2>/dev/null; '
         f'test $? -ne 0 && echo refused'
     )
     result = subprocess.run(

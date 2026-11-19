@@ -29,7 +29,7 @@ from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource
 
-SESSION_KEY = "agent:main:telegram:group:-1001:12345"
+SESSION_KEY = "agent:main:discord:group:-1001:12345"
 
 
 def _bootstrap(monkeypatch, tmp_path):
@@ -44,12 +44,10 @@ def _bootstrap(monkeypatch, tmp_path):
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
     runner._handle_active_session_busy_message = AsyncMock(return_value=False)
     runner._session_db = MagicMock()
-    runner._recover_telegram_topic_thread_id = lambda _source: None
     runner._cache_session_source = lambda _key, _source: None
     runner._is_session_run_current = lambda _key, _gen: True
     runner._begin_session_run_generation = lambda _key: 1
@@ -65,7 +63,7 @@ def _bootstrap(monkeypatch, tmp_path):
         session_id="sess-82888",
         created_at=datetime.now(),
         updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="group",
     )
     runner.session_store.load_transcript.return_value = []
@@ -86,7 +84,7 @@ def _bootstrap(monkeypatch, tmp_path):
 
 def _source():
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="-1001",
         chat_type="group",
         user_id="12345",

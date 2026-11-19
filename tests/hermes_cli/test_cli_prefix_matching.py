@@ -25,10 +25,10 @@ class TestSlashCommandPrefixMatching:
 
 
     def test_ambiguous_prefix_shows_suggestions(self):
-        """/re matches multiple commands — should show ambiguous message."""
+        """/ve matches multiple commands — should show ambiguous message."""
         cli_obj = _make_cli()
         with patch("cli._cprint") as mock_cprint:
-            cli_obj.process_command("/re")
+            cli_obj.process_command("/ve")
             printed = " ".join(str(c) for c in mock_cprint.call_args_list)
         assert "Ambiguous" in printed or "Did you mean" in printed
 
@@ -80,12 +80,12 @@ class TestSlashCommandPrefixMatching:
         assert "Ambiguous" not in printed
 
     def test_tied_shortest_matches_still_ambiguous(self):
-        """/re matches /reset and /retry (both 6 chars) — no unique shortest, stays ambiguous."""
+        """/ve matches /verbose and /version (both 7 chars) — no unique shortest, stays ambiguous."""
         cli_obj = _make_cli()
         printed = []
         import cli as cli_mod
         with patch.object(cli_mod, '_cprint', side_effect=lambda t: printed.append(t)):
-            cli_obj.process_command("/re")
+            cli_obj.process_command("/ve")
         combined = " ".join(printed)
         assert "Ambiguous" in combined or "Did you mean" in combined
 

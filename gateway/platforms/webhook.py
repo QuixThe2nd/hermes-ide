@@ -46,8 +46,8 @@ _PROFILE_REJECTED = object()
 _UNPARSEABLE = object()
 
 _BUILTIN_DELIVER_PLATFORMS = {
-    "telegram", "discord", "slack", "signal", "sms", "whatsapp", "matrix", "mattermost",
-    "homeassistant", "email", "dingtalk", "feishu", "wecom", "wecom_callback", "weixin",
+    "discord", "slack", "signal", "sms", "whatsapp", "matrix",
+    "homeassistant", "email", "feishu", "weixin",
     "bluebubbles", "qqbot", "yuanbao"}
 
 # ``None`` → aiohttp binds BOTH address families. "0.0.0.0" is IPv4-only (unreachable on IPv6-only
@@ -160,6 +160,9 @@ class WebhookAdapter(BasePlatformAdapter):
     interactive_resume: bool = False
     # ``/p/<profile>/webhooks/<route>`` on the shared listener (``_resolve_request_profile``).
     serves_profile_prefix: bool = True
+    # Owns the webhook TCP port: intake must stop at overlap authority
+    # release so the newest generation can bind it.
+    owns_singleton_listener: bool = True
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WEBHOOK)
@@ -173,6 +176,7 @@ class WebhookAdapter(BasePlatformAdapter):
         self._dynamic_routes_mtime: float = 0.0
         self._routes: Dict[str, dict] = dict(self._static_routes)
         self._runner = None
+        self._site = None
         self._v1_signature_warned: set[str] = set()  # routes already warned about legacy V1 (once per route)
         # Keyed by session chat_id; read by EVERY send() (interim status messages AND the final
         # response) so never pop on send(). TTL-pruned on each POST.
@@ -208,7 +212,7 @@ class WebhookAdapter(BasePlatformAdapter):
             deliver = route.get("deliver", "log")
             if not deliver or deliver == "log":
                 raise ValueError(f"[webhook] Route '{name}' has deliver_only=true but deliver is '{deliver}'. Direct "
-                                 f"delivery requires a real target (telegram, discord, slack, github_comment, etc.).")
+                                 f"delivery requires a real target (discord, slack, signal, github_comment, etc.).")
             if route.get("cron_job"):
                 raise ValueError(f"[webhook] Route '{name}' sets both deliver_only and cron_job. They are mutually "
                                  f"exclusive: deliver_only pushes the rendered template as a message, cron_job fires "
@@ -232,7 +236,7 @@ class WebhookAdapter(BasePlatformAdapter):
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         try:
-            await start_tcp_site(self._runner, self._host, self._port, log_tag="webhook")
+            self._site = await start_tcp_site(self._runner, self._host, self._port, log_tag="webhook")
         except OSError as exc:
             await self._runner.cleanup()
             self._runner = None
@@ -245,6 +249,19 @@ class WebhookAdapter(BasePlatformAdapter):
                     self._port, ", ".join(self._routes.keys()) or "(none configured)")
         self._wire_plugin_handlers(None)
         return True
+
+    async def stop_intake(self) -> None:
+        """Stop accepting new webhook deliveries; in-flight requests finish.
+
+        Overlap authority release calls this so the newest gateway
+        generation can bind the shared port immediately while this process
+        finishes the agent runs it already owns. Outbound delivery is
+        unaffected.
+        """
+        site, self._site = self._site, None
+        if site is not None:
+            await site.stop()
+            logger.info("[webhook] Listener stopped for overlap authority handoff")
 
     async def disconnect(self) -> None:
         await self._coalescer.flush()  # buffered events are dispatched, not dropped, on shutdown/reconnect
@@ -851,7 +868,7 @@ class WebhookAdapter(BasePlatformAdapter):
         return self.gateway_runner._authorization_adapter(target_platform, profile)
 
     async def _deliver_cross_platform(self, platform_name: str, content: str, delivery: dict) -> SendResult:
-        """Route response to another platform (telegram, discord, etc.)."""
+        """Route response to another platform (discord, slack, etc.)."""
         if not self.gateway_runner:
             return SendResult(success=False, error="No gateway runner for cross-platform delivery")
         try:
@@ -871,5 +888,5 @@ class WebhookAdapter(BasePlatformAdapter):
                     success=False,
                     error=f"No chat_id for {platform_name}; set an explicit delivery target",
                 )
-            thread_id = extra.get("message_thread_id") or extra.get("thread_id")  # Telegram forum topics
+            thread_id = extra.get("message_thread_id") or extra.get("thread_id")  # forum topics
             return await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)

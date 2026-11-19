@@ -409,10 +409,9 @@ def _resolve_relay_identity_token() -> str:
           ``$DOMINO_API_PROXY/access-token``): a plain GET whose body IS the token,
           raw JWT or a JSON envelope with ``access_token``. Possession of the
           (typically loopback) endpoint is the credential.
-      2.  Nous Portal (default): ``resolve_nous_access_token()``.
-
     Raises on failure; callers decide whether that's fatal (enroll CLI) or a graceful
-    boot no-op (self-provision).
+    boot no-op (self-provision). Without an IdP token endpoint there is no ambient
+    sign-in fallback.
     """
     env = {k: os.environ.get(f"GATEWAY_RELAY_IDP_{k.upper()}", "").strip() for k in _IDP_KEYS}
     if not env["token_url"]:
@@ -425,9 +424,10 @@ def _resolve_relay_identity_token() -> str:
     token_url, client_id, client_secret, scope = (env[k] for k in _IDP_KEYS)
 
     if not token_url:
-        from hermes_cli.auth import resolve_nous_access_token
-
-        return resolve_nous_access_token()
+        raise RuntimeError(
+            "gateway relay identity is not configured. Set gateway.idp.token_url "
+            "with an ambient token endpoint or OAuth2 client credentials."
+        )
 
     if not client_id and not client_secret:
         # Mode 1b — plain GET; the body is the token, raw or JSON-enveloped.
@@ -745,8 +745,7 @@ def register_relay_adapter(force: bool = False, url: Optional[str] = None) -> bo
 # The whole block is removed by reverting the commit that added it.
 
 def relay_bot_username(platform: str) -> Optional[str]:
-    """The bot's deep-link username/handle for a platform (e.g. Telegram's
-    ``@handle`` for ``t.me/<handle>``), read from the per-platform entry in
+    """The bot's public username/handle for a platform, read from the per-platform entry in
     ``GATEWAY_RELAY_BOT_IDS``. None when absent (most platforms don't need one).
     """
     entry = _relay_bot_ids_map().get(platform)

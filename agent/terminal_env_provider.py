@@ -30,8 +30,6 @@ class TerminalEnvironmentProvider(ProviderBase):
       prompt, the host Python probe, and remote-aware skill env handling.
     * ``is_container`` — own filesystem rooted away from the host: container resource config
       passed through, host-looking cwds sanitized, file tools use container path resolution.
-    * ``skip_container_guards`` — sandbox disposable enough to skip dangerous-command approval
-      prompts. Defaults to ``is_container``; backends that can mount host paths override to False.
     * ``cache_path_base`` — where auto-synced ``~/.hermes/cache`` files land inside the backend
       (``"~/.hermes"``, ``"/root/.hermes"``), or ``None`` when host paths remain correct.
     * ``strip_env_keys`` — vendor credential env vars, stripped from every subprocess the agent
@@ -49,9 +47,6 @@ class TerminalEnvironmentProvider(ProviderBase):
         """One-line description shown in backend pickers."""
         return f"Run commands in a {self.display_name} environment."
 
-    @property
-    def skip_container_guards(self) -> bool:
-        return self.is_container
 
     @property
     def cache_path_base(self) -> Optional[str]:
@@ -100,4 +95,4 @@ class TerminalEnvironmentProvider(ProviderBase):
     ):
         """Create an execution environment (``BaseEnvironment`` duck type). MUST accept ``**kwargs`` and ignore
         unknown keys so the factory can evolve without breaking older plugins. ``task_id`` keys reuse/persistence;
-        ``container_config`` carries ``container_cpu/memory/disk/persistent`` when :attr:`is_container`."""
+        ``container_config`` is backend-defined sandbox settings (empty dict unless the caller supplies one)."""

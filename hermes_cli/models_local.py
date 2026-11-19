@@ -285,7 +285,7 @@ def _same_ollama_native_root(left: str, right: str) -> bool:
         return False
 
 
-_NEVER_OLLAMA_PROVIDERS = frozenset({"openrouter", "nous", "anthropic", "openai", "openai-codex", "gemini", "ollama-cloud"})
+_NEVER_OLLAMA_PROVIDERS = frozenset({"openrouter", "anthropic", "openai", "openai-codex", "gemini", "ollama-cloud"})
 _LOCAL_LIKE_PROVIDERS = frozenset({"", "custom", "local", "llamacpp", "llama.cpp", "llama-cpp", "vllm"})
 
 

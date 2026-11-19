@@ -139,58 +139,20 @@ VALID_HOOKS: Set[str] = {
     # fast-path of /new; see gateway/run.py::_interrupt_and_clear_session). Kwargs: session_key,
     # platform, reason, invalidation_reason. Return values are ignored.
     "agent_loop_stopped",
-    # Approval observers (tools/approval.py); returns ignored — plugins cannot veto or pre-answer
-    # (use pre_tool_call). Kwargs: command, description, pattern_key, pattern_keys, session_key,
-    # surface: "cli"|"gateway"|"smart"; post_approval_response adds choice ("once"|"session"|
-    # "always"|"deny"|"timeout"|"smart_approve"|"smart_deny") and decided_by.
-    "pre_approval_request", "post_approval_response",
     # on_room_member_activity: a hosted Group Chat member's live runtime events (tool.started/completed,
     # request.opened, message.delta, reasoning.delta, turn.error, ...) stamped with room_id, thread_id,
     # member_id, turn_id, task_id, execution_generation. Observer, queued per consumer off the token
     # path (agent.plugin_stream_hooks); never written to the durable room log. Kwargs: those
     # coordinates + kind, seq, payload (the client-safe session event payload, approvals redacted).
     "on_room_member_activity",
-    # pre_transcription: after provider resolution, BEFORE any backend runs. Kwargs: file_path,
-    # provider, model, language, prompt, source. Return None or a dict mutating prompt/language/
-    # model (registration order, last-writer-wins; file_path is read-only).
-    "pre_transcription",
-    # Kanban task observers (hermes_cli.kanban_db), fired AFTER the DB commit so a slow plugin never
-    # holds the SQLite write lock; returns ignored. claimed fires in the DISPATCHER right before
-    # spawn; completed/blocked fire in the WORKER (or whichever process drove it). Kwargs: task_id,
-    # board, assignee, run_id, profile_name; completed adds summary, blocked adds reason.
-    "kanban_task_claimed", "kanban_task_completed", "kanban_task_blocked",
-    # Kanban worker/mutation/tick observers; returns ignored; fire sites short-circuit on
-    # has_hook(). Kwargs: task_id, profile_name, board, assignee, run_id plus, per hook:
-    # worker_spawned (DISPATCHER, after PID persisted, inside the dispatch lock — stay fast):
-    #   worker_pid, workspace_path (privacy: project layout/usernames).
-    # worker_exited (tick-derived on dead-PID reclaim): worker_pid, exit_kind ("clean_exit" |
-    #   "rate_limited" | "nonzero_exit" | "signaled" | "unknown"), exit_code, outcome, retry_status.
-    # worker_stale_claim (TTL-expired claim reclaimed; live-PID extensions do NOT fire):
-    #   worker_pid, heartbeat_stale, retry_status.
-    # task_updated (committed task-row write outside claim/complete/block, in whichever process
-    #   committed it): changed_fields — field NAMES only, never values.
-    # dispatch_tick (once per dispatch_once, strictly AFTER the dispatch lock is released): board,
-    #   profile_name, dry_run, outcome ("ok"|"skipped_locked"|"idle"), result: DispatchResult
-    #   (privacy: task ids, assignees, workspace paths).
-    "on_kanban_worker_spawned", "on_kanban_worker_exited", "on_kanban_worker_stale_claim",
-    "on_kanban_task_updated", "on_kanban_dispatch_tick",
     # gateway_platform_event: normalized envelopes only, never raw SDK objects or adapter handles.
     # Kwargs: platform, event_type, payload (event_type-local; see hooks.md). New event types land
     # only together with real fire-sites.
-    # on_kanban_dispatch_tick fires once per dispatcher tick in dispatch_once, strictly AFTER the board's
-    # single-writer dispatch lock has been released (the #56066 original fired inside the lock — the #64231
-    # disposition mandates the post-lock re-port), so a slow subscriber can never extend the writer critical
-    # section. Kwargs: board: str | None, profile_name: str, dry_run: bool, outcome: "ok" | "skipped_locked"
-    # | "idle", result: hermes_cli.kanban_db.DispatchResult (spawned, reclaimed, promoted,
-    # reconciled_orphans, crashed, stale, timed_out, auto_blocked, rate_limited, auto_assigned_default,
-    # respawn_guarded, skipped_per_profile_capped, skipped_unassigned, skipped_nonspawnable,
-    # skipped_locked). Privacy: result carries task ids, assignees, and workspace paths.
     # Gateway platform-boundary observer hooks (#64176). Observer-only; each callback isolated by
-    # invoke_hook. This surface grants no adapter handles or platform actions. Fired today: Telegram
-    # "reaction" + "message_edited"; Discord "message_edited", "message_deleted", "thread_created",
-    # "thread_renamed". Each event type carries its own event-local additive payload contract (see
+    # invoke_hook. This surface grants no adapter handles or platform actions. Fired today: Discord
+    # "message_edited", "message_deleted", "thread_created", "thread_renamed". Each event type
+    # carries its own event-local additive payload contract (see
     # hooks.md). Other event types and hook names land here only together with real fire-sites and payload
-    # contracts; no inert VALID_HOOKS surface is registered ahead of implementation.
     "gateway_platform_event",
     # pre_command: BEFORE a recognized slash command's handler on CLI and gateway canonical dispatch;
     # returns IGNORED in v1. Deliberately NOT fired for the gateway's running-agent intercept path
@@ -520,7 +482,7 @@ class PluginContext:
     def profile_name(self) -> str:
         """Active profile name (``"default"``, the ``~/.hermes/profiles/<name>`` id, or ``"custom"``),
         derived from ``HERMES_HOME`` — not ``_cli_ref``, which is None outside the interactive CLI —
-        so gateway and kanban workers get it too."""
+        so gateway and automation workers get it too."""
         try:
             from hermes_cli.profiles import get_active_profile_name
             return get_active_profile_name()
@@ -548,30 +510,6 @@ class PluginContext:
         logger.debug("Plugin %s spawned supervised task: %s", self.manifest.name, task_name)
         return task
 
-    def register_approval_transport(self, name: str, present_fn: Callable) -> None:
-        """Register a human approval transport, inactive until ``security.approval.transport:
-        <name>`` selects it. It receives a redacted ``ApprovalRequest`` and returns only a
-        correlated decision; policy and persistence stay host-owned. ``present_fn`` may be async."""
-        from hermes_cli.approval_transport import RegisteredApprovalTransport
-        transports = self._manager._approval_transports
-        clean = str(name).strip().lower()
-        if clean == "builtin":
-            raise ValueError("approval transport name 'builtin' is reserved")
-        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", clean):
-            raise ValueError("approval transport name must match [a-z0-9][a-z0-9_-]{0,63}")
-        if not callable(present_fn):
-            raise TypeError("approval transport present_fn must be callable")
-        if clean in transports:
-            owner = transports[clean].plugin_id
-            raise ValueError(f"approval transport {clean!r} is already registered by {owner!r}")
-        entry = RegisteredApprovalTransport(
-            name=clean, present=present_fn, plugin_id=self.plugin_id,
-            profile_home=str(get_hermes_home().resolve()),
-        )
-        logger.info("Plugin %s registered approval transport: %s", self.plugin_id, clean)
-        # Duplicate names are rejected above, so there is never a displaced previous entry to restore;
-        # tracking makes unload/force-reload remove this transport.
-        self._track_mapping_entry("approval_transport", clean, transports, entry, None)
 
     @_serialized_replacement
     def register_tool(
@@ -943,48 +881,6 @@ class PluginContext:
                      getattr(provider, "name", "?"))
 
     @_serialized_replacement
-    def register_dashboard_auth_provider(self, provider) -> Optional[PluginRegistration]:
-        """Register a :class:`hermes_cli.dashboard_auth.DashboardAuthProvider` for the dashboard
-        auth gate (non-loopback bind without ``--insecure``). Wrong type / duplicate name warn and
-        are ignored, never raised."""
-        from hermes_cli.dashboard_auth import DashboardAuthProvider
-        from hermes_cli.dashboard_auth.registry import register_global_provider, unregister_global_provider
-        if self._wrong_type(provider, DashboardAuthProvider, "dashboard-auth provider"):
-            return
-        launch_scope = hermes_home_key(get_process_hermes_home())
-        if self._manager.scope_key != launch_scope:
-            logger.warning(
-                "Plugin '%s' tried to register dashboard-auth provider %r "
-                "from profile scope %s; ignoring it because dashboard auth "
-                "is owned by launch scope %s.",
-                self.manifest.name,
-                provider.name,
-                self._manager.scope_key,
-                launch_scope,
-            )
-            return
-        registry_name = provider.name
-        # The auth registry is process-global (lifetime = web server). Disposing it on a routine
-        # per-home manager teardown emptied it for the WHOLE process and disabled sign-in until
-        # restart — so upsert and keep it out of reverse-order teardown (``persistent=True``).
-        try:
-            # A per-home manager is torn down routinely (profile-scoped dashboard activity, force
-            # re-discovery), and disposing this registration on that teardown emptied the auth registry for
-            # the WHOLE process, permanently disabling sign-in until restart (#91701). The handle still
-            # disposes explicitly (identity- conditional), and a forced re-discovery rotates the provider in
-            # place via the upsert.
-            register_global_provider(provider)
-        except (TypeError, ValueError) as e:
-            logger.warning("Plugin '%s' failed to register dashboard-auth provider %r: %s",
-                           self.manifest.name, getattr(provider, "name", "?"), e)
-            return
-        handle = self._track("dashboard_auth_provider", registry_name,
-                             lambda: unregister_global_provider(registry_name, provider), persistent=True)
-        logger.info("Plugin '%s' registered dashboard-auth provider: %s (%s)", self.manifest.name,
-                    registry_name, provider.display_name)
-        return handle
-
-    @_serialized_replacement
     def register_platform(
         self, name: str, label: str, adapter_factory: Callable, check_fn: Callable,
         validate_config: Callable | None = None, required_env: list | None = None,
@@ -1037,7 +933,7 @@ class PluginContext:
 
     def register_platform_handler(self, platform: str, factory: Callable) -> None:
         """Register ``factory(native, adapter)``, invoked at ``connect()`` before/as the core handlers
-        register (``adapter`` read-only). ``native``: telegram PTB ``Application``, discord
+        register (``adapter`` read-only). ``native``: discord
         ``commands.Bot``, slack ``AsyncApp``, matrix client, teams ``App``, dingtalk
         ``DingTalkStreamClient``, line aiohttp ``web.Application``, others ``None``. Keep SDK imports
         inside the factory; exceptions are logged and the platform still connects. Scope handlers in
@@ -1052,11 +948,6 @@ class PluginContext:
         logger.debug("Plugin %s registered %s handler factory: %s", self.manifest.name, key,
                      getattr(factory, "__name__", repr(factory)))
 
-    def register_telegram_handler(self, factory: Callable) -> None:
-        """``register_platform_handler("telegram", factory)``. PTB dispatches only the FIRST matching
-        handler per group and core registers a catch-all ``CallbackQueryHandler`` — always scope with
-        ``pattern=`` or you swallow the core button flows."""
-        self.register_platform_handler("telegram", factory)
 
     @_serialized_replacement
     def register_auxiliary_task(
@@ -1235,11 +1126,6 @@ _SCOPED_PROVIDER_REGISTRARS: Tuple[Tuple[str, str, str, str, str, str, Dict[str,
      "Register an :class:`agent.web_search_provider.WebSearchProvider`; "
      "``provider.name`` is matched by ``web.search_backend`` / ``web.extract_backend`` / ``web.backend``.",
      {}),
-    ("register_browser_provider", "browser_provider", "agent.browser_registry",
-     "agent.browser_provider:BrowserProvider", "browser provider",
-     "Register an :class:`agent.browser_provider.BrowserProvider`; "
-     "``provider.name`` is matched by ``browser.cloud_provider`` (consulted by "
-     "``tools.browser_tool_cloud._get_cloud_provider``).", {}),
     ("register_terminal_environment_provider", "terminal_environment_provider",
      "agent.terminal_env_registry", "agent.terminal_env_provider:TerminalEnvironmentProvider",
      "terminal environment provider",
@@ -1255,17 +1141,6 @@ _SCOPED_PROVIDER_REGISTRARS: Tuple[Tuple[str, str, str, str, str, str, Dict[str,
      "orchestrator owns ordering/precedence/provenance; the source only fetches. Since dotenv usually "
      "loads before discovery, the manager re-pulls enabled plugin sources afterwards.",
      {"normalize": None, "register": "register_source", "param": "source"}),
-    ("register_tts_provider", "tts_provider", "agent.tts_registry",
-     "agent.tts_provider:TTSProvider", "TTS provider",
-     "Register an :class:`agent.tts_provider.TTSProvider`; ``provider.name`` is matched by "
-     "``tts.provider`` unless it is a built-in name (rejected with a warning) or a "
-     "``tts.providers.<name>: type: command`` entry shares it (command-providers win).",
-     {"normalize": "lower"}),
-    ("register_transcription_provider", "transcription_provider", "agent.transcription_registry",
-     "agent.transcription_provider:TranscriptionProvider", "transcription provider",
-     "Register an :class:`agent.transcription_provider.TranscriptionProvider`; ``provider.name`` is "
-     "matched by ``stt.provider`` unless it is a built-in name (rejected) or a ``stt.providers.<name>: "
-     "type: command`` entry shares it (command-providers win).", {"normalize": "lower"}),
 )
 
 _NAME_NORMALIZERS: Dict[Optional[str], Optional[Callable[[str], str]]] = {
@@ -1362,8 +1237,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
 
     def __init__(self, scope_key: Optional[str] = None) -> None:
         # Home is captured immutably: unload may run from another profile context, but every
-        # inverse must target the registration's original scope.
-        self.scope_key = scope_key or hermes_home_key()
+        # inverse must target the registration's original scope.  Normalize through
+        # hermes_home_key so the scope matches the key the registries store under
+        # (normcase on Windows).
+        self.scope_key = hermes_home_key(scope_key)
         self.home_path = Path(self.scope_key)
         self._discovery_lock = threading.RLock()
         self._discovered: bool = False
@@ -1372,7 +1249,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._context_engine = None  # Set by a plugin via register_context_engine()
         # Manager-local registries keyed by name (see the matching ``PluginContext.register_*``):
         # plugins, hooks, middleware, CLI + slash commands, prompt sections, skills (qualified name ->
-        # metadata), portable MCP servers, auxiliary tasks, approval transports, Slack action handlers
+        # metadata), portable MCP servers, auxiliary tasks, Slack action handlers
         # (matcher, callback, plugin_name), platform handler factories (lowercase platform -> list).
         self._plugins: Dict[str, LoadedPlugin] = {}
         self._hooks: Dict[str, List[Callable]] = {}
@@ -1387,7 +1264,6 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
         self._portable_mcp_servers: Dict[str, Dict[str, Any]] = {}
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
-        self._approval_transports: Dict[str, Any] = {}
         self._slack_action_handlers: List[tuple] = []
         self._platform_handler_factories: Dict[str, List[tuple]] = {}
         # Event bus: owner-tagged subscriptions (unload removes zombies); one daemon worker keeps
@@ -1614,31 +1490,6 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             logger.log(*verdict.log)
         return False
 
-    def register_approval_transport(self, name: str, present_fn: Callable, *, plugin_id: str) -> None:
-        """Manager-level registration (public API kept for out-of-tree plugins); the PluginContext
-        method is the tracked path plugins normally use. Same validation, no unload tracking."""
-        from hermes_cli.approval_transport import RegisteredApprovalTransport
-        clean = str(name).strip().lower()
-        if clean == "builtin":
-            raise ValueError("approval transport name 'builtin' is reserved")
-        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", clean):
-            raise ValueError("approval transport name must match [a-z0-9][a-z0-9_-]{0,63}")
-        if not callable(present_fn):
-            raise TypeError("approval transport present_fn must be callable")
-        if clean in self._approval_transports:
-            owner = self._approval_transports[clean].plugin_id
-            raise ValueError(f"approval transport {clean!r} is already registered by {owner!r}")
-        self._approval_transports[clean] = RegisteredApprovalTransport(
-            name=clean, present=present_fn, plugin_id=plugin_id, profile_home=str(get_hermes_home().resolve()),
-        )
-        logger.info("Plugin %s registered approval transport: %s", plugin_id, clean)
-
-    def get_approval_transport(self, name: str):
-        """Return a transport only inside the profile that registered it."""
-        registered = self._approval_transports.get(str(name).strip().lower())
-        if registered is None or registered.profile_home != str(get_hermes_home().resolve()):
-            return None
-        return registered
 
     def _collect_directory_manifests(self) -> List[PluginManifest]:
         """Directory manifests in full-discovery order (see :func:`collect_directory_manifests`)."""
@@ -1692,9 +1543,6 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         adapter)`` at connect (see :meth:`PluginContext.register_platform_handler`)."""
         return list(self._platform_handler_factories.get((platform or "").strip().lower(), []))
 
-    def get_telegram_handler_factories(self) -> List[tuple]:
-        """Back-compat alias for ``get_platform_handler_factories("telegram")``."""
-        return self.get_platform_handler_factories("telegram")
 
     def list_plugins(self) -> List[Dict[str, Any]]:
         """Return a list of info dicts for all discovered plugins."""
@@ -1811,13 +1659,6 @@ def _reset_plugin_managers_for_tests() -> None:
                 logger.debug("test plugin-manager unload failed", exc_info=True)
         _plugin_managers_by_home.clear()
         _plugin_manager = None
-    # Dashboard-auth providers are persistent and survive a routine unload, so the clean-slate
-    # reset must clear that process-global registry explicitly or a test's provider leaks.
-    try:
-        from hermes_cli.dashboard_auth.registry import clear_providers
-        clear_providers()
-    except Exception:
-        logger.debug("dashboard-auth registry clear failed", exc_info=True)
 
 
 def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:
@@ -2020,7 +1861,6 @@ _thread_tool_whitelist = threading.local()
 class _PreToolCallDirective:
     action: Optional[str] = None
     message: Optional[str] = None
-    rule_key: Optional[str] = None
     modified_args: Optional[Dict[str, Any]] = None
 
 
@@ -2041,10 +1881,7 @@ def _get_pre_tool_call_directive_details(
     tool_call_id: str = "", turn_id: str = "", api_request_id: str = "",
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
 ) -> _PreToolCallDirective:
-    """Check ``pre_tool_call`` hooks for ``{"action": "block", "message"}`` (veto; message becomes
-    the tool result) or ``{"action": "approve", "message", "rule_key"?}`` (escalate ANY tool to the
-    human-approval gate; ``rule_key`` picks the ``[a]lways`` allowlist grain). First valid directive
-    wins; irrelevant returns are ignored."""
+    """Run pre-tool hooks and return the first block plus merged argument modifications."""
     allowed = getattr(_thread_tool_whitelist, "allowed", None)
     if allowed is not None and tool_name not in allowed:
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
@@ -2060,33 +1897,24 @@ def _get_pre_tool_call_directive_details(
         if not isinstance(result, dict):
             continue
         action = result.get("action")
-        # "modify" — transform tool_input before dispatch. Processed before the block/approve gate
-        # so modify directives are visible even when a later hook blocks. Each modify directive
-        # shallow-merges its keys into one accumulated dict built from the original args.
         if action == "modify":
             partial = result.get("args")
             if isinstance(partial, dict) and partial:
                 modified_args = {**(modified_args if modified_args is not None else
                                     (args if isinstance(args, dict) else {})), **partial}
             continue
-        if action not in ("block", "approve"):
+        if action != "block":
             continue
         message = result.get("message")
-        message = message if isinstance(message, str) and message else None
-        # A block directive requires a message (it becomes the tool result); approve's is optional.
-        if action == "block" and not message:
-            continue
-        rule_key = result.get("rule_key") if action == "approve" else None
-        rule_key = (rule_key.strip() or None) if isinstance(rule_key, str) else None
-        return _PreToolCallDirective(action=action, message=message, rule_key=rule_key, modified_args=modified_args)
+        if isinstance(message, str) and message:
+            return _PreToolCallDirective(action="block", message=message, modified_args=modified_args)
     return _PreToolCallDirective(modified_args=modified_args)
 
 
 def get_pre_tool_call_directive(
     tool_name: str, args: Optional[Dict[str, Any]], **hook_kwargs: Any
 ) -> tuple[Optional[str], Optional[str]]:
-    """Back-compat: ``(directive, message)`` with directive ``"block"`` / ``"approve"`` / ``None``.
-    ``hook_kwargs`` are the observability ids of :func:`_get_pre_tool_call_directive_details`."""
+    """Return ``("block", message)`` or ``(None, None)`` after running hooks."""
     details = _get_pre_tool_call_directive_details(tool_name, args, **hook_kwargs)
     return (details.action, details.message)
 
@@ -2094,7 +1922,7 @@ def get_pre_tool_call_directive(
 def get_pre_tool_call_block_message(
     tool_name: str, args: Optional[Dict[str, Any]], **hook_kwargs: Any
 ) -> Optional[str]:
-    """Deprecated shim: only the ``block`` message (or ``None``); ``approve`` is invisible here."""
+    """Return the first valid block message, if any."""
     directive, message = get_pre_tool_call_directive(tool_name, args, **hook_kwargs)
     return message if directive == "block" else None
 
@@ -2102,52 +1930,16 @@ def get_pre_tool_call_block_message(
 def resolve_pre_tool_block(
     tool_name: str, args: Optional[Dict[str, Any]], **hook_kwargs: Any
 ) -> Optional[str]:
-    """Resolve the pre_tool_call directive to a final block message (or ``None`` to proceed),
-    running the human-approval gate for ``approve``. See :func:`_resolve_block_from_details`."""
+    """Resolve a pre-tool block message; ``None`` proceeds."""
     return _dispatch_pre_tool_call_hooks(tool_name, args, **hook_kwargs)[0]
-
-
-def _resolve_block_from_details(
-    details: "_PreToolCallDirective", tool_name: str, *, turn_id: str = "", tool_call_id: str = "",
-    session_id: str = "",
-) -> Optional[str]:
-    """The ONE place for the fail-closed approval logic: ``block`` blocks with its message; an
-    ``approve`` whose gate errors, denies, or times out is blocked; anything else proceeds."""
-    if details.action == "block":
-        return details.message
-    if details.action != "approve":
-        return None
-    try:
-        from tools.approval import request_tool_approval
-        from tools.approval_context import reset_current_observability_context, set_current_observability_context
-        approval_tokens = None
-        with suppress(Exception):
-            approval_tokens = set_current_observability_context(
-                turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id)
-        try:
-            result = request_tool_approval(tool_name, details.message or "", rule_key=details.rule_key or tool_name)
-        finally:
-            if approval_tokens is not None:
-                with suppress(Exception):
-                    reset_current_observability_context(approval_tokens)
-    except Exception:
-        # Fail-closed: if the gate itself errors, block rather than silently execute an action a
-        # plugin flagged for approval.
-        return f"BLOCKED: plugin approval gate failed for {tool_name}"
-    if not result.get("approved"):
-        return str(result.get("message") or f"BLOCKED: plugin approval required for {tool_name}")
-    return None
 
 
 def _dispatch_pre_tool_call_hooks(
     tool_name: str, args: Optional[Dict[str, Any]], **hook_kwargs: Any
 ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
-    """Invoke ``pre_tool_call`` hooks once; return ``(block_message, modified_args)`` — the resolved
-    block/approve message (``None`` to proceed) and merged ``modify`` args (``None`` if none)."""
+    """Invoke hooks once; return ``(block_message, modified_args)``."""
     details = _get_pre_tool_call_directive_details(tool_name, args, **hook_kwargs)
-    block_msg = _resolve_block_from_details(
-        details, tool_name, **{k: hook_kwargs.get(k, "") for k in ("turn_id", "tool_call_id", "session_id")})
-    return (block_msg, details.modified_args)
+    return (details.message if details.action == "block" else None, details.modified_args)
 
 
 def get_pre_verify_continue_message(

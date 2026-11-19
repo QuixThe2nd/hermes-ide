@@ -19,7 +19,7 @@ def _runner(entry, adapters):
     runner.session_store.get_or_create_session.return_value = entry
     runner._session_db = AsyncSessionDB(MagicMock())
     runner._session_db._db.export_session.return_value = {
-        "id": "sess-1", "source": "telegram",
+        "id": "sess-1", "source": "discord",
         "messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}],
     }
     return runner
@@ -40,9 +40,9 @@ def _entry(platform):
 def test_save_sends_document_through_requesting_platform_adapter():
     adapter = MagicMock()
     adapter.send_document = AsyncMock()
-    runner = _runner(_entry(Platform.TELEGRAM), {Platform.TELEGRAM: adapter})
+    runner = _runner(_entry(Platform.DISCORD), {Platform.DISCORD: adapter})
 
-    assert _save(runner, Platform.TELEGRAM) == "Export complete."
+    assert _save(runner, Platform.DISCORD) == "Export complete."
     kwargs = adapter.send_document.await_args.kwargs
     assert (kwargs["chat_id"], kwargs["file_name"]) == ("c1", "save-stuff.md")
 

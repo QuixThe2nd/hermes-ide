@@ -1,15 +1,14 @@
 # skills/ + optional-skills/ — bundled skills, authoring standards, curator
 
-Applies on top of the root `AGENTS.md`. Long-form: `website/docs/developer-guide/creating-skills.md`;
-user docs: `website/docs/user-guide/features/skills.md`, `curator.md`.
+Applies on top of the root `AGENTS.md`.
 
 ## Two surfaces
 
-- **`skills/`** — built-in, loadable by default, organised by category (`skills/github/`, `skills/mlops/`).
+- **`skills/`** — built-in, loadable by default, organised by category (`skills/github/`, `skills/research/`).
 - **`optional-skills/`** — heavier/niche skills shipped but NOT active; installed via
   `hermes skills install official/<category>/<skill>` (adapter `tools/skills_hub_official.py`
   `OptionalSkillSource`). Categories: `autonomous-ai-agents, blockchain, communication, creative,
-  devops, email, health, mcp, migration, mlops, productivity, research, security, web-development`.
+  devops, email, health, mcp, migration, productivity, research, security, web-development`.
 
 Reviewing a skill PR: check the target directory — heavy-dep or niche skills go to `optional-skills/`.
 

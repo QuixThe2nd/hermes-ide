@@ -16,6 +16,8 @@ from typing import Any, Callable, Iterator
 from urllib.parse import urlsplit
 
 from utils import safe_json_loads
+from agent.display_cron_subject import resolve_cron_job_name
+from agent.display_progressive import base_verb_phrase, progressive_phrase
 from agent.redact import redact_sensitive_text
 from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
 
@@ -341,21 +343,14 @@ def _delegate_task_goals(tasks: Any, *, per_goal_len: int) -> list[str]:
     return [_tail_trunc(("?" if g is None else _oneline(str(g))) or "?", per_goal_len) for g in raw_goals]
 
 
-def _browser_exec_step_label(args: dict, max_chars: int = 80) -> str | None:
-    """User-friendly step label from browser_exec code's leading comment."""
-    first = str(args.get("code", "") or "").strip().split("\n", 1)[0].strip()
-    label = first.lstrip("#").strip() if first.startswith("#") else ""
-    if not label:
-        return None
-    return label[: max_chars - 1] + "…" if len(label) > max_chars else label
 
 
 _PRIMARY_ARGS = {
     "terminal": "command", "web_search": "query", "web_extract": "urls", "read_file": "path",
     "write_file": "path", "patch": "path", "search_files": "pattern", "browser_navigate": "url",
-    "browser_click": "ref", "browser_type": "text", "image_generate": "prompt", "text_to_speech": "text",
+    "browser_click": "ref", "browser_type": "text", "image_generate": "prompt",
     "vision_analyze": "question", "skill_view": "name", "skills_list": "category", "cronjob_manage": "action",
-    "execute_code": "code", "browser_exec": "code", "delegate_task": "goal", "clarify": "question",
+    "execute_code": "code", "delegate_task": "goal", "clarify": "question",
     "skill_manage": "name",
     # Legacy spellings kept for replayed transcripts: ``delegate_agent`` renders like
     # ``delegate_task``; plain ``cronjob`` like ``cronjob_manage``.
@@ -372,11 +367,6 @@ def _delegate_action_preview(args: dict) -> str | None:
     return None
 
 
-def _preview_browser_exec(args: dict, max_len: int) -> str | None:
-    label = _browser_exec_step_label(args)
-    if label is not None:
-        return _tail_trunc(label, max_len)
-    return _tail_trunc(_oneline(str(args.get("code", "") or "")), max_len) or None
 
 
 def _preview_delegate_task(args: dict, max_len: int) -> str | None:
@@ -442,7 +432,7 @@ def _preview_skill_view(args: dict, max_len: int) -> str | None:
 # Tool-specific preview builders: f(args, max_len) -> preview. Tools not listed
 # fall through to the primary-argument lookup in build_tool_preview.
 _PREVIEW_BUILDERS = {
-    "browser_exec": _preview_browser_exec, "delegate_task": _preview_delegate_task,
+    "delegate_task": _preview_delegate_task,
     "delegate_agent": _preview_delegate_task,  # legacy spelling (replayed transcripts)
     "process_manage": _preview_process_manage, "todo_list": _preview_todo_list,
     "terminal": _preview_shell("command"), "execute_code": _preview_shell("code"),
@@ -493,7 +483,7 @@ _TOOL_VERBS: dict[str, str] = {
     "read_file": "Reading", "write_file": "Writing", "patch": "Editing", "search_files": "Searching files",
     "terminal": "Running", "execute_code": "Running code",
     "image_generate": "Generating image", "video_generate": "Generating video",
-    "text_to_speech": "Generating speech", "vision_analyze": "Looking at the image",
+    "vision_analyze": "Looking at the image",
     "session_search": "Searching past sessions",
     "skill_view": "Reading skill", "skills_list": "Listing skills", "skill_manage": "Updating skill",
     "delegate_task": "Delegating", "delegate_agent": "Delegating",
@@ -637,9 +627,23 @@ def _describe_todo_list_phrase(args: dict) -> str | None:
     return f"Updating tasks: {summary}"
 
 
+def _describe_purpose(reason: str) -> str:
+    """Infinitive purpose clause, normalising progressive openers without doubling ``to``."""
+    explicit_to = re.match(r"(?i)^(to\s+)(.*)$", reason, re.DOTALL)
+    if explicit_to:
+        return explicit_to.group(1) + base_verb_phrase(explicit_to.group(2))
+    return f"to {base_verb_phrase(reason)}"
+
+
 def _describe_file_tool_phrase(tool_name: str, args: dict) -> str | None:
-    path = _describe_file_path(args)
     verb = get_tool_verb(tool_name)
+    reason = _describe_safe_str(args.get("description"))
+    if tool_name in ("write_file", "patch") and reason and verb:
+        purpose = _describe_purpose(reason)
+        path = _describe_safe_str(args.get("path"))
+        basename = Path(path).name if path else ""
+        return f"{verb} {basename} {purpose}" if basename else f"{verb} {purpose}"
+    path = _describe_file_path(args)
     return f"{verb} {path}" if verb and path else None
 
 
@@ -651,8 +655,10 @@ def _describe_web_search_phrase(tool_name: str, args: dict) -> str | None:
 
 def _describe_session_search_phrase(tool_name: str, args: dict) -> str | None:
     query = _describe_safe_str(args.get("query"))
+    reason = _describe_safe_str(args.get("description"))
     verb = get_tool_verb(tool_name)
-    return f"{verb} for {query}" if verb and query else None
+    label = f"{verb} for {query}" if verb and query else verb
+    return f"{label} {_describe_purpose(reason)}" if label and reason else label
 
 
 # Curated safe-subject builders, table-driven like _TOOL_VERBS above: each entry
@@ -668,7 +674,7 @@ _DESCRIBE_SUBJECT_BUILDERS: dict[str, Callable[[str, dict], str | None]] = {
 }
 
 
-# ── describe: action-style tools (skill/cron/process/memory/discord/kanban) ──
+# ── describe: action-style tools (skill/cron/process/memory/discord) ──
 # Same posture as the builders above: fixed verb tables validated against each
 # tool's known action enum (never reflected from the raw argument), with only
 # allowlisted safe fields as subjects — IDs, names, targets, domains. Payloads
@@ -697,10 +703,14 @@ def _describe_action_key(args: dict) -> str | None:
 
 
 def _describe_skill_phrase(_tool_name: str, args: dict) -> str | None:
+    """Skill name/path only — never SKILL.md contents; optional ``description`` is the LLM progress phrase."""
     name = _describe_arg(args, "name")
     file_path = _describe_arg(args, "file_path")
-    if name is None and file_path is None:
+    reason = _describe_arg(args, "description")
+    if name is None and file_path is None and reason is None:
         return None
+    if reason:
+        return f"Reading skill {_describe_purpose(reason)}"
     subject = f"{name} → {file_path}" if name and file_path else (name or file_path)
     return f"Reading skill {subject}"
 
@@ -736,16 +746,20 @@ def _describe_skill_manage_op(op: object) -> str:
 
 
 def _describe_skill_manage_phrase(_tool_name: str, args: dict) -> str | None:
+    reason = _describe_arg(args, "description")
     operations = args.get("operations")
     if operations is not None:
         # Current interface: every operation lives in ``operations``; there is
         # no top-level ``action``. Empty/malformed arrays stay safe and content-free.
         if not isinstance(operations, list) or not operations:
-            return "Updating skills"
+            summary = "Updating skills"
+            return f"{summary} {_describe_purpose(reason)}" if reason else summary
         phrases = [_describe_skill_manage_op(op) for op in operations[:3]]
         extra = len(operations) - 3
         summary = ", ".join(phrases)
-        return f"{summary}, +{extra} more" if extra > 0 else summary
+        if extra > 0:
+            summary = f"{summary}, +{extra} more"
+        return f"{summary} {_describe_purpose(reason)}" if reason else summary
     action = _describe_action_key(args)
     label = _describe_enum_label(_SKILL_MANAGE_DESCRIBE_ACTIONS, args.get("action"))
     if label is None:
@@ -758,7 +772,7 @@ def _describe_skill_manage_phrase(_tool_name: str, args: dict) -> str | None:
         label = f"{label} {name}"
     if file_path is not None and action in ("write_file", "remove_file"):
         label = f"{label}: {file_path}"
-    return label
+    return f"{label} {_describe_purpose(reason)}" if reason else label
 
 
 _CRON_DESCRIBE_ACTIONS = {
@@ -775,16 +789,22 @@ _CRON_NEUTRAL_TOOL_PHRASES = {"cronjob_manage": "Managing cron jobs", "cronjob":
 
 def _describe_cronjob_phrase(_tool_name: str, args: dict) -> str | None:
     action = _describe_action_key(args)
+    reason = _describe_arg(args, "description")
     label = _describe_enum_label(_CRON_DESCRIBE_ACTIONS, args.get("action"))
     if label is None:
         # missing/null/unknown action (None, int, list, dict, bad string): never claim scheduling
-        return "Managing cron jobs"
-    subject = _describe_arg(args, "name", "job_id") if action != "list" else None
+        label = "Managing cron jobs"
+        return f"{label} {_describe_purpose(reason)}" if reason else label
+    subject = _describe_arg(args, "name") if action != "list" else None
+    job_id = _describe_arg(args, "job_id") if action != "list" else None
+    if subject is None and job_id is not None:
+        subject = resolve_cron_job_name(job_id) or job_id
     if subject is None and action == "create":
         skills = args.get("skills")
         subject = skills[0] if isinstance(skills, list) and skills and isinstance(skills[0], str) else None
         subject = subject or _describe_arg(args, "skill")
-    return f"{label} {subject}" if subject else label
+    phrase = f"{label} {subject}" if subject else label
+    return f"{phrase} {_describe_purpose(reason)}" if reason else phrase
 
 
 _PROCESS_DESCRIBE_ACTIONS = {
@@ -809,17 +829,20 @@ def _describe_memory_phrase(_tool_name: str, args: dict) -> str | None:
     # target is a memory/user enum; invalid strings are never reflected.
     target = _describe_arg(args, "target")
     target = target if target in ("memory", "user") else None
+    reason = _describe_arg(args, "description")
     if "operations" in args and args.get("action") is None:
         # Current batch shape: operations with a top-level target, no action
         # ("batch" is not a schema enum). Only the count renders — never contents.
         operations = args.get("operations")
         count = len(operations) if isinstance(operations, list) else 0
         label = f"Updating memories ({count} operation{'s' if count != 1 else ''})"
-        return f"{label} ({target})" if target else label
+        phrase = f"{label} ({target})" if target else label
+        return f"{phrase} {_describe_purpose(reason)}" if reason else phrase
     label = _describe_enum_label(_MEMORY_DESCRIBE_ACTIONS, args.get("action"))
     if label is None:
         return None
-    return f"{label} ({target})" if target else label
+    phrase = f"{label} ({target})" if target else label
+    return f"{phrase} {_describe_purpose(reason)}" if reason else phrase
 
 
 def _describe_send_message_phrase(_tool_name: str, args: dict) -> str | None:
@@ -853,10 +876,11 @@ def _describe_delegate_agent_phrase(tool_name: str, args: dict) -> str | None:
     # progress phrase follows it (the hidden legacy aliases keep their own
     # entries below and never carry `backend`).
     backend = str(args.get("backend") or "").strip().lower()
+    reason = _describe_arg(args, "description")
     if backend == "claude":
+        if reason:
+            return f"Delegated to Claude agent: {reason}"
         return _describe_delegate_child_phrase("Delegating to a Claude agent")(tool_name, args)
-    if backend == "cursor":
-        return _describe_delegate_child_phrase("Delegating to a Cursor agent")(tool_name, args)
     return _describe_delegate_phrase(tool_name, args)
 
 
@@ -912,20 +936,6 @@ def _describe_papercuts_phrase(_tool_name: str, args: dict) -> str | None:
     return f"{label} {papercut_id}" if papercut_id and _describe_action_key(args) in ("resolve", "ignore") else label
 
 
-_RESOLVE_TICKET_DESCRIBE_ACTIONS = {
-    "propose": "Proposing to close a Discord ticket", "close": "Closing a Discord ticket",
-}
-
-
-def _describe_resolve_ticket_phrase(_tool_name: str, args: dict) -> str | None:
-    action = args.get("action") or "propose"  # function/schema default
-    label = _describe_enum_label(_RESOLVE_TICKET_DESCRIBE_ACTIONS, action)
-    if label is None:
-        return "Managing Discord ticket resolution"
-    channel_id = _describe_arg(args, "channel_id")
-    return f"{label} in channel {channel_id}" if channel_id else label
-
-
 _START_CONVERSATION_DESCRIBE_ACTIONS = {
     "start": "Starting a conversation", "setup": "Provisioning a conversation channel",
 }
@@ -960,6 +970,7 @@ _DISCORD_ADMIN_DESCRIBE_ACTIONS = {
 
 
 def _describe_discord_phrase(_tool_name: str, args: dict) -> str | None:
+    reason = _describe_arg(args, "description")
     label = _describe_enum_label(_DISCORD_DESCRIBE_ACTIONS, args.get("action"))
     if label is None:
         return None
@@ -968,11 +979,13 @@ def _describe_discord_phrase(_tool_name: str, args: dict) -> str | None:
     if action == "create_thread":
         thread_name = _describe_arg(args, "name")
         subject = f" {thread_name}" if thread_name else (f" in channel {channel_id}" if channel_id else "")
-        return label + subject
-    if action == "search_members":
+        phrase = label + subject
+    elif action == "search_members":
         query = _describe_arg(args, "query")
-        return f"{label} for {query}" if query else label
-    return f"{label} in channel {channel_id}" if channel_id else label
+        phrase = f"{label} for {query}" if query else label
+    else:
+        phrase = f"{label} in channel {channel_id}" if channel_id else label
+    return f"{phrase} {_describe_purpose(reason)}" if reason else phrase
 
 
 # Subject field and connector vary by operation: a channel id is not a message
@@ -993,15 +1006,18 @@ _DISCORD_ADMIN_DESCRIBE_SUBJECTS = {
 
 
 def _describe_discord_admin_phrase(_tool_name: str, args: dict) -> str | None:
+    reason = _describe_arg(args, "description")
     label = _describe_enum_label(_DISCORD_ADMIN_DESCRIBE_ACTIONS, args.get("action"))
     if label is None:
         return None
     subject_spec = _DISCORD_ADMIN_DESCRIBE_SUBJECTS.get(_describe_action_key(args))
     if subject_spec is None:
-        return label
-    key, connector = subject_spec
-    subject = _describe_arg(args, key)
-    return f"{label} {connector.format(subject)}" if subject else label
+        phrase = label
+    else:
+        key, connector = subject_spec
+        subject = _describe_arg(args, key)
+        phrase = f"{label} {connector.format(subject)}" if subject else label
+    return f"{phrase} {_describe_purpose(reason)}" if reason else phrase
 
 
 _DISCORD_GUESTS_DESCRIBE_ACTIONS = {
@@ -1083,15 +1099,6 @@ def _describe_clarify_phrase(_tool_name: str, _args: dict) -> str | None:
     return "Asking a clarifying question"  # question body never renders
 
 
-_KANBAN_STATUS_ENUM = frozenset({"triage", "todo", "ready", "running", "blocked", "done", "archived"})
-
-
-def _describe_kanban_list_phrase(_tool_name: str, args: dict) -> str | None:
-    status = _describe_arg(args, "status")
-    status = status if status in _KANBAN_STATUS_ENUM else None  # enum-validated, never reflected
-    return f"Listing Kanban tasks with status {status}" if status else "Listing Kanban tasks"
-
-
 # ── describe: fixed action-only labels for opaque/private payloads ──
 # Browser interactions, agent/research delegation, Hindsight, media: subjects
 # are keystrokes, prompts, credentials or generated content — all payload. The
@@ -1118,7 +1125,14 @@ def _describe_browser_scroll_phrase(_tool_name: str, args: dict) -> str | None:
 
 def _describe_terminal_phrase(_tool_name: str, args: dict) -> str | None:
     session_id = _describe_arg(args, "session_id")
-    return f"Running a terminal command {session_id}" if session_id else "Running a terminal command"
+    command = args.get("command")
+    summary = (
+        redact_sensitive_text(summarize_shell_command(command), force=True)
+        if isinstance(command, str) and command.strip()
+        else ""
+    )
+    phrase = f"Running {summary}" if summary else "Running a terminal command"
+    return f"{phrase} {session_id}" if session_id else phrase
 
 
 def _describe_x_search_phrase(_tool_name: str, args: dict) -> str | None:
@@ -1126,11 +1140,29 @@ def _describe_x_search_phrase(_tool_name: str, args: dict) -> str | None:
     return f"Searching X for {query}" if query else "Searching X"
 
 
-def _describe_kanban_task_phrase(label: str):
+def _describe_delegate_lane_phrase(lane_name: str):
+    # Lane labels come from the lane spec table (ui_dev -> "ui dev"); the task
+    # and context are prompt payloads and never render. `description` is the
+    # model-authored progress phrase from the tool schema.
+    label = lane_name.replace("_", " ")
+
     def _build(_tool_name: str, args: dict) -> str | None:
-        task_id = _describe_arg(args, "task_id")
-        return f"{label} {task_id}" if task_id else label
+        reason = _describe_arg(args, "description")
+        if reason:
+            return f"Delegated to {label} lane: {reason}"
+        workdir = _describe_arg(args, "workdir")
+        return f"Delegating to the {label} lane in {workdir}" if workdir else f"Delegating to the {label} lane"
+
     return _build
+
+
+def _lane_describe_builders() -> dict:
+    from tools.delegate_lane_specs import LANE_NAMES
+
+    return {
+        f"delegate_{name}": _describe_delegate_lane_phrase(name)
+        for name in LANE_NAMES
+    }
 
 
 _DESCRIBE_SUBJECT_BUILDERS.update({
@@ -1142,16 +1174,14 @@ _DESCRIBE_SUBJECT_BUILDERS.update({
     "memory": _describe_memory_phrase,
     "send_message": _describe_send_message_phrase,
     "delegate_task": _describe_delegate_phrase,  # legacy alias: subagent phrasing
-    "delegate_agent": _describe_delegate_agent_phrase,  # backend-aware (subagent/claude/cursor)
+    "delegate_agent": _describe_delegate_agent_phrase,  # backend-aware (subagent/claude)
     "delegate_claude_agent": _describe_delegate_child_phrase("Delegating to a Claude agent"),
-    "delegate_cursor_agent": _describe_delegate_child_phrase("Delegating to a Cursor agent"),
     "delegate_assistant": _describe_delegate_assistant_phrase,
     "delegate_research": _describe_delegate_research_phrase,
     "dispatch_agent": _describe_dispatch_agent_phrase,
     "moa_ask": _describe_fixed("Asking advisor models"),
     "moa_debate": _describe_fixed("Running an advisor debate"),
     "restart": _describe_fixed("Restarting the agent"),
-    "resolve_ticket": _describe_resolve_ticket_phrase,
     "papercuts": _describe_papercuts_phrase,
     "start_conversation": _describe_start_conversation_phrase,
     "x_search": _describe_x_search_phrase,
@@ -1161,7 +1191,6 @@ _DESCRIBE_SUBJECT_BUILDERS.update({
     "hindsight_recall": _describe_fixed("Searching long-term memory"),
     "hindsight_reflect": _describe_fixed("Reflecting on long-term memory"),
     "image_generate": _describe_fixed("Generating an image"),
-    "text_to_speech": _describe_fixed("Synthesizing speech"),
     "vision_analyze": _describe_fixed("Analyzing an image"),
     "multi_tool_use.parallel": _describe_fixed("Running tools in parallel"),  # orchestration wrapper
     "browser_navigate": _describe_browser_navigate_phrase,
@@ -1184,16 +1213,7 @@ _DESCRIBE_SUBJECT_BUILDERS.update({
     "discord_history": _describe_discord_history_phrase,
     "web_extract": _describe_web_extract_phrase,
     "clarify": _describe_clarify_phrase,
-    "kanban_list": _describe_kanban_list_phrase,
-    "kanban_show": _describe_kanban_task_phrase("Reading Kanban task"),
-    "kanban_complete": _describe_kanban_task_phrase("Completing Kanban task"),
-    "kanban_block": _describe_kanban_task_phrase("Blocking Kanban task"),
-    "kanban_heartbeat": _describe_kanban_task_phrase("Sending Kanban heartbeat for"),
-    "kanban_request_review": _describe_kanban_task_phrase("Requesting review of Kanban task"),
-    "kanban_request_changes": _describe_kanban_task_phrase("Requesting changes on Kanban task"),
-    "kanban_comment": _describe_kanban_task_phrase("Commenting on Kanban task"),
-    "kanban_attach": _describe_kanban_task_phrase("Attaching a file to Kanban task"),
-    "kanban_attach_url": _describe_kanban_task_phrase("Attaching a URL to Kanban task"),
+    **_lane_describe_builders(),
 })
 
 # The Discord MCP server exposes operation-in-name tools with camelCase fields
@@ -1280,6 +1300,14 @@ def _describe_subject_phrase(tool_name: str, args: dict) -> str | None:
     return _describe_mcp_discord_phrase(tool_name, args)
 
 
+# Builders here fold ``description`` into verb+reason; raw ``description`` alone must not win.
+_DESCRIBE_COMPOSES_TOOL_DESCRIPTION = frozenset({
+    "write_file", "patch", "skill_view", "skill_manage", "delegate_agent", "discord", "discord_admin",
+    "session_search", "cronjob_manage", "cronjob", "memory",
+    *tuple(_lane_describe_builders()),  # lane phrases carry their own attribution
+})
+
+
 def describe_tool_call(tool_name: str, args: dict | None, max_len: int = DESCRIBE_TOOL_MAX_LEN) -> str:
     """One-line human phrase for the ``describe`` tool-progress mode.
 
@@ -1287,16 +1315,24 @@ def describe_tool_call(tool_name: str, args: dict | None, max_len: int = DESCRIB
     string, else a curated safe subject built from a small set of argument
     fields (file path, search pattern/query, task names) — both whitespace-
     normalised; uncapped by default, capped only when a positive *max_len* is
-    given. Never the command/code/content payload;
-    unknown tools fall back to a short verb or the bare tool name.
+    given. Command/code/content payloads stay hidden, except for the terminal
+    fallback's redacted command summary; unknown tools fall back to a short
+    verb or the bare tool name.
     """
     if isinstance(args, dict):
-        desc = args.get("description")
-        if isinstance(desc, str) and desc.strip():
-            return _describe_cap(desc, max_len)
         derived = _describe_subject_phrase(tool_name, args)
-        if derived:
-            return _describe_cap(derived, max_len)
+        desc = args.get("description")
+        has_desc = isinstance(desc, str) and desc.strip()
+        if tool_name in _DESCRIBE_COMPOSES_TOOL_DESCRIPTION:
+            if derived:
+                return _describe_cap(derived, max_len)
+            if has_desc:
+                return _describe_cap(progressive_phrase(desc), max_len)
+        else:
+            if has_desc:
+                return _describe_cap(progressive_phrase(desc), max_len)
+            if derived:
+                return _describe_cap(derived, max_len)
     else:
         # describe-only neutral fallback: non-dict args (None/list/string/number) for cron tools
         neutral = _CRON_NEUTRAL_TOOL_PHRASES.get(tool_name)
@@ -1713,10 +1749,6 @@ def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     if is_guardrail_refusal(data):
         return False, ""
 
-    # A denied/timed-out approval carries one human sentence; show it instead of the model-facing
-    # "BLOCKED: ... Do NOT retry" text (which stays in the JSON for the model).
-    if isinstance(data, dict) and data.get("user_summary"):
-        return True, f" [{_tail_trunc(str(data['user_summary']), _DEGRADED_SUFFIX_MAX_LEN)}]"
 
     # Terminal: non-zero exit code is the canonical failure signal.
     if tool_name == "terminal":
@@ -1818,10 +1850,6 @@ def _cute_execute_code(a: dict, _r) -> str:
     return f"┊ 🐍 exec      {_cute_trunc(code.split(chr(10))[0] if code else '')}"
 
 
-def _cute_browser_exec(a: dict, _r) -> str:
-    # Leading `# …` comment becomes the step label; code stays collapsed behind the preview cap.
-    label = _browser_exec_step_label(a)
-    return f"┊ 🌐 browser   {_cute_trunc(_oneline(str(a.get('code', '') or ''))) if label is None else label}"
 
 
 def _cute_delegate(a: dict, _r) -> str:
@@ -1867,12 +1895,10 @@ _CUTE_LINES = {
     "skills_list": lambda a, r: f"┊ 📚 skills    list {a.get('category', 'all')}",
     "skill_view": _cute_skill_view,
     "image_generate": lambda a, r: f"┊ 🎨 create    {_cute_trunc(a.get('prompt', ''))}",
-    "text_to_speech": lambda a, r: f"┊ 🔊 speak     {_cute_trunc(a.get('text', ''))}",
     "vision_analyze": lambda a, r: f"┊ 👁️  vision    {_cute_trunc(a.get('question', ''))}",
     "send_message": lambda a, r: f"┊ 📨 send      {a.get('target', '?')}: \"{_cute_trunc(a.get('message', ''))}\"",
     "cronjob_manage": _cute_cronjob, "cronjob": _cute_cronjob,  # cronjob: legacy spelling
     "execute_code": _cute_execute_code,
-    "browser_exec": _cute_browser_exec,
     "delegate_task": _cute_delegate, "delegate_agent": _cute_delegate,  # legacy spelling
 }
 

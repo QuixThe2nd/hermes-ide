@@ -104,8 +104,8 @@ def test_title_cased_profile_label_is_normalised_not_rejected(monkeypatch):
 def test_invalid_dash_p_after_a_subcommand_is_left_to_that_subcommand(monkeypatch):
     from hermes_cli import main as _main
 
-    # A plugin/subcommand flag such as `hermes kanban serve -p "Work Bot"` is not our profile selector.
-    monkeypatch.setattr(sys, "argv", ["hermes", "kanban", "serve", "-p", "Work Bot"])
+    # A plugin/subcommand flag such as `hermes example serve -p "Work Bot"` is not our profile selector.
+    monkeypatch.setattr(sys, "argv", ["hermes", "example", "serve", "-p", "Work Bot"])
     assert _main._scan_profile_flag(sys.argv[1:]) == (None, 0, None)
 
 
@@ -148,16 +148,3 @@ def test_missing_dashboard_deps_point_at_hermes_update():
     assert "hermes update" in text
     assert "-m pip install -e '.[all]'" in text
     assert "metadata" not in text
-
-
-def test_missing_node_message_names_cli_fallback(monkeypatch, capsys):
-    from hermes_cli import main_tui_launch as _tui
-
-    monkeypatch.setattr("hermes_constants.find_node_executable", lambda _b: None)
-    monkeypatch.setattr("hermes_cli.dep_ensure.ensure_dependency", lambda _n: False, raising=False)
-    monkeypatch.delenv("HERMES_NODE", raising=False)
-    with pytest.raises(SystemExit):
-        _tui._tui_node_bin("node")
-    text = capsys.readouterr().out
-    assert "hermes --cli" in text
-    assert "Node.js" in text

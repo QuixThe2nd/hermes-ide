@@ -90,12 +90,6 @@ def _linked_worktree(project: Path, tmp_path: Path) -> Path:
 
 
 # Production removal paths; each returns (root that goes away, sibling root that stays, remove()).
-def _kanban_worktree(project, tmp_path, monkeypatch):
-    from hermes_cli import kanban_db_workspace as kbw
-    wt = _linked_worktree(project, tmp_path)
-    return wt, project, lambda: kbw._cleanup_worktree_workspace("t1", str(wt), "wt/t1")
-
-
 def _cli_worktree(project, tmp_path, monkeypatch):
     import cli
     wt = _linked_worktree(project, tmp_path)
@@ -114,35 +108,13 @@ def _subagent_worktree(project, tmp_path, monkeypatch):
     return wt, project, remove
 
 
-def _kanban_scratch(project, tmp_path, monkeypatch):
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_workspace as kbw
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb.init_db()
-    with kbc.connect() as conn:
-        tid = kb.create_task(conn, title="scratch")
-        ws = kbw.resolve_workspace(kb.get_task(conn, tid))
-        kbw.set_workspace_path(conn, tid, ws)
-    (ws / ".git").mkdir()  # the worker cloned a project into its scratch dir
-    _seed_project(ws)
-
-    def remove():
-        with kbc.connect() as conn:
-            assert kb.complete_task(conn, tid, result="ok")
-    return ws, project, remove
-
-
 @pytest.mark.parametrize("mock_pyright", [False, True], ids=["single-root", "multi-root"], indirect=True)
-@pytest.mark.parametrize("entry", [_kanban_worktree, _cli_worktree, _subagent_worktree, _kanban_scratch],
+@pytest.mark.parametrize("entry", [_cli_worktree, _subagent_worktree],
                          ids=lambda f: f.__name__.strip("_"))
 def test_workspace_removal_releases_only_its_language_servers(entry, mock_pyright, project, tmp_path,
                                                                  monkeypatch):
-    """Every in-process workspace-removal path (kanban worktree/scratch cleanup, ``hermes -w`` exit, the
-    delegate_task worktree prune) shuts down (single-root) or detaches (multi-root) exactly the removed
+    """Every in-process workspace-removal path (``hermes -w`` exit and the delegate_task worktree
+    prune) shuts down (single-root) or detaches (multi-root) exactly the removed root's servers
     root's servers BEFORE the tree goes: the sibling keeps serving diagnostics, the released state is gone
     everywhere, and a repeat release is a no-op."""
     gone, kept, remove = entry(project, tmp_path, monkeypatch)

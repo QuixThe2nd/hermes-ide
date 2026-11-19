@@ -12,11 +12,10 @@ api_messages``). There ``last_head_role`` defaults to ``"user"`` and the
 summary is emitted as ``role="assistant"``.
 
 On a session whose only genuine user turn falls into the compressed
-middle — the canonical shape being a ``hermes kanban`` worker seeded with
-a single short ``"work kanban task <id>"`` prompt followed by nothing but
-assistant/tool turns — the compressed output then contains no user-role
-message at all. OpenAI-compatible backends (vLLM/Qwen) reject such a
-request with a non-retryable ``400 No user query found in messages``,
+middle — for example, a worker seeded with one short task prompt followed
+by nothing but assistant/tool turns — the compressed output then contains
+no user-role message at all. OpenAI-compatible backends (vLLM/Qwen) reject
+such a request with a non-retryable ``400 No user query found in messages``,
 crashing the worker with no possible recovery (every resume replays the
 same poisoned history).
 
@@ -78,34 +77,6 @@ def _role_hist(messages: list[dict]) -> dict[str, int]:
 
 
 class TestCompressAlwaysKeepsAUserTurn:
-    def test_kanban_worker_recompaction_keeps_user_turn(self, compressor):
-        """The exact #58753 shape: no system prompt in the list, a
-        re-compaction (``protect_first_n`` decayed to 0), and the only
-        user turn old enough to fall into the compressed middle. Before
-        the fix, the summary was emitted as ``assistant`` and the output
-        had zero user-role messages."""
-        from agent.context_compressor import SUMMARY_PREFIX
-
-        c = compressor
-        # A prior compaction has already happened → protect_first_n decays
-        # to 0 so compress_start lands at 0 (no protected head).
-        c.compression_count = 1
-        # No system message: the main loop prepends it separately.
-        messages = [{"role": "user", "content": "work kanban task 42"}]
-        messages += _tool_turns(0, 12)
-
-        mocked = f"{SUMMARY_PREFIX}\nrolled-up summary of the tool work"
-        with patch.object(c, "_generate_summary", return_value=mocked):
-            out = c.compress(messages, current_tokens=90_000)
-
-        hist = _role_hist(out)
-        assert hist.get("user", 0) >= 1, (
-            "REGRESSION (#58753): compression produced a transcript with "
-            f"zero user-role messages, which vLLM/Qwen reject with a "
-            f"non-retryable 400. Role histogram: {hist}"
-        )
-
-
     def test_no_consecutive_user_roles_introduced(self, compressor):
         """Forcing the summary to role=user must not create two
         consecutive user-role messages (strict alternation invariant).
@@ -115,7 +86,7 @@ class TestCompressAlwaysKeepsAUserTurn:
 
         c = compressor
         c.compression_count = 1
-        messages = [{"role": "user", "content": "work kanban task 9"}]
+        messages = [{"role": "user", "content": "work assigned task 9"}]
         messages += _tool_turns(0, 12)
 
         mocked = f"{SUMMARY_PREFIX}\nsummary body"
@@ -189,7 +160,7 @@ class TestCompressKeepsANonEmptyUserTurn:
         # No system message and no protected head (compression_count=1
         # decays protect_first_n to 0), same #58753 shape — except the
         # only surviving user turn is an image with no caption text.
-        messages = [{"role": "user", "content": "work kanban task 42"}]
+        messages = [{"role": "user", "content": "work assigned task 42"}]
         messages += _tool_turns(0, 12)
         messages += [{
             "role": "user",
@@ -256,7 +227,7 @@ class TestCompressKeepsANonEmptyUserTurn:
 
         c = compressor
         c.compression_count = 1  # decays protect_first_n to 0 -> compress_start == 0
-        messages = [{"role": "user", "content": "work kanban task 42"}]
+        messages = [{"role": "user", "content": "work assigned task 42"}]
         messages += _tool_turns(0, 12)
         messages += [{
             "role": "user",

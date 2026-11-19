@@ -31,8 +31,6 @@ _RELAY_PKG = _REPO_ROOT / "gateway" / "relay"
 # Modules / symbols that mean "platform crypto re-validation". If the relay path
 # imports any of these it has re-coupled the gateway to a platform secret.
 _FORBIDDEN_MODULE_TOKENS = (
-    "wecom_crypto",
-    "wecom_callback",
     "webhook",  # gateway.platforms.webhook holds signature verification
 )
 _FORBIDDEN_SYMBOL_RE = re.compile(

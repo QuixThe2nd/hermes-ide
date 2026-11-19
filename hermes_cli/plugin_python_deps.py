@@ -107,7 +107,7 @@ def _is_memory_provider(plugin_dir: Path, manifest: dict) -> bool:
     init = plugin_dir / "__init__.py"
     if not init.is_file():
         return False
-    head = init.read_text(encoding="utf-8", errors="replace")[:8192]
+    head = init.read_text(encoding="utf-8-sig", errors="replace")[:8192]
     return "register_memory_provider" in head or "MemoryProvider" in head
 
 
@@ -166,7 +166,7 @@ def unsupported_specs(specs: Iterable[str]) -> list[str]:
 def core_constraints(project_root: Path) -> list[str]:
     """Hermes' own declared ranges (``[project].dependencies`` + every extra), as constraint lines.
     Plugins resolve inside these, so they can move transitives but never a core package out of range."""
-    document = tomllib.loads((Path(project_root) / "pyproject.toml").read_text(encoding="utf-8"))
+    document = tomllib.loads((Path(project_root) / "pyproject.toml").read_text(encoding="utf-8-sig"))
     project = document.get("project", {})
     declared: list[str] = list(project.get("dependencies", []))
     for group in project.get("optional-dependencies", {}).values():
@@ -265,8 +265,8 @@ def _tail(text: str, limit: int = 600) -> str:
 def resolve(specs: list[str], constraints: list[str], *, dry_run: bool, timeout: int = 600):
     """Run the shared installer ladder on *specs* under *constraints*. Raises ``DependencyConflict`` or
     ``DependencyInstallError``; returns the installer result on success."""
-    from tools.lazy_deps import install_specs
-    result = install_specs(specs, timeout=timeout, constraints=constraints, dry_run=dry_run)
+    from pm import python_requirements
+    result = python_requirements.install_specs(specs, timeout=timeout, constraints=constraints, dry_run=dry_run)
     error = _classify(result)
     if error is not None:
         raise error
