@@ -2,66 +2,57 @@
   "comment": "Shared contract between internal/jevnotices (Go, canonical) and gateway/jev_notice.py (Python twin). Each case is one notice record and the exact line BOTH implementations must produce. Both sides' tests execute this table.",
   "cases": [
     {
-      "name": "goal-intent task success first attempt",
+      "name": "goal-intent success posts the fenced confidence",
       "record": {
         "purpose": "goal-intent",
-        "subject": "user message",
-        "author": "Alice",
-        "attempt": 1,
-        "attempts": 2,
-        "label": "task",
         "confidence": 0.82
       },
-      "expect": "🔎 jev goal-intent (attempt 1/2) user message from Alice: task (confidence 0.82)"
+      "expect": "```\n🔍 Goal Intent: 0.82 Confidence\n```"
     },
     {
-      "name": "goal-intent chat label is visible",
+      "name": "goal-intent low confidence is visible",
       "record": {
         "purpose": "goal-intent",
-        "subject": "user message",
-        "author": "Alice",
-        "attempt": 1,
-        "attempts": 2,
-        "label": "chat",
         "confidence": 0.2
       },
-      "expect": "🔎 jev goal-intent (attempt 1/2) user message from Alice: chat (confidence 0.20)"
+      "expect": "```\n🔍 Goal Intent: 0.20 Confidence\n```"
     },
     {
-      "name": "goal-intent transport failure on first attempt",
+      "name": "goal-intent missing confidence says so",
       "record": {
         "purpose": "goal-intent",
-        "subject": "user message",
-        "author": "Alice",
-        "attempt": 1,
-        "attempts": 2,
-        "error": "transport_error"
+        "confidence": null
       },
-      "expect": "🔎 jev goal-intent (attempt 1/2) user message from Alice: failed (transport_error)"
+      "expect": "```\n🔍 Goal Intent: confidence unavailable\n```"
     },
     {
-      "name": "goal-intent schema failure detail collapses to class token",
+      "name": "goal-intent transport failure posts the sanitized class",
+      "record": {
+        "purpose": "goal-intent",
+        "error": "transport_error"
+      },
+      "expect": "```\n🔍 Goal Intent: failed (transport_error)\n```"
+    },
+    {
+      "name": "goal-intent failure detail collapses to the class token",
+      "record": {
+        "purpose": "goal-intent",
+        "error": "schema_mismatch: no answers object"
+      },
+      "expect": "```\n🔍 Goal Intent: failed (schema_mismatch)\n```"
+    },
+    {
+      "name": "goal-intent retried attempt carries no numbering or fragments",
       "record": {
         "purpose": "goal-intent",
         "subject": "user message",
         "author": "Bob",
         "attempt": 2,
         "attempts": 2,
-        "error": "schema_mismatch: no answers object"
-      },
-      "expect": "🔎 jev goal-intent (attempt 2/2) user message from Bob: failed (schema_mismatch)"
-    },
-    {
-      "name": "goal-intent without author omits the fragment",
-      "record": {
-        "purpose": "goal-intent",
-        "subject": "user message",
-        "attempt": 1,
-        "attempts": 2,
         "label": "task",
-        "confidence": 1.0
+        "confidence": 0.77
       },
-      "expect": "🔎 jev goal-intent (attempt 1/2) user message: task (confidence 1.00)"
+      "expect": "```\n🔍 Goal Intent: 0.77 Confidence\n```"
     },
     {
       "name": "response-gate allow with all four nouls",

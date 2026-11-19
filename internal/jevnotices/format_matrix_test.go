@@ -8,10 +8,12 @@ import (
 
 // TestFormatMatrixInvariants sweeps every purpose × verdict shape × author
 // presence × attempt-numbering combination and asserts the structural
-// invariants a chat notice must hold on EVERY rendering path: one single line
-// with the fixed prefix, a colon before the verdict, no control runes, no
-// backtick/@ in the author fragment, sanitized tokens only, and the attempt
-// fragment exactly when the caller retries.
+// invariants a chat notice must hold on EVERY rendering path: the gates
+// render one single line with the fixed prefix, a colon before the verdict,
+// no control runes, no backtick/@ in the author fragment, sanitized tokens
+// only, and the attempt fragment exactly when the caller retries; the
+// goal-intent status renders as a fenced code block whose only content is
+// the confidence line — never numbering, subject, author or label.
 func TestFormatMatrixInvariants(t *testing.T) {
 	purposes := []string{PurposeGoalIntent, PurposeResponseGate, PurposeReactionGate}
 	authors := []string{"", "Alice", "@everyone", "line\nbreak", strings.Repeat("long", 60)}
@@ -81,6 +83,10 @@ func verdictShapes(purpose string, allowedValues []*bool) []Notice {
 
 func assertNoticeInvariants(t *testing.T, line string, n Notice) {
 	t.Helper()
+	if n.Purpose == PurposeGoalIntent {
+		assertGoalIntentNoticeInvariants(t, line, n)
+		return
+	}
 	if !strings.HasPrefix(line, Prefix) {
 		t.Fatalf("line %q lacks prefix", line)
 	}
@@ -101,6 +107,44 @@ func assertNoticeInvariants(t *testing.T, line string, n Notice) {
 	wantAttempt := n.Attempts > 1 && n.Attempt > 0
 	if hasAttempt != wantAttempt {
 		t.Fatalf("line %q attempt-fragment=%v, want %v", line, hasAttempt, wantAttempt)
+	}
+}
+
+// assertGoalIntentNoticeInvariants pins the fenced goal-intent status:
+// opening fence on its own line, exactly one status line starting with the
+// fixed head, closing fence on its own line, and none of the fragments the
+// record may still carry (numbering, subject, author, label) leaking in.
+func assertGoalIntentNoticeInvariants(t *testing.T, block string, n Notice) {
+	t.Helper()
+	const head = "```\n🔍 Goal Intent: "
+	if !strings.HasPrefix(block, head) || !strings.HasSuffix(block, "\n```") {
+		t.Fatalf("goal-intent notice %q is not a fenced status block", block)
+	}
+	if got := strings.Count(block, "\n"); got != 2 {
+		t.Fatalf("goal-intent notice %q has %d newlines, want exactly the two fence lines", block, got)
+	}
+	status := strings.TrimSuffix(strings.TrimPrefix(block, head), "\n```")
+	switch {
+	case n.Error != "":
+		if !strings.HasPrefix(status, "failed (") || !strings.HasSuffix(status, ")") {
+			t.Fatalf("error notice status %q is not a failure", status)
+		}
+	case n.HasConfidence:
+		if !strings.HasSuffix(status, " Confidence") || len(status) != len("0.00 Confidence") {
+			t.Fatalf("confidence status %q is not a fixed-two-decimal readout", status)
+		}
+	default:
+		if status != "confidence unavailable" {
+			t.Fatalf("no-confidence status %q must say confidence unavailable", status)
+		}
+	}
+	for _, banned := range []string{"attempt", "user message", "message", "from ", "jev", n.Label} {
+		if banned != "" && strings.Contains(status, banned) {
+			t.Fatalf("goal-intent status %q leaks %q", status, banned)
+		}
+	}
+	if author := SanitizeAuthor(n.Author); author != "" && strings.Contains(block, author) {
+		t.Fatalf("goal-intent notice %q leaks author %q", block, author)
 	}
 }
 
@@ -134,12 +178,16 @@ func TestFormatIsPureAndDeterministic(t *testing.T) {
 // never leaks the human detail after ':' and never carries whitespace.
 func TestFormatEveryPurposeFailureUsesTheSanitizedClassOnly(t *testing.T) {
 	detailed := "classification unavailable: no litellm virtual key in scope"
-	for _, purpose := range []string{PurposeGoalIntent, PurposeResponseGate, PurposeReactionGate} {
+	for _, purpose := range []string{PurposeResponseGate, PurposeReactionGate} {
 		line := Format(Notice{Purpose: purpose, Subject: "user message", Error: detailed})
 		want := Prefix + purpose + " user message: failed (classification_unavailable)"
 		if line != want {
 			t.Fatalf("purpose %s failure line = %q, want %q", purpose, line, want)
 		}
+	}
+	goalLine := Format(Notice{Purpose: PurposeGoalIntent, Subject: "user message", Error: detailed})
+	if goalLine != "```\n🔍 Goal Intent: failed (classification_unavailable)\n```" {
+		t.Fatalf("goal-intent failure status = %q", goalLine)
 	}
 }
 
@@ -167,17 +215,19 @@ func TestReactionVerdictCoversReactAbstainAndMissingFragments(t *testing.T) {
 	}
 }
 
-// TestGoalIntentVerdictCoversLabelsAndMissingConfidence.
-func TestGoalIntentVerdictCoversLabelsAndMissingConfidence(t *testing.T) {
+// TestGoalIntentStatusIgnoresLabelAndCoversMissingConfidence: labels never
+// render — every success is the same confidence readout — and a missing
+// confidence says so instead of inventing one.
+func TestGoalIntentStatusIgnoresLabelAndCoversMissingConfidence(t *testing.T) {
 	for _, label := range []string{"chat", "task", "approval", "chase", "unknown"} {
 		line := Format(Notice{Purpose: PurposeGoalIntent, Label: label, HasConfidence: true, Confidence: 0.5})
-		want := Prefix + "goal-intent message: " + label + " (confidence 0.50)"
+		want := "```\n🔍 Goal Intent: 0.50 Confidence\n```"
 		if line != want {
 			t.Errorf("label %s: Format = %q, want %q", label, line, want)
 		}
 	}
 	line := Format(Notice{Purpose: PurposeGoalIntent, Label: "task"})
-	want := Prefix + "goal-intent message: task (confidence unavailable)"
+	want := "```\n🔍 Goal Intent: confidence unavailable\n```"
 	if line != want {
 		t.Errorf("no-confidence: Format = %q, want %q", line, want)
 	}
@@ -197,18 +247,27 @@ func TestResponseGateVerdictBoundaryReadout(t *testing.T) {
 	}
 }
 
-// TestAttemptNumberingRendersAcrossTheRetryWindow.
+// TestAttemptNumberingRendersAcrossTheRetryWindow: the non-goal-intent line
+// keeps its attempt fragment (the gates never retry today, but the fragment
+// is generic line shape); the goal-intent fence never carries one.
 func TestAttemptNumberingRendersAcrossTheRetryWindow(t *testing.T) {
 	for attempt := 1; attempt <= 4; attempt++ {
 		for attempts := attempt + 1; attempts <= 4; attempts++ {
 			line := Format(Notice{
-				Purpose: PurposeGoalIntent, Subject: "user message",
+				Purpose: PurposeResponseGate, Subject: "user message",
 				Attempt: attempt, Attempts: attempts,
-				Label: "task", HasConfidence: true, Confidence: 0.5,
 			})
 			fragment := fmt.Sprintf("(attempt %d/%d)", attempt, attempts)
 			if !strings.Contains(line, fragment) {
 				t.Fatalf("line %q lacks %q", line, fragment)
+			}
+			goalLine := Format(Notice{
+				Purpose: PurposeGoalIntent, Subject: "user message",
+				Attempt: attempt, Attempts: attempts,
+				Label: "task", HasConfidence: true, Confidence: 0.5,
+			})
+			if strings.Contains(goalLine, fragment) {
+				t.Fatalf("goal-intent notice %q carries %q", goalLine, fragment)
 			}
 		}
 	}

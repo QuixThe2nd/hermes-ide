@@ -29,6 +29,21 @@ func TestRunRendersOneLinePerRecord(t *testing.T) {
 	}
 }
 
+// TestRunRendersTheFencedGoalIntentStatus: the goal-intent record is the one
+// multi-line render — the whole notice is a fenced code block (fences on
+// their own lines), still newline-terminated as one stdout write the bridge
+// strips with rstrip("\n").
+func TestRunRendersTheFencedGoalIntentStatus(t *testing.T) {
+	out, errOut, code := runRecord(t, `{"purpose":"goal-intent","confidence":0.61}`)
+	if code != 0 || errOut != "" {
+		t.Fatalf("run exit=%d stderr=%q", code, errOut)
+	}
+	want := "```\n🔍 Goal Intent: 0.61 Confidence\n```\n"
+	if out != want {
+		t.Fatalf("stdout = %q, want %q", out, want)
+	}
+}
+
 // TestRunRejectsAnUnreadableRecord keeps the failure exit code distinct from
 // a rendered line: the bridge treats a non-zero exit as "post nothing".
 func TestRunRejectsAnUnreadableRecord(t *testing.T) {

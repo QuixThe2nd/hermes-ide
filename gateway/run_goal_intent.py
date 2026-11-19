@@ -165,18 +165,17 @@ class GatewayGoalIntentMixin:
         older notice when two overlapped turns each register one. A status
         line may therefore arrive before the answer; that is intended.
         """
-        author = str(getattr(source, "user_name", "") or "")
         # Captured on the loop: display.jev_notices belongs to the profile owning the source.
         profile_home = self._resolve_profile_home_for_source(source)
 
         def on_attempt(attempt: int, attempts: int, label, confidence, error) -> None:
+            # attempt/attempts/label stay in the callback contract (the
+            # classifier owns retry numbering) but the fenced status renders
+            # none of them.
             from gateway.jev_notice import format_notice, goal_intent_attempt_record
 
             line = format_notice(
-                goal_intent_attempt_record(
-                    attempt=attempt, attempts=attempts, label=label,
-                    confidence=confidence, error=error, author=author,
-                ),
+                goal_intent_attempt_record(confidence=confidence, error=error),
                 profile_home,
             )
             if line is None:

@@ -628,6 +628,40 @@ async def test_fetch_channel_context_cold_retains_human_pasted_jev_notice(adapte
 
 
 @pytest.mark.asyncio
+async def test_fetch_channel_context_cold_retains_human_pasted_goal_intent_status(adapter, monkeypatch):
+    """Cold recovery keeps a human-quoted fenced status and drops the bot's own.
+
+    The goal-intent notice is a fenced code block, so the exclusion must
+    match the fence lines themselves (a bare ``🔎`` marker never appears in
+    it). A human quoting the block is ordinary history and must survive a
+    cold recovery; the bot's identical copy must not.
+    """
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter.config.extra["history_backfill_limit"] = 10
+
+    status = "```\n🔍 Goal Intent: 0.91 Confidence\n```"
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+
+    channel = FakeHistoryChannel(
+        [
+            make_history_message(author=human, content="ordinary human control", msg_id=3),
+            make_history_message(author=human, content=status, msg_id=2),
+            make_history_message(author=adapter._client.user, content=status, msg_id=1),
+        ],
+        channel_id=123,
+    )
+
+    result = await adapter._fetch_channel_context(
+        channel, before=make_message(channel=channel, content="trigger")
+    )
+
+    assert result == (
+        "[Recent channel messages]\n"
+        f"[Alice] {status}\n"
+        "[Alice] ordinary human control"
+    )
+
+@pytest.mark.asyncio
 async def test_fetch_channel_context_reply_window_scopes_jev_notice_by_provenance(adapter, monkeypatch):
     """The reply-anchored window (filtered by ``_keep`` alone) scopes the same way.
 
@@ -684,7 +718,7 @@ async def test_fetch_channel_context_warm_tracked_notice_id_still_excludes(adapt
     monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
     adapter.config.extra["history_backfill_limit"] = 10
 
-    notice = "🔎 jev goal-intent user message from operator: task (confidence 0.91)"
+    notice = "```\n🔍 Goal Intent: 0.91 Confidence\n```"
     human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
 
     channel = FakeHistoryChannel(
@@ -1181,6 +1215,32 @@ async def test_discord_send_does_not_cache_jev_notice_as_history_boundary(adapte
         "🔎 jev response-gate user message from Alice: allow "
         "(addresses_bot=0.91 continues_bot_thread=0.12 joins_bot_thread=0.03 noise=0.05)",
     )
+
+    assert result.success is True
+    assert adapter._last_self_message_id["778"] == "111"
+
+
+@pytest.mark.asyncio
+async def test_discord_send_does_not_cache_goal_intent_status_as_history_boundary(adapter):
+    """The fenced goal-intent status must not move the boundary either.
+
+    The status block carries no ``🔎 jev`` prefix line, so the textual
+    fallback must recognize the fence itself, not the single-line marker.
+    """
+
+    class SendingChannel(FakeTextChannel):
+        async def send(self, content, reference=None):
+            return SimpleNamespace(id=333)
+
+    channel = SendingChannel(channel_id=778)
+    adapter._client = SimpleNamespace(
+        user=adapter._client.user,
+        get_channel=lambda channel_id: channel if channel_id == 778 else None,
+        fetch_channel=AsyncMock(return_value=channel),
+    )
+    adapter._last_self_message_id["778"] = "111"
+
+    result = await adapter.send("778", "```\n🔍 Goal Intent: 0.90 Confidence\n```")
 
     assert result.success is True
     assert adapter._last_self_message_id["778"] == "111"

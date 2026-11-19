@@ -61,7 +61,9 @@ const (
 // Exactly one verdict source is set: Label+Confidence (goal-intent success),
 // Allowed+Scores (response gate), Emoji/Abstain (reaction gate), or Error
 // (any caller's failed attempt). Attempt/Attempts carry retry numbering;
-// Attempts <= 1 hides the attempt fragment (the gates never retry).
+// Attempts <= 1 hides the attempt fragment (the gates never retry). The
+// goal-intent purpose renders only Confidence/Error (goalIntentStatus) —
+// Subject, Author, Label and the numbering are gates-only inputs.
 type Notice struct {
 	Purpose       string
 	Subject       string
@@ -158,9 +160,14 @@ func SanitizeText(raw string) string {
 	return out
 }
 
-// Format renders the single notice line. Pure: no I/O, no clock, no locale
-// (numbers are formatted with fixed 2-decimal rendering).
+// Format renders the notice. Pure: no I/O, no clock, no locale (numbers are
+// formatted with fixed 2-decimal rendering). Goal-intent renders the fenced
+// status block (see goalIntentStatus); every other purpose renders the
+// single prefixed line.
 func Format(n Notice) string {
+	if SanitizeToken(n.Purpose) == PurposeGoalIntent {
+		return goalIntentStatus(n)
+	}
 	var b strings.Builder
 	b.WriteString(Prefix)
 	b.WriteString(SanitizeToken(n.Purpose))
@@ -178,16 +185,27 @@ func Format(n Notice) string {
 	return b.String()
 }
 
+// goalIntentStatus is the goal-intent notice: a fenced status block whose
+// only content is the confidence readout, the sanitized failure class, or
+// the unavailability marker. Subject, author, attempt numbering and label
+// are deliberately NOT rendered — the status reports the classifier's own
+// health, not the classified message. The fence makes chat platforms keep
+// the block verbatim instead of folding it into conversational history.
+func goalIntentStatus(n Notice) string {
+	value := "confidence unavailable"
+	if n.Error != "" {
+		value = "failed (" + SanitizeToken(n.Error) + ")"
+	} else if n.HasConfidence {
+		value = fixed2(n.Confidence) + " Confidence"
+	}
+	return "```\n🔍 Goal Intent: " + value + "\n```"
+}
+
 func verdict(n Notice) string {
 	if n.Error != "" {
 		return "failed (" + SanitizeToken(n.Error) + ")"
 	}
 	switch n.Purpose {
-	case PurposeGoalIntent:
-		if n.HasConfidence {
-			return fmt.Sprintf("%s (confidence %s)", SanitizeToken(n.Label), fixed2(n.Confidence))
-		}
-		return SanitizeToken(n.Label) + " (confidence unavailable)"
 	case PurposeResponseGate:
 		if n.Allowed == nil {
 			return "decision unavailable"

@@ -62,21 +62,23 @@ def test_shared_table_covers_every_purpose_and_failure():
 
 
 class TestGoalIntentAttemptRecord:
-    def test_success_carries_label_and_confidence(self):
-        record = goal_intent_attempt_record(
-            attempt=1, attempts=2, label="task", confidence=0.9, error=None,
-        )
-        assert record["label"] == "task"
-        assert record["confidence"] == 0.9
-        assert "error" not in record
+    """The fenced goal-intent status renders only confidence or the error
+    class — numbering, subject, author and label stopped being record inputs
+    when the notice dropped them, so the builder must not emit them either."""
+
+    def test_success_carries_only_the_confidence(self):
+        record = goal_intent_attempt_record(confidence=0.9, error=None)
+        assert record == {"purpose": "goal-intent", "confidence": 0.9}
+
+    def test_null_confidence_is_carried_verbatim(self):
+        record = goal_intent_attempt_record(confidence=None, error=None)
+        assert record == {"purpose": "goal-intent", "confidence": None}
 
     def test_failure_carries_only_the_error_class(self):
         record = goal_intent_attempt_record(
-            attempt=2, attempts=2, label=None, confidence=None,
-            error="schema_mismatch: no answers object",
+            confidence=None, error="schema_mismatch: no answers object",
         )
-        assert "label" not in record
-        assert record["error"] == "schema_mismatch: no answers object"
+        assert record == {"purpose": "goal-intent", "error": "schema_mismatch: no answers object"}
 
 
 class TestBridgeFailureIsolation:
