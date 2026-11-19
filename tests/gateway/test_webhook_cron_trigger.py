@@ -190,7 +190,7 @@ class TestCronJobRouteValidation:
                 "secret": "s3cret",
                 "cron_job": "some-job",
                 "deliver_only": True,
-                "deliver": "telegram",
+                "deliver": "discord",
             }
         }
         adapter = _make_adapter(routes)

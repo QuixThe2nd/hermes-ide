@@ -25,12 +25,12 @@ _COMMAND_REASONS = [
 
 class _Adapter(BasePlatformAdapter):
     def __init__(self):
-        super().__init__(PlatformConfig(enabled=True), Platform.TELEGRAM)
+        super().__init__(PlatformConfig(enabled=True), Platform.DISCORD)
         self.restarted = []
 
     @property
     def name(self):
-        return "telegram"
+        return "discord"
 
     async def connect(self, *, is_reconnect=False):
         return True
@@ -53,8 +53,8 @@ def _gateway():
     adapter = _Adapter()
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig()
-    runner.adapters = {Platform.TELEGRAM: adapter}
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="c1", chat_type="dm", user_id="u1")
+    runner.adapters = {Platform.DISCORD: adapter}
+    source = SessionSource(platform=Platform.DISCORD, chat_id="c1", chat_type="dm", user_id="u1")
     key = adapter._event_session_key(MessageEvent(text="", message_type=MessageType.TEXT, source=source))
     return adapter, runner, source, key
 

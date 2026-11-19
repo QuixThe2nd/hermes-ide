@@ -285,16 +285,16 @@ class TestMessageSummary:
             "author": {"id": "99", "username": "bot", "global_name": "Bot", "bot": True},
             "embeds": [
                 {
-                    "title": "Cursor Cloud Agent",
+                    "title": "Agent Progress",
                     "description": "Agent is running",
-                    "url": "https://cursor.com/agents/bc-x",
+                    "url": "https://example.com/agents/bc-x",
                 },
             ],
         }
         summary = _message_summary(msg)
         assert len(summary["embeds"]) == 1
-        assert summary["embeds"][0]["title"] == "Cursor Cloud Agent"
-        assert summary["embeds"][0]["url"] == "https://cursor.com/agents/bc-x"
+        assert summary["embeds"][0]["title"] == "Agent Progress"
+        assert summary["embeds"][0]["url"] == "https://example.com/agents/bc-x"
 
 
 # ---------------------------------------------------------------------------

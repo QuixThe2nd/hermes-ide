@@ -78,7 +78,7 @@ GRID: List[tuple] = [
 ]
 
 SCAR: List[tuple] = [
-    # MarkdownV2 reserved characters in prose — the classic Telegram 400.
+    # MarkdownV2 reserved characters in prose — historically a 400 from a chat API.
     ("mdv2-reserved-chars", "Price is 3.50 (was 4.00) — save ~12%! #deal +tax = win."),
     ("mdv2-underscores", "snake_case_name and file_name.py in prose."),
     ("mdv2-brackets", "Array[0] and dict{key} and (parens) live here."),

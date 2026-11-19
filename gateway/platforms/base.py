@@ -35,8 +35,7 @@ def _consume_detached_handler_exception(task: "asyncio.Task") -> None:
         logger.error("Detached fatal-error handler task failed: %s", exc, exc_info=exc)
 
 
-# Audio exts for native audio delivery; Telegram's narrower sets stay separate (.m2a is audio to
-# Hermes but not to sendAudio).
+# Audio exts for native audio delivery; platform-native senders with narrower sets stay separate.
 _AUDIO_MIME_TYPES = {
     ".ogg": "audio/ogg", ".opus": "audio/opus", ".mp3": "audio/mpeg", ".m2a": "audio/mpeg",
     ".wav": "audio/wav", ".m4a": "audio/m4a", ".flac": "audio/flac"}
@@ -68,9 +67,7 @@ def _or_default(thunk, default, exc=(TypeError, ValueError)):
 
 
 def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
-    """Platform-aware thread metadata for adapter sends. Telegram DM topics route with
-    ``message_thread_id`` + a reply anchor; anchorless synthetic/resumed sends fall back to
-    ``direct_messages_topic_id`` when supported."""
+    """Platform-aware thread metadata for adapter sends."""
     thread_id = getattr(source, "thread_id", None)
     platform = _platform_name(getattr(source, "platform", None))
     metadata = {"thread_id": thread_id} if thread_id is not None else {}
@@ -81,13 +78,6 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
         metadata["slack_team_id"] = str(scope_id)
     if not metadata:
         return None
-    if platform == "telegram" and getattr(source, "chat_type", None) == "dm":
-        metadata["telegram_dm_topic_reply_fallback"] = True
-        if str(thread_id) not in {"", "1"}:
-            metadata["direct_messages_topic_id"] = str(thread_id)
-        anchor = reply_to_message_id or getattr(source, "message_id", None)
-        if anchor is not None:
-            metadata["telegram_reply_to_message_id"] = str(anchor)
     # Routed profile (multiplex / profile_routes): outbound prune paths must not assume the
     # adapter's static profile stamp.
     profile = str(getattr(source, "profile", None) or "").strip()
@@ -119,12 +109,6 @@ def _reply_anchor_for_event(event) -> str | None:
         # Slack reaction handoff = new top-level message; a message_id anchor would make
         # _resolve_thread_ts() reply in a nonexistent thread.
         return None
-    if platform == "telegram" and thread_id:
-        # Forum topics route by topic metadata (no reply); DM-topic lanes reply to the triggering
-        # message — replying to the topic seed/anchor can render outside the active lane.
-        if getattr(source, "chat_type", None) != "dm":
-            return None
-        return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)
     return getattr(event, "message_id", None)
@@ -137,7 +121,7 @@ def _media_failure_text(kind: str, file_name: "str | None" = None) -> str:
 
 
 def utf16_len(s: str) -> int:
-    """UTF-16 code units in *s* — Telegram's 4 096 limit counts those, so astral chars
+    """UTF-16 code units in *s* — platform length limits that count UTF-16 units make astral chars
     (emoji, CJK Ext B) cost **two** units although Python's ``len()`` counts one.
 
     Ported from nearai/ironclaw#2304 which discovered the same discrepancy in Rust's ``chars().count()``.
@@ -212,14 +196,14 @@ def resolve_proxy_url(
     target_hosts: str | list[str] | tuple[str, ...] | set[str] | None = None,
     configured: str | None = None) -> str | None:
     """Proxy URL: *platform_env_var* (e.g. ``DISCORD_PROXY``) first, then the adapter's own YAML
-    value *configured* (``telegram.proxy_url``), then HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (any
+    value *configured* (e.g. ``discord.proxy_url``), then HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (any
     case), then the macOS system proxy — the latter two only when ``gateway.trust_env`` is true.
     None when nothing is found or NO_PROXY matches a target.
 
     *platform_env_var* is a per-adapter, per-profile-configurable setting (each proxy URL can
     embed credentials, e.g. ``http://user:pass@host``) so it is read scope-aware: under a
     secondary multiplex profile it comes from that profile's own ``.env``, not the shared
-    process env another profile's ``TELEGRAM_PROXY``/``DISCORD_PROXY``/etc. may hold; the YAML
+    process env another profile's ``DISCORD_PROXY``/``SLACK_PROXY``/etc. may hold; the YAML
     value is the same profile's, so a secondary keeps its configured route without any env
     bridge (#108440). The generic ``HTTPS_PROXY``/``HTTP_PROXY``/``ALL_PROXY`` fallback stays a raw
     process-env read — those are OS/system-level network settings, not a per-profile Hermes concept."""
@@ -324,7 +308,7 @@ GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
 # One sentence for every "you may not press/run this" refusal on every platform (slash commands,
 # approval buttons, pickers, prompts). ``{platform}`` is the ``Platform.value`` for the
 # ``hermes pairing approve`` command (hermes_cli/subcommands/pairing.py) that lets the owner fix it.
-# Kept under 200 chars: Telegram's answerCallbackQuery truncates longer text.
+# Kept under 200 chars: platform callback-answer APIs truncate longer text.
 UNAUTHORIZED_ACTION_NOTICE = (
     "This bot is private and you're not on its allowed list. If you own it, run "
     "`hermes pairing approve {platform} <request-id>` on the host (`hermes pairing list` shows the id).")
@@ -1161,7 +1145,7 @@ def _resolve_media_ext(filename: str, mime_type: str) -> str:
 def cache_media_bytes(data: bytes, *, filename: str = "", mime_type: str = "",
                       default_kind: Optional[str] = None) -> Optional[CachedMedia]:
     """Classify and cache raw attachment bytes -> CachedMedia (None only for images failing
-    validation). ``default_kind`` biases ambiguous ext/MIME (Telegram native photo, no name);
+    validation). ``default_kind`` biases ambiguous ext/MIME (platform-native photo, no name);
     anything not image/video/audio is a document."""
     from tools.credential_files import to_agent_visible_cache_path
     ext = _resolve_media_ext(filename, mime_type)
@@ -1253,11 +1237,11 @@ class SendResult:
     success: bool
     message_id: Optional[str] = None
     error: Optional[str] = None
-    # Adapter-specific metadata. Contract: Telegram edit-overflow partials set
+    # Adapter-specific metadata. Contract: edit-overflow partials set
     # raw_response["partial_overflow"] so the stream consumer sends the missing tail.
     raw_response: Any = None
     retryable: bool = False  # transient connection error — base retries automatically
-    retry_after: Optional[float] = None  # server-requested delay (Telegram FloodWait) beats our backoff
+    retry_after: Optional[float] = None  # server-requested delay (platform flood control) beats our backoff
     # Extra ids (send order) when a payload was split; ``message_id`` is then the LAST id so
     # later edits target the newest chunk.
     continuation_message_ids: tuple = ()
@@ -1510,7 +1494,7 @@ class BasePlatformAdapter(ABC):
     # auto-resume finishes the work instead of asking nobody.
     # The startup auto-resume turn (``_schedule_resume_pending_sessions`` → the ``_is_resume_pending``
     # branch in ``_handle_message_with_agent``) reads this to pick its guidance: interactive platforms
-    # (Telegram, Slack, Discord DMs, …) get "report the restore and ask what the user wants next";
+    # (Slack, Discord DMs, …) get "report the restore and ask what the user wants next";
     # non-interactive event platforms (webhook) get "finish the interrupted work" because nobody is there to
     # answer, and an acknowledgement would silently abandon the task (#57056). Read generically via
     # ``getattr(adapter, "interactive_resume", True)`` — no per-platform branching at the call site.
@@ -1532,8 +1516,6 @@ class BasePlatformAdapter(ABC):
         self._reaction_handler: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
         # Runner-owned boundary for normalized events: auth/profile state never lives in an adapter.
         self._platform_event_handler: Optional[Callable[[Dict[str, Any], Any], Awaitable[None]]] = None
-        # Rewrites ``event.source.thread_id`` before session keying (Telegram DM topics).
-        self._topic_recovery_fn: Optional[Callable[[Any], Optional[str]]] = None
         self._running, self._fatal_error_retryable = False, True
         self._fatal_error_code: Optional[str] = None
         self._fatal_error_message: Optional[str] = None
@@ -1580,7 +1562,7 @@ class BasePlatformAdapter(ABC):
     @property
     def message_len_fn(self) -> Callable[[str], int]:
         """Length function for message size; override where the platform counts
-        differently from ``len`` (Telegram: UTF-16 code units)."""
+        differently from ``len`` (some platforms count UTF-16 code units)."""
         return len
 
     def max_message_length_for_chat(self, chat_id: str) -> int:
@@ -1622,13 +1604,13 @@ class BasePlatformAdapter(ABC):
 
     def prefers_fresh_final_streaming(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
         """Whether the stream consumer should finalize with a *fresh* final message (best-effort
-        deleting the preview) instead of final-editing it (Telegram: keeps rich rendering)."""
+        deleting the preview) instead of final-editing it (some adapters keep rich rendering)."""
         return False
 
     def streaming_overflow_limit(self) -> Optional[int]:
         """Max single-message length (``message_len_fn`` units) the stream consumer may
         accumulate before splitting, for rich send/draft paths exceeding the legacy cap
-        (Telegram Rich Messages: 32,768 vs 4,096). ``None`` = use ``MAX_MESSAGE_LENGTH``."""
+        (platforms with rich sends: 32,768 vs 4,096). ``None`` = use ``MAX_MESSAGE_LENGTH``."""
         return None
 
     async def send_draft(self, chat_id: str, draft_id: int, content: str,
@@ -1693,8 +1675,8 @@ class BasePlatformAdapter(ABC):
         self._fatal_error_handler = handler
 
     #: Published when an adapter is installed and running but its receive
-    #: path is not yet confirmed (e.g. Telegram polling has not proven a
-    #: getUpdates round-trip). Same ``retrying`` platform_state the runner
+    #: path is not yet confirmed (e.g. polling has not proven a
+    #: receive round-trip). Same ``retrying`` platform_state the runner
     #: uses for queued reconnects, so readers see "not delivering" (#101391).
     DEGRADED_STATUS_MESSAGE = "connected but not yet confirmed active; recovering in background"
 
@@ -1765,8 +1747,8 @@ class BasePlatformAdapter(ABC):
             return
         result = handler(self)
         if asyncio.iscoroutine(result):
-            # Detached + shielded: often awaited from an adapter-owned task (e.g. Telegram
-            # ``_polling_error_task``) that the gateway fatal handler's ``disconnect()``
+            # Detached + shielded: often awaited from an adapter-owned task (e.g. a
+            # polling error task) that the gateway fatal handler's ``disconnect()``
             # cancels; unshielded, the handler died mid-flight — adapter popped from the
             # gateway map but never queued for background reconnect, leaving a zombie
             # gateway with no platforms and no pending retries (#81335).
@@ -1873,30 +1855,6 @@ class BasePlatformAdapter(ABC):
         closed."""
         self._platform_event_handler = handler
 
-    def set_topic_recovery_fn(self, fn: Optional[Callable[[Any], Optional[str]]]) -> None:
-        """Install a thread_id-recovery hook (Telegram DM topic mode): called with ``event.source``
-        before session keying; a non-None return replaces ``source.thread_id``. ``None`` clears
-        it."""
-        self._topic_recovery_fn = fn
-
-    def _apply_topic_recovery(self, event: MessageEvent) -> None:
-        """Rewrite ``event.source.thread_id`` in place if the hook returns one."""
-        recover = getattr(self, "_topic_recovery_fn", None)
-        source = getattr(event, "source", None)
-        if recover is None or source is None:
-            return
-        try:
-            recovered = recover(source)
-            if recovered is None or str(recovered) == str(source.thread_id or ""):
-                return
-        except Exception:
-            logger.debug("topic recovery hook failed", exc_info=True)
-            return
-        try:
-            from gateway.session_identity import replace_source
-            event.source = replace_source(source, thread_id=str(recovered))  # keeps the pinned identity
-        except Exception:
-            logger.debug("topic recovery rewrite failed", exc_info=True)
 
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
@@ -2195,7 +2153,7 @@ class BasePlatformAdapter(ABC):
     @abstractmethod
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect and start receiving; True on success. ``is_reconnect``: the reconnect watcher is
-        re-establishing a dropped platform — adapters with a server-side update queue (Telegram)
+        re-establishing a dropped platform — adapters with a server-side update queue
         must preserve it so outage-time messages aren't discarded."""
 
     @abstractmethod
@@ -2243,7 +2201,7 @@ class BasePlatformAdapter(ABC):
 
     def _schedule_ephemeral_delete(self, chat_id: str, message_id: str, ttl_seconds: int) -> None:
         """Spawn a detached task that deletes ``message_id`` after ``ttl_seconds``; best-effort
-        (gateway restart, permission denied, Telegram 48h window) swallowed at debug level."""
+        (gateway restart, permission denied, platform deletion window) swallowed at debug level."""
         async def _run_delete() -> None:
             try:
                 await asyncio.sleep(max(1, int(ttl_seconds)))
@@ -3125,7 +3083,7 @@ class BasePlatformAdapter(ABC):
         if not is_network and self._is_timeout_error(error_str):
             return result
         if is_network:
-            # A server-requested retry_after (Telegram FloodWait) overrides backoff, once per send.
+            # A server-requested retry_after (platform flood control) overrides backoff, once per send.
             server_retry_after = result.retry_after
             for attempt in range(1, max_retries + 1):
                 backoff = server_retry_after
@@ -3220,7 +3178,7 @@ class BasePlatformAdapter(ABC):
     @staticmethod
     def _is_partial_delivery(result: "SendResult") -> bool:
         """True when a split payload was PARTLY delivered (``raw_response["partial_overflow"]``, the
-        contract Telegram's send/edit-overflow paths set and the stream consumer reads): the visible
+        contract send/edit-overflow paths set and the stream consumer reads): the visible
         head must never be sent again."""
         raw = getattr(result, "raw_response", None)
         return isinstance(raw, dict) and bool(raw.get("partial_overflow"))
@@ -3391,11 +3349,6 @@ class BasePlatformAdapter(ABC):
         if self._drop_unresolved(event):
             return
         expected_session_key = str((event.metadata or {}).get("gateway_session_key") or "").strip()
-        # Explicitly routed events already name their destination; recovering a
-        # different topic would redirect them and yield before the session claim.
-        if (not expected_session_key and getattr(self, "_topic_recovery_fn", None) is not None
-                and event.source.platform == Platform.TELEGRAM and event.source.chat_type == "dm"):
-            await asyncio.to_thread(self._apply_topic_recovery, event)
         session_key = self._event_session_key(event)
         if expected_session_key and session_key != expected_session_key:
             logger.warning("Dropping internally routed event: expected session=%s derived=%s",
@@ -4045,8 +3998,8 @@ class BasePlatformAdapter(ABC):
         return None
 
     def format_message(self, content: str) -> str:
-        """Format a message for this platform (override for e.g. Telegram
-        MarkdownV2); default returns content as-is."""
+        """Format a message for this platform (override where the platform has its
+        own markup dialect); default returns content as-is."""
         return content
 
     @staticmethod
@@ -4054,7 +4007,7 @@ class BasePlatformAdapter(ABC):
                          len_fn: Optional["Callable[[str], int]"] = None) -> List[str]:
         """Split a long message into chunks preserving code blocks: a split inside a fence closes it
         at the chunk end and reopens it (same language tag) in the next; multi-chunk output gets
-        ``(1/3)`` indicators. ``len_fn`` overrides ``len`` (``utf16_len`` for Telegram)."""
+        ``(1/3)`` indicators. ``len_fn`` overrides ``len`` (``utf16_len`` where the platform counts UTF-16)."""
         _len = len_fn or len
         if _len(content) <= max_length:
             return [content]

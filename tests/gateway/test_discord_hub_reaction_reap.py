@@ -1,9 +1,6 @@
 """Hub-side cleanup of processing 👀 reactions when a gateway generation detaches."""
 
 import asyncio
-import os
-import uuid
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -17,9 +14,10 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def _short_hub_socket(_tmp_path: Path) -> Path:
-    """AF_UNIX bind paths are length-capped; pytest tmp dirs can exceed the limit."""
-    return Path("/tmp") / f"hermes-dh-test-{os.getpid()}-{uuid.uuid4().hex[:10]}.sock"
+# Bind paths come from the shared ``short_af_unix_path`` fixture: hub start()
+# chmods the socket's parent directory 0o700, so the parent must be a directory
+# the test owns (never the shared ``/tmp`` root — EPERM for non-root users) and
+# short enough to bind under macOS's 104-byte sun_path limit.
 
 
 class FakeRawMessage:
@@ -33,9 +31,9 @@ class FakeHubUser:
 
 
 @pytest.mark.platforms("posix")
-def test_detach_reaps_processing_reaction_via_hub_rpc(tmp_path):
+def test_detach_reaps_processing_reaction_via_hub_rpc(tmp_path, short_af_unix_path):
     async def scenario():
-        server = DiscordHubServer(_short_hub_socket(tmp_path))
+        server = DiscordHubServer(short_af_unix_path)
         hub_user = FakeHubUser()
 
         class FakeDiscordConnection:
@@ -86,9 +84,9 @@ def test_detach_reaps_processing_reaction_via_hub_rpc(tmp_path):
 
 
 @pytest.mark.platforms("posix")
-def test_processing_reaction_tracking_is_bounded_and_dropped_on_detach(tmp_path):
+def test_processing_reaction_tracking_is_bounded_and_dropped_on_detach(tmp_path, short_af_unix_path):
     async def scenario():
-        server = DiscordHubServer(_short_hub_socket(tmp_path))
+        server = DiscordHubServer(short_af_unix_path)
 
         class FakeDiscordConnection:
             def __init__(self):
@@ -144,9 +142,9 @@ def test_processing_reaction_tracking_is_bounded_and_dropped_on_detach(tmp_path)
 
 
 @pytest.mark.platforms("posix")
-def test_detach_reap_only_removes_processing_emoji_not_completion(tmp_path):
+def test_detach_reap_only_removes_processing_emoji_not_completion(tmp_path, short_af_unix_path):
     async def scenario():
-        server = DiscordHubServer(_short_hub_socket(tmp_path))
+        server = DiscordHubServer(short_af_unix_path)
         hub_user = FakeHubUser()
 
         class FakeDiscordConnection:
@@ -200,9 +198,9 @@ def test_detach_reap_only_removes_processing_emoji_not_completion(tmp_path):
 
 
 @pytest.mark.platforms("posix")
-def test_successful_remove_reaction_clears_tracking_without_detach_reap(tmp_path):
+def test_successful_remove_reaction_clears_tracking_without_detach_reap(tmp_path, short_af_unix_path):
     async def scenario():
-        server = DiscordHubServer(_short_hub_socket(tmp_path))
+        server = DiscordHubServer(short_af_unix_path)
         hub_user = FakeHubUser()
 
         class FakeDiscordConnection:

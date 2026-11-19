@@ -283,8 +283,7 @@ strip, which the client swaps in (or removes) on every poll while
 the feed cursor keeps its existing behavior.
 
 Inline dispatch cards: the real spawn-shaped delegate tool call
-(delegate_agent, delegate_task, delegate_claude_agent,
-delegate_cursor_agent) is the chronological authority — one
+(delegate_agent, delegate_task, delegate_claude_agent) is the chronological authority — one
 Discord-style dispatch card renders at the call carrier's position
 in the transcript (a batch call contributes one card per task, in
 order), and exactly the matching generic delegate_* tool result row
@@ -1354,7 +1353,7 @@ def _lineage_job_children(specs, dbs_by_profile):
     links to every spec whose window contains its started_at and whose
     prompts byte-contain its first user message, and ONLY when the
     candidate's own source is an explicitly non-human worker source
-    (LINEAGE_WORKER_SOURCES): a human-facing CLI/API/Discord/Telegram
+    (LINEAGE_WORKER_SOURCES): a human-facing CLI/API/Discord
     session keeps its inbox row even when its first prompt and start
     time match a job — prompt bytes plus a time window are inference,
     never proof a person did not type them. Multiple parents are

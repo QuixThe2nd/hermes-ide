@@ -2,7 +2,7 @@
 
 Covers ``_format_exec_approval`` (template-attr driven exec-approval text),
 ``_format_choice_page`` (picker pagination core), ``_truncate_preview``, and
-byte-parity of the rewired adapters (telegram/feishu/matrix) against their
+byte-parity of the rewired adapters (feishu/matrix) against their
 historical inline formatting.
 """
 
@@ -103,7 +103,7 @@ class TestAdapterParity:
     """Rewired adapters produce byte-identical text vs their historical inline code."""
 
 
-    def test_telegram_pagination_parity(self):
+    def test_choice_page_pagination_parity(self):
         """_format_choice_page matches the old _build_*_keyboard arithmetic."""
 
         def old(options, page, page_size):

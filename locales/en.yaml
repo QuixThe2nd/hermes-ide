@@ -144,7 +144,7 @@ gateway:
   restart:
     in_progress:           "⏳ Gateway restart already in progress..."
     restarting:            "♻ Restarting gateway..."
-    chained:               "♻ Gateway restart chained — queued on the incoming generation."
+    forwarded:            "♻ Gateway restart forwarded to the newest generation (PID {pid})..."
 
   resume:
     db_unavailable:        "Session database not available."
@@ -264,17 +264,6 @@ gateway:
     current_with_title:    "📌 Session: `{session_id}`\nTitle: **{title}**"
     current_no_title:      "📌 Session: `{session_id}`\nNo title set. Usage: `/title My Session Name`"
 
-  topic:
-    not_telegram_dm:         "The /topic command is only available in Telegram private chats."
-    no_session_db:           "Session database not available."
-    unauthorized:            "You are not authorized to use /topic on this bot."
-    restore_needs_topic:     "To restore a session, first create or open a Telegram topic, then send /topic <session-id> inside that topic. To create a new topic, open All Messages and send any message there."
-    topics_disabled:         "Telegram topics are not enabled for this bot yet.\n\nHow to enable them:\n1. Open @BotFather.\n2. Choose your bot.\n3. Open Bot Settings → Threads Settings.\n4. Turn on Threaded Mode and make sure users are allowed to create new threads.\n\nThen send /topic again."
-    topics_user_disallowed:  "Telegram topics are enabled, but users are not allowed to create topics.\n\nOpen @BotFather → choose your bot → Bot Settings → Threads Settings, then turn off 'Disallow users to create new threads'.\n\nThen send /topic again."
-    enable_failed:           "Failed to enable Telegram topic mode: {error}"
-    bound_status:            "This topic is linked to:\nSession: {label}\nID: {session_id}\n\nUse /new to replace this topic with a fresh session.\nFor parallel work, open All Messages and send a message there to create another topic."
-    thread_ready:            "Telegram multi-session topics are enabled.\n\nThis topic will be used as an independent Hermes session. Use /new to replace this topic's current session. For parallel work, open All Messages and send a message there to create another topic."
-    untitled_session:        "Untitled session"
 
   undo:
     nothing:               "Nothing to undo."

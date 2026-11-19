@@ -745,8 +745,7 @@ def register_relay_adapter(force: bool = False, url: Optional[str] = None) -> bo
 # The whole block is removed by reverting the commit that added it.
 
 def relay_bot_username(platform: str) -> Optional[str]:
-    """The bot's deep-link username/handle for a platform (e.g. Telegram's
-    ``@handle`` for ``t.me/<handle>``), read from the per-platform entry in
+    """The bot's public username/handle for a platform, read from the per-platform entry in
     ``GATEWAY_RELAY_BOT_IDS``. None when absent (most platforms don't need one).
     """
     entry = _relay_bot_ids_map().get(platform)

@@ -1,7 +1,7 @@
 """Opt-in compression progress notices on chat gateways (#52995).
 
 Routine automatic compression is silent-by-design on human-facing chat
-platforms: the gateway noise filter (`_TELEGRAM_NOISY_STATUS_RE` via
+platforms: the gateway noise filter (`_NOISY_STATUS_RE` via
 `_prepare_gateway_status_message`) swallows every ROUTINE compression status.
 `compression.progress_notices: true` (default: false) opens an opt-in gate
 that lets those ROUTINE compression statuses through — scoped strictly to
@@ -10,7 +10,7 @@ noise (auxiliary failures, provider retry/rate-limit chatter) stays
 suppressed even when the gate is enabled.
 
 The default-OFF path must stay byte-identical to silent-by-design main:
-tests/gateway/test_telegram_noise_filter.py pins that suite unchanged.
+this suite pins it via the CHAT_PLATFORMS matrix below.
 """
 
 import pytest
@@ -23,8 +23,8 @@ from agent.conversation_compression import (
 from gateway.run import _prepare_gateway_status_message
 
 # Chat surfaces the opt-in must deliver to (subset of the noise-filter
-# suite's CHAT_PLATFORMS; telegram + discord are the required anchors).
-CHAT_PLATFORMS = ["telegram", "discord", "slack", "whatsapp"]
+# suite's CHAT_PLATFORMS; discord + slack are the required anchors.
+CHAT_PLATFORMS = ["discord", "slack", "whatsapp"]
 
 # Noisy statuses that are NOT routine compression progress — they must stay
 # suppressed on chat platforms even when progress_notices is enabled.

@@ -244,17 +244,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     current_with_title:    "📌 セッション: `{session_id}`\nタイトル: **{title}**"
     current_no_title:      "📌 セッション: `{session_id}`\nタイトル未設定。使い方: `/title セッション名`"
 
-  topic:
-    not_telegram_dm:         "/topic コマンドは Telegram のプライベートチャットでのみ利用できます。"
-    no_session_db:           "セッションデータベースを利用できません。"
-    unauthorized:            "この bot で /topic を使用する権限がありません。"
-    restore_needs_topic:     "セッションを復元するには、まず Telegram topic を作成または開いてから、その topic 内で /topic <session-id> を送信してください。新しい topic を作成するには、All Messages を開いて任意のメッセージを送信してください。"
-    topics_disabled:         "この bot ではまだ Telegram topics が有効になっていません。\n\n有効にする方法:\n1. @BotFather を開きます。\n2. 自分の bot を選びます。\n3. Bot Settings → Threads Settings を開きます。\n4. Threaded Mode をオンにし、ユーザーが新しいスレッドを作成できるように設定します。\n\nそして /topic をもう一度送信してください。"
-    topics_user_disallowed:  "Telegram topics は有効ですが、ユーザーは topic を作成できません。\n\n@BotFather → 自分の bot → Bot Settings → Threads Settings を開き、'Disallow users to create new threads' をオフにしてください。\n\nそして /topic をもう一度送信してください。"
-    enable_failed:           "Telegram topic モードの有効化に失敗しました: {error}"
-    bound_status:            "この topic は次にリンクされています:\nセッション: {label}\nID: {session_id}\n\nこの topic を新しいセッションに置き換えるには /new を使用してください。\n並行作業には、All Messages を開いてメッセージを送信し、別の topic を作成してください。"
-    thread_ready:            "Telegram のマルチセッション topics が有効です。\n\nこの topic は独立した Hermes セッションとして使用されます。この topic の現在のセッションを置き換えるには /new を使用してください。並行作業には、All Messages を開いてメッセージを送信し、別の topic を作成してください。"
-    untitled_session:        "無題のセッション"
 
   undo:
     nothing:               "元に戻せる操作がありません。"

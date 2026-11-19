@@ -72,7 +72,7 @@ class TestDelegateRequirements(unittest.TestCase):
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
         # tasks[] is the advertised SUBAGENT spawn shape (single task =
         # one-entry array); the unified backend surface additionally
-        # advertises top-level `goal` (backend=claude/cursor task brief).
+        # advertises top-level `goal` (backend=claude task brief).
         # Legacy context/output_schema stay handler-accepted but unadvertised.
         self.assertIn("tasks", props)
         self.assertIn("goal", props)
@@ -218,7 +218,7 @@ class TestChildSystemPrompt(unittest.TestCase):
             self.assertIn("decisions already made", prompt)
 
     def test_lane_souls_carry_decision_brief_rule(self):
-        # Souls are standalone harness prompts on the omp/claude/cursor backends,
+        # Souls are standalone harness prompts on the omp/claude backends,
         # so each must carry the same 1-3-1 rule the builder injects.
         from tools.delegate_lane_specs import LANE_NAMES, read_soul, resolve_lane_spec
 

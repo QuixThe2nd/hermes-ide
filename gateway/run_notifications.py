@@ -418,7 +418,7 @@ class GatewayNotificationsMixin:
         result, so a final refused here (flood control, a transport that had just died) left no
         ledger row and was gone for good. The ledger identity is the raw inbound message id;
         ``event_message_id`` is only the reply anchor, which is None wherever replies are not used
-        (Telegram forum topics, Slack reaction handoffs) and so cannot identify the turn; with no
+        (forum topics, Slack reaction handoffs) and so cannot identify the turn; with no
         inbound id the ledger falls back to the event's own (empty) message id. Adapters without
         the base contract and sends without a session key keep the plain send."""
         if session_key and isinstance(adapter, BasePlatformAdapter):
@@ -528,7 +528,7 @@ class GatewayNotificationsMixin:
         return data[offset:].decode("utf-8", errors="replace"), len(data)
 
     async def _send_update_output(self, target: "_UpdateTarget", text: str) -> None:
-        """Send buffered update output as fenced chunks that fit message limits (Telegram: 4096)."""
+        """Send buffered update output as fenced chunks that fit message limits (e.g. 4096)."""
         from tools.ansi_strip import strip_ansi
         clean = strip_ansi(text).strip()
         if not clean:
@@ -539,7 +539,7 @@ class GatewayNotificationsMixin:
                 await target.send(f"```\n{clean[i:i + max_chunk]}\n```")
 
     async def _forward_update_prompt(self, target: "_UpdateTarget", prompt_text: str, default: str) -> None:
-        """Forward an update prompt: platform-native buttons first (Discord, Telegram), else text."""
+        """Forward an update prompt: platform-native buttons first (Discord), else text."""
         sent_buttons = False
         adapter = target.adapter
         if getattr(type(adapter), "send_update_prompt", None) is not None:

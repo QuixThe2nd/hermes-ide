@@ -139,7 +139,7 @@ class TestResetNoticeSessionInfo:
         from gateway.config import Platform
         from gateway.session import SessionSource
         return SessionSource(
-            platform=Platform.TELEGRAM, chat_id="123", user_id="u1",
+            platform=Platform.DISCORD, chat_id="123", user_id="u1",
             profile="planner",
         )
 

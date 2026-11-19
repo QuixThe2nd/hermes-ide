@@ -244,17 +244,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     current_with_title:    "📌 세션: `{session_id}`\n제목: **{title}**"
     current_no_title:      "📌 세션: `{session_id}`\n제목이 설정되지 않았습니다. 사용법: `/title 내 세션 이름`"
 
-  topic:
-    not_telegram_dm:         "/topic 명령은 Telegram 비공개 채팅에서만 사용할 수 있습니다."
-    no_session_db:           "세션 데이터베이스를 사용할 수 없습니다."
-    unauthorized:            "이 봇에서 /topic을 사용할 권한이 없습니다."
-    restore_needs_topic:     "세션을 복원하려면 먼저 Telegram 토픽을 만들거나 열고, 해당 토픽 안에서 /topic <session-id>를 보내세요. 새 토픽을 만들려면 All Messages를 열고 그곳으로 메시지를 보내세요."
-    topics_disabled:         "이 봇에는 아직 Telegram 토픽이 활성화되어 있지 않습니다.\n\n활성화 방법:\n1. @BotFather를 엽니다.\n2. 봇을 선택합니다.\n3. Bot Settings → Threads Settings를 엽니다.\n4. Threaded Mode를 켜고 사용자가 새 스레드를 만들 수 있도록 허용합니다.\n\n그런 다음 다시 /topic을 보내세요."
-    topics_user_disallowed:  "Telegram 토픽이 활성화되어 있지만, 사용자가 토픽을 만들 수 없습니다.\n\n@BotFather → 봇 선택 → Bot Settings → Threads Settings를 열고 'Disallow users to create new threads'를 끄세요.\n\n그런 다음 다시 /topic을 보내세요."
-    enable_failed:           "Telegram 토픽 모드 활성화에 실패했습니다: {error}"
-    bound_status:            "이 토픽은 다음에 연결되어 있습니다:\n세션: {label}\nID: {session_id}\n\n이 토픽을 새 세션으로 교체하려면 /new를 사용하세요.\n병렬 작업을 위해서는 All Messages를 열고 메시지를 보내 다른 토픽을 만드세요."
-    thread_ready:            "Telegram 다중 세션 토픽이 활성화되었습니다.\n\n이 토픽은 독립된 Hermes 세션으로 사용됩니다. 이 토픽의 현재 세션을 교체하려면 /new를 사용하세요. 병렬 작업을 위해서는 All Messages를 열고 메시지를 보내 다른 토픽을 만드세요."
-    untitled_session:        "제목 없는 세션"
 
   undo:
     nothing:               "되돌릴 내용이 없습니다."

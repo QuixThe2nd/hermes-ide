@@ -18,7 +18,7 @@ from gateway.session import SessionSource
 def _make_runner() -> GatewayRunner:
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")},
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="fake")},
     )
     runner.adapters = {}
     runner._model = "openai/gpt-4.1-mini"
@@ -28,7 +28,7 @@ def _make_runner() -> GatewayRunner:
 
 def _source() -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="123",
         chat_name="DM",
         chat_type="private",
@@ -58,32 +58,6 @@ async def test_reply_prefix_injected_when_text_absent_from_history():
         '[Replying to: "Japan is great for culture, food, and efficiency."]'
     )
     assert result.endswith("What's the best time to go?")
-
-
-@pytest.mark.asyncio
-async def test_telegram_long_reply_reaches_prompt_without_losing_later_items():
-    """The native reply already has the full message; preparation must not trim it."""
-    from gateway.platforms.event import MessageType
-    from tests.gateway.test_telegram_reply_quote import _make_adapter, _make_message
-
-    quoted = "\n".join(
-        f"{index}. {company}: " + "Evidence from the supplied list. " * 12
-        for index, company in enumerate(
-            ["GoCar", "Urban Drive", "DubCar", "GRPS", "Halucar"], 1
-        )
-    )
-    event = _make_adapter()._build_message_event(
-        _make_message(text="Review all five companies.", reply_to_text=quoted),
-        MessageType.TEXT,
-    )
-    history = [{"role": "user", "content": "Previous request"}]
-    result = await _make_runner()._prepare_inbound_message_text(
-        event=event, source=event.source, history=history,
-    )
-    assert result is not None
-    assert quoted in result
-    assert result.endswith("Review all five companies.")
-    assert history == [{"role": "user", "content": "Previous request"}]
 
 
 @pytest.mark.asyncio

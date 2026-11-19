@@ -38,7 +38,7 @@ OVERRIDE = {
 
 def _make_source() -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         user_id="u1",
         chat_id="c1",
         user_name="tester",

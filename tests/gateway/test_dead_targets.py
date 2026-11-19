@@ -1,5 +1,5 @@
-"""Tests for confirmed-dead delivery-target short-circuiting (deleted Telegram
-groups, blocked/kicked bots, deactivated users).
+"""Tests for confirmed-dead delivery-target short-circuiting (deleted groups,
+blocked/kicked bots, deactivated users).
 
 Covers the full lifecycle through the real ``DeliveryRouter.deliver()`` path:
   forbidden send  -> target marked dead
@@ -49,20 +49,20 @@ def isolate(tmp_path, monkeypatch):
 class TestDeadTargetRegistry:
     def test_mark_is_dead_clear_roundtrip(self, isolate):
         reg = DeadTargetRegistry()
-        assert reg.is_dead("telegram", "123") is False
-        assert reg.mark_dead("telegram", "123", "forbidden") is True
-        assert reg.is_dead("telegram", "123") is True
+        assert reg.is_dead("discord", "123") is False
+        assert reg.mark_dead("discord", "123", "forbidden") is True
+        assert reg.is_dead("discord", "123") is True
         # idempotent: second mark returns False (already present)
-        assert reg.mark_dead("telegram", "123", "forbidden") is False
-        assert reg.clear("telegram", "123") is True
-        assert reg.is_dead("telegram", "123") is False
+        assert reg.mark_dead("discord", "123", "forbidden") is False
+        assert reg.clear("discord", "123") is True
+        assert reg.is_dead("discord", "123") is False
 
     def test_persists_across_instances(self, isolate):
         reg = DeadTargetRegistry()
-        reg.mark_dead("telegram", "999", "deleted group")
+        reg.mark_dead("discord", "999", "deleted group")
         # New instance reads the same on-disk store under tmp HERMES_HOME.
         reg2 = DeadTargetRegistry()
-        assert reg2.is_dead("telegram", "999") is True
+        assert reg2.is_dead("discord", "999") is True
 
 
 # --------------------------------------------------------------------------
@@ -72,36 +72,36 @@ class TestDeadTargetRegistry:
 @pytest.mark.asyncio
 async def test_forbidden_marks_target_dead_then_short_circuits(isolate):
     adapter = ForbiddenThenOkAdapter(fail_times=99)
-    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
-    target = DeliveryTarget.parse("telegram:42")
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
+    target = DeliveryTarget.parse("discord:42")
 
     # First delivery: send raises Forbidden -> failure + target recorded dead.
     res1 = await router.deliver("hi", [target])
-    assert res1["telegram:42"]["success"] is False
-    assert router.dead_targets.is_dead("telegram", "42") is True
+    assert res1["discord:42"]["success"] is False
+    assert router.dead_targets.is_dead("discord", "42") is True
     assert adapter.calls == ["42"]  # adapter was invoked once
 
     # Second delivery: short-circuited, adapter NOT called again.
     res2 = await router.deliver("hi again", [target])
-    assert res2["telegram:42"]["skipped"] == "dead_target"
-    assert res2["telegram:42"]["success"] is False
+    assert res2["discord:42"]["skipped"] == "dead_target"
+    assert res2["discord:42"]["success"] is False
     assert adapter.calls == ["42"]  # still only the original call
 
 
 @pytest.mark.asyncio
 async def test_shared_registry_is_used_when_injected(isolate):
     shared = DeadTargetRegistry()
-    shared.mark_dead("telegram", "500", "pre-existing")
+    shared.mark_dead("discord", "500", "pre-existing")
     adapter = ForbiddenThenOkAdapter(fail_times=0)
     router = DeliveryRouter(
         GatewayConfig(),
-        adapters={Platform.TELEGRAM: adapter},
+        adapters={Platform.DISCORD: adapter},
         dead_targets=shared,
     )
-    target = DeliveryTarget.parse("telegram:500")
+    target = DeliveryTarget.parse("discord:500")
     res = await router.deliver("hi", [target])
     # Injected registry's pre-existing flag short-circuits before any send.
-    assert res["telegram:500"]["skipped"] == "dead_target"
+    assert res["discord:500"]["skipped"] == "dead_target"
     assert adapter.calls == []
 
 

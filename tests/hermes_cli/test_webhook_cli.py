@@ -131,7 +131,7 @@ class TestCronJobSubscribe:
             name="ev",
             cron_job="sweeper",
             deliver_only=True,
-            deliver="telegram",
+            deliver="discord",
         ))
         assert "mutually exclusive" in capsys.readouterr().out
         assert "ev" not in _load_subscriptions()

@@ -266,13 +266,13 @@ class TestLegacyKanbanConfigStillLoads:
                 "  enabled: true\n"
                 "  default_board: work\n"
                 "tools:\n"
-                "  telegram:\n"
+                "  discord:\n"
                 "    disabled: [kanban]\n"
             )
             config = load_config()
             assert config["model"]["default"] == "test/custom"
             assert config["kanban"] == {"enabled": True, "default_board": "work"}
-            assert config["tools"]["telegram"]["disabled"] == ["kanban"]
+            assert config["tools"]["discord"]["disabled"] == ["kanban"]
 
     def test_legacy_kanban_toolset_name_is_a_silent_no_op(self):
         from toolsets import get_toolset, resolve_multiple_toolsets, resolve_toolset
@@ -342,7 +342,7 @@ class TestSaveAndLoadRoundtrip:
             "  provider: anthropic\n"
             "gateway:\n"
             "  platforms:\n"
-            "    telegram:\n"
+            "    discord:\n"
             "      enabled: true\n"
             "broken: [unterminated\n"
         )
@@ -947,7 +947,7 @@ class TestConfigSupportFloor:
     _V12_FIXTURE = {
         "_config_version": 12,
         "model": {"default": "openai/gpt-5.4", "provider": "openrouter"},
-        "display": {"tool_progress_overrides": {"telegram": "verbose"}},
+        "display": {"tool_progress_overrides": {"discord": "verbose"}},
         "stt": {"model": "base", "provider": "local"},
         "compression": {"summary_model": "gpt-x", "summary_provider": "auto"},
         "model_catalog": {"ttl_hours": 24},
@@ -966,8 +966,8 @@ class TestConfigSupportFloor:
         "compression": {},
         "delegation": {"max_concurrent_children": 8},
         "display": {
-            "platforms": {"telegram": {"tool_progress": "verbose"}},
-            "tool_progress_overrides": {"telegram": "verbose"},
+            "platforms": {"discord": {"tool_progress": "verbose"}},
+            "tool_progress_overrides": {"discord": "verbose"},
         },
         "memory": {"write_approval": True},
         "model": {"default": "openai/gpt-5.4", "provider": "openrouter"},

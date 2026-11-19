@@ -3,11 +3,11 @@
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 
 
-def _telegram_descriptor(**overrides) -> CapabilityDescriptor:
+def _discord_descriptor(**overrides) -> CapabilityDescriptor:
     base = dict(
         contract_version=CONTRACT_VERSION,
-        platform="telegram",
-        label="Telegram",
+        platform="discord",
+        label="Discord",
         max_message_length=4096,
         supports_draft_streaming=False,
         supports_edit=True,
@@ -15,14 +15,14 @@ def _telegram_descriptor(**overrides) -> CapabilityDescriptor:
         markdown_dialect="markdown_v2",
         len_unit="utf16",
         emoji="\u2708\ufe0f",
-        platform_hint="You are on Telegram.",
+        platform_hint="You are on Discord.",
     )
     base.update(overrides)
     return CapabilityDescriptor(**base)
 
 
 def test_descriptor_is_frozen():
-    d = _telegram_descriptor()
+    d = _discord_descriptor()
     try:
         d.max_message_length = 1  # type: ignore[misc]
     except Exception as exc:  # FrozenInstanceError
@@ -44,7 +44,7 @@ def test_supports_op_legacy_connector_assumes_legacy_set():
     """An empty supported_ops means the connector predates op discovery: the
     legacy four ops are assumed supported (old connectors keep working), while
     NEW ops are not (discovery semantics — never probe by trying)."""
-    d = _telegram_descriptor()  # no supported_ops
+    d = _discord_descriptor()  # no supported_ops
     for op in ("send", "edit", "typing", "follow_up"):
         assert d.supports_op(op) is True, op
     assert d.supports_op("get_chat_info") is False

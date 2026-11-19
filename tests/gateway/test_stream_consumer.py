@@ -80,7 +80,7 @@ class TestCleanForDisplay:
 class TestFinalizeCapabilityGate:
     """Verify REQUIRES_EDIT_FINALIZE gates the redundant final edit.
 
-    Platforms that don't need an explicit finalize signal (Telegram,
+    Platforms that don't need an explicit finalize signal (edit-once,
     Slack, Matrix, …) should skip the redundant final edit when the
     mid-stream edit already delivered the final content.  Platforms that
     *do* need it (DingTalk AI Cards) must always receive a finalize=True
@@ -397,7 +397,7 @@ class TestSegmentBreakOnToolBoundary:
         adapter.send = AsyncMock(side_effect=send_results)
 
         # First two edits succeed, everything after fails with flood control
-        # — simulating Telegram's "edit once then get rate-limited" pattern.
+        # — simulating the "edit once then get rate-limited" pattern.
         edit_results = [
             SimpleNamespace(success=True),   # "Hello world ▉"  — succeeds
             SimpleNamespace(success=False, error="flood_control:6.0"),  # "Hello world more ▉" — flood triggered
@@ -603,10 +603,10 @@ class TestFinalContentDeliveredGuard:
         subsequent finalize edit fails, _final_content_delivered must stay
         False so the gateway does not suppress its fallback send (#25010).
 
-        Simulates TelegramAdapter which sets REQUIRES_EDIT_FINALIZE=True,
+        Simulates an adapter which sets REQUIRES_EDIT_FINALIZE=True,
         requiring a second finalize edit even when content is unchanged."""
         adapter = MagicMock()
-        adapter.REQUIRES_EDIT_FINALIZE = True  # Telegram adapter behavior
+        adapter.REQUIRES_EDIT_FINALIZE = True  # edit-finalize adapter behavior
         # First send (initial streaming message) succeeds.
         # Mid-stream edit succeeds.
         # Final finalize edit fails, and the consumer's own fallback send also
@@ -700,7 +700,7 @@ class TestInitialOverflowRollingEdit:
     @pytest.mark.asyncio
     async def test_initial_overflow_uses_adapter_fence_aware_split(self):
         """Initial rolling sends must preserve the adapter's fence contract."""
-        adapter = TestUtf16OverflowDetection()._make_telegram_like_adapter()
+        adapter = TestUtf16OverflowDetection()._make_edit_finalize_like_adapter()
         from gateway.platforms.base import utf16_len
 
         msg_ids = iter(["msg_1", "msg_2", "msg_3"])
@@ -752,7 +752,7 @@ class TestInitialOverflowRollingEdit:
 
 class TestEditOverflowSplitAndDeliver:
     """When edit_message split-and-delivers an oversized payload across the
-    original message + N continuations (Telegram >4096 UTF-16), the consumer
+    original message + N continuations (>4096 UTF-16 units), the consumer
     must update _message_id to the latest continuation, reset _last_sent_text,
     and fire on_new_message so subsequent tool-progress bubbles linearize
     below the new visible message."""
@@ -1154,18 +1154,18 @@ class TestOnNewMessageCallback:
 
 
 class TestUtf16OverflowDetection:
-    """Regression coverage for #11170 — Telegram counts message length in
+    """Regression coverage for #11170 — some platforms count message length in
     UTF-16 code units, not Python codepoints. A response with supplementary
     characters (emoji, CJK in some ranges) can have len()=3000 codepoints
-    but utf16_len()=5000+ units, blowing past Telegram's 4096 limit."""
+    but utf16_len()=5000+ units, blowing past a 4096-unit limit."""
 
-    def _make_telegram_like_adapter(self):
+    def _make_edit_finalize_like_adapter(self):
         """Construct a minimal BasePlatformAdapter subclass that overrides
-        message_len_fn like Telegram does."""
+        message_len_fn measuring UTF-16 units."""
         from gateway.platforms.base import utf16_len, BasePlatformAdapter
 
-        TelegramLikeAdapter = type(
-            "TelegramLikeAdapter",
+        EditFinalizeLikeAdapter = type(
+            "EditFinalizeLikeAdapter",
             (BasePlatformAdapter,),
             {
                 "MAX_MESSAGE_LENGTH": 4096,
@@ -1174,8 +1174,8 @@ class TestUtf16OverflowDetection:
         )
         # Defeat ABCMeta abstract-instantiation guard by clearing the cached
         # abstract methods set after class creation.
-        TelegramLikeAdapter.__abstractmethods__ = frozenset()
-        adapter = TelegramLikeAdapter.__new__(TelegramLikeAdapter)
+        EditFinalizeLikeAdapter.__abstractmethods__ = frozenset()
+        adapter = EditFinalizeLikeAdapter.__new__(EditFinalizeLikeAdapter)
         adapter._typing_paused = set()
         adapter._fatal_error_message = None
         return adapter
@@ -1186,7 +1186,7 @@ class TestUtf16OverflowDetection:
         units must trigger the overflow-split path."""
         from gateway.platforms.base import utf16_len
 
-        adapter = self._make_telegram_like_adapter()
+        adapter = self._make_edit_finalize_like_adapter()
         # Mock the send/edit methods we actually call
         adapter.send = AsyncMock(
             return_value=SimpleNamespace(success=True, message_id="msg_1"),
@@ -1199,7 +1199,7 @@ class TestUtf16OverflowDetection:
 
         # 🚀 is 1 codepoint = 2 UTF-16 units. 2200 of them = 2200 codepoints,
         # 4400 UTF-16 units. Under the codepoint-equivalent limit (would not
-        # trigger split with len()) but over Telegram's UTF-16 4096 limit.
+        # trigger split with len()) but over the adapter's UTF-16 4096 limit.
         emoji_text = "🚀" * 2200
         assert len(emoji_text) < adapter.MAX_MESSAGE_LENGTH, (
             "Test setup invariant: codepoint count under limit"
@@ -1216,14 +1216,14 @@ class TestUtf16OverflowDetection:
 
         # The fix: stream consumer detects UTF-16 overflow using the adapter's
         # length function.  Without that, len() would return 2200 (under the
-        # limit) and Hermes would attempt a single over-limit Telegram send.
+        # limit) and Hermes would attempt a single over-limit send.
         sent_texts = [call.kwargs["content"] for call in adapter.send.call_args_list]
         assert len(sent_texts) == 2, (
             "UTF-16 overflow not detected — emoji text bypassed split path"
         )
         max_units = 4096
         assert all(utf16_len(text) <= max_units for text in sent_texts), (
-            f"split chunks still exceed Telegram UTF-16 limit: "
+            f"split chunks still exceed the UTF-16 limit: "
             f"{[utf16_len(text) for text in sent_texts]}"
         )
 
@@ -1232,7 +1232,7 @@ class TestFreshFinalRespectsAdapterDecline:
     """Regression: when an adapter explicitly declines fresh-final via
     ``prefers_fresh_final_streaming = False``, the time-based
     ``_should_send_fresh_final()`` must NOT override that decision.
-    (#47048 — Telegram rich-message overlap with legacy MarkdownV2 preview)
+    (#47048 — rich-message overlap with the legacy rendered preview)
     """
 
     @pytest.mark.asyncio
@@ -1248,7 +1248,7 @@ class TestFreshFinalRespectsAdapterDecline:
             return_value=SimpleNamespace(success=True, message_id="edit_msg"),
         )
         adapter.delete_message = AsyncMock(return_value=True)
-        # Adapter explicitly declines fresh-final (like Telegram)
+        # Adapter explicitly declines fresh-final
         adapter.prefers_fresh_final_streaming = MagicMock(return_value=False)
 
         config = StreamConsumerConfig(
@@ -1356,7 +1356,7 @@ class TestRunStillCurrentGuard:
 # ── _strip_orphan_close_tags regression tests ──────────────────────────
 # Regression guard for the /think tag leak: when the stream consumer is
 # NOT inside a think block, stray close tags like </think> must be
-# stripped before text is accumulated — otherwise they leak to Telegram.
+# stripped before text is accumulated — otherwise they leak to the platform.
 # (Reported by Tony on 2026-06-09.)
 
 
@@ -1410,7 +1410,7 @@ class TestConfirmedFinalDeliveryConsultsCommentaryRecord:
         from gateway.run_turn import GatewayTurnMixin
         response = {"final_response": final_text}
         turn_ctx = SimpleNamespace(
-            stream_consumer_holder=[consumer], source=SimpleNamespace(platform="telegram"), session_key="s1",
+            stream_consumer_holder=[consumer], source=SimpleNamespace(platform="discord"), session_key="s1",
         )
         asyncio.run(GatewayTurnMixin()._run_agent_mark_streamed_delivery(response, turn_ctx))
         return response

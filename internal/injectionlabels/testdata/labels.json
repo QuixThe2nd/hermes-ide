@@ -1,0 +1,93 @@
+{
+  "generic_label": "🧠 Injecting context",
+  "kind_labels": {
+    "message_id": "📎 Injecting message id",
+    "restart": "🔁 Injecting restart notice",
+    "voice": "🎙️ Injecting voice status",
+    "session_reset": "🆕 Injecting session reset",
+    "intro": "👋 Injecting intro",
+    "surface_switch": "🔀 Injecting surface switch",
+    "plugin": "🧩 Injecting plugin context"
+  },
+  "memory": {
+    "plain": "🧠 Injecting memory",
+    "one": "🧠 Injecting 1 memory",
+    "many": "🧠 Injecting 3 memories"
+  },
+  "cases": [
+    {
+      "name": "legacy_payload_without_kinds_renders_generic",
+      "memory_sourced": false,
+      "expect_lines": ["🧠 Injecting context"]
+    },
+    {
+      "name": "legacy_memory_sourced_payload_renders_memory_heading",
+      "memory_sourced": true,
+      "expect_lines": ["🧠 Injecting memory"]
+    },
+    {
+      "name": "unknown_kind_renders_generic_heading",
+      "kinds": ["mystery"],
+      "memory_sourced": false,
+      "expect_lines": ["🧠 Injecting context"]
+    },
+    {
+      "name": "blank_kind_renders_generic_heading",
+      "kinds": [""],
+      "memory_sourced": false,
+      "expect_lines": ["🧠 Injecting context"]
+    },
+    {
+      "name": "memory_kind_plain_heading",
+      "kinds": ["memory"],
+      "memory_sourced": true,
+      "expect_lines": ["🧠 Injecting memory"]
+    },
+    {
+      "name": "memory_kind_count_one_singular",
+      "kinds": ["memory"],
+      "memory_sourced": true,
+      "recalled_count": 1,
+      "expect_lines": ["🧠 Injecting 1 memory"]
+    },
+    {
+      "name": "memory_kind_count_many_plural",
+      "kinds": ["memory"],
+      "memory_sourced": true,
+      "recalled_count": 3,
+      "expect_lines": ["🧠 Injecting 3 memories"]
+    },
+    {
+      "name": "memory_kind_count_zero_renders_plain",
+      "kinds": ["memory"],
+      "memory_sourced": true,
+      "recalled_count": 0,
+      "expect_lines": ["🧠 Injecting memory"]
+    },
+    {
+      "name": "mixed_kinds_render_one_line_each_in_payload_order",
+      "kinds": ["plugin", "surface_switch"],
+      "memory_sourced": false,
+      "expect_lines": ["🧩 Injecting plugin context", "🔀 Injecting surface switch"]
+    },
+    {
+      "name": "duplicate_kinds_render_one_line",
+      "kinds": ["restart", "restart"],
+      "memory_sourced": false,
+      "expect_lines": ["🔁 Injecting restart notice"]
+    },
+    {
+      "name": "distinct_unknown_kinds_dedupe_to_one_generic_line",
+      "kinds": ["mystery", "puzzle"],
+      "memory_sourced": false,
+      "expect_lines": ["🧠 Injecting context"]
+    },
+    {
+      "name": "memory_heading_counts_even_without_the_memory_kind_tag",
+      "kinds": [],
+      "memory_sourced": true,
+      "recalled_count": 3,
+      "expect_lines": ["🧠 Injecting 3 memories"]
+    }
+  ]
+}

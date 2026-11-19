@@ -33,6 +33,54 @@ def test_moa_slot_picker_excludes_unconfigured_providers(monkeypatch):
     assert captured["include_unconfigured"] is False
 
 
+def test_moa_slot_picker_selects_custom_litellm_astra(monkeypatch, tmp_path):
+    """MoA offers and selects a config-defined LiteLLM model without catalog metadata."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+model:
+  provider: custom:litellm
+  default: gpt-6-astra
+custom_providers:
+  - name: litellm
+    base_url: https://litellm.example.test/v1
+    api_key: test-key
+    api_mode: chat_completions
+    discover_models: false
+    models:
+      glm-5.3: {}
+      grok-4.6: {}
+      kimi-k3.1-pro: {}
+      claude-opus-5-5: {}
+      gpt-6-astra: {}
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+
+    from hermes_cli import moa_cmd
+
+    prompts = {}
+
+    def choose(title, rows, default=0):
+        if title == "Select provider":
+            prompts["providers"] = list(rows)
+            return next(index for index, row in enumerate(rows) if "(custom:litellm)" in row)
+        assert title.startswith("Select model for ")
+        prompts["models"] = list(rows)
+        return rows.index("gpt-6-astra")
+
+    monkeypatch.setattr(moa_cmd, "_prompt_choice", choose)
+
+    assert moa_cmd._pick_slot() == {"provider": "custom:litellm", "model": "gpt-6-astra"}
+    assert set(prompts["models"]) == {
+        "glm-5.3", "grok-4.6", "kimi-k3.1-pro", "claude-opus-5-5", "gpt-6-astra"
+    }
+    assert len(prompts["models"]) == 5
+
+
 def _enabled_refs(refs):
     return [{**slot, "enabled": True} for slot in refs]
 

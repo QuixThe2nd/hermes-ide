@@ -244,17 +244,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     current_with_title:    "📌 Сеанс: `{session_id}`\nНазва: **{title}**"
     current_no_title:      "📌 Сеанс: `{session_id}`\nНазву не встановлено. Використання: `/title Назва мого сеансу`"
 
-  topic:
-    not_telegram_dm:         "Команда /topic доступна лише в приватних чатах Telegram."
-    no_session_db:           "База даних сесій недоступна."
-    unauthorized:            "Ви не маєте дозволу використовувати /topic у цьому боті."
-    restore_needs_topic:     "Щоб відновити сесію, спочатку створіть або відкрийте Telegram topic, а потім надішліть /topic <session-id> у цьому topic. Щоб створити новий topic, відкрийте All Messages і надішліть там будь-яке повідомлення."
-    topics_disabled:         "Telegram topics ще не ввімкнено для цього бота.\n\nЯк увімкнути:\n1. Відкрийте @BotFather.\n2. Виберіть свого бота.\n3. Відкрийте Bot Settings → Threads Settings.\n4. Увімкніть Threaded Mode і переконайтеся, що користувачам дозволено створювати нові threads.\n\nПотім надішліть /topic знову."
-    topics_user_disallowed:  "Telegram topics увімкнено, але користувачам не дозволено створювати topics.\n\nВідкрийте @BotFather → виберіть свого бота → Bot Settings → Threads Settings, потім вимкніть 'Disallow users to create new threads'.\n\nПотім надішліть /topic знову."
-    enable_failed:           "Не вдалося ввімкнути режим Telegram topic: {error}"
-    bound_status:            "Цей topic пов'язано з:\nСесія: {label}\nID: {session_id}\n\nВикористовуйте /new, щоб замінити цей topic новою сесією.\nДля паралельної роботи відкрийте All Messages і надішліть там повідомлення, щоб створити інший topic."
-    thread_ready:            "Багатосесійні Telegram topics увімкнено.\n\nЦей topic використовуватиметься як незалежна сесія Hermes. Використовуйте /new, щоб замінити поточну сесію цього topic. Для паралельної роботи відкрийте All Messages і надішліть там повідомлення, щоб створити інший topic."
-    untitled_session:        "Сесія без назви"
 
   undo:
     nothing:               "Немає чого скасовувати."

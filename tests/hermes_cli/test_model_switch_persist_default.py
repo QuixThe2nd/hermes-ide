@@ -25,7 +25,7 @@ class TestParseModelFlagsSession:
 
 
     def test_unicode_dash_session_normalized(self):
-        # Telegram/iOS auto-converts -- to en/em dashes.
+        # Some mobile keyboards auto-convert -- to en/em dashes.
         assert parse_model_flags("sonnet \u2013session") == (
             "sonnet",
             "",

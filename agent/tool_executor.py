@@ -133,8 +133,8 @@ _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
 # ``timeouts.tools.unbounded_tools`` in config.yaml (a list of tool names; an
 # explicit empty list disables the exemption entirely).
 #
-# Uniform delegation lifecycle: ALL four delegate tools are exempt in their
-# default (blocking) mode — a foreground fan-out, a multi-hour claude/cursor
+# Uniform delegation lifecycle: ALL delegate tools are exempt in their
+# default (blocking) mode — a foreground fan-out, a multi-hour claude
 # run, or a days-long assistant mission wait is legitimate blocked work, not
 # a wedged thread. The 30s tool heartbeat keeps the gateway's inactivity
 # watchdog fed the whole time, so the deadline exemption is the only guard
@@ -144,9 +144,8 @@ _DEFAULT_UNBOUNDED_TOOLS = frozenset(
     {
         "delegate_agent",
         "delegate_claude_agent",
-        "delegate_cursor_agent",
         "delegate_assistant",
-        # Opt-in lane tools — a foreground lane run (especially an OMP RPC
+        # Coding lane tools — a foreground lane run (especially an OMP RPC
         # goal-mode reverse-engineer pass) legitimately blocks for a long time.
         "delegate_ui_dev",
         "delegate_client_dev",
@@ -1593,7 +1592,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
         inline_ctx = InlineToolContext(effective_task_id=effective_task_id, tool_call_id=tool_call_id, messages=messages)
         return _SequentialDispatch(lambda next_args: inline_executor(agent, next_args, inline_ctx), finish_in_finally=False)
     if function_name in ("delegate_agent", "delegate_task"):
-        # Backend-routed calls (claude/cursor) need the registry dispatch path:
+        # Backend-routed calls (claude) need the registry dispatch path:
         # the external handlers key spawn/restart receipts on the session and
         # tool-call ids only that path supplies. The subagent fast path keeps
         # its live-agent intercept.

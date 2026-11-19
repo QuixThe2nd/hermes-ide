@@ -138,11 +138,11 @@ class TestStore:
             return {"id": "job123", "name": kwargs.get("name"), **kwargs}
 
         with patch("cron.jobs.create_job", fake_create_job):
-            job = store.accept_suggestion("1", origin={"platform": "telegram", "chat_id": "5"})
+            job = store.accept_suggestion("1", origin={"platform": "discord", "chat_id": "5"})
 
         assert job is not None
         assert created["schedule"] == "0 9 * * *"
-        assert created["origin"] == {"platform": "telegram", "chat_id": "5"}
+        assert created["origin"] == {"platform": "discord", "chat_id": "5"}
         # No longer pending.
         assert store.list_pending() == []
         # And accepting again is a no-op (not pending anymore).
@@ -229,7 +229,7 @@ class TestBlueprintBridge:
     def test_blueprint_registers_suggestion(self, store):
         from tools.blueprints import BlueprintSpec, register_blueprint_suggestion
 
-        spec = BlueprintSpec(skill_name="morning-brief", schedule="0 8 * * *", deliver="telegram")
+        spec = BlueprintSpec(skill_name="morning-brief", schedule="0 8 * * *", deliver="discord")
         with patch("cron.suggestions.add_suggestion", store.add_suggestion):
             rec = register_blueprint_suggestion(spec)
         assert rec is not None

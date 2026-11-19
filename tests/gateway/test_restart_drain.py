@@ -67,7 +67,7 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
     assert expected == "♻ Restarting gateway..."
     running_agent.interrupt.assert_not_called()
     runner.request_restart.assert_called_once_with(
-        detached=True, via_service=False, restart_platforms=True
+        detached=True, via_service=False
     )
 
 
@@ -189,7 +189,7 @@ async def test_request_restart_defers_stop_until_active_turn_finishes():
     runner.stop = AsyncMock()
     runner._launch_detached_restart_watcher = AsyncMock()
     runner._restart_after_turn_timeout = 5.0
-    session_key = "agent:main:telegram:dm:123"
+    session_key = "agent:main:discord:dm:123"
     runner._running_agents[session_key] = MagicMock()
 
     assert runner.request_restart(detached=False, via_service=True) is True
@@ -220,7 +220,7 @@ async def test_request_restart_after_turn_timeout_zero_still_waits_for_active_wo
     runner, _adapter = make_restart_runner()
     runner.stop = AsyncMock()
     runner._restart_after_turn_timeout = 0.0
-    key = "agent:main:telegram:dm:1"
+    key = "agent:main:discord:dm:1"
     runner._running_agents[key] = MagicMock()
 
     assert runner.request_restart(detached=False, via_service=True) is True
@@ -243,7 +243,7 @@ async def test_request_restart_cap_elapsed_never_calls_stop_with_active_work():
     runner, _adapter = make_restart_runner()
     runner.stop = AsyncMock()
     runner._restart_after_turn_timeout = 0.2
-    key = "agent:main:telegram:dm:1"
+    key = "agent:main:discord:dm:1"
     runner._running_agents[key] = MagicMock()
 
     assert runner.request_restart(detached=False, via_service=True) is True
@@ -266,7 +266,7 @@ async def test_request_restart_wait_cancelled_never_calls_stop():
     """Cancellation of the restart wait must not fall through into stop()."""
     runner, _adapter = make_restart_runner()
     runner.stop = AsyncMock()
-    runner._running_agents["agent:main:telegram:dm:1"] = MagicMock()
+    runner._running_agents["agent:main:discord:dm:1"] = MagicMock()
 
     assert runner.request_restart(detached=False, via_service=True) is True
     await asyncio.sleep(0.15)  # the wait is now inside its poll loop
@@ -282,7 +282,7 @@ async def test_request_restart_wait_exception_never_calls_stop(monkeypatch):
     monkeypatch.setattr(gateway_run, "_RESTART_WAIT_RETRY_SLEEP_S", 0.01)
     runner, _adapter = make_restart_runner()
     runner.stop = AsyncMock()
-    runner._running_agents["agent:main:telegram:dm:1"] = MagicMock()
+    runner._running_agents["agent:main:discord:dm:1"] = MagicMock()
 
     real_wait = runner._await_active_work_before_restart
 
@@ -322,7 +322,7 @@ async def test_restart_boundary_guard_holds_stop_over_work_returning_mid_wait():
         return True
 
     runner._await_active_work_before_restart = wait_that_claims_drain_over_live_work
-    runner._running_agents["agent:main:telegram:dm:1"] = MagicMock()
+    runner._running_agents["agent:main:discord:dm:1"] = MagicMock()
 
     assert runner.request_restart(detached=False, via_service=True) is True
     await asyncio.sleep(0.2)
@@ -986,15 +986,15 @@ async def test_drain_suppress_skips_notification_channel_keeps_session_ping(tmp_
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    runner, adapter = make_restart_runner(platform=Platform.TELEGRAM)
+    runner, adapter = make_restart_runner(platform=Platform.DISCORD)
     # A notification channel distinct from the active session's chat.
-    runner.config.platforms[Platform.TELEGRAM].notification_channel = DeliveryTarget(
-        platform=Platform.TELEGRAM,
+    runner.config.platforms[Platform.DISCORD].notification_channel = DeliveryTarget(
+        platform=Platform.DISCORD,
         chat_id="restarts-42",
         name="Ops Restarts",
     )
     # One active session in a different chat.
-    runner._running_agents["agent:main:telegram:dm:999"] = MagicMock()
+    runner._running_agents["agent:main:discord:dm:999"] = MagicMock()
 
     # NAS auto-update drain: marker present with suppress_notification=True.
     dc.write_drain_request(principal="nas", suppress_notification=True)
@@ -1069,7 +1069,7 @@ async def test_request_restart_waits_for_live_and_wedged_together(monkeypatch):
     runner, _adapter = make_restart_runner()
     runner.stop = AsyncMock()
     runner._launch_detached_restart_watcher = AsyncMock()
-    live_key = "agent:main:telegram:dm:2"
+    live_key = "agent:main:discord:dm:2"
     wedged_key = "agent:main:whatsapp:dm:1"
     runner._running_agents[wedged_key] = _wedged_agent()
     runner._running_agents[live_key] = _live_agent()
@@ -1095,7 +1095,7 @@ def test_wedged_agent_count_disabled_timeout_counts_nothing(monkeypatch):
     """gateway_timeout=0 (unbounded turns) disables wedge detection."""
     monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "0")
     runner, _adapter = make_restart_runner()
-    runner._running_agents["agent:main:telegram:dm:1"] = _wedged_agent(10**6)
+    runner._running_agents["agent:main:discord:dm:1"] = _wedged_agent(10**6)
     assert runner._wedged_agent_count() == 0
 
 

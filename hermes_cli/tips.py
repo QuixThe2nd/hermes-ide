@@ -67,7 +67,7 @@ TIPS = [
     "hermes chat -q \"query\" runs a single non-interactive query and exits.",
     f"hermes chat --max-turns 1000 overrides the default {DEFAULT_MAX_TURNS}-iteration limit per turn.",
     "hermes chat --checkpoints enables filesystem snapshots before every destructive file change.",
-    "hermes chat --source telegram tags the session for filtering in hermes sessions list.",
+    "hermes chat --source discord tags the session for filtering in hermes sessions list.",
     "hermes -p work chat runs under a specific profile without changing your default.",
     # --- CLI Subcommands ---
     "hermes doctor --fix diagnoses and auto-repairs config and dependency issues.",
@@ -162,12 +162,12 @@ TIPS = [
     "/plan writes a markdown implementation plan to .hermes/plans/ without executing anything.",
     # --- Cron & Scheduling ---
     "Cron jobs can attach skills: hermes cron add --skill blogwatcher \"Check for new posts\".",
-    "Cron delivery targets include telegram, discord, slack, email, sms, and 12+ more platforms.",
+    "Cron delivery targets include discord, slack, email, sms, and 12+ more platforms.",
     "If a cron response starts with [SILENT], delivery is suppressed — useful for monitoring-only jobs.",
     "Cron supports relative delays (30m), intervals (every 2h), cron expressions, and ISO timestamps.",
     "Cron jobs run in completely fresh agent sessions — prompts must be self-contained.",
     # --- Gateway & Messaging ---
-    "Hermes runs on 21 messaging platforms: Telegram, Discord, Slack, WhatsApp, Signal, Matrix, IRC, Microsoft Teams, email, and more.",
+    "Hermes runs on 20+ messaging platforms: Discord, Slack, WhatsApp, Signal, Matrix, IRC, Microsoft Teams, email, and more.",
     "hermes gateway install sets it up as a system service that starts on boot.",
     "DingTalk uses Stream Mode — no webhooks or public URL needed.",
     "BlueBubbles brings iMessage to Hermes via a local macOS server.",
@@ -184,7 +184,7 @@ TIPS = [
     "Context auto-compresses when it reaches the threshold — memories are flushed and history summarized.",
     "The status bar turns yellow, then orange, then red as context fills up.",
     "SOUL.md is the agent's primary identity file — customize it to shape behavior.",
-    "Hermes loads project context from .hermes.md, AGENTS.md, CLAUDE.md, or .cursorrules (first match).",
+    "Hermes loads project context from .hermes.md, AGENTS.md, or CLAUDE.md (first match).",
     "Subdirectory AGENTS.md files are discovered progressively as the agent navigates into folders.",
     "Context files are capped at 20,000 characters with smart head/tail truncation.",
     # --- Browser ---
@@ -265,7 +265,7 @@ TIPS = [
     "Quick commands support two types: exec (run shell command directly) and alias (redirect to another command).",
     "Per-task delegation model: delegation.model and delegation.provider in config route subagents to cheaper models.",
     "delegation.reasoning_effort independently controls thinking depth for subagents.",
-    "display.platforms in config.yaml allows per-platform display overrides: {telegram: {tool_progress: all}}.",
+    "display.platforms in config.yaml allows per-platform display overrides: {discord: {tool_progress: all}}.",
     "Config version migrations run automatically on load — new config keys appear without manual intervention.",
     "GPT and Codex models get special system prompt guidance for tool discipline and mandatory tool use.",
     "Gemini models get tailored directives for absolute paths, parallel tool calls, and non-interactive commands.",
@@ -275,7 +275,6 @@ TIPS = [
     "When compression fails, further attempts are paused for 10 minutes to avoid API hammering.",
     "Profile names cannot collide with existing PATH binaries — 'hermes profile create ls' would be rejected.",
     "hermes profile create backup --clone-all copies everything (config, keys, SOUL.md, memories, skills, sessions).",
-    ".cursorrules and .cursor/rules/*.mdc files are auto-detected and loaded as project context.",
     "Context files support 10+ prompt injection patterns — invisible Unicode, 'ignore instructions', exfil attempts.",
     "GPT-5 and Codex use 'developer' role instead of 'system' in the message format.",
     "Per-task auxiliary overrides: auxiliary.vision.provider, auxiliary.compression.model, etc. in config.yaml.",
@@ -297,7 +296,6 @@ TIPS = [
     '/agents (alias /tasks) shows active agents and running background tasks across the current session.',
     '/footer toggles the gateway footer on final replies showing model, context, and API/tool/other timing.',
     '/busy queue|steer|interrupt controls what pressing Enter does while Hermes is working.',
-    '/topic in Telegram DMs enables user-managed multi-session topic mode — /topic <id> restores past sessions inline.',
     '/restart gracefully restarts the gateway after draining active runs, then pings the requester when back up.',
     '/reload reloads ~/.hermes/.env into the running session — pick up new API keys without restarting.',
     # --- Cron (no-agent & scripts) ---
@@ -330,7 +328,7 @@ TIPS = [
     "display.tool_progress_command: true exposes /verbose on messaging platforms; it's CLI-only by default.",
     'HERMES_BACKGROUND_NOTIFICATIONS=result only pings when background tasks finish (vs concise/all/error/off).',
     'HERMES_WRITE_SAFE_ROOT restricts write_file/patch to directory prefixes; multiple paths via os.pathsep (: or ;).',
-    'HERMES_IGNORE_RULES skips auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills.',
+    'HERMES_IGNORE_RULES skips auto-injection of AGENTS.md, SOUL.md, memory, and preloaded skills.',
     'HERMES_ACCEPT_HOOKS auto-approves unseen shell hooks declared in config.yaml without a TTY prompt.',
     'auxiliary.goal_judge.model routes the /goal judge to a cheap fast model to keep loop cost near zero.',
     'Checkpoints skip directories with more than 50,000 files to avoid slow git operations on massive monorepos.',
@@ -339,7 +337,6 @@ TIPS = [
     'GATEWAY_PROXY_URL runs a split setup: platform I/O locally, agent work delegated to a remote API server.',
     # --- Platform-specific ---
     'MATRIX_DEVICE_ID pins a stable device ID for E2EE — without it, keys rotate every start and historic decrypt breaks.',
-    'TELEGRAM_WEBHOOK_SECRET is required whenever TELEGRAM_WEBHOOK_URL is set — generate with openssl rand -hex 32.',
     # --- Batch ---
     "batch_runner.py --resume content-matches completed prompts by text so dataset reorders don't re-run finished work.",
     # --- Less-Known Slash Commands ---

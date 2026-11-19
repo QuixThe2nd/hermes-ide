@@ -77,9 +77,9 @@ def test_dispatch_return_semantics_and_side_effects():
     assert c.process_command("/exit") is False
     c = _cli()
     with patch.object(HermesCLI, "_handle_handoff_command", return_value=False):
-        assert c.process_command("/handoff telegram") is False
+        assert c.process_command("/handoff discord") is False
     with patch.object(HermesCLI, "_handle_handoff_command", return_value=True):
-        assert c.process_command("/handoff telegram") is True
+        assert c.process_command("/handoff discord") is True
     with patch.object(HermesCLI, "_handle_update_command", return_value=True):
         assert c.process_command("/update") is False
     with patch.object(HermesCLI, "_handle_update_command", return_value=False):

@@ -9,7 +9,7 @@ the name and one-shot CLI readers never bridge, so the two copies diverged silen
 The routing rule is the key's SHAPE, not a registry: a bare ``UPPER_SNAKE`` name is an environment
 setting and goes to ``.env`` — the file every runtime reader (``os.getenv``, the gateway's
 ``platform_gate_env``) resolves against — whether or not Hermes enumerates it anywhere. Roughly 290
-of the ~700 documented variables (``TELEGRAM_GROUP_ALLOWED_USERS``, ``HERMES_TIMEZONE``, ...) are
+of the ~700 documented variables (``DISCORD_GROUP_ALLOWED_USERS``, ``HERMES_TIMEZONE``, ...) are
 read straight from the environment without being registered in ``OPTIONAL_ENV_VARS``, so a registry
 check alone kept landing them in ``config.yaml``. Provider credentials keep their own rotation
 lifecycle in ``hermes_cli.credential_lifecycle``.

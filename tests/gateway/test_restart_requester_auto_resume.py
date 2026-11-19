@@ -109,7 +109,7 @@ async def test_restart_notification_skips_running_or_suspended_requester(
 
     notify_path = tmp_path / ".restart_notify.json"
     notify_path.write_text(
-        json.dumps({"platform": "telegram", "chat_id": "busy", "chat_type": "dm"})
+        json.dumps({"platform": "discord", "chat_id": "busy", "chat_type": "dm"})
     )
     adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="m1"))
 
@@ -122,7 +122,7 @@ async def test_restart_notification_skips_running_or_suspended_requester(
     runner._session_state(session_key).turn.agent = object()
 
     notify_path.write_text(
-        json.dumps({"platform": "telegram", "chat_id": "busy", "chat_type": "dm"})
+        json.dumps({"platform": "discord", "chat_id": "busy", "chat_type": "dm"})
     )
     await runner._send_restart_notification()
 
@@ -176,7 +176,7 @@ async def test_restart_notification_without_adapter_leaves_requester_pending(
     tmp_path, monkeypatch,
 ):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    source = make_restart_source(chat_id="42", platform=Platform.TELEGRAM)
+    source = make_restart_source(chat_id="42", platform=Platform.SLACK)
     session_key, entry = _idle_requester_entry(source)
 
     runner, adapter = make_restart_runner()
@@ -185,7 +185,7 @@ async def test_restart_notification_without_adapter_leaves_requester_pending(
 
     notify_path = tmp_path / ".restart_notify.json"
     notify_path.write_text(
-        json.dumps({"platform": "telegram", "chat_id": "42", "chat_type": "dm"})
+        json.dumps({"platform": "slack", "chat_id": "42", "chat_type": "dm"})
     )
     adapter.send = AsyncMock()
 

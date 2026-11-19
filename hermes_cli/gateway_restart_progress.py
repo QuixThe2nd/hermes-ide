@@ -64,7 +64,7 @@ def _connected_platforms(record: dict) -> Optional[str]:
 
 def request_gateway_restart(
     old_pid: int, *, home: Optional[Path] = None, via_service: bool,
-    restart_platforms: bool = True, from_update: bool = False,
+    from_update: bool = False,
 ) -> RestartOutcome:
     """Attach to a committed restart, else request one through control/SIGUSR1."""
     record = _read_status(home)
@@ -98,17 +98,17 @@ def request_gateway_restart(
     else:
         ack = query_gateway_control(
             control_home, "restart",
-            params={"restart_platforms": bool(restart_platforms), "via_service": via_service},
+            params={"via_service": via_service},
         )
         if ack is not None:
             status = str(ack.get("status") or "")
             accepted = bool(
                 ack.get("queued") or ack.get("restarting") or ack.get("accepted")
-                or ack.get("already_stopping") or status in {"already_in_progress", "chained"}
+                or ack.get("already_stopping") or status in {"already_in_progress", "forwarded"}
             )
             return RestartOutcome(
                 accepted=accepted,
-                attached=bool(ack.get("already_stopping")) or status in {"already_in_progress", "chained"},
+                attached=bool(ack.get("already_stopping")) or status in {"already_in_progress", "forwarded"},
             )
 
     if not hasattr(signal, "SIGUSR1") or old_pid <= 0:
@@ -176,14 +176,13 @@ def observe_gateway_restart(
 
 def restart_gateway_with_progress(
     old_pid: int, *, home: Optional[Path] = None, via_service: bool,
-    restart_platforms: bool = True, from_update: bool = False,
+    from_update: bool = False,
     emit: Callable[[str], None] = print,
     sleep: Callable[[float], None] = time.sleep,
 ) -> RestartOutcome:
     """Request/attach and observe; Ctrl-C is a safe detach, never escalation."""
     requested = request_gateway_restart(
-        old_pid, home=home, via_service=via_service,
-        restart_platforms=restart_platforms, from_update=from_update,
+        old_pid, home=home, via_service=via_service, from_update=from_update,
     )
     if not requested.accepted:
         return requested

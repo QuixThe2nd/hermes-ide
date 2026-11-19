@@ -1,0 +1,69 @@
+{
+  "cases": [
+    {
+      "name": "existing-profile-skips",
+      "record": {"op": "plan", "name": "researcher", "exists": true, "active_profile": "default", "active_is_named": false},
+      "expect": {"action": "skip", "clone_config": false, "clone_from": "", "code": "", "reason": ""}
+    },
+    {
+      "name": "existing-default-profile-skips",
+      "record": {"op": "plan", "name": "default", "exists": true, "active_profile": "default", "active_is_named": false},
+      "expect": {"action": "skip", "clone_config": false, "clone_from": "", "code": "", "reason": ""}
+    },
+    {
+      "name": "fresh-install-clones-active-home",
+      "record": {"op": "plan", "name": "researcher", "exists": false, "active_profile": "default", "active_is_named": false},
+      "expect": {"action": "create", "clone_config": true, "clone_from": "", "code": "", "reason": ""}
+    },
+    {
+      "name": "named-active-profile-is-the-clone-source",
+      "record": {"op": "plan", "name": "researcher", "exists": false, "active_profile": "coder", "active_is_named": true},
+      "expect": {"action": "create", "clone_config": true, "clone_from": "coder", "code": "", "reason": ""}
+    },
+    {
+      "name": "custom-home-still-clones-the-active-home",
+      "record": {"op": "plan", "name": "researcher", "exists": false, "active_profile": "custom", "active_is_named": false},
+      "expect": {"action": "create", "clone_config": true, "clone_from": "", "code": "", "reason": ""}
+    },
+    {
+      "name": "reserved-active-name-is-not-a-clone-source",
+      "record": {"op": "plan", "name": "researcher", "exists": false, "active_profile": "tmp", "active_is_named": true},
+      "expect": {"action": "create", "clone_config": true, "clone_from": "", "code": "", "reason": ""}
+    },
+    {
+      "name": "empty-name-refused",
+      "record": {"op": "plan", "name": "", "exists": false, "active_profile": "default", "active_is_named": false},
+      "expect": {"action": "refuse", "clone_config": false, "clone_from": "", "code": "invalid_worker_profile", "reason": "worker profile name is empty"}
+    },
+    {
+      "name": "default-name-cannot-be-created",
+      "record": {"op": "plan", "name": "default", "exists": false, "active_profile": "default", "active_is_named": false},
+      "expect": {"action": "refuse", "clone_config": false, "clone_from": "", "code": "invalid_worker_profile", "reason": "cannot create the built-in default profile"}
+    },
+    {
+      "name": "invalid-name-refused",
+      "record": {"op": "plan", "name": "Researcher!", "exists": false, "active_profile": "default", "active_is_named": false},
+      "expect": {"action": "refuse", "clone_config": false, "clone_from": "", "code": "invalid_worker_profile", "reason": "worker profile name \"Researcher!\" is not a valid profile id (lowercase letters, numbers, '-', '_')"}
+    },
+    {
+      "name": "path-escape-refused",
+      "record": {"op": "plan", "name": "../escape", "exists": false, "active_profile": "default", "active_is_named": false},
+      "expect": {"action": "refuse", "clone_config": false, "clone_from": "", "code": "invalid_worker_profile", "reason": "worker profile name \"../escape\" is not a valid profile id (lowercase letters, numbers, '-', '_')"}
+    },
+    {
+      "name": "reserved-name-refused",
+      "record": {"op": "plan", "name": "root", "exists": false, "active_profile": "default", "active_is_named": false},
+      "expect": {"action": "refuse", "clone_config": false, "clone_from": "", "code": "invalid_worker_profile", "reason": "worker profile name \"root\" is reserved"}
+    },
+    {
+      "name": "lost-creation-race-is-provisioned",
+      "record": {"op": "classify", "name": "researcher", "race": true, "error": ""},
+      "expect": {"outcome": "provisioned", "code": "", "message": ""}
+    },
+    {
+      "name": "create-failure-is-reported-with-the-profile-name",
+      "record": {"op": "classify", "name": "researcher", "race": false, "error": "profiles root is read-only"},
+      "expect": {"outcome": "failed", "code": "worker_profile_provision_failed", "message": "could not provision worker profile \"researcher\": profiles root is read-only"}
+    }
+  ]
+}

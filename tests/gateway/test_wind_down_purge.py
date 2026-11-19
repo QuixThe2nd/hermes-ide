@@ -3,14 +3,13 @@
 The unified overlap-handover restart pipeline removed the old
 "ask active agents to park" wind-down choreography entirely. This pins that no
 reference creeps back into the gateway, CLI, or plugin trees (the unrelated
-"Evening wind-down" user cron blueprint is excluded), and that the new
-config surface it was replaced by is present.
+"Evening wind-down" user cron blueprint is excluded), and that the drain knob
+the replacement pipeline reads is present.
 """
 
 import subprocess
 from pathlib import Path
 
-from gateway.restart import restart_platforms_enabled
 from hermes_cli.config import DEFAULT_CONFIG
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -44,16 +43,9 @@ def test_no_wind_down_or_park_references_remain():
     assert hits == [], f"wind-down/park references re-introduced:\n" + "\n".join(hits)
 
 
-def test_restart_platforms_default_true():
-    assert restart_platforms_enabled(None) is True
-    assert restart_platforms_enabled({}) is True
-
-
-def test_default_config_carries_restart_platforms_and_drain_timeout():
+def test_default_config_carries_drain_timeout():
     gateway = DEFAULT_CONFIG["gateway"]
-    # Relationship asserts: the knobs the unified pipeline reads exist and the
-    # restart-platforms default is the bounce-connections posture the pipeline
-    # assumes when nothing is configured.
-    assert gateway["restart_platforms"] is True
+    # Relationship assert: the drain knob the unified pipeline reads exists
+    # and bounds the stop() drain.
     assert isinstance(gateway["drain_timeout"], (int, float))
     assert gateway["drain_timeout"] > 0

@@ -174,3 +174,43 @@ class OverlapSuccessorRegistry:
         if len(self._records) != before:
             self._save()
         return result
+
+def read_live_rows(state_path: Optional[Path] = None) -> list[Dict[str, Any]]:
+    """Live registry rows from the hub's mirror file, without a hub connection.
+
+    Same liveness rule as ``snapshot`` (PID plus start-time fingerprint);
+    record order is spawn order. For sync teardown paths (exit-code
+    resolution, systemd handover) that cannot await a hub RPC. An absent or
+    unreadable file answers [] — callers fall back to their tuple-era rules.
+    """
+    if state_path is None:
+        # Late import: the hub imports this module; only the socket-path
+        # helper is needed, never the hub class.
+        from plugins.platforms.discord.hub import default_socket_path
+
+        state_path = default_socket_path().parent / "hub-overlap-successors.json"
+    try:
+        rows = json.loads(Path(state_path).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return []
+    live: list[Dict[str, Any]] = []
+    for row in rows if isinstance(rows, list) else []:
+        try:
+            pid = int(row["pid"])
+            start_time = row.get("start_time")
+            start_time = int(start_time) if start_time is not None else None
+        except (KeyError, TypeError, ValueError):
+            continue
+        if pid <= 0 or not _live_start(pid, start_time):
+            continue
+        try:
+            live.append({
+                "pid": pid,
+                "start_time": start_time,
+                "gateway_home": str(row.get("gateway_home") or ""),
+                "predecessor_pid": int(row.get("predecessor_pid") or 0),
+                "state": "attached" if row.get("attached") else "starting",
+            })
+        except (TypeError, ValueError):
+            continue
+    return live

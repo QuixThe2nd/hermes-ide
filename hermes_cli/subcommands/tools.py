@@ -9,7 +9,7 @@ def build_tools_parser(subparsers, *, cmd_tools: Callable) -> None:
     """Attach the ``tools`` subcommand to ``subparsers``."""
     tools_parser = subparsers.add_parser(
         "tools", help="Configure which tools are enabled per platform",
-        description="Enable, disable, or list tools for CLI, Telegram, Discord, etc.\n\n"
+        description="Enable, disable, or list tools for CLI, Discord, etc.\n\n"
             "Built-in toolsets use plain names (e.g. web, memory).\n"
             "MCP tools use server:tool notation (e.g. github:create_issue).\n\n"
             "Run 'hermes tools' with no subcommand for the interactive configuration UI.")

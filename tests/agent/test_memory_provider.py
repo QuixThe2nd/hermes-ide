@@ -1125,7 +1125,7 @@ class TestMemoryToolToolsetGate:
 
     Before the fix, MemoryManager.get_all_tool_schemas() output was appended
     to AIAgent.tools unconditionally in agent_init.py — bypassing the
-    enabled_toolsets filter. Result: `platform_toolsets: telegram: []`
+    enabled_toolsets filter. Result: `platform_toolsets: discord: []`
     still leaked fact_store and other memory tools into the tool surface,
     causing 10x latency on local models (Qwen3-30B: 1.7s → 42s) and
     tool-call loops on small models.
@@ -1195,7 +1195,7 @@ class TestMemoryToolToolsetGate:
         assert names == set()
 
     def test_empty_toolsets_blocks_injection(self):
-        """`platform_toolsets: telegram: []` must suppress memory tools. (#5544)"""
+        """`platform_toolsets: discord: []` must suppress memory tools. (#5544)"""
         mgr = self._mgr_with_tools("fact_store")
         tools, names = self._run_memory_injection([], mgr)
         assert tools == []
@@ -1295,7 +1295,7 @@ class TestContextEngineToolsetGate:
         assert "lcm_grep" in engine_names
 
     def test_empty_toolsets_blocks_injection(self):
-        """`platform_toolsets: telegram: []` must suppress context-engine tools."""
+        """`platform_toolsets: discord: []` must suppress context-engine tools."""
         c = self._compressor_with("lcm_grep")
         tools, names, engine_names = self._run_context_engine_injection([], c)
         assert tools == []

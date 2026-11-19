@@ -315,7 +315,7 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
         logger.warning("Cannot recover structurally invalid pending message from %s; "
                        "the flush file has been preserved", path)
         return False
-    # session_key is a gateway routing key (e.g. "agent:main:telegram:..."); appending a row
+    # session_key is a gateway routing key (e.g. "agent:main:discord:..."); appending a row
     # needs the real session_id, which real payloads lack — the resolver supplies it together with
     # the store owning the key. ``session_db`` (the owned default) serves only payloads that already
     # carry a session_id; a resolver-resolved payload goes to the resolver's db alone, never the

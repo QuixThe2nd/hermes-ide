@@ -11,7 +11,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
-def _make_event(text="/verbose", platform=Platform.TELEGRAM, user_id="12345", chat_id="67890"):
+def _make_event(text="/verbose", platform=Platform.DISCORD, user_id="12345", chat_id="67890"):
     """Build a MessageEvent for testing."""
     source = SessionSource(
         platform=platform,
@@ -77,11 +77,11 @@ class TestVerboseCommand:
 
         # all -> verbose
         assert "VERBOSE" in result
-        assert "telegram" in result.lower()  # per-platform feedback
+        assert "discord" in result.lower()  # per-platform feedback
 
-        # Verify config was saved to display.platforms.telegram
+        # Verify config was saved to display.platforms.discord
         saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        assert saved["display"]["platforms"]["telegram"]["tool_progress"] == "verbose"
+        assert saved["display"]["platforms"]["discord"]["tool_progress"] == "verbose"
 
     @pytest.mark.asyncio
     async def test_quoted_false_keeps_command_disabled(self, tmp_path, monkeypatch):

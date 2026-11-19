@@ -49,9 +49,9 @@ class TestHandoffStateDB:
         for sid in (a, b, c, d):
             self._make_session(db, sid)
 
-        db.request_handoff(a, "telegram")
+        db.request_handoff(a, "discord")
         db.request_handoff(b, "discord")
-        db.request_handoff(c, "telegram")
+        db.request_handoff(c, "discord")
         db.claim_handoff(c)  # c is now running, not pending
         db.request_handoff(d, "slack")
         db.claim_handoff(d)
@@ -65,11 +65,11 @@ class TestHandoffStateDB:
     def test_complete_handoff_clears_error(self, db):
         sid = "sess-complete"
         self._make_session(db, sid)
-        db.request_handoff(sid, "telegram")
+        db.request_handoff(sid, "discord")
         db.claim_handoff(sid)
         db.fail_handoff(sid, "transient")
         # User retries; mock the watcher path
-        db.request_handoff(sid, "telegram")
+        db.request_handoff(sid, "discord")
         db.claim_handoff(sid)
         db.complete_handoff(sid)
 
@@ -88,7 +88,7 @@ class TestHandoffStateDB:
         db.append_message(sid, "assistant", "Hi there!")
 
         # CLI: request handoff
-        assert db.request_handoff(sid, "telegram") is True
+        assert db.request_handoff(sid, "discord") is True
         assert db.get_handoff_state(sid)["state"] == "pending"
 
         # Gateway watcher: discover + claim

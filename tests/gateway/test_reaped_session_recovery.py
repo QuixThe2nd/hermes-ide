@@ -58,9 +58,9 @@ class _DeadReapedAgent:
 def _make_runner(store) -> GatewayRunner:
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="x")}
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="x")}
     )
-    runner.adapters = {Platform.TELEGRAM: _FakeAdapter()}
+    runner.adapters = {Platform.DISCORD: _FakeAdapter()}
     runner._pending_messages = {}
     runner._background_tasks = set()
     runner._draining = False
@@ -82,7 +82,7 @@ def _make_runner(store) -> GatewayRunner:
 
 def _source(chat_id="555001") -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id=chat_id,
         chat_type="dm",
         user_id=chat_id,
@@ -99,7 +99,7 @@ def _store(tmp_path) -> SessionStore:
 def _occupy_turn_slot(runner, key, agent):
     state = runner._session_state(key)
     state.turn.agent = agent
-    # Turn started 2 minutes ago — outside the Telegram follow-up grace
+    # Turn started 2 minutes ago — outside the follow-up grace
     # window, inside the idle-staleness threshold.
     state.turn.started_ts = time.time() - 120
 

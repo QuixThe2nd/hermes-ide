@@ -933,7 +933,7 @@ class TestSpawnEnvSanitization:
             "PATH": "/usr/bin:/bin",
             "HOME": "/home/user",
             "USER": "tester",
-            "TELEGRAM_BOT_TOKEN": "bot-secret",
+            "DISCORD_BOT_TOKEN": "bot-secret",
             "FIRECRAWL_API_KEY": "fc-secret",
         }, clear=True), \
             patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
@@ -945,16 +945,16 @@ class TestSpawnEnvSanitization:
                 cwd="/tmp",
                 env_vars={
                     "MY_CUSTOM_VAR": "keep-me",
-                    "TELEGRAM_BOT_TOKEN": "drop-me",
-                    f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}TELEGRAM_BOT_TOKEN": "forced-bot-token",
+                    "DISCORD_BOT_TOKEN": "drop-me",
+                    f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}DISCORD_BOT_TOKEN": "forced-bot-token",
                 },
             )
 
         env = captured["env"]
         assert env["MY_CUSTOM_VAR"] == "keep-me"
-        assert env["TELEGRAM_BOT_TOKEN"] == "forced-bot-token"
+        assert env["DISCORD_BOT_TOKEN"] == "forced-bot-token"
         assert "FIRECRAWL_API_KEY" not in env
-        assert f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}TELEGRAM_BOT_TOKEN" not in env
+        assert f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}DISCORD_BOT_TOKEN" not in env
         assert env["PYTHONUNBUFFERED"] == "1"
 
     def test_spawn_via_env_checks_returncode_when_wrapper_fails(self, registry):
@@ -1590,7 +1590,7 @@ def test_drain_notifications_filters_async_delegation_by_session_key():
         process_registry.completion_queue.put({
             "type": "async_delegation",
             "delegation_id": "deleg_session_a",
-            "session_key": "telegram:dm:111:user_a",
+            "session_key": "discord:dm:111:user_a",
             "goal": "task A",
             "status": "completed",
             "summary": "done A",
@@ -1600,7 +1600,7 @@ def test_drain_notifications_filters_async_delegation_by_session_key():
         process_registry.completion_queue.put({
             "type": "async_delegation",
             "delegation_id": "deleg_session_b",
-            "session_key": "telegram:dm:222:user_b",
+            "session_key": "discord:dm:222:user_b",
             "goal": "task B",
             "status": "completed",
             "summary": "done B",
@@ -1609,7 +1609,7 @@ def test_drain_notifications_filters_async_delegation_by_session_key():
         })
 
         # Drain for session A — should only get deleg_session_a
-        results_a = process_registry.drain_notifications(session_key="telegram:dm:111:user_a")
+        results_a = process_registry.drain_notifications(session_key="discord:dm:111:user_a")
         assert len(results_a) == 1, (
             f"Expected 1 event for session A, got {len(results_a)}"
         )
@@ -1617,7 +1617,7 @@ def test_drain_notifications_filters_async_delegation_by_session_key():
         assert "done A" in results_a[0][1]
 
         # Session B's event should have been re-queued — drain for session B
-        results_b = process_registry.drain_notifications(session_key="telegram:dm:222:user_b")
+        results_b = process_registry.drain_notifications(session_key="discord:dm:222:user_b")
         assert len(results_b) == 1, (
             f"Expected 1 event for session B, got {len(results_b)}"
         )

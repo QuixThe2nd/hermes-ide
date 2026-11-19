@@ -149,11 +149,10 @@ VALID_HOOKS: Set[str] = {
     # Kwargs: platform, event_type, payload (event_type-local; see hooks.md). New event types land
     # only together with real fire-sites.
     # Gateway platform-boundary observer hooks (#64176). Observer-only; each callback isolated by
-    # invoke_hook. This surface grants no adapter handles or platform actions. Fired today: Telegram
-    # "reaction" + "message_edited"; Discord "message_edited", "message_deleted", "thread_created",
-    # "thread_renamed". Each event type carries its own event-local additive payload contract (see
+    # invoke_hook. This surface grants no adapter handles or platform actions. Fired today: Discord
+    # "message_edited", "message_deleted", "thread_created", "thread_renamed". Each event type
+    # carries its own event-local additive payload contract (see
     # hooks.md). Other event types and hook names land here only together with real fire-sites and payload
-    # contracts; no inert VALID_HOOKS surface is registered ahead of implementation.
     "gateway_platform_event",
     # pre_command: BEFORE a recognized slash command's handler on CLI and gateway canonical dispatch;
     # returns IGNORED in v1. Deliberately NOT fired for the gateway's running-agent intercept path
@@ -934,7 +933,7 @@ class PluginContext:
 
     def register_platform_handler(self, platform: str, factory: Callable) -> None:
         """Register ``factory(native, adapter)``, invoked at ``connect()`` before/as the core handlers
-        register (``adapter`` read-only). ``native``: telegram PTB ``Application``, discord
+        register (``adapter`` read-only). ``native``: discord
         ``commands.Bot``, slack ``AsyncApp``, matrix client, teams ``App``, dingtalk
         ``DingTalkStreamClient``, line aiohttp ``web.Application``, others ``None``. Keep SDK imports
         inside the factory; exceptions are logged and the platform still connects. Scope handlers in
@@ -949,11 +948,6 @@ class PluginContext:
         logger.debug("Plugin %s registered %s handler factory: %s", self.manifest.name, key,
                      getattr(factory, "__name__", repr(factory)))
 
-    def register_telegram_handler(self, factory: Callable) -> None:
-        """``register_platform_handler("telegram", factory)``. PTB dispatches only the FIRST matching
-        handler per group and core registers a catch-all ``CallbackQueryHandler`` — always scope with
-        ``pattern=`` or you swallow the core button flows."""
-        self.register_platform_handler("telegram", factory)
 
     @_serialized_replacement
     def register_auxiliary_task(
@@ -1549,9 +1543,6 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         adapter)`` at connect (see :meth:`PluginContext.register_platform_handler`)."""
         return list(self._platform_handler_factories.get((platform or "").strip().lower(), []))
 
-    def get_telegram_handler_factories(self) -> List[tuple]:
-        """Back-compat alias for ``get_platform_handler_factories("telegram")``."""
-        return self.get_platform_handler_factories("telegram")
 
     def list_plugins(self) -> List[Dict[str, Any]]:
         """Return a list of info dicts for all discovered plugins."""

@@ -1086,6 +1086,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     supports_async_delivery: bool = False
     # ``/p/<profile>/v1/...`` on the shared listener (``_make_profile_prefix_middleware``).
     serves_profile_prefix: bool = True
+    # Owns the /v1 TCP port: intake must stop at overlap authority release
+    # so the newest generation can bind it.
+    owns_singleton_listener: bool = True
     # Same statelessness applies to the startup auto-resume prompt: no client is waiting to answer "session
     # restored — what next?", so a resumed turn should complete the interrupted work rather than acknowledge
     # (#57056).
@@ -1911,7 +1914,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @staticmethod
     def _normalize_session_source(value: Any) -> str:
         text = str(value or "").strip().lower()
-        allowed = {"api_server", "hermes_browser", "browser", "cli", "telegram", "discord", "slack", "desktop", "dashboard"}
+        allowed = {"api_server", "hermes_browser", "browser", "cli", "discord", "slack", "desktop", "dashboard"}
         if text not in allowed:
             return "api_server"
         return "hermes_browser" if text == "browser" else text
@@ -2151,7 +2154,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "tool_complete_callback": tool_complete_callback,
             "reasoning_callback": reasoning_callback,
             "session_db": self._ensure_session_db(),
-            # Same fallback provider chain as Telegram/Discord/Slack.
+            # Same fallback provider chain as the messaging platforms.
             "fallback_model": None if confirmed_runtime_lock else GatewayRunner._load_fallback_model(),
             "reasoning_config": request_reasoning_config,
             "gateway_session_key": gateway_session_key}
@@ -3611,6 +3614,18 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except Exception as e:
             logger.error("[%s] Failed to start API server: %s", self.name, e)
             return False
+
+    async def stop_intake(self) -> None:
+        """Stop accepting new API requests; in-flight requests finish.
+
+        Overlap authority release calls this so the newest gateway
+        generation can bind the shared port immediately while this process
+        finishes the /v1 runs it already owns.
+        """
+        site, self._site = self._site, None
+        if site is not None:
+            await site.stop()
+            logger.info("[%s] Listener stopped for overlap authority handoff", self.name)
 
     async def disconnect(self) -> None:
         """Stop the aiohttp server and release every owned resource, including the ResponseStore

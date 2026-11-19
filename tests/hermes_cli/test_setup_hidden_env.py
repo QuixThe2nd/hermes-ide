@@ -17,7 +17,7 @@ class TestIsSetupHiddenEnv:
         [
             "DISCORD_ALLOW_ALL_USERS",
             "DISCORD_REPLY_TO_MODE",
-            "TELEGRAM_PROXY",
+            "DISCORD_PROXY",
         ],
     )
     def test_self_configuring_knobs_are_hidden(self, key):

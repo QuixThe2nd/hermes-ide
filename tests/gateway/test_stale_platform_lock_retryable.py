@@ -1,7 +1,7 @@
 """Regression tests for platform-lock acquire behavior.
 
 #54167 — stale platform lock must be retryable.
-When a gateway process is killed (SIGKILL, crash) during Telegram
+When a gateway process is killed (SIGKILL, crash) during platform
 initialization, the scoped lock file survives. On next startup,
 ``acquire_scoped_lock()`` detects the stale lock and deletes it, but may
 still return ``(False, existing_dict)`` to the caller (e.g. if the
@@ -31,7 +31,7 @@ from gateway.run import GatewayRunner
 class _StubAdapter(BasePlatformAdapter):
     """Minimal concrete subclass for testing _acquire_platform_lock."""
 
-    platform = MagicMock(value="telegram")
+    platform = MagicMock(value="discord")
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
@@ -70,12 +70,12 @@ def test_stale_lock_failure_is_retryable(adapter):
         return_value=(False, {"pid": 99999, "start_time": "2026-01-01T00:00:00Z"}),
     ), patch.object(adapter, "_write_runtime_status_safe"):
         result = adapter._acquire_platform_lock(
-            "telegram-bot-token", "test-token", "Telegram bot token"
+            "discord-bot-token", "test-token", "Discord bot token"
         )
 
     assert result is False
     assert adapter._fatal_error_retryable is True
-    assert adapter._fatal_error_code == "telegram-bot-token_lock"
+    assert adapter._fatal_error_code == "discord-bot-token_lock"
 
 
 def test_explicit_replace_takeover_reacquires_lock_once(adapter):
@@ -96,7 +96,7 @@ def test_explicit_replace_takeover_reacquires_lock_once(adapter):
         adapter, "_write_runtime_status_safe"
     ):
         result = adapter._acquire_platform_lock(
-            "telegram-bot-token", "test-token", "Telegram bot token"
+            "discord-bot-token", "test-token", "Discord bot token"
         )
 
     assert result is True
@@ -120,20 +120,20 @@ def test_lock_conflict_names_owning_profile(adapter):
         return_value=(False, existing),
     ), patch.object(adapter, "_write_runtime_status_safe"):
         result = adapter._acquire_platform_lock(
-            "telegram-bot-token",
+            "discord-bot-token",
             "test-token",
-            "Telegram bot token",
+            "Discord bot token",
         )
 
     assert result is False
     assert adapter._fatal_error_message == (
-        "Telegram bot token already in use by the "
+        "Discord bot token already in use by the "
         "'lead-gen-outreach' profile gateway (PID 559). "
         "Stop that gateway first "
         "(hermes --profile lead-gen-outreach gateway stop)."
     )
     assert adapter._fatal_error_retryable is True
-    assert adapter._fatal_error_code == "telegram-bot-token_lock"
+    assert adapter._fatal_error_code == "discord-bot-token_lock"
 
 
 def test_lock_conflict_infers_profile_from_legacy_hermes_home(adapter):
@@ -149,9 +149,9 @@ def test_lock_conflict_infers_profile_from_legacy_hermes_home(adapter):
         return_value=(False, existing),
     ), patch.object(adapter, "_write_runtime_status_safe"):
         result = adapter._acquire_platform_lock(
-            "telegram-bot-token",
+            "discord-bot-token",
             "test-token",
-            "Telegram bot token",
+            "Discord bot token",
         )
 
     assert result is False
@@ -172,13 +172,13 @@ def test_lock_conflict_keeps_pid_only_wording_for_legacy_record(adapter):
         return_value=(False, existing),
     ), patch.object(adapter, "_write_runtime_status_safe"):
         result = adapter._acquire_platform_lock(
-            "telegram-bot-token",
+            "discord-bot-token",
             "test-token",
-            "Telegram bot token",
+            "Discord bot token",
         )
 
     assert result is False
     assert adapter._fatal_error_message == (
-        "Telegram bot token already in use (PID 99999). "
+        "Discord bot token already in use (PID 99999). "
         "Stop the other gateway first."
     )

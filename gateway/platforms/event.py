@@ -53,9 +53,6 @@ class MessageEvent:
     # refused first reply then reads as delivered). Reply routing is unaffected: the reply anchor
     # still comes from this event.
     ledger_message_id: Optional[str] = None
-    # Platform update id (Telegram ``update_id``): ``/restart`` records it so the new gateway
-    # advances past it even if PTB's shutdown ACK times out.
-    platform_update_id: Optional[int] = None
     # Media attachments: local file paths (for vision tool access)
     media_urls: List[str] = field(default_factory=list)
     media_types: List[str] = field(default_factory=list)

@@ -3,10 +3,14 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
 import requests
 
 
 from tools.browser_camofox import (
+    CamofoxNotConfiguredError,
+    _request,
+    _rewrite_loopback_url_for_camofox,
     camofox_back,
     camofox_click,
     camofox_close,
@@ -20,7 +24,6 @@ from tools.browser_camofox import (
     camofox_vision,
     check_camofox_available,
     is_camofox_mode,
-    _rewrite_loopback_url_for_camofox,
 )
 
 
@@ -370,3 +373,21 @@ class TestBrowserToolRouting:
         assert check_browser_requirements() is True
 
 
+
+
+class TestCamofoxNotConfigured:
+    """pc_35b0ee9abed7: an unset CAMOFOX_URL used to surface as requests'
+    ``MissingSchema: Invalid URL '/tabs': No scheme supplied`` — a page-URL-shaped
+    error for what is really a missing browser-server configuration."""
+
+    def test_request_raises_clear_error_without_server_url(self, monkeypatch):
+        monkeypatch.delenv("CAMOFOX_URL", raising=False)
+        with pytest.raises(CamofoxNotConfiguredError, match="CAMOFOX_URL"):
+            _request("get", "/tabs", timeout=1)
+
+    def test_navigate_reports_missing_server_url(self, monkeypatch):
+        monkeypatch.delenv("CAMOFOX_URL", raising=False)
+        result = json.loads(camofox_navigate("https://example.com", task_id="t_nourl"))
+        assert result["success"] is False
+        assert "CAMOFOX_URL" in result["error"]
+        assert "Invalid URL" not in result["error"]

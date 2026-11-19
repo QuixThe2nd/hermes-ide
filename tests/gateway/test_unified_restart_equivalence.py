@@ -6,12 +6,9 @@ and ``hermes gateway restart`` (control-socket transport) all reach
 of their own — so requester routing, preflight, and the drain hand-off cannot
 drift apart between entry points.
 
-The SIGUSR1 arm covers the resolution seam the gateway's signal handler
-delegates to (``gateway.restart._runner_restart_platforms``): the handler
-itself is a closure installed inside ``start_gateway`` and cannot be invoked
-outside a real gateway boot, but its entire restart-platforms decision is
-``_runner_restart_platforms(runner)``, tested here against the runner's config
-loader with a fail-open default.
+The SIGUSR1 path is exercised end-to-end by the gateway's signal-handler
+coverage; here the CLI transport arm pins that the control-socket request
+carries no platforms override.
 """
 
 import asyncio
@@ -49,7 +46,6 @@ async def test_restart_slash_command_reaches_shared_queue(tmp_path, monkeypatch)
         message_type=MessageType.TEXT,
         source=make_restart_source(),
         message_id="m1",
-        platform_update_id=None,
     )
 
     result = await runner._handle_restart_command(event)
@@ -63,12 +59,13 @@ async def test_restart_slash_command_reaches_shared_queue(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_restart_slash_command_reports_chained_on_incoming_generation(
+async def test_restart_slash_command_reports_forwarded_to_newest_generation(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     queued = AsyncMock(return_value={
-        "status": "chained", "active_agents": 0, "via_service": False,
+        "status": "forwarded", "forwarded_to": 202,
+        "active_agents": 0, "via_service": False,
     })
     monkeypatch.setattr("gateway.restart.queue_user_restart", queued)
     runner, _adapter = make_restart_runner()
@@ -80,14 +77,13 @@ async def test_restart_slash_command_reports_chained_on_incoming_generation(
         message_type=MessageType.TEXT,
         source=make_restart_source(),
         message_id="m-chain",
-        platform_update_id=None,
     )
 
     result = await runner._handle_restart_command(event)
 
     queued.assert_awaited_once()
-    assert "chained" in str(result)
-    assert "incoming generation" in str(result)
+    assert "forwarded" in str(result)
+    assert "202" in str(result)
 
 
 # ── (b) tool: plugins.gateway_restart.tool.handle_restart → queue_user_restart ─
@@ -146,10 +142,10 @@ def test_restart_tool_reaches_shared_queue(monkeypatch, loop_thread):
     assert payload["status"] == "restarting"
 
 
-# ── (c) CLI: hermes gateway restart --no-platforms → control socket ──────────
+# ── (c) CLI: hermes gateway restart → control socket ────────────────────────
 
 
-def test_cli_restart_leads_with_control_socket_no_platforms(monkeypatch):
+def test_cli_restart_leads_with_control_socket(monkeypatch):
     import hermes_cli.gateway as cli_gateway
 
     requested = MagicMock(
@@ -171,84 +167,26 @@ def test_cli_restart_leads_with_control_socket_no_platforms(monkeypatch):
     )
     monkeypatch.setattr(cli_gateway, "_installed_service_kind_for", lambda *a, **k: None)
 
-    args = SimpleNamespace(system=False, all=False, force=False, no_platforms=True)
+    args = SimpleNamespace(system=False, all=False, force=False)
     cli_gateway._cmd_restart(args)
 
     requested.assert_called_once()
-    kwargs = requested.call_args.kwargs
-    assert kwargs.get("restart_platforms") is False
+    # The request carries no platforms override — restarts always hand over
+    # to the overlap successor.
+    assert requested.call_args.kwargs == {}
 
 
-def test_control_socket_transport_passes_flag_through(monkeypatch):
+def test_control_socket_forwarded_reply_names_target_generation(monkeypatch, capsys):
     import hermes_cli.gateway as cli_gateway
 
-    requested = MagicMock(return_value={"queued": True, "status": "restarting"})
+    requested = MagicMock(return_value={
+        "queued": True, "status": "forwarded", "forwarded_to": 202})
     monkeypatch.setattr("gateway.control_socket.request_gateway_restart", requested)
 
-    assert cli_gateway._restart_via_control_socket(False) is True
-    requested.assert_called_once()
-    assert requested.call_args.kwargs.get("restart_platforms") is False
-
-
-def test_control_socket_chained_reply_names_incoming_generation(monkeypatch, capsys):
-    import hermes_cli.gateway as cli_gateway
-
-    requested = MagicMock(return_value={"queued": True, "status": "chained"})
-    monkeypatch.setattr("gateway.control_socket.request_gateway_restart", requested)
-
-    assert cli_gateway._restart_via_control_socket(True) is True
+    assert cli_gateway._restart_via_control_socket() is True
     output = capsys.readouterr().out
-    assert "chained" in output
-    assert "incoming generation" in output
-
-
-# ── (d) SIGUSR1: restart_platforms resolved from the runner's config ─────────
-
-
-def test_runner_restart_platforms_resolution(monkeypatch):
-    from gateway.restart import _runner_restart_platforms
-
-    loader = MagicMock(return_value={"gateway": {"restart_platforms": False}})
-    monkeypatch.setattr("gateway.run._load_gateway_config", loader)
-    assert _runner_restart_platforms(object()) is False
-
-    loader_true = MagicMock(return_value={"gateway": {"restart_platforms": True}})
-    monkeypatch.setattr("gateway.run._load_gateway_config", loader_true)
-    assert _runner_restart_platforms(object()) is True
-
-    def _boom():
-        raise RuntimeError("config unreadable")
-
-    # A config read failure must never block a restart: default True.
-    monkeypatch.setattr("gateway.run._load_gateway_config", _boom)
-    assert _runner_restart_platforms(object()) is True
-
-
-@pytest.mark.asyncio
-async def test_request_restart_stores_resolved_platforms_for_the_signal_path(monkeypatch):
-    """The SIGUSR1 handler hands ``_runner_restart_platforms(runner)`` straight to
-    ``request_restart``; the core must persist that decision on the runner so the
-    overlap spawn honours it (asserted end-to-end in test_restart_platforms_flag)."""
-    from unittest.mock import patch
-
-    runner, _adapter = make_restart_runner()
-    spawn = AsyncMock(return_value=None)
-    monkeypatch.setattr("gateway.overlap_restart.spawn_successor", spawn)
-    # stop()'s browser reaper mkdirs a state dir under the isolated home,
-    # which the hermetic guard rejects on hosts whose sandbox home sits under
-    # the real root — the reaper is orthogonal to this contract.
-    monkeypatch.setattr("tools.browser_tool.cleanup_all_browsers", MagicMock())
-    monkeypatch.setattr("tools.terminal_tool.cleanup_all_environments", MagicMock())
-    with patch("gateway.status.remove_pid_file"), patch(
-        "gateway.status.write_runtime_status"
-    ):
-        assert runner.request_restart(
-            detached=False, via_service=True, restart_platforms=False
-        )
-        assert runner._restart_platforms is False
-        await asyncio.wait_for(runner._restart_task, timeout=5.0)
-    spawn.assert_awaited_once()
-    assert spawn.await_args.kwargs.get("restart_platforms") is False
+    assert "forwarded" in output
+    assert "202" in output
 
 
 # The shared adapter double is intentionally unused here but kept imported for

@@ -15,7 +15,7 @@ def _session(**overrides):
     data = {
         "id": "20260706_123456_abcd1234",
         "title": "Export Test",
-        "source": "telegram",
+        "source": "discord",
         "model": "gpt-5.5",
         "billing_provider": "openai-codex",
         "cwd": "/tmp/project",

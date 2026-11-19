@@ -233,6 +233,37 @@ def test_classifier_caps_state_fields(jev_key):
     assert len(state["user_previous_message"]) == goal_intent._PREVIOUS_USER_LIMIT == 1500
 
 
+def test_goal_context_recovers_task_before_empty_tool_call_row(hermes_home):
+    """The current chase and an empty tool-call row must not hide the prior exchange."""
+    from hermes_cli import goals
+    from hermes_cli.goal_intent import build_goal_context
+
+    db = goals._get_session_db()
+    session_id = "goal-context-idle-chase"
+    task = "recover my Snapchat account"
+    reply = "I started checking recovery options."
+    db.create_session(session_id=session_id, source="telegram")
+    db.append_message(session_id, "user", task)
+    db.append_message(session_id, "assistant", reply)
+    db.append_message(
+        session_id,
+        "assistant",
+        "",
+        tool_calls=[{
+            "id": "call-1",
+            "type": "function",
+            "function": {"name": "terminal", "arguments": "{}"},
+        }],
+    )
+    db.append_message(session_id, "tool", "done", tool_call_id="call-1")
+    db.append_message(session_id, "user", "status?")
+
+    context = build_goal_context(session_id)
+
+    assert context["last_assistant"] == reply
+    assert context["user_previous_message"] == task
+
+
 def test_suppression_control_phrases():
     from hermes_cli.goal_intent import auto_goal_suppression
 
@@ -288,7 +319,7 @@ def _write_record(path, *, ts, label, excerpt, session="s1"):
     record = {
         "ts": ts,
         "session_id": session,
-        "platform": "telegram",
+        "platform": "discord",
         "message_excerpt": excerpt,
         "label": label,
         "reason": f"reason for {excerpt}",

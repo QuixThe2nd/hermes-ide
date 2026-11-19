@@ -153,7 +153,7 @@ def test_error_truncated_to_bounded_length(monkeypatch, tmp_path):
 def test_failure_type_classification(monkeypatch, tmp_path):
     inc = _point_db(monkeypatch, tmp_path)
     cases = [
-        ("delivery failed for telegram chat", "delivery"),
+        ("delivery failed for discord chat", "delivery"),
         ("Provider read timed out after 60s", "timeout"),
         ("authentication failed: invalid API key", "auth"),
         ("HTTP 429: rate limit exceeded", "rate_limit"),
@@ -231,7 +231,7 @@ def test_repeat_failure_alerts_once_then_reminds_after_cooldown(monkeypatch, tmp
     inc = _point_db(monkeypatch, tmp_path)
     deliveries = []
     # A real (non-local) lane: the ping leaves the process, so the incident is marked alerted.
-    job = _job(deliver="telegram:123")
+    job = _job(deliver="discord:123")
     (tmp_path / "config.yaml").write_text("cron:\n  preflight: false\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     with cron_jobs.use_cron_store(tmp_path):

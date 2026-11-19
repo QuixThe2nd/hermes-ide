@@ -248,17 +248,6 @@ Ritheann athshioncronú go huathoibríoch uair amháin in aghaidh na huaire ar a
     current_with_title:    "📌 Seisiún: `{session_id}`\nTeideal: **{title}**"
     current_no_title:      "📌 Seisiún: `{session_id}`\nGan teideal socraithe. Úsáid: `/title M'Ainm Seisiúin`"
 
-  topic:
-    not_telegram_dm:         "Tá an t-ordú /topic ar fáil amháin i gcomhráite príobháideacha Telegram."
-    no_session_db:           "Níl bunachar sonraí na seisiún ar fáil."
-    unauthorized:            "Níl tú údaraithe chun /topic a úsáid ar an mbot seo."
-    restore_needs_topic:     "Chun seisiún a athchóiriú, cruthaigh nó oscail topaic Telegram ar dtús, ansin seol /topic <session-id> taobh istigh den topaic sin. Chun topaic nua a chruthú, oscail All Messages agus seol teachtaireacht ar bith ann."
-    topics_disabled:         "Níl topaicí Telegram cumasaithe don bhot seo fós.\n\nConas iad a chumasú:\n1. Oscail @BotFather.\n2. Roghnaigh do bhot.\n3. Oscail Bot Settings → Threads Settings.\n4. Casadh ar Threaded Mode agus déan cinnte go bhfuil cead ag úsáideoirí snáitheanna nua a chruthú.\n\nAnsin seol /topic arís."
-    topics_user_disallowed:  "Tá topaicí Telegram cumasaithe, ach níl cead ag úsáideoirí topaicí a chruthú.\n\nOscail @BotFather → roghnaigh do bhot → Bot Settings → Threads Settings, ansin múchadh 'Disallow users to create new threads'.\n\nAnsin seol /topic arís."
-    enable_failed:           "Theip ar mhodh topaice Telegram a chumasú: {error}"
-    bound_status:            "Tá an topaic seo nasctha le:\nSeisiún: {label}\nID: {session_id}\n\nÚsáid /new chun an topaic seo a athsholáthar le seisiún úr.\nLe haghaidh oibre comhthreomhaire, oscail All Messages agus seol teachtaireacht ann chun topaic eile a chruthú."
-    thread_ready:            "Tá topaicí il-seisiúin Telegram cumasaithe.\n\nÚsáidfear an topaic seo mar sheisiún Hermes neamhspleách. Úsáid /new chun seisiún reatha na topaice seo a athsholáthar. Le haghaidh oibre comhthreomhaire, oscail All Messages agus seol teachtaireacht ann chun topaic eile a chruthú."
-    untitled_session:        "Seisiún gan teideal"
 
   undo:
     nothing:               "Níl aon rud le cealú."

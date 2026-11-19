@@ -85,7 +85,7 @@ class TestScanSkillCommands:
     def test_get_skill_commands_rescans_when_platform_scope_changes(self, tmp_path):
         """Platform-specific disabled-skill caches must not leak across platforms.
 
-        Regression test for #14536: a gateway process serving Telegram
+        Regression test for #14536: a gateway process serving WhatsApp
         and Discord concurrently would seed the process-global cache
         with whichever platform scanned first, and subsequent
         ``get_skill_commands()`` calls from the other platform silently
@@ -96,8 +96,8 @@ class TestScanSkillCommands:
 
         def _disabled_skills():
             platform = os.getenv("HERMES_PLATFORM")
-            if platform == "telegram":
-                return {"telegram-only"}
+            if platform == "whatsapp":
+                return {"whatsapp-only"}
             if platform == "discord":
                 return {"discord-only"}
             return set()
@@ -109,30 +109,30 @@ class TestScanSkillCommands:
             patch.object(sc_mod, "_skill_commands_platform", None),
         ):
             _make_skill(tmp_path, "shared")
-            _make_skill(tmp_path, "telegram-only")
+            _make_skill(tmp_path, "whatsapp-only")
             _make_skill(tmp_path, "discord-only")
 
-            with patch.dict(os.environ, {"HERMES_PLATFORM": "telegram"}):
-                telegram_commands = dict(get_skill_commands())
+            with patch.dict(os.environ, {"HERMES_PLATFORM": "whatsapp"}):
+                whatsapp_commands = dict(get_skill_commands())
 
-            assert "/shared" in telegram_commands
-            assert "/discord-only" in telegram_commands
-            assert "/telegram-only" not in telegram_commands
+            assert "/shared" in whatsapp_commands
+            assert "/discord-only" in whatsapp_commands
+            assert "/whatsapp-only" not in whatsapp_commands
 
             with patch.dict(os.environ, {"HERMES_PLATFORM": "discord"}):
                 discord_commands = dict(get_skill_commands())
 
             assert "/shared" in discord_commands
-            assert "/telegram-only" in discord_commands
+            assert "/whatsapp-only" in discord_commands
             assert "/discord-only" not in discord_commands
 
-            # Switching back to telegram must also rescan — not re-serve
+            # Switching back to whatsapp must also rescan — not re-serve
             # the discord view that was just cached.
-            with patch.dict(os.environ, {"HERMES_PLATFORM": "telegram"}):
-                telegram_again = dict(get_skill_commands())
+            with patch.dict(os.environ, {"HERMES_PLATFORM": "whatsapp"}):
+                whatsapp_again = dict(get_skill_commands())
 
-            assert "/telegram-only" not in telegram_again
-            assert "/discord-only" in telegram_again
+            assert "/whatsapp-only" not in whatsapp_again
+            assert "/discord-only" in whatsapp_again
 
     def test_get_skill_commands_rescans_when_session_platform_changes(self, tmp_path):
         """``HERMES_SESSION_PLATFORM`` from the gateway session context must
@@ -160,8 +160,8 @@ class TestScanSkillCommands:
                 os.getenv("HERMES_PLATFORM")
                 or get_session_env("HERMES_SESSION_PLATFORM")
             )
-            if platform == "telegram":
-                return {"telegram-only"}
+            if platform == "whatsapp":
+                return {"whatsapp-only"}
             if platform == "discord":
                 return {"discord-only"}
             return set()
@@ -173,22 +173,22 @@ class TestScanSkillCommands:
             patch.object(sc_mod, "_skill_commands_platform", None),
         ):
             _make_skill(tmp_path, "shared")
-            _make_skill(tmp_path, "telegram-only")
+            _make_skill(tmp_path, "whatsapp-only")
             _make_skill(tmp_path, "discord-only")
 
-            # First simulated gateway request: telegram handler.
-            tokens = set_session_vars(platform="telegram")
+            # First simulated gateway request: whatsapp handler.
+            tokens = set_session_vars(platform="whatsapp")
             try:
-                telegram_commands = dict(get_skill_commands())
+                whatsapp_commands = dict(get_skill_commands())
             finally:
                 clear_session_vars(tokens)
 
-            assert "/shared" in telegram_commands
-            assert "/discord-only" in telegram_commands
-            assert "/telegram-only" not in telegram_commands
+            assert "/shared" in whatsapp_commands
+            assert "/discord-only" in whatsapp_commands
+            assert "/whatsapp-only" not in whatsapp_commands
 
             # Second simulated gateway request: discord handler. The cache
-            # was just populated for telegram; the rescan trigger must fire
+            # was just populated for whatsapp; the rescan trigger must fire
             # off the ContextVar change, not just an env-var change.
             tokens = set_session_vars(platform="discord")
             try:
@@ -197,7 +197,7 @@ class TestScanSkillCommands:
                 clear_session_vars(tokens)
 
             assert "/shared" in discord_commands
-            assert "/telegram-only" in discord_commands
+            assert "/whatsapp-only" in discord_commands
             assert "/discord-only" not in discord_commands
 
     def test_get_skill_commands_rescans_when_profile_home_changes(self, tmp_path):
@@ -302,8 +302,8 @@ class TestScanSkillCommands:
         from agent.skill_commands import get_skill_commands
 
         def _disabled_skills():
-            if os.getenv("HERMES_PLATFORM") == "telegram":
-                return {"telegram-only"}
+            if os.getenv("HERMES_PLATFORM") == "whatsapp":
+                return {"whatsapp-only"}
             return set()
 
         with (
@@ -313,17 +313,17 @@ class TestScanSkillCommands:
             patch.object(sc_mod, "_skill_commands_platform", None),
         ):
             _make_skill(tmp_path, "shared")
-            _make_skill(tmp_path, "telegram-only")
+            _make_skill(tmp_path, "whatsapp-only")
 
-            monkeypatch.setenv("HERMES_PLATFORM", "telegram")
-            telegram_commands = dict(get_skill_commands())
-            assert "/telegram-only" not in telegram_commands
+            monkeypatch.setenv("HERMES_PLATFORM", "whatsapp")
+            whatsapp_commands = dict(get_skill_commands())
+            assert "/whatsapp-only" not in whatsapp_commands
 
             # Drop back to no platform scope — bare CLI / cron / RL rollouts.
             monkeypatch.delenv("HERMES_PLATFORM", raising=False)
             bare_commands = dict(get_skill_commands())
 
-            assert "/telegram-only" in bare_commands
+            assert "/whatsapp-only" in bare_commands
             assert sc_mod._skill_commands_platform is None
 
 
@@ -533,9 +533,9 @@ class TestScanSkillCommands:
 
 
 class TestResolveSkillCommandKey:
-    """Telegram bot-command names disallow hyphens, so the menu registers
-    skills with hyphens swapped for underscores. When Telegram autocomplete
-    sends the underscored form back, we need to find the hyphenated key.
+    """Some platform command surfaces (e.g. Slack) disallow hyphens, so the
+    menu registers skills with hyphens swapped for underscores. When such
+    autocomplete sends the underscored form back, we find the hyphenated key.
     """
 
     def test_hyphenated_form_matches_directly(self, tmp_path):
@@ -692,7 +692,7 @@ class TestBuildSkillInvocationMessage:
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             from gateway.session_context import clear_session_vars, set_session_vars
 
-            tokens = set_session_vars(platform="telegram")
+            tokens = set_session_vars(platform="discord")
             try:
                 _make_skill(
                     tmp_path,

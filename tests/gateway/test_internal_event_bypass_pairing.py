@@ -141,10 +141,10 @@ async def test_notify_on_complete_uses_session_store_origin_for_group_topic(monk
 
     runner = GatewayRunner(GatewayConfig())
     adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
-    runner.adapters[Platform.TELEGRAM] = adapter
-    runner.session_store._entries["agent:main:telegram:group:-100:42"] = SimpleNamespace(
+    runner.adapters[Platform.DISCORD] = adapter
+    runner.session_store._entries["agent:main:discord:group:-100:42"] = SimpleNamespace(
         origin=SessionSource(
-            platform=Platform.TELEGRAM,
+            platform=Platform.DISCORD,
             chat_id="-100",
             chat_type="group",
             thread_id="42",
@@ -156,8 +156,8 @@ async def test_notify_on_complete_uses_session_store_origin_for_group_topic(monk
     watcher = {
         "session_id": "proc_test_internal",
         "check_interval": 0,
-        "session_key": "agent:main:telegram:group:-100:42",
-        "platform": "telegram",
+        "session_key": "agent:main:discord:group:-100:42",
+        "platform": "discord",
         "chat_id": "-100",
         "thread_id": "42",
         "notify_on_complete": True,
@@ -168,7 +168,7 @@ async def test_notify_on_complete_uses_session_store_origin_for_group_topic(monk
     assert adapter.handle_message.await_count == 1
     event = adapter.handle_message.await_args.args[0]
     assert event.internal is True
-    assert event.source.platform == Platform.TELEGRAM
+    assert event.source.platform == Platform.DISCORD
     assert event.source.chat_id == "-100"
     assert event.source.chat_type == "group"
     assert event.source.thread_id == "42"

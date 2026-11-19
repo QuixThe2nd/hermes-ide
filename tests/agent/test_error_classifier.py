@@ -726,7 +726,7 @@ class TestClassifyApiError:
     # model-provider safety refusals for THIS prompt, not OpenRouter
     # account-level data policy. Recovery is fallback model, not config fix.
     # See issue #18028 — OpenAI Codex was burning 3 retries on identical
-    # refusals before users saw "API failed after 3 retries" on Telegram.
+    # refusals before users saw "API failed after 3 retries" on chat platforms.
 
     def test_message_only_cyber_content_policy_blocked(self):
         # OpenAI Codex returns this without an HTTP status. Retrying the

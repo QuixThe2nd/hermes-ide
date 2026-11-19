@@ -45,7 +45,7 @@ def store(tmp_path, monkeypatch):
 
 def _make_source() -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         user_id="170829464",
         chat_id="170829464",
         chat_type="dm",

@@ -2,7 +2,7 @@
 """Google Workspace OAuth2 setup for Hermes Agent.
 
 Fully non-interactive — designed to be driven by the agent via terminal commands.
-The agent mediates between this script and the user (works on CLI, Telegram, Discord, etc.)
+The agent mediates between this script and the user (works on CLI, Discord, etc.)
 
 Commands:
   setup.py --check                          # Is auth valid? Exit 0 = yes, 1 = no

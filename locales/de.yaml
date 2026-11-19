@@ -244,17 +244,6 @@ Re-Syncs laufen automatisch höchstens einmal pro Stunde."
     current_with_title:    "📌 Sitzung: `{session_id}`\nTitel: **{title}**"
     current_no_title:      "📌 Sitzung: `{session_id}`\nKein Titel gesetzt. Verwendung: `/title Mein Sitzungsname`"
 
-  topic:
-    not_telegram_dm:         "Der /topic-Befehl ist nur in Telegram-Privatchats verfügbar."
-    no_session_db:           "Sitzungsdatenbank nicht verfügbar."
-    unauthorized:            "Sie sind nicht berechtigt, /topic auf diesem Bot zu verwenden."
-    restore_needs_topic:     "Um eine Sitzung wiederherzustellen, erstellen oder öffnen Sie zuerst ein Telegram-Topic und senden Sie dann /topic <session-id> innerhalb dieses Topics. Um ein neues Topic zu erstellen, öffnen Sie All Messages und senden Sie dort eine beliebige Nachricht."
-    topics_disabled:         "Telegram-Topics sind für diesen Bot noch nicht aktiviert.\n\nSo aktivieren Sie sie:\n1. Öffnen Sie @BotFather.\n2. Wählen Sie Ihren Bot.\n3. Öffnen Sie Bot Settings → Threads Settings.\n4. Aktivieren Sie Threaded Mode und stellen Sie sicher, dass Benutzer neue Threads erstellen dürfen.\n\nDann senden Sie /topic erneut."
-    topics_user_disallowed:  "Telegram-Topics sind aktiviert, aber Benutzer dürfen keine Topics erstellen.\n\nÖffnen Sie @BotFather → wählen Sie Ihren Bot → Bot Settings → Threads Settings, und deaktivieren Sie dann 'Disallow users to create new threads'.\n\nDann senden Sie /topic erneut."
-    enable_failed:           "Telegram-Topic-Modus konnte nicht aktiviert werden: {error}"
-    bound_status:            "Dieses Topic ist verknüpft mit:\nSitzung: {label}\nID: {session_id}\n\nVerwenden Sie /new, um dieses Topic durch eine neue Sitzung zu ersetzen.\nFür parallele Arbeit öffnen Sie All Messages und senden Sie dort eine Nachricht, um ein weiteres Topic zu erstellen."
-    thread_ready:            "Telegram-Multi-Session-Topics sind aktiviert.\n\nDieses Topic wird als unabhängige Hermes-Sitzung verwendet. Verwenden Sie /new, um die aktuelle Sitzung dieses Topics zu ersetzen. Für parallele Arbeit öffnen Sie All Messages und senden Sie dort eine Nachricht, um ein weiteres Topic zu erstellen."
-    untitled_session:        "Unbenannte Sitzung"
 
   undo:
     nothing:               "Nichts zum Rückgängigmachen."

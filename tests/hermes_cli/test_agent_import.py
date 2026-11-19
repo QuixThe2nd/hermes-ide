@@ -188,7 +188,7 @@ class TestDetection:
 
     def test_unsupported_agent_raises(self, hermes_home, tmp_path):
         with pytest.raises(ValueError):
-            AgentImporter("cursor", tmp_path, hermes_home)
+            AgentImporter("unknown-agent", tmp_path, hermes_home)
 
 
 
@@ -457,7 +457,7 @@ mcp_servers:
     command: uvx
     args:
       - notes-mcp
-telegram:
+discord:
   enabled: true
   chat_id: 12345
 """
@@ -576,7 +576,7 @@ class TestExistingConfigPreserved:
         # Untouched sections survive verbatim.
         assert merged["model"] == "hermes-4-405b"
         assert merged["api_key_env"] == "OPENROUTER_API_KEY"
-        assert merged["telegram"] == {"enabled": True, "chat_id": 12345}
+        assert merged["discord"] == {"enabled": True, "chat_id": 12345}
         # Existing and imported MCP servers coexist.
         assert "local-notes" in merged["mcp_servers"]
         assert "github" in merged["mcp_servers"]
@@ -673,7 +673,7 @@ class TestCliWiring:
         subparsers = parser.add_subparsers(dest="command")
         build_import_agent_parser(subparsers, cmd_import_agent=lambda a: None)
         with pytest.raises(SystemExit):
-            parser.parse_args(["import-agent", "cursor"])
+            parser.parse_args(["import-agent", "unknown-agent"])
 
     def test_command_dry_run_via_cli_writes_nothing(
             self, claude_tree, hermes_home, capsys):

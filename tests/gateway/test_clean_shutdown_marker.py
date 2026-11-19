@@ -19,7 +19,7 @@ from gateway.session import SessionSource, SessionStore
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_source(platform=Platform.TELEGRAM, chat_id="123", user_id="u1"):
+def _make_source(platform=Platform.DISCORD, chat_id="123", user_id="u1"):
     return SessionSource(platform=platform, chat_id=chat_id, user_id=user_id)
 
 

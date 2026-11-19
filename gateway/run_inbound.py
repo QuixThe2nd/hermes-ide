@@ -60,6 +60,20 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text[len(prefix):] if message_text.startswith(prefix) else message_text
 
 
+def interrupt_if_capable(running_agent: Any, text: Any) -> bool:
+    """Call ``interrupt()`` only on a live agent; a placeholder object has none.
+
+    The session slot can briefly hold a non-agent placeholder that is not the pending
+    sentinel, so duck-type instead of assuming ``interrupt`` exists. False means nothing
+    was interrupted and the caller keeps the follow-up queued instead of crashing.
+    """
+    interrupt = getattr(running_agent, "interrupt", None)
+    if not callable(interrupt):
+        return False
+    interrupt(text)
+    return True
+
+
 class GatewayInboundMixin:
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
@@ -239,7 +253,7 @@ class GatewayInboundMixin:
 
         if not self._is_user_authorized_for_source(source):
             if source.user_id is None:
-                # No user identity (Telegram service messages, channel forwards, anonymous admin
+                # No user identity (platform service messages, channel forwards, anonymous admin
                 # posts, sender_chat): can't be paired but may be authorized via a chat allowlist.
                 logger.debug("Ignoring message with no user_id from %s", source.platform.value)
                 return None
@@ -609,7 +623,7 @@ class GatewayInboundMixin:
             # interrupt_then_dispatch / reject). Unrecognized commands and plain text fall through.
             return True, await self._dispatch_busy_slash_command(event, _cmd_def_inner, _quick_key, source)
 
-        # Telegram photo bursts arrive as near-simultaneous updates — never interrupt for a
+        # Photo bursts arrive as near-simultaneous updates — never interrupt for a
         # photo-only follow-up; adapter-level batching absorbs them.
         if event.message_type == MessageType.PHOTO:
             logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
@@ -617,26 +631,6 @@ class GatewayInboundMixin:
             return True, None
         return False, None
 
-    def _hm_busy_telegram_grace_queue(
-        self, event: "MessageEvent", source: SessionSource, _quick_key: str
-    ) -> bool:
-        """Queue a Telegram text follow-up that lands within the post-start grace window."""
-        from gateway.run import logger
-
-        _grace = float(os.getenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0"))
-        _grace_state = self._peek_session_state(_quick_key)
-        _started_at = _grace_state.turn.started_ts if _grace_state else 0
-        if not (
-            source.platform == Platform.TELEGRAM and event.message_type == MessageType.TEXT
-            and _grace > 0 and _started_at and (time.time() - _started_at) <= _grace
-        ):
-            return False
-        logger.debug(
-            "Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
-            time.time() - _started_at, _quick_key,
-        )
-        self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)
-        return True
 
     @staticmethod
     def _hm_text_only(event: "MessageEvent") -> bool:
@@ -666,7 +660,9 @@ class GatewayInboundMixin:
             _interrupt_text = _build_media_placeholder(event)
         # Delivered via adapter._pending_messages (read by _run_agent); never also buffered on self
         # — that copy was never consumed and grew unbounded.
-        running_agent.interrupt(_interrupt_text)
+        if not interrupt_if_capable(running_agent, _interrupt_text):
+            # Placeholder object: nothing to interrupt, keep the follow-up queued.
+            self._queue_or_replace_pending_event(_quick_key, event)
 
     def _resume_claim_event_consumes_sentinel(
         self, event: "MessageEvent", session_key: str
@@ -703,9 +699,6 @@ class GatewayInboundMixin:
         _handled, _result = await self._hm_busy_slash_or_photo(event, source, _quick_key)
         if _handled:
             return _result
-
-        if self._hm_busy_telegram_grace_queue(event, source, _quick_key):
-            return None
 
         _ra_state = self._peek_session_state(_quick_key)
         running_agent = _ra_state.turn.agent if _ra_state else None
@@ -867,8 +860,6 @@ class GatewayInboundMixin:
 
 
     async def _hm_cmd_new(self, event, source, _quick_key):
-        if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
-            return True, self._telegram_topic_root_new_message()
         return True, await self._handle_reset_command(event)
 
     async def _hm_cmd_incognito(self, event, source, _quick_key):
@@ -876,12 +867,6 @@ class GatewayInboundMixin:
             event, "incognito", "This starts a fresh incognito session and discards the current conversation history.",
             self._handle_incognito_command,
         )
-
-    async def _hm_cmd_start(self, event, source, _quick_key):
-        from gateway.run import logger
-
-        logger.info("Ignoring /start platform ping for session %s", _quick_key)
-        return True, ""
 
     async def _hm_rewrite_turn_to_prompt(self, event, source, name: str, ack: str, build) -> Tuple[bool, Optional[str]]:
         """Ack, then rewrite the turn to ``build()`` and fall through to the agent (keeps role
@@ -1043,8 +1028,8 @@ class GatewayInboundMixin:
                 return True, f"Quick command '/{command}' has no target defined.", command
             command = new_command  # Fall through to normal command dispatch below
 
-        # Plugin-registered slash commands. Underscores normalize to hyphens so Telegram's
-        # underscored autocomplete form matches plugin commands registered with hyphens.
+        # Plugin-registered slash commands. Underscores normalize to hyphens so underscored
+        # autocomplete forms match plugin commands registered with hyphens.
         if command:
             try:
                 from hermes_cli.plugins import get_plugin_command_handler
@@ -1123,7 +1108,7 @@ class GatewayInboundMixin:
     ) -> Optional[str]:
         """Rewrite ``/<bundle>`` / ``/<skill>`` invocations into the skill prompt on ``event.text``;
         returns a reply string when the command is disabled/unknown/failed, else None.
-        resolve_skill_command_key() handles the Telegram underscore/hyphen round-trip (/claude_code)."""
+        resolve_skill_command_key() handles the underscore/hyphen round-trip (/claude_code)."""
         from gateway.run import logger
 
         if not command or self._hm_bundle_slash_rewrite(event, source, _quick_key, command):
@@ -1436,10 +1421,10 @@ class GatewayInboundMixin:
         if is_internal:
             pass
         elif source.user_id is None:
-            # Messages with no user identity (Telegram service messages,
+            # Messages with no user identity (platform service messages,
             # channel forwards, anonymous admin posts, sender_chat) can't
             # be paired, but they can still be authorized via a
-            # chat-scoped allowlist (e.g. TELEGRAM_GROUP_ALLOWED_CHATS
+            # chat-scoped allowlist (e.g. QQ_GROUP_ALLOWED_USERS
             # authorizes every member of the listed chat regardless of
             # sender). Defer to _is_user_authorized so that path runs.
             if not self._is_user_authorized_for_source(source):
@@ -1830,7 +1815,7 @@ class GatewayInboundMixin:
         # Default behavior is to interrupt immediately so user text/stop messages
         # are handled with minimal latency.
         #
-        # Special case: Telegram/photo bursts often arrive as multiple near-
+        # Special case: photo bursts often arrive as multiple near-
         # simultaneous updates. Do NOT interrupt for photo-only follow-ups here;
         # let the adapter-level batching/queueing logic absorb them.
 
@@ -2041,37 +2026,6 @@ class GatewayInboundMixin:
                     merge_pending_message_event(adapter._pending_messages, _quick_key, event)
                 return None
 
-            _telegram_followup_grace = float(
-                os.getenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0")
-            )
-            _grace_state = self._peek_session_state(_quick_key)
-            _started_at = _grace_state.turn.started_ts if _grace_state else 0
-            if (
-                source.platform == Platform.TELEGRAM
-                and event.message_type == MessageType.TEXT
-                and _telegram_followup_grace > 0
-                and _started_at
-                and (time.time() - _started_at) <= _telegram_followup_grace
-            ):
-                if _drain_refuses:
-                    # The grace window's in-memory queue dies with the process
-                    # bounce — this sub-path takes the same durable admission
-                    # as every other busy follow-up, never a silent loss.
-                    return self._busy_drain_admission(event, _quick_key)
-                logger.debug(
-                    "Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
-                    time.time() - _started_at,
-                    _quick_key,
-                )
-                adapter = self._adapter_for_source(source)
-                if adapter:
-                    merge_pending_message_event(
-                        adapter._pending_messages,
-                        _quick_key,
-                        event,
-                        merge_text=True,
-                    )
-                return None
 
             _ra_state = self._peek_session_state(_quick_key)
             running_agent = _ra_state.turn.agent if _ra_state else None
@@ -2138,7 +2092,10 @@ class GatewayInboundMixin:
             _media_urls = getattr(event, "media_urls", None) or []
             if not _interrupt_text and _media_urls:
                 _interrupt_text = _build_media_placeholder(event)
-            running_agent.interrupt(_interrupt_text)
+            if not interrupt_if_capable(running_agent, _interrupt_text):
+                # Placeholder object in the slot: nothing to interrupt, keep the
+                # follow-up queued rather than killing the turn with AttributeError.
+                self._queue_or_replace_pending_event(_quick_key, event)
             # NOTE: self._pending_messages was write-only (never consumed).
             # The actual interrupt message is delivered via adapter._pending_messages
             # which is read by _run_agent. Removed to prevent unbounded growth.
@@ -2303,16 +2260,8 @@ class GatewayInboundMixin:
             return await plain_handler(event)
 
         if canonical == "new":
-            if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
-                return self._telegram_topic_root_new_message()
             return await self._handle_reset_command(event)
 
-        if canonical == "topic":
-            return await self._handle_topic_command(event)
-
-        if canonical == "start":
-            logger.info("Ignoring /start platform ping for session %s", _quick_key)
-            return ""
 
         if canonical == "whoami":
             return await self._handle_whoami_command(event)
@@ -2581,9 +2530,8 @@ class GatewayInboundMixin:
         if command:
             try:
                 from hermes_cli.plugins import get_plugin_command_handler
-                # Normalize underscores to hyphens so Telegram's underscored
-                # autocomplete form matches plugin commands registered with
-                # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
+                # Normalize underscores to hyphens so underscored
+                # autocomplete forms match plugin commands registered with hyphens.
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
                     user_args = event.get_command_args().strip()
@@ -2595,9 +2543,8 @@ class GatewayInboundMixin:
                 logger.warning("Plugin command dispatch failed: %s", e)
 
         # Skill slash commands: /skill-name loads the skill and sends to agent.
-        # resolve_skill_command_key() handles the Telegram underscore/hyphen
-        # round-trip so /claude_code from Telegram autocomplete still resolves
-        # to the claude-code skill.
+        # resolve_skill_command_key() handles the underscore/hyphen
+        # round-trip so /claude_code from an underscored autocomplete still resolves
         if command:
             # Skill bundles take precedence over individual skill commands —
             # /<bundle> loads multiple skills at once. Mirrors CLI dispatch.
@@ -2741,15 +2688,6 @@ class GatewayInboundMixin:
             except Exception as e:
                 logger.debug("Skill command check failed (non-fatal): %s", e)
 
-
-        if not is_internal and await asyncio.to_thread(
-            self._is_telegram_topic_root_lobby, source
-        ):
-            # Debounce the lobby reminder so a user who forgets about
-            # topic mode and fires ten prompts doesn't get ten copies.
-            if self._should_send_telegram_lobby_reminder(source):
-                return self._telegram_topic_root_lobby_message()
-            return None
 
         # ── External-drain new-turn gate (Phase 2) ────────────────────
         # When NAS has engaged an external drain (.drain_request.json present,
@@ -3399,25 +3337,6 @@ class GatewayInboundMixin:
             )
             message_text = f"{_redelivery_note}\n\n{message_text}"
 
-        # Discord: surface the triggering message id per-turn on the user
-        # message rather than in the cached system prompt. message_id changes
-        # every turn, so baking it into build_session_context_prompt() would
-        # bust the agent-cache signature and rebuild the AIAgent every message
-        # (destroying prompt caching). The static IDs block points the agent
-        # here; the volatile id rides the per-turn user content.
-        if (
-            source is not None
-            and getattr(source, "platform", None) == Platform.DISCORD
-            and getattr(event, "message_id", None)
-        ):
-            from gateway.session import _discord_tools_loaded as _disc_tools_loaded
-            if _disc_tools_loaded():
-                message_text = (
-                    f"[Triggering message id: `{event.message_id}` — use as "
-                    f"`message_id` for reply/react/pin via the discord tools.]\n\n"
-                    f"{message_text}"
-                )
-
         # Incognito sessions drop unbounded history backfill and reply context here, BEFORE
         # either is composed into the turn text (adapters that proved a bounded block flag it).
         self._apply_incognito_inbound_gate(event)
@@ -3434,6 +3353,29 @@ class GatewayInboundMixin:
                 )
             else:
                 message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+
+        # Discord: surface the triggering message id per-turn on the user
+        # message rather than in the cached system prompt. message_id changes
+        # every turn, so baking it into build_session_context_prompt() would
+        # bust the agent-cache signature and rebuild the AIAgent every message
+        # (destroying prompt caching). The static IDs block points the agent
+        # here; the volatile id rides the per-turn user content. Prepended
+        # LAST so the note is the message's leading bytes — that prefix is
+        # what strip_discord_triggering_note peels for the persisted copy
+        # (a reply pointer prepended after it would hide the note from the
+        # strip and leak the instruction into the durable transcript).
+        if (
+            source is not None
+            and getattr(source, "platform", None) == Platform.DISCORD
+            and getattr(event, "message_id", None)
+        ):
+            from gateway.session import _discord_tools_loaded as _disc_tools_loaded
+            if _disc_tools_loaded():
+                message_text = (
+                    f"[Triggering message id: `{event.message_id}` — use as "
+                    f"`message_id` for reply/react/pin via the discord tools.]\n\n"
+                    f"{message_text}"
+                )
 
         # Prepend channel context from history backfill (if any), OUTERMOST so the block reads
         # history → reply pointer → trigger message. Runs after sender-prefix so the prefix

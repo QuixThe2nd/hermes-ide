@@ -7,7 +7,7 @@ Covers the runner-owned half of the normalized-envelope pattern:
   performs the authoritative post-auth check before invoking plugins
 * the profile-scoped handlers stamp the routed profile before dispatch
 
-The adapter-side normalization/fire-site tests lived with the Telegram adapter
+The adapter-side normalization/fire-site tests lived with a since-removed adapter
 and were removed alongside it.
 """
 

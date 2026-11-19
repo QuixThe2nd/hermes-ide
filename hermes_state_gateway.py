@@ -131,21 +131,18 @@ _ORPHAN_CONTIGUITY_DONORS_SQL = f"""
                         ORDER BY last_active DESC
                         LIMIT 2
                         """
-_OPTIONAL_TABLE_NAMES = (
-    "telegram_dm_topic_mode", "telegram_dm_topic_bindings", "delivery_obligations")
+_OPTIONAL_TABLE_NAMES = ("delivery_obligations",)
 
 
 def _optional_table_columns(conn) -> Dict[str, Set[str]]:
     """Live column sets of the lazily-created tables that exist (``{}`` when none do).
 
-    ``apply_telegram_topic_migration`` runs only on explicit ``/topic`` opt-in, so a store
-    can hold supported v1/v2 tables without ``profile_name`` for its whole life; likewise the
-    delivery ledger adds ``delivery_obligations.adapter_profile`` only when a gateway opens
-    it. Identity settlement must gate its column SQL on the column actually being there
-    rather than on table existence, and must not force those migrations (#113757).
+    The delivery ledger adds ``delivery_obligations.adapter_profile`` only when a gateway
+    opens it. Identity settlement must gate its column SQL on the column actually being
+    there rather than on table existence, and must not force that migration (#113757).
     """
     existing = {row[0] for row in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?, ?, ?)",
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?)",
         _OPTIONAL_TABLE_NAMES)}
     return {
         table: {row[1] for row in conn.execute(f"PRAGMA table_info('{table}')")}
@@ -195,21 +192,6 @@ class SessionGatewayMixin:
             if collision is not None:
                 raise ValueError(
                     f"profile routing collision in scope {collision[0]!r}: {collision[1]!r}")
-            for table, columns in (
-                ("telegram_dm_topic_mode", ("chat_id",)),
-                ("telegram_dm_topic_bindings", ("chat_id", "thread_id")),
-            ):
-                if "profile_name" not in topic_columns.get(table, set()):
-                    continue
-                equality = " AND ".join(
-                    f"target.{column} = old.{column}" for column in columns)
-                collision = conn.execute(
-                    f"SELECT 1 FROM {table} AS old JOIN {table} AS target "
-                    f"ON target.profile_name = ? AND {equality} "
-                    "WHERE old.profile_name = ? LIMIT 1", (new, old)).fetchone()
-                if collision is not None:
-                    raise ValueError(f"profile identity collision in {table}")
-
             counts["sessions_profile_name"] = conn.execute(
                 "UPDATE sessions SET profile_name = ? WHERE profile_name = ?", (new, old)).rowcount
             counts["gateway_heartbeats_profile"] = conn.execute(
@@ -240,17 +222,6 @@ class SessionGatewayMixin:
                         (new, old)).rowcount
                 counts["delivery_obligations_session_key"] = conn.execute(
                     "UPDATE delivery_obligations SET session_key = ? || substr(session_key, ?) "
-                    "WHERE substr(session_key, 1, ?) = ?",
-                    (new_ns, ns_len + 1, ns_len, old_ns)).rowcount
-            for table in ("telegram_dm_topic_mode", "telegram_dm_topic_bindings"):
-                if "profile_name" in topic_columns.get(table, set()):
-                    counts[f"{table}_profile_name"] = conn.execute(
-                        f"UPDATE {table} SET profile_name = ? WHERE profile_name = ?",
-                        (new, old)).rowcount
-            if "session_key" in topic_columns.get("telegram_dm_topic_bindings", set()):
-                counts["telegram_dm_topic_bindings_session_key"] = conn.execute(
-                    "UPDATE telegram_dm_topic_bindings "
-                    "SET session_key = ? || substr(session_key, ?) "
                     "WHERE substr(session_key, 1, ?) = ?",
                     (new_ns, ns_len + 1, ns_len, old_ns)).rowcount
 
@@ -285,7 +256,7 @@ class SessionGatewayMixin:
 
         The mirror of :meth:`rekey_profile_state`: a rename must rekey a profile's identity, a
         delete must purge it. ``agent:<name>:*`` routing keys, ``gateway_heartbeats.profile``,
-        ``delivery_obligations`` and the telegram topic tables are bookkeeping for a profile that
+        ``delivery_obligations`` rows are bookkeeping for a profile that
         no longer exists — left behind, every inbound event on a chat keyed to the deleted name
         enters the routing index, resolves a profile whose directory is gone, and logs
         ``Profile '<name>' does not exist`` on each event for the life of the store.
@@ -334,21 +305,6 @@ class SessionGatewayMixin:
                     "UPDATE delivery_obligations SET state='abandoned', updated_at=? "
                     f"WHERE ({by_profile}substr(session_key, 1, ?) = ?) "
                     "AND state NOT IN ('delivered', 'abandoned')", params).rowcount
-            if "profile_name" in topic_columns.get("telegram_dm_topic_mode", set()):
-                counts["telegram_dm_topic_mode"] = conn.execute(
-                    "DELETE FROM telegram_dm_topic_mode WHERE profile_name = ?", (name,)).rowcount
-            binding_columns = topic_columns.get("telegram_dm_topic_bindings", set())
-            if "session_key" in binding_columns:
-                # A rename rewrites a binding's session_key namespace as well as its profile_name
-                # (:meth:`rekey_profile_state`), so matching on one alone leaves the other behind.
-                # Legacy v1/v2 bindings have no profile_name but keep the ``agent:<name>:`` namespace
-                # in session_key, so the namespace match alone is the exact cleanup there.
-                by_profile = "profile_name = ? OR " if "profile_name" in binding_columns else ""
-                params = (name, ns_len, ns) if by_profile else (ns_len, ns)
-                counts["telegram_dm_topic_bindings"] = conn.execute(
-                    "DELETE FROM telegram_dm_topic_bindings "
-                    f"WHERE {by_profile}substr(session_key, 1, ?) = ?", params).rowcount
-
         self._execute_write(_do)
         return counts
 

@@ -35,11 +35,11 @@ class TestResolveDisplaySetting:
             "display": {
                 "tool_progress": "all",
                 "platforms": {
-                    "telegram": {"tool_progress": "verbose"},
+                    "whatsapp": {"tool_progress": "verbose"},
                 },
             }
         }
-        assert resolve_display_setting(config, "telegram", "tool_progress") == "verbose"
+        assert resolve_display_setting(config, "whatsapp", "tool_progress") == "verbose"
 
     def test_global_setting_when_no_platform_override(self):
         """Falls back to display.<key> when no platform override exists."""
@@ -51,7 +51,7 @@ class TestResolveDisplaySetting:
                 "platforms": {},
             }
         }
-        assert resolve_display_setting(config, "telegram", "tool_progress") == "new"
+        assert resolve_display_setting(config, "whatsapp", "tool_progress") == "new"
 
 
     def test_platform_override_only_affects_that_platform(self):
@@ -67,7 +67,7 @@ class TestResolveDisplaySetting:
             }
         }
         assert resolve_display_setting(config, "slack", "tool_progress") == "off"
-        assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
+        assert resolve_display_setting(config, "whatsapp", "tool_progress") == "all"
 
 
 # ---------------------------------------------------------------------------
@@ -86,12 +86,12 @@ class TestBackwardCompat:
                 "tool_progress": "all",
                 "tool_progress_overrides": {
                     "signal": "off",
-                    "telegram": "verbose",
+                    "whatsapp": "verbose",
                 },
             }
         }
         assert resolve_display_setting(config, "signal", "tool_progress") == "off"
-        assert resolve_display_setting(config, "telegram", "tool_progress") == "verbose"
+        assert resolve_display_setting(config, "whatsapp", "tool_progress") == "verbose"
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +106,7 @@ class TestYAMLNormalisation:
         from gateway.display_config import resolve_display_setting
 
         config = {"display": {"tool_progress": False}}
-        assert resolve_display_setting(config, "telegram", "tool_progress") == "off"
+        assert resolve_display_setting(config, "whatsapp", "tool_progress") == "off"
 
 
     def test_thinking_progress_string_false_normalised_to_false(self):
@@ -174,7 +174,7 @@ class TestConfigMigration:
             "display": {
                 "tool_progress_overrides": {
                     "signal": "off",
-                    "telegram": "all",
+                    "whatsapp": "all",
                 },
             },
         }
@@ -191,7 +191,7 @@ class TestConfigMigration:
         updated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         platforms = updated.get("display", {}).get("platforms", {})
         assert platforms.get("signal", {}).get("tool_progress") == "off"
-        assert platforms.get("telegram", {}).get("tool_progress") == "all"
+        assert platforms.get("whatsapp", {}).get("tool_progress") == "all"
 
 
 # ---------------------------------------------------------------------------
@@ -208,10 +208,10 @@ class TestStreamingPerPlatform:
 
         config = {
             "display": {
-                "platforms": {"telegram": {"streaming": False}},
+                "platforms": {"whatsapp": {"streaming": False}},
             }
         }
-        assert resolve_display_setting(config, "telegram", "streaming") is False
+        assert resolve_display_setting(config, "whatsapp", "streaming") is False
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +225,7 @@ class TestCleanupProgress:
         """No config set → cleanup_progress resolves to False everywhere."""
         from gateway.display_config import resolve_display_setting
 
-        for plat in ("telegram", "discord", "slack", "email"):
+        for plat in ("whatsapp", "discord", "slack", "email"):
             assert resolve_display_setting({}, plat, "cleanup_progress") is False
 
 
@@ -236,10 +236,10 @@ class TestCleanupProgress:
         for val in ("true", "yes", "on", "1"):
             config = {
                 "display": {
-                    "platforms": {"telegram": {"cleanup_progress": val}},
+                    "platforms": {"whatsapp": {"cleanup_progress": val}},
                 }
             }
-            assert resolve_display_setting(config, "telegram", "cleanup_progress") is True, val
+            assert resolve_display_setting(config, "whatsapp", "cleanup_progress") is True, val
 
 
 class TestToolProgressGrouping:
@@ -250,7 +250,7 @@ class TestToolProgressGrouping:
         from gateway.display_config import resolve_display_setting
 
         assert (
-            resolve_display_setting({}, "telegram", "tool_progress_grouping")
+            resolve_display_setting({}, "whatsapp", "tool_progress_grouping")
             == "accumulate"
         )
 
@@ -277,7 +277,7 @@ class TestReasoningDisplay:
     def test_other_platforms_use_italic_summary(self):
         from gateway.display_config import format_reasoning_prefix
 
-        for plat in ("telegram", "slack", "matrix", "api_server"):
+        for plat in ("whatsapp", "slack", "matrix", "api_server"):
             assert format_reasoning_prefix("Compare options.", plat) == (
                 "_💭 Reasoned about Compare options._"
             ), plat
@@ -307,26 +307,18 @@ class TestLiveStatusSetting:
 
 
 class TestToolProgressDefaults:
-    """Unconfigured gateways describe tool calls inside code boxes; explicit config wins."""
+    """display.tool_progress defaults to describe; explicit config wins."""
 
-    def test_unconfigured_discord_describes_in_codebox(self):
+    def test_unconfigured_discord_defaults_to_describe(self):
         from gateway.display_config import resolve_display_setting
 
         assert resolve_display_setting({}, "discord", "tool_progress") == "describe"
-        assert resolve_display_setting({}, "discord", "tool_progress_codebox") is True
 
     def test_explicit_overrides_win(self):
         from gateway.display_config import resolve_display_setting
 
-        config = {"display": {"tool_progress": "all", "tool_progress_codebox": False}}
+        config = {"display": {"tool_progress": "all"}}
         assert resolve_display_setting(config, "discord", "tool_progress") == "all"
-        assert resolve_display_setting(config, "discord", "tool_progress_codebox") is False
-
-    def test_per_platform_codebox_false_wins(self):
-        from gateway.display_config import resolve_display_setting
-
-        config = {"display": {"platforms": {"discord": {"tool_progress_codebox": False}}}}
-        assert resolve_display_setting(config, "discord", "tool_progress_codebox") is False
 
     def test_boolean_true_still_means_verbose_all(self):
         from gateway.display_config import resolve_display_setting

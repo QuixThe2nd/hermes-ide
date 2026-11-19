@@ -176,7 +176,7 @@ MUTATING_CONFIRMATION_SMOKE_COMMANDS = [
     "mcp picker",
     "backup --quick -o /tmp/hermes-console-test.zip",
     "import /tmp/hermes-console-test.zip",
-    "send --to telegram hello",
+    "send --to discord hello",
     "memory reset --target memory",
     "auth remove openrouter 1",
     "pairing approve abc123",

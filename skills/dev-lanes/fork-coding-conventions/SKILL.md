@@ -30,7 +30,7 @@ Continue with the conventions in the existing delegated context. Use `read_file`
 ## Quick Reference
 
 - Canonical source: `skills/dev-lanes/SOUL.md`.
-- Injection: automatic for OMP lanes, Claude, Cursor, and native delegation.
+- Injection: automatic for OMP lanes, Claude, and native delegation.
 - Compatibility skill: optional and pointer-only.
 
 ## Procedure

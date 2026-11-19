@@ -20,7 +20,7 @@ class StubAdapter(BasePlatformAdapter):
     """Minimal adapter for interrupt tests."""
 
     def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.DISCORD)
 
     async def connect(self, *, is_reconnect: bool = False):
         return True
@@ -40,7 +40,7 @@ class StubAdapter(BasePlatformAdapter):
 
 def _source(chat_id="123456", chat_type="dm", thread_id=None):
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id=chat_id,
         chat_type=chat_type,
         thread_id=thread_id,
