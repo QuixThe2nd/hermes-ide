@@ -149,8 +149,7 @@ def _commit_model_switch(cli, result, *, persist_global: bool, one_turn: bool = 
 
 
 def _show_model_listing(cli, ctx, refresh: bool) -> None:
-    """``/model`` with no args: the Go-canonical listing text (current model, authed providers,
-    usage)."""
+    """``/model`` with no args: the Go-canonical listing text."""
     from cli import _cprint
     from hermes_cli.model_switch_providers import list_authenticated_providers
     from hermes_cli.modelcmd import listing_record, render_model_listing
@@ -453,19 +452,10 @@ class CLIModelSwitchMixin:
             _cprint("    Tip: `/new` starts a new session immediately.")
 
     def _handle_model_command(self, cmd_original: str):
-        """Handle /model — show the current model or switch it.
-
-          /model                              — show current model + authed providers + usage
-          /model <name>                       — switch model (this session only)
-          /model <name> --once                — switch for the next turn only
-          /model <name> --session             — switch for this session only (explicit)
-          /model <name> --global              — switch and persist to config.yaml
-          /model <name> --provider <provider> — switch provider + model
-          /model --provider <provider>        — switch to provider, auto-detect model
-          /model --refresh                    — re-fetch live model lists (with no target)
-
-        Switches are session-scoped unless ``model.persist_switch_by_default`` or ``--global``.
-        """
+        """Handle /model: no args lists the current model + authed providers, a target
+        switches to it. Session-scoped unless ``model.persist_switch_by_default`` or
+        ``--global``; flags: ``--once``, ``--session``, ``--global``, ``--provider``,
+        ``--refresh`` (see ``/help model``)."""
         from cli import _cprint
         from hermes_cli.model_switch import parse_model_switch_args, resolve_persist_behavior, switch_model
 
@@ -504,8 +494,8 @@ class CLIModelSwitchMixin:
             request.is_global, request.is_session, is_once=request.is_once,
             explicit_provider=request.explicit_provider)
         result = switch_model(
-            raw_input=request.target,
-            current_provider=self.provider or "", current_model=self.model or "",
+            raw_input=request.target, current_provider=self.provider or "",
+            current_model=self.model or "",
             current_base_url=self.base_url or "", current_api_key=self.api_key or "",
             is_global=persist_global, explicit_provider=request.explicit_provider,
             user_providers=ctx.user_providers if ctx is not None else None,
@@ -516,12 +506,10 @@ class CLIModelSwitchMixin:
         _commit_model_switch(self, result, persist_global=persist_global, one_turn=request.is_once)
 
     def _stage_and_swap_model(self, result, old_model) -> bool:
-        """Stage ``result`` onto the CLI fields, then swap the live agent in place.
-
-        CLI fields are snapshotted first so a failed agent swap rolls the whole CLI back —
-        otherwise the staged broken credentials leak into the next turn even though the agent
-        rolled back. Returns False after printing the failure (a failed switch is a no-op).
-        """
+        """Stage ``result`` onto the CLI fields, then swap the live agent. CLI fields are
+        snapshotted first so a failed agent swap rolls the whole CLI back — else the staged
+        broken credentials leak into the next turn. Returns False after printing the failure
+        (a failed switch is a no-op)."""
         from cli import _cprint
         _cli_snapshot = _runtime_fields(self)
         self.model = result.new_model
@@ -558,15 +546,12 @@ class CLIModelSwitchMixin:
         return True
 
     def _persist_model_switch_to_session(self, result) -> None:
-        """Persist a session-scoped /model switch to the session DB row.
-
-        Writes the model column plus the route in both shapes readers use — nested
-        ``gateway_runtime`` (CLI --resume) and top-level keys (TUI session.resume) — from one
-        or-None dict so stale keys are DELETED (``_merge_model_config_json`` only deletes on
-        explicit None) and the shapes never diverge, mirroring the gateway's
-        ``update_session_model()`` call (#79536). ``getattr``: tests drive the switch paths
-        with ``object.__new__`` stubs.
-        """
+        """Persist a session-scoped /model switch to the session DB row: the model column plus
+        the route in both shapes readers use (nested ``gateway_runtime`` for CLI --resume,
+        top-level keys for TUI session.resume) from one or-None dict so stale keys are DELETED
+        (``_merge_model_config_json`` deletes only on explicit None), mirroring the gateway's
+        ``update_session_model()`` (#79536). ``getattr``: tests drive these paths with
+        ``object.__new__`` stubs."""
         from cli import logger
         db = getattr(self, "_session_db", None)
         sid = getattr(self, "session_id", None)
@@ -574,8 +559,8 @@ class CLIModelSwitchMixin:
             return
         route = {
             "provider": _heal_bare_custom_provider(
-                result.target_provider, base_url=result.base_url, model=result.new_model,
-            ) or None,
+                result.target_provider, base_url=result.base_url,
+                model=result.new_model) or None,
             "base_url": result.base_url or None,
             "api_mode": result.api_mode or None}
         try:
