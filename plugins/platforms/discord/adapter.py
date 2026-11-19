@@ -279,14 +279,24 @@ _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS = (
     ),
     re.compile(r"^\s*♻️?\s+Gateway\s+(?:restarted successfully|online\b)[\s\S]*$", re.IGNORECASE),
 )
-# Jev classification notices (the Go formatter's fixed "🔎 jev " prefix) are a
-# SEPARATE, provenance-scoped fallback: the pattern drops a notice line only
-# when the OWNING BOT authored the message. A human pasting/quoting a notice
-# verbatim is genuine conversational history and must survive cold recovery
-# (no-prefix-blanket-suppression contract). The trusted exclusions (metadata
-# flags, tracked message ids) are author-independent and stay in force.
+# Jev classification notices are a SEPARATE, provenance-scoped fallback: the
+# patterns drop a notice only when the OWNING BOT authored the message (or the
+# message is our own outbound send, where authorship is by construction). A
+# human pasting/quoting a notice verbatim is genuine conversational history
+# and must survive cold recovery (no-prefix-blanket-suppression contract). The
+# trusted exclusions (metadata flags, tracked message ids) are
+# author-independent and stay in force.
+# The second pattern is the goal-intent fenced status, pinned to the exact
+# shape the Go formatter emits (notice.go goalIntentStatus) so the bot's
+# ordinary fenced code answers never match.
 _DISCORD_SELF_NOTICE_HISTORY_MESSAGE_PATTERNS = (
     re.compile(r"^\s*🔎\s+jev\s+\S", re.IGNORECASE),
+    re.compile(
+        r"^\s*```\s*\n🔍 Goal Intent: (?:[0-9]+\.[0-9]{2} Confidence"
+        r"|failed \([A-Za-z0-9_.\-]{1,48}\)"
+        r"|confidence unavailable)\n```\s*$",
+        re.IGNORECASE,
+    ),
 )
 try:
     import discord

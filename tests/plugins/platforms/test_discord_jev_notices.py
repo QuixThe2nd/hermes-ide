@@ -472,6 +472,32 @@ class TestNoRecursion:
         adapter._handle_message.assert_not_awaited()
         assert _notices(adapter) == []
 
+
+    @pytest.mark.asyncio
+    async def test_inbound_goal_intent_status_replay_never_consults_the_judge(self, monkeypatch):
+        """The fenced goal-intent status replaying inbound (relay, edit,
+        history tooling) is bot chatter like any notice: no request, no
+        dispatch — even though it carries no ``🔎 jev`` prefix line."""
+        speaking = _DecisionRecorder()
+        choice = _ChoiceRecorder(probabilities=REACT_FIRE)
+        _stub_speaking(monkeypatch, speaking)
+        _stub_choice(monkeypatch, choice)
+        adapter = _adapter(
+            reaction={"enabled": True, "channels": ["555"]},
+            response={"channels": ["555"], "mode": "enforce"},
+        )
+        inbound_status = _message(
+            content="```\n🔍 Goal Intent: 0.90 Confidence\n```",
+            author=SimpleNamespace(id=BOT_ID, name="hermes", display_name=BOT_NAME, bot=True),
+        )
+
+        await adapter._dispatch_discord_message(inbound_status)
+
+        assert speaking.calls == 0
+        assert choice.calls == 0
+        adapter._handle_message.assert_not_awaited()
+        assert _notices(adapter) == []
+
     @pytest.mark.asyncio
     async def test_human_authored_notice_copy_is_a_fresh_human_message(self, monkeypatch):
         """A human pasting/quoting a notice line is fresh human speech, not
