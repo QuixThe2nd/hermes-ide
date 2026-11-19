@@ -615,6 +615,52 @@ def linger_warning(scope: InstallScope | None) -> str | None:
     )
 
 
+def _ownership_refusal_warning(scope: InstallScope, current_home: Path) -> str | None:
+    """Warning when the installed unit belongs to another install (or is
+    ambiguous); ``None`` means this install may manage the unit."""
+    service_path = service_unit_path(scope)
+    installed_body: str | None = None
+    ownership_warning: str | None = None
+    try:
+        installed_body = service_path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        if service_path.is_symlink():
+            ownership_warning = _ambiguous_ownership_warning(service_path, exc)
+    except (OSError, UnicodeError) as exc:
+        ownership_warning = _ambiguous_ownership_warning(service_path, exc)
+
+    if installed_body is not None:
+        try:
+            installed_home = Path(
+                _parse_unit_environment_home(installed_body)
+            ).resolve()
+        except (OSError, RuntimeError, ValueError) as exc:
+            ownership_warning = _ambiguous_ownership_warning(service_path, exc)
+        else:
+            if installed_home != current_home:
+                ownership_warning = (
+                    f"refusing takeover: installed {SERVICE_NAME} targets "
+                    f"HERMES_HOME={installed_home}; this install is {current_home}. "
+                    "Set auto_update.systemd_takeover: true to take over the "
+                    "existing unit explicitly."
+                )
+    return ownership_warning
+
+
+def _ownership_refused_result(scope: InstallScope, warning: str) -> ReconcileResult:
+    return ReconcileResult(
+        supported=True,
+        scope=scope,
+        changed=False,
+        enabled=False,
+        timer_active=False,
+        legacy=(),
+        warnings=(warning,),
+        enabled_known=False,
+        timer_active_known=False,
+    )
+
+
 def reconcile_units(
     cfg: Mapping[str, object],
     *,
@@ -648,6 +694,12 @@ def reconcile_units(
         )
 
     if not enabled:
+        if cfg.get("systemd_takeover") is not True:
+            refusal = _ownership_refusal_warning(
+                selected, get_hermes_home().resolve()
+            )
+            if refusal is not None:
+                return _ownership_refused_result(selected, refusal)
         disable_warnings = disable_timer(selected, run_systemctl=runner)
         warnings = list(disable_warnings)
         enabled_probe = probe_timer_is_enabled(selected, run_systemctl=runner)
@@ -672,45 +724,9 @@ def reconcile_units(
     current_home = get_hermes_home().resolve()
     hermes_home = str(current_home)
     if cfg.get("systemd_takeover") is not True:
-        service_path = service_unit_path(selected)
-        installed_body: str | None = None
-        ownership_warning: str | None = None
-        try:
-            installed_body = service_path.read_text(encoding="utf-8")
-        except FileNotFoundError as exc:
-            if service_path.is_symlink():
-                ownership_warning = _ambiguous_ownership_warning(service_path, exc)
-        except (OSError, UnicodeError) as exc:
-            ownership_warning = _ambiguous_ownership_warning(service_path, exc)
-
-        if installed_body is not None:
-            try:
-                installed_home = Path(
-                    _parse_unit_environment_home(installed_body)
-                ).resolve()
-            except (OSError, RuntimeError, ValueError) as exc:
-                ownership_warning = _ambiguous_ownership_warning(service_path, exc)
-            else:
-                if installed_home != current_home:
-                    ownership_warning = (
-                        f"refusing takeover: installed {SERVICE_NAME} targets "
-                        f"HERMES_HOME={installed_home}; this install is {current_home}. "
-                        "Set auto_update.systemd_takeover: true to take over the "
-                        "existing unit explicitly."
-                    )
-
-        if ownership_warning is not None:
-            return ReconcileResult(
-                supported=True,
-                scope=selected,
-                changed=False,
-                enabled=False,
-                timer_active=False,
-                legacy=(),
-                warnings=(ownership_warning,),
-                enabled_known=False,
-                timer_active_known=False,
-            )
+        refusal = _ownership_refusal_warning(selected, current_home)
+        if refusal is not None:
+            return _ownership_refused_result(selected, refusal)
 
     service_body = render_service_unit(
         hermes_home=hermes_home,

@@ -637,7 +637,7 @@ def test_enabled_reconcile_refuses_unreadable_existing_ownership(
     assert timer_unit_path(user_scope).read_bytes() == timer_before
 
 
-def test_disabled_reconcile_still_disables_foreign_owned_timer(
+def test_disabled_reconcile_refuses_foreign_owned_timer(
     user_scope, cfg, monkeypatch, tmp_path
 ):
     production_home = tmp_path / "production"
@@ -650,12 +650,47 @@ def test_disabled_reconcile_still_disables_foreign_owned_timer(
     result = reconcile_units(cfg, enabled=False, scope=user_scope, run_systemctl=runner)
 
     assert result.changed is False
+    assert result.enabled_known is False
+    assert result.timer_active_known is False
+    warning = "\n".join(result.warnings)
+    assert str(production_home.resolve()) in warning
+    assert str(disposable_home.resolve()) in warning
+    assert "auto_update.systemd_takeover: true" in warning
+    assert calls == []
+    assert service_unit_path(user_scope).read_bytes() == service_before
+    assert timer_unit_path(user_scope).read_bytes() == timer_before
+
+
+def test_disabled_reconcile_disables_own_timer(user_scope, cfg, monkeypatch, tmp_path):
+    hermes_home = tmp_path / "disposable"
+    _install_units(user_scope, hermes_home)
+    calls, runner = _prepare_reconcile(monkeypatch, hermes_home)
+
+    result = reconcile_units(cfg, enabled=False, scope=user_scope, run_systemctl=runner)
+
+    assert result.changed is False
     assert any("stop" in call and TIMER_NAME in call for call in calls)
     assert any("disable" in call and TIMER_NAME in call for call in calls)
     assert not any("enable" in call for call in calls)
     assert not any("takeover" in warning for warning in result.warnings)
-    assert service_unit_path(user_scope).read_bytes() == service_before
-    assert timer_unit_path(user_scope).read_bytes() == timer_before
+
+
+def test_disabled_takeover_allows_disabling_foreign_timer(
+    user_scope, monkeypatch, tmp_path
+):
+    production_home = tmp_path / "production"
+    disposable_home = tmp_path / "disposable"
+    _install_units(user_scope, production_home)
+    calls, runner = _prepare_reconcile(monkeypatch, disposable_home)
+    takeover_cfg = load_auto_update_config({"systemd_takeover": "true"})
+
+    result = reconcile_units(
+        takeover_cfg, enabled=False, scope=user_scope, run_systemctl=runner
+    )
+
+    assert any("stop" in call and TIMER_NAME in call for call in calls)
+    assert any("disable" in call and TIMER_NAME in call for call in calls)
+    assert not any("takeover" in warning for warning in result.warnings)
 
 
 def test_disable_timer_never_stops_service(user_scope):
