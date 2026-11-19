@@ -114,6 +114,27 @@ partial failure. Retrying the same opening therefore cannot assume that a timeou
 means nothing was posted. Inspect the recorded destination before any manual recovery.
 The guard preserves mentions, thread membership and conversation seeding.
 
+## Recovery
+
+A start whose Discord send was interrupted — process death, or a network call
+that hit its 30s bound — leaves a reservation in `state.json` recording how
+far it got (`pending`, `anchor_posted`, `thread_created`) and, once known,
+the posted anchor's message id. Send failures and lock-busy deferrals return
+that `pending_start` list plus a `recover_hint`.
+
+Reconcile from the anchor without reposting:
+
+```
+start_conversation action='recover' anchor_id='<message id>'
+```
+
+Recovery is idempotent (an anchor already in history is a no-op), reuses a
+thread that already exists on the anchor, verifies content before adopting an
+anchor whose id was never recorded (pass `start_number` for that), posts only
+thread tail parts not already present, and then applies the same listener
+mark, session seed and history commit as a live start. An anchor Discord no
+longer knows is a clean refusal that changes nothing.
+
 ## Multi-guild bots
 
 If the bot is in more than one Discord server, setup returns the guild list and asks you to
