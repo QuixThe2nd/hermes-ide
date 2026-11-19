@@ -259,6 +259,7 @@ def _socket_result_json(ack: dict) -> str:
         "success": True,
         "status": ack.get("status"),
         "active_agents": ack.get("active_agents", 0),
+        "via_service": ack.get("via_service"),
         # Same self-describing queue state as `_result_json`, unless the
         # caller already composed a process-specific note (the ack
         # rewrite's chained / forwarded note).
