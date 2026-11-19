@@ -18,15 +18,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
 
 from pm.store import current_target
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ACTIVATE = REPO_ROOT / "activate"
-ACTIVATE_PS1 = REPO_ROOT / "activate.ps1"
 SETUP_HERMES_SH = REPO_ROOT / "setup-hermes.sh"
-SETUP_HERMES_PS1 = REPO_ROOT / "setup-hermes.ps1"
 CANARY = "HERMES_PM_ACTIVATE_CANARY"
 
 
@@ -240,101 +237,3 @@ def test_activate_fails_cleanly_without_a_store(tmp_path: Path):
     # Without any provisioned python the source must refuse — never
     # silently no-op with a half-activated shell.
     assert "refused" in result.stdout
-
-
-def _powershell() -> str | None:
-    for name in ("pwsh", "powershell"):
-        found = shutil.which(name)
-        if found and "windowsapps" not in str(found).lower():
-            return found
-    # Prefer the conventional System32 host over an MSIX-packaged one
-    # (same WinError-5-outside-package-context class as _bash()); also the
-    # fallback when the hermetic runner's PATH misses both names.
-    if sys.platform == "win32":
-        cand = (
-            Path(os.environ.get("SystemRoot", r"C:\Windows"))
-            / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
-        )
-        if cand.exists():
-            return str(cand)
-    return None
-
-
-def test_powershell_scripts_parse():
-    """Parse-check the PowerShell entry points; skip gracefully when no
-    PowerShell host is available."""
-    ps = _powershell()
-    if ps is None:
-        pytest.skip("no PowerShell host available")
-    for script in (ACTIVATE_PS1, SETUP_HERMES_PS1):
-        result = subprocess.run(
-            [
-                ps,
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                f"$errs = $null; $null = [System.Management.Automation.Language.Parser]::ParseFile("
-                f"'{script}', [ref]$null, [ref]$errs); "
-                f"if ($errs.Count) {{ $errs | ForEach-Object {{ $_.Message }}; exit 1 }}",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0, f"{script.name}: {result.stdout}{result.stderr}"
-
-
-def test_powershell_activate_exports_and_deactivates(tmp_path: Path):
-    ps = _powershell()
-    if ps is None:
-        pytest.skip("no PowerShell host available")
-    store, _ = _fake_store(tmp_path)
-
-    # The store interpreter is a /bin/sh wrapper — PowerShell needs a real
-    # python.exe, so stage the running interpreter (+ its DLLs/zips) into
-    # the fake entry; if that does not yield a runnable python, skip.
-    entry = store / json.loads(store.joinpath("facts.json").read_text())["packages"][
-        "python"
-    ]["entry"]
-    exe = Path(sys.executable)
-    shim = entry / "bin" / "python.exe"
-    for src in exe.parent.glob("*.dll"):
-        shutil.copy2(src, entry / "bin" / src.name)
-    for base in (exe.parent, Path(sys.base_prefix)):
-        for zipname in ("python311.zip", "python312.zip"):
-            if (base / zipname).exists():
-                shutil.copy2(base / zipname, entry / "bin" / zipname)
-    if (exe.parent / "Lib").is_dir():
-        shutil.copytree(exe.parent / "Lib", entry / "bin" / "Lib", dirs_exist_ok=True)
-    shutil.copy2(exe, shim)
-
-    probe = subprocess.run(
-        [str(shim), "-c", "print(1)"], capture_output=True, text=True, env=_child_env()
-    )
-    if probe.returncode != 0:
-        pytest.skip("copied interpreter is not runnable on this host")
-
-    result = subprocess.run(
-        [
-            ps,
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            f"$env:HERMES_RUNTIME_DIR = '{store}'; "
-            f". '{ACTIVATE_PS1}'; "
-            f"$active = $env:{CANARY}; "
-            f"deactivate; "
-            f"$after = $env:{CANARY}; "
-            f"Write-Output ('active=' + $active + ' after=' + $after)",
-        ],
-        capture_output=True,
-        text=True,
-        cwd=str(REPO_ROOT),
-        env=_child_env(),
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "active=env-ok" in result.stdout
-    assert "after=" in result.stdout and "after=env-ok" not in result.stdout

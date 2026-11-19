@@ -288,7 +288,6 @@ hermes-agent/
 │
 ├── scripts/                  # Installer and bridge scripts
 │   ├── install.sh                # Linux/macOS installer
-│   ├── install.ps1               # Windows PowerShell installer
 │   └── whatsapp-bridge/          # Node.js WhatsApp bridge (Baileys)
 │
 ├── skills/                   # Bundled skills (copied to ~/.hermes/skills/ on install)
@@ -702,10 +701,6 @@ See `hermes_cli/skin_engine.py` for the full schema and existing skins as exampl
 Hermes runs on Linux, macOS, and native Windows (plus WSL2). When writing code
 that touches the OS, assume *any* platform can hit your code path.
 
-> **Before you PR:** run `scripts/check-windows-footguns.py` to catch the
-> common Windows-unsafe patterns in your diff. It's grep-based and cheap;
-> CI runs it on every PR too.
-
 ### Critical rules
 
 1. **Never call `os.kill(pid, 0)` for liveness checks.** `os.kill(pid, 0)`
@@ -828,11 +823,6 @@ that touches the OS, assume *any* platform can hit your code path.
     `subprocess.run(["./myscript.py"])` on Windows fails even if the file
     has a shebang line. Always invoke Python explicitly:
     `[sys.executable, "myscript.py"]`.
-
-12. **Shell commands in installers.** If you change `scripts/install.sh`,
-    make the equivalent change in `scripts/install.ps1`. The two scripts
-    are the canonical example of "works on Linux does not mean works on
-    Windows" and have drifted multiple times — keep them in lockstep.
 
 13. **Known paths that are OneDrive-redirected on Windows:** Desktop,
     Documents, Pictures, Videos. The "real" path when OneDrive Backup is

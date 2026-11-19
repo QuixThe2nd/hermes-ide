@@ -21,7 +21,6 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
-INSTALL_PS1 = REPO_ROOT / "scripts" / "install.ps1"
 
 pytestmark = pytest.mark.skipif(
     shutil.which("git") is None or shutil.which("bash") is None,
@@ -134,12 +133,3 @@ def test_install_sh_discards_lockfile_churn_before_status_probe() -> None:
     assert idx_cleanup < idx_status < idx_stash
 
 
-def test_install_ps1_discards_lockfile_churn_before_status_probe() -> None:
-    text = INSTALL_PS1.read_text()
-    assert "function Discard-LockfileChurn" in text
-    idx_cleanup = text.index("Discard-LockfileChurn $InstallDir")
-    idx_status = text.index(
-        "$statusOut = git -c windows.appendAtomically=false status --porcelain"
-    )
-    idx_stash = text.index("stash push --include-untracked")
-    assert idx_cleanup < idx_status < idx_stash

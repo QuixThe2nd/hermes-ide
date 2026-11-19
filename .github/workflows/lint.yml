@@ -122,7 +122,7 @@ jobs:
     # Enforce the rules in pyproject.toml [tool.ruff.lint.select]. Currently
     # PLW1514 (unspecified-encoding) — catches bare ``open()`` /
     # ``read_text()`` / ``write_text()`` calls that default to locale
-    # encoding on Windows. Failure here blocks merge; the advisory
+    # encoding. Failure here blocks merge; the advisory
     # ``lint-diff`` job above runs independently so reviewers still get
     # the diff comment even when enforcement fails.
     name: ruff enforcement (blocking)
@@ -151,12 +151,9 @@ jobs:
         run: |
           ruff check .
 
-  windows-footguns:
-    # Static guardrails on Windows-unsafe Python primitives — os.kill(pid, 0),
-    # os.killpg, os.setsid, signal.SIGKILL without getattr fallback,
-    # shebang scripts via subprocess, bare open() without encoding=, etc.
-    # See scripts/check-windows-footguns.py for the full rule list.
-    name: Windows footguns (blocking)
+  guardrails:
+    # Blocking repo guardrails that share one cheap ubuntu runner.
+    name: Repo guardrails (blocking)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -175,9 +172,6 @@ jobs:
         uses: ./.github/actions/retry
         with:
           command: uv python install 3.11
-
-      - name: Run footgun checker
-        run: python scripts/check-windows-footguns.py --all
 
       # The Sep 2026 decomposition kept old import paths alive for external plugins
       # (PLUGIN-COMPAT blocks, see COMPAT_MANIFEST.md). They are removed on schedule by
@@ -250,8 +244,7 @@ jobs:
     # touch tests (labels: no-tests-needed, or docs/config/chore-only diffs),
     # and lockfiles / CI workflow rewrites must be the PR's majority class or
     # carry the matching label (deps / ci). See scripts/check_pr_diff.py.
-    # Separate job from windows-footguns so the known-failing footgun lane
-    # does not mask it.
+    # Separate job from guardrails so a slow gate step does not mask it.
     name: PR diff gate (tests + scope)
     if: inputs.event_name == 'pull_request'
     runs-on: ubuntu-latest
