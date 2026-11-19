@@ -65,13 +65,12 @@
 //     sockets, caches, tool handles, recorded pids). Same process, first
 //     turn, or unprovable fingerprints render nothing — silence is never a
 //     guess.
-//   - The restart-tool owner gate (OwnerAction/OwnerRefusal/ChainRewrite):
-//     a restart queued through the control socket must target the process
-//     serving THIS conversation. The socket's answerer must be that
-//     process, or attest it as a hub-ready successor ("attested-chain" —
-//     the result then names the serving process, not the socket owner);
-//     anything else is a refusal naming both pids. No serving stamp on the
-//     session keeps pre-fix behavior exactly (old installs never refused).
+//   - The restart-tool owner gate (OwnerAction/OwnerRefusal): a restart
+//     queued through the control socket must target the process serving THIS
+//     conversation. The socket's answerer must be that process, or attest it
+//     as a hub-ready successor; anything else is a refusal naming both pids.
+//     No serving stamp on the session keeps pre-fix behavior exactly (old
+//     installs never refused).
 package servingidentity
 
 import (
@@ -337,9 +336,8 @@ func pidList(pids []int) string {
 }
 
 // StatusLines renders the serving-gateway status block. Wording is
-// byte-identical to gateway.serving_identity.serving_status_lines;
-// chained is a peeked .restart_chain.json marker (nil when none exists);
-// a marker whose generation provably died renders as stale, never queued.
+// StatusLines renders the serving-gateway status block. Wording is
+// byte-identical to gateway.serving_identity.serving_status_lines.
 //
 // gatewayPIDs is the live gateway process scan (hermes_cli.find_gateway_pids):
 // EVIDENCE, never a claim. It never upgrades an answer — a serving claim
@@ -351,7 +349,7 @@ func pidList(pids []int) string {
 // overlap role is NEVER green: during overlap that answerer is the draining
 // predecessor, and its serving role cannot be proven from here (the incident
 // where status green-served the predecessor while the successor served turns).
-func StatusLines(id *Identify, st *StateFile, chained *ChainedMarker, successorIdentity SuccessorIdentity, gatewayPIDs []int) []string {
+func StatusLines(id *Identify, st *StateFile, successorIdentity SuccessorIdentity, gatewayPIDs []int) []string {
 	resolve := func(pid int, expectedStart int64) string {
 		if successorIdentity == nil {
 			if expectedStart == 0 {
@@ -366,10 +364,7 @@ func StatusLines(id *Identify, st *StateFile, chained *ChainedMarker, successorI
 		return state
 	}
 	var lines []string
-	// The PROVEN serving identity (pid + start fingerprint), for the chain
-	// marker's staleness judgement. The state-file branch never sets it: a
-	// status file carries no start fingerprint.
-	servingPID, servingStart := 0, int64(0)
+
 	switch {
 	case id != nil && id.PID > 0:
 		answering := buildClause(id.PID, id.StartTime, "")
@@ -385,7 +380,6 @@ func StatusLines(id *Identify, st *StateFile, chained *ChainedMarker, successorI
 							"running or its PID was reused; the restart may have failed, check "+
 							"the gateway log before restarting anything")
 				case id.SuccessorReady && state == "live":
-					servingPID, servingStart = id.SuccessorPID, id.SuccessorStartTime
 					lines = append(lines,
 						"✓ Serving gateway: pid "+strconv.Itoa(id.SuccessorPID)+" — restart successor "+
 							"(hub-confirmed serving); new turns are served here",
@@ -406,18 +400,16 @@ func StatusLines(id *Identify, st *StateFile, chained *ChainedMarker, successorI
 						"respawn it — check the gateway log before restarting anything")
 			}
 		case id.Role == RoleOverlapSuccessor:
-			servingPID, servingStart = id.PID, id.StartTime
 			predecessorClause := ""
 			if id.PredecessorPID > 0 {
 				predecessorClause = "; predecessor pid " + strconv.Itoa(id.PredecessorPID) +
 					" is draining its in-flight turns"
 			}
-			lines = append(lines, "✓ Serving gateway: "+answering+
-				" — restart successor, serving new turns"+predecessorClause)
-		case id.Role == RoleServing:
-			servingPID, servingStart = id.PID, id.StartTime
-			lines = append(lines, "✓ Serving gateway: "+answering+
-				" — answering on the gateway control socket")
+		lines = append(lines, "✓ Serving gateway: "+answering+
+			" — restart successor, serving new turns"+predecessorClause)
+	case id.Role == RoleServing:
+		lines = append(lines, "✓ Serving gateway: "+answering+
+			" — answering on the gateway control socket")
 		case id.Role == "":
 			// Legacy answerer (pre-overlap build): never green. Its serving
 			// role is unprovable, and during an overlap window this answerer
@@ -488,11 +480,7 @@ func StatusLines(id *Identify, st *StateFile, chained *ChainedMarker, successorI
 			lines = append(lines, "⚠ Serving gateway: unknown — no control socket answer and no gateway_state.json record")
 		}
 	}
-	if chained != nil {
-		if line := ChainedLine(chained, servingPID, servingStart); line != "" {
-			lines = append(lines, line)
-		}
-	}
+
 	return lines
 }
 
@@ -517,13 +505,3 @@ func OverlapFields(s Snapshot) map[string]any {
 	return fields
 }
 
-// ChainedSource renders the status-source summary for a peeked
-// .restart_chain.json payload: the recorded source when present, else the
-// honest fallback. Mirrors the Python twin's chained-line source handling.
-func ChainedSource(source string) string {
-	source = strings.TrimSpace(source)
-	if source == "" {
-		return "an earlier restart request"
-	}
-	return source
-}

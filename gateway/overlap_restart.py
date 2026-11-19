@@ -29,7 +29,8 @@ DEFAULT_OVERLAP_SUCCESSOR_ATTACH_TIMEOUT_SECONDS = 300.0
 # The launch markers are popped from os.environ right after the PID claim (so
 # tool children never inherit them), but the hub attach that proves this
 # process is an attested successor happens later, when adapters connect.
-# Keep the predecessor here until this process becomes authoritative.
+# Ancestry anchor for this process's spawn; outlives the claim (attach may
+# happen after it) and never leaves the process.
 _pending_predecessor_pid: Optional[int] = None
 
 
@@ -39,6 +40,7 @@ def remember_pending_predecessor(pid: Optional[int]) -> None:
 
 
 def forget_pending_predecessor() -> None:
+    """Reset the anchor (test isolation; production keeps ancestry forever)."""
     remember_pending_predecessor(None)
 
 
@@ -134,7 +136,7 @@ def drop_inbound_session_refusal_during_overlap(
     """During overlap handoff the predecessor still holds the cross-process lease.
 
     The occupancy copy is for a real second writer (CLI vs gateway), not the
-    same bot's successor process waiting on ``claim_when_predecessor_exits``.
+    same bot's successor process waiting on ``claim_authority_when_lock_frees``.
     Silence only when the live holder is that known predecessor.
     """
     if not getattr(runner, "_overlap_successor_pending", False):
@@ -156,7 +158,8 @@ def defer_primary_adapter(runner: Any, pending: tuple) -> None:
     deferred.append(pending)
     platform = pending[0]
     logger.info(
-        "%s deferred until overlap predecessor exits and this successor claims the gateway lock",
+        "%s deferred until the predecessor releases authority and this "
+        "successor claims the gateway lock",
         platform.value,
     )
 
@@ -164,26 +167,86 @@ def defer_primary_adapter(runner: Any, pending: tuple) -> None:
 def defer_secondary_adapter(runner: Any, profile_name: str, platform: Any) -> None:
     runner._overlap_deferred_secondary_adapters = True
     logger.info(
-        "%s deferred for profile '%s' until overlap predecessor exits and this successor claims the gateway lock",
+        "%s deferred for profile '%s' until no live ancestor holds its "
+        "shared credential lock",
         platform.value, profile_name,
     )
 
 
 async def start_deferred_adapters(runner: Any) -> None:
-    """Start adapters held back during the non-authoritative overlap window."""
-    pending = getattr(runner, "_overlap_deferred_primary_adapters", [])
+    """Start adapters held back during the non-authoritative overlap window.
+
+    Called at claim. Singleton listeners (api_server, webhook, whatsapp —
+    ``owns_singleton_listener``) start immediately: every draining
+    predecessor stopped its listener at authority release, so the ports are
+    ours. Shared-credential transports (Telegram, Feishu, … — no hub) start
+    only once no live ancestor still holds their platform locks; until then
+    they stay queued and ``watch_deferred_shared_adapters`` finishes them.
+    """
+    pending = list(getattr(runner, "_overlap_deferred_primary_adapters", []))
     runner._overlap_deferred_primary_adapters = []
-    if pending:
-        raw = await runner._start_connect_pending(pending)
+    array = await generation_array_for_runner(runner)
+    may_shared = array.may_start_shared_adapters(os.getpid())
+    start_now: list = []
+    held: list = []
+    for entry in pending:
+        (start_now if may_shared or getattr(entry[2], "owns_singleton_listener", False)
+         else held).append(entry)
+    if start_now:
+        raw = await runner._start_connect_pending(start_now)
         if raw:
             retryable: list[str] = []
             nonretryable: list[str] = []
             await runner._start_aggregate_connect_results(raw, retryable, nonretryable)
             for message in (*retryable, *nonretryable):
                 logger.error("Deferred platform startup after overlap handoff: %s", message)
-    if getattr(runner, "_overlap_deferred_secondary_adapters", False):
-        runner._overlap_deferred_secondary_adapters = False
-        await runner._start_secondary_profile_adapters()
+    if held or getattr(runner, "_overlap_deferred_secondary_adapters", False):
+        if may_shared:
+            if held:
+                raw = await runner._start_connect_pending(held)
+                if raw:
+                    retryable2: list[str] = []
+                    nonretryable2: list[str] = []
+                    await runner._start_aggregate_connect_results(raw, retryable2, nonretryable2)
+                    for message in (*retryable2, *nonretryable2):
+                        logger.error("Deferred shared-credential startup after overlap handoff: %s", message)
+            if getattr(runner, "_overlap_deferred_secondary_adapters", False):
+                runner._overlap_deferred_secondary_adapters = False
+                await runner._start_secondary_profile_adapters()
+        else:
+            if held:
+                runner._overlap_deferred_primary_adapters = held
+            if getattr(runner, "_overlap_shared_adapter_watch_task", None) is None:
+                runner._overlap_shared_adapter_watch_task = asyncio.create_task(
+                    watch_deferred_shared_adapters(runner),
+                    name="overlap-shared-adapter-watch",
+                )
+
+
+async def watch_deferred_shared_adapters(
+    runner: Any, *, poll_seconds: float = 2.0,
+) -> None:
+    """Start shared-credential adapters once every ancestor generation exited."""
+    while not _shutdown_requested(runner):
+        await asyncio.sleep(poll_seconds)
+        array = await generation_array_for_runner(runner)
+        if not array.may_start_shared_adapters(os.getpid()):
+            continue
+        pending = list(getattr(runner, "_overlap_deferred_primary_adapters", []))
+        runner._overlap_deferred_primary_adapters = []
+        if pending:
+            raw = await runner._start_connect_pending(pending)
+            if raw:
+                retryable: list[str] = []
+                nonretryable: list[str] = []
+                await runner._start_aggregate_connect_results(raw, retryable, nonretryable)
+                for message in (*retryable, *nonretryable):
+                    logger.error("Deferred shared-credential startup after overlap handoff: %s", message)
+        if getattr(runner, "_overlap_deferred_secondary_adapters", False):
+            runner._overlap_deferred_secondary_adapters = False
+            await runner._start_secondary_profile_adapters()
+        runner._overlap_shared_adapter_watch_task = None
+        return
 
 
 def _shutdown_requested(runner: Any) -> bool:
@@ -191,76 +254,237 @@ def _shutdown_requested(runner: Any) -> bool:
     return bool(event is not None and event.is_set())
 
 
-async def claim_when_predecessor_exits(
+def _hub_client_adapter(runner: Any) -> Optional[Any]:
+    """First hub-attached adapter that can issue raw hub RPCs, else None."""
+    for adapter in _iter_adapters(runner):
+        if getattr(adapter, "supports_overlap_restart", False) is not True:
+            continue
+        if callable(getattr(adapter, "_call", None)) and getattr(adapter, "_running", False) is True:
+            return adapter
+    return None
+
+
+async def _generation_snapshot_rows(runner: Any) -> list:
+    """Live successor-registry rows from the transport hub; [] when unreachable."""
+    adapter = _hub_client_adapter(runner)
+    if adapter is None:
+        return []
+    try:
+        result = await adapter._call("overlap_successors", {})
+        rows = (result or {}).get("successors")
+        return list(rows) if isinstance(rows, list) else []
+    except Exception:
+        # Hub unreachable/degraded: the claim falls back to the env-predecessor
+        # single-slot rules, which only ever delays a claim.
+        return []
+
+
+async def generation_array_for_runner(runner: Any):
+    """Generation-array snapshot for this process (see gateway/generations.py)."""
+    from gateway.status import get_process_start_time
+    from gateway.generations import array_from_registry
+    # ``_runner_predecessor_pid`` keeps the env fallback for successors whose
+    # launch markers were popped after boot; the runner attr anchors ancestry
+    # even when the hub registry is unreachable (rows == []).
+    predecessor = _runner_predecessor_pid(runner)
+    rows = await _generation_snapshot_rows(runner)
+    return array_from_registry(
+        rows, me_pid=os.getpid(),
+        me_start_time=get_process_start_time(os.getpid()) or 0,
+        me_predecessor=int(predecessor or 0),
+        me_draining=bool(getattr(runner, "_draining", False)),
+    )
+
+async def forward_restart_to_newest(
+    runner: Any, *, restart_hub: bool = False,
+    requester: Optional[dict] = None,
+) -> Optional[dict]:
+    """Forward a restart request to the newest live generation via the hub.
+
+    Only an ATTACHED target can receive a hub control; a newest generation
+    still starting is served by its own claim path and a forward to it would
+    fail. Returns the target's restart ACK, or None when no attached newer
+    generation exists / the hub could not deliver — the caller then proceeds
+    with its own restart decision (never a dropped request).
+    """
+    from gateway.restart import _restart_notify_payload
+
+    array = await generation_array_for_runner(runner)
+    target = array.newest_live_other(os.getpid())
+    if target is None or not target.attached:
+        return None
+    payload = requester
+    if payload is None:
+        source = getattr(runner, "_restart_command_source", None)
+        if source is not None:
+            payload = _restart_notify_payload(source, getattr(source, "message_id", None))
+    for adapter in _iter_adapters(runner):
+        if getattr(adapter, "supports_overlap_restart", False) is not True:
+            continue
+        if getattr(adapter, "_running", False) is not True:
+            continue
+        forward = getattr(adapter, "forward_restart_to_newest", None)
+        if not callable(forward):
+            continue
+        result = await forward(restart_hub=restart_hub, requester=payload)
+        if result is None:
+            continue
+        ack_status = str(result.get("status") or "restarting")
+        logger.info(
+            "Restart request forwarded to newest generation PID %d (ack: %s)",
+            target.pid, ack_status,
+        )
+        # "forwarded" is the caller-facing status: the newest generation
+        # took the request and spawns its own successor. Its internal ack
+        # (restarting / already_in_progress) stays in the log line above.
+        return {
+            "status": "forwarded",
+            "forwarded_to": target.pid,
+            "active_agents": result.get("active_agents"),
+            "via_service": result.get("via_service"),
+        }
+    return None
+
+
+def newest_live_other_pid(me: Optional[int] = None) -> Optional[int]:
+    """Newest live generation other than *me* (sync; hub mirror file read).
+
+    Teardown paths (planned-exit resolution, systemd handover) run after the
+    event loop's RPC surface is gone; the mirror file keeps the same
+    fingerprint-verified liveness as the hub's live answer. None means "no
+    newer generation provably lives" — callers fall back to their own
+    successor evidence.
+    """
+    from gateway.generations import array_from_registry
+    from gateway.overlap_registry import read_live_rows
+
+    me_pid = os.getpid() if me is None else int(me)
+    rows = read_live_rows()
+    if not rows:
+        return None
+    array = array_from_registry(rows, me_pid=me_pid)
+    target = array.newest_live_other(me_pid)
+    return target.pid if target is not None else None
+
+async def claim_authority_when_lock_frees(
     runner: Any,
     predecessor_pid: int,
     on_authoritative: Callable[[], Awaitable[None]],
     *,
     poll_seconds: float = 0.2,
 ) -> bool:
-    """Wait for the old process, then win the normal lock/PID claim or stop cleanly."""
-    from gateway.status import _pid_exists
+    """Claim the runtime lock/PID as soon as authority frees — not when the
+    predecessor process exits.
 
-    while _pid_exists(predecessor_pid) and not _shutdown_requested(runner):
-        await asyncio.sleep(poll_seconds)
+    Predecessors release the lock, PID file and runtime-status authority at
+    drain START (``release_authority``), so the newest generation claims while
+    every older generation is still finishing its own in-flight sessions.
+    Arbitration is generation-array-aware: a generation superseded while it
+    was waiting (its own successor already spawned) never claims, and a live
+    gateway outside the ancestry never loses its authority to us.
+    """
     while not _shutdown_requested(runner):
-        # Late import: run.py owns the single normal claim path and imports this module.
-        from gateway.run import _start_gateway_claim_pid_file
+        array = await generation_array_for_runner(runner)
+        if array.may_claim_authority(os.getpid()):
+            ancestors = set(array.ancestors_of(os.getpid()))
+            if predecessor_pid:
+                # Env predecessor anchors the chain when the registry is
+                # unreachable; harmless when it is already in the walk.
+                ancestors.add(int(predecessor_pid))
+            # Pre-array predecessors hold the lock/PID file until they EXIT;
+            # array predecessors release at drain start. Either way, claim
+            # only once no ancestor still physically holds either artifact.
+            if not any(p > 0 and _authority_still_held(p) for p in ancestors):
+                claim = await _try_claim(runner, ancestors, on_authoritative)
+                if claim is not None:
+                    return claim
+        await asyncio.sleep(poll_seconds)
+    return False
 
-        reason = "Overlap successor lost the gateway lock/PID claim to another gateway; exiting"
-        try:
-            claim = _start_gateway_claim_pid_file(predecessor_pid)
-        except Exception:
-            logger.exception("Overlap successor's deferred gateway lock/PID claim failed; exiting")
-            runner._exit_with_failure = True
-            reason = "Overlap successor could not complete the gateway lock/PID claim; exiting"
-            claim = False
-        if claim is True:
-            runner._overlap_successor_pending = False
-            forget_pending_predecessor()
-            logger.warning(
-                "Overlap predecessor PID %d exited; successor PID %d is now the authoritative gateway",
-                predecessor_pid, os.getpid(),
-            )
-            try:
-                await on_authoritative()
-                from gateway.restart_chain import run_chained_restart
 
-                await run_chained_restart(runner)
-            except Exception:
-                logger.exception("Overlap successor became authoritative but post-claim startup failed; exiting")
-                runner._exit_with_failure = True
-                stop = getattr(runner, "stop", None)
-                if callable(stop):
-                    result = stop()
-                    if inspect.isawaitable(result):
-                        await result
-                return False
+def _authority_still_held(pid: int) -> bool:
+    """True while pid still owns the runtime lock or the PID file."""
+    from gateway.status import (
+        _pid_from_record, _read_gateway_lock_record, _read_pid_record,
+        get_running_pid,
+    )
+
+    if get_running_pid() == pid:
+        return True
+    for record in (_read_pid_record(), _read_gateway_lock_record()):
+        holder = _pid_from_record(record)
+        if holder == pid:
             return True
-        if claim == GATEWAY_CLAIM_SUCCESSOR_PENDING:
-            await asyncio.sleep(poll_seconds)
-            continue
-        logger.warning(reason)
-        for adapter in _iter_adapters(runner):
-            if getattr(adapter, "supports_overlap_restart", False) is not True:
-                continue
-            disconnect = getattr(adapter, "disconnect", None)
-            if not callable(disconnect):
-                continue
-            try:
-                result = disconnect()
-                if inspect.isawaitable(result):
-                    await result
-            except Exception:
-                logger.exception("Could not detach losing overlap successor from its hub")
-        runner._exit_cleanly = True
-        runner._exit_reason = reason
+    return False
+
+
+async def _try_claim(runner: Any, ancestors: set,
+                     on_authoritative: Callable[[], Awaitable[None]]) -> Optional[bool]:
+    """One claim attempt; True won, False lost cleanly, None retry."""
+    # Late import: run.py owns the single normal claim path and imports this module.
+    from gateway.run import _start_gateway_claim_pid_file
+
+    try:
+        claim = _start_gateway_claim_pid_file(
+            int(getattr(runner, "_overlap_predecessor_pid", 0) or 0) or None,
+            ancestors=sorted(ancestors),
+        )
+    except Exception:
+        logger.exception("Overlap successor's deferred gateway lock/PID claim failed; exiting")
+        runner._exit_with_failure = True
+        runner._exit_reason = "Overlap successor could not complete the gateway lock/PID claim; exiting"
         stop = getattr(runner, "stop", None)
         if callable(stop):
             result = stop()
             if inspect.isawaitable(result):
                 await result
         return False
+    if claim is True:
+        runner._overlap_successor_pending = False
+        # Keep the predecessor anchor: a claim that raced ahead of the hub
+        # attach still needs it in ``overlap_attachment()`` (the env markers
+        # are already popped here), or this successor registers as a
+        # "starting" row forever and older generations refuse to forward to
+        # it. The anchor is ancestry, not one-shot launch state.
+        logger.warning(
+            "Gateway authority claimed by PID %d (generation array: predecessors draining)",
+            os.getpid(),
+        )
+        try:
+            await on_authoritative()
+        except Exception:
+            logger.exception("Overlap successor became authoritative but post-claim startup failed; exiting")
+            runner._exit_with_failure = True
+            stop = getattr(runner, "stop", None)
+            if callable(stop):
+                result = stop()
+                if inspect.isawaitable(result):
+                    await result
+            return False
+        return True
+    if claim == GATEWAY_CLAIM_SUCCESSOR_PENDING:
+        return None
+    logger.warning(
+        "Overlap successor lost the gateway lock/PID claim to another gateway; exiting")
+    for adapter in _iter_adapters(runner):
+        if getattr(adapter, "supports_overlap_restart", False) is not True:
+            continue
+        disconnect = getattr(adapter, "disconnect", None)
+        if not callable(disconnect):
+            continue
+        try:
+            result = disconnect()
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            logger.exception("Could not detach losing overlap successor from its hub")
+    runner._exit_cleanly = True
+    runner._exit_reason = "Overlap successor lost the gateway lock/PID claim; exiting"
+    stop = getattr(runner, "stop", None)
+    if callable(stop):
+        result = stop()
+        if inspect.isawaitable(result):
+            await result
     return False
 
 
@@ -492,6 +716,18 @@ def handover_systemd_overlap_successor(runner: Any, planned_exit_code: Optional[
     while True:
         identity = _overlap_successor_identity_state(runner, successor_pid)
         if identity == "dead":
+            newer = newest_live_other_pid()
+            if newer is not None:
+                # Our own successor died but a NEWER generation still lives
+                # (a restart was forwarded to it, or it forked the line):
+                # serial supervisor replacement would start a duplicate
+                # beside it. The unit loses its main pid; no-duplicate wins.
+                logger.error(
+                    "Overlap successor PID %s is dead but newer generation PID %d "
+                    "lives; exiting without supervisor replacement to avoid a duplicate",
+                    successor_pid, newer,
+                )
+                return True
             logger.error(
                 "Overlap successor PID %d is dead or its PID was reused; "
                 "allowing serial supervisor replacement",
@@ -599,6 +835,75 @@ async def spawn_successor(runner: Any, *, via_service: bool) -> Optional[int]:
     return None
 
 
+def release_authority(runner: Any) -> None:
+    """Hand gateway authority to the successor generation at drain START.
+
+    A draining predecessor keeps ONLY the in-flight sessions it already owns:
+    the runtime lock, PID file, runtime-status record, control socket and
+    every singleton listener (api_server/webhook/whatsapp ports) move to the
+    newest generation immediately, so it serves new work on the new code
+    while old generations finish theirs. Idempotent.
+    """
+    from gateway.status import (
+        mark_runtime_status_released, owns_gateway_runtime_lock,
+        release_gateway_runtime_lock, remove_pid_file,
+    )
+
+    if getattr(runner, "_overlap_authority_released", False):
+        return
+    runner._overlap_authority_released = True
+    successor_pid = int(getattr(runner, "_overlap_restart_successor_pid", 0) or 0)
+    try:
+        mark_runtime_status_released(successor_pid or None)
+    except Exception:
+        logger.exception("Could not stamp the runtime-status handoff marker")
+    if owns_gateway_runtime_lock():
+        release_gateway_runtime_lock()
+    remove_pid_file()
+    _stop_authoritative_control_server(runner)
+    _stop_listener_intake(runner)
+    logger.warning(
+        "Gateway authority released to successor PID %s; this process (PID %d) "
+        "drains only its in-flight work",
+        successor_pid or "?", os.getpid(),
+    )
+
+
+def _stop_authoritative_control_server(runner: Any) -> None:
+    """Close the control socket so the claiming successor can bind it."""
+    server = getattr(runner, "_control_server", None)
+    cleanup = getattr(server, "cleanup_files", None)
+    if callable(cleanup):
+        try:
+            cleanup()
+        except Exception:
+            logger.exception("Control-socket cleanup failed during authority release")
+    stop = getattr(server, "stop", None)
+    if callable(stop):
+        try:
+            result = stop()
+            if inspect.isawaitable(result):
+                asyncio.ensure_future(result)
+        except Exception:
+            logger.exception("Control-socket stop failed during authority release")
+    if server is not None:
+        runner._control_server = None
+
+
+def _stop_listener_intake(runner: Any) -> None:
+    """Stop singleton listeners (bound ports); outbound delivery continues."""
+    for adapter in _iter_adapters(runner):
+        stop_intake = getattr(adapter, "stop_intake", None)
+        if not callable(stop_intake):
+            continue
+        try:
+            result = stop_intake()
+            if inspect.isawaitable(result):
+                asyncio.ensure_future(result)
+        except Exception:
+            logger.exception("Listener intake stop failed during authority release")
+
+
 def _predecessor_still_draining(runner: Any) -> bool:
     """True while this process is a predecessor whose drain has not reached stop()."""
     return bool(
@@ -659,6 +964,17 @@ async def watch_successor(
                 "starting a replacement successor", pid, os.getpid(),
             )
             mark_successor_lost(runner)
+        # Guard EVERY respawn attempt, not just the death announcement:
+        # mark_successor_lost clears the latch above, so later cycles reach
+        # this point with no pid at all. The restart line may already have
+        # advanced past the dead successor (it restarted into its own
+        # successor, or a forwarded request reached a newer generation).
+        # Respawning then would fork a PARALLEL newest generation — exactly
+        # the duplicate the generation array exists to prevent. Keep
+        # watching: if every newer generation later dies, the guard reopens
+        # and the replacement spawns then.
+        if await _newer_generation_continues_line(runner):
+            continue
         try:
             new_pid = await spawn_successor(runner, via_service=via_service)
         except Exception:
@@ -669,3 +985,20 @@ async def watch_successor(
             continue
         delay = backoff[min(attempt, len(backoff) - 1)]
         attempt += 1
+
+
+async def _newer_generation_continues_line(runner: Any) -> bool:
+    """True when a live generation NEWER than this process already carries the
+    restart line (per the hub's successor attestations).
+
+    Used by ``watch_successor`` to decide whether a dead successor needs a
+    replacement: when the line already continues past it, respawning would
+    create a second newest generation. An unreachable hub answers False —
+    the watcher then keeps its old respawn behavior, and the spawn itself
+    needs the hub anyway.
+    """
+    try:
+        array = await generation_array_for_runner(runner)
+    except Exception:
+        return False
+    return array.newest_live_other(os.getpid()) is not None

@@ -366,7 +366,6 @@ def serving_status_lines(
     state_pid_is_live: bool = False,
     state_is_stale: bool = False,
     state_restart_requested: Any = None,
-    chained: Optional[Mapping[str, Any]] = None,
     successor_identity: Optional[Callable[[int, Any], str]] = None,
     gateway_pids: Optional[Iterable[int]] = None,
 ) -> list[str]:
@@ -395,8 +394,6 @@ def serving_status_lines(
     ``gateway_pids`` (a process scan like ``find_gateway_pids``) is
     evidence, never a serving claim: it only demotes unproven rungs to
     ambiguous, and corroborates proven ones. Optional/absent by default.
-    ``chained`` (a peeked ``.restart_chain.json`` payload) adds the
-    pending-restart line.
     """
     lines: list[str] = []
     # (pid, start fingerprint) of the PROVEN serving process, when the ladder
@@ -520,30 +517,4 @@ def serving_status_lines(
         else:
             lines.append(
                 "⚠ Serving gateway: unknown — no control socket answer and no gateway_state.json record")
-    if isinstance(chained, Mapping):
-        from gateway.restart_chain import chained_marker_state
-
-        source = chained.get("source") or "an earlier restart request"
-        if chained_marker_state(chained, *proven_serving) == "stale":
-            # The marker names its own generation (this code stamps it); the
-            # proven serving process is neither member, so nothing can act
-            # on it. Rendering it "queued" would promise a restart that can
-            # never run (the live incident: a marker requested against one
-            # gateway shown as pending through two successor restarts).
-            generation_parts = []
-            predecessor = chained.get("predecessor")
-            if isinstance(predecessor, Mapping) and _positive_int(predecessor.get("pid")):
-                generation_parts.append(f"predecessor pid {predecessor.get('pid')}")
-            if _positive_int(chained.get("successor_pid")):
-                generation_parts.append(f"successor pid {chained.get('successor_pid')}")
-            generation = " → ".join(generation_parts) or "a previous process generation"
-            lines.append(
-                "⚠ Chained restart marker is stale and will not run: requested by "
-                f"{source}, recorded for {generation}, but the serving process is "
-                f"{_start_clause(*proven_serving)}; nothing will act on it — the next "
-                "gateway start clears it")
-        else:
-            lines.append(
-                "⏳ Chained restart queued: another restart will run once the current handoff "
-                f"completes (requested by {source})")
     return lines

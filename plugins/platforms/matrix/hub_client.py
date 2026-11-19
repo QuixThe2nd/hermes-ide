@@ -316,6 +316,16 @@ class MatrixHubClientAdapter(MatrixAdapter):
         try:
             method = message.get("method")
             params = message.get("params") or {}
+            if method == "restart_request":
+                response = {
+                    "type": "control_result", "id": message.get("id"),
+                    "result": await self._restart_request_control(params),
+                }
+                if self._writer is not None:
+                    async with self._write_lock:
+                        self._writer.write((json.dumps(response, separators=(",", ":")) + "\n").encode())
+                        await self._writer.drain()
+                return
             if method != "matrix_reaction":
                 raise ValueError("unknown Matrix hub control method")
             event = SimpleNamespace(**(params.get("event") or {}))

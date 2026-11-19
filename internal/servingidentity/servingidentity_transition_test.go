@@ -173,7 +173,7 @@ func TestApplyServedByDegradesGracefully(t *testing.T) {
 //     overlap window is exactly when two gateways legitimately coexist.
 func TestStatusLinesAmbiguityBranches(t *testing.T) {
 	legacy := &Identify{PID: 709505, StartTime: 3001234}
-	lines := StatusLines(legacy, nil, nil, nil, []int{709505, 1531038})
+	lines := StatusLines(legacy, nil, nil, []int{709505, 1531038})
 	if len(lines) != 1 || !strings.Contains(lines[0], "ambiguous") ||
 		!strings.Contains(lines[0], "pid 709505, pid 1531038") {
 		t.Errorf("legacy multi-pid: %q", lines)
@@ -181,13 +181,13 @@ func TestStatusLinesAmbiguityBranches(t *testing.T) {
 	drainingState := &StateFile{
 		PID: 709505, GatewayState: "draining", PIDIsLive: true, RestartRequested: true,
 	}
-	lines = StatusLines(legacy, drainingState, nil, nil, nil)
+	lines = StatusLines(legacy, drainingState, nil, nil)
 	if len(lines) != 1 || !strings.Contains(lines[0], "unknown") ||
 		!strings.Contains(lines[0], "draining") {
 		t.Errorf("legacy draining state: %q", lines)
 	}
 	stateOnly := &StateFile{PID: 709505, GatewayState: "running", PIDIsLive: true}
-	lines = StatusLines(nil, stateOnly, nil, nil, []int{709505, 1531038})
+	lines = StatusLines(nil, stateOnly, nil, []int{709505, 1531038})
 	if len(lines) != 1 || !strings.Contains(lines[0], "ambiguous") ||
 		!strings.Contains(lines[0], "pid 709505, pid 1531038") {
 		t.Errorf("state multi-pid: %q", lines)
@@ -195,17 +195,17 @@ func TestStatusLinesAmbiguityBranches(t *testing.T) {
 	drainingMulti := &StateFile{
 		PID: 1438, GatewayState: "draining", PIDIsLive: true, RestartRequested: true,
 	}
-	lines = StatusLines(nil, drainingMulti, nil, nil, []int{1438, 1531038})
+	lines = StatusLines(nil, drainingMulti, nil, []int{1438, 1531038})
 	if len(lines) != 1 || !strings.Contains(lines[0], "unknown") ||
 		!strings.Contains(lines[0], "live gateway processes: pid 1438, pid 1531038") {
 		t.Errorf("draining multi-pid: %q", lines)
 	}
-	lines = StatusLines(nil, nil, nil, nil, []int{709505, 1531038})
+	lines = StatusLines(nil, nil, nil, []int{709505, 1531038})
 	if len(lines) != 1 || !strings.Contains(lines[0], "ambiguous") {
 		t.Errorf("no sources multi-pid: %q", lines)
 	}
 	serving := &Identify{PID: 1531038, StartTime: 3005678, Role: RoleServing}
-	lines = StatusLines(serving, nil, nil, nil, []int{709505, 1531038})
+	lines = StatusLines(serving, nil, nil, []int{709505, 1531038})
 	if len(lines) != 1 || !strings.Contains(lines[0], "✓ Serving gateway: pid 1531038") {
 		t.Errorf("proven serving beside second pid: %q", lines)
 	}
@@ -363,7 +363,6 @@ func TestSharedTableCoversTheHonestyContract(t *testing.T) {
 		"owner_guard_legacy_predecessor_refuse",
 		"owner_guard_attested_chain",
 		"owner_refusal_legacy_answerer",
-		"chain_rewrite_names_serving_process",
 		"turn_notes_first_turn_after_handoff",
 	} {
 		if !names[required] {
@@ -380,24 +379,24 @@ func TestStatusLinesScanEvidenceMatrix(t *testing.T) {
 	green := &Identify{PID: 1531038, StartTime: 3005678, Role: RoleServing,
 		SuccessorPID: 1531038, SuccessorReady: true}
 	// Proven serving role + second live pid → still green (overlap window).
-	lines := StatusLines(green, nil, nil, nil, []int{709505, 1531038})
+	lines := StatusLines(green, nil, nil, []int{709505, 1531038})
 	if !anyLineContains(lines, "✓ Serving gateway: pid 1531038") {
 		t.Fatalf("proven role must stay green beside a second pid: %q", lines)
 	}
 	// Legacy answerer (no overlap block) + second live pid → ambiguous.
 	legacy := &Identify{PID: 1531038, StartTime: 3005678}
-	lines = StatusLines(legacy, nil, nil, nil, []int{709505, 1531038})
+	lines = StatusLines(legacy, nil, nil, []int{709505, 1531038})
 	if !anyLineContains(lines, "ambiguous") {
 		t.Fatalf("legacy answerer with a second live pid must be ambiguous: %q", lines)
 	}
 	// Same legacy answerer as the only gateway process → still never green
 	// (the serving role is unprovable without restart-handoff state).
-	lines = StatusLines(legacy, nil, nil, nil, []int{1531038})
+	lines = StatusLines(legacy, nil, nil, []int{1531038})
 	if !anyLineContains(lines, "⚠") || anyLineContains(lines, "✓") {
 		t.Fatalf("legacy identify must never be green, even alone: %q", lines)
 	}
 	// Answering pid absent from the scan → dead-process rung.
-	lines = StatusLines(legacy, nil, nil, nil, []int{709505})
+	lines = StatusLines(legacy, nil, nil, []int{709505})
 	if !anyLineContains(lines, "⚠") || anyLineContains(lines, "✓") {
 		t.Fatalf("absent pid must not stay green: %q", lines)
 	}

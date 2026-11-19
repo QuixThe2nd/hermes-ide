@@ -4005,6 +4005,7 @@ from gateway.restart import (
     DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    clear_pre_array_chain_marker,
     detached_restart_spawn_blocked,
     is_global_startup_conflict,
     parse_cron_drain_timeout,
@@ -7812,6 +7813,9 @@ class GatewayRunner(
             _set_reaction = getattr(adapter, "set_reaction_handler", None)
             if callable(_set_reaction):
                 _set_reaction(self._handle_reaction_event)
+            _set_restart = getattr(adapter, "set_restart_request_handler", None)
+            if callable(_set_restart):
+                _set_restart(self._handle_forwarded_restart)
             adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
             adapter.set_platform_event_handler(self._primary_platform_event_handler())
             from gateway.overlap_restart import defer_adapter_until_authoritative, defer_primary_adapter
@@ -9753,6 +9757,16 @@ class GatewayRunner(
 
         return SessionSource(**kwargs)
 
+    async def _handle_forwarded_restart(
+        self, *, restart_hub: bool, requester: Optional[dict] = None,
+    ) -> dict:
+        """Take a restart another generation forwarded here through the hub."""
+        from gateway.restart import handle_forwarded_restart
+
+        return await handle_forwarded_restart(
+            self, restart_hub=restart_hub, requester=requester,
+        )
+
     def _mark_and_schedule_restart_requester_resume(self, notify_data: dict) -> bool:
         """Durably mark the restart requester, then schedule it when its adapter is ready.
 
@@ -11155,47 +11169,81 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
     return shutdown_signal_handler
 
 
-def _start_gateway_claim_pid_file(predecessor_pid: int | None = None) -> bool | str:
-    """Claim authority normally, or let the expected overlap successor boot pending."""
+def _start_gateway_claim_pid_file(
+    predecessor_pid: int | None = None, *, ancestors: tuple[int, ...] = (),
+) -> bool | str:
+    """Claim gateway authority, or stay pending while an ancestor holds it.
+
+    Array-aware: ``ancestors`` is the claiming generation's full predecessor
+    chain (from the transport hub's successor registry), so a third
+    generation may take over artifacts still owned by its grandparent. A
+    live holder OUTSIDE the ancestry is a foreign gateway — lose cleanly
+    instead of displacing it.
+    """
     import atexit
+    from gateway.generations import takeover_allowed
     from gateway.overlap_restart import (
         GATEWAY_CLAIM_SUCCESSOR_PENDING, OVERLAP_PREDECESSOR_PID_ENV, OVERLAP_SUCCESSOR_ENV,
         overlap_predecessor_pid,
     )
     from gateway.status import (
-        acquire_gateway_runtime_lock, get_running_pid, release_gateway_runtime_lock,
-        remove_pid_file, write_pid_file)
+        _pid_exists, _pid_from_record, _read_pid_record, acquire_gateway_runtime_lock,
+        get_running_pid, release_gateway_runtime_lock, remove_pid_file,
+        unlink_pid_file_for_claim, write_pid_file,
+    )
     _current_pid = get_running_pid()
     _overlap_predecessor_pid = (
         predecessor_pid if predecessor_pid is not None else overlap_predecessor_pid()
     )
+    claim_ancestors = {p for p in (*ancestors, _overlap_predecessor_pid or 0) if p > 0}
     if _current_pid is not None and _current_pid != os.getpid():
-        if _current_pid == _overlap_predecessor_pid:
+        if _current_pid in claim_ancestors:
             logger.info(
                 "Overlap successor PID %d booting non-authoritatively behind predecessor PID %d",
                 os.getpid(), _current_pid,
             )
             return GATEWAY_CLAIM_SUCCESSOR_PENDING
+        if os.environ.get(OVERLAP_SUCCESSOR_ENV) == "1":
+            # A hub-spawned successor defers the verdict to its claim loop,
+            # which sees the full generation array: in a multi-generation
+            # restart the PID file can legitimately name a grandparent the
+            # env predecessor chain does not include.
+            return GATEWAY_CLAIM_SUCCESSOR_PENDING
         logger.error("Another gateway instance (PID %d) started during our startup. "
                      "Exiting to avoid double-running.", _current_pid)
         return False
-    if _current_pid is None and _overlap_predecessor_pid is not None:
-        from gateway.status import _pid_exists
-        if _pid_exists(_overlap_predecessor_pid):
-            logger.info(
-                "Overlap successor PID %d waiting for predecessor PID %d before claiming authority",
-                os.getpid(), _overlap_predecessor_pid,
-            )
-            return GATEWAY_CLAIM_SUCCESSOR_PENDING
     if not acquire_gateway_runtime_lock():
+        # Lock busy is EXPECTED while an ancestor drains (it releases at
+        # drain start; pre-array code holds it until exit). Pending only for
+        # a live ancestor; anything else is a foreign owner.
+        from gateway.status import _read_gateway_lock_record
+
+        holder = _pid_from_record(_read_gateway_lock_record())
+        if holder and _pid_exists(holder) and holder in claim_ancestors:
+            return GATEWAY_CLAIM_SUCCESSOR_PENDING
         logger.error("Gateway runtime lock is already held by another instance. Exiting.")
         return False
     try:
         write_pid_file()
     except FileExistsError:
-        release_gateway_runtime_lock()
-        logger.error("PID file race lost to another gateway instance. Exiting.")
-        return False
+        holder = _pid_from_record(_read_pid_record())
+        holder_live = bool(holder and _pid_exists(holder))
+        if takeover_allowed(holder or 0, holder_live, sorted(claim_ancestors)):
+            # Dead holder, or a file naming one of our ancestors that a
+            # pre-array predecessor left behind (its atexit only removes a
+            # file naming ITSELF, so the newest generation rewrites it).
+            unlink_pid_file_for_claim()
+            try:
+                write_pid_file()
+            except FileExistsError:
+                release_gateway_runtime_lock()
+                logger.error("PID file takeover race lost to another gateway instance. Exiting.")
+                return False
+        else:
+            release_gateway_runtime_lock()
+            logger.error("PID file names live gateway PID %s outside this restart "
+                         "ancestry. Exiting to avoid double-running.", holder)
+            return False
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
     if _overlap_predecessor_pid is not None:
@@ -11325,13 +11373,17 @@ async def _start_gateway_start_control_socket(runner):
             if not result_box:
                 return {"queued": False, "reason": "restart hand-off not observed in time"}
             status = result_box[0]
-            return {
-                "queued": status.get("status") in {"restarting", "chained"},
+            ack = {
+                "queued": status.get("status") in {"restarting", "forwarded"},
                 "status": status.get("status"),
                 "pid": os.getpid(),
                 "active_agents": status.get("active_agents", 0),
                 "via_service": status.get("via_service"),
             }
+            forwarded_to = status.get("forwarded_to")
+            if isinstance(forwarded_to, int) and forwarded_to > 0:
+                ack["forwarded_to"] = forwarded_to
+            return ack
 
         _control_server = GatewayControlServer(
             verb_handlers={"identify": _identify_verb,
@@ -11589,8 +11641,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     # A pending successor is not a truthful control-plane authority yet; its socket starts after the claim.
     _control_server = None
+    runner._control_server = None
     if not runner._overlap_successor_pending:
         _control_server = await _start_gateway_start_control_socket(runner)
+        runner._control_server = _control_server
 
     def _lifecycle_record_startup() -> None:
         # Report if the previous life died uncleanly (SIGKILL / OOM / VM death), then claim the
@@ -11655,11 +11709,18 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         cron_stop, cron_provider, cron_thread, housekeeping_thread = (
             _start_gateway_start_cron_and_housekeeping(
                 runner, in_process_only=True, with_housekeeping=False))
-        from gateway.overlap_restart import claim_when_predecessor_exits, start_deferred_adapters
+        from gateway.overlap_restart import claim_authority_when_lock_frees, start_deferred_adapters
 
         async def _on_overlap_authoritative() -> None:
             nonlocal _control_server, cron_stop, cron_provider, cron_thread, housekeeping_thread
+            # Authority is ours: re-arm status writes and stamp the shared
+            # record fresh so every consumer (get_running_pid, CLI status,
+            # updater) sees this generation immediately.
+            from gateway.status import clear_runtime_status_released
+
+            clear_runtime_status_released()
             _control_server = await _start_gateway_start_control_socket(runner)
+            runner._control_server = _control_server
             _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
             # Opt-in hub bounce (restart_hub): consume the marker and bounce
             # hermes-discord-hub.service BEFORE adapters attach. Off-loop —
@@ -11689,7 +11750,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             runner._start_systemd_watchdog()
 
         _overlap_claim_task = asyncio.create_task(
-            claim_when_predecessor_exits(
+            claim_authority_when_lock_frees(
                 runner, runner._overlap_predecessor_pid, _on_overlap_authoritative,
             ),
             name="overlap-successor-claim",
@@ -11699,16 +11760,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             _start_gateway_start_cron_and_housekeeping(runner))
         # READY only once adapters, cron and housekeeping run; missing systemd state just disables watchdog.
         runner._start_systemd_watchdog()
-        # A DIRECT claim (not the pending-successor path) never runs
-        # run_chained_restart, so settle any leftover chain marker at the same
-        # lifecycle point the genuine path would: honor it when it provably
-        # targets this process, else clear it as orphaned by a dead
-        # generation — otherwise status would forever show a chained restart
-        # that can never run.
-        from gateway.restart_chain import settle_chained_restart_after_direct_claim
-
-        await settle_chained_restart_after_direct_claim(
-            runner, launched_as_overlap_successor=runner._launched_as_overlap_successor)
+        # Pre-array upgrade cleanup: a leftover .restart_chain.json (written
+        # by the chained-restart design this array replaced) can never run —
+        # restarts forward to the newest generation through the hub now, and
+        # nothing queues through a chain marker. Clear it at the same
+        # lifecycle point the genuine path used to settle it, so an older
+        # hermes binary never misreads it as a pending restart.
+        _best_effort(
+            clear_pre_array_chain_marker, "pre-array chain marker cleanup failed: %s")
 
     await runner.wait_for_shutdown()
 
@@ -11717,7 +11776,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         await asyncio.gather(_overlap_claim_task, return_exceptions=True)
 
     return await _start_gateway_shutdown_tail(
-        runner, _control_server, cron_stop, cron_provider, cron_thread, housekeeping_thread,
+        runner, getattr(runner, "_control_server", _control_server),
+        cron_stop, cron_provider, cron_thread, housekeeping_thread,
         _planned_stop_watcher_stop, _planned_stop_watcher_thread, _signal_initiated_shutdown)
 
 

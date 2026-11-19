@@ -128,6 +128,34 @@ def _live_runner(monkeypatch, gateway_loop, **overrides):
     return runner
 
 
+def _install_forwardable_newest(monkeypatch, runner, *, pid: int):
+    """Attach a live newer generation + hub adapter so the request forwards."""
+    import os
+
+    import gateway.overlap_restart as overlap_restart
+    from gateway.generations import Generation, GenerationArray
+    from gateway.platforms.base import Platform
+
+    array = GenerationArray([
+        Generation(pid=os.getpid(), predecessor=0, spawn_seq=1, draining=True),
+        Generation(pid=pid, predecessor=os.getpid(), spawn_seq=2, attached=True),
+    ])
+
+    async def fixed_array(_runner):
+        return array
+
+    monkeypatch.setattr(overlap_restart, "generation_array_for_runner", fixed_array)
+
+    class _ForwardAdapter:
+        supports_overlap_restart = True
+        _running = True
+
+        async def forward_restart_to_newest(self, **kwargs):
+            return {"status": "restarting", "active_agents": 0}
+
+    runner.adapters[Platform.DISCORD] = _ForwardAdapter()
+
+
 def _bind_session(runner, **kwargs):
     """Bind tool context and seed the runner's cached comeback source."""
     set_session_vars(**kwargs)
@@ -454,7 +482,7 @@ def test_handler_reports_committed_restart_without_second_restart(
     assert not (tmp_path / ".restart_notify.json").exists()
 
 
-def test_handler_chains_committed_restart_with_pending_successor(
+def test_handler_forwards_committed_restart_to_newest_generation(
     gateway_loop, monkeypatch, tmp_path
 ):
     from plugins.gateway_restart.tool import handle_restart
@@ -466,6 +494,7 @@ def test_handler_chains_committed_restart_with_pending_successor(
         _draining=True,
         _overlap_restart_successor_started=True,
     )
+    _install_forwardable_newest(monkeypatch, runner, pid=202)
 
     _bind_session(runner, **_CHAT_SESSION)
     try:
@@ -474,9 +503,37 @@ def test_handler_chains_committed_restart_with_pending_successor(
         clear_session_vars(None)
 
     assert result["success"] is True
-    assert result["status"] == "chained"
-    assert (tmp_path / ".restart_chain.json").exists()
+    assert result["status"] == "forwarded"
+    assert result["forwarded_to"] == 202
+    assert not (tmp_path / ".restart_notify.json").exists()
     runner.request_restart.assert_not_called()
+
+def test_handler_forwarded_restart_names_newest_generation(
+    gateway_loop, monkeypatch, tmp_path
+):
+    """A forwarded restart is performed by the NEWEST generation, not this
+    superseded one: the result's ``process`` must name the forward target."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner = _live_runner(
+        monkeypatch,
+        gateway_loop,
+        _restart_requested=True,
+        _draining=True,
+        _overlap_restart_successor_started=True,
+    )
+    _install_forwardable_newest(monkeypatch, runner, pid=202)
+
+    _bind_session(runner, **_CHAT_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    assert result["status"] == "forwarded"
+    assert result["process"] == "pid 202"
+    assert "newest" in result["note"]
 
 
 def test_handler_refuses_generic_shutdown_drain(gateway_loop, monkeypatch):
@@ -836,6 +893,33 @@ def test_handler_socket_chained_restart_names_the_serving_process(monkeypatch):
     assert result["success"] is True
     assert result["status"] == "chained"
     assert result["process"] == "pid 1531038"
+    assert "709505" in result["note"]
+
+def test_handler_socket_forwarded_restart_names_newest_generation(monkeypatch):
+    """Array overlap: the draining answerer forwards the restart to the
+    newest generation, and the ack's own ``forwarded_to`` is the proof —
+    the result names that generation, never the draining socket owner,
+    with no serving stamp needed to see it."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    monkeypatch.delenv("HERMES_SESSION_GATEWAY_PID", raising=False)
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway",
+        lambda home, **kw: pytest.fail("identify must not run without a serving stamp"))
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart",
+        lambda home, **kw: {
+            "queued": True, "pid": 709505, "status": "forwarded",
+            "forwarded_to": 1531038, "active_agents": 1, "via_service": False,
+        })
+
+    result = json.loads(handle_restart({}))
+
+    assert result["success"] is True
+    assert result["status"] == "forwarded"
+    assert result["process"] == "pid 1531038"
+    assert result["forwarded_to"] == 1531038
     assert "709505" in result["note"]
 
 

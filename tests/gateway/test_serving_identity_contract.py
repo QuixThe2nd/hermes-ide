@@ -73,13 +73,10 @@ def _table_runner(snap: dict):
 
 
 # Ops whose table expectation is one value (string or dict) rather than a
-# line list.
-_VALUE_OPS = ("note", "transition", "record", "owner_guard",
-              "owner_refusal", "chain_rewrite")
+# line list. All of them print a bare value from the Go binary.
+_VALUE_OPS = ("note", "transition", "record", "owner_guard", "owner_refusal")
 
-# Of those, the ops whose Go binary prints a bare value (not JSON): the
-# binary prints chain_rewrite as JSON.
-_BARE_OUTPUT_OPS = ("note", "transition", "record", "owner_guard", "owner_refusal")
+_BARE_OUTPUT_OPS = _VALUE_OPS
 
 
 def _python_render(case: dict):
@@ -110,11 +107,6 @@ def _python_render(case: dict):
         from plugins.gateway_restart.tool import socket_owner_refusal
         request = case["input"]
         return socket_owner_refusal(request["serving_pid"], request["identify"])
-    if case["op"] == "chain_rewrite":
-        from plugins.gateway_restart.tool import _socket_chain_rewrites_serving_process
-        request = case["input"]
-        return _socket_chain_rewrites_serving_process(
-            dict(request["ack"]), request["serving_pid"], request["identify"])
     if case["op"] == "turn_notes":
         request = case["input"]
         identity = request["identity"]
@@ -136,8 +128,7 @@ def _python_render(case: dict):
         state_pid_is_live=bool(state.get("pid_is_live", False)),
         state_is_stale=bool(state.get("is_stale", False)),
         state_restart_requested=state.get("restart_requested"),
-        chained=request.get("chained") or (
-            {"source": request["chained_source"]} if request.get("chained_source") else None),
+
         successor_identity=(
             (lambda pid, start_time: request["successor_identity"])
             if request.get("successor_identity") else None),

@@ -23,11 +23,8 @@
 //	{"op": "status", "identify": {"pid": …, "start_time": …,
 //	 "overlap": {"role": …, …}} | null, "state": {"pid": …,
 //	 "gateway_state": "…", "pid_is_live": bool, "is_stale": bool,
-//	 "restart_requested": bool} | null, "chained": {"source": "…",
-//	 "predecessor": {"pid": …, "start_time": …} | null,
-//	 "successor_pid": …, "successor_start_time": …} | null
-//	 (legacy bare-source form: "chained_source": "…"), "successor_identity":
-//	 "live" | "dead" | "unknown" | null}
+//	 "restart_requested": bool} | null,
+//	 "successor_identity": "live" | "dead" | "unknown" | null}
 //	  → prints the status lines as a JSON array.
 package main
 
@@ -62,15 +59,6 @@ func main() {
 		fmt.Println(servingidentity.OwnerRefusal(
 			intValue(request["serving_pid"]),
 			identifyFromRecord(request["identify"])))
-	case "chain_rewrite":
-		ack, _ := request["ack"].(map[string]any)
-		encoded, err := json.Marshal(servingidentity.ChainRewrite(
-			ack, intValue(request["serving_pid"]), identifyFromRecord(request["identify"])))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "servingidentity: %v\n", err)
-			os.Exit(2)
-		}
-		fmt.Println(string(encoded))
 	case "stamp":
 		snapshot, ok := servingidentity.SessionStamp(
 			stringValue(request["pid"]), stringValue(request["start_time"]))
@@ -183,7 +171,7 @@ func statusFromRequest(request map[string]any) []string {
 			SuccessorReady:     boolValue(overlap["successor_ready"]),
 		}
 	}
-	chained := chainedFromRequest(request)
+
 	var state *servingidentity.StateFile
 	if raw, ok := request["state"].(map[string]any); ok && intValue(raw["pid"]) > 0 {
 		state = &servingidentity.StateFile{
@@ -198,29 +186,7 @@ func statusFromRequest(request map[string]any) []string {
 	if v, ok := request["successor_identity"].(string); ok && v != "" {
 		probe = func(int, int64) string { return v }
 	}
-	return servingidentity.StatusLines(identify, state, chained, probe, pidsFromRequest(request["gateway_pids"]))
-}
-
-// chainedFromRequest maps the optional chain marker onto the twin input:
-// the full peeked payload object ("chained") when present, else the legacy
-// bare source string ("chained_source"), else no marker.
-func chainedFromRequest(request map[string]any) *servingidentity.ChainedMarker {
-	if raw, ok := request["chained"].(map[string]any); ok {
-		marker := &servingidentity.ChainedMarker{
-			Source:         servingidentity.ChainedSource(stringValue(raw["source"])),
-			SuccessorPID:   intValue(raw["successor_pid"]),
-			SuccessorStart: int64Value(raw["successor_start_time"]),
-		}
-		if pred, ok := raw["predecessor"].(map[string]any); ok {
-			marker.PredecessorPID = intValue(pred["pid"])
-			marker.PredecessorStart = int64Value(pred["start_time"])
-		}
-		return marker
-	}
-	if source := stringValue(request["chained_source"]); source != "" {
-		return &servingidentity.ChainedMarker{Source: servingidentity.ChainedSource(source)}
-	}
-	return nil
+	return servingidentity.StatusLines(identify, state, probe, pidsFromRequest(request["gateway_pids"]))
 }
 
 // pidsFromRequest maps the optional gateway_pids array (live process scan)

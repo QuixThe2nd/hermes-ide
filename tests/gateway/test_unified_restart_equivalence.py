@@ -59,12 +59,13 @@ async def test_restart_slash_command_reaches_shared_queue(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_restart_slash_command_reports_chained_on_incoming_generation(
+async def test_restart_slash_command_reports_forwarded_to_newest_generation(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     queued = AsyncMock(return_value={
-        "status": "chained", "active_agents": 0, "via_service": False,
+        "status": "forwarded", "forwarded_to": 202,
+        "active_agents": 0, "via_service": False,
     })
     monkeypatch.setattr("gateway.restart.queue_user_restart", queued)
     runner, _adapter = make_restart_runner()
@@ -81,8 +82,8 @@ async def test_restart_slash_command_reports_chained_on_incoming_generation(
     result = await runner._handle_restart_command(event)
 
     queued.assert_awaited_once()
-    assert "chained" in str(result)
-    assert "incoming generation" in str(result)
+    assert "forwarded" in str(result)
+    assert "202" in str(result)
 
 
 # ── (b) tool: plugins.gateway_restart.tool.handle_restart → queue_user_restart ─
@@ -175,16 +176,17 @@ def test_cli_restart_leads_with_control_socket(monkeypatch):
     assert requested.call_args.kwargs == {}
 
 
-def test_control_socket_chained_reply_names_incoming_generation(monkeypatch, capsys):
+def test_control_socket_forwarded_reply_names_target_generation(monkeypatch, capsys):
     import hermes_cli.gateway as cli_gateway
 
-    requested = MagicMock(return_value={"queued": True, "status": "chained"})
+    requested = MagicMock(return_value={
+        "queued": True, "status": "forwarded", "forwarded_to": 202})
     monkeypatch.setattr("gateway.control_socket.request_gateway_restart", requested)
 
     assert cli_gateway._restart_via_control_socket() is True
     output = capsys.readouterr().out
-    assert "chained" in output
-    assert "incoming generation" in output
+    assert "forwarded" in output
+    assert "202" in output
 
 
 # The shared adapter double is intentionally unused here but kept imported for

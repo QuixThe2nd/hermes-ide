@@ -439,8 +439,10 @@ class GatewaySlashCommandsMixin(
         status = await queue_user_restart(
             self, event.source, event.message_id, restart_hub=restart_hub
         )
-        if status["status"] == "chained":
-            return EphemeralReply(t("gateway.restart.chained"))
+        if status["status"] == "forwarded":
+            return EphemeralReply(t("gateway.restart.forwarded", pid=status.get("forwarded_to")))
+        if status["status"] == "already_in_progress":
+            return EphemeralReply(t("gateway.restart.in_progress"))
         active_agents = status["active_agents"]
         # Track sessions that were active at shutdown for stuck-loop detection (#7536). On each restart, the
         # counter increments for sessions that were running. If a session hits the threshold (3 consecutive
