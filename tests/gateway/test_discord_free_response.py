@@ -1418,3 +1418,34 @@ class TestNonConversationalTrackerOffload:
         assert sorted(writes[-1]) == ["1", "2"]
 
 
+def test_channel_gate_parses_json_array_string(adapter):
+    """``hermes config set discord.allowed_channels '["111","222"]'`` stores a string."""
+    adapter.config.extra["allowed_channels"] = '["111", "222"]'
+    assert adapter._get_allowed_channels() == {"111", "222"}
+
+
+def test_channel_gate_keeps_csv_and_list_forms(adapter):
+    adapter.config.extra["allowed_channels"] = "111, 222"
+    assert adapter._get_allowed_channels() == {"111", "222"}
+    adapter.config.extra["allowed_channels"] = ["111", "222"]
+    assert adapter._get_allowed_channels() == {"111", "222"}
+
+
+@pytest.mark.asyncio
+async def test_bare_mention_acks_with_eyes_and_starts_no_turn(adapter, monkeypatch):
+    """A bare @mention is dropped without a turn, but the ping gets a visible 👀 ack."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_REACTIONS", "true")
+    adapter._add_reaction = AsyncMock(return_value=True)
+
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content=f"<@{bot_user.id}>",
+        mentions=[bot_user],
+    )
+
+    assert await adapter._handle_message(message) is False
+    adapter.handle_message.assert_not_awaited()
+    adapter._add_reaction.assert_awaited_once_with(message, "👀")

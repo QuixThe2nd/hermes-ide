@@ -5951,7 +5951,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return set()
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
-        return {part.strip() for part in str(raw).split(",") if part.strip()}
+        s = str(raw).strip()
+        if s.startswith("["):
+            # ``hermes config set`` stores a JSON array as a string, not a list;
+            # without this every entry collapses into one unusable channel key.
+            try:
+                parsed = json.loads(s)
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, list):
+                return {str(part).strip() for part in parsed if str(part).strip()}
+        return {part.strip() for part in s.split(",") if part.strip()}
 
     def _get_allowed_channels(self) -> set:
         """This adapter's DISCORD_ALLOWED_CHANNELS gate (per-profile)."""
@@ -6102,13 +6112,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         raw = self.config.extra.get("free_response_channels")
         if raw is None:
             raw = self._gate_env("DISCORD_FREE_RESPONSE_CHANNELS")
-        if isinstance(raw, list):
-            return {str(part).strip() for part in raw if str(part).strip()}
-        # YAML parses a bare numeric value as int; str() any scalar before splitting.
-        s = str(raw).strip() if raw is not None else ""
-        if s:
-            return {part.strip() for part in s.split(",") if part.strip()}
-        return set()
+        return self._gate_csv_set(raw)
 
     def _discord_thread_free_response_channels(self) -> set:
         """Free-response channels that still auto-thread (``discord.thread_free_response_channels``).
@@ -7638,6 +7642,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     getattr(message.author, "display_name", getattr(message.author, "name", "unknown")),
                     getattr(message.channel, "id", "unknown"),
                 )
+                # A bare @mention means "are you there?" — no turn, but the ping gets a visible ack
+                # instead of vanishing.
+                if self._reactions_enabled():
+                    await self._add_reaction(message, "👀")
                 return False
             event_text = "(The user sent a message with no text content)"
         _chan = message.channel
